@@ -87,7 +87,7 @@ const SESSION_ACCESS_CACHE_TTL_MS = 1_000
 const SESSION_ACCESS_CACHE_MAX_SESSIONS = 64
 
 export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlersDeps): void {
-    const { io, store, rpcRegistry, terminalRegistry, onSessionAlive, onSessionReady, onSessionEnd, onMachineAlive, onSessionChildExited, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed, onPromptDelivered } = deps
+    const { io, store, rpcRegistry, terminalRegistry, onSessionAlive, onSessionReady, onSessionEnd, onMachineAlive, onSessionChildExited, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed, onPromptDelivered, onMaintenanceTurn } = deps
     const terminalNamespace = io.of('/terminal')
     const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
 
@@ -186,7 +186,8 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
         onAgentProgress,
         onSweepImmediateQueued,
         onMessagesConsumed,
-        onPromptDelivered
+        onPromptDelivered,
+        onMaintenanceTurn
     })
     registerMachineHandlers(socket, {
         store,

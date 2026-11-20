@@ -141,7 +141,8 @@ export function createSocketServer(deps: SocketServerDeps): {
         onAgentProgress: deps.onAgentProgress,
         onSweepImmediateQueued: deps.onSweepImmediateQueued,
         onMessagesConsumed: deps.onMessagesConsumed,
-        onPromptDelivered: deps.onPromptDelivered
+        onPromptDelivered: deps.onPromptDelivered,
+        onMaintenanceTurn: deps.onMaintenanceTurn
     }))
 
     terminalNs.use(async (socket, next) => {

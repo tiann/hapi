@@ -80,6 +80,36 @@ describe('a locally handled command does not answer the agent (#1717)', () => {
         store.close()
     })
 
+    it('reports the maintenance turn UP to the hub, not just hub-side', () => {
+        // My previous test for this called `markMaintenanceTurn` on the cache
+        // directly, so it could not see that the callback was declared in both
+        // option types and supplied by `startHub` but never forwarded to this
+        // handler — the fix was dead on arrival in production. Asserting the
+        // callback actually fires is what pins the wiring.
+        const { socket, session, store } = harness()
+        const maintenance: string[] = []
+        const socket2 = new FakeSocket()
+        registerSessionHandlers(socket2 as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session }),
+            emitAccessError() {},
+            onWebappEvent() {},
+            onMaintenanceTurn: (sid) => { maintenance.push(sid) }
+        })
+        socket2.trigger('message', {
+            sid: session.id,
+            localId: 'compact-wire',
+            message: { role: 'user', content: { type: 'text', text: '/compact' } }
+        })
+        socket2.trigger('messages-consumed', {
+            sid: session.id, localIds: ['compact-wire'], maintenance: true
+        })
+
+        expect(maintenance).toEqual([session.id])
+        void socket
+        store.close()
+    })
+
     it('leaves the blocker alone for a maintenance command, which keeps its grace', () => {
         // OpenCode acknowledges /compact when it DEQUEUES the command, before
         // compaction starts, and that consumed a command rather than

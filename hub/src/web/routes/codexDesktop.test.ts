@@ -1113,6 +1113,101 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('does not duplicate an initiating prompt across a THREE-session merge', async () => {
+        // Survivor holds a blocked footer. One duplicate supplies the live
+        // prompt that preceded it; another supplies the Desktop import of that
+        // SAME prompt. Bumping only the tally a row was measured against left
+        // the other stale, so the second duplicate saw a count that did not
+        // include the row just copied and appended the prompt again — with a
+        // synthetic stamp after the footer, which reconciliation then read as
+        // an answer and hid an unanswered blocker.
+        const { SyncEngine } = await import('../../sync/syncEngine')
+        const { RpcRegistry } = await import('../../socket/rpcRegistry')
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        // Created through the STORE, not the engine: `engine.getOrCreateSession`
+        // with a shared `codexSessionId` engages the engine's own duplicate
+        // handling, which raced the route-level merge under test and made this
+        // flaky (2 of 3 runs) before I caught it.
+        const canonical = store.sessions.getOrCreateSession(
+            'tri-canon', { codexSessionId: 'codex-thread-14', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const liveDup = store.sessions.getOrCreateSession(
+            'tri-live', { codexSessionId: 'codex-thread-14', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const importDup = store.sessions.getOrCreateSession(
+            'tri-import', { codexSessionId: 'codex-thread-14', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const base = Date.now() - 600_000
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+
+        // Survivor: padding so it wins canonical selection, then the footer.
+        for (let i = 0; i < 6; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `pad ${i}` }] } }
+                }
+            }, `tri-pad-${i}`, base)
+        }
+        store.messages.addMessage(canonical.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, undefined, null, base + 3_000, base + 3_000)
+        // The footer is set directly rather than derived first: deriving it
+        // pre-merge depended on engine cache priming and made this flaky. What
+        // is under test is whether the MERGE's reconciliation keeps it, so the
+        // starting state only has to be unambiguous.
+        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: canonical.id })
+        store.sessions.setSessionLastNotify(
+            canonical.id,
+            { status: 'blocked', at: base + 3_000, note: 'needs a key', receivedAt: base + 3_000 },
+            'default'
+        )
+        const blockedStatus = () => store.sessions
+            .getSessionByNamespace(canonical.id, 'default')?.lastNotifyStatus
+        expect(blockedStatus()).toBe('blocked')
+
+        // Duplicate A: the live prompt, real hub acknowledgement.
+        store.messages.addMessage(liveDup.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'tri-live-id', null, base + 1_000, base + 1_000)
+        store.messages.markMessagesInvoked(liveDup.id, ['tri-live-id'], base + 2_000)
+        // Duplicate B: the Desktop import of the same prompt, synthetic stamp
+        // AFTER the footer.
+        store.messages.addImportedMessage(importDup.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'tri-import-id', base + 9_000)
+
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-14'] })
+            })
+            expect(response.status).toBe(200)
+
+            const prompts = store.messages.getAllMessages(canonical.id)
+                .filter((row) => JSON.stringify(row.content).includes('Continue'))
+            expect(prompts).toHaveLength(1)
+            expect(blockedStatus()).toBe('blocked')
+        } finally {
+            store.close()
+        }
+    })
+
     it('aligns a live prompt with its LATER Desktop import, under real reconciliation', async () => {
         // My previous test gave both copies the same delivery timestamp and
         // stubbed reconciliation, which is the easy version of this. In
@@ -1131,11 +1226,11 @@ describe('Codex Desktop import routes', () => {
         const store = new Store(':memory:')
         const io = { of: () => ({ to: () => ({ emit() {} }) }) }
         const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
-        const canonical = engine.getOrCreateSession(
-            'canon-real', { codexSessionId: 'codex-thread-13', path: '/tmp', host: 'h' }, null, 'default'
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-real', { codexSessionId: 'codex-thread-13', path: '/tmp', host: 'h' }, {}, 'default'
         )
-        const duplicate = engine.getOrCreateSession(
-            'dup-real', { codexSessionId: 'codex-thread-13', path: '/tmp', host: 'h' }, null, 'default'
+        const duplicate = store.sessions.getOrCreateSession(
+            'dup-real', { codexSessionId: 'codex-thread-13', path: '/tmp', host: 'h' }, {}, 'default'
         )
         const base = Date.now() - 600_000
         const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
@@ -1163,8 +1258,19 @@ describe('Codex Desktop import routes', () => {
                 data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
             }
         }, undefined, null, base + 3_000, base + 3_000)
-        engine.reconcileNotifySignalAfterImport(canonical.id)
-        expect(engine.getSession(canonical.id)?.lastNotify?.status).toBe('blocked')
+        // The footer is set directly rather than derived first: deriving it
+        // pre-merge depended on engine cache priming and made this flaky. What
+        // is under test is whether the MERGE's reconciliation keeps it, so the
+        // starting state only has to be unambiguous.
+        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: canonical.id })
+        store.sessions.setSessionLastNotify(
+            canonical.id,
+            { status: 'blocked', at: base + 3_000, note: 'needs a key', receivedAt: base + 3_000 },
+            'default'
+        )
+        const blockedStatus = () => store.sessions
+            .getSessionByNamespace(canonical.id, 'default')?.lastNotifyStatus
+        expect(blockedStatus()).toBe('blocked')
 
         // The duplicate holds the SAME prompt as an untimestamped import, so
         // its delivery stamp is synthetic and LATER than the footer.
@@ -1185,7 +1291,7 @@ describe('Codex Desktop import routes', () => {
                 .filter((row) => JSON.stringify(row.content).includes('Continue'))
             expect(prompts).toHaveLength(1)
             // And the blocker is still there, because nothing answered it.
-            expect(engine.getSession(canonical.id)?.lastNotify?.status).toBe('blocked')
+            expect(blockedStatus()).toBe('blocked')
         } finally {
             store.close()
         }

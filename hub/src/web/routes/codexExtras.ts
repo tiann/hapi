@@ -901,7 +901,21 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         )
     }
 
-    for (const source of sessionStates.slice(1)) {
+    // Sources carrying a REAL delivery stamp go first (#1717). Two duplicates
+    // can each hold a copy of the same prompt — one from the live projection
+    // with a genuine acknowledgement, one from the Desktop import with a
+    // synthesized stamp — and whichever is processed first is the copy that
+    // survives alignment. With an unstable order the synthetic copy sometimes
+    // won, and its stamp can fall AFTER the survivor's footer, so
+    // reconciliation read it as an answer and hid an unanswered blocker. The
+    // real stamp is the truthful one, so it wins deterministically.
+    const sourcesByStampFidelity = sessionStates.slice(1).slice().sort((a, b) => {
+        const real = (candidate: typeof a): number => candidate.storedMessages.some(
+            (message) => isDeliveredOperatorReply(message) && !isSyntheticDelivery(message)
+        ) ? 0 : 1
+        return real(a) - real(b)
+    })
+    for (const source of sourcesByStampFidelity) {
         latestActivity = Math.max(latestActivity, source.updatedAt)
         const sourceSeen = new Map<string, number>()
         for (const message of source.storedMessages) {
@@ -917,7 +931,9 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 : (canonicalTimedCounts.get(comparableKey) ?? 0)
             const ordinal = (sourceSeen.get(comparableKey) ?? 0) + 1
             sourceSeen.set(comparableKey, ordinal)
-            // Already represented by the matching occurrence on the survivor.
+            // Already represented by a matching occurrence on the survivor.
+            // The tallies grow as rows are copied, so a later duplicate sees
+            // what earlier ones contributed.
             if (ordinal <= have) {
                 continue
             }
@@ -934,8 +950,19 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 receivedAt: message.receivedAt,
                 agentDelivered: message.agentDelivered
             })
-            if (alignOnContent) canonicalContentCounts.set(comparableKey, ordinal)
-            else canonicalTimedCounts.set(comparableKey, ordinal)
+            // Update BOTH tallies for every copied row, and record a
+            // synthetic stamp if this one had it. Bumping only the tally this
+            // row happened to be measured against left the other stale, so a
+            // second duplicate measured on the OTHER tally saw a count that
+            // did not include the row just copied and copied the prompt again
+            // — and its synthetic stamp could fall after the footer, letting
+            // reconciliation read it as an answer (#1717).
+            canonicalContentCounts.set(content, (canonicalContentCounts.get(content) ?? 0) + 1)
+            if (isDeliveredOperatorReply(message)) {
+                const timed = timedKeyOf(message)
+                canonicalTimedCounts.set(timed, (canonicalTimedCounts.get(timed) ?? 0) + 1)
+                if (isSyntheticDelivery(message)) syntheticContents.add(content)
+            }
             appendedMessages.push(copied)
             latestActivity = Math.max(latestActivity, copied.invokedAt ?? copied.createdAt)
         }
