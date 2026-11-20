@@ -477,7 +477,8 @@ describe('claudeRemote in-process /clear', () => {
         'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout', 'result-eof',
         'unacknowledged-input-eof', 'acknowledged-input-eof', 'failed-clear-input-eof',
         'follow-up-result', 'legacy-follow-up-result', 'follow-up-after-compact',
-        'later-follow-up-result', 'idle-background-output', 'native-slash-follow-up', 'native-slash-follow-up-without-hook'
+        'later-follow-up-result', 'idle-background-output', 'native-slash-follow-up', 'native-slash-follow-up-without-hook',
+        'native-slash-follow-up-init', 'native-slash-follow-up-init-eof'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -491,7 +492,9 @@ describe('claudeRemote in-process /clear', () => {
         const interveningCompact = outcome === 'follow-up-after-compact';
         const hasLaterFollowUp = outcome === 'later-follow-up-result';
         const idleBackgroundOutput = outcome === 'idle-background-output';
-        const nativeSlashFollowUp = outcome === 'native-slash-follow-up' || outcome === 'native-slash-follow-up-without-hook';
+        const aliasInit = outcome === 'native-slash-follow-up-init' || outcome === 'native-slash-follow-up-init-eof';
+        const nativeSlashFollowUp = outcome === 'native-slash-follow-up' || outcome === 'native-slash-follow-up-without-hook'
+            || aliasInit;
         const hasFollowUpResult = outcome === 'follow-up-result' || legacyFollowUp || interveningCompact || hasLaterFollowUp;
         const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook'
             || outcome === 'result-eof' || exitsAfterFollowUp || hasFollowUpResult || idleBackgroundOutput || nativeSlashFollowUp;
@@ -577,11 +580,20 @@ describe('claudeRemote in-process /clear', () => {
                 if (nativeSlashFollowUp) {
                     const alias = await input.next();
                     expect(alias.value?.message.content).toBe('/reset');
-                    yield { type: 'user', isReplay: true, uuid: alias.value?.uuid };
+                    if (outcome !== 'native-slash-follow-up-init-eof') {
+                        yield { type: 'user', isReplay: true, uuid: alias.value?.uuid };
+                    }
                     if (outcome === 'native-slash-follow-up') hookSessionId = 'native-alias-session';
+                    if (aliasInit) {
+                        yield { type: 'system', subtype: 'init', session_id: 'native-alias-session' };
+                        expect(order).not.toContain('session:native-alias-session');
+                        if (outcome === 'native-slash-follow-up-init-eof') return;
+                    }
                     nativeSlashResult = { ...autonomousResult, session_id: 'native-alias-session', local_command: 'clear' };
                     yield nativeSlashResult;
                     expect(order).toContain('follow-up');
+                    yield { type: 'system', subtype: 'init', session_id: resultId };
+                    expect(order.filter((item) => item === `session:${resultId}`)).toHaveLength(1);
                 }
                 if (interveningCompact) {
                     const compact = await input.next();
@@ -702,6 +714,12 @@ describe('claudeRemote in-process /clear', () => {
                     session_id: priorId,
                     message: { role: 'assistant', content: [{ type: 'text', text: 'background output' }] }
                 });
+            } else if (outcome === 'native-slash-follow-up-init-eof') {
+                expect(order).toEqual([
+                    `session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset',
+                    '/reset', 'accepted', 'reset', 'session:native-alias-session', 'Context was reset'
+                ]);
+                expect(inputs).toEqual(['follow-up']);
             } else {
                 expect(order).toEqual(success
                     ? [`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset',
@@ -711,7 +729,7 @@ describe('claudeRemote in-process /clear', () => {
                         ...(hasLaterFollowUp ? ['later follow-up', 'ready'] : [])]
                     : [`session:${priorId}`, 'ready', '/clear', 'accepted', completion, 'follow-up']);
             }
-            expect(clearContextTokens).toEqual(success || lateRotation ? [0] : []);
+            expect(clearContextTokens).toEqual(outcome === 'native-slash-follow-up-init-eof' ? [0, 0] : success || lateRotation ? [0] : []);
             if (outcome === 'result-eof' || outcome === 'unacknowledged-input-eof' || outcome === 'failed-clear-input-eof') {
                 expect(inputs).toEqual(['follow-up']);
             }

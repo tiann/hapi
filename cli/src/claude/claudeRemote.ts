@@ -578,7 +578,7 @@ export async function claudeRemote(opts: {
     let correlatesResults: boolean | null = null;
     let promptResultsHaveUuid = false;
     let waitingForClearFollowUp = false;
-    let clearFollowUp: { uuid: string; sessionId: string | null; command?: string } | undefined;
+    let clearFollowUp: { uuid: string; sessionId: string | null; command?: string; init?: SDKSystemMessage } | undefined;
     const clearedSessionIds = new Set<string>();
     const compactCompletionAbort = new AbortController();
     let compactCompletion: Promise<CompactCompletion> | null = null;
@@ -855,6 +855,11 @@ export async function claudeRemote(opts: {
                 clear.init = message as SDKSystemMessage;
                 continue;
             }
+            if (clearFollowUp?.command === 'clear' && message.type === 'system' && message.subtype === 'init'
+                && typeof message.session_id === 'string' && message.session_id !== clearFollowUp.sessionId) {
+                clearFollowUp.init = message as SDKSystemMessage;
+                continue;
+            }
             const clearSessionId = clear ? getClearRotation(clear) : undefined;
             const matchesClearSession = clearSessionId !== undefined && message.session_id === clearSessionId;
             const isClearResult = clear !== null
@@ -1000,16 +1005,16 @@ export async function claudeRemote(opts: {
                     const matchesUuid = message.user_message_uuid === clearFollowUp.uuid;
                     const isMatchingCommand = clearFollowUp.command !== undefined && message.local_command === clearFollowUp.command;
                     const isClear = clearFollowUp.command === 'clear';
-                    const hookRotation = isClear ? opts.getClearHookSessionId?.() : undefined;
+                    const confirmedRotation = isClear ? clearFollowUp.init?.session_id ?? opts.getClearHookSessionId?.() : undefined;
                     const resultRotation = isClear && (matchesUuid || isMatchingCommand)
                         ? getClearResultSessionId(message, clearFollowUp.sessionId) : undefined;
-                    const rotatedId = hookRotation ?? resultRotation;
+                    const rotatedId = confirmedRotation ?? resultRotation;
                     const nativeSessionId = isClear ? rotatedId ?? currentSessionId : clearFollowUp.sessionId;
                     const canAcceptWithoutUuid = !pushedUuids.has(clearFollowUp.uuid)
                         && message.user_message_uuid == null && nativeSessionId !== null && message.session_id === nativeSessionId
                         && (isMatchingCommand || (!promptResultsHaveUuid && message.local_command == null));
                     if (!matchesUuid && !canAcceptWithoutUuid) continue;
-                    if (rotatedId && rotatedId !== clearFollowUp.sessionId) bindClearSession(rotatedId);
+                    if (rotatedId && rotatedId !== clearFollowUp.sessionId) bindClearSession(rotatedId, clearFollowUp.init);
                     pushedUuids.delete(clearFollowUp.uuid);
                     clearFollowUp = undefined;
                 }
@@ -1134,7 +1139,7 @@ export async function claudeRemote(opts: {
         const clear = clearState.active;
         const compact = compactState.active;
         const pending = clear ?? (compact?.initial === false ? compact : null);
-        if (clearFollowUp && pushedUuids.has(clearFollowUp.uuid) && !opts.signal?.aborted) {
+        if (clearFollowUp && !clearFollowUp.init && pushedUuids.has(clearFollowUp.uuid) && !opts.signal?.aborted) {
             opts.onInputUndelivered?.();
         }
         if (pending && !timedOutCommand && !opts.signal?.aborted && !(clear && getClearRotation(clear))) {
@@ -1167,6 +1172,11 @@ export async function claudeRemote(opts: {
         if (rotatedId) {
             opts.onResultAccepted?.();
             bindClearSession(rotatedId, clear?.init);
+            await opts.onReady('Context was reset', undefined, 0);
+        }
+        if (clearFollowUp?.init?.session_id) {
+            opts.onResultAccepted?.();
+            bindClearSession(clearFollowUp.init.session_id, clearFollowUp.init);
             await opts.onReady('Context was reset', undefined, 0);
         }
         if (compactCompletion) {
