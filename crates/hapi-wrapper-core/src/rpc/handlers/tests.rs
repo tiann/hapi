@@ -265,7 +265,7 @@ fn ascii_order_matches_typescript_locale_compare() {
     names.sort();
     names.dedup();
     let script = format!(
-        "console.log(JSON.stringify({}.sort((a, b) => a.localeCompare(b))))",
+        "console.log(JSON.stringify({}.sort((a, b) => a.localeCompare(b, 'en'))))",
         serde_json::to_string(&names).unwrap()
     );
     let output = std::process::Command::new("bun")
@@ -314,6 +314,31 @@ async fn conditional_writes_keep_content_and_skip_special_files() {
         .await["hash"],
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     );
+    assert_eq!(fs::read(dir.join("file")).unwrap(), b"");
+    for hash in [json!(false), json!(1), json!([abc])] {
+        assert_eq!(
+            f.call(
+                "writeFile",
+                json!({"path":"absent","expectedHash":hash,"content":"YQ=="})
+            )
+            .await,
+            error("File does not exist but hash was provided")
+        );
+        assert!(!dir.join("absent").exists());
+    }
+    let empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    for (hash, shown) in [(json!(false), "false"), (json!([empty]), empty)] {
+        assert_eq!(
+            f.call(
+                "writeFile",
+                json!({"path":"file","expectedHash":hash,"content":"YQ=="})
+            )
+            .await,
+            error(format!(
+                "File hash mismatch. Expected: {shown}, Actual: {empty}"
+            ))
+        );
+    }
     assert_eq!(fs::read(dir.join("file")).unwrap(), b"");
     let fifo = dir.join("fifo");
     nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();

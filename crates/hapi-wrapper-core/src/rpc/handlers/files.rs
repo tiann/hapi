@@ -1,4 +1,5 @@
 use super::*;
+use crate::jsjson::number_string;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use sha2::{Digest, Sha256};
 use std::{
@@ -77,11 +78,24 @@ fn decode(s: &str) -> Vec<u8> {
     );
     engine.decode(chars).unwrap_or_default()
 }
+fn hex(digest: &[u8]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
 fn hash(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex(&Sha256::digest(bytes))
+}
+fn js_string(v: &Value) -> Option<String> {
+    fn text(v: &Value) -> String {
+        match v {
+            Value::Null => String::new(),
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.as_f64().map_or(n.to_string(), number_string),
+            Value::Bool(b) => b.to_string(),
+            Value::Array(a) => a.iter().map(text).collect::<Vec<_>>().join(","),
+            Value::Object(_) => "[object Object]".into(),
+        }
+    }
+    (!v.is_null()).then(|| text(v))
 }
 fn metadata(v: &mut Value, m: &Metadata) {
     v["size"] = json!(m.len());
@@ -229,7 +243,7 @@ fn handle(method: &str, root: &Path, data: Value) -> Result<Value, String> {
                     v => format!("type {}", if v.is_number() { "number" } else if v.is_boolean() { "boolean" } else { "object" }),
                 })),
             };
-            let mut f = if let Some(expected) = data["expectedHash"].as_str() {
+            let mut f = if let Some(expected) = js_string(&data["expectedHash"]) {
                 let resolved = p.canonicalize().map_err(|e| {
                     if e.kind() == io::ErrorKind::NotFound {
                         "File does not exist but hash was provided".into()
@@ -251,11 +265,18 @@ fn handle(method: &str, root: &Path, data: Value) -> Result<Value, String> {
                 {
                     return Err("Path is not a regular file".into());
                 }
-                let mut existing = Vec::new();
-                f.read_to_end(&mut existing)
-                    .map_err(|e| fs_error(e, "read", &p))?;
-                let actual = hash(&existing);
-                if actual != expected {
+                let mut digest = Sha256::new();
+                let mut buf = vec![0; 64 << 10];
+                loop {
+                    match f.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => digest.update(&buf[..n]),
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                        Err(e) => return Err(fs_error(e, "read", &p)),
+                    }
+                }
+                let actual = hex(&digest.finalize());
+                if !data["expectedHash"].is_string() || actual != expected {
                     return Err(format!(
                         "File hash mismatch. Expected: {expected}, Actual: {actual}"
                     ));
