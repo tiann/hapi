@@ -1113,6 +1113,117 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('upgrades a synthetic import stamp to the real one so an unanswered blocker is not read as answered (cold-review round 21)', async () => {
+        // The Desktop import is the LONGER session (more rows), so it wins
+        // canonical. It ends with the initiating prompt — no reply, no
+        // footer, because the importer only ever captured the prompt. Its
+        // copy of that prompt is synthetic: invokedAt === createdAt, and
+        // stamped at IMPORT time, which can land after anything the live
+        // session produced.
+        //
+        // The live duplicate is shorter but holds the real event: the same
+        // prompt, genuinely delivered (invokedAt from a real hub ack), and
+        // the blocked footer it produced. Content-only alignment correctly
+        // recognises the live prompt as the same occurrence as the imported
+        // one and does not duplicate it in the transcript — but if it simply
+        // drops the live row, the synthetic import stamp is all that is left
+        // on the surviving prompt, and that stamp can sit AFTER the footer's
+        // arrival, so the merged transcript reads as "operator replied after
+        // the blocker" when no such reply ever happened. The real stamp must
+        // end up on whichever row survives.
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-import', { codexSessionId: 'codex-thread-21' }, {}, 'default'
+        )
+        const duplicate = store.sessions.getOrCreateSession(
+            'dup-live', { codexSessionId: 'codex-thread-21' }, {}, 'default'
+        )
+        const base = Date.now() - 600_000
+
+        // Canonical (import): filler, then the initiating prompt, imported
+        // well after the live session's own activity — nothing follows it.
+        for (let i = 0; i < 3; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `filler ${i}` }] } }
+                }
+            }, `import-filler-${i}`, base)
+        }
+        store.messages.addImportedMessage(
+            canonical.id,
+            { role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' } },
+            'import-prompt',
+            base + 5_000 // after the live footer below — the regression trigger
+        )
+
+        // Duplicate (live): the SAME prompt, genuinely delivered early …
+        store.messages.addMessage(duplicate.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'live-prompt', null, base, base)
+        store.messages.markMessagesInvoked(duplicate.id, ['live-prompt'], base + 1_000)
+        // … then the blocked footer that prompt produced.
+        store.messages.addMessage(duplicate.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    message: {
+                        content: [{ type: 'text', text: 'Stuck.\n\nAGENT_NOTIFY_SUMMARY {"version":1,"status":"blocked","summary":"needs creds"}' }]
+                    }
+                }
+            }
+        }, undefined, null, base + 2_000, base + 2_000)
+
+        const engine = {
+            getSessionsByNamespace: () => [],
+            transferBlockedAck: () => {},
+            transferAttachedJobs: () => {},
+            deleteSession: async (sessionId: string) => {
+                store.sessions.deleteSession(sessionId, 'default')
+            },
+            handleRealtimeEvent: () => {},
+            reconcileNotifySignalAfterImport: () => {},
+            recordSessionActivity: () => {}
+        } as unknown as SyncEngine
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-21'] })
+            })
+            expect(response.status).toBe(200)
+            const body = await response.json() as { merged: Array<{ canonicalSessionId?: string }> }
+            expect(body.merged[0]?.canonicalSessionId).toBe(canonical.id)
+
+            const rows = store.messages.getAllMessages(canonical.id)
+            const prompts = rows.filter((row) => JSON.stringify(row.content).includes('Continue'))
+            // One prompt — the duplicate is not appended beside the import.
+            expect(prompts).toHaveLength(1)
+            // But its timing is the REAL one, not the import's synthetic
+            // stamp: without the upgrade this would be `base + 5_000`, after
+            // the footer, and reconciliation would read it as an answer.
+            expect(prompts[0]?.invokedAt).toBe(base + 1_000)
+
+            const footer = rows.find((row) => JSON.stringify(row.content).includes('AGENT_NOTIFY_SUMMARY'))
+            expect(footer).toBeTruthy()
+            // The prompt that actually caused the blocker now sorts before
+            // it, as an initiating prompt must.
+            expect(prompts[0]!.invokedAt!).toBeLessThan(footer!.receivedAt ?? footer!.createdAt)
+        } finally {
+            store.close()
+        }
+    })
+
     it('does not duplicate an initiating prompt across a THREE-session merge', async () => {
         // Survivor holds a blocked footer. One duplicate supplies the live
         // prompt that preceded it; another supplies the Desktop import of that

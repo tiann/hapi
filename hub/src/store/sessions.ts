@@ -793,7 +793,7 @@ export function setSessionLastNotify(
 export function setSessionBlockedAck(
     db: Database,
     id: string,
-    ack: { at: number; reason: string; keys?: string[] | null },
+    ack: { at: number; reason: string; keys?: string[] | null; livePendingKeys?: ReadonlySet<string> },
     namespace: string
 ): boolean {
     try {
@@ -816,7 +816,7 @@ export function setSessionBlockedAck(
               -- is a SET, so dismissing an OLDER prompt after a newer one is
               -- legitimate — the guard rejected it and the route turned that
               -- into a 500. Ordering is carried by the keys, not the clock.
-        `).run({ id, at: ack.at, reason: ack.reason, keys: serialiseAckKeys(ack.keys), namespace })
+        `).run({ id, at: ack.at, reason: ack.reason, keys: serialiseAckKeys(ack.keys, ack.livePendingKeys), namespace })
         return result.changes === 1
     } catch {
         return false
@@ -1321,9 +1321,31 @@ export function parseAckKeys(raw: string | null | undefined): string[] | null {
     }
 }
 
-function serialiseAckKeys(keys: string[] | null | undefined): string | null {
+/** Exported so tests can exercise the retention boundary without a magic number. */
+export const ACK_KEYS_RETENTION_LIMIT = 64
+
+function serialiseAckKeys(keys: string[] | null | undefined, livePendingKeys?: ReadonlySet<string>): string | null {
     if (!keys || keys.length === 0) return null
-    // Bounded so a long-lived session cannot grow this without limit; the
-    // newest dismissals are the ones still capable of hiding a live blocker.
-    return JSON.stringify(keys.slice(-64))
+    if (keys.length <= ACK_KEYS_RETENTION_LIMIT) return JSON.stringify(keys)
+    // Bounded so a long-lived session cannot grow this without limit. Plain
+    // "keep the newest N" evicted an OLD dismissal whose request was still
+    // pending once 64 later ones piled up, and the web re-flagged it as
+    // blocked (cold-review round 21) — the key was gone, not the request.
+    // A still-live key (the caller's current footer or an open request) is
+    // preserved regardless of position; only resolved/superseded keys are
+    // evicted, oldest first, to make room.
+    if (!livePendingKeys || livePendingKeys.size === 0) {
+        return JSON.stringify(keys.slice(-ACK_KEYS_RETENTION_LIMIT))
+    }
+    const live: string[] = []
+    const resolved: string[] = []
+    for (const key of keys) {
+        (livePendingKeys.has(key) ? live : resolved).push(key)
+    }
+    const resolvedBudget = ACK_KEYS_RETENTION_LIMIT - live.length
+    const keptResolved = resolvedBudget > 0 ? resolved.slice(-resolvedBudget) : []
+    const kept = new Set([...keptResolved, ...live])
+    // Original relative order, not live-then-resolved — nothing downstream
+    // should have to know this function reordered anything.
+    return JSON.stringify(keys.filter((key) => kept.has(key)))
 }

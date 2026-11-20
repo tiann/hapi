@@ -909,6 +909,64 @@ describe('the acknowledgement broadcast stays inside its own schema (#1717)', ()
         expect(last?.blockedAck?.keys).toEqual(row?.blockedAckKeys ?? [])
         expect(cache.getSession(session.id)?.blockedAck?.keys).toEqual(row?.blockedAckKeys ?? [])
     })
+
+    it('never evicts a dismissal whose request is still pending, even when 64 later ones arrive (cold-review round 21)', () => {
+        // The bound used to keep "the newest 64" by position alone. An OLD
+        // dismissal whose request stayed open through 64 later, already-
+        // resolved dismissals got evicted on position, and the web then
+        // presented that still-open, already-dismissed request as blocked
+        // again — a store bug, not a stale cache: the key was genuinely gone.
+        const store = new Store(':memory:')
+        const emitted: SyncEvent[] = []
+        const cache = new SessionCache(store, {
+            emit: (event: SyncEvent) => { emitted.push(event) }
+        } as EventPublisher)
+        const session = cache.getOrCreateSession(
+            'ack-bound-live',
+            { path: '/tmp/project', host: 'localhost' },
+            // Five requests that stay open through every later dismissal below.
+            { requests: {
+                r0: { tool: 'Bash', arguments: {} },
+                r1: { tool: 'Bash', arguments: {} },
+                r2: { tool: 'Bash', arguments: {} },
+                r3: { tool: 'Bash', arguments: {} },
+                r4: { tool: 'Bash', arguments: {} }
+            }, completedRequests: {} },
+            'default'
+        )
+
+        // Dismiss the five still-open requests first (oldest), then 60 more
+        // whose requests are NOT in agentState — already resolved by the time
+        // they were dismissed. 65 distinct keys total, one over the bound.
+        for (let i = 0; i < 5; i++) {
+            cache.setSessionBlockedAck(session.id, 'handled', Date.now() + i, `request:r${i}`)
+        }
+        for (let i = 5; i < 65; i++) {
+            cache.setSessionBlockedAck(session.id, 'handled', Date.now() + i, `request:r${i}`)
+        }
+
+        const row = store.sessions.getSessionByNamespace(session.id, 'default')
+        const keys = row?.blockedAckKeys ?? []
+
+        expect(keys).toHaveLength(64)
+        // Every still-open request survives regardless of how old its
+        // dismissal is.
+        for (let i = 0; i < 5; i++) {
+            expect(keys).toContain(`request:r${i}`)
+        }
+        // Budget for resolved keys is 64 - 5 = 59, so only the OLDEST resolved
+        // dismissal (r5) is evicted to make room — not a live one.
+        expect(keys).not.toContain('request:r5')
+        for (let i = 6; i < 65; i++) {
+            expect(keys).toContain(`request:r${i}`)
+        }
+
+        const last = emitted
+            .filter((event) => event.type === 'session-updated')
+            .map((event) => (event as { data: { blockedAck?: { keys?: string[] | null } } }).data)
+            .at(-1)
+        expect(last?.blockedAck?.keys).toEqual(keys)
+    })
 })
 
 describe('blocked acknowledgement across a session merge (#1717)', () => {

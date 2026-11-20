@@ -1,4 +1,4 @@
-import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
+import { mergeClaudeSessionIdHistory, mergeReadState, notifyBlockerKey, requestBlockerKey } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
@@ -597,9 +597,20 @@ export class SessionCache {
         const keys = key
             ? Array.from(new Set([...existingKeys, key]))
             : (existingKeys.length > 0 ? existingKeys : null)
+        // Keys the store's retention bound must never evict even if 64 newer
+        // dismissals pile up: the current footer and every request the agent
+        // is still parked on. Anything else is resolved or superseded and is
+        // safe to drop first (cold-review round 21).
+        const livePendingKeys = new Set<string>()
+        if (session.lastNotify) {
+            livePendingKeys.add(notifyBlockerKey(session.lastNotify.at))
+        }
+        for (const requestId of Object.keys(session.agentState?.requests ?? {})) {
+            livePendingKeys.add(requestBlockerKey(requestId))
+        }
         if (!this.store.sessions.setSessionBlockedAck(
             sessionId,
-            { at, reason, keys },
+            { at, reason, keys, livePendingKeys },
             session.namespace
         )) {
             return null
@@ -778,6 +789,14 @@ export class SessionCache {
         const transferKeyless = mergedKeys.length === 0
             && (targetAckAt === null || sourceAckAt > targetAckAt)
         if (mergedKeys.length === 0 && !transferKeyless) return
+        const targetSession = this.sessions.get(toSessionId)
+        const livePendingKeys = new Set<string>()
+        if (targetSession?.lastNotify) {
+            livePendingKeys.add(notifyBlockerKey(targetSession.lastNotify.at))
+        }
+        for (const requestId of Object.keys(targetSession?.agentState?.requests ?? {})) {
+            livePendingKeys.add(requestBlockerKey(requestId))
+        }
         this.store.sessions.setSessionBlockedAck(
             toSessionId,
             {
@@ -785,7 +804,8 @@ export class SessionCache {
                 reason: (targetAckAt !== null && targetAckAt >= sourceAckAt)
                     ? (target.blockedAckReason ?? '')
                     : (source.blockedAckReason ?? ''),
-                keys: mergedKeys.length > 0 ? mergedKeys : null
+                keys: mergedKeys.length > 0 ? mergedKeys : null,
+                livePendingKeys
             },
             namespace
         )

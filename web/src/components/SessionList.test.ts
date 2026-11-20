@@ -1198,6 +1198,8 @@ describe('collectOffscreenBlockers (#1717 one list for arrow and target)', () =>
 })
 
 describe('chooseBlockedJumpTarget (#1717 jump follows its own arrow)', () => {
+    const noneVisited: ReadonlySet<string> = new Set()
+
     it('travels down to the off-screen row when the arrow points down', () => {
         // The bug: with a newer blocker already visible and an older one below
         // the fold, the arrow pointed down but the cursor selected the visible
@@ -1207,7 +1209,8 @@ describe('chooseBlockedJumpTarget (#1717 jump follows its own arrow)', () => {
             direction: 'down',
             above: [],
             below: ['older-below'],
-            fallbackId: 'newer-visible'
+            visited: noneVisited,
+            fallbackOrder: ['newer-visible', 'older-below']
         })).toBe('older-below')
     })
 
@@ -1217,7 +1220,8 @@ describe('chooseBlockedJumpTarget (#1717 jump follows its own arrow)', () => {
             direction: 'up',
             above: ['far-above', 'near-above'],
             below: [],
-            fallbackId: 'visible'
+            visited: noneVisited,
+            fallbackOrder: ['visible', 'far-above', 'near-above']
         })).toBe('near-above')
     })
 
@@ -1228,18 +1232,20 @@ describe('chooseBlockedJumpTarget (#1717 jump follows its own arrow)', () => {
             direction: 'both',
             above: ['a'],
             below: ['b'],
-            fallbackId: 'cursor-pick'
+            visited: noneVisited,
+            fallbackOrder: ['cursor-pick', 'a', 'b']
         })).toBe('cursor-pick')
     })
 
     it('falls back when the arrow points somewhere with nothing measurable', () => {
         // Filter-hidden blockers are not in the DOM, so a direction can be
-        // drawn with no row to travel to; the cursor still has to work.
+        // drawn with no row to travel to; the fallback order still has to work.
         expect(chooseBlockedJumpTarget({
             direction: 'down',
             above: [],
             below: [],
-            fallbackId: 'cursor-pick'
+            visited: noneVisited,
+            fallbackOrder: ['cursor-pick']
         })).toBe('cursor-pick')
     })
 
@@ -1248,7 +1254,51 @@ describe('chooseBlockedJumpTarget (#1717 jump follows its own arrow)', () => {
             direction: 'none',
             above: ['a'],
             below: ['b'],
-            fallbackId: 'cursor-pick'
+            visited: noneVisited,
+            fallbackOrder: ['cursor-pick', 'a', 'b']
         })).toBe('cursor-pick')
+    })
+
+    // Cold-review round 21: a one-way arrow always re-selects the nearest
+    // off-screen row in that direction, so a blocker hidden entirely by a
+    // filter (never present in `above`/`below`) could never be reached —
+    // repeated clicks alternated between the two directionally-visible rows
+    // forever. Without `visited`, this would return 'below-one' again.
+    it('skips an already-visited directional target and reaches a filtered blocker instead', () => {
+        // 'pinned-visible' and 'below-one' were already visited earlier in
+        // this cycle (the pinned row is on screen; the arrow already sent a
+        // click to the one below the fold) — only 'filtered-out' is new.
+        const visited = new Set(['pinned-visible', 'below-one'])
+        expect(chooseBlockedJumpTarget({
+            direction: 'down',
+            above: [],
+            below: ['below-one'],
+            visited,
+            fallbackOrder: ['pinned-visible', 'below-one', 'filtered-out']
+        })).toBe('filtered-out')
+    })
+
+    it('prefers an unvisited directional candidate over the fallback order', () => {
+        const visited = new Set(['near-above'])
+        expect(chooseBlockedJumpTarget({
+            direction: 'up',
+            above: ['far-above', 'near-above'],
+            below: [],
+            visited,
+            fallbackOrder: ['far-above', 'near-above']
+        })).toBe('far-above')
+    })
+
+    it('still returns a target when every candidate has already been visited', () => {
+        // Defensive only: the caller clears `visited` before this can happen
+        // in practice, but the picker must not return an empty id.
+        const visited = new Set(['only-one'])
+        expect(chooseBlockedJumpTarget({
+            direction: 'down',
+            above: [],
+            below: ['only-one'],
+            visited,
+            fallbackOrder: ['only-one']
+        })).toBe('only-one')
     })
 })

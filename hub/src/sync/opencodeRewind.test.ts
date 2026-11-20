@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
-import { SyncEngine } from './syncEngine'
+import { SyncEngine, hashOpenCodeRewindTranscript } from './syncEngine'
 import { registerSessionHandlers } from '../socket/handlers/cli/sessionHandlers'
 import type { CliSocketWithData } from '../socket/socketTypes'
 import type { OpenCodeRewindOperation } from '@hapi/protocol/schemas'
@@ -575,5 +575,44 @@ describe('OpenCode durable Hub rewind commit', () => {
             await f.engine.rewindConversation(f.id, 'default', 'two')
             expect(f.store.messages.getAllMessages(f.id)).toHaveLength(4)
         } finally { f.engine.stop() }
+    })
+})
+
+describe('OpenCode rewind transcript hash survives a hub upgrade (#1717 cold-review round 21)', () => {
+    // A reservation hashes `getAllMessages` output at reservation time, then
+    // the hub re-hashes it to verify nothing changed before applying a native
+    // report. `sweptAt` / `receivedAt` / `agentDelivered` are new in this PR:
+    // migrated-but-unchanged rows emit them as `null`, which a hub running
+    // the pre-upgrade code never did. Hashing the raw `StoredMessage` object
+    // therefore changes the hash for a transcript that is, in every way that
+    // matters, identical — stranding any reservation written before the
+    // upgrade.
+    const baseMessage = {
+        id: 'm1',
+        sessionId: 's1',
+        content: { type: 'text', text: 'hello' },
+        createdAt: 1_700_000_000_000,
+        seq: 1,
+        localId: 'local-1',
+        invokedAt: 1_700_000_000_500,
+        scheduledAt: null
+    }
+
+    it('is unaffected by fields a pre-upgrade hub never wrote', () => {
+        const preUpgrade = [{ ...baseMessage }]
+        const postUpgradeUnchangedRow = [{ ...baseMessage, sweptAt: null, receivedAt: null, agentDelivered: null }]
+
+        expect(hashOpenCodeRewindTranscript(postUpgradeUnchangedRow))
+            .toBe(hashOpenCodeRewindTranscript(preUpgrade))
+    })
+
+    it('still changes when a field the old hash already covered changes', () => {
+        // Proves the projection is not accidentally hashing nothing: a real
+        // content edit must still be caught.
+        const original = [{ ...baseMessage }]
+        const edited = [{ ...baseMessage, content: { type: 'text', text: 'edited' } }]
+
+        expect(hashOpenCodeRewindTranscript(edited))
+            .not.toBe(hashOpenCodeRewindTranscript(original))
     })
 })

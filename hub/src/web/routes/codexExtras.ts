@@ -879,9 +879,16 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     const canonicalContentCounts = new Map<string, number>()
     const canonicalTimedCounts = new Map<string, number>()
     const syntheticContents = new Set<string>()
+    // Canonical row ids per content key, in occurrence order — the matched
+    // row a content-only alignment can upgrade in place rather than append
+    // beside (#1717 cold-review round 21, see `upgradeMessageDeliveryStamp`).
+    const canonicalContentOccurrences = new Map<string, string[]>()
     for (const message of canonical.storedMessages) {
         const content = contentKeyOf(message)
         canonicalContentCounts.set(content, (canonicalContentCounts.get(content) ?? 0) + 1)
+        const occurrences = canonicalContentOccurrences.get(content)
+        if (occurrences) occurrences.push(message.id)
+        else canonicalContentOccurrences.set(content, [message.id])
         if (!isDeliveredOperatorReply(message)) continue
         canonicalTimedCounts.set(timedKeyOf(message), (canonicalTimedCounts.get(timedKeyOf(message)) ?? 0) + 1)
         if (isSyntheticDelivery(message)) syntheticContents.add(content)
@@ -935,6 +942,27 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             // The tallies grow as rows are copied, so a later duplicate sees
             // what earlier ones contributed.
             if (ordinal <= have) {
+                // This source row only aligned on content — not content+time
+                // — because the SURVIVING canonical occurrence has a
+                // synthetic (imported) stamp. If the dropped source row
+                // carries the genuine delivery time for that same event,
+                // upgrade the row that actually survives to use it: dropping
+                // the duplicate correctly keeps the transcript from showing
+                // the prompt twice, but leaving the synthetic stamp in place
+                // let reconciliation misread an imported initiating prompt as
+                // a reply delivered after the footer it caused, hiding an
+                // unanswered blocker (#1717 cold-review round 21).
+                if (alignOnContent && syntheticContents.has(content)
+                    && isDeliveredOperatorReply(message) && !isSyntheticDelivery(message)) {
+                    const canonicalId = canonicalContentOccurrences.get(content)?.[ordinal - 1]
+                    if (canonicalId) {
+                        options.store.messages.upgradeMessageDeliveryStamp(canonicalId, {
+                            invokedAt: message.invokedAt,
+                            receivedAt: message.receivedAt,
+                            agentDelivered: message.agentDelivered
+                        })
+                    }
+                }
                 continue
             }
 

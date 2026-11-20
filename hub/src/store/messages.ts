@@ -809,6 +809,42 @@ export function copyMessageToSession(
         return toStoredMessage(row)
     })
 }
+
+/**
+ * Upgrade a surviving row's delivery timing after a session-merge alignment
+ * decision (#1717 cold-review round 21).
+ *
+ * Content-only alignment correctly treats a real-stamped duplicate prompt as
+ * the same occurrence as a synthetic-stamped (imported) one and drops the
+ * duplicate rather than appending it — appending it would reintroduce a
+ * visible duplicate prompt the alignment exists to prevent. But a synthetic
+ * stamp is an importer's best guess, not a real delivery time, and leaving it
+ * on the surviving row let reconciliation misread an imported initiating
+ * prompt as a reply delivered after the footer it actually caused, hiding an
+ * unanswered blocker. The real stamp replaces the synthetic one on whichever
+ * row survives — "prefer the real stamp" does not care which session's copy
+ * of the event happened to be the one still on disk.
+ */
+export function upgradeMessageDeliveryStamp(
+    db: Database,
+    messageId: string,
+    stamp: { invokedAt: number | null; receivedAt?: number | null; agentDelivered?: number | null }
+): boolean {
+    const result = prepareCached(db, `
+        UPDATE messages
+        SET invoked_at = @invokedAt,
+            received_at = COALESCE(@receivedAt, received_at),
+            agent_delivered = COALESCE(@agentDelivered, agent_delivered)
+        WHERE id = @id
+    `).run({
+        id: messageId,
+        invokedAt: stamp.invokedAt,
+        receivedAt: stamp.receivedAt ?? null,
+        agentDelivered: stamp.agentDelivered ?? null
+    })
+    return result.changes === 1
+}
+
 /**
  * Batch-hydrate a fork child: one transaction, contiguous seq allocation,
  * single epoch bump. Avoids O(n) max-seq lookups and epoch writes.

@@ -231,6 +231,47 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
     return extractUserMessageText(message.content)
 }
 
+/**
+ * The stable field set an OpenCode rewind reservation hashes its transcript
+ * against (#1717 cold-review round 21).
+ *
+ * `hashOpenCodeRewindTranscript` used to hash `JSON.stringify` of the whole
+ * `StoredMessage` array. `StoredMessage` keeps growing — this PR alone added
+ * `sweptAt` / `receivedAt` / `agentDelivered` — and every one of those fields
+ * is emitted as `null` even for an untouched row migrated from an older
+ * schema version. A reservation hashed before a hub upgrade can never match
+ * the same, unchanged transcript hashed after it: the hash input gained keys
+ * the old hub never wrote. The hub then rejected an already-applied native
+ * rewind as "source transcript changed" and kept retrying against a
+ * reservation it could never satisfy, blocking new prompts.
+ *
+ * Projecting to this fixed, named field set — the contract as it stood before
+ * this PR — means a FUTURE field addition to `StoredMessage` cannot silently
+ * repeat the same regression; it would have to touch this function on
+ * purpose.
+ */
+function hashableOpenCodeRewindFields(message: StoredMessage) {
+    return {
+        deliveryPending: message.deliveryPending ?? null,
+        contentRevision: message.contentRevision ?? null,
+        id: message.id,
+        sessionId: message.sessionId,
+        content: message.content,
+        createdAt: message.createdAt,
+        seq: message.seq,
+        localId: message.localId,
+        invokedAt: message.invokedAt,
+        scheduledAt: message.scheduledAt,
+        deliveryState: message.deliveryState ?? null
+    }
+}
+
+export function hashOpenCodeRewindTranscript(messages: StoredMessage[]): string {
+    return createHash('sha256')
+        .update(JSON.stringify(messages.map(hashableOpenCodeRewindFields)))
+        .digest('hex')
+}
+
 export class SyncEngine {
     private readonly archiveRequests = new Map<string, Promise<void>>()
     // KillSession's beforeKill drain completes before the CLI's async cleanup
@@ -3331,7 +3372,7 @@ export class SyncEngine {
             // reject when a turn completes in between, so the token never pins
             // a tail the sampled cut does not cover (same guard as the
             // OpenCode rewind reservation).
-            const fingerprintBefore = createHash('sha256').update(JSON.stringify(rows)).digest('hex')
+            const fingerprintBefore = hashOpenCodeRewindTranscript(rows)
             try {
                 nativeCut = await this.rpcGateway.previewForkBoundary(sessionId,
                     mode === 'message' ? { mode, messageLocalId } : { mode })
@@ -3339,7 +3380,7 @@ export class SyncEngine {
                 return { type: 'error', message: error instanceof Error ? error.message : String(error) }
             }
             rows = this.store.messages.getAllMessages(sessionId)
-            if (createHash('sha256').update(JSON.stringify(rows)).digest('hex') !== fingerprintBefore) {
+            if (hashOpenCodeRewindTranscript(rows) !== fingerprintBefore) {
                 return { type: 'error', message: 'The source conversation changed while the preview was prepared; try again' }
             }
         }
@@ -4044,7 +4085,7 @@ export class SyncEngine {
             workerId: metadata.opencodeWorkerId, workerPid: metadata.opencodeWorkerProcess.pid, workerStartMarker: metadata.opencodeWorkerProcess.startMarker,
             requestedLocalId: localId, nativeMessageId, cutoffSeq: boundary.seq,
             sourceEpoch: this.store.messages.getMessageEpoch(session.id), sourceMaxSeq: Math.max(0, ...messages.map(m => m.seq)),
-            sourceTranscriptHash: createHash('sha256').update(JSON.stringify(messages)).digest('hex'),
+            sourceTranscriptHash: hashOpenCodeRewindTranscript(messages),
             reservationVersion: current.metadataVersion + 1, phase: 'reserved' }
         // Durable reservation before the first native/RPC await. No generic
         // metadata retry can reserve against a different source version.
@@ -4092,7 +4133,7 @@ export class SyncEngine {
                 const rows = this.store.messages.getAllMessages(sessionId)
                 const hubBoundary = rows.find(m => m.localId === op.requestedLocalId && m.seq === op.cutoffSeq && m.invokedAt != null)
                 if (this.store.messages.getMessageEpoch(sessionId) !== op.sourceEpoch
-                    || createHash('sha256').update(JSON.stringify(rows)).digest('hex') !== op.sourceTranscriptHash
+                    || hashOpenCodeRewindTranscript(rows) !== op.sourceTranscriptHash
                     || Math.max(0, ...rows.map(m => m.seq)) !== op.sourceMaxSeq
                     || !hubBoundary
                     || this.store.messages.getUninvokedLocalMessages(sessionId).length) throw new Error('OpenCode source transcript changed')

@@ -720,20 +720,45 @@ function UnblockDialogHost(props: {
  *
  * A single direction is honoured by travelling to the nearest off-screen row
  * that way. With blockers both above and below, the arrow is not promising one
- * direction, so the cursor keeps cycling and repeated clicks still reach
- * everything.
+ * direction, so the fallback order keeps cycling and repeated clicks still
+ * reach everything.
+ *
+ * `visited` breaks a second failure (cold-review round 21): a one-way arrow
+ * always re-selects the nearest off-screen row in that direction, so with a
+ * blocker pinned on screen, a second below the fold, and a third hidden by a
+ * machine filter (never present in `above`/`below` at all), a down arrow
+ * alternates between the first two forever and the third — which the pill's
+ * own count promises exists — is never reached. Skipping an already-visited
+ * directional candidate drops through to `fallbackOrder`, which the caller
+ * builds from every counted blocker, filtered ones included.
  */
 export function chooseBlockedJumpTarget(options: {
     direction: BlockedJumpDirection
     above: string[]
     below: string[]
-    fallbackId: string
+    visited: ReadonlySet<string>
+    fallbackOrder: string[]
 }): string {
-    const { direction, above, below, fallbackId } = options
+    const { direction, above, below, visited, fallbackOrder } = options
     // `above` is in document order, so the LAST entry is nearest the viewport.
-    if (direction === 'up' && above.length > 0) return above[above.length - 1]!
-    if (direction === 'down' && below.length > 0) return below[0]!
-    return fallbackId
+    if (direction === 'up') {
+        for (let i = above.length - 1; i >= 0; i -= 1) {
+            if (!visited.has(above[i]!)) return above[i]!
+        }
+    }
+    if (direction === 'down') {
+        for (const id of below) {
+            if (!visited.has(id)) return id
+        }
+    }
+    for (const id of fallbackOrder) {
+        if (!visited.has(id)) return id
+    }
+    // Every counted blocker was visited this cycle. The caller clears
+    // `visited` before the lap that would hit this, so it is only reachable
+    // from a stale snapshot mid-render — keep moving rather than return
+    // nothing.
+    return fallbackOrder[0] ?? above[above.length - 1] ?? below[0] ?? ''
 }
 
 /**
@@ -2495,6 +2520,11 @@ export function SessionList(props: {
         { above: 0, below: 0 }
     )
     const blockedJumpCursorRef = useRef(0)
+    // Targets already visited in the current jump cycle (#1717 cold-review
+    // round 21): a one-way arrow otherwise re-picks the same off-screen row
+    // forever, so a blocker hidden behind a filter — never in `above`/`below`
+    // — is never reached.
+    const blockedJumpVisitedRef = useRef<Set<string>>(new Set())
     const { pinInProgressMode } = usePinInProgressSessions()
     // List sort/filter lives in SessionListView (#2263); jobs mode is #1404.
     const effectivePinInProgressMode: PinInProgressMode = pinInProgressMode
@@ -3862,18 +3892,38 @@ export function SessionList(props: {
         // on screen — a filter they set is not ours to discard speculatively.
         const cursor = blockedJumpCursorRef.current % blockedSessions.length
         blockedJumpCursorRef.current = cursor + 1
+        const blockedIds = blockedSessions.map((session) => session.id)
+        const blockedIdSet = new Set(blockedIds)
+        const visited = blockedJumpVisitedRef.current
+        // Drop visited ids that stopped being blocked, so a cleared blocker
+        // does not permanently shrink the pool later jumps can still reach.
+        for (const id of visited) {
+            if (!blockedIdSet.has(id)) visited.delete(id)
+        }
+        // A full lap: every counted blocker has already been visited this
+        // cycle. Start a fresh one instead of starving the directional and
+        // fallback picks of anything unvisited to choose.
+        if (visited.size >= blockedIds.length) {
+            visited.clear()
+        }
         // The same snapshot the arrow is drawn from, so the click cannot
         // disagree with it — including blockers whose section has collapsed
         // and whose rows have left the DOM entirely.
         const { above, below } = measureOffscreenBlockers()
+        // Cursor order, rotated to start where the last fallback left off, so
+        // a direction-exhausted or filter-hidden blocker is still reached by
+        // repeated clicks rather than being skipped forever.
+        const fallbackOrder = [...blockedIds.slice(cursor), ...blockedIds.slice(0, cursor)]
         const targetId = chooseBlockedJumpTarget({
             direction: blockedDirection,
             above,
             below,
-            fallbackId: blockedSessions[cursor]!.id
+            visited,
+            fallbackOrder
         })
         const target = blockedSessions.find((session) => session.id === targetId)
             ?? blockedSessions[cursor]!
+        visited.add(target.id)
         if (!renderedIds.has(target.id)) {
             // Reveal the target through transient state only. Writing
             // `listView` / `machineFilter` persists to local storage, so a
