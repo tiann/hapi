@@ -23,12 +23,14 @@ builds on:
 - `session::incoming_filter`: incoming message dedup by id and sequence cursor,
   backfill and rewind bookkeeping, and the typed user message check.
 - `session::echo`: bookkeeping for prompts that the agent may echo back.
+- `session::versioned_ack`: queued compare-and-swap updates for metadata and
+  agent state, retried with jittered backoff.
 - `schemas`: the session metadata checks of `shared/src/schemas.ts`, including
   the full OpenCode rewind record.
 
 Some tests compare results with the TypeScript implementation. They run `bun`
-from `cli/`, and start a Socket.IO hub fixture from `hub/node_modules`. Run
-`bun install` first.
+and the CLI's `vitest` from `cli/`, and start a Socket.IO hub fixture from
+`hub/node_modules`. Run `bun install` first.
 
 The PEM files in `tests/fixtures/` contain a self-signed test CA and a localhost
 server certificate and private key. They are used only by the TLS tests.
