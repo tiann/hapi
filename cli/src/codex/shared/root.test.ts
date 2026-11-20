@@ -11,6 +11,7 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { asyncQuestionsForItem } from './asyncQuestions';
 import { CodexAppServerClient } from '../codexAppServerClient';
 import { buildHapiMcpBridge } from '../utils/buildHapiMcpBridge';
+import { inheritedResumeTier } from '../utils/serviceTier';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
 type NativeRequest = { id: string | number; method: string; params: unknown };
@@ -396,7 +397,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
         sendSessionEvent: events, sendAgentMessage: send, emitSessionReady: sessionReady,
         sendUserMessage() {}, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
-        sendSessionDeath() {}, async flush() {}, close() {}
+        sendSessionDeath() {}, async flush() {}, async flushMetadata() { return true; }, close() {}
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
     const root = new SharedCodexRoot({ session, sessionInfo: { agentState: state }, workingDirectory: directory } as SessionBootstrapResult, {
@@ -1883,14 +1884,16 @@ it.each([false, true])('requires an effective read despite provisional Ultrafast
 });
 
 it.each([
-    { expectFast: true, effective: 'priority', ready: true },
-    { expectFast: true, effective: 'flex', ready: false },
-    { expectFast: true, effective: 'default', ready: false },
-    { expectFast: false, effective: 'default', ready: true },
-    { expectFast: false, effective: 'priority', ready: false },
-])('restores input after cold resume only for the matching Fast override (%j)', async ({ expectFast, effective, ready }) => {
+    { requested: 'priority', effective: 'priority', ready: true },
+    { requested: 'priority', effective: 'flex', ready: false },
+    { requested: 'priority', effective: 'default', ready: false },
+    { requested: 'flex', effective: 'flex', ready: true },
+    { requested: 'flex', effective: 'default', ready: false },
+    { requested: undefined, effective: 'default', ready: true },
+    { requested: undefined, effective: 'priority', ready: false },
+])('restores input after cold resume only for the expected effective tier (%j)', async ({ requested, effective, ready }) => {
     const f = await fixture({ initialTierPending: true });
-    await f.root.bind('thread', { model: 'mock', serviceTier: effective, thread: { turns: [] } }, false, expectFast);
+    await f.root.bind('thread', { model: 'mock', serviceTier: effective, thread: { turns: [] } }, false, requested);
     await f.root.activate();
     expect(f.metadata().codexTierConfirmationPending).toBe(!ready);
     expect(f.root.needsTierConfirmation).toBe(!ready);
@@ -1969,6 +1972,34 @@ it.each(['priority', 'default'])('reconciles a lost native turn reply from an in
     expect(f.metadata().codexTierConfirmationPending).toBe(serviceTier !== 'priority');
     expect(f.metadata().codexServiceTierExplicit).toBe(serviceTier === 'priority');
     expect(request.mock.calls.map(([method]) => method)).toEqual(['thread/resume']);
+});
+
+it.each(['ultrafast', 'default'])('preserves accepted native Ultrafast if the wrapper stops before an effective %s read', async effective => {
+    const f = await fixture({ bindTier: 'default' });
+    await f.root.activate();
+    const operation = await f.root.prepareNativeTurn({ serviceTier: 'ultrafast' });
+    let enter!: () => void;
+    let release!: () => void;
+    const reading = new Promise<void>(resolve => { enter = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const original = f.root.client.request.bind(f.root.client);
+    vi.spyOn(f.root.client, 'request').mockImplementationOnce(async (method, params) => {
+        enter();
+        await held;
+        return original(method, params);
+    }).mockImplementation(original);
+    const confirm = f.root.confirmNativeTurn(operation.params, true, operation.fallbackNotice, operation.generation);
+    await reading;
+    const pending = structuredClone(f.metadata());
+    expect(pending).toMatchObject({ codexServiceTierExplicit: true, codexPendingServiceTier: 'ultrafast', codexTierConfirmationPending: true });
+    expect(await inheritedResumeTier(f.root.client, {}, pending.codexServiceTierExplicit, '/project', 'standard',
+        pending.codexPendingServiceTier, pending.codexTierConfirmationPending)).toEqual({ serviceTier: 'ultrafast' });
+    f.native.settings.serviceTier = effective;
+    release();
+    await confirm;
+    expect(f.metadata().codexPendingServiceTier).toBeUndefined();
+    expect(f.metadata().codexConfirmedServiceTier).toBe(effective === 'default' ? 'standard' : 'ultrafast');
+    expect(f.metadata().codexTierConfirmationPending).toBe(false);
 });
 
 it.each(['web', 'native'])('keeps a newer lost-turn pause after an older %s Standard write is acknowledged', async origin => {
@@ -2278,10 +2309,16 @@ it('does not reset a newer Fast choice during model-only native turn discovery',
 
 it('does not overwrite a newer tier notification with a delayed native snapshot', async () => {
     const f = await fixture(); await f.root.activate();
+    let entered!: () => void;
     let release!: (value: unknown) => void;
+    const reading = new Promise<void>(resolve => { entered = resolve; });
     const snapshot = new Promise(resolve => { release = resolve; });
-    vi.spyOn(f.root.client, 'request').mockImplementationOnce(() => snapshot as never);
+    vi.spyOn(f.root.client, 'request').mockImplementationOnce(() => {
+        entered();
+        return snapshot as never;
+    });
     const pending = f.root.confirmNativeTurn({ serviceTier: 'priority' }, true);
+    await reading;
     f.root.acceptSettings({ model: 'mock', serviceTier: 'default' }, true);
     release({ model: 'mock', serviceTier: 'priority' }); await pending;
     expect(f.root.freshParams().serviceTier).toBe('default');

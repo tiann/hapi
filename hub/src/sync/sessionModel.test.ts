@@ -5511,17 +5511,20 @@ describe('session model', () => {
 })
 
 it.each([
-    { effective: 'ultrafast', explicit: false, expected: undefined },
-    { effective: 'ultrafast', explicit: true, expected: 'ultrafast' },
-    { effective: 'ultrafast', explicit: undefined, expected: 'ultrafast' },
-    { effective: 'flex', explicit: true, expected: undefined },
-])('keeps effective $effective distinct from the runner tier (explicit $explicit)', async ({ effective, explicit, expected }) => {
+    { effective: 'ultrafast', intent: { codexServiceTierExplicit: false }, expected: undefined },
+    { effective: 'ultrafast', intent: { codexServiceTierExplicit: true }, expected: 'ultrafast' },
+    { effective: 'ultrafast', intent: {}, expected: 'ultrafast' },
+    { effective: 'flex', intent: { codexServiceTierExplicit: true }, expected: undefined },
+    { effective: 'standard', intent: { codexServiceTierExplicit: true, codexPendingServiceTier: 'ultrafast', codexTierConfirmationPending: true }, expected: 'ultrafast' },
+    { effective: 'standard', intent: { codexServiceTierExplicit: true, codexConfirmedServiceTier: 'ultrafast' }, expected: 'ultrafast' },
+    { effective: 'standard', intent: { codexServiceTierExplicit: true, codexPendingServiceTier: 'flex', codexTierConfirmationPending: true }, expected: undefined },
+] as const)('keeps the effective tier distinct from the durable runner intent (%j)', async ({ effective, intent, expected }) => {
     const store = new Store(':memory:')
     const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
     try {
         const session = engine.getOrCreateSession('tier-inheritance', {
             path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
-            codexSessionId: 'native-tier', codexServiceTierExplicit: explicit,
+            codexSessionId: 'native-tier', ...intent,
         }, null, 'default')
         engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.36.5' }, null, 'default')
         engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
@@ -5536,6 +5539,24 @@ it.each([
         ;(engine as any).waitForSessionActive = async () => true
         expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
         expect(tier as string | undefined).toBe(expected)
+    } finally { engine.stop() }
+})
+
+it('clears the confirmed Codex recovery tier after the effective heartbeat is durable', () => {
+    const store = new Store(':memory:')
+    const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+    try {
+        const session = engine.getOrCreateSession('tier-reconciliation', {
+            path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'native-tier',
+            codexServiceTierExplicit: true, codexConfirmedServiceTier: 'ultrafast',
+        }, null, 'default')
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: 'standard' })
+        expect(engine.getSession(session.id)?.metadata?.codexConfirmedServiceTier).toBe('ultrafast')
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: 'ultrafast' })
+        expect(engine.getSession(session.id)).toMatchObject({ serviceTier: 'ultrafast' })
+        expect(engine.getSession(session.id)?.metadata?.codexConfirmedServiceTier).toBeUndefined()
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: 'fast' })
+        expect(store.sessions.getSession(session.id)?.serviceTier).toBe('fast')
     } finally { engine.stop() }
 })
 

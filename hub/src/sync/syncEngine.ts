@@ -2509,7 +2509,8 @@ export class SyncEngine {
             if (!attempt) {
                 attempt = { operationId: randomUUID(), childSessionId: randomUUID(),
                     ...(messageLocalId ? { boundaryLocalId: messageLocalId, boundaryTurnId: turnId! } : {}),
-                    ...(metadata.codexServiceTierExplicit === true && metadata.codexPendingServiceTier === undefined && source.serviceTier === 'flex'
+                    ...(metadata.codexServiceTierExplicit === true && metadata.codexPendingServiceTier === undefined
+                        && (metadata.codexConfirmedServiceTier ?? source.serviceTier) === 'flex'
                         ? { nativeServiceTier: 'flex' } : {}) }
                 this.setArchivedForkAttempt(source.id, namespace, attempt)
             }
@@ -4300,12 +4301,11 @@ export class SyncEngine {
 
     private codexResumeTier(session: Pick<Session, 'metadata' | 'serviceTier'>): string | undefined {
         const metadata = session.metadata
-        if (metadata?.codexPendingServiceTier !== undefined) return metadata.codexPendingServiceTier
-        if (metadata?.codexTierConfirmationPending || metadata?.codexServiceTierExplicit === false) return undefined
-        if (this.codexUsesNativeTier(metadata)) return undefined
+        const pending = metadata?.codexPendingServiceTier
+        if (pending === undefined && (metadata?.codexTierConfirmationPending || metadata?.codexServiceTierExplicit === false || this.codexUsesNativeTier(metadata))) return undefined
         // Native-only effective tiers are restored by Codex, outside the
         // HAPI runner's selectable service-tier overrides.
-        const tier = SessionServiceTierRequestSchema.shape.serviceTier.safeParse(session.serviceTier)
+        const tier = SessionServiceTierRequestSchema.shape.serviceTier.safeParse(pending ?? metadata?.codexConfirmedServiceTier ?? session.serviceTier)
         return tier.success ? tier.data : undefined
     }
 

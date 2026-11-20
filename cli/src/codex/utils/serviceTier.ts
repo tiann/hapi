@@ -162,7 +162,7 @@ export function nativeTierParams(params: Record<string, unknown>): Record<string
 }
 
 /** Explicitly re-resolve inherited intent so a saved native snapshot cannot pin it. */
-export async function inheritedResumeTier(client: Pick<CodexAppServerClient, 'readConfig'> & Partial<Pick<CodexAppServerClient, 'supportsEffectiveUltrafastLaunch'>>, params: Record<string, unknown>, explicit: boolean | undefined, cwd: string, savedTier?: unknown, pendingTier?: 'standard' | 'fast' | 'ultrafast', confirmationPending = false): Promise<Record<string, unknown>> {
+export async function inheritedResumeTier(client: Pick<CodexAppServerClient, 'readConfig'> & Partial<Pick<CodexAppServerClient, 'supportsEffectiveUltrafastLaunch'>>, params: Record<string, unknown>, explicit: boolean | undefined, cwd: string, savedTier?: unknown, pendingTier?: 'standard' | 'fast' | 'ultrafast' | 'flex', confirmationPending = false): Promise<Record<string, unknown>> {
     params = nativeTierParams(params);
     if (params.serviceTier !== undefined) return params;
     if (confirmationPending && pendingTier === undefined) return params;

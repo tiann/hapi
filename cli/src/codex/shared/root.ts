@@ -383,7 +383,7 @@ export class SharedCodexRoot {
         }));
     }
     get isActivated(): boolean { return this.activated; }
-    async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean, expectFast = false): Promise<void> {
+    async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean, expectedResumeTier?: unknown): Promise<void> {
         if (this.threadId && this.threadId !== threadId) throw new Error('Cannot retarget a shared HAPI session');
         this.threadId = threadId;
         // Keep the queue and projection when retrying a failed native read.
@@ -396,19 +396,22 @@ export class SharedCodexRoot {
         }
         this.modelProvider = string(response.modelProvider) ?? string(record(response.thread).modelProvider);
         this.acceptSettings(this.host.settingsFor(threadId) ?? {}, false); this.acceptSettings(response, true);
-        if (!expectFast && this.hasConfirmedStandardTier) {
+        if (expectedResumeTier !== 'priority' && expectedResumeTier !== 'flex' && this.hasConfirmedStandardTier) {
             this.tierConfirmationPending = false;
             this.tierConfirmationResolved = true;
             if (this.session.getMetadata()?.codexTierConfirmationPending) this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
         }
-        if (expectFast) this.confirmFastResume(response);
+        this.confirmResumeTier(response, expectedResumeTier);
         if (!this.host.attached) await this.projectHistory(this.projection, response.thread);
         await this.refresh(); await this.refreshChildren(true);
     }
-    confirmFastResume(response: Record<string, unknown>): void {
-        if ((response.serviceTier === 'priority' || response.serviceTier === 'fast')
-            && this.settings.serviceTier === 'fast' && this.session.getMetadata()?.codexTierConfirmationPending === true) {
-            this.completeTierConfirmation();
+    confirmResumeTier(response: Record<string, unknown>, expected: unknown): void {
+        if (expected !== 'priority' && expected !== 'flex') return;
+        const tier = fromCodexServiceTier(expected);
+        if (fromCodexServiceTier(response.serviceTier) === tier
+            && this.settings.serviceTier === tier && this.session.getMetadata()?.codexTierConfirmationPending === true) {
+            this.tierConfirmationResolved = true;
+            this.tierConfirmationPending = false;
         }
     }
     async activate(options: SharedLaunchOptions = {}, serviceTierExplicit?: boolean, deferInput = false): Promise<void> {
@@ -421,6 +424,8 @@ export class SharedCodexRoot {
         this.session.updateMetadata(metadata => ({
             ...metadata,
             codexServiceTierExplicit: this.serviceTierExplicit,
+            codexConfirmedServiceTier: this.tierConfirmationPending ? metadata.codexConfirmedServiceTier
+                : this.serviceTierExplicit ? this.settings.serviceTier ?? undefined : undefined,
             codexTierConfirmationPending: this.tierConfirmationPending,
             codexPendingServiceTier: this.tierConfirmationPending ? metadata.codexPendingServiceTier : undefined
         }));
@@ -798,13 +803,9 @@ export class SharedCodexRoot {
     }
     private confirmSettingsWrite(operationId: number | undefined, explicitTier: boolean, confirmsTier: boolean, fallbackNotice?: string): void {
         if (operationId === undefined || !this.isCurrentTierOperation(operationId)) return;
-        if (explicitTier) this.markTierExplicit();
+        if (explicitTier) this.serviceTierExplicit = true;
         if (fallbackNotice) this.notice(fallbackNotice);
         if (confirmsTier) this.completeTierConfirmation(operationId);
-    }
-    private markTierExplicit(): void {
-        this.serviceTierExplicit = true;
-        this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: true, codexPendingServiceTier: undefined }));
     }
     private completeTierConfirmation(operationId = ++this.tierOperationCounter): void {
         if (!this.isCurrentTierOperation(operationId)) return;
@@ -812,10 +813,14 @@ export class SharedCodexRoot {
         this.confirmedTierValue = this.settingsNative.serviceTier;
         this.tierConfirmationResolved = true;
         const paused = this.tierConfirmationPending;
-        if (!paused && this.session.getMetadata()?.codexTierConfirmationPending !== true) return;
+        const metadata = this.session.getMetadata();
+        const confirmedTier = this.serviceTierExplicit ? this.settings.serviceTier ?? undefined : undefined;
+        if (!paused && metadata?.codexTierConfirmationPending !== true && metadata?.codexPendingServiceTier === undefined
+            && metadata?.codexConfirmedServiceTier === confirmedTier && metadata?.codexServiceTierExplicit === this.serviceTierExplicit) return;
         this.tierConfirmationPending = false;
         this.pendingLaunchCollaborationMode = undefined;
-        this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
+        this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false,
+            codexServiceTierExplicit: this.serviceTierExplicit, codexConfirmedServiceTier: confirmedTier, codexPendingServiceTier: undefined }));
         this.publishSteering();
         if (paused && this.activated) {
             this.alive(); this.inputReady(); this.session.emitSessionReady();
@@ -916,7 +921,7 @@ export class SharedCodexRoot {
             if (params.serviceTier === 'ultrafast' && !await isUltrafastEnabled(this.client, this.threadId, deadline)) return;
             if (!current()) return;
             this.acceptSettings(snapshot, true);
-            if (explicitTier) this.markTierExplicit();
+            if (explicitTier) this.serviceTierExplicit = true;
             this.completeTierConfirmation(operationId);
             this.alive();
             if (fallbackNotice) this.notice(fallbackNotice);
@@ -927,12 +932,30 @@ export class SharedCodexRoot {
     /** Called only after native turn acceptance; a rejected input leaves intent unchanged. */
     async confirmNativeTurn(params: Record<string, unknown>, explicitTier: boolean, fallbackNotice?: string, operationId = ++this.tierOperationCounter): Promise<void> {
         const verifyUltrafast = params.serviceTier === 'ultrafast' || params.serviceTier === undefined && this.hasUltrafastTier;
-        const current = () => this.isCurrentTierOperation(operationId);
+        const current = () => !this.closed && !this.stopping && this.isCurrentTierOperation(operationId);
         // A settings lookup can confirm the effective value before the native
         // reply arrives. Only the accepted turn establishes explicit intent.
         if (explicitTier) {
             this.acceptedNativeTierOperation = Math.max(this.acceptedNativeTierOperation, operationId);
-            this.markTierExplicit();
+            if (!current()) {
+                if (!this.closed && !this.stopping && operationId >= Math.max(this.pendingTierOperation, this.acceptedNativeTierOperation)
+                    && settingsMatch(this.settingsNative, { serviceTier: params.serviceTier })
+                    && (params.serviceTier !== 'ultrafast' || this.settings.serviceTier === 'ultrafast')) {
+                    this.serviceTierExplicit = true;
+                    this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: true,
+                        codexConfirmedServiceTier: this.settings.serviceTier ?? undefined }));
+                }
+                return;
+            }
+            this.serviceTierExplicit = true;
+            const tier = params.serviceTier === null ? 'standard' : fromCodexServiceTier(params.serviceTier);
+            if (tier === 'standard' || tier === 'fast' || tier === 'ultrafast' || tier === 'flex') {
+                // Persist accepted intent before querying a potentially slow
+                // effective snapshot. The heartbeat can still carry the old tier.
+                this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: true,
+                    codexPendingServiceTier: tier, codexTierConfirmationPending: true }));
+                if (!await this.session.flushMetadata()) logger.debug('[Codex shared] native tier intent metadata is still pending');
+            }
         }
         if (!current()) return;
         const revision = this.settingsRevision;

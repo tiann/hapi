@@ -745,6 +745,22 @@ export class SessionCache {
                 } satisfies SessionPatch
             })
         }
+        // A confirmed explicit tier is retained in metadata until the
+        // effective tier column has caught up. Retire that recovery value once
+        // both are durable so later native changes can follow the live tier.
+        const settledTier = session.metadata?.codexConfirmedServiceTier
+        if (settledTier !== undefined && payload.serviceTier === settledTier
+            && !this.isStaleRuntimeKeepAlive(session.id, 'serviceTier', t)) {
+            const stored = this.store.sessions.getSession(session.id)
+            const metadata = stored?.metadata as Session['metadata'] | undefined
+            if (stored?.serviceTier === settledTier && metadata?.codexConfirmedServiceTier === settledTier
+                && metadata.codexPendingServiceTier === undefined && !metadata.codexTierConfirmationPending) {
+                const { codexConfirmedServiceTier: _, ...next } = metadata
+                const result = this.store.sessions.updateSessionMetadata(session.id, next, stored.metadataVersion,
+                    session.namespace, { touchUpdatedAt: false, preservePreallocation: true })
+                if (result.result === 'success') this.refreshSession(session.id)
+            }
+        }
     }
 
     /**

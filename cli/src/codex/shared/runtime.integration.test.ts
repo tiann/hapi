@@ -42,7 +42,7 @@ class MockSession extends EventEmitter {
     emitSessionReady() { this.readySignals++; }
     async setSteerDeliveryState() { return true; }
     syncNativeQueuedMessage() {}
-    sendSessionDeath() { this.dead = true; } async flush() {} close() {} isPending() { return false; }
+    sendSessionDeath() { this.dead = true; } async flush() {} async flushMetadata() { return true; } close() {} isPending() { return false; }
 }
 vi.mock('@/configuration', () => ({ configuration: { get happyHomeDir() { return state.home; }, apiUrl: 'http://mock-hub', cliApiToken: 'test' } }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: (...args: unknown[]) => { if (process.env.HAPI_DEBUG_SHARED_TEST) console.log(...args); }, warn: vi.fn(), info: vi.fn(), debugLargeJson: vi.fn() } }));

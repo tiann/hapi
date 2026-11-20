@@ -275,7 +275,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         return root.config(tier.params);
     };
     const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, requestedUltrafast = false, downgraded = false, resume?: Reservation,
-        expectFast = resume?.executionParams.serviceTier === 'priority') => {
+        expectedResumeTier = resume?.executionParams.serviceTier) => {
         assertRunning();
         const threadId = string(record(response.thread).id);
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
@@ -293,14 +293,14 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             roots.set(threadId, root);
         }
         if (!resume?.rootBound || subscribe && !root.client.isInitialized()) {
-            await root.bind(threadId, response, subscribe, expectFast);
+            await root.bind(threadId, response, subscribe, expectedResumeTier);
             // A new thread starts with zero cumulative usage. Seed once before
             // activation, including when the first bind had to be retried.
             if (freshThread && !resume?.rootBound) root.seedFreshUsage();
             if (resume) resume.rootBound = true;
         } else {
             root.acceptSettings(response, true);
-            if (expectFast) root.confirmFastResume(response);
+            root.confirmResumeTier(response, expectedResumeTier);
         }
         assertRunning();
         if (resume?.controlSubscription !== controlGeneration) {
@@ -515,7 +515,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
             const metadata = root.session.getMetadata();
             const resolved = request.method === 'thread/resume'
-                ? await inheritedResumeTier(control, params, metadata?.codexServiceTierExplicit, cwd, root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending)
+                ? await inheritedResumeTier(control, params, metadata?.codexServiceTierExplicit, cwd, metadata?.codexConfirmedServiceTier ?? root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending)
                 : params;
             const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, undefined, savedThread, startupCatalogConfig);
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
@@ -661,7 +661,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await reserveRecord(root, threadId); return root;
             });
             const metadata = root.session.getMetadata();
-            const resumeParams = await inheritedResumeTier(control, launch.threadParams, metadata?.codexServiceTierExplicit, root.bootstrap.workingDirectory, root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending);
+            const resumeParams = await inheritedResumeTier(control, launch.threadParams, metadata?.codexServiceTierExplicit, root.bootstrap.workingDirectory,
+                metadata?.codexConfirmedServiceTier ?? root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending);
             const resolved = await resolveUltrafastLaunch(control, 'thread/resume', { ...resumeParams, cwd: root.bootstrap.workingDirectory }, root.bootstrap.workingDirectory, undefined, thread, startupCatalogConfig);
             const downgraded = resolved.downgraded;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
@@ -679,7 +680,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 response = record(await root.client.request('thread/resume', params));
             }
             await bind(root, response, false, options, false, launch.threadParams.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined ? true : undefined,
-                resolved.params.serviceTier === 'ultrafast', downgraded, undefined, resolved.params.serviceTier === 'priority');
+                resolved.params.serviceTier === 'ultrafast', downgraded, undefined, resolved.params.serviceTier);
         } else root = await create('thread/start', { ...launch.threadParams, cwd: launch.cwd }, undefined, options);
         assertRunning();
         onReady?.({ sessionId: root.session.sessionId, runtime });
