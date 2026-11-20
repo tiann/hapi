@@ -1,4 +1,3 @@
-import React from 'react';
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
@@ -11,7 +10,6 @@ import { isAcpStallStderrError } from '@/agent/backends/acp/acpStderrErrors';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import type { AgentMessage, McpServerStdio, PromptContent } from '@/agent/types';
 import { RemoteLauncherBase, type RemoteLauncherDisplayContext, type RemoteLauncherExitReason } from '@/modules/common/remote/RemoteLauncherBase';
-import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
 import type { CollectedQueueItem, QueueReservation } from '@/utils/MessageQueue2';
@@ -404,7 +402,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         });
     }
 
-    protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
+    protected async createDisplay(context: RemoteLauncherDisplayContext): Promise<React.ReactElement> {
+        const [{ default: React }, { OpencodeDisplay }] = await Promise.all([
+            import('react'), import('@/ui/ink/OpencodeDisplay')
+        ]);
         return React.createElement(OpencodeDisplay, context);
     }
 

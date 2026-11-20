@@ -3384,13 +3384,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 onCompactAvailabilityChange: (available) => availabilityEvents.push(available)
             });
 
-            // setupTerminal() runs synchronously as the very first thing
-            // start() does, before runMainLoop() (and hence before the
-            // pending newSession()) gets a chance to run — so by the time
-            // control returns here, ink's render() (mocked above) has
-            // already captured onExit/onSwitchToLocal.
+            await vi.waitFor(() => expect(resolveNewSession).toBeTypeOf('function'));
             expect(inkHarness.lastRenderProps?.onSwitchToLocal).toBeDefined();
-            expect(resolveNewSession).toBeNull();
             expect(availabilityEvents).toEqual([]);
 
             await inkHarness.lastRenderProps!.onSwitchToLocal!();

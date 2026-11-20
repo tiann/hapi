@@ -1,6 +1,4 @@
 import chalk from 'chalk'
-import React from 'react'
-import { render } from 'ink'
 import { existsSync } from 'node:fs'
 import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
 import type {
@@ -18,7 +16,6 @@ import type { ReasoningEffort } from '@/codex/appServerTypes'
 import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
-import { ResumeSessionPicker } from '@/ui/ink/ResumeSessionPicker'
 import type { CommandDefinition } from './types'
 
 function formatSessionLine(session: ResumableSession, index: number): string {
@@ -30,6 +27,9 @@ function formatSessionLine(session: ResumableSession, index: number): string {
 }
 
 export async function selectResumableSession(sessions: ResumableSession[]): Promise<string> {
+    const [{ default: React }, { render }, { ResumeSessionPicker }] = await Promise.all([
+        import('react'), import('ink'), import('@/ui/ink/ResumeSessionPicker')
+    ])
     return await new Promise<string>((resolve, reject) => {
         let settled = false
         const complete = (callback: () => void) => {
