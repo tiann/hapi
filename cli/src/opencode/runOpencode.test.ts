@@ -861,6 +861,7 @@ describe('runOpencode set-session-config handler', () => {
         const gate = options.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
         const submit = harness.session.onUserMessage.mock.calls[0]![0];
         submit({ content: { text: '/clear' } }, 'clear');
+        submit({ content: { text: '/plan' } }, 'plan');
         submit({ content: { text: 'held' } }, 'held');
         await vi.waitFor(() => expect(harness.listSlashCommands).toHaveBeenCalled());
         await new Promise<void>(resolve => setImmediate(resolve));
@@ -870,19 +871,40 @@ describe('runOpencode set-session-config handler', () => {
         expect(await (options.onClearRequested as () => Promise<unknown>)()).toBe(false);
         submit({ content: { text: 'later' } }, 'later');
         await vi.waitFor(() => expect(queue.queue.map(row => row.localId)).toEqual(['clear', 'held', 'later']));
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['plan'], { clearQueuedThinkingGrace: true });
+        expect(queue.queue.filter(row => row.localId !== 'clear').map(row => row.mode.permissionMode)).toEqual(['plan', 'plan']);
+    });
+
+    it('keeps held input ahead of a newer arrival parked on an entry fence when Clear is refused', async () => {
+        await runOpencode({ startedBy: 'runner' });
+        const options = harness.opencodeLoopArgs[0]!;
+        const queue = options.messageQueue as MessageQueue2<OpencodeMode>;
+        const gate = options.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        const submit = harness.session.onUserMessage.mock.calls[0]![0];
+        submit({ content: { text: '/clear' } }, 'clear');
+        submit({ content: { text: 'held' } }, 'held');
+        await vi.waitFor(() => expect(queue.queue.map(row => row.localId)).toEqual(['clear']));
+        const fence = gate.acquireEntryFence();
+        submit({ content: { text: 'parked-newer' } }, 'parked-newer');
+        await new Promise<void>(resolve => setImmediate(resolve));
+        harness.reserveOpenCodeClearSession.mockRejectedValueOnce(new OpenCodeHandoffRefusedError('Clear admission refused'));
+        expect(await (options.onClearRequested as () => Promise<unknown>)()).toBe(false);
+        gate.releaseEntryFence(fence);
+        await vi.waitFor(() => expect(queue.queue.map(row => row.localId)).toEqual(['clear', 'held', 'parked-newer']));
     });
 
     it('releases the clear transition latch when the queued /clear is cancelled', async () => {
         await runOpencode({ startedBy: 'runner' });
 
         const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as
-            { queue: Array<{ message: string; mode: { operation?: string }; localId?: string }> };
+            { queue: Array<{ message: string; mode: OpencodeMode; localId?: string }> };
         const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
             ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void);
         const cancelHandler = harness.session.onCancelQueuedMessage.mock.calls[0]?.[0] as
             ((localId: string) => boolean);
 
         userMessageHandler({ content: { text: '/clear' } }, 'queued-clear');
+        userMessageHandler({ content: { text: '/plan' } }, 'held-plan');
         userMessageHandler({ content: { text: 'rejected while clear is queued' } }, 'rejected-before-cancel');
         for (let i = 0; i < 5; i++) {
             await new Promise((resolve) => setTimeout(resolve, 0));
@@ -897,11 +919,21 @@ describe('runOpencode set-session-config handler', () => {
             await new Promise((resolve) => setTimeout(resolve, 0));
         }
 
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(
+            ['held-plan'], { clearQueuedThinkingGrace: true }
+        );
         expect(messageQueue.queue).toEqual([
-            expect.objectContaining({ message: 'rejected while clear is queued', localId: 'rejected-before-cancel' }),
-            expect.objectContaining({ message: 'continue in the source session', localId: 'after-cancel' })
+            expect.objectContaining({
+                message: 'rejected while clear is queued',
+                localId: 'rejected-before-cancel',
+                mode: expect.objectContaining({ permissionMode: 'plan' })
+            }),
+            expect.objectContaining({
+                message: 'continue in the source session',
+                localId: 'after-cancel',
+                mode: expect.objectContaining({ permissionMode: 'plan' })
+            })
         ]);
-        expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
     });
 
     it('kills the session before draining the local transcript', async () => {
@@ -939,7 +971,7 @@ describe('runOpencode set-session-config handler', () => {
         for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
         expect(cancelHandler('held-cancel')).toBe(true);
         expect(cancelHandler('queued-clear')).toBe(true);
-        expect(messageQueue.queue.map((item) => item.localId)).toEqual(['held-keep']);
+        await vi.waitFor(() => expect(messageQueue.queue.map((item) => item.localId)).toEqual(['held-keep']));
     });
 
     it('archives the source before asking the hub to spawn the fresh OpenCode process', async () => {

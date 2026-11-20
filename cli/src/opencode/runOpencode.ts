@@ -289,7 +289,11 @@ export async function runOpencode(opts: {
     };
 
     let userMessageChain: Promise<void> = Promise.resolve();
-    session.onUserMessage((message, localId) => {
+    const enqueueUserMessage = (
+        message: Parameters<Parameters<typeof session.onUserMessage>[0]>[0],
+        localId?: string,
+        releasedFromClearHold = false
+    ) => {
         const refuseClearDuringRecovery = (): boolean => {
             if (!runtimeGate.recoveryPending) return false;
             if (localId) session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
@@ -305,7 +309,8 @@ export async function runOpencode(opts: {
         let release = runtimeGate.isBlocked() ? undefined : runtimeGate.enterRuntime();
         const finishPreparing = messageQueue.beginPreparingInput();
         if (localId) preparingLocalIds.set(localId, finishPreparing);
-        userMessageChain = userMessageChain.then(async () => {
+        const arrivedDuringClear = clearTransitionLatched && !releasedFromClearHold;
+        const runStep = async () => {
             const wasCancelled = (): boolean => {
                 if (!localId) return false;
                 return cancelledBeforeEnqueue.delete(localId);
@@ -323,6 +328,12 @@ export async function runOpencode(opts: {
                 messageQueue.push(formattedText, buildMode(), localId);
             };
             try {
+                if (arrivedDuringClear && clearTransitionLatched) {
+                    if (wasCancelled()) return;
+                    heldDuringClear.push({ message, localId });
+                    sessionWrapperRef.current?.onThinkingChange(false);
+                    return;
+                }
                 // A blocked arrival admits inside the try with a re-check loop:
                 // the gate can re-block between the open notification and the
                 // retry, and that race must fall into the handler's catch/
@@ -501,23 +512,19 @@ export async function runOpencode(opts: {
                     cancelledBeforeEnqueue.delete(localId);
                 }
             }
-        }).catch((error) => {
+        };
+        userMessageChain = userMessageChain.then(runStep).catch((error) => {
             logger.debug('[opencode] User message handler chain failed', error);
         });
-    });
+    };
+    session.onUserMessage((message, localId) => enqueueUserMessage(message, localId));
 
     const releaseHeldClearInput = () => {
         queuedClearLocalId = null;
         clearTransitionLatched = false;
-        for (const held of heldDuringClear) {
-            const formattedText = formatMessageWithAttachments(held.message.content.text, held.message.content.attachments);
-            messageQueue.push(formattedText, {
-                permissionMode: currentPermissionMode,
-                model: sessionModel,
-                modelReasoningEffort: sessionModelReasoningEffort
-            }, held.localId);
+        for (const held of heldDuringClear.splice(0)) {
+            enqueueUserMessage(held.message, held.localId, true);
         }
-        heldDuringClear.length = 0;
     };
 
     let cancelNativeSteer: OpencodeSteerCancelHandler | null = null;
