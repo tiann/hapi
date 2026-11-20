@@ -30,8 +30,7 @@ import type { Metadata, Session, SessionSummary } from '@/types/api'
 type AgentSessionIdField =
     | 'claudeSessionId' | 'codexSessionId' | 'geminiSessionId' | 'opencodeSessionId'
     | 'grokSessionId' | 'agySessionId' | 'cursorSessionId' | 'kimiSessionId'
-    | 'copilotSessionId' | 'piSessionId' | 'dshSessionId' | 'hermesSessionId'
-    | 'berrySessionId' | 'zcodeSessionId'
+    | 'copilotSessionId' | 'piSessionId' | 'dshSessionId'
 
 /** Reverse of shared `getSummaryAgentSessionId`: the per-flavor metadata slot
  *  the list's derived `metadata.agentSessionId` was flattened from. Restoring
@@ -51,10 +50,7 @@ const AGENT_SESSION_ID_FIELD_BY_FLAVOR: Partial<Record<string, AgentSessionIdFie
     kimi: 'kimiSessionId',
     copilot: 'copilotSessionId',
     pi: 'piSessionId',
-    dsh: 'dshSessionId',
-    hermes: 'hermesSessionId',
-    berry: 'berrySessionId',
-    zcode: 'zcodeSessionId'
+    dsh: 'dshSessionId'
 }
 
 /** Summary metadata → full `Metadata` projection. Summary-only keys

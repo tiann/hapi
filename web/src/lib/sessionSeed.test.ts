@@ -135,13 +135,4 @@ describe('sessionSeedFromSummary', () => {
         expect(seed.metadata?.claudeSessionId).toBe('claude-1')
     })
 
-    it('maps a zcode row onto zcodeSessionId (reader-aligned)', () => {
-        const row = {
-            ...slimRow,
-            metadata: { path: '/w', flavor: 'zcode', agentSessionId: 'z-1' }
-        } as unknown as SessionSummary
-        const seed = sessionSeedFromSummary(row)
-        expect(seed.metadata?.zcodeSessionId).toBe('z-1')
-        expect(seed.metadata?.path).toBe('/w')
     })
-})
