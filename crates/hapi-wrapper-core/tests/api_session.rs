@@ -3,7 +3,7 @@ use hapi_wrapper_core::{
     rest::Rest,
     session::{
         bootstrap::{bootstrap, Options},
-        client::{Cancellation, SessionClient, SessionEvent},
+        client::{Cancellation, SessionClient, SessionEvent, SessionExtension},
     },
 };
 use serde_json::{json, Value};
@@ -1436,4 +1436,182 @@ async fn dropping_last_handle_stops_failing_backfill() {
     let after = h.command("snapshot", Value::Null).await;
     assert_eq!(message_queries(&after), message_queries(&before));
     assert_eq!(after["connections"], before["connections"]);
+}
+
+#[derive(Default)]
+struct Probe {
+    log: std::sync::Mutex<Vec<String>>,
+    stopped: tokio::sync::watch::Sender<bool>,
+}
+impl Probe {
+    fn log(&self) -> Vec<String> {
+        self.log.lock().unwrap().clone()
+    }
+}
+impl SessionExtension for Probe {
+    fn register(&self, rpc: &hapi_wrapper_core::rpc::manager::RpcHandlerManager) {
+        self.log.lock().unwrap().push("register".into());
+        rpc.register("probe", |v| async move { Ok(Some(v)) });
+    }
+    fn connected(&self, socket: &hapi_wrapper_core::sio::client::Client, generation: u64) {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("connected:{generation}"));
+        socket.emit("probe-connected", vec![json!(generation)]);
+    }
+    fn disconnected(&self) {
+        self.log.lock().unwrap().push("disconnected".into());
+        self.stopped.send_replace(true);
+    }
+    fn shutdown(&self) -> futures_util::future::BoxFuture<'static, ()> {
+        let mut stopped = self.stopped.subscribe();
+        Box::pin(async move {
+            let _ = stopped.wait_for(|v| *v).await;
+        })
+    }
+}
+async fn ran_in_child(name: &str) -> bool {
+    if std::env::var_os("HAPI_BOOTSTRAP_TEST_CHILD").is_some() {
+        return false;
+    }
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name])
+        .env("HAPI_BOOTSTRAP_TEST_CHILD", "1")
+        .env("HAPI_WRAPPER_CLI_VERSION", "test-version")
+        .env("HAPI_WRAPPER_RUNTIME_PATH", "/runtime")
+        .status()
+        .await
+        .unwrap();
+    assert!(status.success());
+    true
+}
+async fn bootstrap_with(
+    h: &Hub,
+    extensions: Vec<Arc<dyn SessionExtension>>,
+) -> hapi_wrapper_core::session::bootstrap::Bootstrapped {
+    let opts = Options {
+        flavor: "claude".into(),
+        working_directory: Some(h.config.home.clone()),
+        extensions,
+        ..Default::default()
+    };
+    bootstrap(&h.config, &opts, false, false, |_| false)
+        .await
+        .unwrap()
+}
+fn wire(snapshot: &Value, id: &str) -> Vec<String> {
+    snapshot["emitted"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e["event"].as_str() {
+            Some("rpc-register") => e["payload"]["method"].as_str().map(|m| m.replace(id, "s")),
+            Some("session-alive") => Some("alive".into()),
+            Some("probe-connected") => Some(format!("probe:{}", e["payload"])),
+            _ => None,
+        })
+        .collect()
+}
+#[tokio::test]
+async fn extension_registers_handlers_before_first_connect() {
+    if ran_in_child("extension_registers_handlers_before_first_connect").await {
+        return;
+    }
+    let mut h = Hub::new().await;
+    let probe = Arc::new(Probe::default());
+    let mut started = bootstrap_with(&h, vec![probe.clone()]).await;
+    assert_eq!(probe.log().first().map(String::as_str), Some("register"));
+    wait(&mut started.events, |e| {
+        matches!(e, SessionEvent::Connected)
+    })
+    .await;
+    let id = started.client.id.clone();
+    assert_eq!(
+        h.command(
+            "rpc",
+            json!({"method":format!("{id}:probe"),"params":"{\"ok\":1}"})
+        )
+        .await,
+        json!("{\"ok\":1}")
+    );
+    let snapshot = h.command("snapshot", Value::Null).await;
+    assert_eq!(wire(&snapshot, &id), ["probe:0", "s:probe", "alive"]);
+    assert_eq!(probe.log(), ["register", "connected:0"]);
+    started.client.close();
+}
+#[tokio::test]
+async fn extension_sees_connect_and_disconnect_per_generation() {
+    if ran_in_child("extension_sees_connect_and_disconnect_per_generation").await {
+        return;
+    }
+    let mut h = Hub::new().await;
+    let probe = Arc::new(Probe::default());
+    let mut started = bootstrap_with(&h, vec![probe.clone()]).await;
+    let client = started.client.clone();
+    wait(&mut started.events, |e| {
+        matches!(e, SessionEvent::Connected)
+    })
+    .await;
+    h.command("drop", Value::Null).await;
+    wait(&mut started.events, |e| {
+        matches!(e, SessionEvent::Disconnected)
+    })
+    .await;
+    wait(&mut started.events, |e| {
+        matches!(e, SessionEvent::Connected)
+    })
+    .await;
+    assert_eq!(
+        probe.log(),
+        ["register", "connected:0", "disconnected", "connected:1"]
+    );
+    assert!(client.flush(LIMIT).await);
+    let snapshot = h.command("snapshot", Value::Null).await;
+    assert_eq!(
+        wire(&snapshot, &client.id),
+        ["probe:0", "s:probe", "alive", "probe:1", "s:probe", "alive"]
+    );
+    client.close();
+    client.close();
+    assert_eq!(
+        probe.log(),
+        [
+            "register",
+            "connected:0",
+            "disconnected",
+            "connected:1",
+            "disconnected"
+        ]
+    );
+}
+#[tokio::test]
+async fn shutdown_extensions_waits_for_every_extension_until_close() {
+    if ran_in_child("shutdown_extensions_waits_for_every_extension_until_close").await {
+        return;
+    }
+    struct Noop;
+    impl SessionExtension for Noop {}
+    let mut h = Hub::new().await;
+    let (first, second) = (Arc::new(Probe::default()), Arc::new(Probe::default()));
+    let mut started = bootstrap_with(&h, vec![first.clone(), Arc::new(Noop), second.clone()]).await;
+    wait(&mut started.events, |e| {
+        matches!(e, SessionEvent::Connected)
+    })
+    .await;
+    let mut shutdown = started.client.shutdown_extensions();
+    assert!(timeout(Duration::from_millis(200), &mut shutdown)
+        .await
+        .is_err());
+    first.stopped.send_replace(true);
+    assert!(timeout(Duration::from_millis(200), &mut shutdown)
+        .await
+        .is_err());
+    started.client.close();
+    timeout(LIMIT, shutdown).await.unwrap();
+    assert_eq!(
+        second.log().last().map(String::as_str),
+        Some("disconnected")
+    );
+    h.command("snapshot", Value::Null).await;
 }

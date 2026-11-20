@@ -17,6 +17,7 @@ pub struct Options {
     pub model_reasoning_effort: Option<String>,
     pub effort: Option<String>,
     pub overrides: metadata::Overrides,
+    pub extensions: Vec<std::sync::Arc<dyn super::client::SessionExtension>>,
 }
 
 pub struct Prepared {
@@ -160,8 +161,15 @@ pub async fn bootstrap(
         base,
     } = prepare(&rest, config, opts).await?;
     let empty_history = opts.existing_id.is_none() && opts.tag.is_none();
-    let (client, events) =
-        super::client::SessionClient::start_with(config, rest.clone(), &session, empty_history)?;
+    let (client, events) = super::client::SessionClient::start_with_options(
+        config,
+        rest.clone(),
+        &session,
+        super::client::StartOptions {
+            empty_history,
+            extensions: opts.extensions.clone(),
+        },
+    )?;
     if opts.existing_id.is_some() {
         let overrides = opts.overrides.clone();
         client

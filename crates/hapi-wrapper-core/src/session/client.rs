@@ -44,6 +44,22 @@ pub type CancelHandler =
     Arc<dyn Fn(String) -> BoxFuture<'static, io::Result<Cancellation>> + Send + Sync>;
 pub type RetryHandler = Arc<dyn Fn(String) -> BoxFuture<'static, io::Result<bool>> + Send + Sync>;
 pub type UserHandler = Arc<dyn Fn(Value, Option<String>) + Send + Sync>;
+pub trait SessionExtension: Send + Sync + 'static {
+    fn register(&self, _rpc: &crate::rpc::manager::RpcHandlerManager) {}
+    fn connected(&self, _socket: &Socket, _generation: u64) {}
+    fn disconnected(&self) {}
+    fn socket_event(&self, _name: &str, _args: &[Value], _metadata: &Value) -> bool {
+        false
+    }
+    fn shutdown(&self) -> BoxFuture<'static, ()> {
+        futures_util::future::ready(()).boxed()
+    }
+}
+#[derive(Default)]
+pub struct StartOptions {
+    pub empty_history: bool,
+    pub extensions: Vec<Arc<dyn SessionExtension>>,
+}
 #[derive(Default)]
 struct Incoming {
     delivering: bool,
@@ -68,6 +84,7 @@ pub struct SessionClient {
     pub echoes: Mutex<super::echo::Echoes>,
     pub(super) latest: Mutex<Value>,
     incoming: Mutex<Incoming>,
+    extensions: Vec<Arc<dyn SessionExtension>>,
 }
 impl SessionClient {
     pub fn start(
@@ -83,6 +100,26 @@ impl SessionClient {
         session: &Value,
         empty_history: bool,
     ) -> io::Result<(Arc<Self>, mpsc::UnboundedReceiver<SessionEvent>)> {
+        Self::start_with_options(
+            config,
+            rest,
+            session,
+            StartOptions {
+                empty_history,
+                ..Default::default()
+            },
+        )
+    }
+    pub(super) fn start_with_options(
+        config: &Config,
+        rest: Rest,
+        session: &Value,
+        options: StartOptions,
+    ) -> io::Result<(Arc<Self>, mpsc::UnboundedReceiver<SessionEvent>)> {
+        let StartOptions {
+            empty_history,
+            extensions,
+        } = options;
         let id = session["id"]
             .as_str()
             .ok_or_else(|| io::Error::other("Missing session id"))?
@@ -150,7 +187,11 @@ impl SessionClient {
             echoes: Mutex::default(),
             latest: Mutex::new(json!({"thinking":false})),
             incoming: Mutex::default(),
+            extensions,
         });
+        for extension in &this.extensions {
+            extension.register(&this.rpc);
+        }
         if initially_archived {
             latch();
         }
@@ -189,13 +230,17 @@ impl SessionClient {
                 }
                 match event {
                     Event::Connected => {
-                        let current = Connection::Online(connections);
+                        let generation = connections;
+                        let current = Connection::Online(generation);
                         connections += 1;
                         let link = client.socket.connection();
                         if link.get() != current {
                             continue;
                         }
                         let _ = client.events.send(SessionEvent::ConnectionStart);
+                        for extension in &client.extensions {
+                            extension.connected(&client.socket, generation);
+                        }
                         client.rpc.on_connect(&client.socket);
                         client.alive(false);
                         if connections > 1 {
@@ -227,6 +272,9 @@ impl SessionClient {
                     Event::Disconnected(_) => {
                         client.filter.lock().unwrap().start_backfill();
                         client.rpc.on_disconnect();
+                        for extension in &client.extensions {
+                            extension.disconnected();
+                        }
                         let _ = client.events.send(SessionEvent::Disconnected);
                     }
                     Event::Message { name, args, ack } if name == "rpc-request" => {
@@ -246,6 +294,16 @@ impl SessionClient {
                         }
                     }
                     Event::Message { name, args, ack } => {
+                        if !client.extensions.is_empty() {
+                            let metadata = client.metadata.get().value;
+                            if client
+                                .extensions
+                                .iter()
+                                .any(|e| e.socket_event(&name, &args, &metadata))
+                            {
+                                continue;
+                            }
+                        }
                         let _ = client.events.send(SessionEvent::Socket(name, args, ack));
                     }
                 }
@@ -457,6 +515,9 @@ impl SessionClient {
             return;
         }
         self.rpc.on_disconnect();
+        for extension in &self.extensions {
+            extension.disconnected();
+        }
         self.metadata.close();
         self.agent_state.close();
         *self.incoming.lock().unwrap() = Incoming::default();
@@ -464,6 +525,10 @@ impl SessionClient {
         *self.latest.lock().unwrap() = Value::Null;
         self.stop_keep_alive();
         self.socket.stop(Duration::from_millis(500));
+    }
+    pub fn shutdown_extensions(&self) -> BoxFuture<'static, ()> {
+        let all: Vec<_> = self.extensions.iter().map(|e| e.shutdown()).collect();
+        futures_util::future::join_all(all).map(|_| ()).boxed()
     }
     pub fn on_user_message(&self, f: UserHandler) {
         let mut incoming = self.incoming.lock().unwrap();
@@ -651,6 +716,73 @@ mod tests {
                 .is_err()
         );
         assert!(events.try_recv().is_err());
+        client.close();
+    }
+    #[tokio::test]
+    async fn consumed_socket_event_is_not_forwarded() {
+        struct Consume(&'static str, Mutex<Vec<String>>);
+        impl SessionExtension for Consume {
+            fn socket_event(&self, name: &str, args: &[Value], metadata: &Value) -> bool {
+                self.1
+                    .lock()
+                    .unwrap()
+                    .push(format!("{name}:{}:{}", args[0]["n"], metadata["path"]));
+                name == self.0
+            }
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = Config {
+            api_url: format!("http://{}", listener.local_addr().unwrap()),
+            cli_api_token: "token".into(),
+            home: Default::default(),
+            extra_headers: vec![],
+            machine_id: None,
+        };
+        let rest = Rest::new(&config).await.unwrap();
+        let first = Arc::new(Consume("terminal:open", Mutex::default()));
+        let second = Arc::new(Consume("terminal:write", Mutex::default()));
+        let third = Arc::new(Consume("never", Mutex::default()));
+        let (client, mut events) = SessionClient::start_with_options(
+            &config,
+            rest,
+            &json!({"id":"s","metadataVersion":1,"agentStateVersion":0,"metadata":{"host":"h","path":"/work"}}),
+            StartOptions {
+                extensions: vec![first.clone(), second.clone(), third.clone()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut ws = accept_async(listener.accept().await.unwrap().0).await.unwrap();
+            ws.send(Message::text(r#"0{"sid":"e","pingInterval":60000,"pingTimeout":30000}"#)).await.unwrap();
+            assert!(ws.next().await.unwrap().unwrap().into_text().unwrap().starts_with("40/cli,"));
+            ws.send(Message::text(r#"40/cli,{"sid":"s"}"#)).await.unwrap();
+            for frame in [
+                r#"42/cli,["terminal:open",{"n":1}]"#,
+                r#"42/cli,["terminal:write",{"n":2}]"#,
+                r#"42/cli,["other",{"n":3}]"#,
+                r#"42/cli,["update",{"body":{"t":"barrier"}}]"#,
+            ] {
+                ws.send(Message::text(frame)).await.unwrap();
+            }
+            assert!(matches!(events.recv().await,Some(SessionEvent::ConnectionStart)));
+            assert!(matches!(events.recv().await,Some(SessionEvent::Connected)));
+            assert!(matches!(events.recv().await,Some(SessionEvent::Socket(name,args,None)) if name=="other"&&args[0]["n"]==3));
+            assert!(matches!(events.recv().await,Some(SessionEvent::Message(body)) if body["t"]=="barrier"));
+        }).await.unwrap();
+        assert_eq!(
+            *first.1.lock().unwrap(),
+            [
+                "terminal:open:1:\"/work\"",
+                "terminal:write:2:\"/work\"",
+                "other:3:\"/work\""
+            ]
+        );
+        assert_eq!(
+            *second.1.lock().unwrap(),
+            ["terminal:write:2:\"/work\"", "other:3:\"/work\""]
+        );
+        assert_eq!(*third.1.lock().unwrap(), ["other:3:\"/work\""]);
         client.close();
     }
     #[tokio::test]
