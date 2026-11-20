@@ -1,6 +1,7 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 import { isIndeterminateError } from '../codexAppServerClient';
@@ -110,8 +111,22 @@ export class SharedCodexQueue {
         this.writes = this.writes.catch(() => {}).then(async () => {
             await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
             const temp = `${this.file}.${randomUUID()}.tmp`;
-            await writeFile(temp, snapshot, { mode: 0o600 });
-            await rename(temp, this.file);
+            try {
+                await writeFile(temp, snapshot, { mode: 0o600 });
+                for (let attempt = 0; ; attempt++) {
+                    try { await rename(temp, this.file); break; }
+                    catch (error) {
+                        const code = (error as NodeJS.ErrnoException).code;
+                        // A short-lived sharing lock can reject replacement
+                        // on Windows. Keep the last complete ledger in place.
+                        if (process.platform !== 'win32' || attempt >= 5 || !['EPERM', 'EBUSY', 'EACCES'].includes(code ?? '')) throw error;
+                        await delay(20 * 2 ** attempt);
+                    }
+                }
+            } catch (error) {
+                await unlink(temp).catch(() => {});
+                throw error;
+            }
         });
         return this.writes;
     }

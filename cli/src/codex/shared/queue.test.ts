@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SharedCodexQueue } from './queue';
+
+vi.mock(import('node:fs/promises'), async importOriginal => {
+    const fs = await importOriginal();
+    return { ...fs, rename: vi.fn(fs.rename) };
+});
 
 const input = [{ type: 'text', text: 'hello' }];
 const directories: string[] = [];
@@ -17,6 +22,21 @@ async function fixture() {
     return { queue, rpc, consumed, uncertain, client, dir };
 }
 describe('shared native queue', () => {
+    it.skipIf(process.platform !== 'win32')('retries an atomic replacement without deleting the published Windows ledger', async () => {
+        const { queue, dir } = await fixture();
+        const file = join(dir, 'ledger.json');
+        await queue.cancelHeld('first');
+        const replace = vi.mocked(rename);
+        replace.mockClear().mockImplementationOnce(async (_source, destination) => {
+            expect(destination).toBe(file);
+            expect(JSON.parse(await readFile(file, 'utf8')).entries.first.canceledBeforeAdmission).toBe(true);
+            throw Object.assign(new Error('fixture sharing lock'), { code: 'EPERM' });
+        });
+        await expect(queue.cancelHeld('second')).resolves.toBe(true);
+        expect(replace).toHaveBeenCalledTimes(2);
+        expect(JSON.parse(await readFile(file, 'utf8')).entries.second.canceledBeforeAdmission).toBe(true);
+        expect(await readdir(dir)).toEqual(['ledger.json']);
+    });
     it('repeats a durable cancel acknowledgement after reload and blocks redelivery until explicit retry', async () => {
         const { queue, rpc, client, dir, consumed, uncertain } = await fixture();
         expect(await queue.cancelHeld('held')).toBe(true);
