@@ -18,12 +18,13 @@ serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 futures-util = { version = "0.3", features = ["sink", "std"], default-features = false }
 uuid = { version = "1", features = ["v4"] }
 percent-encoding = "2"
+regex-lite = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.32", features = ["signal", "hostname"] }
 
 [dev-dependencies]
-tokio = { version = "1.54", features = ["test-util", "process", "io-util"] }
+tokio = { version = "1.54", features = ["test-util", "process", "io-util", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26", features = ["ring"], default-features = false }
 proptest = "1.12"
 tempfile = "3"
