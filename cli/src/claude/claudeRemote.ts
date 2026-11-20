@@ -879,18 +879,18 @@ export async function claudeRemote(opts: {
                 const rotatedId = confirmedRotation ?? resultRotation;
                 const nativeSessionId = isClear ? rotatedId ?? currentSessionId : clearFollowUp.sessionId;
                 const acknowledged = !pushedUuids.has(clearFollowUp.uuid);
-                const matchesConfirmedRotation = isMatchingCommand && confirmedRotation !== undefined
-                    && message.session_id === confirmedRotation;
+                const matchesClearRotation = isMatchingCommand && rotatedId !== undefined
+                    && rotatedId !== clearFollowUp.sessionId && message.session_id === rotatedId;
                 const matchesAcknowledgedInput = acknowledged
                     && (isMatchingCommand || (!promptResultsHaveUuid && message.local_command == null));
                 const canAcceptWithoutUuid = message.user_message_uuid == null && nativeSessionId !== null
-                    && message.session_id === nativeSessionId && (matchesConfirmedRotation || matchesAcknowledgedInput);
+                    && message.session_id === nativeSessionId && (matchesClearRotation || matchesAcknowledgedInput);
                 if (!matchesUuid && !canAcceptWithoutUuid) {
                     opts.onMessage(message);
                     continue;
                 }
                 if (rotatedId && rotatedId !== clearFollowUp.sessionId) bindClearSession(rotatedId, clearFollowUp.init);
-                if (!matchesConfirmedRotation) pushedUuids.delete(clearFollowUp.uuid);
+                if (!matchesClearRotation) pushedUuids.delete(clearFollowUp.uuid);
                 clearFollowUp = undefined;
             }
 
