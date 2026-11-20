@@ -572,7 +572,7 @@ export async function claudeRemote(opts: {
     let correlatesResults: boolean | null = null;
     let promptResultsHaveUuid = false;
     let waitingForClearFollowUp = false;
-    let clearFollowUpUuid: string | undefined;
+    let clearFollowUp: { uuid: string; sessionId: string | null } | undefined;
     const compactCompletionAbort = new AbortController();
     let compactCompletion: Promise<CompactCompletion> | null = null;
     let timedOutCommand: { uuid: string; command: 'compact' | 'clear' } | null = null;
@@ -642,7 +642,7 @@ export async function claudeRemote(opts: {
                 specialCommand = nextSpecialCommand;
                 const followUpUuid = pushUserMessage(next.message);
                 if (waitingForClearFollowUp && nextSpecialCommand.type === null) {
-                    clearFollowUpUuid = followUpUuid;
+                    clearFollowUp = { uuid: followUpUuid, sessionId: currentSessionId };
                 }
                 waitingForClearFollowUp = false;
                 if (nextSpecialCommand.type === 'compact') {
@@ -973,12 +973,13 @@ export async function claudeRemote(opts: {
                     updateThinking(false);
                     continue;
                 }
-                if (clearFollowUpUuid) {
-                    const canAcceptUntagged = !promptResultsHaveUuid && !pushedUuids.has(clearFollowUpUuid)
-                        && message.user_message_uuid == null && message.local_command == null;
-                    if (message.user_message_uuid !== clearFollowUpUuid && !canAcceptUntagged) continue;
-                    pushedUuids.delete(clearFollowUpUuid);
-                    clearFollowUpUuid = undefined;
+                if (clearFollowUp) {
+                    const canAcceptUntagged = !promptResultsHaveUuid && !pushedUuids.has(clearFollowUp.uuid)
+                        && message.user_message_uuid == null && message.local_command == null
+                        && clearFollowUp.sessionId !== null && message.session_id === clearFollowUp.sessionId;
+                    if (message.user_message_uuid !== clearFollowUp.uuid && !canAcceptUntagged) continue;
+                    pushedUuids.delete(clearFollowUp.uuid);
+                    clearFollowUp = undefined;
                 }
                 resultSeq += 1;
                 if (correlatesResults === null && (typeof message.user_message_uuid === 'string' || typeof message.local_command === 'string')) {
@@ -1105,13 +1106,12 @@ export async function claudeRemote(opts: {
         const clear = clearState.active;
         const compact = compactState.active;
         const pending = clear ?? (compact?.initial === false ? compact : null);
-        if (clearFollowUpUuid && pushedUuids.has(clearFollowUpUuid) && !opts.signal?.aborted) {
+        if (clearFollowUp && pushedUuids.has(clearFollowUp.uuid) && !opts.signal?.aborted) {
             opts.onInputUndelivered?.();
         }
         if (pending && !timedOutCommand && !opts.signal?.aborted && !(clear && getClearRotation(clear))) {
             const command = clear ? 'clear' : 'compact';
-            const acknowledged = !pushedUuids.has(pending.uuid)
-                || compact?.sawCompactingStatus || compact?.sawCompactSignal;
+            const acknowledged = !pushedUuids.has(pending.uuid) || compact?.sawCompactSignal;
             if (!acknowledged) throw new Error(`Claude exited before acknowledging /${command}`);
             opts.onResultAccepted?.();
             opts.onCompletionEvent?.(unidentifiedCommandResult(command));
