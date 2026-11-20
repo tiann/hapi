@@ -20,14 +20,21 @@ import { countUnseenBlocks, createUnseenWatermark, type UnseenWatermark } from '
  */
 export function useUnseenBlockCount(
     viewMode: 'tail' | 'history',
-    blocks: readonly VisibleChatBlock[]
+    blocks: readonly VisibleChatBlock[],
+    tailEvictedWhileFollowing = false
 ): number {
-    const [prevViewMode, setPrevViewMode] = useState(viewMode)
+    const effectiveViewMode: 'tail' | 'history' =
+        viewMode === 'history' && tailEvictedWhileFollowing
+            ? 'tail'
+            : viewMode
+    const [prevViewMode, setPrevViewMode] = useState(effectiveViewMode)
     const [watermark, setWatermark] = useState<UnseenWatermark | null>(null)
 
-    if (viewMode !== prevViewMode) {
-        setPrevViewMode(viewMode)
-        setWatermark(viewMode === 'history' ? createUnseenWatermark(blocks) : null)
+    if (effectiveViewMode !== prevViewMode) {
+        setPrevViewMode(effectiveViewMode)
+        setWatermark(effectiveViewMode === 'history' ? createUnseenWatermark(blocks) : null)
+    } else if (effectiveViewMode === 'history' && watermark !== null && watermark.ids.size === 0 && blocks.length > 0) {
+        setWatermark(createUnseenWatermark(blocks))
     }
 
     return useMemo(() => countUnseenBlocks(blocks, watermark), [blocks, watermark])
