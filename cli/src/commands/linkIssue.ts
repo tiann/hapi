@@ -52,7 +52,15 @@ export const linkIssueCommand: CommandDefinition = {
             }
             console.error(chalk.red('hapi link-issue:'), error instanceof Error ? error.message : 'Unknown error')
             if (process.env.DEBUG) {
-                console.error(error)
+                // Never dump the raw error (review finding, tiann/hapi#2147,
+                // round 14): linkIssue() sends a bearer JWT, and an AxiosError
+                // carries its own request config — headers included — so
+                // logging it whole here would print a live credential to the
+                // terminal under DEBUG. Surface only the transport-level
+                // signal a debugging session actually needs.
+                const code = (error as { code?: unknown } | null)?.code
+                const status = (error as { response?: { status?: unknown } } | null)?.response?.status
+                console.error(chalk.dim(`  code=${String(code ?? 'unknown')} status=${String(status ?? 'none')}`))
             }
             process.exit(1)
         }

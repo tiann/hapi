@@ -53,7 +53,17 @@ async function exchangeJwt(apiUrl: string, accessToken: string): Promise<string>
         return token
     } catch (error) {
         if (error instanceof LinkIssueError) throw error
-        throw new LinkIssueError('auth_failed', `failed to exchange access token for JWT (${error instanceof Error ? error.message : String(error)}). ${AUTH_RECOVERY_HINT}`)
+        // Same pattern as linkIssue()'s PATCH call below, applied here too
+        // for consistency (review finding, tiann/hapi#2147, round 14): this
+        // request's own catch used to embed error.message/String(error)
+        // straight into a LinkIssueError the command layer logs
+        // unconditionally (not DEBUG-gated), rather than only the safe
+        // transport error code. The access token goes in the body here,
+        // not a header, so the proven leak doesn't reach through this
+        // path today — but there's no reason this one call should trust
+        // a raw error's stringification any more than the other does.
+        const code = axios.isAxiosError(error) ? error.code : undefined
+        throw new LinkIssueError('auth_failed', `failed to exchange access token for JWT${code ? ` (${code})` : ''}. ${AUTH_RECOVERY_HINT}`)
     }
 }
 
@@ -75,15 +85,30 @@ export async function linkIssue(sessionId: string, url: string): Promise<void> {
     const accessToken = resolveAccessToken()
     const jwt = await exchangeJwt(apiUrl, accessToken)
 
-    const response = await axios.patch(
-        `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/link-issue`,
-        { url },
-        {
-            headers: buildHubRequestHeaders({ Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' }),
-            timeout: 10_000,
-            validateStatus: () => true
-        }
-    )
+    // Wrapped, unlike a bare await (review finding, tiann/hapi#2147, round
+    // 14): this request carries a live bearer JWT in its headers. A
+    // transport-level failure (timeout, connection refused) throws the
+    // raw AxiosError, which embeds its own request config — headers
+    // included — and an unwrapped throw here reaches the command's
+    // catch-all, which used to log the whole error object under DEBUG.
+    // Converting to LinkIssueError here, with only the safe fields,
+    // closes the leak at the source rather than relying solely on the
+    // command layer not making the same mistake.
+    let response
+    try {
+        response = await axios.patch(
+            `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/link-issue`,
+            { url },
+            {
+                headers: buildHubRequestHeaders({ Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' }),
+                timeout: 10_000,
+                validateStatus: () => true
+            }
+        )
+    } catch (error) {
+        const code = axios.isAxiosError(error) ? error.code : undefined
+        throw new LinkIssueError('request_failed', `failed to attach the issue${code ? ` (${code})` : ''}`)
+    }
     if (response.status < 200 || response.status >= 300) {
         const detail = typeof response.data?.error === 'string' ? response.data.error : `HTTP ${response.status}`
         throw new LinkIssueError('request_failed', detail)
