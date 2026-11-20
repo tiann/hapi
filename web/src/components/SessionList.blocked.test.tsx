@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
+import { BLOCKED_NOTIFY_STALE_MS } from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
@@ -271,6 +272,30 @@ describe('SessionList blocked chrome (#1717)', () => {
         expect(screen.queryByTestId('blocked-jump-pill')).toBeNull()
         expect(document.activeElement).not.toBe(document.body)
         expect(document.activeElement).toBe(screen.getByTestId('session-list-header-row'))
+    })
+
+    it('goes muted when the blocker crosses the stale deadline with no prop change', async () => {
+        // Age is computed at render, and a memoized row on an open list has no
+        // update scheduled when its blocker passes 24h — so an abandoned row
+        // kept its loud styling until something unrelated re-rendered it. The
+        // row schedules its own render at the deadline now. Session props are
+        // deliberately untouched throughout: only the clock moves.
+        vi.useFakeTimers()
+        try {
+            const at = Date.now()
+            renderList([blocked('stuck-one', { lastNotify: { status: 'blocked', at, note: 'needs a key' } })])
+
+            const row = () => document.querySelector('[data-session-id="stuck-one"]')
+            expect(row()?.getAttribute('data-session-blocked')).toBe('active')
+
+            await act(async () => {
+                vi.advanceTimersByTime(BLOCKED_NOTIFY_STALE_MS + 1_000)
+            })
+
+            expect(row()?.getAttribute('data-session-blocked')).toBe('stale')
+        } finally {
+            vi.useRealTimers()
+        }
     })
 
     it('does not offer Mark unblocked on an unblocked row', async () => {

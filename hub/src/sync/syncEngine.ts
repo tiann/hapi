@@ -92,7 +92,7 @@ import { ArchiveCleanupError } from './archiveCleanupError'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
-import { buildOperatorUnblockEvent, deliveredOperatorReplyAt, extractSessionNotifySignal, messageReceivedAt, ingestNotifySummaryFromMessage, isDeliveredOperatorReply, isOperatorReplyMessage } from './workGraphNotifyIngest'
+import { buildOperatorUnblockEvent, deliveredOperatorReplyAt, extractSessionNotifySignal, messageReceivedAt, operatorReplyDeliveredAt, ingestNotifySummaryFromMessage, isDeliveredOperatorReply, isOperatorReplyMessage } from './workGraphNotifyIngest'
 import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
 import { extractTodoWriteTodosFromMessageContent } from './todos'
@@ -607,19 +607,7 @@ export class SyncEngine {
         let boundaryAt: number | null = null
         for (const message of scanned) {
             if (!isDeliveredOperatorReply(message)) continue
-            // A reply with no `localId` never went through the hub queue — a
-            // prompt typed straight into a local Claude terminal — so nothing
-            // ever hub-stamped it and `invoked_at` is the runner's transcript
-            // clock. Measuring that against a footer's hub arrival is the
-            // cross-clock comparison this whole area exists to avoid: on a
-            // slow-enough runner a LATER local reply sorted before an EARLIER
-            // footer's arrival, and a rewind retaining both restored a blocker
-            // the operator had already answered. The row's own hub arrival is
-            // the right stand-in, because that is when the hub saw the reply.
-            const deliveredAt = message.localId === null
-                ? messageReceivedAt(message)
-                : deliveredOperatorReplyAt(message)
-            const here: [number, number] = [deliveredAt, message.seq]
+            const here: [number, number] = [operatorReplyDeliveredAt(message), message.seq]
             if (boundary === null || !atOrBefore(here, boundary)) {
                 boundary = here
                 boundaryAt = here[0]
@@ -646,20 +634,35 @@ export class SyncEngine {
         // import synthesizes one timestamp for every row) but refused for an
         // exact duplicate of something already answered.
         const supersededIdentities = new Set<string>()
-        const identity = (signal: { status: string; at: number; note: string | null }): string =>
-            `${signal.status}\u0000${signal.at}\u0000${signal.note ?? ''}`
+        // Identity comes from the MESSAGE where one exists, not from the
+        // footer's text. An imported row carries the transcript's own message
+        // id as its `localId`, so two distinct turns that happen to report the
+        // same status and note are still two different messages — keying on
+        // the text alone made the second one look like a replay of the first
+        // and hid the final, unanswered blocker of an import. A live Claude
+        // replay has no local id at all, and shares every field with the row
+        // it duplicates, so there the text IS the only identity available.
+        const identity = (
+            message: StoredMessage,
+            signal: { status: string; at: number; note: string | null }
+        ): string => (
+            message.localId == null
+                ? `text\u0000${signal.status}\u0000${signal.at}\u0000${signal.note ?? ''}`
+                : `msg\u0000${message.localId}`
+        )
         const footers: Array<{
             signal: { status: string; at: number; note: string | null }
             position: [number, number]
+            identity: string
         }> = []
         for (const message of scanned) {
             const signal = extractSessionNotifySignal(message.content, message.createdAt)
             if (!signal) continue
             const here = position(message)
-            footers.push({ signal, position: here })
+            footers.push({ signal, position: here, identity: identity(message, signal) })
             if (boundary !== null && atOrBefore(here, boundary)) {
                 if (authorCutoff === null || signal.at > authorCutoff) authorCutoff = signal.at
-                supersededIdentities.add(identity(signal))
+                supersededIdentities.add(identity(message, signal))
             }
         }
 
@@ -683,7 +686,7 @@ export class SyncEngine {
             // older than the footer it duplicates, so `<` still rejects it.
             if (authorCutoff !== null && footer.signal.at < authorCutoff) continue
             // An exact duplicate of a footer the reply already answered.
-            if (supersededIdentities.has(identity(footer.signal))) continue
+            if (supersededIdentities.has(footer.identity)) continue
             if (best === null
                 || footer.signal.at > best.signal.at
                 || (footer.signal.at === best.signal.at && !atOrBefore(footer.position, best.position))) {

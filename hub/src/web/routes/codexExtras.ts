@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import type { Store, StoredMessage } from '../../store'
+import { isDeliveredOperatorReply, operatorReplyDeliveredAt } from '../../sync/workGraphNotifyIngest'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { SyncEngine } from '../../sync/syncEngine'
 import { collectImportCandidates, type ImportCandidate } from './localSessions/matchContentPrefix'
@@ -837,6 +838,13 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     }
 
     const knownKeys = new Set(canonical.comparableKeys)
+    // Keyed by the same comparable key the dedupe uses, so a skipped duplicate
+    // can still hand its delivery evidence to the row that survived (#1717).
+    const canonicalByKey = new Map<string, StoredMessage>()
+    for (const message of canonical.storedMessages) {
+        const key = getComparableStoredMessageKey(message)
+        if (!canonicalByKey.has(key)) canonicalByKey.set(key, message)
+    }
     const removedSessionIds: string[] = []
     const appendedMessages: StoredMessage[] = []
     let latestActivity = canonical.updatedAt
@@ -857,6 +865,20 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         for (const message of source.storedMessages) {
             const comparableKey = getComparableStoredMessageKey(message)
             if (knownKeys.has(comparableKey)) {
+                // Same text, so the copy is skipped — but the two occurrences
+                // are not interchangeable when THIS one is the delivery that
+                // answered a blocker. A canonical session whose earlier
+                // "Continue" was already present kept only that earlier
+                // delivery, so reconciliation saw no answer and flagged it
+                // blocked. The surviving row inherits the later evidence.
+                const existing = canonicalByKey.get(comparableKey)
+                if (existing && isDeliveredOperatorReply(message)) {
+                    options.store.messages.applyLaterDeliveryEvidence(existing.id, {
+                        invokedAt: operatorReplyDeliveredAt(message),
+                        receivedAt: message.receivedAt,
+                        agentDelivered: message.agentDelivered
+                    })
+                }
                 continue
             }
 

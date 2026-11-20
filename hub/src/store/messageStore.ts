@@ -32,6 +32,7 @@ import {
     countFutureScheduledLocalMessages,
     minFutureScheduledAtBySessionIds,
     countMessages,
+    applyLaterDeliveryEvidence,
     markMessagesInvoked,
     markMessagesSwept,
     markMessagesIndeterminate,
@@ -300,6 +301,13 @@ export class MessageStore {
 
     markMessagesSwept(sessionId: string, localIds: string[], sweptAt: number): number {
         return markMessagesSwept(this.db, sessionId, localIds, sweptAt)
+    }
+
+    applyLaterDeliveryEvidence(
+        messageId: string,
+        evidence: { invokedAt: number | null; receivedAt?: number | null; agentDelivered?: number | null }
+    ): boolean {
+        return applyLaterDeliveryEvidence(this.db, messageId, evidence)
     }
 
     markMessagesInvoked(

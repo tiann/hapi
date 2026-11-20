@@ -661,6 +661,34 @@ export function messageReceivedAt(
     return message.receivedAt ?? message.createdAt
 }
 
+/**
+ * When a delivered reply reached the agent, in the hub's clock (#1717).
+ *
+ * `invoked_at` is hub-stamped only for a reply that went through the hub
+ * QUEUE. A prompt typed straight into a local agent terminal has no local id,
+ * so nothing ever stamped it and `invoked_at` carries the runner's transcript
+ * clock — measuring that against a footer's hub arrival is the cross-clock
+ * comparison this area exists to avoid. For those, the row's own hub arrival
+ * is the right stand-in, because that is when the hub saw the reply.
+ *
+ * Shared by every path that has to order a reply against a footer — live
+ * ingestion, the transcript derivation, and the session merges — because the
+ * two that had their own copy of this rule disagreed about local replies.
+ */
+export function operatorReplyDeliveredAt(
+    message: {
+        createdAt: number
+        receivedAt?: number | null
+        scheduledAt: number | null
+        invokedAt: number | null
+        localId?: string | null
+    }
+): number {
+    return message.localId == null
+        ? messageReceivedAt(message)
+        : deliveredOperatorReplyAt(message)
+}
+
 /** When the agent actually saw a delivered reply. */
 export function deliveredOperatorReplyAt(
     message: { createdAt: number; scheduledAt: number | null; invokedAt: number | null }

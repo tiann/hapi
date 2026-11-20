@@ -341,6 +341,50 @@ describe('importing a transcript does not reopen an answered blocker (#1717)', (
         expect(engine.getSession(session.id)?.lastNotify?.note).toBe('turn two')
     })
 
+    it('keeps the final blocker when both turns report the SAME footer text', async () => {
+        // The round-14 identity check keyed on the footer's text, and an
+        // untimestamped import gives every row one timestamp — so two distinct
+        // turns reporting the same status and note collapsed to one identity
+        // and the second was discarded as a replay. My own multi-turn test
+        // used different notes, so it could not see this. An imported row
+        // carries the transcript's message id, which says they are two
+        // different messages however identical their text.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'import-identical-footers',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const importedAt = Date.now()
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+        const agent = () => ({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        })
+
+        store.messages.addImportedMessage(session.id, agent(), 'f1', importedAt)
+        store.messages.addImportedMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'here you go' },
+            meta: { sentFrom: 'webapp' }
+        }, 'p1', importedAt)
+        // Identical text to the first footer, but a different turn.
+        store.messages.addImportedMessage(session.id, agent(), 'f2', importedAt)
+
+        engine.reconcileNotifySignalAfterImport(session.id)
+
+        expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+    })
+
     it('rejects an EXACT replay of an answered footer on rewind', async () => {
         // Claude transcript rows keep their author timestamp and arrive with
         // no outer local id, so the same footer can be stored a second time
@@ -704,6 +748,57 @@ describe('transferBlockedAck across a merge that copies its own messages (#1717)
         expect(copied.agentDelivered).toBe(1)
     })
 
+    it('hands a skipped duplicate\'s delivery evidence to the row that survived', () => {
+        // Duplicate reconciliation dedupes user prompts by their TEXT, so a
+        // second "Continue" is skipped as already present. The two are not
+        // interchangeable when the skipped one is the delivery that answered a
+        // blocker: the canonical session kept only its earlier delivery, so
+        // reconciliation saw no answer and flagged it blocked. Rather than
+        // loosen the dedupe and copy the prompt twice, the surviving row
+        // inherits the later evidence.
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, { emit: (_e: SyncEvent) => {} } as EventPublisher)
+        const session = cache.getOrCreateSession('eviction', { path: '/tmp', host: 'h' }, null, 'default')
+        const base = Date.now() - 600_000
+
+        const earlier = store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'Continue' },
+            meta: { sentFrom: 'webapp' }
+        }, 'early', null, base, base)
+        store.messages.markMessagesInvoked(session.id, ['early'], base + 1_000)
+
+        expect(store.messages.applyLaterDeliveryEvidence(earlier.id, {
+            invokedAt: base + 10_000,
+            receivedAt: base + 9_000,
+            agentDelivered: 1
+        })).toBe(true)
+
+        const row = store.messages.getAllMessages(session.id)
+            .find((message) => message.id === earlier.id)
+        expect(row?.invokedAt).toBe(base + 10_000)
+        expect(row?.receivedAt).toBe(base + 9_000)
+    })
+
+    it('never moves delivery evidence backwards', () => {
+        // An earlier occurrence must not un-deliver a later one.
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, { emit: (_e: SyncEvent) => {} } as EventPublisher)
+        const session = cache.getOrCreateSession('eviction-back', { path: '/tmp', host: 'h' }, null, 'default')
+        const base = Date.now() - 600_000
+
+        const row = store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'Continue' },
+            meta: { sentFrom: 'webapp' }
+        }, 'late', null, base, base)
+        store.messages.markMessagesInvoked(session.id, ['late'], base + 10_000)
+
+        expect(store.messages.applyLaterDeliveryEvidence(row.id, { invokedAt: base + 1_000 })).toBe(false)
+        expect(store.messages.getAllMessages(session.id)
+            .find((message) => message.id === row.id)?.invokedAt).toBe(base + 10_000)
+    })
+
     it('falls back to createdAt when copying history written before the column existed', () => {
         const store = new Store(':memory:')
         const cache = new SessionCache(store, { emit: (_e: SyncEvent) => {} } as EventPublisher)
@@ -733,6 +828,39 @@ describe('transferBlockedAck across a merge that copies its own messages (#1717)
 
         expect(store.sessions.getSessionByNamespace(canonical.id, 'default')?.blockedAckKeys)
             .toEqual(['request:b'])
+    })
+})
+
+describe('merges share one rule for when a reply reached the agent (#1717)', () => {
+    it('answers a destination footer with a LOCAL source reply on a slow runner', async () => {
+        // The transcript derivation learned to use hub arrival for a reply
+        // with no local id; the merge path kept its own copy of the rule and
+        // did not. A slow runner then gave that local reply an `invoked_at`
+        // earlier than the footer's hub arrival, so the merge moved the
+        // answering reply into the destination transcript and left the row
+        // blocked anyway.
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, { emit: (_e: SyncEvent) => {} } as EventPublisher)
+        const source = cache.getOrCreateSession('local-src', { path: '/tmp', host: 'h' }, null, 'default')
+        const target = cache.getOrCreateSession('local-dst', { path: '/tmp', host: 'h' }, null, 'default')
+        const hubNow = Date.now()
+        const RUNNER_BEHIND = 3_600_000
+
+        cache.setSessionLastNotify(target.id, {
+            status: 'blocked', at: hubNow - RUNNER_BEHIND, note: 'needs a key',
+            receivedAt: hubNow - 60_000
+        })
+        // Local reply on the source: no localId, so `invoked_at` is the
+        // runner's clock and reads an hour before the footer's hub arrival.
+        store.messages.addMessage(source.id, {
+            role: 'user',
+            content: { type: 'text', text: 'here you go' },
+            meta: { sentFrom: 'cli' }
+        }, undefined, null, hubNow - RUNNER_BEHIND + 1_000, hubNow)
+
+        await cache.mergeSessionHistory(source.id, target.id, 'default')
+
+        expect(cache.getSession(target.id)?.lastNotify ?? null).toBeNull()
     })
 })
 

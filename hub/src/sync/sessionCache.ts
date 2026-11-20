@@ -9,7 +9,7 @@ import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { InvalidExternalRefsError } from './externalRefErrors'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
-import { deliveredOperatorReplyAt, isDeliveredOperatorReply, messageReceivedAt } from './workGraphNotifyIngest'
+import { isDeliveredOperatorReply, messageReceivedAt, operatorReplyDeliveredAt } from './workGraphNotifyIngest'
 
 /** Transcript window scanned for a newer operator reply when merging a
  *  notify signal (#1717). Matches the startup backfill's scan depth. */
@@ -801,7 +801,7 @@ export class SessionCache {
      * transcript. A position cannot serve either — see `messageReceivedAt`.
      */
     private replyAnswersFooter(reply: StoredMessage, footerReceivedAt: number): boolean {
-        return deliveredOperatorReplyAt(reply) > footerReceivedAt
+        return operatorReplyDeliveredAt(reply) > footerReceivedAt
     }
 
     /**
@@ -819,9 +819,12 @@ export class SessionCache {
         let newest: StoredMessage | null = null
         for (const message of this.store.messages.getInvokedMessages(sessionId)) {
             if (!isDeliveredOperatorReply(message)) continue
-            // Selected by the same key `replyAnswersFooter` then compares.
+            // Selected by the same key `replyAnswersFooter` then compares, and
+            // by the same rule the transcript derivation uses — the two having
+            // their own copies is how the merge path kept comparing a LOCAL
+            // reply's runner clock against a footer's hub arrival (#1717).
             if (newest === null
-                || deliveredOperatorReplyAt(message) > deliveredOperatorReplyAt(newest)) {
+                || operatorReplyDeliveredAt(message) > operatorReplyDeliveredAt(newest)) {
                 newest = message
             }
         }
@@ -2725,7 +2728,7 @@ export class SessionCache {
                 // read as proof it had answered a later source footer.
                 const targetReceivedAt = target.lastNotifyReceivedAt ?? targetAt
                 if (newest !== null && this.replyAnswersFooter(newest, targetReceivedAt)) {
-                    this.clearSessionLastNotify(newSessionId, deliveredOperatorReplyAt(newest))
+                    this.clearSessionLastNotify(newSessionId, operatorReplyDeliveredAt(newest))
                 }
             }
         }

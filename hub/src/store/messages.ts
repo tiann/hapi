@@ -1663,6 +1663,37 @@ export function markMessagesSwept(
     ).run(sweptAt, sessionId, ...localIds).changes
 }
 
+/**
+ * Apply a later delivery to a message already present in this session (#1717).
+ *
+ * Duplicate reconciliation dedupes user prompts by their text, so a second
+ * occurrence of the same prompt is skipped as "already here" — but the two
+ * occurrences are not interchangeable when one of them is the DELIVERY that
+ * answered a blocker. Rather than loosen that dedupe (and start copying the
+ * prompt twice), the surviving row inherits the newer delivery evidence.
+ */
+export function applyLaterDeliveryEvidence(
+    db: Database,
+    messageId: string,
+    evidence: { invokedAt: number | null; receivedAt?: number | null; agentDelivered?: number | null }
+): boolean {
+    if (evidence.invokedAt === null) return false
+    const result = prepareCached(db, `
+        UPDATE messages
+        SET invoked_at = @invokedAt,
+            received_at = COALESCE(@receivedAt, received_at),
+            agent_delivered = COALESCE(@agentDelivered, agent_delivered)
+        WHERE id = @messageId
+          AND (invoked_at IS NULL OR invoked_at < @invokedAt)
+    `).run({
+        messageId,
+        invokedAt: evidence.invokedAt,
+        receivedAt: evidence.receivedAt ?? null,
+        agentDelivered: evidence.agentDelivered ?? null
+    })
+    return result.changes === 1
+}
+
 export function markMessagesInvoked(
     db: Database,
     sessionId: string,

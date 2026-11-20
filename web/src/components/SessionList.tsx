@@ -118,6 +118,7 @@ import {
 import { playBlockedAlertSound } from '@/lib/blockedAlertSound'
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
 import {
+    BLOCKED_NOTIFY_STALE_MS,
     compareDescWithKeyTiebreak,
     compareSessionsByOrderKeyDesc
 } from '@hapi/protocol'
@@ -2021,7 +2022,29 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     // The rail lives on the button rather than inside SessionRowSummary so it
     // escapes the `opacity-50` disconnected-row treatment — a blocked agent
     // whose CLI dropped is precisely the one worth spotting.
-    const blocked = getSessionBlockedState(s, { now: Date.now() })
+    // Re-evaluated on a timer, not only when props change (#1717). Age is
+    // computed at render, and a memoized row on an open list has no update
+    // scheduled when its blocker crosses the 24h staleness deadline — so an
+    // abandoned row kept its loud warning styling until something unrelated
+    // happened to re-render it. The rail and the chip both read this one
+    // value, so they cannot disagree about it.
+    const [staleTick, setStaleTick] = useState(0)
+    const blocked = useMemo(
+        () => getSessionBlockedState(s, { now: Date.now() }),
+        [s, staleTick]  // eslint-disable-line react-hooks/exhaustive-deps
+    )
+    const blockedAt = blocked?.at ?? null
+    const blockedStale = blocked?.stale ?? false
+    useEffect(() => {
+        if (blockedAt === null || blockedStale) return
+        const due = blockedAt + BLOCKED_NOTIFY_STALE_MS - Date.now()
+        if (due <= 0) {
+            setStaleTick((tick) => tick + 1)
+            return
+        }
+        const timer = setTimeout(() => setStaleTick((tick) => tick + 1), due + 1)
+        return () => clearTimeout(timer)
+    }, [blockedAt, blockedStale])
     const hasScheduleTooltip = showDetailedStatus && s.futureScheduledMessageCount > 0
     const { attentionId, scheduleId, describedBy } = useSessionRowTooltipIds(
         Boolean(attention),
