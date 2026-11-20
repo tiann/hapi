@@ -1790,10 +1790,15 @@ body:
 
     // Review finding: GitHub only inherits default community files from a
     // PUBLIC .github repo — a private one (readable here only because the
-    // hub's gh account happens to have access) must not leak its templates/
-    // blank-issues policy into a board for a repo GitHub itself would never
-    // apply it to.
-    it('does not inherit from a private .github repo even when it has templates', async () => {
+    // hub's gh account happens to have access) must not leak its templates
+    // into a board for a repo GitHub itself would never apply them to.
+    //
+    // blankAllowed still fails closed, though (review finding, round 9): a
+    // real blank_issues_enabled: false is sitting right there in that
+    // private repo's own config.yml — defaulting to "allowed" because its
+    // visibility makes it ineligible for template inheritance would score
+    // that unread policy as a permission. Templates stay empty either way.
+    it('does not inherit templates from a private .github repo, but still fails closed on blank issues', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
@@ -1821,7 +1826,7 @@ body:
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        expect(body.blankAllowed).toBe(true)
+        expect(body.blankAllowed).toBe(false)
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 
@@ -1835,8 +1840,9 @@ body:
     // policy, not a general Enterprise-Cloud one, and nothing distinguishes
     // the two via API — so this defaults to ineligible and requires an
     // explicit operator opt-in for the EMU case (see the sibling test
-    // below for that case).
-    it('does not inherit from an internal .github repo by default (ordinary Enterprise org)', async () => {
+    // below for that case). blankAllowed still fails closed here too
+    // (review finding, round 9) — same reasoning as the private-repo test above.
+    it('does not inherit templates from an internal .github repo by default, but still fails closed on blank issues', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
@@ -1864,7 +1870,7 @@ body:
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        expect(body.blankAllowed).toBe(true)
+        expect(body.blankAllowed).toBe(false)
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 
@@ -2319,6 +2325,44 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
                     }
                 }
             })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null })
+        })
+        expect(response.status).toBe(409)
+        expect(calls).toEqual([])
+    })
+
+    // Review finding (tiann/hapi#2147, round 9): a real blank_issues_enabled:
+    // false sitting in an ineligible-visibility .github repo (an EMU org's
+    // internal .github without the operator opt-in, here) used to be
+    // silently ignored rather than failing closed — the write route must
+    // reject the same way the picker now does, not just the picker.
+    it('rejects a blank-issue submission when the inherited policy exists but its visibility is ineligible', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/42' }
+            },
+            ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'INTERNAL',
+                                issueTemplateDir: {
+                                    entries: [{ name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }]
+                                }
+                            }
+                        }
+                    }
+                }
+                return { data: { repository: { issueTemplateDir: null } } }
+            }
         )
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',

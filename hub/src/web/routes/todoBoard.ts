@@ -1446,8 +1446,24 @@ export function createBoardRoutes(
         if (!repoHasLocalIssueTemplateCoverage(response) && repo.toLowerCase() !== '.github') {
             try {
                 const inherited = await runGraphqlIssueTemplateDir({ host, owner, repo: '.github' })
-                if (!inherited.errors?.length && repoHasLocalIssueTemplateCoverage(inherited) && isEligibleIssueTemplateFallback(inherited)) {
-                    response = inherited
+                if (!inherited.errors?.length && repoHasLocalIssueTemplateCoverage(inherited)) {
+                    if (isEligibleIssueTemplateFallback(inherited)) {
+                        response = inherited
+                    } else {
+                        // A real policy exists right there — we just
+                        // fetched and parsed it — but its visibility
+                        // doesn't clear HAPI's own EMU-ambiguity bar, so
+                        // its *templates* are still not inherited. Blindly
+                        // defaulting blankIssuesEnabled to true here would
+                        // score that unresolved policy as a permission
+                        // (review finding, tiann/hapi#2147, round 9): an
+                        // EMU org's real "no blank issues" answer is sitting
+                        // unread. Fail closed on the one question we can't
+                        // safely skip — same treatment as "nothing usable
+                        // and blank disabled" already gets, including the
+                        // githubNewIssueUrl escape hatch.
+                        return { templates: [], blankIssuesEnabled: false }
+                    }
                 }
             } catch (error) {
                 if (!(error instanceof GhGraphqlNotFoundError)) {
