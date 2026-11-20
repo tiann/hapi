@@ -643,8 +643,8 @@ export async function claudeRemote(opts: {
                 const followUpUuid = pushUserMessage(next.message);
                 if (waitingForClearFollowUp && nextSpecialCommand.type === null) {
                     clearFollowUp = { uuid: followUpUuid, sessionId: currentSessionId };
+                    waitingForClearFollowUp = false;
                 }
-                waitingForClearFollowUp = false;
                 if (nextSpecialCommand.type === 'compact') {
                     beginCompactCommand(followUpUuid, false);
                     startCommandResultTimeout();
