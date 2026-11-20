@@ -11,7 +11,7 @@ use futures_util::{future::BoxFuture, FutureExt};
 use serde_json::{json, Value};
 use std::{
     io,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 use tokio::sync::{mpsc, watch};
@@ -74,6 +74,14 @@ impl SessionClient {
         config: &Config,
         rest: Rest,
         session: &Value,
+    ) -> io::Result<(Arc<Self>, mpsc::UnboundedReceiver<SessionEvent>)> {
+        Self::start_with(config, rest, session, false)
+    }
+    pub(super) fn start_with(
+        config: &Config,
+        rest: Rest,
+        session: &Value,
+        empty_history: bool,
     ) -> io::Result<(Arc<Self>, mpsc::UnboundedReceiver<SessionEvent>)> {
         let id = session["id"]
             .as_str()
@@ -146,6 +154,9 @@ impl SessionClient {
         if initially_archived {
             latch();
         }
+        if empty_history {
+            this.filter.lock().unwrap().accept(None, Some(0));
+        }
         this.filter
             .lock()
             .unwrap()
@@ -180,7 +191,7 @@ impl SessionClient {
                     Event::Connected => {
                         let current = Connection::Online(connections);
                         connections += 1;
-                        let mut link = client.socket.connection();
+                        let link = client.socket.connection();
                         if link.get() != current {
                             continue;
                         }
@@ -193,33 +204,11 @@ impl SessionClient {
                                 filter.set_rewind_syncing(true);
                                 filter.start_backfill()
                             };
-                            tokio::spawn(async move {
-                                let mut closed = client.closed.subscribe();
-                                let refreshed = tokio::select! {biased; _=link.wait_for(|v|v!=current)=>false,_=closed.wait_for(|v|*v)=>false,_=client.refresh_metadata()=>true};
-                                {
-                                    let mut filter = client.filter.lock().unwrap();
-                                    filter.set_rewind_syncing(false);
-                                    if !refreshed {
-                                        return;
-                                    }
-                                    filter.arm_claude_rewind_on_reconnect();
-                                }
-                                let announce = |client: &Self| {
-                                    if link.get() == current
-                                        && !client.hub_archived()
-                                        && !client.is_closed()
-                                    {
-                                        let _ = client.events.send(SessionEvent::Connected);
-                                    }
-                                };
-                                if client.hub_archived() || client.is_closed() {
-                                    announce(&client);
-                                } else {
-                                    client
-                                        .backfill_with_retry(current, start_cursor, announce)
-                                        .await;
-                                }
-                            });
+                            tokio::spawn(Self::recover(
+                                Arc::downgrade(&client),
+                                current,
+                                start_cursor,
+                            ));
                         } else {
                             if link.get() == current
                                 && !client.hub_archived()
@@ -277,20 +266,21 @@ impl SessionClient {
         self.archive.subscribe()
     }
     pub async fn refresh_metadata(&self) -> bool {
-        let Ok(row) = self.rest.refresh(&self.id).await else {
-            return false;
-        };
+        self.try_refresh_metadata().await.unwrap_or(false)
+    }
+    async fn try_refresh_metadata(&self) -> io::Result<bool> {
+        let row = self.rest.refresh(&self.id).await?;
         let Some(version) = row["metadataVersion"].as_u64() else {
-            return false;
+            return Ok(false);
         };
         let Some(meta) = row.get("metadata") else {
-            return false;
+            return Ok(false);
         };
         if !meta.is_null() && !Kind::Metadata.valid(meta) {
-            return false;
+            return Ok(false);
         }
         self.metadata.remote(version, meta);
-        true
+        Ok(true)
     }
     fn reconcile_rewind(self: &Arc<Self>, metadata: &Value) {
         self.filter.lock().unwrap().reconcile_rewind(metadata);
@@ -317,31 +307,90 @@ impl SessionClient {
             if !client.filter.lock().unwrap().rewind_pending() || client.rewind_paused() {
                 return;
             }
-            client.backfill_with_retry(current, None, |_| {}).await;
+            let weak = Arc::downgrade(&client);
+            drop(client);
+            Self::backfill_with_retry(weak, current, None, |_| {}).await;
         });
     }
+    async fn recover(weak: Weak<Self>, current: Connection, start_cursor: Option<i64>) {
+        let refreshed = Self::refresh_with_retry(&weak, current).await;
+        let Some(client) = weak.upgrade() else {
+            return;
+        };
+        {
+            let mut filter = client.filter.lock().unwrap();
+            filter.set_rewind_syncing(false);
+            if !refreshed {
+                return;
+            }
+            filter.arm_claude_rewind_on_reconnect();
+        }
+        if client.hub_archived() || client.is_closed() {
+            return;
+        }
+        drop(client);
+        Self::backfill_with_retry(weak, current, start_cursor, move |client: &Self| {
+            if client.socket.connection().get() == current
+                && !client.hub_archived()
+                && !client.is_closed()
+            {
+                let _ = client.events.send(SessionEvent::Connected);
+            }
+        })
+        .await;
+    }
+    async fn refresh_with_retry(weak: &Weak<Self>, current: Connection) -> bool {
+        let Some(client) = weak.upgrade() else {
+            return false;
+        };
+        let mut link = client.socket.connection();
+        let mut closed = client.closed.subscribe();
+        let mut archived = client.archive.subscribe();
+        drop(client);
+        let mut delay = Duration::from_millis(500);
+        loop {
+            let Some(client) = weak.upgrade() else {
+                return false;
+            };
+            let refreshed = tokio::select! {biased; _=link.wait_for(|v|v!=current)=>return false,_=closed.wait_for(|v|*v)=>return false,r=client.try_refresh_metadata()=>r};
+            if refreshed.is_ok() || client.hub_archived() {
+                return true;
+            }
+            drop(client);
+            tokio::select! {biased; _=link.wait_for(|v|v!=current)=>return false,_=closed.wait_for(|v|*v)=>return false,_=archived.wait_for(|v|*v)=>return true,_=tokio::time::sleep(delay)=>{}};
+            delay = (delay * 2).min(Duration::from_secs(30));
+        }
+    }
     async fn backfill_with_retry(
-        self: &Arc<Self>,
+        weak: Weak<Self>,
         current: Connection,
         start_cursor: Option<i64>,
         attempted: impl FnOnce(&Self),
     ) {
-        let mut link = self.socket.connection();
-        let mut closed = self.closed.subscribe();
-        let mut archived = self.archive.subscribe();
+        let Some(client) = weak.upgrade() else {
+            return;
+        };
+        let mut link = client.socket.connection();
+        let mut closed = client.closed.subscribe();
+        let mut archived = client.archive.subscribe();
+        drop(client);
         let mut attempted = Some(attempted);
         let mut delay = Duration::from_millis(500);
         loop {
-            let result = tokio::select! {biased; _=link.wait_for(|v|v!=current)=>return,_=closed.wait_for(|v|*v)=>return,result=self.backfill(start_cursor)=>result};
+            let Some(client) = weak.upgrade() else {
+                return;
+            };
+            let result = tokio::select! {biased; _=link.wait_for(|v|v!=current)=>return,_=closed.wait_for(|v|*v)=>return,_=archived.wait_for(|v|*v)=>return,result=client.backfill(start_cursor)=>result};
             if result.is_ok() && link.get() == current {
-                self.filter.lock().unwrap().finish_backfill();
+                client.filter.lock().unwrap().finish_backfill();
             }
             if let Some(attempted) = attempted.take() {
-                attempted(self);
+                attempted(&client);
             }
             if result.is_ok() {
                 return;
             }
+            drop(client);
             tokio::select! {biased; _=link.wait_for(|v|v!=current)=>return,_=closed.wait_for(|v|*v)=>return,_=archived.wait_for(|v|*v)=>return,_=tokio::time::sleep(delay)=>{}};
             delay = (delay * 2).min(Duration::from_secs(30));
         }

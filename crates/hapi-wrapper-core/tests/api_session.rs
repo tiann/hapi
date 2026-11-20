@@ -128,18 +128,17 @@ async fn create_and_reopen_through_webhook() {
         ..Default::default()
     };
     h.command("contract", true.into()).await;
+    h.command("autoBridge", true.into()).await;
     let created = bootstrap(&h.config, &opts, true, true, |_| false)
         .await
         .unwrap();
     assert_eq!(created.session_summary_contract, Some(true));
     assert_eq!(std::env::var("HAPI_SESSION_ID").unwrap(), "parent");
-    let child = Command::new("printenv")
-        .arg("HAPI_SESSION_ID")
-        .envs(&created.child_env)
-        .output()
-        .await
-        .unwrap();
-    assert_eq!(String::from_utf8(child.stdout).unwrap().trim(), id);
+    assert_eq!(
+        created.child_env,
+        [("HAPI_SESSION_ID".to_string(), id.clone())].into()
+    );
+    assert_eq!(created.auto_bridge_transient_model_errors, Some(true));
     assert!(created.client.flush(LIMIT).await);
     let state = h.command("snapshot", Value::Null).await;
     let req = state["requests"].as_array().unwrap();
@@ -147,16 +146,23 @@ async fn create_and_reopen_through_webhook() {
         req.iter()
             .map(|r| r["path"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["/cli/machines", "/cli/sessions", "/session-started"]
+        if cfg!(unix) {
+            &["/cli/machines", "/cli/sessions", "/session-started"][..]
+        } else {
+            &["/cli/machines", "/cli/sessions"][..]
+        }
     );
     assert_eq!(req[1]["body"]["id"], id);
     assert_eq!(req[1]["body"]["adopt"], true);
-    assert_eq!(
-        req[2]["body"],
-        json!({"sessionId":id,"metadata":created.metadata})
-    );
+    #[cfg(unix)]
+    {
+        assert_eq!(
+            req[2]["body"],
+            json!({"sessionId":id,"metadata":created.metadata})
+        );
+        assert!(created.metadata["hostStartMarker"].is_string());
+    }
     assert_eq!(created.metadata["wrapperRuntime"], "rust");
-    assert!(created.metadata["hostStartMarker"].is_string());
     assert!(req[0]["body"]["metadata"].get("capabilities").is_none());
     created.client.close();
     let mut stale = created.metadata.clone();
@@ -175,6 +181,7 @@ async fn create_and_reopen_through_webhook() {
         .capabilities
         .insert("conversationHistory".into(), None);
     h.command("contract", false.into()).await;
+    h.command("autoBridge", false.into()).await;
     let opened = bootstrap(&h.config, &opts, false, true, |_| true)
         .await
         .unwrap();
@@ -190,6 +197,7 @@ async fn create_and_reopen_through_webhook() {
     }
     assert!(opened.child_env.is_empty());
     assert_eq!(opened.session_summary_contract, Some(false));
+    assert_eq!(opened.auto_bridge_transient_model_errors, Some(false));
     assert_eq!(opened.client.metadata.get().value["name"], "preserved");
     assert!(opened
         .client
@@ -1309,4 +1317,123 @@ async fn interrupted_rewind_resumes_after_its_last_completed_page() {
         ]
     );
     client.close();
+}
+
+#[tokio::test]
+async fn failed_reconnect_refresh_retries_before_backfilling() {
+    let (mut h, client, mut events, mut users) = rewind_fixture().await;
+    h.command("failRefresh", 1.into()).await;
+    h.command("drop", Value::Null).await;
+    wait(&mut events, |e| matches!(e, SessionEvent::Disconnected)).await;
+    let metadata =
+        json!({"host":"test","path":"/tmp","opencodeRewind":opencode_rewind("op","committed")});
+    h.command("metadata", json!({"metadataVersion":2,"metadata":metadata}))
+        .await;
+    h.command("rows", rewound_rows()).await;
+    wait(&mut events, |e| matches!(e, SessionEvent::Connected)).await;
+    assert_eq!(users.try_recv().unwrap(), "queued");
+    assert!(users.try_recv().is_err());
+    let state = h.command("snapshot", Value::Null).await;
+    let refreshes = state["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["path"] == "/cli/sessions/s")
+        .count();
+    assert_eq!(refreshes, 2);
+    assert_eq!(message_queries(&state), ["?afterSeq=0&limit=200"]);
+    client.close();
+}
+#[tokio::test]
+async fn fresh_session_backfills_first_prompt_queued_while_offline() {
+    if std::env::var_os("HAPI_BOOTSTRAP_TEST_CHILD").is_none() {
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "fresh_session_backfills_first_prompt_queued_while_offline",
+            ])
+            .env("HAPI_BOOTSTRAP_TEST_CHILD", "1")
+            .env("HAPI_WRAPPER_CLI_VERSION", "test-version")
+            .env("HAPI_WRAPPER_RUNTIME_PATH", "/runtime")
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let mut h = Hub::new().await;
+    let opts = Options {
+        flavor: "claude".into(),
+        ..Default::default()
+    };
+    let mut created = bootstrap(&h.config, &opts, false, false, |_| false)
+        .await
+        .unwrap();
+    let (tx, mut users) = mpsc::unbounded_channel();
+    created.client.on_user_message(Arc::new(move |_, id| {
+        tx.send(id.unwrap()).unwrap();
+    }));
+    wait(&mut created.events, |e| {
+        matches!(e, SessionEvent::Connected)
+    })
+    .await;
+    h.command("drop", Value::Null).await;
+    wait(&mut created.events, |e| {
+        matches!(e, SessionEvent::Disconnected)
+    })
+    .await;
+    h.command("rows", json!([message("first", 1, "web")])).await;
+    wait(&mut created.events, |e| {
+        matches!(e, SessionEvent::Connected)
+    })
+    .await;
+    assert_eq!(users.try_recv().unwrap(), "first");
+    let state = h.command("snapshot", Value::Null).await;
+    assert_eq!(message_queries(&state), ["?afterSeq=0&limit=200"]);
+    created.client.close();
+}
+#[tokio::test]
+async fn hub_archive_cancels_in_flight_backfill_page() {
+    let (mut h, client, mut events, mut users) = rewind_fixture().await;
+    h.command("rows", json!([message("late", 101, "web")]))
+        .await;
+    h.command("holdPage", 100.into()).await;
+    h.command("drop", Value::Null).await;
+    wait(&mut events, |e| matches!(e, SessionEvent::Disconnected)).await;
+    timeout(LIMIT, async {
+        while h.command("snapshot", Value::Null).await["pagePending"] != true {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    h.command("update",json!({"t":"update-session","metadata":{"version":2,"value":{"path":"/tmp","host":"test","lifecycleState":"archived","archivedBy":"hub"}}})).await;
+    wait(&mut events, |e| matches!(e, SessionEvent::HubArchived)).await;
+    h.command("releasePage", Value::Null).await;
+    assert!(timeout(Duration::from_millis(300), users.recv())
+        .await
+        .is_err());
+    client.close();
+}
+#[tokio::test]
+async fn dropping_last_handle_stops_failing_backfill() {
+    let (mut h, client, mut events, _users) = rewind_fixture().await;
+    h.command("failPages", true.into()).await;
+    h.command("drop", Value::Null).await;
+    wait(&mut events, |e| matches!(e, SessionEvent::Disconnected)).await;
+    timeout(LIMIT, async {
+        while message_queries(&h.command("snapshot", Value::Null).await).is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let before = h.command("snapshot", Value::Null).await;
+    assert_eq!(before["online"], false);
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let after = h.command("snapshot", Value::Null).await;
+    assert_eq!(message_queries(&after), message_queries(&before));
+    assert_eq!(after["connections"], before["connections"]);
 }

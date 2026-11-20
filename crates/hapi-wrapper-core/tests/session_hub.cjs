@@ -19,6 +19,9 @@ let failPageAfter
 let releasePage
 let releaseRefresh
 let holdRefresh=false
+let failRefresh=0
+let failPages=false
+let autoBridge
 let steerReply=true
 let forceId
 let socket
@@ -46,7 +49,7 @@ async function handleRest(req,res) {
             holdPageAfter = undefined
             await new Promise(resolve => { releasePage = resolve })
         }
-        if (after === failPageAfter) {
+        if (failPages || after === failPageAfter) {
             failPageAfter = undefined
             res.writeHead(503).end()
             return
@@ -56,12 +59,17 @@ async function handleRest(req,res) {
         res.end(JSON.stringify({machine:{...row,id:body.id,metadata:body.metadata,runnerState:null,runnerStateVersion:0}}))
     } else {
         if (body) Object.assign(row,{id:forceId || body.id || 's', metadata:body.metadata, agentState:body.agentState})
+        if (!body && failRefresh > 0) {
+            failRefresh--
+            res.writeHead(503).end()
+            return
+        }
         if (!body && holdRefresh) {
             holdRefresh=false
             await new Promise(resolve => {releaseRefresh=resolve})
         }
         const session=malformed==='missing' ? {metadataVersion:99} : malformed ? {metadataVersion:99,metadata:{bad:true}} : row
-        res.end(JSON.stringify({session,sessionSummaryContract}))
+        res.end(JSON.stringify({session,sessionSummaryContract,autoBridgeTransientModelErrors:autoBridge}))
     }
 }
 const http = createServer(handleRest)
@@ -96,12 +104,15 @@ createInterface({input:process.stdin}).on('line', async line => {
         await new Promise(resolve => https.listen(0, '127.0.0.1', resolve))
         result = https.address().port
     }
-    if (cmd.op==='snapshot') result={requests,emitted,row,connections,refreshPending:!!releaseRefresh,pagePending:!!releasePage}
+    if (cmd.op==='snapshot') result={requests,emitted,row,connections,refreshPending:!!releaseRefresh,pagePending:!!releasePage,online:!!socket?.connected}
     if (cmd.op==='contract') sessionSummaryContract=cmd.value
     if (cmd.op==='holdPage') holdPageAfter=cmd.value
     if (cmd.op==='failPage') failPageAfter=cmd.value
     if (cmd.op==='releasePage') {releasePage?.(); releasePage=undefined}
     if (cmd.op==='holdRefresh') holdRefresh=true
+    if (cmd.op==='failRefresh') failRefresh=cmd.value
+    if (cmd.op==='failPages') failPages=cmd.value
+    if (cmd.op==='autoBridge') autoBridge=cmd.value
     if (cmd.op==='releaseRefresh') {releaseRefresh?.(); releaseRefresh=undefined}
     if (cmd.op==='steerReply') steerReply=cmd.value
     if (cmd.op==='forceId') forceId=cmd.value

@@ -21,6 +21,7 @@ pub struct Options {
 
 pub struct Prepared {
     pub session_summary_contract: Option<bool>,
+    pub auto_bridge_transient_model_errors: Option<bool>,
     pub session: Value,
     pub metadata: Value,
     pub base: Value,
@@ -85,6 +86,7 @@ pub async fn prepare(rest: &Rest, config: &Config, opts: &Options) -> io::Result
         let metadata = metadata::existing(&base, &session["metadata"], &opts.overrides);
         return Ok(Prepared {
             session_summary_contract: response.session_summary_contract,
+            auto_bridge_transient_model_errors: response.auto_bridge_transient_model_errors,
             session,
             metadata,
             base,
@@ -126,6 +128,7 @@ pub async fn prepare(rest: &Rest, config: &Config, opts: &Options) -> io::Result
     }
     Ok(Prepared {
         session_summary_contract: response.session_summary_contract,
+        auto_bridge_transient_model_errors: response.auto_bridge_transient_model_errors,
         session,
         metadata,
         base,
@@ -134,6 +137,7 @@ pub async fn prepare(rest: &Rest, config: &Config, opts: &Options) -> io::Result
 
 pub struct Bootstrapped {
     pub session_summary_contract: Option<bool>,
+    pub auto_bridge_transient_model_errors: Option<bool>,
     pub child_env: std::collections::BTreeMap<String, String>,
     pub client: std::sync::Arc<super::client::SessionClient>,
     pub events: tokio::sync::mpsc::UnboundedReceiver<super::client::SessionEvent>,
@@ -150,11 +154,14 @@ pub async fn bootstrap(
     let rest = Rest::new(config).await?;
     let Prepared {
         session_summary_contract,
+        auto_bridge_transient_model_errors,
         session,
         metadata,
         base,
     } = prepare(&rest, config, opts).await?;
-    let (client, events) = super::client::SessionClient::start(config, rest.clone(), &session)?;
+    let empty_history = opts.existing_id.is_none() && opts.tag.is_none();
+    let (client, events) =
+        super::client::SessionClient::start_with(config, rest.clone(), &session, empty_history)?;
     if opts.existing_id.is_some() {
         let overrides = opts.overrides.clone();
         client
@@ -182,6 +189,7 @@ pub async fn bootstrap(
     }
     Ok(Bootstrapped {
         session_summary_contract,
+        auto_bridge_transient_model_errors,
         child_env,
         client,
         events,

@@ -29,7 +29,7 @@ impl SessionClient {
             }
             *attempted = epoch;
             let rows = self.rest.messages(&self.id, cursor).await?;
-            if self.rewind_held() {
+            if self.hub_archived() || self.rewind_held() {
                 return Ok(());
             }
             if let Some(restart) = self.filter.lock().unwrap().rewind_restart(epoch) {
@@ -41,6 +41,9 @@ impl SessionClient {
             }
             let mut next = cursor;
             for row in &rows {
+                if self.hub_archived() {
+                    return Ok(());
+                }
                 next = next.max(row["seq"].as_i64().unwrap_or(cursor));
                 if !row["invokedAt"].is_null()
                     && super::incoming_filter::user_message(&row["content"]).is_some()
