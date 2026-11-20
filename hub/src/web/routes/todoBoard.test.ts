@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { Hono } from 'hono'
 import type { BoardItemsResponse, BoardsResponse } from '@hapi/protocol'
 import type { WebAppEnv } from '../middleware/auth'
-import { createBoardRoutes, fetchAllItemComments, fetchAllProjectItems, GhGraphqlNotFoundError, isGhVersionBelow, makeBoardId, parseGhVersion, parseProjectUrl, parseValidatedItemUrl, PROJECT_QUERY, PROJECT_QUERY_FILTERED, resolveProjectView } from './todoBoard'
+import { createBoardRoutes, CreateIssueAssigneesFailedError, fetchAllItemComments, fetchAllProjectItems, GhGraphqlNotFoundError, isGhVersionBelow, makeBoardId, parseGhVersion, parseProjectUrl, parseValidatedItemUrl, PROJECT_QUERY, PROJECT_QUERY_FILTERED, resolveProjectView } from './todoBoard'
 
 const ENV_KEYS = [
     'HAPI_BOARD_HOST',
@@ -2648,6 +2648,32 @@ body:
         expect(missingTitle.status).toBe(400)
     })
 
+    // Review finding (tiann/hapi#2147, follow-up): GitHub CLI applies
+    // assignees as a mutation separate from issue creation, and prints no
+    // URL at all if that second mutation fails — confirmed against gh
+    // CLI's own source (api.IssueCreate, v2.97.0). The issue is real and
+    // already exists; the route must report its URL the same way it
+    // already does for a failed addItemToProject, not a bare 502 that
+    // reads as "nothing happened" and invites a duplicate-creating retry.
+    it('surfaces a created-issue-but-assignees-failed error distinctly, including the created url', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => {
+                throw new CreateIssueAssigneesFailedError('https://github.com/heavygee/hapi/issues/42', 'could not find user "ghost"')
+            },
+            addItemToProject: async () => { throw new Error('should-not-be-called') }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null })
+        })
+        expect(response.status).toBe(502)
+        const body = await response.json() as { error: string; url: string }
+        expect(body.error).toContain('https://github.com/heavygee/hapi/issues/42')
+        expect(body.error).toContain('could not find user "ghost"')
+        expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
+    })
+
     it('surfaces a failed createIssue as a 502 without attempting to add anything to the project', async () => {
         const calls: string[] = []
         const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
@@ -2758,6 +2784,58 @@ body:
         })
         expect(response.status).toBe(200)
         expect(calls).toEqual(['addItemToProject:https://github.com/heavygee/hapi/issues/42'])
+    })
+
+    // Regression (cold review, tiann/hapi#2147, follow-up): a retry-attach
+    // used to only ever re-run addItemToProject, so an assignee-application
+    // failure (same { error, url } shape) silently and permanently dropped
+    // the assignees once the client retried — this proves the retry path
+    // re-applies them too, before attaching to the project.
+    it('re-applies assignees on a retry-attach, before attaching to the project', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+            setAssignees: async (target, addLogins, removeLogins) => { calls.push(`setAssignees:${target.url}:${addLogins.join(',')}:${removeLogins.join(',')}`) },
+            addItemToProject: async (target) => { calls.push(`addItemToProject:${target.issueUrl}`) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                assignees: ['ghost'],
+                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42'
+            })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([
+            'setAssignees:https://github.com/heavygee/hapi/issues/42:ghost:',
+            'addItemToProject:https://github.com/heavygee/hapi/issues/42'
+        ])
+    })
+
+    it('surfaces a retry-attach assignee failure as a 502 with the url, without attempting to add it to the project', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+            setAssignees: async () => { throw new Error('could not find user "ghost"') },
+            addItemToProject: async (target) => { calls.push(`should-not-be-called:${target.issueUrl}`) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                assignees: ['ghost'],
+                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42'
+            })
+        })
+        expect(response.status).toBe(502)
+        const body = await response.json() as { error: string; url: string }
+        expect(body.error).toContain('https://github.com/heavygee/hapi/issues/42')
+        expect(body.error).toContain('could not find user "ghost"')
+        expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
+        expect(calls).toEqual([])
     })
 })
 

@@ -906,6 +906,23 @@ export class GhGraphqlNotFoundError extends Error {
     }
 }
 
+// The issue itself exists on GitHub by the time this can throw — see
+// createIssue's own comment for why assignees are applied as a second,
+// separate call rather than a `gh issue create --assignee` flag — so the
+// caller must not treat this the same as "nothing was created." Mirrors
+// the existing createIssue-succeeds-then-addItemToProject-fails pattern:
+// carry the URL forward so the route can report a partial failure instead
+// of inviting a retry that creates a second, duplicate issue.
+export class CreateIssueAssigneesFailedError extends Error {
+    url: string
+
+    constructor(url: string, message: string) {
+        super(message)
+        this.name = 'CreateIssueAssigneesFailedError'
+        this.url = url
+    }
+}
+
 // Async (not spawnSync): this runs on the shared hub event loop, and a slow
 // or rate-limited GitHub response must not stall every other request in
 // flight (SSE streams, unrelated API calls) for the duration of the call.
@@ -1081,14 +1098,34 @@ export const defaultBoardItemActions: BoardItemActions = {
     // any doubt. `gh issue create` prints the created issue's URL as its
     // last stdout line on success; nothing else in its non-interactive
     // output does.
+    //
+    // Assignees are applied as a SEPARATE `gh issue edit --add-assignee`
+    // call, never a `--assignee` flag on the create itself (review finding,
+    // tiann/hapi#2147, follow-up) — confirmed against GitHub CLI's own
+    // source (api.IssueCreate, v2.97.0): assignee application on
+    // github.com runs as its own GraphQL mutation *after* the issue
+    // already exists, and the `issue create` command does a bare early
+    // return without ever printing the URL if that second mutation fails.
+    // A single combined call would leave the hub with no URL at all for
+    // an issue that genuinely exists — an unrecoverable orphan a retry can
+    // only make worse (a second, duplicate issue, with the first still
+    // never surfaced anywhere).
     createIssue: async (target) => {
         const args = ['issue', 'create', '--repo', `${target.host}/${target.repo}`, '--title', target.title, '--body', target.body]
         for (const label of target.labels) args.push('--label', label)
-        for (const assignee of target.assignees) args.push('--assignee', assignee)
         const stdout = await execGh(args, target.host)
         const url = stdout.trim().split('\n').pop()?.trim()
         if (!url) {
             throw new Error('gh issue create did not return a URL')
+        }
+        if (target.assignees.length > 0) {
+            try {
+                await execGh(['issue', 'edit', url, '--add-assignee', target.assignees.join(',')], target.host)
+            } catch (error) {
+                throw new CreateIssueAssigneesFailedError(
+                    url, error instanceof Error ? error.message : 'Failed to apply assignees'
+                )
+            }
         }
         return url
     },
@@ -2133,6 +2170,25 @@ export function createBoardRoutes(
                 return c.json({ error: 'The issue being retried does not belong to the submitted repository' }, 400)
             }
             issueUrl = parsed.data.existingIssueUrl
+            // Re-apply assignees too, not just the project attach (review
+            // finding, tiann/hapi#2147, follow-up): the prior failure that
+            // produced this retry may have been the assignee application
+            // itself — it reports the same { error, url } shape as an
+            // addItemToProject failure below — and this branch used to
+            // assume the only thing left to do on retry was attach to the
+            // project, silently and permanently dropping the assignees.
+            // `gh issue edit --add-assignee` is additive (re-adding an
+            // already-applied login is a no-op), so retrying unconditionally
+            // here is safe even when the original failure was actually in
+            // addItemToProject.
+            if (issueAssignees.length > 0) {
+                try {
+                    await actions.setAssignees({ host: board.host, url: issueUrl, isPullRequest: false }, issueAssignees, [])
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : 'unknown error'
+                    return c.json({ error: `Issue created at ${issueUrl} but assignees could not be applied: ${message}`, url: issueUrl }, 502)
+                }
+            }
         } else {
             try {
                 issueUrl = await actions.createIssue({
@@ -2144,6 +2200,13 @@ export function createBoardRoutes(
                     assignees: issueAssignees
                 })
             } catch (error) {
+                // The issue itself exists even though this call failed —
+                // same treatment as the addItemToProject failure below:
+                // report the URL explicitly rather than inviting a retry
+                // that creates a second, duplicate issue.
+                if (error instanceof CreateIssueAssigneesFailedError) {
+                    return c.json({ error: `Issue created at ${error.url} but assignees could not be applied: ${error.message}`, url: error.url }, 502)
+                }
                 return c.json({ error: error instanceof Error ? error.message : 'Failed to create issue' }, 502)
             }
         }
