@@ -254,13 +254,17 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId); await persist();
     };
     const reserve = async (root: SharedCodexRoot, threadId: string) => withThreadOwnership(home, threadId, id, () => reserveRecord(root, threadId));
-    const acceptedResumeParams = async (reservation: Reservation, params: Record<string, unknown>, savedThread?: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const hasControlSubscription = (reservation: Reservation) =>
+        reservation.controlSubscription === controlGeneration && control.isInitialized();
+    const acceptedResumeParams = async (
+        reservation: Reservation, params: Record<string, unknown>, savedThread?: Record<string, unknown>, client = control
+    ): Promise<Record<string, unknown>> => {
         const view = rejoinThreadParams(params);
-        if (reservation.controlSubscription === controlGeneration && control.isInitialized()) return view;
+        if (hasControlSubscription(reservation)) return view;
         const root = reservation.root;
         // Without a confirmed live subscription, Codex can load the thread
         // again. Restore HAPI's configuration from the original intent.
-        const tier = await resolveUltrafastLaunch(control, 'thread/resume', { ...reservation.executionParams, ...view },
+        const tier = await resolveUltrafastLaunch(client, 'thread/resume', { ...reservation.executionParams, ...view },
             root.bootstrap.workingDirectory, undefined, savedThread, startupCatalogConfig);
         reservation.tierConfirmationPending = undefined;
         if (tier.downgraded) {
@@ -387,7 +391,20 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 // A transient setup failure must not require repeating a Web
                 // fork. The native writer already accepted this conversation.
                 resumingThreads.add(threadId);
-                await bindAccepted(reservation, response);
+                let result = response;
+                // If both subscriptions were lost, restore the original
+                // configuration and confirm the tier again before activation.
+                if (!root.client.isInitialized() && !hasControlSubscription(reservation)) {
+                    try {
+                        await initializeSharedClient(root.client);
+                        const params = await acceptedResumeParams(reservation, { threadId, excludeTurns: true }, undefined, root.client);
+                        result = record(await root.client.request('thread/resume', params));
+                    } catch (error) {
+                        resumingThreads.delete(threadId);
+                        throw error;
+                    }
+                }
+                await bindAccepted(reservation, result);
             }
             return root;
         } catch (error) {
