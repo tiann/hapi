@@ -27,6 +27,12 @@ export function createAgyAcpBackend(): AcpSdkBackend {
         // agy streams agent_message_chunk as pure deltas; overlap-dedupe would eat
         // a repeated character at a chunk boundary (73-8 + 800 -> 73-800).
         textChunkMode: 'delta',
+        // agy >= 1.5.10 streams idle reactive wakeup frames after end_turn
+        // (https://github.com/google-antigravity/antigravity-cli/issues/1461);
+        // the transcript reactive wakeup path is the single renderer for those
+        // wakeups, so retire the turn handler at prompt end to prevent duplicate
+        // rendering and buffer leakage into the next turn.
+        ignoreIdleUpdates: true,
         // agy then asks its ask_question questions as form elicitations.
         elicitationForm: true
     });

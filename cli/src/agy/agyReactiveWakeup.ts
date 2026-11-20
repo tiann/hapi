@@ -559,6 +559,54 @@ export function resolveAgyBackgroundTaskIds(
 }
 
 /**
+ * Consumes `text` from a streamed-text multiset. When an exact match is absent,
+ * peels `text` from a coalesced segment only at a whitespace boundary (for
+ * example `"STARTED\n\nFINISHED:DONE_BG"` -> `"FINISHED:DONE_BG"`) and records
+ * the peeled remainder in `coalescedRemainders` so it only authorizes advancing
+ * past the wakeup slice it belongs to.
+ */
+function consumeAgyStreamedText(
+    text: string,
+    pool: Map<string, number>,
+    coalescedRemainders?: Map<string, number>
+): boolean {
+    const exact = pool.get(text) ?? 0;
+    if (exact > 0) {
+        if (exact === 1) pool.delete(text);
+        else pool.set(text, exact - 1);
+        if (coalescedRemainders) {
+            const remCount = coalescedRemainders.get(text) ?? 0;
+            if (remCount === 1) coalescedRemainders.delete(text);
+            else if (remCount > 1) coalescedRemainders.set(text, remCount - 1);
+        }
+        return true;
+    }
+    for (const [candidate, count] of pool) {
+        if (
+            count <= 0
+            || candidate.length <= text.length
+            || !candidate.startsWith(text)
+            || !/\s/.test(candidate[text.length]!)
+        ) {
+            continue;
+        }
+        const remainder = candidate.slice(text.length).trim();
+        if (!remainder) continue;
+        if (count === 1) pool.delete(candidate);
+        else pool.set(candidate, count - 1);
+        pool.set(remainder, (pool.get(remainder) ?? 0) + 1);
+        if (coalescedRemainders) {
+            const prevRem = coalescedRemainders.get(candidate) ?? 0;
+            if (prevRem === 1) coalescedRemainders.delete(candidate);
+            else if (prevRem > 1) coalescedRemainders.set(candidate, prevRem - 1);
+            coalescedRemainders.set(remainder, (coalescedRemainders.get(remainder) ?? 0) + 1);
+        }
+        return true;
+    }
+    return false;
+}
+
+/**
  * Advances the transcript cursor at the end of a prompt turn while preserving
  * any autonomous `SYSTEM_MESSAGE` wakeup slice written after `agy` closed its
  * prompt turn (before Node finished draining and settling the turn).
@@ -570,6 +618,7 @@ export function advanceAgyTurnTranscriptCursor(
 ): number {
     let cursor = currentCursor;
     const remainingTexts = new Map(streamedTextCounts);
+    const coalescedRemainders = new Map<string, number>();
 
     const isTerminalPlanner = (step: AgyTranscriptStep): boolean =>
         step.source === 'MODEL'
@@ -612,8 +661,7 @@ export function advanceAgyTurnTranscriptCursor(
             if (step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE') {
                 const text = step.content?.trim();
                 if (text) {
-                    const available = remainingTexts.get(text) ?? 0;
-                    if (available > 0) remainingTexts.set(text, available - 1);
+                    consumeAgyStreamedText(text, remainingTexts);
                 }
             }
             if (step.step_index > cursor) cursor = step.step_index;
@@ -626,11 +674,13 @@ export function advanceAgyTurnTranscriptCursor(
     for (let i = startIdx; i < stepsAfterStart.length; i += 1) {
         const step = stepsAfterStart[i]!;
         if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
-            if (sawTerminalPlanner) break;
+            if (sawTerminalPlanner && coalescedRemainders.size === 0) break;
 
             let terminalIdx = -1;
             let unstreamed = false;
+            let matchedTexts = 0;
             const probeTexts = new Map(remainingTexts);
+            const probeRemainders = new Map(coalescedRemainders);
             for (let j = i + 1; j < stepsAfterStart.length; j += 1) {
                 const ahead = stepsAfterStart[j]!;
                 if (ahead.source === 'MODEL' && ahead.type === 'PLANNER_RESPONSE') {
@@ -640,12 +690,11 @@ export function advanceAgyTurnTranscriptCursor(
                     }
                     const text = ahead.content?.trim();
                     if (text) {
-                        const available = probeTexts.get(text) ?? 0;
-                        if (available <= 0) {
+                        if (!consumeAgyStreamedText(text, probeTexts, probeRemainders)) {
                             unstreamed = true;
                             break;
                         }
-                        probeTexts.set(text, available - 1);
+                        matchedTexts += 1;
                     }
                     const endIdx = terminalTurnEndIndex(j);
                     if (endIdx !== null) {
@@ -655,7 +704,7 @@ export function advanceAgyTurnTranscriptCursor(
                 }
             }
 
-            if (unstreamed || terminalIdx < 0) {
+            if (unstreamed || terminalIdx < 0 || (sawTerminalPlanner && matchedTexts === 0)) {
                 break;
             }
             if (step.step_index > cursor) cursor = step.step_index;
@@ -665,8 +714,7 @@ export function advanceAgyTurnTranscriptCursor(
         if (step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE') {
             const text = step.content?.trim();
             if (text) {
-                const available = remainingTexts.get(text) ?? 0;
-                if (available > 0) remainingTexts.set(text, available - 1);
+                consumeAgyStreamedText(text, remainingTexts, coalescedRemainders);
             }
             if (isTerminalPlanner(step)) {
                 sawTerminalPlanner = true;

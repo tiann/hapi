@@ -7,7 +7,7 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentMessage, PermissionRequest, PromptContent } from '@/agent/types';
-import type { AcpSdkBackend } from '@/agent/backends/acp';
+import { AcpSdkBackend } from '@/agent/backends/acp';
 import { AgySession } from './session';
 import type { AgyMode } from './types';
 import { AgyAcpRemoteLauncher } from './agyAcpRemoteLauncher';
@@ -4050,5 +4050,220 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
 
         queue.close();
         await runPromise;
+    });
+
+    it('renders idle agy >= 1.5.10 wakeup once through real AcpSdkBackend + AcpMessageHandler with no turn-2 leak', async () => {
+        const acpSessionId = 'agy-real-acp-wakeup';
+        const backend = new AcpSdkBackend({
+            command: 'agy',
+            args: ['acp'],
+            flavor: 'agy',
+            textChunkMode: 'delta',
+            ignoreIdleUpdates: true,
+            toolCallLifetimeStore: null
+        });
+        const internal = backend as unknown as {
+            transport: Record<string, unknown>;
+            initializeResult: Record<string, unknown>;
+            handleNotification: (method: string, params: unknown) => void;
+        };
+        const ctor = AcpSdkBackend as unknown as Record<string, number>;
+        const savedTimings = {
+            UPDATE_QUIET_PERIOD_MS: ctor.UPDATE_QUIET_PERIOD_MS,
+            UPDATE_DRAIN_TIMEOUT_MS: ctor.UPDATE_DRAIN_TIMEOUT_MS,
+            PRE_PROMPT_UPDATE_QUIET_PERIOD_MS: ctor.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
+            PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS: ctor.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS,
+            LATE_FLUSH_INTERVAL_MS: ctor.LATE_FLUSH_INTERVAL_MS,
+            LATE_FLUSH_QUIET_PERIOD_MS: ctor.LATE_FLUSH_QUIET_PERIOD_MS,
+            LATE_FLUSH_WINDOW_MS: ctor.LATE_FLUSH_WINDOW_MS
+        };
+        ctor.UPDATE_QUIET_PERIOD_MS = 10;
+        ctor.UPDATE_DRAIN_TIMEOUT_MS = 40;
+        ctor.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 10;
+        ctor.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 40;
+        ctor.LATE_FLUSH_INTERVAL_MS = 10;
+        ctor.LATE_FLUSH_QUIET_PERIOD_MS = 20;
+        ctor.LATE_FLUSH_WINDOW_MS = 60;
+
+        try {
+            let promptCount = 0;
+            let alive = true;
+            const notify = (update: Record<string, unknown>) => {
+                internal.handleNotification('session/update', { sessionId: acpSessionId, update });
+            };
+            internal.transport = {
+                sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
+                    if (method === 'session/new') {
+                        return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
+                    }
+                    if (method === 'session/resume') return { sessionId: String(params.sessionId) };
+                    if (method === 'session/set_mode' || method === 'session/set_model') return {};
+                    if (method === 'session/list') return { sessions: [] };
+                    if (method === 'session/prompt') {
+                        promptCount += 1;
+                        if (promptCount === 1) {
+                            notify({
+                                sessionUpdate: 'tool_call',
+                                toolCallId: 'call-bg-1',
+                                name: 'run_command',
+                                title: 'sleep 20 && echo DONE_BG',
+                                status: 'in_progress',
+                                rawInput: { CommandLine: 'sleep 20 && echo DONE_BG' }
+                            });
+                            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'STARTED' } });
+                            writeTranscript(tempBrainDir, acpSessionId, [
+                                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run bg' },
+                                {
+                                    step_index: 1,
+                                    source: 'MODEL',
+                                    type: 'PLANNER_RESPONSE',
+                                    status: 'DONE',
+                                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 20 && echo DONE_BG"' } }]
+                                },
+                                {
+                                    step_index: 2,
+                                    source: 'MODEL',
+                                    type: 'GENERIC',
+                                    status: 'RUNNING',
+                                    content: `Tool is running as a background task with task id: ${acpSessionId}/task-1`
+                                },
+                                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'STARTED' }
+                            ]);
+                        } else {
+                            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OK' } });
+                        }
+                        return { stopReason: 'end_turn', usage: { inputTokens: 40, outputTokens: 10 } };
+                    }
+                    return {};
+                }),
+                sendNotification: vi.fn(),
+                onNotification: () => {},
+                onStderrError: () => {},
+                registerRequestHandler: () => {},
+                isAlive: () => alive,
+                getProcessPid: () => 4242,
+                close: async () => { alive = false; return true; }
+            };
+            internal.initializeResult = {
+                protocolVersion: 1,
+                agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } }
+            };
+
+            const { session, queue, client } = makeHarness('always-proceed');
+            const launcher = new AgyAcpRemoteLauncher(session, {
+                createBackend: () => backend,
+                brainDir: tempBrainDir,
+                reactivePollMs: 15,
+                reactiveSettleMs: 25
+            });
+            const runPromise = launcher.launch();
+
+            queue.push('run bg', { permissionMode: 'always-proceed' }, 'msg-1');
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+            client.sendSessionEvent.mockClear();
+            client.sendAgentMessage.mockClear();
+
+            // Simulate agy >= 1.5.10 streaming live idle updates alongside transcript.jsonl writes.
+            notify({
+                sessionUpdate: 'tool_call_update',
+                toolCallId: 'call-bg-1',
+                status: 'completed',
+                rawOutput: { output: 'Command exited with code 0.\n\nCommand output:\nDONE_BG', exit_code: 0 }
+            });
+            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n\nFINISHED:DONE_BG' } });
+
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, acpSessionId)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({
+                        step_index: 4,
+                        source: 'SYSTEM',
+                        type: 'SYSTEM_MESSAGE',
+                        status: 'DONE',
+                        content: `<SYSTEM_MESSAGE>\nTask id "${acpSessionId}/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDONE_BG\n</SYSTEM_MESSAGE>`
+                    }),
+                    JSON.stringify({
+                        step_index: 5,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        content: 'FINISHED:DONE_BG',
+                        input_tokens: 80,
+                        output_tokens: 5
+                    })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+            const wakeupTexts = client.sendAgentMessage.mock.calls
+                .map(([msg]) => msg as { type?: string; message?: string })
+                .filter((msg) => msg.type === 'message')
+                .map((msg) => msg.message?.trim());
+            expect(wakeupTexts).toEqual(['FINISHED:DONE_BG']);
+
+            // Turn 2 receives only 'OK' with zero leaked wakeup text.
+            client.sendSessionEvent.mockClear();
+            client.sendAgentMessage.mockClear();
+            queue.push('Reply with only OK.', { permissionMode: 'always-proceed' }, 'msg-2');
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+            const turn2Texts = client.sendAgentMessage.mock.calls
+                .map(([msg]) => msg as { type?: string; message?: string })
+                .filter((msg) => msg.type === 'message')
+                .map((msg) => msg.message?.trim());
+            expect(turn2Texts).toEqual(['OK']);
+
+            queue.close();
+            await runPromise;
+        } finally {
+            Object.assign(ctor, savedTimings);
+        }
+    });
+
+    it('peels coalesced drain-window text only at whitespace boundaries and does not stay latched for later wakeups', () => {
+        // Whitespace boundary ("STARTED\n\nFINISHED:DONE_BG") advances past the streamed slice (step 3),
+        // then stops before a later unstreamed SYSTEM_MESSAGE (step 4) instead of staying latched.
+        expect(advanceAgyTurnTranscriptCursor(
+            [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run bg' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'STARTED' },
+                { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>done1</SYSTEM_MESSAGE>' },
+                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'FINISHED:DONE_BG' },
+                { step_index: 4, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>done2</SYSTEM_MESSAGE>' },
+                { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'SECOND_WAKEUP' }
+            ],
+            -1,
+            new Map([['STARTED\n\nFINISHED:DONE_BG', 1], ['SECOND_WAKEUP', 1]])
+        )).toBe(3);
+
+        // Mid-word prefix ("OKAY" vs "OK") must not peel "AY" into a synthetic remainder.
+        expect(advanceAgyTurnTranscriptCursor(
+            [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'hi' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'OK' },
+                { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>done</SYSTEM_MESSAGE>' },
+                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'AY' }
+            ],
+            -1,
+            new Map([['OKAY', 1]])
+        )).toBe(1);
+
+        // 3-part coalesced chain ("A\n\nB\n\nC"): peeling A -> "B\n\nC" -> "C" empties
+        // coalescedRemainders once C is consumed, so a following SYSTEM_MESSAGE stops the cursor.
+        expect(advanceAgyTurnTranscriptCursor(
+            [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'chain' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'A' },
+                { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m1</SYSTEM_MESSAGE>' },
+                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'B' },
+                { step_index: 4, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m2</SYSTEM_MESSAGE>' },
+                { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'C' },
+                { step_index: 6, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m3</SYSTEM_MESSAGE>' },
+                { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'NEXT_WAKEUP' }
+            ],
+            -1,
+            new Map([['A\n\nB\n\nC', 1], ['NEXT_WAKEUP', 1]])
+        )).toBe(5);
     });
 });

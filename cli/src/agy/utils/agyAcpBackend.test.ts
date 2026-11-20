@@ -65,4 +65,10 @@ describe('createAgyAcpBackend text chunk assembly', () => {
     it('sets the delta text chunk mode explicitly', () => {
         expect(configuredMode()).toBe('delta')
     })
+
+    it('enables ignoreIdleUpdates so idle wakeup frames do not bypass transcript rendering', () => {
+        createAgyAcpBackend()
+        expect(constructorCalls).toHaveLength(1)
+        expect(constructorCalls[0]?.ignoreIdleUpdates).toBe(true)
+    })
 })

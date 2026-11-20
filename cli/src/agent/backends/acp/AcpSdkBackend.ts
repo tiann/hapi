@@ -257,6 +257,13 @@ export class AcpSdkBackend implements AgentBackend {
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
         /**
+         * Retire the prompt's `AcpMessageHandler` once a prompt turn finishes
+         * draining so idle-period `session/update` content frames are neither
+         * rendered nor buffered into the next prompt's pre-swap drain.
+         * Opt-in for flavors whose transcript watcher renders idle wakeups.
+         */
+        ignoreIdleUpdates?: boolean;
+        /**
          * Where open tool call lifetimes survive a restart. Defaults to a file
          * per ACP session under the HAPI home when this process serves a HAPI
          * session; `null` disables persistence.
@@ -956,7 +963,10 @@ export class AcpSdkBackend implements AgentBackend {
                 if (promptRequestEpoch !== this.promptRequestEpoch) {
                     this.activePromptRequests = Math.max(0, this.activePromptRequests - 1);
                     this.isProcessingMessage = this.activePromptRequests > 0;
-                    if (!this.isProcessingMessage) this.notifyResponseComplete();
+                    if (!this.isProcessingMessage) {
+                        this.retireIdleMessageHandlerIfConfigured();
+                        this.notifyResponseComplete();
+                    }
                 } else {
                     this.finishPromptRequest(promptRequestEpoch);
                 }
@@ -1582,6 +1592,9 @@ export class AcpSdkBackend implements AgentBackend {
         const update = handler
             ? this.withToolCallLifetimeId(params.update, MAIN_TOOL_CALL_SCOPE)
             : params.update;
+        if (!handler && this.options.ignoreIdleUpdates) {
+            this.closeTrackedIdleToolCallLifetime(params.update);
+        }
         // Title/usage/commands stay synchronous (#1028). Only message-handler
         // work is queued so async image registration preserves event order.
         if (sessionId) {
@@ -1880,6 +1893,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.activePromptRequests = this.foregroundPromptRequests;
         this.isProcessingMessage = this.activePromptRequests > 0;
         if (!this.isProcessingMessage) {
+            this.retireIdleMessageHandlerIfConfigured();
             this.notifyResponseComplete();
         }
     }
@@ -1891,8 +1905,27 @@ export class AcpSdkBackend implements AgentBackend {
         this.activePromptRequests = Math.max(0, this.activePromptRequests - 1);
         this.isProcessingMessage = this.activePromptRequests > 0;
         if (!this.isProcessingMessage) {
+            this.retireIdleMessageHandlerIfConfigured();
             this.notifyResponseComplete();
         }
+    }
+
+    private retireIdleMessageHandlerIfConfigured(): void {
+        if (this.options.ignoreIdleUpdates && !this.isProcessingMessage) {
+            this.messageHandler = null;
+        }
+    }
+
+    private closeTrackedIdleToolCallLifetime(update: unknown): void {
+        if (!isObject(update)) return;
+        const sessionUpdate = asString(update.sessionUpdate);
+        if (sessionUpdate !== ACP_SESSION_UPDATE_TYPES.toolCallUpdate && sessionUpdate !== ACP_SESSION_UPDATE_TYPES.toolCall) {
+            return;
+        }
+        if (update.status !== 'completed' && update.status !== 'failed') return;
+        const agentToolCallId = asString(update.toolCallId);
+        if (!agentToolCallId) return;
+        this.toolCallLifetimes.closeIfTracked(agentToolCallId, MAIN_TOOL_CALL_SCOPE);
     }
 
     private notifyResponseComplete(): void {

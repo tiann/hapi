@@ -2941,3 +2941,126 @@ describe('AcpSdkBackend num_turns extraction (google-antigravity/antigravity-cli
         expect(backend.extractNumTurns({ usage: { num_turns: 2.9 } })).toBe(3);
     });
 });
+
+describe('AcpSdkBackend ignoreIdleUpdates', () => {
+    it('retires the turn messageHandler after end_turn, prevents turn-2 buffer leak, and closes tracked lifetimes on idle terminal updates', async () => {
+        const opened: string[] = [];
+        const closed: string[] = [];
+        const lifetimeStore = {
+            load: () => [],
+            save: vi.fn(),
+            append: vi.fn((_sid: string, entry: { id: string }) => { opened.push(entry.id); }),
+            appendClose: vi.fn((_sid: string, id: string) => { closed.push(id); })
+        };
+        const backend = new AcpSdkBackend({
+            command: 'agy',
+            args: ['acp'],
+            flavor: 'agy',
+            textChunkMode: 'delta',
+            ignoreIdleUpdates: true,
+            toolCallLifetimeStore: lifetimeStore
+        });
+        const internal = backend as unknown as {
+            transport: { sendRequest: ReturnType<typeof vi.fn>; close: () => Promise<void> };
+            handleNotification: (method: string, params: unknown) => void;
+        };
+        let promptCount = 0;
+        internal.transport = {
+            sendRequest: vi.fn(async (method: string) => {
+                if (method === 'session/prompt') {
+                    promptCount += 1;
+                    if (promptCount === 1) {
+                        internal.handleNotification('session/update', {
+                            sessionId: 's1',
+                            update: {
+                                sessionUpdate: 'tool_call',
+                                toolCallId: 'bg-1',
+                                title: 'sleep 20 && echo DONE_BG',
+                                status: 'in_progress'
+                            }
+                        });
+                        internal.handleNotification('session/update', {
+                            sessionId: 's1',
+                            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'STARTED' } }
+                        });
+                    } else {
+                        internal.handleNotification('session/update', {
+                            sessionId: 's1',
+                            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OK' } }
+                        });
+                    }
+                    return { stopReason: 'end_turn' };
+                }
+                return {};
+            }),
+            close: async () => {}
+        };
+
+        const turn1Messages: AgentMessage[] = [];
+        await backend.prompt('s1', [{ type: 'text', text: 'turn 1' }], (m) => turn1Messages.push(m));
+        expect(turn1Messages.filter((m) => m.type === 'text').map((m) => m.text)).toEqual(['STARTED']);
+        expect(opened).toHaveLength(1);
+        expect(closed).toHaveLength(0);
+
+        // Idle reactive wakeup updates arrive after end_turn: ignored for rendering,
+        // yet the already-tracked background command's lifetime is closed in the store.
+        internal.handleNotification('session/update', {
+            sessionId: 's1',
+            update: { sessionUpdate: 'tool_call_update', toolCallId: 'bg-1', status: 'completed', rawOutput: { stdout: 'DONE_BG' } }
+        });
+        internal.handleNotification('session/update', {
+            sessionId: 's1',
+            update: { sessionUpdate: 'tool_call_update', toolCallId: 'untracked-idle', status: 'completed' }
+        });
+        internal.handleNotification('session/update', {
+            sessionId: 's1',
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n\nFINISHED:DONE_BG' } }
+        });
+
+        expect(closed).toEqual(opened);
+        expect(opened).toHaveLength(1);
+
+        const turn2Messages: AgentMessage[] = [];
+        await backend.prompt('s1', [{ type: 'text', text: 'turn 2' }], (m) => turn2Messages.push(m));
+        expect(turn1Messages.filter((m) => m.type === 'text').map((m) => m.text)).toEqual(['STARTED']);
+        expect(turn1Messages.filter((m) => m.type === 'tool_result')).toEqual([]);
+        expect(turn2Messages.filter((m) => m.type === 'text').map((m) => m.text)).toEqual(['OK']);
+    });
+
+    it('keeps idle updates flowing to the previous handler when ignoreIdleUpdates is unset (other flavors unchanged)', async () => {
+        const backend = new AcpSdkBackend({ command: 'acp-agent', textChunkMode: 'delta', toolCallLifetimeStore: null });
+        const internal = backend as unknown as {
+            transport: { sendRequest: ReturnType<typeof vi.fn>; close: () => Promise<void> };
+            handleNotification: (method: string, params: unknown) => void;
+        };
+        let promptCount = 0;
+        internal.transport = {
+            sendRequest: vi.fn(async (method: string) => {
+                if (method === 'session/prompt') {
+                    promptCount += 1;
+                    internal.handleNotification('session/update', {
+                        sessionId: 's1',
+                        update: {
+                            sessionUpdate: 'agent_message_chunk',
+                            content: { type: 'text', text: promptCount === 1 ? 'T1' : 'T2' }
+                        }
+                    });
+                    return { stopReason: 'end_turn' };
+                }
+                return {};
+            }),
+            close: async () => {}
+        };
+
+        const turn1Messages: AgentMessage[] = [];
+        await backend.prompt('s1', [{ type: 'text', text: 't1' }], (m) => turn1Messages.push(m));
+        internal.handleNotification('session/update', {
+            sessionId: 's1',
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'late' } }
+        });
+        const turn2Messages: AgentMessage[] = [];
+        await backend.prompt('s1', [{ type: 'text', text: 't2' }], (m) => turn2Messages.push(m));
+        expect(turn1Messages.filter((m) => m.type === 'text').map((m) => m.text)).toEqual(['T1', 'late']);
+        expect(turn2Messages.filter((m) => m.type === 'text').map((m) => m.text)).toEqual(['T2']);
+    });
+});

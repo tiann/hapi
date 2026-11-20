@@ -160,6 +160,14 @@ export class AcpToolCallLifetimes {
         return this.open(agentToolCallId, kind, scope).id;
     }
 
+    /** Closes an already-open lifetime without opening a new one (for ignored idle terminal updates). */
+    closeIfTracked(agentToolCallId: string, scope: ToolCallScope = MAIN_TOOL_CALL_SCOPE): void {
+        const current = this.lifetimes.get(lifetimeKey(scope, agentToolCallId));
+        if (current && !current.terminal) {
+            this.markTerminal(current);
+        }
+    }
+
     /**
      * The id for the next permission request or question asked under
      * `lifetimeId`. The first request uses the lifetime id itself; later ones
