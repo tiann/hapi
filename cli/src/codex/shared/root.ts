@@ -90,13 +90,14 @@ export class SharedCodexRoot {
     private settingsNative: Record<string, unknown> = {};
     private modelProvider?: string;
     private serviceTierExplicit?: boolean;
+    private confirmedNativeStandardReset = false;
     private tierConfirmationPending = false;
     private tierConfirmationResolved = false;
     get hasUltrafastTier(): boolean { return this.settingsNative.serviceTier === 'ultrafast'; }
     private tierAdmissionPending = false;
     beginTierConfirmation(): void { this.tierAdmissionPending = true; this.publishSteering(); }
     get needsTierConfirmation(): boolean { return this.tierAdmissionPending || this.tierConfirmationPending; }
-    get hasConfirmedStandardTier(): boolean { return this.settingsNative.serviceTier === 'default'; }
+    get hasConfirmedStandardTier(): boolean { return this.settings.serviceTier === 'standard'; }
     private settingsNotification?: Record<string, unknown>;
     private readonly settingsListeners = new Set<() => void>();
     private ready!: () => void;
@@ -408,16 +409,24 @@ export class SharedCodexRoot {
         }
         this.modelProvider = string(response.modelProvider) ?? string(record(response.thread).modelProvider);
         this.acceptSettings(this.host.settingsFor(threadId) ?? {}, false); this.acceptSettings(response, true);
+        this.confirmResumeTier(response, expectedResumeTier);
         if (expectedResumeTier !== 'priority' && expectedResumeTier !== 'flex' && this.hasConfirmedStandardTier) {
             this.tierConfirmationPending = false;
             this.tierConfirmationResolved = true;
             if (this.session.getMetadata()?.codexTierConfirmationPending) this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
         }
-        this.confirmResumeTier(response, expectedResumeTier);
         if (!this.host.attached) await this.projectHistory(this.projection, response.thread);
         await this.refresh(); await this.refreshChildren(true);
     }
     confirmResumeTier(response: Record<string, unknown>, expected: unknown): void {
+        if ((expected === null || expected === 'default') && typeof response.model === 'string'
+            && response.serviceTier === null && this.settingsNative.serviceTier === null) {
+            this.confirmedNativeStandardReset = true;
+            this.settings = { ...this.settings, serviceTier: 'standard' };
+            this.tierConfirmationResolved = true;
+            this.tierConfirmationPending = false;
+            return;
+        }
         if (expected !== 'priority' && expected !== 'flex') return;
         const tier = fromCodexServiceTier(expected);
         if (fromCodexServiceTier(response.serviceTier) === tier
@@ -499,6 +508,7 @@ export class SharedCodexRoot {
         this.settingsRevision++;
         if ('collaborationMode' in value && 'sandboxPolicy' in value) this.settingsNotification = value;
         this.settingsNative = { ...this.settingsNative, ...value };
+        if ('serviceTier' in value && value.serviceTier !== null && value.serviceTier !== 'default') this.confirmedNativeStandardReset = false;
         this.modelProvider = string(value.modelProvider) ?? this.modelProvider;
         const sandbox = record(value.sandboxPolicy ?? value.sandbox).type;
         this.settings = { ...this.settings, model: value.model,
@@ -506,7 +516,7 @@ export class SharedCodexRoot {
             ...(sandbox ? { permissionMode: sandbox === 'dangerFullAccess' ? 'yolo' : sandbox === 'readOnly' ? 'read-only'
                 : this.settingsNative.approvalsReviewer === 'auto_review' ? 'autoReview' : 'default' } : {}),
             ...('serviceTier' in value && (effective || value.serviceTier !== 'ultrafast')
-                ? { serviceTier: fromCodexServiceTier(value.serviceTier) }
+                ? { serviceTier: value.serviceTier === null && this.confirmedNativeStandardReset ? 'standard' : fromCodexServiceTier(value.serviceTier) }
                 : !effective && this.settings.serviceTier === 'ultrafast' && value.model !== this.settings.model ? { serviceTier: null } : {}),
             ...('collaborationMode' in value ? { collaborationMode: record(value.collaborationMode).mode === 'plan' ? 'plan' as const : 'default' as const } : {})
         };
@@ -999,18 +1009,18 @@ export class SharedCodexRoot {
                 if (this.settingsRevision !== revision) continue;
                 if (confirmsTier && (typeof snapshot.model !== 'string'
                     || snapshot.serviceTier !== null && typeof snapshot.serviceTier !== 'string')) continue;
+                if (params.serviceTier !== undefined && snapshot.serviceTier === null) {
+                    // A successfully accepted Standard reset can appear as null
+                    // when Codex filters native tiers. Keep that explicit intent.
+                    this.confirmedNativeStandardReset = params.serviceTier === null || params.serviceTier === 'default';
+                    if (!this.confirmedNativeStandardReset && !verifyUltrafast) this.serviceTierExplicit = false;
+                }
                 this.acceptSettings(snapshot, true);
                 if (verifyUltrafast && !this.hasUltrafastTier && !this.hasOtherEffectiveTier) {
                     if (!await this.fallbackToStandard(deadline, operationId) && current()) {
                         await this.confirmEffectiveUltrafast(deadline, operationId);
                     }
-                } else {
-                    // An accepted turn can still have its requested tier
-                    // filtered by native feature state. A fresh effective
-                    // null means there is no override to restore on resume.
-                    if (typeof params.serviceTier === 'string' && snapshot.serviceTier === null) this.serviceTierExplicit = false;
-                    if (!confirmsTier && model && snapshot.model !== model) throw new Error('Native turn settings are not confirmed');
-                }
+                } else if (!confirmsTier && model && snapshot.model !== model) throw new Error('Native turn settings are not confirmed');
                 if (!current()) return;
                 if (confirmsTier) await this.completeTierConfirmation(operationId);
                 this.alive();
@@ -1407,7 +1417,8 @@ export class SharedCodexRoot {
     freshParams(): Record<string, unknown> {
         const sandbox = inheritedSandbox(this.settingsNative);
         return { ...sandbox, cwd: this.settingsNative.cwd ?? this.bootstrap.workingDirectory, model: this.settingsNative.model, modelProvider: this.settingsNative.modelProvider,
-            approvalPolicy: this.settingsNative.approvalPolicy, serviceTier: this.serviceTierExplicit ? this.settingsNative.serviceTier : undefined,
+            approvalPolicy: this.settingsNative.approvalPolicy,
+            serviceTier: this.serviceTierExplicit ? this.confirmedNativeStandardReset ? 'default' : this.settingsNative.serviceTier : undefined,
             approvalsReviewer: this.settingsNative.approvalsReviewer, personality: this.settingsNative.personality,
             developerInstructions: getCodexSystemPrompt(),
             config: { ...record(sandbox.config), model_reasoning_effort: this.settings.modelReasoningEffort ?? undefined } };

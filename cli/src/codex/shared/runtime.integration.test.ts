@@ -61,8 +61,8 @@ vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => 
 // Explicit opt-in: installed official binary, entirely isolated CODEX_HOME, mock Responses API only.
 describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Codex shared runtime', () => {
     afterEach(() => { vi.unstubAllEnvs(); state.sessions.clear(); state.beforeBootstrap = undefined; });
-    it('reports no effective override after accepting a turn with disabled native Fast', async () => {
-        const home = await mkdtemp(join(tmpdir(), 'hapi-shared-filtered-fast-'));
+    it.each(['priority', null])('reports no effective override after accepting tier %s with disabled native Fast', async serviceTier => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-shared-filtered-tier-'));
         await writeFile(join(home, 'config.toml'), [
             'model = "mock-model"', 'model_provider = "mock"', '[features]', 'fast_mode = false',
             '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
@@ -77,7 +77,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             const threadId = start.thread.id;
             await client.request('thread/metadata/update', { threadId, gitInfo: { branch: null } });
             const accepted = await client.request<{ turn: { id: string } }>('turn/start', {
-                threadId, serviceTier: 'priority', input: [{ type: 'text', text: 'Isolated test', text_elements: [] }]
+                threadId, serviceTier, input: [{ type: 'text', text: 'Isolated test', text_elements: [] }]
             });
             expect(accepted.turn.id).toBeTruthy();
             await vi.waitFor(async () => {

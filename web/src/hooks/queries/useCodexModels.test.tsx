@@ -66,6 +66,31 @@ describe('useCodexModels query scoping', () => {
         expect(getMachineCodexModels).toHaveBeenCalledTimes(1)
     })
 
+    it('replaces the startup fallback when the session RPC registers in the same runtime', async () => {
+        let sessionReady = false
+        const getSessionCodexModels = vi.fn(async () => {
+            if (!sessionReady) throw new ApiError('session RPC unavailable', 503, RPC_TARGET_MISSING_ERROR_CODE)
+            return { success: true, models: [{ id: 'live-model', serviceTiers: ['ultrafast'] }] }
+        })
+        const getMachineCodexModels = vi.fn(async () => ({ success: true, models: [{ id: 'fallback-model' }] }))
+        const api = { getMachineCodexModels, getSessionCodexModels } as unknown as ApiClient
+        const { result } = renderHook(() => useCodexModels({
+            api,
+            sessionId: 'session-1',
+            sessionRuntimeGeneration: 'same-generation',
+            machineId: 'machine-1',
+            preferSession: true,
+            enabled: true
+        }), { wrapper: wrapper(createQueryClient()) })
+
+        await waitFor(() => expect(result.current.models[0]?.id).toBe('fallback-model'))
+        expect(result.current.catalogSource).toBe('machine')
+        sessionReady = true
+        await waitFor(() => expect(result.current.models[0]?.serviceTiers).toEqual(['ultrafast']), { timeout: 3_000 })
+        expect(result.current.catalogSource).toBe('session')
+        expect(getMachineCodexModels).toHaveBeenCalledTimes(1)
+    })
+
     it('shares machine-backed discovery across sessions on the same machine', async () => {
         const getMachineCodexModels = vi.fn(async () => ({
             success: true,

@@ -2397,16 +2397,30 @@ it('clears in-flight Fast intent when Codex confirms an accepted turn has no eff
     expect(f.root.freshParams().serviceTier).toBeUndefined();
 });
 
-it('preserves an explicit native tier reset when Codex confirms no override', async () => {
+it('persists a native Standard fallback when Codex reports no override and restores it on cold resume', async () => {
     const f = await fixture({ bindTier: 'priority' });
     await f.root.activate();
-    const operation = await f.root.prepareNativeTurn({ serviceTier: null });
+    const operation = await f.root.prepareNativeTurn({ model: 'standard-only', serviceTier: 'ultrafast' });
+    expect(operation.params.serviceTier).toBeNull();
+    expect(operation.fallbackNotice).toBeTruthy();
     f.native.settings.serviceTier = null;
     await f.root.confirmNativeTurn(operation.params, true, operation.fallbackNotice, operation.generation);
-    expect(f.metadata().codexServiceTierExplicit).toBe(true);
-    expect(f.metadata().codexPendingServiceTier).toBeUndefined();
+    const saved = f.metadata();
+    expect(saved.codexServiceTierExplicit).toBe(true);
+    expect(saved.codexConfirmedServiceTier).toBe('standard');
+    expect(saved.codexPendingServiceTier).toBeUndefined();
     expect(f.root.needsTierConfirmation).toBe(false);
-    expect(f.root.freshParams().serviceTier).toBeNull();
+    expect(f.root.freshParams().serviceTier).toBe('default');
+    expect(f.events).toHaveBeenCalledWith({ type: 'message', message: operation.fallbackNotice });
+
+    const resumeParams = await inheritedResumeTier(f.root.client, {}, saved.codexServiceTierExplicit, '/project', saved.codexConfirmedServiceTier);
+    expect(resumeParams).toEqual({ serviceTier: null });
+    const reopened = await fixture({ initialTierPending: true });
+    await reopened.root.bind('thread', { model: 'mock', serviceTier: null, thread: { turns: [] } }, false, resumeParams.serviceTier);
+    await reopened.root.activate({}, saved.codexServiceTierExplicit);
+    expect(reopened.root.needsTierConfirmation).toBe(false);
+    expect(reopened.metadata().codexConfirmedServiceTier).toBe('standard');
+    expect(reopened.root.freshParams().serviceTier).toBe('default');
 });
 
 it('does not reset a newer Fast choice during model-only native turn discovery', async () => {
