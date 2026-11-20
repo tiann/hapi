@@ -9,6 +9,19 @@ function hashTemplateRevision(raw: string): string {
 
 const SUPPORTED_FIELD_TYPES = new Set(['markdown', 'input', 'textarea', 'dropdown', 'checkboxes'])
 
+// GitHub's own attribute tables, one per field type (confirmed directly
+// against GitHub's documented form-schema syntax) — the full permitted
+// set, used to reject an unrecognized attribute key (see the main parse
+// loop's own comment for why this needed checking at all).
+const PERMITTED_FIELD_ATTRIBUTES: Record<string, Set<string>> = {
+    markdown: new Set(['value']),
+    input: new Set(['label', 'description', 'placeholder', 'value']),
+    textarea: new Set(['label', 'description', 'placeholder', 'value', 'render']),
+    dropdown: new Set(['label', 'description', 'multiple', 'options', 'default']),
+    checkboxes: new Set(['label', 'description', 'options']),
+    upload: new Set(['label', 'description'])
+}
+
 function asString(value: unknown): string | undefined {
     return typeof value === 'string' ? value : undefined
 }
@@ -315,6 +328,23 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         const elObj = element as Record<string, unknown>
         const type = elObj.type
         const attrs = asRecord(elObj.attributes)
+
+        // GitHub documents this as its own validation error, "Body[i]: `x`
+        // is not a permitted attribute" (bot review, tiann/hapi#2147,
+        // follow-up, confirmed directly against GitHub's validation-errors
+        // page) — an unrecognized key inside a field's `attributes:` block
+        // invalidates the whole form, the same "GitHub's own chooser would
+        // reject this" class as the unexpected-top-level-key check above,
+        // one level deeper. This parser read only the attributes it knew
+        // about and silently ignored anything extra, which could let a
+        // malformed template still classify as usable.
+        const permittedAttrs = typeof type === 'string' ? PERMITTED_FIELD_ATTRIBUTES[type] : undefined
+        if (permittedAttrs) {
+            const unexpectedAttr = Object.keys(attrs).find(key => !permittedAttrs.has(key))
+            if (unexpectedAttr !== undefined) {
+                return { id, name, kind: 'unsupported', reason: `A "${type}" field has an unexpected attribute "${unexpectedAttr}"`, githubValid: false }
+            }
+        }
 
         if (type === 'markdown') {
             // `attributes.value` is required for a markdown element — GitHub

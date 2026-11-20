@@ -587,6 +587,23 @@ body:
         expect(template.reason).toContain('value')
     })
 
+    // Regression (bot review, tiann/hapi#2147, follow-up): GitHub
+    // documents this as its own validation error, "Body[i]: `x` is not a
+    // permitted attribute" — an unrecognized key inside a field's
+    // `attributes:` block invalidates the whole form. This parser read
+    // only the attributes it knew about and silently ignored anything
+    // extra, which could let a malformed template still count as usable.
+    it('is genuinely invalid when a field has an attribute key GitHub does not recognize', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: markdown\n    attributes:\n      x: "a random key!"\n      value: Hi\n  - type: input\n    id: contact\n    attributes:\n      label: Contact'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('x')
+    })
+
     // Regression (bot review, tiann/hapi#2147, follow-up): two fields
     // explicitly declaring the same id used to both parse successfully,
     // each keeping its own `fieldId = explicitFieldId` — generateFieldId's
