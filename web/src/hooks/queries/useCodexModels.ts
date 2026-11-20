@@ -4,7 +4,11 @@ import { ApiError, type ApiClient } from '@/api/client'
 import type { CodexModelSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 
-const SESSION_CATALOG_STARTUP_POLLS = 10
+const SESSION_CATALOG_STARTUP_POLLS = 5
+
+function isMissingRpc(error: unknown): boolean {
+    return error instanceof ApiError && error.code === RPC_TARGET_MISSING_ERROR_CODE
+}
 
 export function useCodexModels(args: {
     api: ApiClient | null
@@ -23,7 +27,30 @@ export function useCodexModels(args: {
     const enabled = Boolean(args.enabled && api && (sessionId || machineId))
     const preferSession = Boolean(enabled && args.preferSession && sessionId)
 
-    const machineOptions = queryOptions({
+    const sessionOptions = queryOptions({
+        queryKey: queryKeys.sessionCodexModels(sessionId ?? 'unknown', sessionRuntimeGeneration),
+        queryFn: async () => {
+            if (!api || !sessionId) {
+                throw new Error('API unavailable')
+            }
+            return { ...await api.getSessionCodexModels(sessionId), catalogSource: 'session' as const }
+        },
+        staleTime: 30_000,
+        retry: false,
+    })
+    const sharedSessionQuery = useQuery({
+        ...sessionOptions,
+        enabled: preferSession,
+        // RPC registration can take a while. Keep checking in the foreground
+        // independently of the machine request, and back off after startup.
+        refetchInterval: query => {
+            const { error, errorUpdateCount } = query.state
+            if (!preferSession || !isMissingRpc(error)) return false
+            return errorUpdateCount < SESSION_CATALOG_STARTUP_POLLS ? 2_000 : 15_000
+        },
+    })
+    const useMachineFallback = preferSession && Boolean(machineId) && isMissingRpc(sharedSessionQuery.error)
+    const machineQuery = useQuery({
         queryKey: queryKeys.machineCodexModels(machineId ?? 'unknown'),
         queryFn: async () => {
             if (!api) {
@@ -34,47 +61,22 @@ export function useCodexModels(args: {
             }
             throw new Error('Codex models target unavailable')
         },
+        enabled: Boolean(enabled && machineId && (!preferSession || useMachineFallback)),
         staleTime: 30_000,
         retry: false,
     })
-    const machineQuery = useQuery({ ...machineOptions, enabled: Boolean(enabled && machineId && !preferSession) })
 
-    // Legacy sessions use the shared machine catalog. A shared session uses
-    // its live app-server; only missing RPC targets need the other route.
+    // Legacy sessions start with machine discovery and can use the session
+    // route when older runners do not expose a machine RPC.
     const useLegacySessionFallback = Boolean(
         enabled
         && sessionId
         && !preferSession
-        && (!machineId || (
-            machineQuery.error instanceof ApiError
-            && machineQuery.error.code === RPC_TARGET_MISSING_ERROR_CODE
-        ))
+        && (!machineId || isMissingRpc(machineQuery.error))
     )
-    const sessionQuery = useQuery({
-        queryKey: queryKeys.sessionCodexModels(sessionId ?? 'unknown', sessionRuntimeGeneration),
-        queryFn: async ({ client }) => {
-            if (!api || !sessionId) {
-                throw new Error('API unavailable')
-            }
-            try {
-                return { ...await api.getSessionCodexModels(sessionId), catalogSource: 'session' as const }
-            } catch (error) {
-                if (preferSession && machineId && error instanceof ApiError
-                    && error.code === RPC_TARGET_MISSING_ERROR_CODE) {
-                    return await client.fetchQuery(machineOptions)
-                }
-                throw error
-            }
-        },
-        enabled: Boolean(preferSession || useLegacySessionFallback),
-        staleTime: query => query.state.data?.catalogSource === 'machine' ? 0 : 30_000,
-        retry: false,
-        // During startup the runner can be online before the session registers
-        // its RPC. Keep the provisional machine catalog visible while it does.
-        refetchInterval: query => preferSession && query.state.data?.catalogSource === 'machine'
-            && query.state.dataUpdateCount < SESSION_CATALOG_STARTUP_POLLS ? 1_000 : false,
-    })
-    const query = preferSession || useLegacySessionFallback ? sessionQuery : machineQuery
+    const legacySessionQuery = useQuery({ ...sessionOptions, enabled: useLegacySessionFallback })
+    const query = preferSession && !useMachineFallback ? sharedSessionQuery
+        : useLegacySessionFallback ? legacySessionQuery : machineQuery
 
     return {
         catalogSource: query.data?.catalogSource ?? null,
