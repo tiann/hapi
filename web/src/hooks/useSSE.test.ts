@@ -444,6 +444,27 @@ describe('applySessionDetailPatch (PR #897 review, Copilot keep-alive)', () => {
             copilotAgentMode: 'interactive'
         })).toBeNull()
     })
+
+    it('ignores a stale thinking patch that arrived after a fresher one on the other SSE stream (cold-review round 27)', () => {
+        // Incremental patches ride the same two unordered streams a full
+        // session snapshot does, so without an ordering value a stale
+        // `thinking` patch could still overwrite a fresher one.
+        const thinkingSession = { ...session, thinking: false, thinkingAt: 20 } as unknown as Session
+        expect(applySessionDetailPatch(thinkingSession, {
+            thinking: true,
+            thinkingAt: 10
+        })).toBeNull()
+    })
+
+    it('still applies a genuinely newer thinking patch', () => {
+        const thinkingSession = { ...session, thinking: false, thinkingAt: 20 } as unknown as Session
+        const next = applySessionDetailPatch(thinkingSession, {
+            thinking: true,
+            thinkingAt: 30
+        })
+        expect(next?.thinking).toBe(true)
+        expect(next?.thinkingAt).toBe(30)
+    })
 })
 
 describe('useSSE user-activity ordering', () => {
@@ -589,6 +610,44 @@ describe('useSSE user-activity ordering', () => {
 
         const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
         expect(data?.sessions[0]?.thinking).toBe(false)
+        expect(data?.sessions[0]?.thinkingAt).toBe(20)
+        unmount()
+    })
+
+    it('ignores a stale thinking patch that arrived after a fresher one on the other SSE stream (cold-review round 27)', () => {
+        // The incremental patch path has the SAME exposure as the full
+        // snapshot above — it rides the same two unordered streams — but
+        // had no mechanism to detect staleness at all until `thinkingAt`
+        // was added to `SessionPatchSchema`.
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
+            id: 'session-1', thinking: false, thinkingConfirmed: true, thinkingAt: 20
+        })] })
+
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: { thinking: true, thinkingConfirmed: false, thinkingAt: 10 }
+        }))
+
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        expect(data?.sessions[0]?.thinking).toBe(false)
+        expect(data?.sessions[0]?.thinkingAt).toBe(20)
+        unmount()
+    })
+
+    it('still takes a genuinely newer thinking patch through the incremental path', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
+            id: 'session-1', thinking: false, thinkingAt: 10
+        })] })
+
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: { thinking: true, thinkingAt: 20 }
+        }))
+
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        expect(data?.sessions[0]?.thinking).toBe(true)
         expect(data?.sessions[0]?.thinkingAt).toBe(20)
         unmount()
     })

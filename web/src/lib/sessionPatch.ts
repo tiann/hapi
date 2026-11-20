@@ -66,8 +66,15 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
     if (patch.contentRevision !== undefined) assign('contentRevision', Math.max(session.contentRevision ?? 0, patch.contentRevision))
     if (patch.readState) assign('readState', mergeReadState(session.readState, patch.readState))
     if (patch.active !== undefined) assign('active', patch.active)
-    if (patch.thinking !== undefined) assign('thinking', patch.thinking)
-    if (patch.thinkingConfirmed !== undefined) assign('thinkingConfirmed', patch.thinkingConfirmed)
+    // Same dual, unordered SSE streams as the list summary (#1717 cold-review
+    // round 27): a stale `thinking` patch can arrive here after a fresher one
+    // already landed via the other stream. An absent `thinkingAt` (older hub)
+    // takes the patch unconditionally, preserving prior behaviour.
+    if (patch.thinkingAt === undefined || patch.thinkingAt >= session.thinkingAt) {
+        if (patch.thinking !== undefined) assign('thinking', patch.thinking)
+        if (patch.thinkingConfirmed !== undefined) assign('thinkingConfirmed', patch.thinkingConfirmed)
+        if (patch.thinkingAt !== undefined) assign('thinkingAt', patch.thinkingAt)
+    }
     if (patch.activeAt !== undefined) assign('activeAt', patch.activeAt)
     // Monotonic with hub applySessionPatch: a rejected stale
     // metadata/agentState replay must not rewind updatedAt.

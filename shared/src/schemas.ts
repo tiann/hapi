@@ -807,6 +807,12 @@ export const SessionPatchSchema = z.object({
     active: z.boolean().optional(),
     thinking: z.boolean().optional(),
     thinkingConfirmed: z.boolean().optional(),
+    // Ordering value for `thinking`/`thinkingConfirmed` (#1717 cold-review
+    // round 27); see `Session.thinkingAt`. An incremental patch rides one of
+    // two unordered SSE streams exactly like a full snapshot does, and
+    // without this a stale `thinking` patch arriving after a fresher one
+    // has no way to be recognized as stale.
+    thinkingAt: z.number().optional(),
     activeTurnStartedAt: z.number().nullable().optional(),
     activeAt: z.number().optional(),
     updatedAt: z.number().optional(),

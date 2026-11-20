@@ -592,13 +592,25 @@ export function useSSE(options: {
                     return previous
                 }
 
+                // An incremental patch rides the same two unordered SSE
+                // streams a full snapshot does (#1717 cold-review round 27),
+                // so a stale `thinking` patch can arrive after a fresher one
+                // already landed via the other stream. Unlike the other
+                // versioned fields below, an absent `thinkingAt` (older hub)
+                // takes the patch unconditionally — today's behaviour,
+                // preserved for backward compatibility.
+                const keepCurrentThinking = patch.thinkingAt !== undefined
+                    && patch.thinkingAt < (current.thinkingAt ?? 0)
                 const nextSummary: SessionSummary = {
                     ...current,
                     contentRevision: Math.max(current.contentRevision ?? 0, patch.contentRevision ?? 0),
                     readState: mergeReadState(current.readState, patch.readState),
                     active: patch.active ?? current.active,
-                    thinking: patch.thinking ?? current.thinking,
-                    thinkingConfirmed: patch.thinkingConfirmed ?? current.thinkingConfirmed,
+                    thinking: keepCurrentThinking ? current.thinking : (patch.thinking ?? current.thinking),
+                    thinkingConfirmed: keepCurrentThinking
+                        ? current.thinkingConfirmed
+                        : (patch.thinkingConfirmed ?? current.thinkingConfirmed),
+                    thinkingAt: keepCurrentThinking ? current.thinkingAt : (patch.thinkingAt ?? current.thinkingAt),
                     activeAt: patch.activeAt ?? current.activeAt,
                     // Monotonic: stale versioned-patch replays can carry an
                     // older updatedAt; never move the list clock backward.

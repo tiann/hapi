@@ -910,7 +910,8 @@ export class SessionCache {
             data: {
                 active: true,
                 activeAt: session.activeAt,
-                thinking: session.thinking
+                thinking: session.thinking,
+                thinkingAt: session.thinkingAt
             } satisfies SessionPatch
         })
 
@@ -1186,6 +1187,7 @@ export class SessionCache {
                     active: true,
                     activeAt: session.activeAt,
                     thinking: session.thinking,
+                    thinkingAt: session.thinkingAt,
                     thinkingConfirmed: session.thinkingConfirmed,
                     activeTurnStartedAt: session.activeTurnStartedAt,
                     permissionMode: session.permissionMode,
@@ -1291,6 +1293,7 @@ export class SessionCache {
                 sessionId: session.id,
                 data: {
                     thinking: true,
+                    thinkingAt: session.thinkingAt,
                     thinkingConfirmed: session.thinkingConfirmed,
                     activeTurnStartedAt: session.activeTurnStartedAt,
                     updatedAt: session.updatedAt
@@ -1665,6 +1668,7 @@ export class SessionCache {
                 active: false,
                 activeAt: session.activeAt,
                 thinking: false,
+                thinkingAt: session.thinkingAt,
                 activeTurnStartedAt: null,
                 backgroundTaskCount: 0,
                 backgroundTasks: [],
