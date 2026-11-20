@@ -648,54 +648,25 @@ export class SyncEngine {
     /**
      * Re-derive the blocked signal after importing a transcript (#1717).
      *
-     * An import replays historical rows through live ingestion, which is the
-     * wrong shape for this question twice over: an imported reply never passes
-     * through the CLI delivery callback, so nothing clears the footer it
-     * answered; and every imported row is stamped with the SAME hub arrival
-     * (import time) while imported replies keep their historical invocation
-     * times, so arrival cannot order them either. The result was an imported
-     * conversation entering Blocked on a footer its own transcript answers.
+     * An import replays historical rows through live ingestion, which saves
+     * each footer as it passes but never clears one: an imported reply does
+     * not go through the CLI delivery callback, so nothing marks the footer it
+     * answered as answered. The conversation entered Blocked on a footer its
+     * own transcript closes.
      *
-     * Inside one imported transcript every timestamp comes from that
-     * transcript, so its own order is both available and internally
-     * consistent. Derive once from that, after the import, and write it.
+     * The ordinary derivation is correct here, because an imported row carries
+     * the transcript's own time in BOTH `received_at` and `invoked_at` — so
+     * its footers and its replies are directly comparable, exactly as live
+     * rows are in the hub's clock. Only the one-shot re-derivation is needed.
      */
     reconcileNotifySignalAfterImport(sessionId: string): void {
-        const session = this.sessionCache.getSession(sessionId)
-        if (!session) return
-        const derived = this.deriveNotifyStateFromImportedTranscript(sessionId)
+        if (!this.sessionCache.getSession(sessionId)) return
+        const derived = this.deriveNotifyStateFromTranscript(sessionId, null)
         this.sessionCache.replaceNotifyAfterTruncate(
             sessionId,
-            derived,
-            // The import itself is the arrival, so a genuinely new footer
-            // afterwards is always later than this and still gets through.
-            Date.now()
+            derived.signal,
+            derived.boundaryAt ?? 0
         )
-    }
-
-    /**
-     * Newest unanswered footer in an imported transcript, by transcript order.
-     *
-     * Walks `seq`, which during an import is the order the rows were read out
-     * of the transcript. That is the only ordering an imported conversation
-     * supplies — and because both its footers and its replies come from the
-     * same source, it is a sound one.
-     */
-    private deriveNotifyStateFromImportedTranscript(
-        sessionId: string
-    ): { status: string; at: number; note: string | null; receivedAt?: number | null } | null {
-        const messages = this.store.messages.getAllMessages(sessionId)
-        let best: { status: string; at: number; note: string | null } | null = null
-        for (const message of messages) {
-            // A reply supersedes every footer before it in the transcript.
-            if (isDeliveredOperatorReply(message)) {
-                best = null
-                continue
-            }
-            const signal = extractSessionNotifySignal(message.content, message.createdAt)
-            if (signal) best = signal
-        }
-        return best === null ? null : { ...best, receivedAt: Date.now() }
     }
 
     private resolveOnlineMachineForSession(

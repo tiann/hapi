@@ -92,9 +92,16 @@ export function addImportedMessage(
             session_id: sessionId,
             content: encodeMessageContent(canonicalContent),
             created_at: stampedAt,
-            // Hub arrival, not the runner's clock: the key the delivery boundary
-            // is measured against (#1717).
-            received_at: Date.now(),
+            // An IMPORTED row is stamped with the TRANSCRIPT's own time, not
+            // import time (#1717). Its `invoked_at` just below is historical
+            // too, so stamping arrival at `now` put the two halves of one row
+            // in different regimes: an imported footer then looked newer than
+            // the imported reply that answered it, and a rewind retaining that
+            // prefix reopened a blocker the transcript had already closed.
+            // Within one transcript everything shares a clock; against live
+            // rows both are real-world times and the historical gap dwarfs any
+            // skew between them.
+            received_at: stampedAt,
             seq: msgSeqRow.nextSeq,
             local_id: localId,
             invoked_at: stampedAt

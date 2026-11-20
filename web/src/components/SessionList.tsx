@@ -1483,6 +1483,13 @@ export function SessionListSearch(props: {
                 // check, focusing its "Got it" button reads as focus leaving
                 // and collapses the search bar out from under it.
                 if (related?.closest('[data-fue-callout]')) return
+                // The blocked controls sit beside this container, not inside
+                // it, so moving focus onto them read as focus leaving: the bar
+                // collapsed and unmounted the button BEFORE the click
+                // dispatched, swallowing it, and tabbing across from the field
+                // lost the focused control the same way. They share the search
+                // field's focus boundary instead (#1717).
+                if (related?.closest('[data-search-focus-boundary]')) return
                 if (!event.currentTarget.contains(related as Node | null)) {
                     props.onExpandedChange(false)
                 }
@@ -2791,10 +2798,18 @@ export function SessionList(props: {
     // rail + chip where they sit.
     const blockedSectionSessions = useMemo(() => {
         const now = Date.now()
-        return machineFilteredSessions
+        const blocked = machineFilteredSessions
             .filter(session => !session.globalPinned && sessionIsBlocked(session, { now }))
-            .sort((a, b) => b.updatedAt - a.updatedAt)
-    }, [machineFilteredSessions])
+        // Same ordering rule as the global-pinned section. A bare `updatedAt`
+        // sort discarded the search ranking the matches had already been
+        // given, so a recently touched path-only match outranked an older
+        // exact title match — and outside search it silently overrode the
+        // operator's configured list order too.
+        if (searchScoreIndex && hasTextQuery) {
+            return sortSessionsBySearchRelevance(blocked, searchScoreIndex)
+        }
+        return [...blocked].sort(listComparator)
+    }, [machineFilteredSessions, searchScoreIndex, hasTextQuery, listComparator])
     const blockedSectionIds = useMemo(
         () => new Set(blockedSectionSessions.map(session => session.id)),
         [blockedSectionSessions]
@@ -3863,6 +3878,10 @@ export function SessionList(props: {
                     {showSearch && searchExpanded && (blockedCount > 0 || showBlockedOnly) ? (
                         <div
                             data-testid="blocked-search-controls"
+                            // Claims the search field's focus boundary, so its
+                            // blur handler does not collapse the bar (and
+                            // unmount these buttons) when focus lands here.
+                            data-search-focus-boundary=""
                             className="flex shrink-0 items-center gap-1"
                         >
                             {blockedCount > 0 ? (

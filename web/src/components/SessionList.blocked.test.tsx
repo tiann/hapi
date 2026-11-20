@@ -286,6 +286,67 @@ describe('SessionList blocked chrome (#1717)', () => {
         expect(within(compact).getByTestId('blocked-lens-toggle')).toBeTruthy()
     })
 
+    it('orders the Blocked section by the configured list order', () => {
+        // The section sorted by `updatedAt`, which is neither the operator's
+        // configured order nor the search ranking. The default comparator
+        // orders by last USER message, so agent output must not reorder the
+        // section — and a row touched recently by the agent must not jump
+        // above one the operator spoke to more recently.
+        const now = Date.now()
+        renderList([
+            blocked('agent-chatty', {
+                updatedAt: now,
+                createdAt: now - 100_000,
+                lastUserMessageAt: now - 90_000
+            }),
+            blocked('operator-recent', {
+                updatedAt: now - 50_000,
+                createdAt: now - 100_000,
+                lastUserMessageAt: now - 10_000
+            })
+        ])
+
+        const order = Array.from(
+            screen.getByTestId('blocked-section').querySelectorAll('[data-session-id]')
+        ).map((row) => row.getAttribute('data-session-id'))
+
+        expect(order).toEqual(['operator-recent', 'agent-chatty'])
+    })
+
+    it('does not collapse the expanded search when focus moves to the blocked controls', () => {
+        // The controls sit beside the search container, not inside it, so
+        // moving focus onto them read as focus leaving: the bar collapsed and
+        // unmounted the button BEFORE the click dispatched, swallowing it.
+        // Tabbing across from the field lost the control the same way.
+        Element.prototype.scrollIntoView = vi.fn()
+        renderList([blocked('stuck-one'), makeSession({ id: 'fine-one' })])
+
+        fireEvent.click(within(screen.getByTestId('session-list-search')).getAllByRole('button')[0]!)
+        const compact = screen.getByTestId('blocked-search-controls')
+        const pill = within(compact).getByTestId('blocked-jump-pill')
+
+        // The blur that happens as focus crosses from the field to the pill.
+        fireEvent.blur(screen.getByTestId('session-list-search'), { relatedTarget: pill })
+
+        // Still mounted, so the click that follows the blur actually lands.
+        expect(screen.getByTestId('blocked-search-controls')).toBeTruthy()
+        fireEvent.click(pill)
+        expect(screen.getByTestId('blocked-search-controls')).toBeTruthy()
+    })
+
+    it('still collapses the expanded search when focus leaves it entirely', () => {
+        // Positive control: the escape hatch must be scoped to those controls,
+        // not a blanket "never collapse".
+        renderList([blocked('stuck-one'), makeSession({ id: 'fine-one' })])
+
+        fireEvent.click(within(screen.getByTestId('session-list-search')).getAllByRole('button')[0]!)
+        expect(screen.getByTestId('blocked-search-controls')).toBeTruthy()
+
+        fireEvent.blur(screen.getByTestId('session-list-search'), { relatedTarget: document.body })
+
+        expect(screen.queryByTestId('blocked-search-controls')).toBeNull()
+    })
+
     it('does not let the selected session escape the machine filter', () => {
         // The machine filter had no selected-session exception before the
         // blocked jump, and must not gain one: with a machine-A session open,

@@ -148,28 +148,32 @@ describe('importing a transcript does not reopen an answered blocker (#1717)', (
 
         // The transcript: blocked footer, the operator's reply, then an
         // assistant turn carrying no footer at all.
+        // Written exactly as the importer writes them — `addImportedMessage`,
+        // not `addMessage`. Using the live insert here modelled an import that
+        // does not exist: it stamps arrival at `now` while the importer stamps
+        // the transcript's own time, which is the whole distinction the
+        // reconciliation turns on.
         const rows = [
-            store.messages.addMessage(session.id, {
+            store.messages.addImportedMessage(session.id, {
                 role: 'agent',
                 content: {
                     type: 'output',
                     data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
                 }
-            }, undefined, null, historical),
-            store.messages.addMessage(session.id, {
+            }, 'imported-footer', historical).message,
+            store.messages.addImportedMessage(session.id, {
                 role: 'user',
                 content: { type: 'text', text: 'here is the key' },
                 meta: { sentFrom: 'webapp' }
-            }, 'imported-reply', null, historical + 1_000),
-            store.messages.addMessage(session.id, {
+            }, 'imported-reply', historical + 1_000).message,
+            store.messages.addImportedMessage(session.id, {
                 role: 'agent',
                 content: {
                     type: 'output',
                     data: { type: 'assistant', message: { content: [{ type: 'text', text: 'All done.' }] } }
                 }
-            }, undefined, null, historical + 2_000)
+            }, 'imported-tail', historical + 2_000).message
         ]
-        store.messages.markMessagesInvoked(session.id, ['imported-reply'], historical + 1_000)
 
         // Replayed through live ingestion exactly as the importer does.
         for (const message of rows) {
@@ -190,6 +194,56 @@ describe('importing a transcript does not reopen an answered blocker (#1717)', (
         // Live ingestion alone leaves the answered footer standing.
         expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
 
+        engine.reconcileNotifySignalAfterImport(session.id)
+
+        expect(engine.getSession(session.id)?.lastNotify ?? null).toBeNull()
+    })
+
+    it('does not reopen an answered imported blocker when a rewind retains it', async () => {
+        // The reviewer's sequence: import (footer, reply, footerless reply),
+        // resume, send another prompt, then rewind to that prompt so the
+        // imported prefix survives. Rewind reconciliation re-derives from the
+        // retained transcript — and an imported row used to carry the
+        // transcript's time in `invoked_at` but IMPORT time in `received_at`,
+        // so the imported footer looked newer than the imported reply that
+        // answered it and the replacement write reopened the blocker.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'import-then-rewind',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const historical = Date.now() - 86_400_000
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needed a key' })
+
+        // Imported prefix, written the way the importer writes it.
+        store.messages.addImportedMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, 'imported-footer', historical)
+        store.messages.addImportedMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'here is the key' },
+            meta: { sentFrom: 'webapp' }
+        }, 'imported-reply', historical + 1_000)
+        store.messages.addImportedMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: 'All done.' }] } }
+            }
+        }, 'imported-tail', historical + 2_000)
+
+        // What the rewind reconciliation does with the retained prefix.
         engine.reconcileNotifySignalAfterImport(session.id)
 
         expect(engine.getSession(session.id)?.lastNotify ?? null).toBeNull()
@@ -319,6 +373,43 @@ describe('notify revision is whatever SQLite says (#1717)', () => {
         expect(row?.lastNotifyUpdatedAt).toBeGreaterThan(0)
         expect(patch?.notifyUpdatedAt).toBe(row!.lastNotifyUpdatedAt!)
         expect(cache.getSession(id)?.notifyUpdatedAt).toBe(row!.lastNotifyUpdatedAt!)
+    })
+})
+
+describe('the acknowledgement broadcast stays inside its own schema (#1717)', () => {
+    it('publishes the persisted, bounded key set on the 65th distinct dismissal', () => {
+        // The cache keeps dismissal keys after their prompts resolve, so a
+        // long-lived session reaches the 64-key bound. SQLite trims there; the
+        // broadcast did not, so it carried 65 keys and the web rejected the
+        // whole session against its own 64-key schema limit — other tabs
+        // silently missed the live dismissal.
+        const store = new Store(':memory:')
+        const emitted: SyncEvent[] = []
+        const cache = new SessionCache(store, {
+            emit: (event: SyncEvent) => { emitted.push(event) }
+        } as EventPublisher)
+        const session = cache.getOrCreateSession(
+            'ack-bound',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+
+        for (let i = 0; i < 65; i++) {
+            cache.setSessionBlockedAck(session.id, 'handled', Date.now() + i, `request:r${i}`)
+        }
+
+        const row = store.sessions.getSessionByNamespace(session.id, 'default')
+        const last = emitted
+            .filter((event) => event.type === 'session-updated')
+            .map((event) => (event as { data: { blockedAck?: { keys?: string[] | null } } }).data)
+            .at(-1)
+
+        expect(row?.blockedAckKeys).toHaveLength(64)
+        expect(last?.blockedAck?.keys).toHaveLength(64)
+        // And it is the SAME bounded set the row holds, not merely the same size.
+        expect(last?.blockedAck?.keys).toEqual(row?.blockedAckKeys ?? [])
+        expect(cache.getSession(session.id)?.blockedAck?.keys).toEqual(row?.blockedAckKeys ?? [])
     })
 })
 

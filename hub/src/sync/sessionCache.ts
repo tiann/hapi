@@ -596,10 +596,29 @@ export class SessionCache {
         const keys = key
             ? Array.from(new Set([...existingKeys, key]))
             : (existingKeys.length > 0 ? existingKeys : null)
-        const ack = { at, reason, keys }
-        if (!this.store.sessions.setSessionBlockedAck(sessionId, ack, session.namespace)) {
+        if (!this.store.sessions.setSessionBlockedAck(
+            sessionId,
+            { at, reason, keys },
+            session.namespace
+        )) {
             return null
         }
+        // Read the WHOLE acknowledgement back from the row, not just its
+        // revision. SQLite bounds the key set; a long-lived session keeps
+        // dismissal keys after their prompts resolve, so the 65th distinct
+        // dismissal was trimmed to 64 in storage while the broadcast carried
+        // all 65 — and the web rejected that session wholesale against the
+        // 64-key schema limit, so other tabs silently missed the dismissal.
+        // Publishing what was persisted keeps the wire inside its own schema
+        // and keeps every tab agreeing with the row.
+        const stored = this.store.sessions.getSessionByNamespace(sessionId, session.namespace)
+        const ack = stored?.blockedAckAt !== null && stored?.blockedAckAt !== undefined
+            ? {
+                at: stored.blockedAckAt,
+                reason: stored.blockedAckReason ?? reason,
+                keys: stored.blockedAckKeys ?? null
+            }
+            : { at, reason, keys }
         // In place + full-session emit, for the same reason as the notify
         // writes: refreshSession would discard in-memory runtime state.
         session.blockedAck = ack
