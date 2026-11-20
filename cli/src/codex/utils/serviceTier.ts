@@ -1,4 +1,8 @@
 import { isDeepStrictEqual } from 'node:util';
+import { createHash } from 'node:crypto';
+import { readFile, realpath } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 
 /** Validate against the same native account/provider that will execute the thread. */
@@ -14,10 +18,22 @@ const providerFields = (value: unknown): Record<string, unknown> => value && typ
     ? Object.fromEntries(Object.entries(value).filter(([key]) => providerConfigKey(key)))
     : {};
 
-export function catalogConfiguration(response: Awaited<ReturnType<CodexAppServerClient['readConfig']>>): unknown {
+export async function catalogConfiguration(response: Awaited<ReturnType<CodexAppServerClient['readConfig']>>): Promise<unknown> {
     if (!Array.isArray(response.layers)) return undefined;
+    const configuredPath = response.config.model_catalog_json;
+    let staticCatalog: { path: string; hash: string } | undefined;
+    if (configuredPath != null) {
+        if (typeof configuredPath !== 'string') return undefined;
+        try {
+            const file = configuredPath.startsWith('file:') ? fileURLToPath(configuredPath) : configuredPath;
+            if (!isAbsolute(file)) return undefined;
+            const path = await realpath(file);
+            staticCatalog = { path, hash: createHash('sha256').update(await readFile(path)).digest('hex') };
+        } catch { return undefined; }
+    }
     return {
         config: providerFields(response.config),
+        ...(staticCatalog ? { staticCatalog } : {}),
         layers: response.layers.flatMap(layer => {
             if (!layer || layer.disabledReason) return [];
             const fields = providerFields(layer.config);
@@ -26,8 +42,8 @@ export function catalogConfiguration(response: Awaited<ReturnType<CodexAppServer
     };
 }
 
-export function catalogConfigurationMatches(startup: unknown, response: Awaited<ReturnType<CodexAppServerClient['readConfig']>>): boolean {
-    return startup != null && isDeepStrictEqual(startup, catalogConfiguration(response));
+export async function catalogConfigurationMatches(startup: unknown, response: Awaited<ReturnType<CodexAppServerClient['readConfig']>>): Promise<boolean> {
+    return startup != null && isDeepStrictEqual(startup, await catalogConfiguration(response));
 }
 
 /** Selected tier notifications do not prove the native execution feature is enabled. */
@@ -94,12 +110,12 @@ async function discoverUltrafastTarget(
     const startup = verifyConfig ? await bounded(() => Promise.resolve(startupCatalogConfig)) : undefined;
     const current = verifyConfig || !explicitModel || !modelProvider
         ? await bounded(() => client.readConfig({ cwd, includeLayers: verifyConfig })) : undefined;
-    const assertCatalogConfiguration = (response: typeof current) => {
-        if (!response || !catalogConfigurationMatches(startup, response)) {
+    const assertCatalogConfiguration = async (response: typeof current) => {
+        if (!response || !await bounded(() => catalogConfigurationMatches(startup, response))) {
             throw new Error('Cannot verify the Codex catalog against the launch provider configuration; settings were not changed. Restart the Codex runtime and retry.');
         }
     };
-    if (verifyConfig) assertCatalogConfiguration(current);
+    if (verifyConfig) await assertCatalogConfiguration(current);
     const target = (configured: typeof current) => ({
         effectiveProvider: modelProvider ?? (typeof configured?.config.model_provider === 'string' ? configured.config.model_provider : 'openai'),
         effectiveModel: explicitModel ?? (typeof configured?.config.model === 'string' && configured.config.model.trim() ? configured.config.model : undefined)
@@ -118,7 +134,7 @@ async function discoverUltrafastTarget(
     } while (cursor);
     if (verifyConfig) {
         const finalConfig = await bounded(() => client.readConfig({ cwd, includeLayers: true }));
-        assertCatalogConfiguration(finalConfig);
+        await assertCatalogConfiguration(finalConfig);
         const finalTarget = target(finalConfig);
         if (finalTarget.effectiveModel !== effectiveModel || finalTarget.effectiveProvider !== effectiveProvider) {
             throw new Error('The effective Codex model or provider changed during tier discovery; settings were not changed. Retry with the current configuration.');

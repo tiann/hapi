@@ -191,9 +191,17 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(state.sessions.get(original.sessionId)?.metadata.lifecycleState).not.toBe('archived');
             const originalNativeRequest = CodexAppServerClient.prototype.request;
             let rejectMetadata = true;
+            let rejectSideSubscription = true;
+            let controlConnection: CodexAppServerClient | undefined;
             const metadataFailure = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
                 if (rejectMetadata && method === 'thread/metadata/update' && !clients.includes(this) && record(params).threadId === threadId) {
+                    controlConnection = this;
                     rejectMetadata = false; return Promise.reject(new Error('fixture metadata update unavailable'));
+                }
+                if (rejectSideSubscription && controlConnection && this !== controlConnection && !clients.includes(this)
+                    && method === 'thread/resume' && record(params).threadId === threadId) {
+                    rejectSideSubscription = false;
+                    return Promise.reject(new Error('fixture side subscription unavailable'));
                 }
                 return originalNativeRequest.call(this, method, params) as Promise<T>;
             }); extraSpies.push(metadataFailure);
@@ -218,20 +226,9 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             clients.push(retryFrontend); await initializeSharedClient(retryFrontend);
             const configs = vi.spyOn(SharedCodexRoot.prototype, 'config');
             extraSpies.push(configs);
-            const refresh = SharedCodexRoot.prototype.refresh;
-            let rejectRefresh = true;
-            const historyFailure = vi.spyOn(SharedCodexRoot.prototype, 'refresh').mockImplementation(function(this: InstanceType<typeof SharedCodexRoot>) {
-                if (rejectRefresh && this.threadId === threadId) {
-                    rejectRefresh = false;
-                    return Promise.reject(new Error('fixture history refresh unavailable'));
-                }
-                return refresh.call(this);
-            });
-            extraSpies.push(historyFailure);
             await expect(retryFrontend.request('thread/resume', {
                 threadId, excludeTurns: true, serviceTier: 'ultrafast', model: 'gpt-6.1-sol', config: { service_tier: 'ultrafast' }
-            })).rejects.toThrow('fixture history refresh unavailable');
-            historyFailure.mockRestore();
+            })).rejects.toThrow('fixture side subscription unavailable');
             expect(configs.mock.results.map(result => result.value)).toContainEqual(expect.objectContaining({
                 threadId, serviceTier: 'priority', config: expect.objectContaining({
                     'shell_environment_policy.set.HAPI_SESSION_ID': original.sessionId,
@@ -240,6 +237,22 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             }));
             configs.mockRestore();
             metadataFailure.mockRestore();
+            await retryFrontend.disconnect();
+            await vi.waitFor(async () => {
+                expect(await concurrent.request('thread/read', { threadId, includeTurns: false }))
+                    .toMatchObject({ thread: { status: { type: 'notLoaded' } } });
+            }, { timeout: 5_000 });
+            if (!controlConnection) throw new Error('Fixture did not observe the runtime control connection');
+            const abandonedTransport = (controlConnection as unknown as { transportAbandonedHandler: () => void }).transportAbandonedHandler;
+            const controlReconnect = vi.spyOn(controlConnection, 'request');
+            extraSpies.push(controlReconnect);
+            await controlConnection.disconnect();
+            abandonedTransport();
+            await vi.waitFor(() => expect(controlConnection!.isInitialized()).toBe(true));
+            expect(await concurrent.request('thread/read', { threadId, includeTurns: false }))
+                .toMatchObject({ thread: { status: { type: 'notLoaded' } } });
+            expect(controlReconnect).not.toHaveBeenCalledWith('thread/resume', expect.objectContaining({ threadId }));
+            controlReconnect.mockRestore();
             expect(second.runtime.sessions[original.sessionId].active).toBe(true);
             await expect(concurrent.request('thread/settings/update', { threadId, serviceTier: null })).rejects.toThrow('initialization is pending');
             await expect(second.client.request('thread/queue/delete', { threadId, queuedSubmissionId: 'not-bound' })).rejects.toThrow('tier confirmation');
@@ -249,7 +262,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true })));
             const response = attempts.find(result => result.status === 'fulfilled');
             expect(response).toMatchObject({ status: 'fulfilled', value: { serviceTier: 'priority' } });
-            expect(await retryFrontend.request('thread/resume', {
+            expect(await concurrent.request('thread/resume', {
                 threadId, excludeTurns: true, initialTurnsPage: { limit: 1 }, serviceTier: 'ultrafast'
             })).toMatchObject({
                 model: 'gpt-6-astra', serviceTier: 'priority', initialTurnsPage: { data: expect.any(Array) }

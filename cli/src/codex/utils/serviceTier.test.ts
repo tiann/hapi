@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { catalogConfiguration, isUltrafastAvailable, isUltrafastEnabled, inheritedResumeTier, resumeTierContext, resolveUltrafastLaunch } from './serviceTier';
 
 it('preserves the native tier while lost-write confirmation is pending', async () => {
@@ -21,7 +25,7 @@ it('leaves the requested tier untouched when the same provider changes catalog e
     };
     const requested = { model: 'eligible', modelProvider: 'custom', serviceTier: 'ultrafast' };
     await expect(resolveUltrafastLaunch(client, 'thread/start', requested, '/project', undefined, undefined,
-        catalogConfiguration(configuration('https://old.example.test')))).rejects.toThrow('launch provider configuration');
+        await catalogConfiguration(configuration('https://old.example.test')))).rejects.toThrow('launch provider configuration');
     expect(listModels).not.toHaveBeenCalled();
     expect(requested.serviceTier).toBe('ultrafast');
 });
@@ -38,11 +42,30 @@ it.each([
         request: vi.fn(), retainsResumeModelProvider: () => true, supportsProviderScopedModels: () => true,
     };
     const requested = { ...params, serviceTier: 'ultrafast' };
-    const launch = resolveUltrafastLaunch(client, 'thread/start', requested, '/project', undefined, undefined, catalogConfiguration(original));
+    const launch = resolveUltrafastLaunch(client, 'thread/start', requested, '/project', undefined, undefined, await catalogConfiguration(original));
     if (changed) await expect(launch).rejects.toThrow('effective Codex model or provider changed');
     else await expect(launch).resolves.toEqual({ params: requested, downgraded: false });
     expect(client.listModels).toHaveBeenCalledExactlyOnceWith({ includeHidden: true, modelProvider: 'original-provider' });
     expect(client.readConfig).toHaveBeenCalledTimes(2);
+});
+
+it('stops tier discovery when a static catalog changes in place during lookup', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hapi-static-catalog-'));
+    try {
+        const file = join(dir, 'models.json');
+        await writeFile(file, '{"models":[]}');
+        const config = { config: { model: 'eligible', model_provider: 'openai', model_catalog_json: pathToFileURL(file).href }, layers: [] };
+        const startup = await catalogConfiguration(config);
+        const listModels = vi.fn(async () => {
+            await writeFile(file, '{"models":[{"id":"eligible"}]}');
+            return { data: [] };
+        });
+        await expect(isUltrafastAvailable({
+            supportsProviderScopedModels: () => true, listModels, readConfig: vi.fn().mockResolvedValue(config)
+        }, 'eligible', dir, Date.now() + 10_000, 'openai', undefined, startup))
+            .rejects.toThrow('Restart the Codex runtime');
+        expect(listModels).toHaveBeenCalledOnce();
+    } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 it.each(['thread/start', 'thread/fork', 'thread/resume'])('applies the same catalog fallback before native %s', async method => {

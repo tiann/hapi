@@ -132,7 +132,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 try {
                     await initializeSharedClient(control);
                     // Roots remain loaded by their independent side-clients.
-                    for (const threadId of roots.keys()) await control.request('thread/resume', { threadId, excludeTurns: true });
+                    for (const [threadId, root] of roots) {
+                        if (root.isActivated && !ending.has(root)) await control.request('thread/resume', { threadId, excludeTurns: true });
+                    }
                     return;
                 } catch (error) {
                     logger.debug('[Codex shared] control reconnect', error);
@@ -284,10 +286,12 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             if (ending.has(root)) throw new Error('Codex thread was archived during binding');
             if (requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) root.beginTierConfirmation();
             roots.set(threadId, root);
+        }
+        if (!resume?.rootBound || subscribe && !root.client.isInitialized()) {
             await root.bind(threadId, response, subscribe);
             // A new thread starts with zero cumulative usage. Seed once before
             // activation, including when the first bind had to be retried.
-            if (freshThread) root.seedFreshUsage();
+            if (freshThread && !resume?.rootBound) root.seedFreshUsage();
             if (resume) resume.rootBound = true;
         } else root.acceptSettings(response, true);
         assertRunning();
@@ -577,11 +581,10 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             startupCatalogConfig = (async () => {
                 let timer: ReturnType<typeof setTimeout> | undefined;
                 try {
-                    const config = await Promise.race([
-                        control.readConfig({ cwd: launch.cwd, includeLayers: true }),
+                    return await Promise.race([
+                        control.readConfig({ cwd: launch.cwd, includeLayers: true }).then(catalogConfiguration),
                         new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 5_000); })
-                    ]);
-                    return config ? catalogConfiguration(config) ?? null : null;
+                    ]) ?? null;
                 } catch {
                     logger.debug('[Codex shared] catalog provider snapshot unavailable');
                     return null;

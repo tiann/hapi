@@ -836,6 +836,7 @@ describe('compaction delivery confirmation', () => {
 
     it('does not keep waiting after native disconnect or stopping', async () => {
         const f = await fixture();
+        await f.root.activate();
         await startCompaction(f);
         await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: ['input'] }));
         f.native.initialized = false;
@@ -982,6 +983,7 @@ describe('shared plan actions', () => {
 
     it('preserves content while native turns, mode changes and disconnects withdraw controls', async () => {
         const f = await fixture();
+        await f.root.activate();
         const id = await completePlan(f);
         expect(f.state().codexPlanProposalId).toBe(id);
         expect(f.state().requests).toEqual({});
@@ -1141,6 +1143,7 @@ describe('shared steering availability', () => {
 
     it('reconciles native and Hub reconnects without publishing on every refresh', async () => {
         const f = await fixture();
+        await f.root.activate();
         const updates = f.updateState.mock.calls.length;
         await f.root.refresh(); await f.root.refresh();
         expect(f.updateState).toHaveBeenCalledTimes(updates);

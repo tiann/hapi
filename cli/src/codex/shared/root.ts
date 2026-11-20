@@ -166,7 +166,7 @@ export class SharedCodexRoot {
             if (this.host.attached) {
                 this.stopAccepting();
                 void this.host.end(this, false, 'unavailable').catch(error => logger.debug('[Codex attached] disconnect', error));
-            } else void this.reconnect();
+            } else if (this.activated) void this.reconnect();
         });
         this.session.onUserMessage((message, localId) => {
             const id = localId ?? randomUUID();
@@ -389,6 +389,7 @@ export class SharedCodexRoot {
         if (!this.projection) await this.initializeBinding(threadId);
         // The first subscription uses the complete response to initialize history.
         if (subscribe) {
+            if (!this.client.isInitialized()) await initializeSharedClient(this.client);
             await this.host.beforeSubscribe?.(threadId);
             response = record(await this.client.request('thread/resume', { threadId }));
         }
@@ -1124,7 +1125,7 @@ export class SharedCodexRoot {
                     const startup = await this.host.startupCatalogConfig;
                     if (startup != null) {
                         const config = await this.client.readConfig({ cwd: this.bootstrap.workingDirectory, includeLayers: true });
-                        canVerifyUltrafast = catalogConfigurationMatches(startup, config);
+                        canVerifyUltrafast = await catalogConfigurationMatches(startup, config);
                     }
                 } catch { /* Keep the model list and withhold unverified Ultrafast. */ }
             }
