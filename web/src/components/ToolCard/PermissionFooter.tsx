@@ -38,6 +38,7 @@ function isClaudeSession(metadata: SessionMetadataSummary | null): boolean {
 }
 
 function formatPermissionSummary(permission: ToolPermission, toolName: string, toolInput: unknown, codex: boolean, t: (key: string) => string): string {
+    if (permission.answerSubmitted) return t('tool.answerSentWaiting')
     if (permission.status === 'resolved') return t('tool.resolved')
     if (permission.status === 'pending') return t('tool.waitingForApproval')
     if (permission.status === 'canceled') return permission.reason ? `${t('tool.canceled')}: ${permission.reason}` : t('tool.canceled')
@@ -138,7 +139,7 @@ export function PermissionFooter(props: {
     const summary = formatPermissionSummary(permission, props.tool.name, props.tool.input, codex, t)
     const isPending = permission.status === 'pending'
 
-    const run = async (action: () => Promise<void>, hapticType: 'success' | 'error') => {
+    const run = async (action: () => Promise<unknown>, hapticType: 'success' | 'error') => {
         if (props.disabled) return
         setError(null)
         try {

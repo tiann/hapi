@@ -135,7 +135,7 @@ export function AskUserQuestionFooter(props: {
     if (!permission || permission.status !== 'pending') return null
     if (!isAskUserQuestionToolName(props.tool.name)) return null
 
-    const run = async (action: () => Promise<void>, hapticType: 'success' | 'error') => {
+    const run = async (action: () => Promise<unknown>, hapticType: 'success' | 'error') => {
         if (props.disabled) return
         setError(null)
         try {

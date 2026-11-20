@@ -1,8 +1,9 @@
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED } from '@hapi/protocol/rpcMethods'
 import { PermissionModeSchema } from '@hapi/protocol/schemas'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { z } from 'zod'
-import { PermissionRequestNotFoundError } from '../../sync/rpcGateway'
+import { PermissionDecisionRejectedError, PermissionQuestionReissuedError, PermissionRequestNotFoundError } from '../../sync/rpcGateway'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
@@ -20,12 +21,28 @@ const approveBodySchema = z.object({
     mode: PermissionModeSchema.optional(),
     allowTools: z.array(z.string()).optional(),
     decision: decisionSchema.optional(),
-    answers: answersSchema.optional()
+    answers: answersSchema.optional(),
+    instanceId: z.string().min(1).optional()
 })
 
 const denyBodySchema = z.object({
-    decision: decisionSchema.optional()
+    decision: decisionSchema.optional(),
+    instanceId: z.string().min(1).optional()
 })
+
+function permissionFailure(c: Context<WebAppEnv>, error: unknown): Response {
+    if (error instanceof PermissionRequestNotFoundError) {
+        const status = error.requestId.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX) ? 404 : 409
+        return c.json({ error: error.message }, status)
+    }
+    if (error instanceof PermissionQuestionReissuedError) {
+        return c.json({ error: error.message, code: CODEX_QUESTION_REISSUED }, 409)
+    }
+    if (error instanceof PermissionDecisionRejectedError) {
+        return c.json({ error: error.message }, 422)
+    }
+    throw error
+}
 
 export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -66,14 +83,11 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         const decision = parsed.data.decision
         const answers = parsed.data.answers
         try {
-            await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
+            const acknowledgement = await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers, parsed.data.instanceId)
+            return c.json({ ok: true, acknowledgement })
         } catch (error) {
-            if (error instanceof PermissionRequestNotFoundError) {
-                return c.json({ error: error.message }, 409)
-            }
-            throw error
+            return permissionFailure(c, error)
         }
-        return c.json({ ok: true })
     })
 
     app.post('/sessions/:id/permissions/:requestId/deny', async (c) => {
@@ -102,14 +116,11 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         }
 
         try {
-            await engine.denyPermission(sessionId, requestId, parsed.data.decision)
+            const acknowledgement = await engine.denyPermission(sessionId, requestId, parsed.data.decision, parsed.data.instanceId)
+            return c.json({ ok: true, acknowledgement })
         } catch (error) {
-            if (error instanceof PermissionRequestNotFoundError) {
-                return c.json({ error: error.message }, 409)
-            }
-            throw error
+            return permissionFailure(c, error)
         }
-        return c.json({ ok: true })
     })
 
     return app

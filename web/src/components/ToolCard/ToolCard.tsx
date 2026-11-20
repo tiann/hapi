@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { PermissionFooter, permissionFooterContent } from '@/components/ToolCard/PermissionFooter'
 import { CodexPlanFooter } from '@/components/ToolCard/CodexPlanFooter'
 import { AskUserQuestionFooter } from '@/components/ToolCard/AskUserQuestionFooter'
+import { applyCodexQuestionSubmission, getCodexQuestionSubmission, isHiddenCodexQuestionSubmission, useCodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
 import { RequestUserInputFooter } from '@/components/ToolCard/RequestUserInputFooter'
 import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
 import { isRequestUserInputToolName } from '@/components/ToolCard/requestUserInput'
@@ -336,7 +337,17 @@ function renderToolInput(block: ToolCallBlock, surface: 'inline' | 'dialog' = 'i
     return <CodeBlock code={safeStringify(input)} language="json" title="Input" collapseLongContent={collapseLongContent} {...codeBlockSurfaceProps} />
 }
 
-export function ToolStatusIcon(props: { state: ToolCallBlock['tool']['state'] }) {
+type ToolHeaderState = ToolCallBlock['tool']['state'] | 'closed'
+
+export function ToolStatusIcon(props: { state: ToolHeaderState }) {
+    if (props.state === 'closed') {
+        return (
+            <svg aria-hidden="true" className="h-3 w-3" viewBox="0 0 16 16" fill="none">
+                <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" />
+                <line x1="4" y1="12" x2="12" y2="4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+        )
+    }
     if (props.state === 'completed') {
         return (
             <svg className="h-3 w-3" viewBox="0 0 16 16" fill="none">
@@ -369,7 +380,7 @@ export function ToolStatusIcon(props: { state: ToolCallBlock['tool']['state'] })
     )
 }
 
-export function toolStatusColorClass(state: ToolCallBlock['tool']['state']): string {
+export function toolStatusColorClass(state: ToolHeaderState): string {
     if (state === 'completed') return 'text-emerald-600'
     if (state === 'error') return 'text-red-600'
     if (state === 'pending') return 'text-amber-600'
@@ -443,7 +454,7 @@ export function ToolDetailDialogContent(props: {
     )
 }
 
-function ToolCardInner(props: ToolCardProps) {
+function ToolCardInner(props: ToolCardProps & { closedByReceipt: boolean }) {
     const { t } = useTranslation()
     const [detailsOpen, setDetailsOpen] = useState(false)
     const presentation = useMemo(() => getToolPresentation({
@@ -476,13 +487,14 @@ function ToolCardInner(props: ToolCardProps) {
     const isCodexAgentCard = toolName === 'CodexAgent'
     const isTerminalTool = isTerminalToolBlock(props.block)
     const useCompactTerminalCard = shouldUseCompactTerminalToolCard(toolName, props.terminalToolDisplayMode, isTerminalTool)
-    const showInline = shouldShowInlineToolCardBody(toolName, presentation.minimal, props.terminalToolDisplayMode, isTerminalTool)
+    const permission = props.block.tool.permission
+    const isRequestUserInput = isRequestUserInputToolName(toolName)
+    const showInline = (isRequestUserInput && permission?.answerSubmitted === true)
+        || shouldShowInlineToolCardBody(toolName, presentation.minimal, props.terminalToolDisplayMode, isTerminalTool)
     const CompactToolView = showInline ? getToolViewComponent(toolName, props.block.tool) : null
     const compactViewOwnsInteractions = toolName === 'CodexDiff'
     const ResultToolView = getToolResultViewComponent(toolName, props.block)
-    const permission = props.block.tool.permission
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)
-    const isRequestUserInput = isRequestUserInputToolName(toolName)
     const isQuestionTool = isAskUserQuestion || isRequestUserInput
     const showsPermissionFooter = permissionFooterContent(permission, toolName, props.block.tool.input) !== null
     const hasBody = showInline || taskSummary !== null || showsPermissionFooter
@@ -491,7 +503,11 @@ function ToolCardInner(props: ToolCardProps) {
     const inlineBodySpacing = props.block.tool.state === 'pending'
         ? 'mt-3'
         : (subtitle ? 'mt-1' : 'mt-0')
-    const stateColor = toolStatusColorClass(props.block.tool.state)
+    const toolState = props.block.tool.state
+    const headerState = props.closedByReceipt && (toolState === 'pending' || toolState === 'running')
+        ? 'closed'
+        : permission?.answerSubmitted && toolState === 'pending' ? 'running' : toolState
+    const stateColor = toolStatusColorClass(headerState)
     const { suppressFocusRing, onTriggerPointerDown, onTriggerKeyDown, onTriggerBlur } = usePointerFocusRing()
     const inlineDetailInvokerRef = useRef<HTMLElement | null>(null)
     const openDetails = () => setDetailsOpen(true)
@@ -548,7 +564,7 @@ function ToolCardInner(props: ToolCardProps) {
                     </span>
                 ) : null}
                 <span className={stateColor}>
-                    <ToolStatusIcon state={props.block.tool.state} />
+                    <ToolStatusIcon state={headerState} />
                 </span>
                 <span className="text-[var(--app-hint)]">
                     <DetailsIcon />
@@ -682,4 +698,12 @@ function ToolCardInner(props: ToolCardProps) {
     )
 }
 
-export const ToolCard = memo(ToolCardInner)
+export const ToolCard = memo(function ToolCard(props: ToolCardProps) {
+    const { submissions } = useCodexQuestionSubmission(props.sessionId)
+    const tool = props.block.tool
+    const submission = tool.permission && getCodexQuestionSubmission(submissions, tool.permission.id, tool.permission.instanceId)
+    const displayedTool = submission ? applyCodexQuestionSubmission(tool, submission) : tool
+    const block = displayedTool === tool ? props.block : { ...props.block, tool: displayedTool }
+    const closedByReceipt = displayedTool !== tool && isHiddenCodexQuestionSubmission(submission?.status)
+    return <ToolCardInner {...props} block={block} closedByReceipt={closedByReceipt} />
+})

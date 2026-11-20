@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED, PERMISSION_REQUEST_NOT_FOUND_MESSAGE } from '@hapi/protocol/rpcMethods';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState } from '@/api/types';
 import { isIndeterminateError } from '../codexAppServerClient';
@@ -17,7 +19,7 @@ type AsyncQuestion = {
 };
 
 function requestId(threadId: string, questionItemId: string): string {
-    return `codex-async-question:${JSON.stringify([threadId, questionItemId])}`;
+    return `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}${JSON.stringify([threadId, questionItemId])}`;
 }
 
 export function asyncQuestionReplies(text: string): Array<{ questionItemId: string; question?: string; answer: string }> {
@@ -55,7 +57,7 @@ export function asyncQuestionsForItem(threadId: string, value: unknown): AsyncQu
     });
 }
 
-type Pending = { question: AsyncQuestion; submitted: boolean };
+type Pending = { question: AsyncQuestion; instanceId: string; submitted: boolean };
 type Resolution = { status: 'resolved'; answer: string } | { status: 'canceled'; decision?: 'denied' };
 
 /** Reuses the existing question UI; replies are native user input, never RPC responses. */
@@ -92,12 +94,13 @@ export class SharedCodexAsyncQuestions {
             if (this.pending.has(question.id)) continue;
             // Shutdown also cancels controls. Only an explicit user decision survives replay.
             if (this.completedAtBootstrap?.[question.id]?.decision === 'denied') continue;
-            this.pending.set(question.id, { question, submitted: false });
+            const instanceId = randomUUID();
+            this.pending.set(question.id, { question, instanceId, submitted: false });
             this.session.updateAgentState(state => {
                 const completedRequests = { ...state.completedRequests };
                 delete completedRequests[question.id];
                 return { ...state, completedRequests, requests: { ...state.requests, [question.id]: {
-                    tool: 'request_user_input', toolCallId: question.id, arguments: question.input,
+                    tool: 'request_user_input', toolCallId: question.id, instanceId, arguments: question.input,
                     createdAt: typeof item.completedAtMs === 'number' ? item.completedAtMs : Date.now()
                 } } };
             });
@@ -117,7 +120,15 @@ export class SharedCodexAsyncQuestions {
 
     async answer(reply: PermissionReply): Promise<boolean> {
         const pending = this.pending.get(reply.id);
-        if (!pending) return false;
+        if (!pending) {
+            if (reply.id.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX)) {
+                throw new Error(PERMISSION_REQUEST_NOT_FOUND_MESSAGE);
+            }
+            return false;
+        }
+        if (reply.instanceId !== undefined && reply.instanceId !== pending.instanceId) {
+            throw new Error(CODEX_QUESTION_REISSUED);
+        }
         if (this.closed || pending.submitted) throw new Error('Question already submitted or unavailable');
         const question = pending.question;
         if (!reply.approved) {

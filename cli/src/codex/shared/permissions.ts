@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ApiSessionClient } from '@/api/apiSession';
+import type { PermissionDecisionResponse } from '@hapi/protocol/apiTypes';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 import { registerAppServerPermissionHandlers, IGNORE_SHARED_REQUEST } from '../utils/appServerPermissionAdapter';
@@ -7,6 +8,7 @@ import { record, string } from './gateway';
 
 const ReplySchema = z.object({
     id: z.string(), approved: z.boolean(),
+    instanceId: z.string().min(1).optional(),
     decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).optional(),
     reason: z.string().optional(),
     answers: z.union([z.record(z.string(), z.array(z.string())), z.record(z.string(), z.object({ answers: z.array(z.string()) }))]).optional()
@@ -36,7 +38,10 @@ export class SharedCodexPermissions {
         private readonly onUserWait?: (threadId: string) => ((endedAt: number) => void) | undefined) {
         session.rpcHandlerManager.registerHandler(RPC_METHODS.Permission, async (raw: unknown) => {
             const reply = ReplySchema.parse(raw);
-            if (await answerAsyncQuestion?.(reply)) return;
+            if (await answerAsyncQuestion?.(reply)) {
+                if (!reply.instanceId) return;
+                return { ok: true, acknowledgement: { requestId: reply.id, instanceId: reply.instanceId } } satisfies PermissionDecisionResponse;
+            }
             const request = this.pending.get(reply.id);
             if (!request || request.submitted) throw new Error('Request already resolved or submitted');
             const questions = record(request.input).questions;
@@ -55,6 +60,7 @@ export class SharedCodexPermissions {
                 return;
             }
             request.answer(reply);
+            return undefined;
         });
     }
 

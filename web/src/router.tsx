@@ -672,8 +672,16 @@ function SessionPage() {
                 retargetSharePendingTransfer(session.id, resolvedSessionId)
                 seedMessageWindowFromSession(session.id, resolvedSessionId)
             }
+            // A replacement session has its own state and revision sequences.
+            const seed = resolvedSessionId === session.id ? session : {
+                ...session,
+                agentState: null,
+                agentStateVersion: 0,
+                contentRevision: 0,
+                readState: undefined
+            }
             queryClient.setQueryData(queryKeys.session(resolvedSessionId), (previous: { session?: typeof session } | undefined) => ({
-                session: { ...(previous?.session ?? session), id: resolvedSessionId, active: true }
+                session: { ...(previous?.session ?? seed), id: resolvedSessionId, active: true }
             }))
             void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
         }

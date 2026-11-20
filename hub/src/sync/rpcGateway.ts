@@ -1,5 +1,7 @@
+import { getPermissionDecisionAcknowledgement, type PermissionDecisionResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import { isObject } from '@hapi/protocol'
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED, DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import {
     UsageQueryResultSchema,
     UsageQuerySettingsResponseSchema,
@@ -111,20 +113,38 @@ export class RpcTargetMissingError extends Error {
  * sent a control_cancel_request for it) before this answer arrived.
  */
 export class PermissionRequestNotFoundError extends Error {
-    constructor(requestId: string) {
+    constructor(readonly requestId: string) {
         super(`Permission request is no longer active: ${requestId}`)
         this.name = 'PermissionRequestNotFoundError'
     }
 }
 
-// Matches on the specific shared message rather than treating any error on
-// the Permission RPC method as "not found" — a future, unrelated throw in
-// handlePermissionResponse's success path should surface as a genuine error,
-// not get relabeled as a stale request.
-function isPermissionRequestNotFoundResponse(response: unknown): boolean {
-    if (!response || typeof response !== 'object') return false
-    const error = (response as Record<string, unknown>).error
-    return error === PERMISSION_REQUEST_NOT_FOUND_MESSAGE
+export class PermissionDecisionRejectedError extends Error {
+    constructor(action: 'answer' | 'dismissal') {
+        super(`The agent rejected the ${action}`)
+        this.name = 'PermissionDecisionRejectedError'
+    }
+}
+
+export class PermissionQuestionReissuedError extends Error {
+    constructor() {
+        super('Question was reissued')
+        this.name = 'PermissionQuestionReissuedError'
+    }
+}
+
+function assertPermissionDecisionAccepted(requestId: string, response: unknown, action: 'answer' | 'dismissal'): void {
+    if (!isObject(response) || typeof response.error !== 'string') return
+    if (response.error === PERMISSION_REQUEST_NOT_FOUND_MESSAGE) {
+        throw new PermissionRequestNotFoundError(requestId)
+    }
+    // HTTP success closes Codex async forms before the agent publishes completion.
+    if (requestId.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX)) {
+        if (response.error === CODEX_QUESTION_REISSUED) {
+            throw new PermissionQuestionReissuedError()
+        }
+        throw new PermissionDecisionRejectedError(action)
+    }
 }
 
 export type RpcCommandResponse = CommandResponse
@@ -177,34 +197,40 @@ export class RpcGateway {
         mode?: PermissionMode,
         allowTools?: string[],
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
-        answers?: Record<string, string[]> | Record<string, { answers: string[] }>
-    ): Promise<void> {
+        answers?: Record<string, string[]> | Record<string, { answers: string[] }>,
+        instanceId?: string
+    ): Promise<PermissionDecisionResponse['acknowledgement']> {
         const response = await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
             approved: true,
             mode,
             allowTools,
             decision,
-            answers
+            answers,
+            instanceId
         })
-        if (isPermissionRequestNotFoundResponse(response)) {
-            throw new PermissionRequestNotFoundError(requestId)
-        }
+        assertPermissionDecisionAccepted(requestId, response, 'answer')
+        return requestId.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX)
+            ? getPermissionDecisionAcknowledgement(response, requestId, instanceId)
+            : undefined
     }
 
     async denyPermission(
         sessionId: string,
         requestId: string,
-        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
-    ): Promise<void> {
+        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
+        instanceId?: string
+    ): Promise<PermissionDecisionResponse['acknowledgement']> {
         const response = await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
             approved: false,
-            decision
+            decision,
+            instanceId
         })
-        if (isPermissionRequestNotFoundResponse(response)) {
-            throw new PermissionRequestNotFoundError(requestId)
-        }
+        assertPermissionDecisionAccepted(requestId, response, 'dismissal')
+        return requestId.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX)
+            ? getPermissionDecisionAcknowledgement(response, requestId, instanceId)
+            : undefined
     }
 
     async abortSession(sessionId: string): Promise<void> {

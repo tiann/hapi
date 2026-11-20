@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { QueryClient } from '@tanstack/react-query'
+import { createQueryClient } from '@/lib/query-client'
 import { queryKeys } from '@/lib/query-keys'
 import {
     mergeSessionDetailIfActiveUnchanged,
@@ -30,9 +30,7 @@ describe('mergeSessionDetailIfActiveUnchanged', () => {
 
 describe('refreshSessionDetailPreservingActive', () => {
     it('does not resurrect active after the cache went inactive mid-flight', async () => {
-        const queryClient = new QueryClient({
-            defaultOptions: { queries: { retry: false } },
-        })
+        const queryClient = createQueryClient()
         const resolvedSessionId = 'session-reopened'
         queryClient.setQueryData(queryKeys.session(resolvedSessionId), {
             session: { id: resolvedSessionId, active: true, title: 'seeded' },

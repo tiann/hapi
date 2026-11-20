@@ -14,6 +14,6 @@ export function getAppSseResyncQueryKeys(
     return [
         queryKeys.sessions,
         queryKeys.scratchlistSessionIds,
-        ['session']
+        queryKeys.sessionDetails
     ]
 }

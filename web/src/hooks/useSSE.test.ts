@@ -1,9 +1,10 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { act, renderHook } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import type { Session } from '@/types/api'
+import { createQueryClient } from '@/lib/query-client'
 import { queryKeys } from '@/lib/query-keys'
 import {
     applySessionDetailPatch,
@@ -60,7 +61,7 @@ class FakeEventSource {
 function renderUseSSE(options?: {
     onDisconnect?: (reason: string) => void
 }) {
-    const queryClient = new QueryClient()
+    const queryClient = createQueryClient()
     const wrapper = ({ children }: { children: ReactNode }) =>
         createElement(QueryClientProvider, { client: queryClient }, children)
     const hook = renderHook(() => useSSE({
@@ -474,6 +475,38 @@ describe('useSSE user-activity ordering', () => {
         patch('old', { lastUserMessageAt: 4_000 })
         expect(read()[0]!.lastUserMessageAt).toBe(200_000)
         expect(read().map(s => s.id)).toEqual(['old', 'new'])
+        unmount()
+    })
+
+    it('preserves the issued question across an older full snapshot, then accepts its removal', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        const id = 'session-1'
+        const detail = queryKeys.session(id)
+        const initial = {
+            ...makeSummary(), namespace: 'default', seq: 1, createdAt: 1, thinkingAt: 0,
+            agentStateVersion: 1, agentState: {}
+        }
+        const pending = { requests: { question: { tool: 'request_user_input', arguments: {}, instanceId: 'issued' } } }
+        const deliver = (data: unknown) => act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({ type: 'session-updated', sessionId: id, data })
+        })
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary()] })
+        deliver(initial)
+        deliver({ agentState: { version: 2, value: pending } })
+        expect(queryClient.getQueryData(detail)).toMatchObject({ session: { agentStateVersion: 2, agentState: pending } })
+
+        deliver({ ...initial, pinned: true })
+        expect(queryClient.getQueryData(detail)).toMatchObject({
+            session: { pinned: true, agentStateVersion: 2, agentState: pending }
+        })
+        expect(queryClient.getQueryData(queryKeys.sessions)).toMatchObject({
+            sessions: [{ pinned: true, agentStateVersion: 2, pendingRequestsCount: 1 }]
+        })
+
+        deliver({ ...initial, agentStateVersion: 3, agentState: { requests: {} } })
+        expect(queryClient.getQueryData(detail)).toMatchObject({
+            session: { agentStateVersion: 3, agentState: { requests: {} } }
+        })
         unmount()
     })
 

@@ -114,6 +114,7 @@ function arePermissionsEqual(left?: ToolPermission, right?: ToolPermission): boo
     if (left === right) return true
     if (!left || !right) return false
     return left.id === right.id
+        && left.instanceId === right.instanceId
         && left.status === right.status
         && left.reason === right.reason
         && left.mode === right.mode

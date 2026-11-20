@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState } from '@/api/types';
 import type { CodexAppServerClient } from '../codexAppServerClient';
-import { SharedCodexPermissions } from './permissions';
+import { SharedCodexPermissions, type PermissionReply } from './permissions';
 
-function fixture() {
+function fixture(answerAsyncQuestion?: (reply: PermissionReply) => Promise<boolean>) {
     let state: AgentState = {};
     const handlers = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
@@ -12,12 +12,25 @@ function fixture() {
         updateAgentState: (fn: (state: AgentState) => AgentState) => { state = fn(state); },
         rpcHandlerManager: { registerHandler: (key: string, fn: (raw: unknown) => Promise<unknown>) => handlers.set(key, fn) } } as unknown as ApiSessionClient;
     const respond = vi.fn();
-    const permissions = new SharedCodexPermissions(session, { respond } as unknown as CodexAppServerClient, 'generation');
+    const permissions = new SharedCodexPermissions(session, { respond } as unknown as CodexAppServerClient, 'generation', answerAsyncQuestion);
     const request = { id: 1, method: 'item/tool/requestUserInput', params: { threadId: 'thread', turnId: 'turn', itemId: 'call',
         questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [{ label: 'A', description: 'A' }, { label: 'B', description: 'B' }] }] } };
     return { permissions, request, respond, handlers, send, state: () => state };
 }
 describe('shared request arbitration', () => {
+    it.each([true, false])('acknowledges an accepted async decision only with an issuance (approved: %s)', async approved => {
+        const answer = vi.fn<(reply: PermissionReply) => Promise<boolean>>().mockResolvedValue(true);
+        const f = fixture(answer);
+        const id = 'codex-async-question:test';
+        const handler = f.handlers.get('permission')!;
+        const reply = { id, approved, instanceId: 'issuance' };
+        await expect(handler(reply)).resolves.toEqual({ ok: true, acknowledgement: { requestId: id, instanceId: 'issuance' } });
+        expect(answer).toHaveBeenLastCalledWith(reply);
+        await expect(handler({ id, approved })).resolves.toBeUndefined();
+        answer.mockRejectedValueOnce(new Error('Question already submitted or unavailable'));
+        await expect(handler(reply)).rejects.toThrow('Question already submitted or unavailable');
+    });
+
     it.each([{ notes: [] }, { notes: ['user_note: custom answer'] }])('preserves isOther and canonical other answers (%j) without claiming a winner', async ({ notes }) => {
         const f = fixture();
         const request = { ...f.request, params: { ...f.request.params, isBlocking: true,
