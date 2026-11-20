@@ -545,6 +545,23 @@ body:
         expect(template.reason).toContain('contact')
     })
 
+    // Regression (bot review, tiann/hapi#2147, follow-up): GitHub's own
+    // form-schema syntax table restricts an explicit `id` to "alpha-numeric
+    // characters, `-`, and `_`" — a stricter set than this parser (or the
+    // dialog) ever checked. An id with a space or other punctuation is
+    // itself malformed, a form GitHub's own chooser would reject outright,
+    // not merely a valid-but-unsupported one.
+    it('is genuinely invalid when an explicit id uses a character outside letters, numbers, - and _', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: "my id!"\n    attributes:\n      label: Contact'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('my id!')
+    })
+
     // Regression (bot review, tiann/hapi#2147, follow-up): a dropdown's
     // own choices were never checked for duplicates — only an empty
     // options list was rejected. GitHub requires a dropdown's choices to

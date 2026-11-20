@@ -216,11 +216,24 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
     // get `fieldId = 'foo'` uncaught, and since both the dialog and the hub
     // key answers by id, the second field's answer silently overwrites the
     // first's, letting one value satisfy two different required fields.
+    // GitHub's own schema restricts an explicit `id` to "alpha-numeric
+    // characters, `-`, and `_`" (bot review, tiann/hapi#2147, follow-up,
+    // confirmed directly against GitHub's documented form-schema syntax
+    // table) — a stricter character set than the dialog or hub ever
+    // enforced. An id outside that set (a space, punctuation, anything
+    // non-ASCII) is itself malformed, same "GitHub's own chooser would
+    // reject this whole form" class as every other check in this loop,
+    // checked before the duplicate check below so a malformed id doesn't
+    // first get silently treated as a normal, unique one.
+    const VALID_EXPLICIT_ID = /^[a-zA-Z0-9_-]+$/
     const usedIds = new Set<string>()
     for (const element of bodyRaw) {
         if (element && typeof element === 'object') {
             const explicitId = asString((element as Record<string, unknown>).id)
             if (explicitId) {
+                if (!VALID_EXPLICIT_ID.test(explicitId)) {
+                    return { id, name, kind: 'unsupported', reason: `Template body has an invalid field id "${explicitId}" (ids may only use letters, numbers, "-", and "_")`, githubValid: false }
+                }
                 if (usedIds.has(explicitId)) {
                     return { id, name, kind: 'unsupported', reason: `Template body has a duplicate field id "${explicitId}"`, githubValid: false }
                 }
