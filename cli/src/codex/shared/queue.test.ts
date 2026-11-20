@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SharedCodexQueue } from './queue';
+import { QueueAdmissionPaused, SharedCodexQueue } from './queue';
 
 vi.mock(import('node:fs/promises'), async importOriginal => {
     const fs = await importOriginal();
@@ -12,12 +12,12 @@ vi.mock(import('node:fs/promises'), async importOriginal => {
 const input = [{ type: 'text', text: 'hello' }];
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
-async function fixture() {
+async function fixture(assertInputAdmission?: () => void) {
     const dir = await mkdtemp(join(tmpdir(), 'hapi-queue-')); directories.push(dir);
     const rpc = vi.fn<(method: string, params: unknown) => Promise<unknown>>();
     const client = { request: async <T>(method: string, params?: unknown) => await rpc(method, params) as T };
     const consumed = vi.fn(); const uncertain = vi.fn();
-    const queue = new SharedCodexQueue(client, 'thread', join(dir, 'ledger.json'), consumed, uncertain);
+    const queue = new SharedCodexQueue(client, 'thread', join(dir, 'ledger.json'), consumed, uncertain, undefined, undefined, assertInputAdmission);
     await queue.load();
     return { queue, rpc, consumed, uncertain, client, dir };
 }
@@ -168,5 +168,26 @@ describe('shared native queue', () => {
         expect(await queue.steer('local', 'turn-a')).toMatchObject({ steered: false });
         expect(rpc.mock.calls[3]).toEqual(['turn/steer', { threadId: 'thread', expectedTurnId: 'turn-a', input, clientUserMessageId: 'local' }]);
         expect(queue.state('local')).toBe('queued');
+    });
+    it('rolls the replacement journal back to released when admission pauses after the write', async () => {
+        let restoring = false;
+        let restorationChecks = 0;
+        const { queue, rpc, dir, uncertain } = await fixture(() => {
+            if (restoring && ++restorationChecks === 2) throw new QueueAdmissionPaused('tier confirmation pending');
+        });
+        const queued = { id: 'native', input, clientUserMessageId: 'local' };
+        rpc.mockResolvedValueOnce({ queuedSubmission: queued }); await queue.enqueue('local', input);
+        rpc.mockResolvedValueOnce({ data: [queued] }).mockResolvedValueOnce({ deleted: true })
+            .mockImplementationOnce(async () => { restoring = true; throw new Error('active turn changed'); });
+        expect(await queue.steer('local', 'turn-a')).toMatchObject({ steered: false });
+        expect(JSON.parse(await readFile(join(dir, 'ledger.json'), 'utf8')).entries.local).toMatchObject({ state: 'released', input });
+        expect(uncertain).not.toHaveBeenCalled();
+        expect(rpc.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(1);
+
+        restoring = false;
+        rpc.mockResolvedValueOnce({ queuedSubmission: { ...queued, id: 'replacement' } });
+        await queue.resumeDeferredInput(() => true, () => false);
+        expect(queue.state('local')).toBe('queued');
+        expect(rpc.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(2);
     });
 });

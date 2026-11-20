@@ -77,6 +77,7 @@ export class SharedCodexQueue {
     private entries: Record<string, Entry> = {};
     private batches: Record<string, Batch> = {};
     private readonly deferredStarts = new Set<string>();
+    private readonly deferredSteers = new Set<string>();
     private operations: Promise<unknown> = Promise.resolve();
     private writes = Promise.resolve();
     constructor(private readonly client: Pick<CodexAppServerClient, 'request'>, readonly threadId: string,
@@ -547,10 +548,10 @@ export class SharedCodexQueue {
     enqueue(id: string, input: QueueInput, resumeInterrupted = false, batchKey?: string): Promise<void> {
         return this.serial(async () => {
             if (this.isHeldCancellation(id)) return;
+            if (!batchKey) return this.enqueueLegacy(id, input, resumeInterrupted);
             const previous = this.entries[id];
             try {
-                if (batchKey) await this.enqueueBatched(id, input, resumeInterrupted, batchKey);
-                else await this.enqueueLegacy(id, input, resumeInterrupted);
+                await this.enqueueBatched(id, input, resumeInterrupted, batchKey);
             } catch (error) {
                 if (error instanceof QueueAdmissionPaused) {
                     // The local check ran before native mutation. Restore the
@@ -577,9 +578,22 @@ export class SharedCodexQueue {
             if (error instanceof QueueAdmissionPaused) this.deferredStarts.add(id);
         }
     }
-    resumeDeferredStart(canResume: () => boolean): Promise<void> {
+    resumeDeferredInput(canResume: () => boolean, shouldStart: () => boolean): Promise<void> {
         return this.serial(async () => {
-            if (this.deferredStarts.size === 0 || !canResume()) return;
+            for (const id of this.deferredSteers) {
+                if (!canResume()) return;
+                const entry = this.entries[id];
+                if (entry?.state === 'released') {
+                    try { await this.enqueueLegacy(id, entry.input, shouldStart()); }
+                    catch (error) {
+                        if (error instanceof QueueAdmissionPaused) return;
+                        this.deferredSteers.delete(id);
+                        throw error;
+                    }
+                }
+                this.deferredSteers.delete(id);
+            }
+            if (this.deferredStarts.size === 0 || !canResume() || !shouldStart()) return;
             const nativeIds = new Set<string>();
             for (const id of this.deferredStarts) {
                 const entry = this.entries[id];
@@ -588,7 +602,7 @@ export class SharedCodexQueue {
                 if (nativeId) nativeIds.add(nativeId);
             }
             const queued = nativeIds.size > 0 && (await this.list()).some(item => nativeIds.has(item.id));
-            if (!canResume()) return;
+            if (!canResume() || !shouldStart()) return;
             if (queued) await this.client.request('thread/queue/start', { threadId: this.threadId });
             this.deferredStarts.clear();
         });
@@ -602,6 +616,7 @@ export class SharedCodexQueue {
         }
         // Preserve native edits and non-text input when the hub redelivers.
         if (existing?.state === 'released') input = existing.input;
+        this.assertInputAdmission();
         const entry: Entry = { state: 'unknown', input };
         this.entries[id] = entry; await this.save();
         try {
@@ -613,7 +628,13 @@ export class SharedCodexQueue {
             await this.save();
             if (resumeInterrupted) await this.startAfterEnqueue(id);
         } catch (error) {
-            if (error instanceof QueueAdmissionPaused) throw error;
+            if (error instanceof QueueAdmissionPaused) {
+                if (entry.state === 'consumed') return;
+                if (existing) this.entries[id] = existing;
+                else delete this.entries[id];
+                await this.save();
+                throw error;
+            }
             if (entry.state !== 'consumed') {
                 entry.state = indeterminate(error) ? 'unknown' : 'rejected';
                 await this.save();
@@ -801,7 +822,9 @@ export class SharedCodexQueue {
 
     steer(id: string, expectedTurnId: string, freshInput?: QueueInput): Promise<{ steered: boolean; indeterminate?: boolean; error?: string }> {
         return this.serial(async () => {
+            this.assertInputAdmission();
             let entry = this.entries[id];
+            const queued = entry !== undefined;
             if (entry?.state === 'consumed') return { steered: false, error: 'Message already consumed' };
             if (entry?.batchId) return this.steerBatchMember(entry, id, expectedTurnId, freshInput);
             if (entry) {
@@ -820,20 +843,15 @@ export class SharedCodexQueue {
                 entry = { input: freshInput, state: 'unknown' }; this.entries[id] = entry; await this.save();
             } else return { steered: false, error: 'Message not queued' };
             try {
+                this.assertInputAdmission();
                 await this.client.request('turn/steer', { threadId: this.threadId, expectedTurnId, input: entry.input, clientUserMessageId: id });
                 entry.state = 'consumed'; await this.save(); this.consumed([id], true); return { steered: true };
             } catch (error) {
                 if (this.state(id) === 'consumed') return { steered: true };
                 if (isIndeterminateError(error)) { this.uncertain([id]); return { steered: false, indeterminate: true }; }
                 // Definitely rejected; restoring a removed queued item is safe. Never restore an unknown dispatch.
-                if (!freshInput) {
-                    try {
-                        const response = z.object({ queuedSubmission: SubmissionSchema }).parse(await this.client.request('thread/queue/add', {
-                            threadId: this.threadId, input: entry.input, clientUserMessageId: id
-                        }));
-                        if (entry.state !== 'consumed') { entry.state = 'queued'; entry.nativeId = response.queuedSubmission.id; }
-                    } catch { if (this.state(id) !== 'consumed') { entry.state = 'unknown'; this.uncertain([id]); } }
-                } else entry.state = 'rejected';
+                if (queued) await this.restoreDetachedSteer(entry, id, entry.input);
+                else entry.state = 'rejected';
                 await this.save(); return { steered: false, error: error instanceof Error ? error.message : String(error) };
             }
         });
@@ -886,13 +904,14 @@ export class SharedCodexQueue {
         // The confirmed shrink/delete separates this request from its siblings.
         entry.detachedSteer = true; await this.save();
         try {
+            this.assertInputAdmission();
             await this.client.request('turn/steer', { threadId: this.threadId, expectedTurnId, input, clientUserMessageId: id });
             entry.state = 'consumed'; await this.save(); this.consumed([id], true); return { steered: true };
         } catch (error) {
             if (this.state(id) === 'consumed') return { steered: true };
             if (isIndeterminateError(error)) { batch.state = 'unknown'; this.uncertain([id]); await this.save(); return { steered: false, indeterminate: true }; }
             // Definite rejection: restore the removed input safely, keeping siblings.
-            if (proposal) {
+            if (proposal && !(error instanceof QueueAdmissionPaused)) {
                 const restoration = this.version(version.input, version.members);
                 batch.versions.push(restoration); batch.current = batch.versions.length - 1;
                 // Write ahead: the batch outcome is unknown until the restoration is confirmed.
@@ -928,7 +947,12 @@ export class SharedCodexQueue {
         delete entry.batchId; delete entry.nativeId; delete entry.detachedSteer;
         entry.input = input; entry.state = 'released'; await this.save();
         try { await this.enqueueLegacy(id, input, false); }
-        catch { if (this.state(id) === 'unknown') this.uncertain([id]); }
+        catch (error) {
+            if (error instanceof QueueAdmissionPaused && this.state(id) === 'released') {
+                this.deferredSteers.add(id);
+                await this.publishReleased();
+            }
+        }
     }
 
     async flush(): Promise<void> { await this.operations.catch(() => {}); await this.writes; }

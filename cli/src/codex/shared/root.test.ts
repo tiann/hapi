@@ -55,6 +55,12 @@ vi.mock('../codexAppServerClient', () => ({
                 entry.input = params.input;
                 return { queuedSubmission: entry };
             }
+            if (method === 'thread/queue/delete') {
+                const index = this.queue.findIndex(item => item.id === params.queuedSubmissionId);
+                if (index === -1) return { deleted: false };
+                this.queue.splice(index, 1);
+                return { deleted: true };
+            }
             if (method === 'thread/queue/add') {
                 const entry = { id: `queued-${this.queue.length}`, clientUserMessageId: params.clientUserMessageId, input: params.input };
                 this.queue.push(entry);
@@ -417,7 +423,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
-        sendSessionEvent: events, sendAgentMessage: send, emitSessionReady: sessionReady,
+        sendSessionEvent: events, sendAgentMessage: send, emitSessionReady: sessionReady, setSteerDeliveryState: vi.fn(async () => true),
         sendUserMessage() {}, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, async flushMetadata() { return true; }, close() {}
     } as unknown as ApiSessionClient;
@@ -446,7 +452,8 @@ session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
         ledger: async () => JSON.parse(await readFile(join(directory, 'sid.queue.json'), 'utf8')),
         retry: (id: string, cancellationAcknowledged?: boolean) => retryMessage?.(id, cancellationAcknowledged),
         cancel: (id: string) => cancelMessage?.(id),
-        submit: (text: string, id: string) => userMessage?.({ role: 'user', content: { type: 'text', text } }, id), metadata: () => metadata, state: () => state, updateState,
+        submit: (text: string, id: string, native = false) => userMessage?.({ role: 'user', content: { type: 'text', text },
+            ...(native ? { meta: { isNativeQueuedMessage: true } } : {}) }, id), metadata: () => metadata, state: () => state, updateState,
         drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
@@ -2674,23 +2681,52 @@ it('orders a queued Standard confirmation after native snapshots begun while it 
     } finally { releaseWrite(); vi.useRealTimers(); }
 });
 
-it.each([false, true])('rejects steering when tier admission pauses (during queue mutation %s)', async late => {
+it('rejects steering before changing the native queue when tier admission is paused', async () => {
     const f = await fixture(); await f.root.activate();
     f.submit('queued for steering', 'paused-steer');
     await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
     f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'running' } }); await f.drain();
-    const original = f.root.client.request.bind(f.root.client);
-    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
-        if (late && method === 'thread/queue/delete') f.root.beginTierConfirmation();
-        return original(method, params);
-    });
-    if (!late) f.root.beginTierConfirmation();
-    const steer = f.rpc.get(RPC_METHODS.SteerQueuedMessage)!;
-    if (late) expect((await steer({ localId: 'paused-steer' }) as { steered: boolean }).steered).toBe(false);
-    else await expect(steer({ localId: 'paused-steer' })).rejects.toThrow('Confirm the service tier');
-    expect(request.mock.calls.some(([method]) => method === 'turn/steer')).toBe(false);
+    const request = vi.spyOn(f.root.client, 'request');
+    f.root.beginTierConfirmation();
+    await expect(f.rpc.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'paused-steer' })).rejects.toThrow('Confirm the service tier');
+    expect(request.mock.calls.some(([method]) => method === 'turn/steer' || method === 'thread/queue/delete')).toBe(false);
     expect(f.native.queue).toHaveLength(1);
     expect(f.state().steeringActive).toBe(false);
+});
+
+it.each(['legacy', 'single-member batch', 'multi-member batch'])('restores %s input once after tier confirmation interrupts steering', async kind => {
+    const f = await fixture(); await f.root.activate();
+    const legacy = kind === 'legacy';
+    const hasSibling = kind === 'multi-member batch';
+    f.submit('queued for steering', 'paused-steer', legacy);
+    if (hasSibling) f.submit('leave queued', 'sibling');
+    await vi.waitFor(async () => expect((await f.ledger()).entries[hasSibling ? 'sibling' : 'paused-steer']?.state).toBe('queued'));
+    f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'running' } }); await f.drain();
+    const tier = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
+    const original = f.root.client.request.bind(f.root.client);
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        const response = await original(method, params);
+        if (method === (hasSibling ? 'thread/queue/update' : 'thread/queue/delete')) {
+            await f.root.recoverLostNativeTurn(tier.params, true, undefined, tier.generation);
+        }
+        return response;
+    });
+    expect(await f.rpc.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'paused-steer' })).toMatchObject({ steered: false });
+    expect(f.root.needsTierConfirmation).toBe(true);
+    expect((await f.ledger()).entries['paused-steer'].state).toBe('released');
+    expect(f.native.queue).toHaveLength(hasSibling ? 1 : 0);
+    expect(request.mock.calls.some(([method]) => method === 'turn/steer' || method === 'thread/queue/add')).toBe(false);
+    expect(f.session.setSteerDeliveryState).toHaveBeenCalledWith(['paused-steer'], 'queued');
+    expect(f.state().steeringActive).toBe(false);
+
+    await f.root.applySettings({ serviceTier: 'standard' });
+    await vi.waitFor(async () => expect((await f.ledger()).entries['paused-steer'].state).toBe('queued'));
+    // An ordinary Hub replay for the same ID must converge on the restored input.
+    f.submit('duplicate replay', 'paused-steer', legacy);
+    await vi.waitFor(() => expect(request.mock.calls.filter(([method]) => method === 'thread/queue/list').length).toBeGreaterThan(1));
+    expect(request.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(1);
+    expect(f.native.queue.find(item => item.clientUserMessageId === 'paused-steer')?.input).toMatchObject([{ text: 'queued for steering' }]);
+    expect(f.native.queue).toHaveLength(hasSibling ? 2 : 1);
 });
 
 it.each(['suspend', 'close'])('does not submit input released from the second gate during %s', async action => {

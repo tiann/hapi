@@ -365,7 +365,7 @@ export class SharedCodexRoot {
     }
     private async initializeBinding(threadId: string): Promise<void> {
         this.queue = new SharedCodexQueue({ request: <T = unknown>(method: string, params?: unknown): Promise<T> => {
-            if (['turn/steer', 'thread/queue/start'].includes(method) && (this.closed || this.stopping || this.needsTierConfirmation)) {
+            if (method === 'thread/queue/start' && (this.closed || this.stopping || this.needsTierConfirmation)) {
                 return Promise.reject(new Error('Service tier confirmation is pending or execution is stopping; input was not steered.'));
             }
             return this.client.request<T>(method, params);
@@ -865,9 +865,9 @@ export class SharedCodexRoot {
         }
     }
     private resumeDeferredQueue(): void {
-        void this.queue.resumeDeferredStart(() => this.interrupted && !this.currentTurn && !this.closed
-            && !this.stopping && !this.reconnecting && !this.needsTierConfirmation && this.client.isInitialized())
-            .catch(error => logger.debug('[Codex shared] deferred queue start', error));
+        void this.queue.resumeDeferredInput(() => !this.closed && !this.stopping && !this.reconnecting
+            && !this.needsTierConfirmation && this.client.isInitialized(), () => this.interrupted && !this.currentTurn)
+            .catch(error => logger.debug('[Codex shared] deferred queue input', error));
     }
     /** Resolve native intent without committing settings before input is accepted. */
     private async resolveNativeSettings(params: Record<string, unknown>, operationDeadline = Date.now() + 25_000): Promise<{ params: Record<string, unknown>; fallbackNotice?: string }> {
