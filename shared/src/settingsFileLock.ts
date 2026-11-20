@@ -41,7 +41,9 @@ export async function withSettingsFileLock<T>(
     // which names the lock rather than the real cause. That is reachable in
     // production on first run into a fresh HAPI_HOME, and in any test that
     // points at a temp home it has not created yet.
-    mkdirSync(dirname(lockfilePath), { recursive: true })
+    // mode 0o700 matches hub/cli settings writers so a group-writable umask
+    // cannot leave the recreated parent group-writable before the lock.
+    mkdirSync(dirname(lockfilePath), { recursive: true, mode: 0o700 })
 
     const release = await lockfile.lock(settingsFile, {
         realpath: false,

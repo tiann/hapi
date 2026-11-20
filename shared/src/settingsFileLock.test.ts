@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach } from 'bun:test'
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -89,6 +89,8 @@ describe('withSettingsFileLock', () => {
         expect(existsSync(fresh)).toBe(false)
         await expect(withSettingsFileLock(settingsFile, async () => 'ok')).resolves.toBe('ok')
         expect(existsSync(fresh)).toBe(true)
+        // Owner-only from creation (matches hub settings writer); resists umask 0002.
+        expect(statSync(fresh).mode & 0o777).toBe(0o700)
         rmSync(fresh, { recursive: true, force: true })
     })
 })
