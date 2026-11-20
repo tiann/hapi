@@ -36,7 +36,7 @@ function createFakeSession() {
         session,
         queueItems,
         getAgentState: () => agentState,
-        deliverRpcResponse: (r: { id: string }) => rpcHandler!(r),
+        deliverRpcResponse: (r: { id: string; approved?: boolean; allowTools?: string[] }) => rpcHandler!(r),
     };
 }
 
@@ -270,5 +270,64 @@ describe('PermissionHandler — steer while a request is pending', () => {
 
         await expect(resultPromise).resolves.toMatchObject({ behavior: 'deny' });
         expect(handler.isAborted('tc-plan')).toBe(false);
+    });
+});
+
+describe('PermissionHandler — Bash session grants', () => {
+    async function decision(allowTools: string[], command: string) {
+        const { session, getAgentState, deliverRpcResponse } = createFakeSession();
+        const handler = new PermissionHandler(session);
+
+        function call(id: string, command: string) {
+            const input = { command };
+            handler.onMessage({
+                type: 'assistant',
+                message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input }] },
+            });
+            return handler.handleToolCall('Bash', input, { permissionMode: 'default' }, {
+                signal: new AbortController().signal,
+            });
+        }
+
+        const initial = call('grant', 'pwd');
+        await deliverRpcResponse({ id: 'grant', approved: true, allowTools });
+        await initial;
+
+        const result = call('check', command);
+        const request = getAgentState().requests?.check;
+        if (request) {
+            expect(request).toMatchObject({ tool: 'Bash', arguments: { command } });
+            await deliverRpcResponse({ id: 'check', approved: false });
+            await expect(result).resolves.toMatchObject({ behavior: 'deny' });
+            return 'prompt';
+        }
+        await expect(result).resolves.toMatchObject({ behavior: 'allow' });
+        return 'allow';
+    }
+
+    it.each([
+        { rules: ['Bash(:*)'], command: 'rm -rf /tmp/x', expected: 'prompt' },
+        { rules: ['Bash(:*)', 'Bash(git :*)'], command: 'git status', expected: 'allow' },
+        { rules: ['Bash(:*)', 'Bash(git :*)'], command: 'ls', expected: 'prompt' },
+        { rules: ['Bash(pwd)'], command: 'pwd', expected: 'allow' },
+        { rules: ['Bash(pwd)'], command: 'pwdx', expected: 'prompt' },
+        { rules: ['Bash'], command: 'pwd', expected: 'prompt' },
+        { rules: ['Bash( :*)'], command: ' pwd', expected: 'allow' },
+        { rules: ['Bash( :*)'], command: 'pwd', expected: 'prompt' },
+    ])('$rules with "$command" gives $expected', async ({ rules, command, expected }) => {
+        expect(await decision(rules, command)).toBe(expected);
+    });
+
+    it('preserves the decision when an empty prefix is added to a rule set', async () => {
+        const parts = ['a', ' ', ':*', ')', '猫', '\n'];
+        for (const first of parts) {
+            for (const rest of ['', ...parts]) {
+                const command = first + rest;
+                for (const rules of [[], ['Bash'], [`Bash(${command})`], [`Bash(${first}:*)`, 'Bash(pwd)']]) {
+                    expect(await decision([...rules, 'Bash(:*)'], command))
+                        .toBe(await decision(rules, command));
+                }
+            }
+        }
     });
 });
