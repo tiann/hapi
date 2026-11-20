@@ -2181,12 +2181,24 @@ export function createBoardRoutes(
             // already-applied login is a no-op), so retrying unconditionally
             // here is safe even when the original failure was actually in
             // addItemToProject.
+            //
+            // A failure here is deliberately swallowed, not returned (cold
+            // review follow-up, tiann/hapi#2147): a *persistently*
+            // unassignable login — a deleted/renamed account, one without
+            // repo access — would otherwise fail this exact call on every
+            // single retry, permanently blocking addItemToProject below
+            // and leaving the user with no way to ever get the issue onto
+            // the board. The first attempt already reported the assignee
+            // failure explicitly (the createIssue catch below) — a
+            // retry's job is to make forward progress despite it, not keep
+            // re-surfacing the same permanent error forever. Still
+            // attempted every retry rather than given up on after one try,
+            // in case whatever caused it resolves itself in the meantime.
             if (issueAssignees.length > 0) {
                 try {
                     await actions.setAssignees({ host: board.host, url: issueUrl, isPullRequest: false }, issueAssignees, [])
-                } catch (error) {
-                    const message = error instanceof Error ? error.message : 'unknown error'
-                    return c.json({ error: `Issue created at ${issueUrl} but assignees could not be applied: ${message}`, url: issueUrl }, 502)
+                } catch {
+                    // Swallowed — see comment above.
                 }
             }
         } else {

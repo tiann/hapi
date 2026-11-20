@@ -2814,13 +2814,19 @@ body:
         ])
     })
 
-    it('surfaces a retry-attach assignee failure as a 502 with the url, without attempting to add it to the project', async () => {
+    // Regression (bot review, tiann/hapi#2147, follow-up): a *persistently*
+    // unassignable login (a deleted/renamed account, one without repo
+    // access) must not block the user from ever attaching the issue to the
+    // board — the retry-attach assignee call is best-effort, swallowed on
+    // failure, not fatal, so addItemToProject still runs and the user
+    // reaches a real success instead of retrying into the same 502 forever.
+    it('still attaches to the project on a retry-attach whose assignee re-application keeps failing', async () => {
         const calls: string[] = []
         const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
             ...UNUSED_ACTIONS,
             createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
             setAssignees: async () => { throw new Error('could not find user "ghost"') },
-            addItemToProject: async (target) => { calls.push(`should-not-be-called:${target.issueUrl}`) }
+            addItemToProject: async (target) => { calls.push(`addItemToProject:${target.issueUrl}`) }
         })
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',
@@ -2830,12 +2836,10 @@ body:
                 existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42'
             })
         })
-        expect(response.status).toBe(502)
-        const body = await response.json() as { error: string; url: string }
-        expect(body.error).toContain('https://github.com/heavygee/hapi/issues/42')
-        expect(body.error).toContain('could not find user "ghost"')
+        expect(response.status).toBe(200)
+        const body = await response.json() as { ok: true; url: string }
         expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
-        expect(calls).toEqual([])
+        expect(calls).toEqual(['addItemToProject:https://github.com/heavygee/hapi/issues/42'])
     })
 })
 
