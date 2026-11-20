@@ -29,6 +29,7 @@ const LedgerV2Schema = z.object({
     version: z.literal(2), entries: LedgerSchema, batches: z.record(z.string(), BatchSchema)
 });
 export type QueueInput = z.infer<typeof InputSchema>;
+export class QueueAdmissionPaused extends Error {}
 type Entry = z.infer<typeof EntrySchema>;
 type Member = z.infer<typeof MemberSchema>;
 type Removal = z.infer<typeof RemovalSchema>;
@@ -134,9 +135,9 @@ export class SharedCodexQueue {
         return this.serial(async () => {
             const entry = this.entries[id];
             if (!entry?.canceledBeforeAdmission) return;
-            delete entry.canceledBeforeAdmission;
+            delete this.entries[id];
             try { await this.save(); }
-            catch (error) { entry.canceledBeforeAdmission = true; throw error; }
+            catch (error) { this.entries[id] = entry; throw error; }
         });
     }
 
@@ -517,8 +518,24 @@ export class SharedCodexQueue {
     enqueue(id: string, input: QueueInput, resumeInterrupted = false, batchKey?: string): Promise<void> {
         return this.serial(async () => {
             if (this.isHeldCancellation(id)) return;
-            if (batchKey) await this.enqueueBatched(id, input, resumeInterrupted, batchKey);
-            else await this.enqueueLegacy(id, input, resumeInterrupted);
+            const previous = this.entries[id];
+            try {
+                if (batchKey) await this.enqueueBatched(id, input, resumeInterrupted, batchKey);
+                else await this.enqueueLegacy(id, input, resumeInterrupted);
+            } catch (error) {
+                if (error instanceof QueueAdmissionPaused) {
+                    // The local check ran before native mutation. Restore the
+                    // prior ledger entry so this input can wait in the root.
+                    const consumed = this.entries[id]?.state === 'consumed';
+                    if (!consumed) {
+                        if (previous) this.entries[id] = previous;
+                        else delete this.entries[id];
+                    }
+                    await this.save();
+                    if (consumed) return;
+                }
+                throw error;
+            }
         });
     }
     private async enqueueLegacy(id: string, input: QueueInput, resumeInterrupted: boolean): Promise<void> {
@@ -544,6 +561,7 @@ export class SharedCodexQueue {
                 await this.client.request('thread/queue/start', { threadId: this.threadId }).catch(() => {});
             }
         } catch (error) {
+            if (error instanceof QueueAdmissionPaused) throw error;
             if (entry.state !== 'consumed') {
                 entry.state = indeterminate(error) ? 'unknown' : 'rejected';
                 await this.save();
@@ -594,6 +612,12 @@ export class SharedCodexQueue {
             await this.save();
             if (resumeInterrupted) await this.client.request('thread/queue/start', { threadId: this.threadId }).catch(() => {});
         } catch (error) {
+            if (error instanceof QueueAdmissionPaused) {
+                batch.versions.pop();
+                batch.current = previousCurrent;
+                if (batch.state === 'unknown') batch.state = batch.versions[previousCurrent]?.status === 'consumed' ? 'consumed' : previousState;
+                throw error;
+            }
             if (entry.state === 'consumed') return;
             if (!indeterminate(error) && queuedSubmissionNotFound(error)) {
                 // Proven unaccepted: detach only this new member and enqueue it normally.
@@ -631,6 +655,10 @@ export class SharedCodexQueue {
             await this.save();
             if (resumeInterrupted) await this.client.request('thread/queue/start', { threadId: this.threadId }).catch(() => {});
         } catch (error) {
+            if (error instanceof QueueAdmissionPaused) {
+                delete this.batches[clientId];
+                throw error;
+            }
             if (entry.state !== 'consumed') {
                 entry.state = indeterminate(error) ? 'unknown' : 'rejected';
                 batch.state = entry.state === 'unknown' ? 'unknown' : 'rejected';

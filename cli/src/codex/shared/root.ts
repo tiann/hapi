@@ -20,7 +20,7 @@ import { resolveCodexSlashCommand } from '../utils/slashCommands';
 import { parseReasoningEffortValue } from '../utils/reasoningEffort';
 import { SharedCodexPermissions } from './permissions';
 import { SharedCodexAsyncQuestions } from './asyncQuestions';
-import { SharedCodexQueue } from './queue';
+import { QueueAdmissionPaused, SharedCodexQueue } from './queue';
 import { SharedCodexProjection, inputText, userMessageDisplayText } from './projection';
 import { getCodexSystemPrompt } from '../utils/systemPrompt';
 import { record, string } from './gateway';
@@ -170,7 +170,7 @@ export class SharedCodexRoot {
         });
         this.session.onUserMessage((message, localId) => {
             const id = localId ?? randomUUID();
-            if (this.heldMessages.has(id)) return;
+            if (this.heldMessages.has(id) || this.queue?.isHeldCancellation(id)) return;
             const attempt = Symbol();
             this.heldMessages.set(id, attempt);
             const stillHeld = () => this.heldMessages.get(id) === attempt;
@@ -191,24 +191,23 @@ export class SharedCodexRoot {
                     if (resolved !== null && !this.heldMessages.has(id)) this.heldMessages.set(id, attempt);
                 }
                 if (resolved === null) { this.session.emitMessagesConsumed([id], { clearQueuedThinkingGrace: true }); return; }
-                // Compute the batch key now: this.settings may have changed
-                // while this message waited behind earlier queued work (e.g. a
-                // settings-updating slash command) or while hydration
-                // populated them. Capturing it at callback arrival would merge
-                // across the configuration change.
-                const batchKey = JSON.stringify({
-                    ...this.settings,
-                    fallbackModel: message.meta?.fallbackModel ?? null,
-                    customSystemPrompt: message.meta?.customSystemPrompt ?? null,
-                    appendSystemPrompt: message.meta?.appendSystemPrompt ?? null,
-                    allowedTools: message.meta?.allowedTools ?? null,
-                    disallowedTools: message.meta?.disallowedTools ?? null
-                });
-                if (this.needsTierConfirmation) await this.inputGate;
-                if (this.closed || this.stopping || !stillHeld()) return;
-                releaseHeld();
-                await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted,
-                    slash || message.meta?.isNativeQueuedMessage ? undefined : batchKey);
+                const input = buildUserInputFromMessage(resolved);
+                for (;;) {
+                    if (this.needsTierConfirmation) await this.inputGate;
+                    if (this.closed || this.stopping || !stillHeld()) return;
+                    // Current settings can change while input waits for
+                    // preceding work or tier confirmation.
+                    const batchKey = slash || message.meta?.isNativeQueuedMessage ? undefined : JSON.stringify({
+                        ...this.settings,
+                        fallbackModel: message.meta?.fallbackModel ?? null,
+                        customSystemPrompt: message.meta?.customSystemPrompt ?? null,
+                        appendSystemPrompt: message.meta?.appendSystemPrompt ?? null,
+                        allowedTools: message.meta?.allowedTools ?? null,
+                        disallowedTools: message.meta?.disallowedTools ?? null
+                    });
+                    try { await this.queue.enqueue(id, input, this.interrupted, batchKey); return; }
+                    catch (error) { if (!(error instanceof QueueAdmissionPaused)) throw error; }
+                }
             }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`)).finally(releaseHeld);
         });
         this.session.onCancelQueuedMessage(async id => {
@@ -231,7 +230,14 @@ export class SharedCodexRoot {
             await this.bound;
             if (this.stopping) return false;
             if (cancellationAcknowledged) {
-                await this.queue.retryHeldCancellation(id);
+                if (this.queue.isHeldCancellation(id)) {
+                    // Invalidate any redelivery already waiting for admission
+                    // before clearing its durable cancellation for this retry.
+                    const resetting = Symbol();
+                    this.heldMessages.set(id, resetting);
+                    try { await this.queue.retryHeldCancellation(id); }
+                    finally { if (this.heldMessages.get(id) === resetting) this.heldMessages.delete(id); }
+                }
                 return true;
             }
             await this.refresh();
@@ -357,7 +363,8 @@ export class SharedCodexRoot {
             }, ids => this.session.emitSteerIndeterminate(ids),
             (id, input) => this.session.syncNativeQueuedMessage(id, input === null ? null : inputText(input)),
             ids => this.session.setSteerDeliveryState(ids, 'queued'), () => {
-                if (this.closed || this.stopping || this.needsTierConfirmation) throw new Error('Service tier confirmation is pending or execution is stopping; input was not submitted.');
+                if (this.closed || this.stopping) throw new Error('Execution is stopping; input was not submitted.');
+                if (this.needsTierConfirmation) throw new QueueAdmissionPaused('Service tier confirmation is pending; input was not submitted.');
             });
         await this.queue.load();
         this.projection = new SharedCodexProjection(this.session, threadId, (id, content) => this.queue.committed(id, content),

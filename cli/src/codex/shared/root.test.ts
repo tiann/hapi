@@ -132,7 +132,7 @@ it('allows cancellation while tier confirmation keeps queued input paused', asyn
     await expect(f.root.nativeQueueMutation('thread/queue/start', { threadId: 'thread' })).rejects.toThrow('tier confirmation');
 });
 
-it('acknowledges cancellation of a held Web message and submits only the remaining message after tier recovery', async () => {
+it('dispatches the explicit retry of a held message after tier recovery without replaying its stale delivery', async () => {
     const f = await fixture();
     await f.root.activate({}, false, true);
     f.submit('cancel this message', 'held-canceled');
@@ -142,13 +142,14 @@ it('acknowledges cancellation of a held Web message and submits only the remaini
     await expect(f.cancel('held-canceled')).resolves.toBe(true);
     f.submit('redelivery after the first acknowledgement was lost', 'held-canceled');
     expect(f.native.queue).toHaveLength(0);
-    await f.root.applySettings({ serviceTier: 'standard' });
-    await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
-    expect(f.native.queue[0].input).toEqual([{ type: 'text', text: 'keep this message' }]);
     await expect(f.retry('held-canceled', true)).resolves.toBe(true);
-    expect((await f.ledger()).entries['held-canceled']?.canceledBeforeAdmission).toBeUndefined();
+    expect((await f.ledger()).entries['held-canceled']).toBeUndefined();
     f.submit('explicit retry text', 'held-canceled');
-    await vi.waitFor(() => expect(f.native.queue.flatMap(entry => entry.input)).toContainEqual({ type: 'text', text: 'explicit retry text' }));
+    await f.root.applySettings({ serviceTier: 'standard' });
+    await vi.waitFor(() => expect(f.native.queue.flatMap(entry => entry.input)).toEqual([
+        { type: 'text', text: 'keep this message' },
+        { type: 'text', text: 'explicit retry text' },
+    ]));
 });
 
 it('does not publish cold-resume readiness before startup controls are registered', async () => {
@@ -271,19 +272,34 @@ it.each(['web', 'native'])('does not restore deferred Plan after an explicit Def
     expect(f.root.needsTierConfirmation).toBe(false);
 });
 
-it.each([false, true])('rejects new queue input if tier confirmation pauses after the async preflight (existing batch %s)', async batch => {
+it.each([false, true])('holds input paused during queue preflight and submits it once after recovery (existing batch %s)', async batch => {
     const f = await fixture(); await f.root.activate();
+    await f.root.applySettings({ serviceTier: 'standard' });
     if (batch) { f.submit('already queued', 'first'); await vi.waitFor(() => expect(f.native.queue).toHaveLength(1)); }
     const original = f.root.client.request.bind(f.root.client);
-    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+    let paused = false;
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
         const result = await original(method, params);
-        if (method === 'thread/queue/list') f.root.beginTierConfirmation();
+        if (!paused && method === 'thread/queue/list') {
+            paused = true;
+            const root = f.root as unknown as { pauseTierConfirmation: (operationId: number) => void; tierOperationCounter: number };
+            root.pauseTierConfirmation(++root.tierOperationCounter);
+        }
         return result;
     });
-    f.submit('must remain retryable', 'blocked');
-    await vi.waitFor(async () => expect((await f.ledger()).entries.blocked.state).toBe('rejected'));
+    f.submit('held during preflight', 'blocked');
+    await vi.waitFor(async () => {
+        expect(f.root.needsTierConfirmation).toBe(true);
+        expect((await f.ledger()).entries.blocked).toBeUndefined();
+    });
     expect(f.native.queue).toHaveLength(batch ? 1 : 0);
     if (batch) expect(f.native.queue[0].input).toEqual([{ type: 'text', text: 'already queued' }]);
+    await f.root.applySettings({ serviceTier: 'standard' });
+    const expectedInput = (batch ? ['already queued', 'held during preflight'] : ['held during preflight'])
+        .map(text => ({ type: 'text', text }));
+    await vi.waitFor(() => expect(f.native.queue.flatMap(entry => entry.input)).toEqual(expectedInput));
+    expect(request.mock.calls.filter(([method]) => method === 'thread/queue/add' || method === 'thread/queue/update')).toHaveLength(1);
+    expect(request.mock.calls.some(([method]) => method === (batch ? 'thread/queue/update' : 'thread/queue/add'))).toBe(true);
 });
 
 it.each(['current', 'latest', 'clear'])('passes Plan into activation and returns the recoverable %s child without a second settings write', async kind => {

@@ -26,8 +26,13 @@ describe('shared native queue', () => {
         await restarted.enqueue('held', input);
         expect(rpc).not.toHaveBeenCalled();
         await restarted.retryHeldCancellation('held');
+        const mirror = vi.fn();
+        const afterRetry = new SharedCodexQueue(client, 'thread', join(dir, 'ledger.json'), consumed, uncertain, mirror);
+        await afterRetry.load();
+        afterRetry.replay();
+        expect(mirror).not.toHaveBeenCalled();
         rpc.mockResolvedValueOnce({ queuedSubmission: { id: 'native', clientUserMessageId: 'held', input } });
-        await restarted.enqueue('held', input);
+        await afterRetry.enqueue('held', input);
         expect(rpc).toHaveBeenCalledWith('thread/queue/add', expect.objectContaining({ clientUserMessageId: 'held' }));
     });
     it('does not restore potentially stale input when the shutdown snapshot is unavailable', async () => {
