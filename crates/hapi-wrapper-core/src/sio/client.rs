@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot, watch, Notify};
 
 use tokio::time::Instant;
 
-type Reply = Box<dyn FnOnce(Vec<Value>) + Send>;
+type Reply = Box<dyn FnOnce(Vec<Value>, &EventSender) + Send>;
 pub(crate) type UpdateListener = dyn Fn(&Value) + Send + Sync;
 
 pub enum Event {
@@ -28,6 +28,82 @@ pub enum Event {
         args: Vec<Value>,
         ack: Option<ServerAck>,
     },
+}
+
+enum Delivery {
+    Event(Event),
+    ApplyAck(Box<dyn FnOnce() + Send>),
+}
+
+enum EventSender {
+    Plain(mpsc::UnboundedSender<Event>),
+    Session(mpsc::UnboundedSender<Delivery>),
+}
+impl EventSender {
+    fn send(&self, event: Event) {
+        match self {
+            Self::Plain(tx) => {
+                let _ = tx.send(event);
+            }
+            Self::Session(tx) => {
+                let _ = tx.send(Delivery::Event(event));
+            }
+        }
+    }
+}
+
+pub struct SessionEvents {
+    pub(crate) socket: Client,
+    rx: mpsc::UnboundedReceiver<Delivery>,
+}
+
+impl SessionEvents {
+    pub fn start(
+        url: String,
+        headers: Vec<(String, String)>,
+        token: String,
+        session_id: String,
+        archived: bool,
+    ) -> (Client, Self) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let socket = Client::session_worker(
+            url,
+            headers,
+            token,
+            session_id,
+            archived,
+            EventSender::Session(tx),
+        );
+        (socket.clone(), Self { socket, rx })
+    }
+
+    pub async fn recv(&mut self) -> Option<Event> {
+        loop {
+            match self.rx.recv().await? {
+                Delivery::ApplyAck(apply) => apply(),
+                Delivery::Event(event) => {
+                    if let Event::Message { name, args, .. } = &event {
+                        if name == "update" {
+                            if let Some(body) = args.first().and_then(|v| v.get("body")) {
+                                let listeners: Vec<_> = self
+                                    .socket
+                                    .shared
+                                    .lock()
+                                    .update_listeners
+                                    .iter()
+                                    .filter_map(Weak::upgrade)
+                                    .collect();
+                                for listener in listeners {
+                                    listener(body);
+                                }
+                            }
+                        }
+                    }
+                    return Some(event);
+                }
+            }
+        }
+    }
 }
 
 struct Outgoing {
@@ -168,7 +244,18 @@ impl Client {
         token: String,
         session_id: String,
     ) -> (Self, mpsc::UnboundedReceiver<Event>) {
-        Self::start_worker(url, headers, token, session_id, false)
+        let (tx, rx) = mpsc::unbounded_channel();
+        (
+            Self::start_worker(
+                url,
+                headers,
+                token,
+                session_id,
+                false,
+                EventSender::Plain(tx),
+            ),
+            rx,
+        )
     }
     pub fn start_session(
         url: String,
@@ -177,6 +264,27 @@ impl Client {
         session_id: String,
         archived: bool,
     ) -> (Self, mpsc::UnboundedReceiver<Event>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (
+            Self::session_worker(
+                url,
+                headers,
+                token,
+                session_id,
+                archived,
+                EventSender::Plain(tx),
+            ),
+            rx,
+        )
+    }
+    fn session_worker(
+        url: String,
+        headers: Vec<(String, String)>,
+        token: String,
+        session_id: String,
+        archived: bool,
+        events: EventSender,
+    ) -> Self {
         if archived {
             let shared = Arc::new(Shared::default());
             {
@@ -185,11 +293,10 @@ impl Client {
                 state.reconnect_disabled = true;
                 state.link.send_replace(Connection::Stopped);
             }
-            let (_, rx) = mpsc::unbounded_channel();
             let (stop, _) = watch::channel(None);
-            return (Self { shared, stop }, rx);
+            return Self { shared, stop };
         }
-        Self::start_worker(url, headers, token, session_id, true)
+        Self::start_worker(url, headers, token, session_id, true, events)
     }
     fn start_worker(
         url: String,
@@ -197,10 +304,10 @@ impl Client {
         token: String,
         session_id: String,
         manual_connect: bool,
-    ) -> (Self, mpsc::UnboundedReceiver<Event>) {
+        events: EventSender,
+    ) -> Self {
         let shared = Arc::new(Shared::default());
         let (stop, mut stopping) = watch::channel(None::<(Instant, Duration)>);
-        let (events, rx) = mpsc::unbounded_channel();
         let worker = shared.clone();
         tokio::spawn(async move {
             let auth = json!({"token":token,"clientType":"session-scoped","sessionId":session_id});
@@ -223,7 +330,7 @@ impl Client {
                         break terminal;
                     }
                     if let Some(event) = terminal {
-                        let _ = events.send(event);
+                        events.send(event);
                     }
                     worker.connect_request.notified().await;
                 }
@@ -258,10 +365,10 @@ impl Client {
                 state.pending.clear();
             }
             if let Some(event) = terminal_event {
-                let _ = events.send(event);
+                events.send(event);
             }
         });
-        (Self { shared, stop }, rx)
+        Self { shared, stop }
     }
     pub fn stop(&self, timeout: Duration) {
         let mut state = self.shared.lock();
@@ -333,7 +440,7 @@ impl Client {
         args: Vec<Value>,
         timeout: Option<Duration>,
     ) -> io::Result<Vec<Value>> {
-        self.emit_with_ack_map(name, args, timeout, |args| args)
+        self.emit_with_ack_map(name, args, timeout, |args, _| args)
             .await
     }
 
@@ -343,12 +450,37 @@ impl Client {
         state.update_listeners.push(Arc::downgrade(listener));
     }
 
-    pub(crate) async fn emit_with_ack_map<T: Send + 'static>(
+    pub(crate) async fn emit_with_session_ack<T: Send + 'static>(
         &self,
         name: &str,
         args: Vec<Value>,
         timeout: Option<Duration>,
         apply: impl FnOnce(Vec<Value>) -> T + Send + 'static,
+    ) -> io::Result<T> {
+        let applied = self
+            .emit_with_ack_map(name, args, timeout, move |args, events| {
+                let (tx, rx) = oneshot::channel();
+                if let EventSender::Session(events) = events {
+                    let _ = events.send(Delivery::ApplyAck(Box::new(move || {
+                        if !tx.is_closed() {
+                            let _ = tx.send(apply(args));
+                        }
+                    })));
+                }
+                rx
+            })
+            .await?;
+        applied
+            .await
+            .map_err(|_| io::Error::other("session dispatch closed"))
+    }
+
+    async fn emit_with_ack_map<T: Send + 'static>(
+        &self,
+        name: &str,
+        args: Vec<Value>,
+        timeout: Option<Duration>,
+        apply: impl FnOnce(Vec<Value>, &EventSender) -> T + Send + 'static,
     ) -> io::Result<T> {
         if reserved(name) {
             return Err(invalid("reserved event name"));
@@ -365,9 +497,9 @@ impl Client {
                 .ok_or_else(|| io::Error::other("ack ids exhausted"))?;
             state.pending.insert(
                 id,
-                Box::new(move |args| {
+                Box::new(move |args, events| {
                     if !tx.is_closed() {
-                        let _ = tx.send(apply(args));
+                        let _ = tx.send(apply(args, events));
                     }
                 }),
             );
@@ -413,7 +545,7 @@ async fn run(
     headers: &[(String, String)],
     auth: &Value,
     shared: &Arc<Shared>,
-    events: &mpsc::UnboundedSender<Event>,
+    events: &EventSender,
     connect_timeout: Duration,
 ) -> Option<Event> {
     let mut backoff = super::backoff::Backoff::default();
@@ -436,7 +568,7 @@ async fn run(
                         .link
                         .send_replace(Connection::Online(state.generation));
                     state.writable = state.queue.is_empty();
-                    let _ = events.send(Event::Connected);
+                    events.send(Event::Connected);
                 }
                 let result = serve(&mut transport, shared, events).await;
                 let mut state = shared.lock();
@@ -456,7 +588,7 @@ async fn run(
                     return event;
                 }
                 if let Some(event) = event {
-                    let _ = events.send(event);
+                    events.send(event);
                 }
             }
             Ok(Err(message)) => {
@@ -468,7 +600,7 @@ async fn run(
             }
             Err(error) => {
                 shared.lock().waiting = true;
-                let _ = events.send(Event::ConnectError {
+                events.send(Event::ConnectError {
                     message: error.to_string(),
                     fatal: false,
                 });
@@ -518,7 +650,7 @@ async fn handshake(
 async fn serve(
     transport: &mut Transport,
     shared: &Arc<Shared>,
-    events: &mpsc::UnboundedSender<Event>,
+    events: &EventSender,
 ) -> io::Result<()> {
     tokio::select! {
         biased;
@@ -541,7 +673,7 @@ async fn serve(
 async fn exchange(
     transport: &mut Transport,
     shared: &Arc<Shared>,
-    events: &mpsc::UnboundedSender<Event>,
+    events: &EventSender,
 ) -> io::Result<()> {
     loop {
         let queue_empty = {
@@ -577,11 +709,7 @@ async fn exchange(
     }
 }
 
-fn receive(
-    packet: Packet,
-    shared: &Arc<Shared>,
-    events: &mpsc::UnboundedSender<Event>,
-) -> io::Result<bool> {
+fn receive(packet: Packet, shared: &Arc<Shared>, events: &EventSender) -> io::Result<bool> {
     if packet.namespace != "/cli" {
         return Ok(true);
     }
@@ -600,25 +728,12 @@ fn receive(
                 .as_str()
                 .map(str::to_owned)
                 .unwrap_or_else(|| crate::jsjson::stringify(&name));
-            if name == "update" {
-                let listeners: Vec<_> = state
-                    .update_listeners
-                    .iter()
-                    .filter_map(Weak::upgrade)
-                    .collect();
-                drop(state);
-                if let Some(body) = args.first().and_then(|v| v.get("body")) {
-                    for listener in listeners {
-                        listener(body);
-                    }
-                }
-            }
-            let _ = events.send(Event::Message { name, args, ack });
+            events.send(Event::Message { name, args, ack });
         }
         Payload::Ack { id, args } => {
             if let Some(reply) = state.pending.remove(&id) {
                 drop(state);
-                reply(args);
+                reply(args, events);
             }
         }
         Payload::Disconnect => return Ok(false),
@@ -1173,7 +1288,9 @@ mod tests {
                 shared: shared.clone(),
                 stop,
             };
-            let (events, _rx) = mpsc::unbounded_channel();
+            let (tx, rx) = mpsc::unbounded_channel();
+            let events = EventSender::Session(tx);
+            let mut session = SessionEvents { socket, rx };
             let (_archive, archived) = watch::channel(false);
             let clear = json!({"host":"test", "path":"/"});
             let mut intent = clear.clone();
@@ -1185,12 +1302,12 @@ mod tests {
                     version: 1,
                 },
                 "s".into(),
-                socket,
+                &session,
                 Arc::new(|| {}),
                 archived,
             );
             let filter = Arc::new(Mutex::new(IncomingFilter::default()));
-            filter.lock().unwrap().accept(Some("prior"), Some(100));
+
             let observer = filter.clone();
             doc.observe(move |value| observer.lock().unwrap().reconcile_rewind(value));
             doc.update(Clone::clone);
@@ -1217,13 +1334,33 @@ mod tests {
                     ],
                 })
             };
+            let live = cli(Payload::Event {
+                id: None,
+                name: "update".into(),
+                args: vec![json!({"body":{"t":"new-message","message":{"id":"prior","seq":100}}})],
+            });
             let frames = if ack_first {
-                [ack(2, &intent), broadcast(3, &clear)]
+                [ack(2, &intent), live, broadcast(3, &clear)]
             } else {
-                [broadcast(2, &intent), ack(3, &clear)]
+                [broadcast(2, &intent), live, ack(3, &clear)]
             };
             for frame in frames {
                 assert!(receive(frame, &shared, &events).unwrap());
+            }
+            events.send(Event::Connected);
+            loop {
+                match session.recv().await.unwrap() {
+                    Event::Message { args, .. } if args[0]["body"]["t"] == "new-message" => {
+                        let row = &args[0]["body"]["message"];
+                        assert_eq!(doc.get().version, 2);
+                        assert!(filter
+                            .lock()
+                            .unwrap()
+                            .accept(row["id"].as_str(), row["seq"].as_i64()));
+                    }
+                    Event::Connected => break,
+                    _ => {}
+                }
             }
             assert_eq!(doc.get().version, 3);
             assert_eq!(doc.get().value, clear);
@@ -1240,7 +1377,7 @@ mod tests {
         for (id, tx) in [(0, inflight), (1, buffered)] {
             state.pending.insert(
                 id,
-                Box::new(move |args| {
+                Box::new(move |args, _| {
                     let _ = tx.send(args);
                 }),
             );
@@ -1259,7 +1396,8 @@ mod tests {
             state.queue.pop_front().unwrap().payload,
             Payload::Event { id: Some(1), .. }
         ));
-        state.pending.remove(&1).unwrap()(vec![json!("reply")]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        state.pending.remove(&1).unwrap()(vec![json!("reply")], &EventSender::Plain(tx));
         assert_eq!(kept.try_recv().unwrap(), vec![json!("reply")]);
     }
 

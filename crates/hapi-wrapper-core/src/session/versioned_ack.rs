@@ -1,5 +1,5 @@
 use super::metadata::hub_archived;
-use crate::sio::client::{Client, UpdateListener};
+use crate::sio::client::{SessionEvents, UpdateListener};
 use serde_json::{json, Value};
 use std::{
     collections::VecDeque,
@@ -43,7 +43,7 @@ impl Kind {
     fn parse(self, v: &Value) -> Option<Value> {
         match self {
             Self::Metadata => {
-                if !crate::schemas::metadata(v) {
+                if !crate::schemas::metadata(v) || !v.get("name").is_none_or(Value::is_string) {
                     return None;
                 }
                 let mut metadata = v.clone();
@@ -290,10 +290,11 @@ impl Document {
         kind: Kind,
         snapshot: Snapshot,
         sid: String,
-        socket: Client,
+        session: &SessionEvents,
         archive: Arc<dyn Fn() + Send + Sync>,
         archived: watch::Receiver<bool>,
     ) -> Self {
+        let socket = &session.socket;
         let mut link = socket.connection();
         let stopped = async move {
             let _ = link
@@ -321,7 +322,7 @@ impl Document {
                         None
                     };
                     socket
-                        .emit_with_ack_map(kind.event(), vec![body], timeout, apply)
+                        .emit_with_session_ack(kind.event(), vec![body], timeout, apply)
                         .await
                 }
             },
@@ -692,8 +693,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn metadata_summary_adoption_matches_typescript() {
+    async fn metadata_name_and_summary_adoption_match_typescript() {
         let cases = json!([
+            {"host":"test","path":"/","name":42},
+            {"host":"test","path":"/","name":null},
+            {"host":"test","path":"/","name":"valid"},
             {"host":"test","path":"/","summary":null},
             {"host":"test","path":"/","summary":{"text":"title"}},
             {"host":"test","path":"/","summary":{"text":"title","updatedAt":"bad"}},
