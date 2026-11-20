@@ -537,6 +537,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         if (!stopped && !backend.canRecheckTermination) {
             throw new MissingAcpWriterCapture(() => this.finishWithoutNativeSession());
         }
+        if (!stopped && this.exitReason === 'switch' && !this.runtimeGate.recoveryPending) {
+            // ACP can die after the close-entry check, which suppresses the loss
+            // notification. Park before launcher finalization releases the terminal.
+            this.enterSwitchRecovery();
+            this.options.onRecoveryStart?.();
+        }
         if (!stopped) throw new UnverifiedAcpWriter(
             'OpenCode v2 server termination cannot be verified',
             this.exitReason === 'switch',
@@ -2825,14 +2831,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // Switch can begin before its ACP exits unexpectedly. Preserve that
             // evidence for teardown without changing the requested destination.
             if (this.exitReason === 'switch') {
-                this.runtimeGate.setRecoveryPending(true);
-                // The confirmed Switch may already have latched Ink's controls.
-                // Keep Exit available while teardown verifies the old writer.
-                this.releaseTerminal();
-                this.setupTerminal({
-                    onSwitchToLocal: () => this.handleSwitchRequest(),
-                    onExit: () => this.runtimeGate.requestSessionExit()
-                });
+                this.enterSwitchRecovery();
                 this.recoveryAttempt.observeLoss(error, details?.childProcessExited === true);
                 this.options.onRecoveryStart?.();
             }
@@ -2867,6 +2866,17 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.abortController.abort();
         this.shouldExit = true;
         this.exitReason = 'exit';
+    }
+
+    private enterSwitchRecovery(): void {
+        this.runtimeGate.setRecoveryPending(true);
+        // The confirmed Switch may already have latched Ink's controls.
+        // Keep Exit available while teardown verifies the old writer.
+        this.releaseTerminal();
+        this.setupTerminal({
+            onSwitchToLocal: () => this.handleSwitchRequest(),
+            onExit: () => this.runtimeGate.requestSessionExit()
+        });
     }
 
     private throwIfStartupCancelled(): void {

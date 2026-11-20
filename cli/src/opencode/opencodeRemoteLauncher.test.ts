@@ -1210,7 +1210,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     });
 
-    linuxRecoveryTest.each(['backoff', 'startup', 'verification', 'switch verification', 'parked'] as const)(
+    linuxRecoveryTest.each(['backoff', 'startup', 'verification', 'switch verification', 'parked', 'parked without loss'] as const)(
         'keeps terminal Exit and RPC Stop available while refusing Switch during %s', async phase => {
             const { RemoteLauncherBase } = await import('@/modules/common/remote/RemoteLauncherBase');
             type Controls = import('@/modules/common/remote/RemoteLauncherBase').RemoteLauncherTerminalHandlers;
@@ -1247,11 +1247,12 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
                 const load = vi.fn(() => loading.promise);
                 harness.loadSessionImpl = load;
-                if (phase === 'parked' || phase === 'switch verification') {
+                if (phase === 'parked' || phase === 'parked without loss' || phase === 'switch verification') {
                     harness.treeGone = false;
                     if (phase === 'switch verification') harness.disconnectImpl = vi.fn(() => verification.promise);
                     const switching = terminal.mock.calls[0]![0].onSwitchToLocal!();
-                    harness.unexpectedExitHandler!(new Error('child exit'), { childProcessExited: true });
+                    // Without loss: ACP died after the close-entry check, so the transport suppressed the notification.
+                    if (phase !== 'parked without loss') harness.unexpectedExitHandler!(new Error('child exit'), { childProcessExited: true });
                     await switching;
                     if (phase === 'switch verification') await vi.waitFor(() => expect(harness.disconnectImpl).toHaveBeenCalledOnce());
                     else await vi.waitFor(() => expect(sessionEvents.some(e => String(e.message).includes('still be writing'))).toBe(true));
