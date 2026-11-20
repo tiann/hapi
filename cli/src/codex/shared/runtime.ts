@@ -515,7 +515,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
             const metadata = root.session.getMetadata();
             const resolved = request.method === 'thread/resume'
-                ? await inheritedResumeTier(control, params, metadata?.codexServiceTierExplicit, cwd, metadata?.codexConfirmedServiceTier ?? root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending)
+                ? await inheritedResumeTier(control, params, metadata?.codexServiceTierExplicit, cwd, metadata?.codexConfirmedServiceTier ?? root.bootstrap.sessionInfo.serviceTier,
+                    metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined)
                 : params;
             const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, undefined, savedThread, startupCatalogConfig);
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
@@ -662,7 +663,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             });
             const metadata = root.session.getMetadata();
             const resumeParams = await inheritedResumeTier(control, launch.threadParams, metadata?.codexServiceTierExplicit, root.bootstrap.workingDirectory,
-                metadata?.codexConfirmedServiceTier ?? root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending);
+                metadata?.codexConfirmedServiceTier ?? root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier,
+                metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined);
             const resolved = await resolveUltrafastLaunch(control, 'thread/resume', { ...resumeParams, cwd: root.bootstrap.workingDirectory }, root.bootstrap.workingDirectory, undefined, thread, startupCatalogConfig);
             const downgraded = resolved.downgraded;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });

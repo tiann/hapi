@@ -4302,7 +4302,8 @@ export class SyncEngine {
     private codexResumeTier(session: Pick<Session, 'metadata' | 'serviceTier'>): string | undefined {
         const metadata = session.metadata
         const pending = metadata?.codexPendingServiceTier
-        if (pending === undefined && (metadata?.codexTierConfirmationPending || metadata?.codexServiceTierExplicit === false || this.codexUsesNativeTier(metadata))) return undefined
+        if (pending === undefined && (metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined
+            || metadata?.codexServiceTierExplicit === false || this.codexUsesNativeTier(metadata))) return undefined
         // Native-only effective tiers are restored by Codex, outside the
         // HAPI runner's selectable service-tier overrides.
         const tier = SessionServiceTierRequestSchema.shape.serviceTier.safeParse(pending ?? metadata?.codexConfirmedServiceTier ?? session.serviceTier)

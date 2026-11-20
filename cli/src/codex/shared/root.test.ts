@@ -2089,8 +2089,35 @@ it.each(['web', 'native'])('awaits durable Standard recovery through %s before a
     expect(f.sessionReady).toHaveBeenCalledTimes(1);
     expect(durable.codexPendingServiceTier).toBeUndefined();
     expect(durable.codexConfirmedServiceTier).toBe('standard');
+    expect(durable.codexTierConfirmationPending).toBe(true);
+    expect(f.metadata().codexTierConfirmationPending).toBe(false);
     expect(await inheritedResumeTier(f.root.client, {}, durable.codexServiceTierExplicit, '/project',
-        durable.codexConfirmedServiceTier ?? 'ultrafast', durable.codexPendingServiceTier, durable.codexTierConfirmationPending)).toEqual({ serviceTier: null });
+        durable.codexConfirmedServiceTier ?? 'ultrafast', durable.codexPendingServiceTier,
+        durable.codexTierConfirmationPending && durable.codexConfirmedServiceTier === undefined)).toEqual({ serviceTier: null });
+});
+
+it('keeps Web Standard recovery visible if the tier metadata is acknowledged after the wait times out', async () => {
+    const f = await fixture();
+    f.session.updateMetadata(metadata => ({ ...metadata, codexPendingServiceTier: 'ultrafast', codexTierConfirmationPending: true }));
+    await f.root.activate({}, true);
+    const queued: Array<Parameters<ApiSessionClient['updateMetadata']>[0]> = [];
+    const applyMetadata = f.session.updateMetadata.bind(f.session);
+    const delayMetadata = vi.spyOn(f.session, 'updateMetadata').mockImplementation(update => { queued.push(update); });
+    vi.spyOn(f.session, 'flushMetadata').mockResolvedValueOnce(false);
+    await expect(f.root.applySettings({ serviceTier: 'standard' })).rejects.toThrow('could not confirm saving it');
+    expect(f.sessionReady).not.toHaveBeenCalled();
+    expect(f.metadata().codexPendingServiceTier).toBe('ultrafast');
+
+    for (const update of queued) applyMetadata(update);
+    delayMetadata.mockRestore();
+    expect(f.metadata()).toMatchObject({ codexConfirmedServiceTier: 'standard', codexTierConfirmationPending: true });
+    expect(f.metadata().codexPendingServiceTier).toBeUndefined();
+    expect(f.root.needsTierConfirmation).toBe(true);
+
+    await f.root.applySettings({ serviceTier: 'standard' });
+    expect(f.metadata().codexTierConfirmationPending).toBe(false);
+    expect(f.root.needsTierConfirmation).toBe(false);
+    expect(f.sessionReady).toHaveBeenCalledTimes(1);
 });
 
 it.each(['default', 'priority'])('keeps newer Standard unless a delayed lost reply snapshot reports %s', async serviceTier => {

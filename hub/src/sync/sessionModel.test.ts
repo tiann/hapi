@@ -5517,6 +5517,7 @@ it.each([
     { effective: 'flex', intent: { codexServiceTierExplicit: true }, expected: undefined },
     { effective: 'standard', intent: { codexServiceTierExplicit: true, codexPendingServiceTier: 'ultrafast', codexTierConfirmationPending: true }, expected: 'ultrafast' },
     { effective: 'standard', intent: { codexServiceTierExplicit: true, codexConfirmedServiceTier: 'ultrafast' }, expected: 'ultrafast' },
+    { effective: 'ultrafast', intent: { codexServiceTierExplicit: true, codexConfirmedServiceTier: 'standard', codexTierConfirmationPending: true }, expected: 'standard' },
     { effective: 'standard', intent: { codexServiceTierExplicit: true, codexPendingServiceTier: 'flex', codexTierConfirmationPending: true }, expected: undefined },
 ] as const)('keeps the effective tier distinct from the durable runner intent (%j)', async ({ effective, intent, expected }) => {
     const store = new Store(':memory:')

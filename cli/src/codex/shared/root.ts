@@ -826,19 +826,27 @@ export class SharedCodexRoot {
         const paused = this.tierConfirmationPending;
         const metadata = this.session.getMetadata();
         const confirmedTier = this.serviceTierExplicit ? this.settings.serviceTier ?? undefined : undefined;
+        const keepRecoveryVisible = this.activated && (paused || metadata?.codexTierConfirmationPending === true);
         if (paused || metadata?.codexTierConfirmationPending === true || metadata?.codexPendingServiceTier !== undefined
             || metadata?.codexConfirmedServiceTier !== confirmedTier || metadata?.codexServiceTierExplicit !== this.serviceTierExplicit) {
-            this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false,
-                codexServiceTierExplicit: this.serviceTierExplicit, codexConfirmedServiceTier: confirmedTier, codexPendingServiceTier: undefined }));
+            this.session.updateMetadata(metadata => this.isCurrentTierOperation(operationId)
+                ? { ...metadata, codexTierConfirmationPending: keepRecoveryVisible,
+                    codexServiceTierExplicit: this.serviceTierExplicit, codexConfirmedServiceTier: confirmedTier, codexPendingServiceTier: undefined }
+                : metadata);
         }
         if (this.activated && !await this.session.flushMetadata()) {
-            this.pauseTierConfirmation(operationId);
+            this.pauseTierConfirmation(operationId, true);
             throw new Error('Codex applied the tier, but HAPI could not confirm saving it. Reconnect before changing the service tier.');
         }
         if (!this.isCurrentTierOperation(operationId) || this.closed || this.stopping) return;
         this.tierConfirmationResolved = true;
-        if (!this.tierConfirmationPending) return;
+        const resumeInput = this.tierConfirmationPending;
         this.tierConfirmationPending = false;
+        if (keepRecoveryVisible) {
+            this.session.updateMetadata(metadata => this.isCurrentTierOperation(operationId) && !this.tierConfirmationPending
+                ? { ...metadata, codexTierConfirmationPending: false } : metadata);
+        }
+        if (!resumeInput) return;
         this.pendingLaunchCollaborationMode = undefined;
         this.publishSteering();
         if (paused && this.activated) {
@@ -1023,12 +1031,17 @@ export class SharedCodexRoot {
             this.notice('Codex accepted the turn, but its settings could not be confirmed. Reconnect before changing the service tier.');
         }
     }
-    private pauseTierConfirmation(operationId: number): void {
-        if (operationId < Math.max(this.confirmedTierOperation, this.acceptedNativeTierOperation)) return;
+    private pauseTierConfirmation(operationId: number, retainConfirmedTier = false): void {
+        if (!this.isCurrentTierOperation(operationId)) return;
+        const newerPause = operationId > this.pendingTierOperation;
         this.tierConfirmationResolved = false;
         this.pendingTierOperation = Math.max(this.pendingTierOperation, operationId);
-        if (this.session.getMetadata()?.codexTierConfirmationPending !== true) {
-            this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: true }));
+        const metadata = this.session.getMetadata();
+        if (newerPause || metadata?.codexTierConfirmationPending !== true || !retainConfirmedTier && metadata.codexConfirmedServiceTier !== undefined) {
+            this.session.updateMetadata(metadata => this.isCurrentTierOperation(operationId)
+                ? { ...metadata, codexTierConfirmationPending: true,
+                    codexConfirmedServiceTier: retainConfirmedTier ? metadata.codexConfirmedServiceTier : undefined }
+                : metadata);
         }
         if (!this.tierConfirmationPending) {
             this.tierConfirmationPending = true;
