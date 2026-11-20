@@ -1883,14 +1883,14 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.promptCalls).toBe(1);
     });
 
-    it('does not replay a prompt when a transient failure follows tool activity', async () => {
-        harness.promptMessages = [{
+    it('auto-continues once when a transient failure follows tool activity instead of replaying the prompt', async () => {
+        harness.promptMessageBatches = [[{
             type: 'tool_call',
             id: 'tool-1',
             name: 'shell',
             input: { command: 'touch output.txt' },
             status: 'completed'
-        }];
+        }], []];
         harness.promptErrors = [
             new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
         ];
@@ -1918,10 +1918,73 @@ describe('cursorAcpRemoteLauncher', () => {
 
         await cursorAcpRemoteLauncher(session);
 
-        expect(harness.promptCalls).toBe(1);
-        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[0]).toEqual([{ type: 'text', text: 'finish the task' }]);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        // Successful auto-continue must not stamp Blocked / "not retried" give-up.
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
             type: 'error',
             message: expect.stringContaining('not retried')
+        }));
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked"/)
+        }));
+    });
+
+    it('stamps Blocked when auto-continue after tool activity also fails', async () => {
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], [{
+            type: 'tool_call',
+            id: 'tool-2',
+            name: 'shell',
+            input: { command: 'touch again.txt' },
+            status: 'completed'
+        }]];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('auto-continue also failed')
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(
+                /AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/
+            )
         }));
         expect(client.sendSessionEvent.mock.calls.some(
             (call) => call[0]?.type === 'modelError'
@@ -1931,19 +1994,296 @@ describe('cursorAcpRemoteLauncher', () => {
         )).toBe(false);
     });
 
-    it('does not auto-bridge a transient failure after tool side effects', async () => {
+    it('does not auto-bridge a transient failure after tool side effects, even once the one-shot Continue also fails', async () => {
         // Cold-review Major 2026-09-08: ordinary retry respects
         // attemptProducedToolActivity, but auto-Bridge only checked
         // bridgeability/transience/settings — re-sending lastUserMessage
         // would re-run completed shell/edit tools.
+        //
+        // The one-shot auto-Continue (#1724) now retries once with "Continue."
+        // instead of giving up immediately on tool-activity failures — spend
+        // that attempt too so this still reaches the give-up/bridgeable-false
+        // path the original regression guarded.
         setAutoBridgeTransientModelErrors(true);
-        harness.promptMessages = [{
+        harness.promptMessageBatches = [[{
             type: 'tool_call',
             id: 'tool-1',
             name: 'shell',
             input: { command: 'touch output.txt' },
             status: 'completed'
+        }], []];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+            updateMetadata: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(queue.queue.some(
+            (item) => item.internal?.kind === 'model-error-bridge'
+        )).toBe(false);
+        expect(queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+
+        const wroteBridgeableFalse = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { bridgeable?: boolean } | undefined;
+            return err?.bridgeable === false;
+        });
+        expect(wroteBridgeableFalse).toBe(true);
+
+        setAutoBridgeTransientModelErrors(false);
+    });
+
+    it('does not auto-bridge a non-retryable failure on the Continue attempt after tool side effects', async () => {
+        // Cold-review Major 2026-11-19: the retryable give-up branch forces
+        // bridgeable:false, but the non-retryable catch branch recorded the
+        // model error without checking postToolAutoContinueUsed — a rate-limit
+        // rejection (non-retryable, but transient/bridgeable by default) on the
+        // Continue attempt could still auto-Bridge and resend the *original*
+        // prompt into tools that already ran on the first attempt.
+        setAutoBridgeTransientModelErrors(true);
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], []];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Rate limit exceeded')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+            updateMetadata: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        // Non-retryable catch surfaces the raw error message, not the give-up copy.
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Rate limit exceeded'
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(queue.queue.some(
+            (item) => item.internal?.kind === 'model-error-bridge'
+        )).toBe(false);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+
+        const wroteBridgeableFalse = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { bridgeable?: boolean } | undefined;
+            return err?.bridgeable === false;
+        });
+        expect(wroteBridgeableFalse).toBe(true);
+
+        setAutoBridgeTransientModelErrors(false);
+    });
+
+    it('stamps Blocked when a settled text classification ends the turn without a thrown error', async () => {
+        // Cold-review Major 2026-11-19: this branch calls recordModelError but
+        // never surfaced a chat error or stamped the blocked footer at all —
+        // unlike every other path that ends the turn without recovering.
+        harness.promptMessages = [
+            { type: 'text', text: 'Error: RetriableError: [resource_exhausted] quota hit' }
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(1);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+    });
+
+    it('trims leading assistant prose from a settled failure before surfacing it', async () => {
+        // Minor (2026-11-19): Cursor can append `Error: T: […]` after real
+        // assistant prose in the same message; .raw is the whole message, so
+        // the chat error / blocked summary must not just echo it back.
+        harness.promptMessages = [{
+            type: 'text',
+            text: 'All done, wrapping up the task.\nError: RetriableError: [resource_exhausted] quota hit'
         }];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }));
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('wrapping up the task')
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY.*wrapping up the task/)
+        }));
+    });
+
+    it('does not double the chat error for a settled stderr failure wireStderrErrorListener already announced', async () => {
+        // Minor (bot, 2026-11-19): wireStderrErrorListener sends a chat error
+        // row the moment a non-retryable stderr arrives while promptInFlight.
+        // The settled branch (added to fix the missing-footer Major) must not
+        // surface a second one for the same failure once it's picked up from
+        // pendingStderrFailure — only the footer/Bridge bookkeeping is new.
+        harness.promptStderrErrors = [{
+            type: 'rate_limit',
+            message: 'status 429',
+            raw: 'status 429'
+        }];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const errorCallsForThisFailure = client.sendAgentMessage.mock.calls.filter(
+            ([message]) => message?.type === 'error' && message.message === 'status 429'
+        );
+        expect(errorCallsForThisFailure).toHaveLength(1);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+    });
+
+    it('does not auto-bridge a settled text classification on the Continue attempt after tool side effects', async () => {
+        // Audit (orchestrator-requested, 2026-11-19): the settled branch's
+        // postToolAutoContinueUsed gate was only exercised via the thrown-error
+        // branches before. Cover the same gap through the settled-text path.
+        setAutoBridgeTransientModelErrors(true);
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], [{
+            type: 'text',
+            text: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }]];
         harness.promptErrors = [
             new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
         ];
@@ -1972,11 +2312,19 @@ describe('cursorAcpRemoteLauncher', () => {
 
         await cursorAcpRemoteLauncher(session);
 
-        expect(harness.promptCalls).toBe(1);
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
         expect(queue.queue.some(
             (item) => item.internal?.kind === 'model-error-bridge'
         )).toBe(false);
-        expect(queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
         expect(client.sendSessionEvent.mock.calls.some(
             (call) => call[0]?.type === 'modelErrorBridged'
         )).toBe(false);
@@ -1990,6 +2338,103 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(wroteBridgeableFalse).toBe(true);
 
         setAutoBridgeTransientModelErrors(false);
+    });
+
+    it('stamps Blocked after exhausting all retries with no tool activity (no Bridge eligible)', async () => {
+        // Audit (orchestrator-requested, 2026-11-19): the exhausted-retries
+        // give-up branch was restructured to defer-then-stamp the footer like
+        // its siblings, but no test drove it all the way to exhaustion before.
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(4);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: `Cursor Agent failed after ${3} retries.`
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+    });
+
+    it('gives up after one Continue instead of retrying it when the continuation itself fails without tool activity', async () => {
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], []];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        // One-shot contract (#1724): the Continue attempt itself failing
+        // retryably (no new tool activity) must not spend the normal retry
+        // budget resending "Continue." — exactly 2 prompt calls total, not 3+.
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[0]).toEqual([{ type: 'text', text: 'finish the task' }]);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('auto-continue also failed')
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(
+                /AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/
+            )
+        }));
     });
 
     it('removes the Cursor MCP overlay even when backend.disconnect rejects', async () => {

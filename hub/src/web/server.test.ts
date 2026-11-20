@@ -46,9 +46,6 @@ function writeFixture(relPath: string, content: string | Uint8Array): string {
 beforeAll(async () => {
     previousHapiHome = process.env.HAPI_HOME
     homeDir = mkdtempSync(join(tmpdir(), 'hapi-web-server-home-'))
-    // The configuration singleton outlives this file and is reused by route tests.
-    const ownedHome = homeDir
-    process.once('exit', () => rmSync(ownedHome, { recursive: true, force: true }))
     process.env.HAPI_HOME = homeDir
     await createConfiguration()
 
@@ -84,6 +81,10 @@ afterAll(() => {
     } else {
         process.env.HAPI_HOME = previousHapiHome
     }
+    // homeDir is deliberately left in place. createConfiguration() is a
+    // process-wide singleton and bun runs every test file in one process, so
+    // test files that run after this one still write settings under homeDir;
+    // removing it made routes/cli.test.ts fail with ENOENT whenever it ran later.
     if (distDir) {
         rmSync(distDir, { recursive: true, force: true })
     }
