@@ -5558,3 +5558,30 @@ it.each(['ultrafast', 'standard'])('retains explicit %s on re-import of an inher
         expect(tier).toBe(selected)
     } finally { engine.stop() }
 })
+
+it('omits tier overrides across repeated Web resumes of a native import', async () => {
+    const store = new Store(':memory:')
+    const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+    try {
+        const session = engine.getOrCreateSession('native-import-tier', {
+            path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
+            codexSessionId: 'native-tier', codexSourceSessionId: 'source-tier', codexImportedAt: null,
+        }, null, 'default')
+        engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.36.5' }, null, 'default')
+        engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+        const tiers: Array<string | undefined> = []
+        ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+            tiers.push(args[11])
+            engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+            engine.handleSessionReady({ sid: session.id, time: Date.now() })
+            return { type: 'success', sessionId: session.id }
+        }
+        for (const serviceTier of ['fast', 'standard']) {
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier })
+            engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+            expect(engine.getSession(session.id)?.serviceTier).toBe(serviceTier)
+            expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
+        }
+        expect(tiers).toEqual([undefined, undefined])
+    } finally { engine.stop() }
+})

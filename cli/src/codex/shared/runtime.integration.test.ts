@@ -434,6 +434,8 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await second.client.request('turn/interrupt', { threadId: imported.thread.id, turnId: importedTurn.turn.id }).catch(() => {});
             const abandoned = await second.client.request<{ thread: { id: string } }>('thread/start', { cwd, serviceTier: null });
             const abandonedSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === abandoned.thread.id)![0];
+            const racingArchive = await second.client.request<{ thread: { id: string } }>('thread/start', { cwd, serviceTier: null });
+            const racingSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === racingArchive.thread.id)![0];
             second.abort.abort(); await second.done;
             await configure('default');
             delete state.sessions.get(importedSid)!.metadata.codexServiceTierExplicit;
@@ -454,6 +456,39 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(state.sessions.get(abandonedSid)?.metadata.lifecycleState).toBe('archived');
             expect(third.runtime.sessions[abandonedSid].active).toBe(false);
             await expect(withThreadOwnership(third.runtime.codexHome, abandoned.thread.id, 'archive-verifier', async () => true)).resolves.toBe(true);
+            const archiveClient = new CodexAppServerClient({ endpoint: third.runtime.endpoint, token: third.runtime.token });
+            clients.push(archiveClient); await initializeSharedClient(archiveClient);
+            let enteredArchiveRace!: () => void;
+            const metadataEntered = new Promise<void>(resolve => { enteredArchiveRace = resolve; });
+            const stalledMetadata = new Promise<void>(resolve => { releaseLaunch = resolve; });
+            const archiveRace = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (method === 'thread/metadata/update' && record(params).threadId === racingArchive.thread.id) {
+                    enteredArchiveRace();
+                    return stalledMetadata.then(() => { throw new Error('fixture metadata update lost during archive'); });
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(archiveRace);
+            const racingBind = third.client.request('thread/resume', { threadId: racingArchive.thread.id, excludeTurns: true });
+            const rejectedBind = expect(racingBind).rejects.toThrow('lost during archive');
+            await metadataEntered;
+            try {
+                await archiveClient.request('thread/archive', { threadId: racingArchive.thread.id });
+                expect(third.runtime.sessions[racingSid].active).toBe(false);
+            } finally { releaseLaunch(); }
+            await rejectedBind; archiveRace.mockRestore();
+            await vi.waitFor(() => expect(state.sessions.get(racingSid)?.metadata.lifecycleState).toBe('archived'));
+            await expect(withThreadOwnership(third.runtime.codexHome, racingArchive.thread.id, 'archive-verifier', async () => true)).resolves.toBe(true);
+            const observingActivation = vi.spyOn(SharedCodexRoot.prototype, 'activate');
+            extraSpies.push(observingActivation);
+            const archivedNativeOnly = await third.client.request<{ thread: { id: string } }>('thread/start', { cwd, serviceTier: null });
+            const notificationRoot = observingActivation.mock.contexts.find((root): root is InstanceType<typeof SharedCodexRoot> =>
+                root instanceof SharedCodexRoot && root.threadId === archivedNativeOnly.thread.id);
+            expect(notificationRoot).toBeDefined();
+            observingActivation.mockRestore();
+            // Bypass the gateway so only the native subscription can cause cleanup.
+            await notificationRoot!.client.request('thread/archive', { threadId: archivedNativeOnly.thread.id });
+            await vi.waitFor(() => expect(third.runtime.sessions[notificationRoot!.session.sessionId].active).toBe(false));
             expect((await third.client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true })).serviceTier).toBe('priority');
             expect(state.sessions.get(original.sessionId)?.metadata.codexServiceTierExplicit).toBe(true);
             // Re-import selected Ultrafast in HAPI while the native snapshot still stores Fast.

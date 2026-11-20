@@ -4284,6 +4284,7 @@ export class SyncEngine {
         const metadata = session.metadata
         if (metadata?.codexPendingServiceTier !== undefined) return metadata.codexPendingServiceTier
         if (metadata?.codexTierConfirmationPending || metadata?.codexServiceTierExplicit === false) return undefined
+        if (metadata?.codexServiceTierExplicit === undefined && metadata?.codexSourceSessionId) return undefined
         return session.serviceTier ?? undefined
     }
 

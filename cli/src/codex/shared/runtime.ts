@@ -159,9 +159,13 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         });
         return shutdownPromise;
     };
-    const end = async (root: SharedCodexRoot, nativeArchive = true, threadId = root.threadId): Promise<void> => {
-        const owned = roots.get(threadId) ?? retryableBindings.get(threadId)?.root;
-        if (owned !== root || ending.has(root)) return;
+    const ownedRoot = (threadId: string): SharedCodexRoot | undefined => roots.get(threadId) ?? retryableBindings.get(threadId)?.root
+        ?? [...prepared].find(root => {
+            const binding = runtime.sessions[root.session.sessionId];
+            return binding?.active && binding.threadId === threadId;
+        });
+    const endOwnedThread = async (root: SharedCodexRoot, threadId: string, nativeArchive: boolean): Promise<void> => {
+        if (ownedRoot(threadId) !== root || ending.has(root)) return;
         ending.add(root);
         try { if (nativeArchive) await root.client.request('thread/archive', { threadId }); } catch (error) { ending.delete(root); throw error; }
         roots.delete(threadId);
@@ -169,16 +173,19 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         resumingThreads.delete(threadId);
         pendingAdmission.delete(threadId);
         nativeSettings.delete(threadId);
-        runtime.sessions[root.session.sessionId].active = false; await persist();
+        const binding = runtime.sessions[root.session.sessionId];
+        if (binding) binding.active = false;
+        await persist();
         // Let the RPC acknowledgement leave both gateway and hub sockets before detach.
         setTimeout(() => {
             void root.close(true).then(async () => {
                 prepared.delete(root);
                 await notifyRunnerSessionStarted(root.session.sessionId, { ...root.bootstrap.metadata, lifecycleState: 'archived' });
-                if (roots.size === 0 && reservations.size === 0 && retryableBindings.size === 0) await shutdown();
+                if (prepared.size === 0 && roots.size === 0 && reservations.size === 0 && retryableBindings.size === 0) await shutdown();
             }).catch(error => logger.debug('[Codex shared] root cleanup', error));
         }, 100);
     };
+    const end = (root: SharedCodexRoot, nativeArchive = true): Promise<void> => endOwnedThread(root, root.threadId, nativeArchive);
     const prepare = async (cwd: string, existingSessionId?: string, parent?: SharedCodexRoot): Promise<SharedCodexRoot> => {
         assertRunning();
         // Seed the generated title before Shared Codex replays inherited history.
@@ -232,6 +239,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         if (reserved && reserved.threadId !== threadId) throw new Error('Codex retargeted a reserved thread');
         if (resume || requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
         if (!reserved) await reserve(root, threadId);
+        if (ending.has(root)) throw new Error('Codex thread was archived during binding');
         if (!resume?.rootBound) {
             // Metadata write materializes an empty legacy rollout for native resume.
             await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
@@ -486,8 +494,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             await bindAccepted(reservation, record(response.result));
         } else if (request.method === 'thread/archive' && !response.error) {
             const threadId = string(record(request.params).threadId);
-            const root = threadId ? roots.get(threadId) ?? retryableBindings.get(threadId)?.root : undefined;
-            if (root && threadId) await end(root, false, threadId);
+            const root = threadId ? ownedRoot(threadId) : undefined;
+            if (root && threadId) await endOwnedThread(root, threadId, false);
         } else if (request.method === 'thread/queue/delete' && !response.error && record(response.result).deleted === true) {
             const root = roots.get(string(record(request.params).threadId) ?? '');
             const nativeId = string(record(request.params).queuedSubmissionId);
