@@ -57,6 +57,7 @@ function renderList(items: BoardItem[], statusOrder: string[], boardId = 'board-
                 issueTemplatesGithubNewIssueUrl={null}
                 isLoadingIssueTemplates={false}
                 issueTemplatesError={null}
+                onIssueTemplatesRefetch={vi.fn()}
                 onNewCardRepoChange={vi.fn()}
                 onCreateCard={vi.fn()}
             />

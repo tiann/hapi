@@ -422,6 +422,7 @@ function SessionsPage() {
         githubNewIssueUrl: newCardGithubNewIssueUrl,
         isLoading: newCardTemplatesLoading,
         error: newCardTemplatesError,
+        refetch: refetchNewCardTemplates,
     } = useIssueTemplates(api, newCardBoardId, newCardRepo, newCardDialogOpen)
     // Seen-tracking used to live here, gated on sessionsMode/selection
     // (hapi#238 Codex review, two rounds) — upstream reworked
@@ -713,6 +714,7 @@ function SessionsPage() {
                             issueTemplatesGithubNewIssueUrl={newCardGithubNewIssueUrl}
                             isLoadingIssueTemplates={newCardTemplatesLoading}
                             issueTemplatesError={newCardTemplatesError}
+                            onIssueTemplatesRefetch={refetchNewCardTemplates}
                             onNewCardRepoChange={setNewCardRepo}
                             onCreateCard={(payload) => {
                                 if (newCardBoardMissing || !newCardBoardId) {

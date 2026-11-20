@@ -28,6 +28,8 @@ export function useIssueTemplates(
     githubNewIssueUrl: string | null
     isLoading: boolean
     error: string | null
+    /** Forces a live refetch — used when the dialog's own template_conflict 409 means the cached list is already known-stale. */
+    refetch: () => void
 } {
     const query = useQuery({
         queryKey: queryKeys.issueTemplates(boardId ?? '', repo ?? ''),
@@ -64,5 +66,6 @@ export function useIssueTemplates(
         githubNewIssueUrl: query.data?.githubNewIssueUrl ?? null,
         isLoading: query.isFetching,
         error: query.error instanceof Error ? query.error.message : query.error ? 'Failed to load issue templates' : null,
+        refetch: () => { void query.refetch() },
     }
 }

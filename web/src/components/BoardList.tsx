@@ -363,6 +363,7 @@ export function BoardList(props: {
     issueTemplatesGithubNewIssueUrl: string | null
     isLoadingIssueTemplates: boolean
     issueTemplatesError: string | null
+    onIssueTemplatesRefetch: () => void
     onNewCardRepoChange: (repo: string | null) => void
     onCreateCard: (payload: { repo: string; title: string; body: string; templateId: string | null; templateRevision: string | null; existingIssueUrl?: string; labels: string[]; assignees: string[] }) => Promise<string>
 }) {
@@ -511,6 +512,7 @@ export function BoardList(props: {
                 githubNewIssueUrl={props.issueTemplatesGithubNewIssueUrl}
                 isLoadingTemplates={props.isLoadingIssueTemplates}
                 templatesError={props.issueTemplatesError}
+                onTemplateConflict={props.onIssueTemplatesRefetch}
                 onRepoChange={props.onNewCardRepoChange}
                 onSubmit={props.onCreateCard}
             />

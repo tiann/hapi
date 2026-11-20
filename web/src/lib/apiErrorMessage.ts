@@ -35,3 +35,24 @@ export function getApiErrorUrl(err: unknown): string | null {
     }
     return null
 }
+
+/**
+ * Extracts an optional machine-readable `code` the hub attached to an error
+ * body — distinct from the human-readable `error` message, which can vary
+ * in wording across the several conditions that share one code (review
+ * finding, tiann/hapi#2147: the create-card 409 needs a reliable way to
+ * tell "the selected template went stale, refetch and let the user pick
+ * again" apart from any other failure, which string-matching message text
+ * could never do safely).
+ */
+export function getApiErrorCode(err: unknown): string | null {
+    if (err instanceof ApiError && err.body) {
+        try {
+            const parsed = JSON.parse(err.body) as { code?: unknown }
+            if (typeof parsed.code === 'string' && parsed.code.trim()) return parsed.code
+        } catch {
+            // fall through
+        }
+    }
+    return null
+}

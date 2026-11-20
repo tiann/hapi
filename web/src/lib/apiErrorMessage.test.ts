@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from '@/api/client'
-import { getApiErrorMessage, getApiErrorUrl } from './apiErrorMessage'
+import { getApiErrorCode, getApiErrorMessage, getApiErrorUrl } from './apiErrorMessage'
 
 describe('getApiErrorMessage', () => {
     it('extracts the hub\'s { error } message from an ApiError body', () => {
@@ -34,5 +34,24 @@ describe('getApiErrorUrl', () => {
 
     it('returns null for a non-ApiError value', () => {
         expect(getApiErrorUrl(new Error('boom'))).toBeNull()
+    })
+})
+
+describe('getApiErrorCode', () => {
+    it('extracts a machine-readable code the hub attached alongside the error', () => {
+        const err = new ApiError('HTTP 409', 409, undefined, JSON.stringify({
+            error: 'This template has changed since you opened it — review it again and try again',
+            code: 'template_conflict'
+        }))
+        expect(getApiErrorCode(err)).toBe('template_conflict')
+    })
+
+    it('returns null when the error body carries no code', () => {
+        const err = new ApiError('HTTP 502', 502, undefined, JSON.stringify({ error: 'rate limited' }))
+        expect(getApiErrorCode(err)).toBeNull()
+    })
+
+    it('returns null for a non-ApiError value', () => {
+        expect(getApiErrorCode(new Error('boom'))).toBeNull()
     })
 })

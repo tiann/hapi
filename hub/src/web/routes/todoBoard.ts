@@ -1964,24 +1964,32 @@ export function createBoardRoutes(
         // (existingIssueUrl set): that issue was already created under the
         // policy that applied at the time, and this request creates nothing
         // new — only (re)attaching it to the project.
+        //
+        // `code: 'template_conflict'` on all three (review finding,
+        // tiann/hapi#2147, follow-up): without a machine-readable signal
+        // distinct from every other 409/error message, the dialog had no
+        // reliable way to tell "stale template, refetch and let the user
+        // pick again" apart from any other failure, so it kept resubmitting
+        // the same stale revision until the user manually backed all the
+        // way out and reopened.
         if (!parsed.data.existingIssueUrl) {
             const [repoOwner, repoName] = parsed.data.repo.split('/') as [string, string]
             try {
                 const { templates, blankIssuesEnabled } = await resolveIssueTemplatesForRepo(board.host, repoOwner, repoName)
                 if (parsed.data.templateId === null) {
                     if (!blankIssuesEnabled) {
-                        return c.json({ error: 'This repository no longer allows blank issues — pick a template and try again' }, 409)
+                        return c.json({ error: 'This repository no longer allows blank issues — pick a template and try again', code: 'template_conflict' }, 409)
                     }
                 } else {
                     const current = templates.find(t => t.id === parsed.data.templateId)
                     if (!current || !isUsableIssueTemplate(current)) {
-                        return c.json({ error: 'This template is no longer available — pick another and try again' }, 409)
+                        return c.json({ error: 'This template is no longer available — pick another and try again', code: 'template_conflict' }, 409)
                     }
                     // templateId existing isn't enough — a maintainer can
                     // edit a template's fields/labels in place, same id,
                     // different content (review finding, hapi#238, follow-up).
                     if (current.revision !== parsed.data.templateRevision) {
-                        return c.json({ error: 'This template has changed since you opened it — review it again and try again' }, 409)
+                        return c.json({ error: 'This template has changed since you opened it — review it again and try again', code: 'template_conflict' }, 409)
                     }
                 }
             } catch (error) {

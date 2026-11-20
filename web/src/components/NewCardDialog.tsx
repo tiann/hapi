@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { SelectControl } from '@/components/ui/select-control'
 import { Spinner } from '@/components/Spinner'
 import { IssueFormFieldView } from '@/components/IssueFormField'
-import { getApiErrorMessage, getApiErrorUrl } from '@/lib/apiErrorMessage'
+import { getApiErrorCode, getApiErrorMessage, getApiErrorUrl } from '@/lib/apiErrorMessage'
 import { useTranslation } from '@/lib/use-translation'
 import {
     formatIssueBody,
@@ -45,6 +45,13 @@ export type NewCardDialogProps = {
     githubNewIssueUrl: string | null
     isLoadingTemplates: boolean
     templatesError: string | null
+    /**
+     * Called when the create-card submit fails with the hub's
+     * `template_conflict` 409 (review finding, tiann/hapi#2147,
+     * follow-up) — the caller owns the templates query, so refetching it
+     * lives there; this dialog only knows to ask for it.
+     */
+    onTemplateConflict: () => void
     onRepoChange: (repo: string | null) => void
     onSubmit: (payload: { repo: string; title: string; body: string; templateId: string | null; templateRevision: string | null; existingIssueUrl?: string; labels: string[]; assignees: string[] }) => Promise<string>
 }
@@ -60,7 +67,7 @@ export type NewCardDialogProps = {
  */
 export function NewCardDialog(props: NewCardDialogProps) {
     const { t } = useTranslation()
-    const { isOpen, onClose, knownRepos, templates, blankAllowed, githubNewIssueUrl, isLoadingTemplates, templatesError, onRepoChange, onSubmit } = props
+    const { isOpen, onClose, knownRepos, templates, blankAllowed, githubNewIssueUrl, isLoadingTemplates, templatesError, onTemplateConflict, onRepoChange, onSubmit } = props
 
     const [step, setStep] = useState<Step>('repo')
     const [repoInput, setRepoInput] = useState('')
@@ -161,6 +168,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
     }
 
     const handleTemplatePick = (template: TemplateSelection) => {
+        setError(null)
         setSelectedTemplate(template)
         // Seed answers from the template's own defaults (an input/textarea's
         // `value:`, a single-select dropdown's `defaultIndex:`) so accepting
@@ -223,6 +231,19 @@ export function NewCardDialog(props: NewCardDialogProps) {
             onClose()
         } catch (err) {
             setError(getApiErrorMessage(err, t('boards.newCard.error')))
+            // The hub's template_conflict 409 means the selection this
+            // dialog is holding is already known-stale — no retry of the
+            // same submission can ever succeed (review finding,
+            // tiann/hapi#2147, follow-up). Ask the caller to refetch (it
+            // owns the templates query) and send the user back to pick
+            // again from the fresh list, instead of leaving them stuck
+            // resubmitting the same stale revision from the review step.
+            if (getApiErrorCode(err) === 'template_conflict') {
+                onTemplateConflict()
+                setSelectedTemplate(undefined)
+                setStep('template')
+                return
+            }
             // Keep showing the previously-known orphaned issue (if any) when
             // this retry's own failure carries no URL of its own — a
             // transient network error on the attach retry must not make the
@@ -295,6 +316,11 @@ export function NewCardDialog(props: NewCardDialogProps) {
                     {step === 'template' ? (
                         <div className="flex flex-col gap-3">
                             <div className="text-xs text-[var(--app-hint)]">{t('boards.newCard.repoLabel')}: {repoInput}</div>
+                            {error ? (
+                                <div className="rounded-md bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-400">
+                                    {error}
+                                </div>
+                            ) : null}
                             {isLoadingTemplates ? (
                                 <div className="flex justify-center p-4"><Spinner size="sm" /></div>
                             ) : templatesError ? (

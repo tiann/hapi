@@ -32,6 +32,7 @@ function renderList() {
                 issueTemplatesGithubNewIssueUrl={null}
                 isLoadingIssueTemplates={false}
                 issueTemplatesError={null}
+                onIssueTemplatesRefetch={vi.fn()}
                 onNewCardRepoChange={vi.fn()}
                 onCreateCard={vi.fn()}
             />

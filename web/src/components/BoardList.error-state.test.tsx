@@ -56,6 +56,7 @@ function renderList(items: BoardItem[], error: string | null, boards = [{ id: 'b
                 issueTemplatesGithubNewIssueUrl={null}
                 isLoadingIssueTemplates={false}
                 issueTemplatesError={null}
+                onIssueTemplatesRefetch={vi.fn()}
                 onNewCardRepoChange={vi.fn()}
                 onCreateCard={vi.fn()}
             />

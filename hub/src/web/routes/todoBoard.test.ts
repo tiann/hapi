@@ -2298,6 +2298,12 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
             })
         })
         expect(response.status).toBe(409)
+        // code (review finding, hapi#2147, follow-up): the dialog's own
+        // template_conflict handling needs a machine-readable signal, not
+        // just this message's wording, to know it's safe to refetch and
+        // send the user back to pick again rather than retry as-is.
+        const body = await response.json() as { code: string }
+        expect(body.code).toBe('template_conflict')
         expect(calls).toEqual([])
     })
 

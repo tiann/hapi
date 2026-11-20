@@ -81,6 +81,7 @@ function renderList(items: BoardItem[], overrides: { onRefresh?: () => void; isR
                 issueTemplatesGithubNewIssueUrl={null}
                 isLoadingIssueTemplates={false}
                 issueTemplatesError={null}
+                onIssueTemplatesRefetch={vi.fn()}
                 onNewCardRepoChange={vi.fn()}
                 onCreateCard={vi.fn()}
             />

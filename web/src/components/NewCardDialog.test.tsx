@@ -15,6 +15,7 @@ function renderDialog(overrides: Partial<NewCardDialogProps> = {}) {
         githubNewIssueUrl: null,
         isLoadingTemplates: false,
         templatesError: null,
+        onTemplateConflict: vi.fn(),
         onRepoChange: vi.fn(),
         onSubmit: vi.fn().mockResolvedValue('https://github.com/heavygee/hapi/issues/42'),
         ...overrides
@@ -351,6 +352,33 @@ describe('NewCardDialog', () => {
                 assignees: []
             })
         })
+    })
+
+    // Review finding (tiann/hapi#2147, follow-up on the template-revision
+    // 409 added above): the hub's template_conflict response means no
+    // retry of the same submission can ever succeed — the dialog used to
+    // just show the error and let the user resubmit the same stale
+    // selection from the review step, which hit the same 409 forever.
+    it('refetches and returns to template-picking on a template_conflict 409', async () => {
+        const onSubmit = vi.fn().mockRejectedValueOnce(new ApiError(
+            'HTTP 409', 409, undefined,
+            JSON.stringify({ error: 'This template has changed since you opened it — review it again and try again', code: 'template_conflict' })
+        ))
+        const onTemplateConflict = vi.fn()
+        renderDialog({ templates: [], blankAllowed: true, onSubmit, onTemplateConflict })
+
+        fireEvent.change(screen.getByPlaceholderText('owner/repo'), { target: { value: 'heavygee/hapi' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(await screen.findByText('Open a blank issue'))
+        fireEvent.change(screen.getAllByRole('textbox')[0]!, { target: { value: 'Some title' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Create issue' }))
+
+        // Back at template-picking (not stuck on review with a dead retry),
+        // with the refetch requested and the reason visible.
+        expect(await screen.findByText('Open a blank issue')).toBeInTheDocument()
+        expect(onTemplateConflict).toHaveBeenCalledTimes(1)
+        expect(screen.getByText('This template has changed since you opened it — review it again and try again')).toBeInTheDocument()
     })
 
     it('does not offer "Open a blank issue" when blankAllowed is false but a usable template exists', async () => {
