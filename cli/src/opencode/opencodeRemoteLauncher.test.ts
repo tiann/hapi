@@ -1108,14 +1108,14 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             let output = '';
             stdout.on('data', chunk => { output += chunk.toString(); });
             type Mounted = {
-                setupTerminal(controls: Controls): void;
-                createDisplay(context: Controls & { messageBuffer: MessageBuffer }): ReactElement;
+                setupTerminal(controls: Controls): Promise<void>;
+                createDisplay(context: Controls & { messageBuffer: MessageBuffer }): Promise<ReactElement>;
                 messageBuffer: MessageBuffer;
                 inkInstance: ReturnType<typeof render>;
             };
             const terminal = vi.spyOn(RemoteLauncherBase.prototype as unknown as Mounted, 'setupTerminal')
-                .mockImplementation(function (this: Mounted, controls) {
-                    this.inkInstance = render(this.createDisplay({ ...controls, messageBuffer: this.messageBuffer }), {
+                .mockImplementation(async function (this: Mounted, controls) {
+                    this.inkInstance = render(await this.createDisplay({ ...controls, messageBuffer: this.messageBuffer }), {
                         stdin: stdin as unknown as NodeJS.ReadStream, stdout: stdout as unknown as NodeJS.WriteStream,
                         debug: true, exitOnCtrlC: false, patchConsole: false
                     });
@@ -3948,13 +3948,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 onCompactAvailabilityChange: (available) => availabilityEvents.push(available)
             });
 
-            // setupTerminal() runs synchronously as the very first thing
-            // start() does, before runMainLoop() (and hence before the
-            // pending newSession()) gets a chance to run. Wait until that
-            // promise is actually held before switching so this regression
-            // covers the intended startup race rather than scheduler timing.
-            expect(inkHarness.lastRenderProps?.onSwitchToLocal).toBeDefined();
             await vi.waitFor(() => expect(resolveNewSession).toBeTypeOf('function'));
+            expect(inkHarness.lastRenderProps?.onSwitchToLocal).toBeDefined();
             expect(availabilityEvents).toEqual([]);
 
             await inkHarness.lastRenderProps!.onSwitchToLocal!();

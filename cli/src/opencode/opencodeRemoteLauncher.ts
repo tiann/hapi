@@ -1,4 +1,3 @@
-import React from 'react';
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
@@ -10,8 +9,8 @@ import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport'
 import { isAcpStallStderrError } from '@/agent/backends/acp/acpStderrErrors';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import type { AgentMessage, McpServerStdio, PromptContent } from '@/agent/types';
+import type { ReactElement } from 'react';
 import { RemoteLauncherBase, type RemoteLauncherDisplayContext, type RemoteLauncherTerminalHandlers, type RemoteLauncherExitReason } from '@/modules/common/remote/RemoteLauncherBase';
-import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
 import type { CollectedQueueItem, QueueReservation } from '@/utils/MessageQueue2';
@@ -446,9 +445,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
     private terminalMounted = false;
 
-    protected override setupTerminal(controls: RemoteLauncherTerminalHandlers): void {
-        super.setupTerminal(controls);
+    protected override setupTerminal(controls: RemoteLauncherTerminalHandlers): void | Promise<void> {
         this.terminalMounted = true;
+        return super.setupTerminal(controls);
     }
 
     protected override finalizeTerminal(): void {
@@ -477,7 +476,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         return this.cleanupFailed;
     }
 
-    protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
+    protected async createDisplay(context: RemoteLauncherDisplayContext): Promise<ReactElement> {
+        const [{ default: React }, { OpencodeDisplay }] = await Promise.all([
+            import('react'), import('@/ui/ink/OpencodeDisplay')
+        ]);
         return React.createElement(OpencodeDisplay, {
             ...context,
             immediateExit: () => this.majorVersion === null || this.recoverChildExit,
@@ -557,7 +559,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         const signal = AbortSignal.any([this.runtimeGate.sessionExit, session.queue.closeSignal]);
         try {
             this.releaseTerminal();
-            this.setupTerminal({ onSwitchToLocal: refuseSwitch, onExit: () => this.runtimeGate.requestSessionExit() });
+            await this.setupTerminal({ onSwitchToLocal: refuseSwitch, onExit: () => this.runtimeGate.requestSessionExit() });
             refuseSwitch();
             while (!signal.aborted) {
                 const batch = await session.queue.waitForDeferredBatch(signal);

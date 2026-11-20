@@ -19,11 +19,14 @@ function authHeaders() {
     }
 }
 
+// Actions runners under a full hub suite occasionally exceed bun's default 5s
+// hook budget during createConfiguration (seen as an unnamed
+// beforeEach/afterEach timeout). Give setup headroom — tiann/hapi#2514.
 beforeAll(async () => {
     const config = await createConfiguration()
     config._setCliApiToken('test-token', 'env', false)
     await config.setGithubPrAwareness(true)
-})
+}, 30_000)
 
 describe('cli shutdown preparation', () => {
     function fixture(machineId = 'machine-1') {
@@ -476,7 +479,7 @@ describe('cli features and external-refs read', () => {
 describe('cli autoBridgeTransientModelErrors namespace gate', () => {
     afterEach(async () => {
         await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, false)
-    })
+    }, 30_000)
 
     it('returns hub auto-bridge only for the default namespace', async () => {
         await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, true)

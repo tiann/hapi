@@ -1,7 +1,7 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
 import type { RawJSONLines } from '@/claude/types';
-import { watch, type FSWatcher } from 'node:fs';
+import { statSync, watch, type BigIntStats, type FSWatcher } from 'node:fs';
 import { RPC_METHODS, splitAgyModelSelection } from '@hapi/protocol';
 import { getBuiltinSlashCommands, mergeSlashCommands } from '@hapi/protocol/slashCommands';
 import { logger } from '@/ui/logger';
@@ -497,44 +497,83 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (queue.size() > 0 || queue.isClosed() || outerSignal.aborted) {
             return { kind: 'batch', batch: await queue.waitForMessagesAndGetAsString(outerSignal) };
         }
-        if (this.hasPendingReactiveWakeup()) {
-            return { kind: 'wakeup' };
-        }
 
         const waitController = new AbortController();
         let wakeupTriggered = false;
         const watchRef: { current: FSWatcher | null } = { current: null };
 
+        let directoryIdentity: BigIntStats | undefined;
+        const closeWatcher = () => {
+            const watcher = watchRef.current;
+            watchRef.current = null;
+            watcher?.close();
+        };
+
         const onOuterAbort = () => waitController.abort();
         outerSignal.addEventListener('abort', onOuterAbort, { once: true });
 
-        const tryAttachWatcher = () => {
-            if (watchRef.current || !this.acpSessionId) return;
+        let timer: ReturnType<typeof setInterval> | undefined;
+        let pollMs: number | undefined;
+        let activityRecheck: ReturnType<typeof setTimeout> | undefined;
+        const stopPoll = () => {
+            clearInterval(timer);
+            timer = undefined;
+        };
+        const armPoll = (intervalMs: number) => {
+            if ((timer && pollMs === intervalMs) || waitController.signal.aborted) return;
+            stopPoll();
+            pollMs = intervalMs;
+            timer = setInterval(() => checkWakeup(true), intervalMs);
+            timer.unref?.();
+        };
+
+        const tryAttachWatcher = (verifyIdentity: boolean) => {
+            if ((watchRef.current && !verifyIdentity) || !this.acpSessionId) return;
             const paths = agyTranscriptPaths(this.brainDir, this.acpSessionId);
             if (!paths) return;
             try {
-                const fsWatcher = watch(paths.logsDir, () => checkWakeup());
+                const identity = statSync(paths.logsDir, { bigint: true });
+                if (watchRef.current && directoryIdentity?.dev === identity.dev && directoryIdentity.ino === identity.ino) return;
+                closeWatcher();
+                const fsWatcher = watch(paths.logsDir, (event) => {
+                    if (watchRef.current !== fsWatcher) return;
+                    if (event === 'rename') {
+                        closeWatcher();
+                    }
+                    checkWakeup();
+                    clearTimeout(activityRecheck);
+                    if (!waitController.signal.aborted && watchRef.current) {
+                        activityRecheck = setTimeout(checkWakeup, this.reactivePollMs);
+                        activityRecheck.unref?.();
+                    }
+                });
+                const lost = () => {
+                    if (watchRef.current !== fsWatcher) return;
+                    closeWatcher();
+                    armPoll(this.reactivePollMs);
+                };
+                fsWatcher.once('error', lost);
+                fsWatcher.once('close', lost);
                 fsWatcher.unref?.();
                 watchRef.current = fsWatcher;
+                directoryIdentity = identity;
             } catch {
-                watchRef.current = null;
+                closeWatcher();
             }
         };
 
-        const checkWakeup = () => {
+        const checkWakeup = (verifyIdentity = false) => {
             if (wakeupTriggered || waitController.signal.aborted || this.shouldExit || queue.size() > 0) return;
-            tryAttachWatcher();
+            tryAttachWatcher(verifyIdentity);
+            armPoll(watchRef.current ? 30_000 : this.reactivePollMs);
             if (this.hasPendingReactiveWakeup()) {
                 wakeupTriggered = true;
                 waitController.abort();
             }
         };
 
-        tryAttachWatcher();
-        const timer = setInterval(checkWakeup, this.reactivePollMs);
-        timer.unref?.();
-
         try {
+            checkWakeup();
             const batch = await queue.waitForMessagesAndGetAsString(waitController.signal);
             if (batch) return { kind: 'batch', batch };
             if (wakeupTriggered && !outerSignal.aborted && !this.shouldExit) {
@@ -542,8 +581,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             return { kind: 'batch', batch: null };
         } finally {
-            clearInterval(timer);
-            watchRef.current?.close();
+            stopPoll();
+            clearTimeout(activityRecheck);
+            closeWatcher();
             outerSignal.removeEventListener('abort', onOuterAbort);
         }
     }
