@@ -1670,9 +1670,15 @@ async fn close_waits_for_an_in_flight_extension_callback() {
     assert!(timeout(Duration::from_millis(200), &mut closing)
         .await
         .is_err());
+    let client = started.client.clone();
+    let mut again = tokio::task::spawn_blocking(move || client.close());
+    assert!(timeout(Duration::from_millis(200), &mut again)
+        .await
+        .is_err());
     assert_eq!(probe.log(), ["register"]);
     release.send(()).unwrap();
     timeout(LIMIT, closing).await.unwrap().unwrap();
+    timeout(LIMIT, again).await.unwrap().unwrap();
     assert_eq!(probe.log(), ["register", "connected:0", "disconnected"]);
     tokio::time::sleep(Duration::from_millis(700)).await;
     let snapshot = h.command("snapshot", Value::Null).await;

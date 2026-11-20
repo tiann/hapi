@@ -66,6 +66,24 @@ struct Gate {
     finished: bool,
     deferred: bool,
     dispatcher: Option<std::thread::ThreadId>,
+    finisher: Option<std::thread::ThreadId>,
+}
+struct Turn<'a>(&'a SessionClient, bool);
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        let mut gate = self
+            .0
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.1 {
+            gate.finisher = None;
+            gate.finished = true;
+        } else {
+            gate.dispatcher = None;
+        }
+        self.0.gate_idle.notify_all();
+    }
 }
 #[derive(Default)]
 struct Incoming {
@@ -258,6 +276,9 @@ impl SessionClient {
                         });
                         if client.is_closed() {
                             break;
+                        }
+                        if link.get() != current {
+                            continue;
                         }
                         client.rpc.on_connect(&client.socket);
                         client.alive(false);
@@ -529,6 +550,7 @@ impl SessionClient {
     }
     pub fn close(&self) {
         if self.closed.send_replace(true) {
+            self.finish_extensions();
             return;
         }
         self.rpc.on_disconnect();
@@ -553,32 +575,35 @@ impl SessionClient {
             }
             gate.dispatcher = Some(current);
         }
+        let turn = Turn(self, false);
         let consumed = self.extensions.iter().any(f);
-        let deferred = {
-            let mut gate = self.gate.lock().unwrap();
-            gate.dispatcher = None;
-            self.gate_idle.notify_all();
-            std::mem::take(&mut gate.deferred)
-        };
+        drop(turn);
+        let deferred = std::mem::take(&mut self.gate.lock().unwrap().deferred);
         if deferred {
             self.finish_extensions();
         }
         consumed
     }
     fn finish_extensions(&self) {
+        let current = Some(std::thread::current().id());
         let mut gate = self.gate.lock().unwrap();
         gate.closed = true;
-        if gate.dispatcher == Some(std::thread::current().id()) {
+        if gate.dispatcher == current {
             gate.deferred = true;
             return;
         }
-        while gate.dispatcher.is_some() {
-            gate = self.gate_idle.wait(gate).unwrap();
-        }
-        if std::mem::replace(&mut gate.finished, true) {
+        if gate.finisher == current {
             return;
         }
+        while gate.dispatcher.is_some() || gate.finisher.is_some() {
+            gate = self.gate_idle.wait(gate).unwrap();
+        }
+        if gate.finished {
+            return;
+        }
+        gate.finisher = current;
         drop(gate);
+        let _turn = Turn(self, true);
         for extension in &self.extensions {
             extension.disconnected();
         }
@@ -875,6 +900,50 @@ mod tests {
         client.close();
         drop(client);
         assert_eq!(recorder.log.lock().unwrap().len(), 3);
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn close_after_a_panicking_extension_returns() {
+        struct Panics(Arc<Recorder>);
+        impl SessionExtension for Panics {
+            fn connected(&self, _: &Socket, _: u64) {
+                self.0.log.lock().unwrap().push("panic".into());
+                panic!("extension failed");
+            }
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (config, rest) = local(&listener).await;
+        let recorder = Arc::new(Recorder::default());
+        let (client, _events) = SessionClient::start_with_options(
+            &config,
+            rest,
+            &json!({"id":"s","metadataVersion":0,"agentStateVersion":0}),
+            StartOptions {
+                extensions: vec![Arc::new(Panics(recorder.clone())), recorder.clone()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let _ws = tokio::time::timeout(Duration::from_secs(5), accept_session(&listener))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while recorder.log.lock().unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let closer = client.clone();
+        let (done, closed) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            closer.close();
+            let _ = done.send(());
+        });
+        tokio::time::timeout(Duration::from_secs(5), closed)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(*recorder.log.lock().unwrap(), ["panic", "disconnected"]);
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn events_of_a_skipped_connection_bypass_extensions() {
