@@ -73,8 +73,24 @@ function transliterate(label: string): string {
         .replace(/[øØ]/g, 'o').replace(/[þÞ]/g, 'th').replace(/[ðÐ]/g, 'd').replace(/[łŁ]/g, 'l')
 }
 
+// GitHub's docs quote Rails' `parameterize` as preserving dashes AND
+// underscores "unless they are used as separators" (bot review follow-up)
+// — e.g. "Jolie__" stays "jolie__", not "jolie--" or "jolie". The previous
+// version replaced ANY non-alphanumeric run with a dash, which silently
+// turned every underscore into a dash too — so "Name_US" and "Name-US"
+// collided here ("name-us" both) even though real `parameterize` keeps
+// them distinct ("name_us" vs "name-us"), the same "we reject on a
+// collision GitHub wouldn't actually see" risk the diacritic fix above
+// exists to close. Underscores (and the separator dash itself) are now
+// excluded from the "strip this" character class; only RUNS of the
+// actual separator character get collapsed/trimmed at the edges, same as
+// Rails only collapses/strips the separator, never an unrelated character
+// that happens to look like one.
 function slugify(label: string): string {
-    const slug = transliterate(label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    const slug = transliterate(label).toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-')
+        .replace(/-{2,}/g, '-')
+        .replace(/^-+|-+$/g, '')
     return slug || 'field'
 }
 

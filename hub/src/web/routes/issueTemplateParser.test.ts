@@ -243,7 +243,14 @@ body:
     })
 
     // Same rule, the other pairing: two idless fields whose DIFFERENT
-    // labels both generate the same reference.
+    // labels both generate the same reference. Deliberately NOT an
+    // underscore here (bot review, tiann/hapi#2147, follow-up) — GitHub's
+    // own `parameterize` preserves underscores distinctly from the
+    // separator dash, so "Name (US)" and "Name_US" do NOT actually
+    // collide under real GitHub behavior (see the underscore-preserving
+    // test below); using two different non-alphanumeric separator
+    // sequences that both collapse to the same dash keeps this test
+    // genuinely testing a real collision.
     it('is genuinely invalid when two idless fields\' different labels generate the same reference', () => {
         const yaml = `
 name: Bug
@@ -254,13 +261,37 @@ body:
       label: Name (US)
   - type: input
     attributes:
-      label: Name_US
+      label: Name - US
 `
         const template = parseIssueFormYaml('x.yml', yaml)
         expect(template.kind).toBe('unsupported')
         if (template.kind !== 'unsupported') return
         expect(template.githubValid).toBe(false)
-        expect(template.reason).toContain('Name_US')
+        expect(template.reason).toContain('Name - US')
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): GitHub's own
+    // docs (Rails' `parameterize`) explicitly preserve underscores as
+    // distinct from the separator dash — "Jolie__" stays "jolie__", not
+    // collapsed or stripped like a run of dashes would be. The previous
+    // version of this parser's `slugify` replaced ANY non-alphanumeric
+    // character with a dash, silently turning an underscore into one too,
+    // so "Name_US" and "Name-US" wrongly collided here even though GitHub
+    // itself would see them as two distinct references.
+    it('does not falsely collide an underscored label with a dashed one', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
+  - type: input
+    attributes:
+      label: Name_US
+  - type: input
+    attributes:
+      label: Name-US
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('form')
     })
 
     // Regression (Meta review, tiann/hapi#2147, follow-up): GitHub's own
