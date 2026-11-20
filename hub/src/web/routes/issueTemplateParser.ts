@@ -157,6 +157,19 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         }
     }
 
+    // GitHub's own rule (confirmed against its documented validation
+    // errors, "Body must have unique labels") is narrower than "every
+    // label must be unique": two fields sharing a label are fine as long
+    // as AT LEAST ONE of them carries an explicit `id` — the `id` is
+    // explicitly GitHub's own escape hatch for intentionally-identical
+    // labels. It's only invalid when NEITHER field has one. This
+    // parser's own `generateFieldId` used to paper over exactly that
+    // case with a numeric suffix (treating it as a harmless internal
+    // disambiguation), which is the bug (bot review, tiann/hapi#2147,
+    // follow-up): a form GitHub itself rejects outright was instead
+    // accepted as normal and usable, wrongly counting as local
+    // `.github`-inheritance coverage.
+    const idlessLabels = new Set<string>()
     const fields: IssueFormField[] = []
     for (const element of bodyRaw) {
         if (!element || typeof element !== 'object') {
@@ -199,8 +212,15 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         // follow-up): a label-less upload field is malformed, not merely
         // unsupported, and GitHub's own chooser would never offer it.
         if (type === 'upload') {
-            if (!asString(attrs.label)) {
+            const uploadLabel = asString(attrs.label)
+            if (!uploadLabel) {
                 return { id, name, kind: 'unsupported', reason: 'A "upload" field is missing a label', githubValid: false }
+            }
+            if (!asString(elObj.id)) {
+                if (idlessLabels.has(uploadLabel)) {
+                    return { id, name, kind: 'unsupported', reason: `Template body has a duplicate label "${uploadLabel}" with no distinguishing id`, githubValid: false }
+                }
+                idlessLabels.add(uploadLabel)
             }
             // Recorded, not returned — see the top-level type:/projects:
             // comment above for why: a later field in this same body can
@@ -226,6 +246,12 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
             return { id, name, kind: 'unsupported', reason: `A "${type}" field is missing a label`, githubValid: false }
         }
         const explicitFieldId = asString(elObj.id)
+        if (!explicitFieldId) {
+            if (idlessLabels.has(label)) {
+                return { id, name, kind: 'unsupported', reason: `Template body has a duplicate label "${label}" with no distinguishing id`, githubValid: false }
+            }
+            idlessLabels.add(label)
+        }
         const fieldId = explicitFieldId ?? generateFieldId(label, usedIds)
         const description = asString(attrs.description)
         const validations = asRecord(elObj.validations)

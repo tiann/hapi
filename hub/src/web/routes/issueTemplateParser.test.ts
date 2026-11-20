@@ -211,7 +211,42 @@ body:
         }])
     })
 
+    // Labels deliberately distinct strings (bot review, tiann/hapi#2147,
+    // follow-up: two id-less fields with the SAME literal label is a
+    // separate, genuine GitHub validation error — covered below, not
+    // this test) — this one exercises generateFieldId's own suffix
+    // collision-avoidance for two DIFFERENT labels that happen to
+    // slugify to the same internal key.
     it('resolves a generated-id collision against another field\'s explicit or generated id', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
+  - type: input
+    attributes:
+      label: Name (US)
+  - type: input
+    id: name-us
+    attributes:
+      label: Something Else
+  - type: input
+    attributes:
+      label: Name_US
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('form')
+        if (template.kind !== 'form') return
+        const ids = template.fields.map(f => f.kind !== 'markdown' ? f.id : null)
+        expect(ids).toEqual(['name-us-2', 'name-us', 'name-us-3'])
+        expect(new Set(ids).size).toBe(3)
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): GitHub's own
+    // documented rule is "Body must have unique labels" for fields with
+    // no distinguishing id — this parser's generateFieldId used to paper
+    // over exactly this case with a numeric suffix, silently accepting a
+    // form GitHub itself rejects outright.
+    it('is genuinely invalid when two fields with no explicit id share the same label', () => {
         const yaml = `
 name: Bug
 description: Bug
@@ -220,19 +255,34 @@ body:
     attributes:
       label: Name
   - type: input
-    id: name
     attributes:
-      label: Something Else
+      label: Name
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('Name')
+    })
+
+    // GitHub's own escape hatch: supplying an explicit id on at least one
+    // of two identically-labeled fields is a valid, documented way to
+    // keep them distinct — must not be caught by the check above.
+    it('allows two fields with the same label when at least one has an explicit id', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
   - type: input
+    attributes:
+      label: Name
+  - type: input
+    id: name_2
     attributes:
       label: Name
 `
         const template = parseIssueFormYaml('x.yml', yaml)
         expect(template.kind).toBe('form')
-        if (template.kind !== 'form') return
-        const ids = template.fields.map(f => f.kind !== 'markdown' ? f.id : null)
-        expect(ids).toEqual(['name-2', 'name', 'name-3'])
-        expect(new Set(ids).size).toBe(3)
     })
 
     it('parses validations.min_length for input/textarea fields', () => {
