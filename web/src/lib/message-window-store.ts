@@ -82,8 +82,6 @@ const AGENT_RUN_WINDOW_SIZE = 800
 export const OLDER_LOAD_WINDOW_SIZE = 800
 const PAGE_SIZE = 200
 const CACHED_REENTRY_PAGE_SIZE = 20
-// ponytail: fixed budget suggested in #2045, not field-measured; tune from load timings.
-const INITIAL_CONTEXT_WAIT_MS = 500
 // Gap recovery refreshes at most this many retained non-terminal tool-call
 // rows through the message-context endpoint (newest first). Live calls are a
 // handful; the bound keeps a pathological window from fanning out requests.
@@ -1039,22 +1037,12 @@ async function fetchInitialContextPage(
     if (!latest.page.hasMore || !before || !isToolOnlyPage(latest.messages)) {
         return null
     }
-    let timer: ReturnType<typeof setTimeout> | undefined
-    try {
-        const context = await Promise.race([
-            api.getMessages(sessionId, {
-                beforeAt: before.at,
-                beforeSeq: before.seq,
-                limit: PAGE_SIZE
-            }).catch(() => null),
-            new Promise<null>((resolve) => {
-                timer = setTimeout(() => resolve(null), INITIAL_CONTEXT_WAIT_MS)
-            })
-        ])
-        return context && context.page.epoch === latest.page.epoch ? context : null
-    } finally {
-        clearTimeout(timer)
-    }
+    const context = await api.getMessages(sessionId, {
+        beforeAt: before.at,
+        beforeSeq: before.seq,
+        limit: PAGE_SIZE
+    }).catch(() => null)
+    return context && context.page.epoch === latest.page.epoch ? context : null
 }
 
 async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
