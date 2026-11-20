@@ -151,12 +151,28 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
     // the dropdown branch's own comment for why that distinction matters.
     // `parseDocument` never throws; malformed YAML surfaces in `.errors`
     // instead, with `.toJS()` still producing a best-effort (and here,
-    // unusable) result alongside it.
-    const cstDoc = parseDocument(raw)
-    if (cstDoc.errors.length > 0) {
+    // unusable) result alongside it. `.toJS()` itself CAN still throw
+    // (bot review, tiann/hapi#2147, follow-up, confirmed directly: an
+    // anchor/alias expansion deep enough to look like a resource-
+    // exhaustion attack throws "Excessive alias count..." from `.toJS()`
+    // even though `.errors` is empty at that point) — the plain `parse()`
+    // this replaced wrapped exactly this in one call, so the try/catch
+    // around it already covered this failure mode; splitting the parse
+    // from the convert step dropped that coverage for the convert half.
+    // One malformed template throwing uncaught here would crash whatever
+    // caller is listing ALL of a repo's templates, not just mark this one
+    // unsupported.
+    let cstDoc: ReturnType<typeof parseDocument>
+    let doc: unknown
+    try {
+        cstDoc = parseDocument(raw)
+        if (cstDoc.errors.length > 0) {
+            return { id, name: id, kind: 'unsupported', reason: 'Could not parse this template\'s YAML', githubValid: false }
+        }
+        doc = cstDoc.toJS()
+    } catch {
         return { id, name: id, kind: 'unsupported', reason: 'Could not parse this template\'s YAML', githubValid: false }
     }
-    const doc: unknown = cstDoc.toJS()
     if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
         return { id, name: id, kind: 'unsupported', reason: 'Template is not a valid issue form', githubValid: false }
     }
@@ -466,6 +482,19 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
             if (options.includes('None')) {
                 return { id, name, kind: 'unsupported', reason: `Dropdown field "${label}" uses "None", a reserved option GitHub auto-populates`, githubValid: false }
             }
+            const defaultIndex = typeof attrs.default === 'number' ? attrs.default : undefined
+            // GitHub's own form-schema syntax table states this as part
+            // of `default`'s own description (bot review, tiann/hapi#2147,
+            // follow-up, confirmed directly against GitHub's docs): "When
+            // a default option is specified, you cannot include 'None' or
+            // 'n/a' as options." Unlike "None" (rejected unconditionally
+            // above, per its own dedicated validation-error entry), "n/a"
+            // has no such entry — this table is the only place GitHub
+            // documents it, and it's explicit that the restriction is
+            // conditional on `default` being set, not a blanket ban.
+            if (defaultIndex !== undefined && options.some(option => option.toLowerCase() === 'n/a')) {
+                return { id, name, kind: 'unsupported', reason: `Dropdown field "${label}" combines a default with the forbidden "n/a" option`, githubValid: false }
+            }
             fields.push({
                 kind: 'dropdown',
                 id: fieldId,
@@ -473,7 +502,7 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
                 description,
                 options,
                 multiple: attrs.multiple === true,
-                defaultIndex: typeof attrs.default === 'number' ? attrs.default : undefined,
+                defaultIndex,
                 required
             })
         } else {

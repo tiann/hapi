@@ -2,6 +2,30 @@ import { describe, expect, it } from 'bun:test'
 import { hasRequiredLegacyTemplateFrontmatter, parseIssueFormYaml, parseIssueTemplateConfig, parseLegacyIssueTemplate } from './issueTemplateParser'
 
 describe('parseIssueFormYaml', () => {
+    // Regression (bot review, tiann/hapi#2147, follow-up): `parseDocument`
+    // itself never throws (malformed YAML surfaces in `.errors` instead),
+    // but its own `.toJS()` conversion step CAN throw independently of
+    // `.errors` — confirmed directly: an anchor/alias expansion deep
+    // enough to look like a resource-exhaustion attack throws "Excessive
+    // alias count..." from `.toJS()` with `.errors` still empty. The
+    // plain `parse()` this parser used before wrapped both the parse and
+    // the convert step in one call, so the surrounding try/catch already
+    // covered this; splitting the two steps dropped that coverage for
+    // the convert half, which would otherwise crash whatever caller is
+    // listing every template in a repo over one malformed file.
+    it('is unsupported, not throwing, when the YAML itself parses but toJS() throws', () => {
+        const yaml = `
+a: &a ["x","x","x","x","x","x","x","x","x"]
+b: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]
+c: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]
+d: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]
+e: [*d,*d,*d,*d,*d,*d,*d,*d,*d]
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
     it('parses a real-shaped bug-report form with every supported field kind', () => {
         const yaml = `
 name: Bug report
@@ -671,6 +695,31 @@ body:
         if (template.kind !== 'unsupported') return
         expect(template.githubValid).toBe(false)
         expect(template.reason).toContain('None')
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): GitHub's own
+    // form-schema syntax table states this as part of `default`'s own
+    // description — "When a default option is specified, you cannot
+    // include 'None' or 'n/a' as options." Unlike "None", this is
+    // conditional on a default being declared at all.
+    it('is genuinely invalid when a dropdown combines a default with "n/a"', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: pie\n    attributes:\n      label: Pie?\n      options:\n        - Steak\n        - n/a\n      default: 0'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+    })
+
+    // Without a default, "n/a" is just an ordinary option label — the
+    // restriction is specifically about combining it with a default.
+    it('allows a dropdown with "n/a" as an option when there is no default', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: pie\n    attributes:\n      label: Pie?\n      options:\n        - Steak\n        - n/a'
+        )
+        expect(template.kind).toBe('form')
     })
 
     // Regression (Meta review, tiann/hapi#2147, follow-up): checkboxes'
