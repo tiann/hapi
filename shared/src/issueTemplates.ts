@@ -213,8 +213,22 @@ export function validateIssueFormAnswers(
             }
             continue
         }
-        if (!field.required) continue
-        if (!(answer && answer.kind === 'dropdown' && answer.selected.length > 0)) {
+        // dropdown — validated even when optional and unanswered is fine
+        // (review finding, tiann/hapi#2147, round 13): the old check only
+        // confirmed a required dropdown had *some* selection, never that
+        // the selection was one of the field's own declared options or
+        // respected single-select cardinality, so a client bypassing the
+        // dialog could submit an undeclared value or multiple values for
+        // a single-select field and have it written straight into the
+        // issue body.
+        const selected = answer && answer.kind === 'dropdown' ? answer.selected : []
+        if (field.required && selected.length === 0) {
+            return { valid: false, fieldLabel: field.label }
+        }
+        if (!field.multiple && selected.length > 1) {
+            return { valid: false, fieldLabel: field.label }
+        }
+        if (!selected.every(value => field.options.includes(value))) {
             return { valid: false, fieldLabel: field.label }
         }
     }

@@ -173,6 +173,37 @@ describe('validateIssueFormAnswers', () => {
         ]
         expect(validateIssueFormAnswers(fields, [{ kind: 'checkboxes', id: 'terms', checked: ['I agree'] }])).toEqual({ valid: true })
     })
+
+    it('rejects a dropdown selection that is not one of the field\'s own declared options', () => {
+        const fields: IssueFormField[] = [
+            { kind: 'dropdown', id: 'severity', label: 'Severity', options: ['Low', 'High'], multiple: false, required: false }
+        ]
+        expect(validateIssueFormAnswers(fields, [{ kind: 'dropdown', id: 'severity', selected: ['Critical'] }]))
+            .toEqual({ valid: false, fieldLabel: 'Severity' })
+    })
+
+    it('rejects more than one selection on a single-select dropdown', () => {
+        const fields: IssueFormField[] = [
+            { kind: 'dropdown', id: 'severity', label: 'Severity', options: ['Low', 'High'], multiple: false, required: false }
+        ]
+        expect(validateIssueFormAnswers(fields, [{ kind: 'dropdown', id: 'severity', selected: ['Low', 'High'] }]))
+            .toEqual({ valid: false, fieldLabel: 'Severity' })
+    })
+
+    it('allows multiple valid selections on a multi-select dropdown', () => {
+        const fields: IssueFormField[] = [
+            { kind: 'dropdown', id: 'browsers', label: 'Browsers', options: ['Firefox', 'Chrome', 'Safari'], multiple: true, required: false }
+        ]
+        expect(validateIssueFormAnswers(fields, [{ kind: 'dropdown', id: 'browsers', selected: ['Firefox', 'Chrome'] }]))
+            .toEqual({ valid: true })
+    })
+
+    it('passes an optional dropdown left entirely unanswered', () => {
+        const fields: IssueFormField[] = [
+            { kind: 'dropdown', id: 'severity', label: 'Severity', options: ['Low', 'High'], multiple: false, required: false }
+        ]
+        expect(validateIssueFormAnswers(fields, [])).toEqual({ valid: true })
+    })
 })
 
 describe('isUsableIssueTemplate', () => {
