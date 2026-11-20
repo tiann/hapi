@@ -40,10 +40,10 @@ class TestResizeObserver {
     }
 }
 
-function resize(target: Element) {
+function resize(target: Element, contentRect?: Partial<DOMRectReadOnly>) {
     act(() => {
         for (const observer of observers) {
-            if (observer.targets.has(target)) observer.fire(target)
+            if (observer.targets.has(target)) observer.fire(target, contentRect)
         }
     })
 }
@@ -165,7 +165,21 @@ describe('SessionList header measurement optimization', () => {
         expect(getSearchStyleReads()).toBe(1)
     })
 
-    it('re-measures search chrome when search element or chrome parts resize via ResizeObserver', () => {
+    it('re-measures search chrome when search element or chrome parts resize via ResizeObserver', async () => {
+        const INITIAL_ICON_WIDTH = 28
+        const INITIAL_CLEAR_WIDTH = 28
+        const INITIAL_SEARCH_WIDTH = 120
+        let iconWidth = INITIAL_ICON_WIDTH
+        let clearWidth = INITIAL_CLEAR_WIDTH
+        let searchWidth = INITIAL_SEARCH_WIDTH
+
+        const offsetWidthSpy = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+            if (this.tagName === 'SPAN' && this.hasAttribute('data-toolbar-chrome')) return iconWidth
+            if (this.tagName === 'BUTTON' && this.hasAttribute('data-toolbar-chrome')) return clearWidth
+            if (this.getAttribute('data-testid') === 'session-list-search') return searchWidth
+            return 0
+        })
+
         const getComputedStyleSpy = vi.spyOn(window, 'getComputedStyle')
         const getSearchStyleReads = () => getComputedStyleSpy.mock.calls.filter(
             ([el]) => el instanceof HTMLElement && el.getAttribute('data-testid') === 'session-list-search'
@@ -173,21 +187,134 @@ describe('SessionList header measurement optimization', () => {
 
         renderSessionList(sessions(5))
 
-        expect(getSearchStyleReads()).toBe(1)
+        // Expand and type a query so that when collapsed, chrome floor sets minWidth
+        const searchButton = screen.getByRole('button', { name: /search/i })
+        act(() => {
+            fireEvent.click(searchButton)
+        })
+        const searchInput = screen.getByRole('searchbox')
+        act(() => {
+            fireEvent.change(searchInput, { target: { value: 'test' } })
+        })
+        act(() => {
+            fireEvent.blur(searchInput, { relatedTarget: document.body })
+        })
 
-        const searchElement = document.querySelector('[data-testid="session-list-search"]')
+        // Flush initial ResizeObserver notifications delivered on observation
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        const searchElement = document.querySelector<HTMLElement>('[data-testid="session-list-search"]')
         expect(searchElement).not.toBeNull()
-        if (searchElement) {
-            resize(searchElement)
-            expect(getSearchStyleReads()).toBe(2)
-        }
+        const trigger = searchElement?.querySelector('button')
+        const triggerStyle = trigger ? window.getComputedStyle(trigger) : null
+        const triggerPad = triggerStyle
+            ? (Number.parseFloat(triggerStyle.paddingLeft) || 0) + (Number.parseFloat(triggerStyle.paddingRight) || 0)
+            : 0
+        const initialExpectedFloor = iconWidth + clearWidth + triggerPad
+        expect(searchElement?.style.minWidth).toBe(`${initialExpectedFloor}px`)
 
-        const chromePart = document.querySelector('[data-toolbar-chrome]')
+        const readsBeforeResize = getSearchStyleReads()
+
+        // 1. Resize chrome part: change width before delivering entry
+        const chromePart = document.querySelector<HTMLElement>('[data-toolbar-chrome]')
         expect(chromePart).not.toBeNull()
         if (chromePart) {
-            resize(chromePart)
-            expect(getSearchStyleReads()).toBe(3)
+            iconWidth = 36
+            resize(chromePart, { width: 36 })
+            // Re-measurement must run and minWidth must reflect the new chrome part size
+            expect(getSearchStyleReads()).toBe(readsBeforeResize + 1)
+            const updatedExpectedFloor = iconWidth + clearWidth + triggerPad
+            expect(searchElement?.style.minWidth).toBe(`${updatedExpectedFloor}px`)
         }
+
+        // 2. Resize search root element: change width before delivering entry
+        const readsBeforeSearchResize = getSearchStyleReads()
+        if (searchElement) {
+            searchWidth = 160
+            resize(searchElement, { width: 160 })
+            expect(getSearchStyleReads()).toBe(readsBeforeSearchResize + 1)
+        }
+
+        offsetWidthSpy.mockRestore()
+    })
+
+    it('without ResizeObserver, fallback performs base reads without duplicate reads or reading expanded root', () => {
+        Reflect.deleteProperty(globalThis, 'ResizeObserver')
+        let chromePartReads = 0
+        let searchRootReads = 0
+        const offsetWidthSpy = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+            if (this.hasAttribute('data-toolbar-chrome')) {
+                chromePartReads++
+                return 28
+            }
+            if (this.getAttribute('data-testid') === 'session-list-search') {
+                searchRootReads++
+                return 120
+            }
+            return 0
+        })
+
+        const { rerender } = renderSessionList(sessions(5))
+
+        // On a subsequent commit (e.g. session update), collapsed mode reads chrome parts exactly once per commit
+        const readsBeforeUpdate = chromePartReads
+        const updated1 = sessions(5).map((s, idx) => idx === 0 ? { ...s, updatedAt: s.updatedAt + 10 } : s)
+        rerender(
+            <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+                <ToastProvider>
+                    <I18nProvider>
+                        <SessionList
+                            sessions={updated1}
+                            selectedSessionId={OPEN_SESSION_ID}
+                            onSelect={vi.fn()}
+                            onNewSession={vi.fn()}
+                            onRefresh={vi.fn()}
+                            isLoading={false}
+                            renderHeader={true}
+                            api={null}
+                        />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+        // Exactly 1 read per chrome part on the commit (no second pass / duplicate snapshot read)
+        expect(chromePartReads - readsBeforeUpdate).toBe(1)
+        expect(searchRootReads).toBe(0)
+
+        // Expand search
+        const searchButton = screen.getByRole('button', { name: /search/i })
+        act(() => {
+            fireEvent.click(searchButton)
+        })
+
+        // Another commit while expanded (e.g. session update)
+        const readsAtExpand = searchRootReads
+        const updated2 = sessions(5).map((s, idx) => idx === 0 ? { ...s, updatedAt: s.updatedAt + 20 } : s)
+        rerender(
+            <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+                <ToastProvider>
+                    <I18nProvider>
+                        <SessionList
+                            sessions={updated2}
+                            selectedSessionId={OPEN_SESSION_ID}
+                            onSelect={vi.fn()}
+                            onNewSession={vi.fn()}
+                            onRefresh={vi.fn()}
+                            isLoading={false}
+                            renderHeader={true}
+                            api={null}
+                        />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+
+        // Expanded mode must not read search root width
+        expect(searchRootReads).toBe(readsAtExpand)
+
+        offsetWidthSpy.mockRestore()
     })
 
     it('re-measures search chrome on expand and collapse', async () => {
