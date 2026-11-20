@@ -17,13 +17,24 @@ class TestResizeObserver {
     constructor(private readonly callback: ResizeObserverCallback) {
         observers.push(this)
     }
-    observe(target: Element) { this.targets.add(target) }
+    observe(target: Element) {
+        this.targets.add(target)
+        queueMicrotask(() => {
+            if (this.targets.has(target)) {
+                this.fire(target)
+            }
+        })
+    }
     unobserve(target: Element) { this.targets.delete(target) }
     disconnect() { this.targets.clear() }
-    fire(target?: Element) {
+    fire(target?: Element, contentRect?: Partial<DOMRectReadOnly>) {
+        const client = target instanceof HTMLElement
+            ? (target.offsetWidth || target.clientWidth || (Number.parseFloat(target.style.minWidth) || 0))
+            : 0
+        const width = client > 0 ? client : 300
         const entries = target ? [{
             target,
-            contentRect: { width: 300, height: 40 } as DOMRectReadOnly,
+            contentRect: { width, height: 40, ...contentRect } as DOMRectReadOnly,
         } as ResizeObserverEntry] : []
         this.callback(entries, this as unknown as ResizeObserver)
     }
@@ -242,6 +253,17 @@ describe('SessionList header measurement optimization', () => {
 
         // Without ResizeObserver, it falls back to measuring on every commit (reads increase)
         expect(getSearchStyleReads()).toBeGreaterThan(initialReads)
+    })
+
+    it('skips MutationObserver entirely when ResizeObserver is undefined', () => {
+        Reflect.deleteProperty(globalThis, 'ResizeObserver')
+        const observeSpy = vi.spyOn(MutationObserver.prototype, 'observe')
+
+        renderSessionList(sessions(5))
+
+        const searchElement = document.querySelector('[data-testid="session-list-search"]')
+        const searchObservations = observeSpy.mock.calls.filter(([target]) => target === searchElement)
+        expect(searchObservations.length).toBe(0)
     })
 
     it('re-measures search chrome and sets minWidth floor when collapsing search with a non-empty query', async () => {

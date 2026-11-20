@@ -2089,8 +2089,14 @@ export function SessionList(props: {
     const searchNodeRef = useRef<HTMLElement | null>(null)
     const searchMutationObserverRef = useRef<MutationObserver | null>(null)
     const observedChromePartsRef = useRef<Set<HTMLElement>>(new Set())
+    const searchElementSizesRef = useRef<WeakMap<Element, { width: number; height: number }>>(new WeakMap())
 
     const syncSearchChromeObservers = useCallback((search: HTMLElement | null) => {
+        if (typeof ResizeObserver === 'undefined') {
+            searchMutationObserverRef.current?.disconnect()
+            searchMutationObserverRef.current = null
+            return
+        }
         const ro = actionsObserverRef.current
         const prevSearch = searchNodeRef.current
         if (prevSearch && prevSearch !== search) {
@@ -2179,7 +2185,13 @@ export function SessionList(props: {
                     actionsWidth = width
                 }
                 if (target instanceof HTMLElement && (target.dataset.testid === 'session-list-search' || target.hasAttribute('data-toolbar-chrome'))) {
-                    sawSearch = true
+                    const prev = searchElementSizesRef.current.get(target)
+                    const reportedW = entry.contentRect.width ?? 0
+                    const targetW = target.offsetWidth || target.clientWidth || (Number.parseFloat(target.style.minWidth) || reportedW)
+                    if (!prev || Math.abs(prev.width - targetW) >= 0.5) {
+                        sawSearch = true
+                        searchElementSizesRef.current.set(target, { width: targetW, height: 0 })
+                    }
                 }
             }
             if (sawActions) publishActions(actionsWidth)
@@ -3148,6 +3160,14 @@ export function SessionList(props: {
             const nextChrome = search && search.dataset.expanded !== 'true'
                 ? measureSearchChrome(search)
                 : 0
+            if (search) {
+                const searchWidth = search.offsetWidth || search.clientWidth || (Number.parseFloat(search.style.minWidth) || nextChrome)
+                searchElementSizesRef.current.set(search, { width: searchWidth, height: 0 })
+                for (const el of search.querySelectorAll<HTMLElement>('[data-toolbar-chrome]')) {
+                    const elWidth = el.offsetWidth || el.clientWidth || (Number.parseFloat(el.style.minWidth) || 0)
+                    searchElementSizesRef.current.set(el, { width: elWidth, height: 0 })
+                }
+            }
             setSearchChromePx((previous) => previous === nextChrome ? previous : nextChrome)
         }
         const root = toolbarMeasureRef.current
