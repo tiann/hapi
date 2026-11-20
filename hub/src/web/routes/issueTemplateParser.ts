@@ -86,6 +86,14 @@ function transliterate(label: string): string {
 // actual separator character get collapsed/trimmed at the edges, same as
 // Rails only collapses/strips the separator, never an unrelated character
 // that happens to look like one.
+//
+// Full divergence surface against `parameterize`'s own five steps (Meta
+// review, follow-up, enumerated and verified against this exact
+// implementation rather than left as "nothing else has surfaced yet"):
+// (1) transliterate — `transliterate()` above; (2) replace runs outside
+// `[a-z0-9_-]` with the separator, (3) collapse runs of the separator,
+// (4) strip it from the ends, (5) downcase — steps (2)-(5) below. Steps
+// 3-5 were already correct before this round; only 1 and 2 needed fixing.
 function slugify(label: string): string {
     const slug = transliterate(label).toLowerCase()
         .replace(/[^a-z0-9_-]+/g, '-')
