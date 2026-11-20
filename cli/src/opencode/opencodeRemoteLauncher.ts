@@ -322,6 +322,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private readonly rewindEntryAbortController = new AbortController();
     private rewindSupersededId: string | undefined;
     private v2Steers = new Map<string, OpencodeV2SteerEntry>();
+    private prePostCompactCancel: { localId: string; cancel: () => void } | null = null;
     private v2AbortInProgress: { promise: Promise<void>; leavingRemote: boolean } | null = null;
     private v2ResetInProgress: Promise<void> | null = null;
 
@@ -1407,8 +1408,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
 
         this.installSteerHandler(session, acpSessionId);
-        if (isV2 && this.v2RestInfo) {
-            this.options.onSteerCancelHandlerChange?.(localId => this.v2Steers.get(localId)?.cancel('explicit'));
+        if ((isV2 && this.v2RestInfo) || this.recoverChildExit) {
+            this.options.onSteerCancelHandlerChange?.(localId => {
+                if (this.prePostCompactCancel?.localId === localId) {
+                    this.prePostCompactCancel.cancel();
+                    return true;
+                }
+                return this.v2Steers.get(localId)?.cancel('explicit');
+            });
         }
 
         const sendReady = () => {
@@ -1485,6 +1492,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // Install the controller before async model/effort changes so
                 // handleAbort() can cancel this batch even before HTTP work starts.
                 const isCompactBatch = batch.mode.operation === 'compact';
+                const compactLocalId = isCompactBatch ? batch.items[0]?.localId : undefined;
+                let prePostCompactCancelled = false;
                 if (isCompactBatch && !this.recoverChildExit) delivery.commit();
                 const compactAbortController = isCompactBatch ? new AbortController() : null;
                 if (compactAbortController) {
@@ -1496,6 +1505,19 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     // landing during the model/effort switch below already has
                     // something to suppress.
                     this.compactResultSuppressed = false;
+                    if (this.recoverChildExit && compactLocalId) {
+                        this.prePostCompactCancel = {
+                            localId: compactLocalId,
+                            cancel: () => {
+                                prePostCompactCancelled = true;
+                                this.prePostCompactCancel = null;
+                                delivery.release();
+                                if (this.compactOperationPhase === 'snapshot') {
+                                    compactAbortController.abort();
+                                }
+                            }
+                        };
+                    }
                 }
 
                 // Inline model change via ACP RPC (session/set_model — see ACP SDK
@@ -1623,7 +1645,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     // via pushIsolated), so its own localId is exactly
                     // batch.items[0]?.localId.
                     if (!this.recoverChildExit) messageBuffer.addMessage(batch.message, 'user');
-                    const compactLocalId = batch.items[0]?.localId;
 
                     // Stop during model/effort setup must not start new HTTP work.
                     // Switch/exit instead passes its aborted signal through the
@@ -1631,14 +1652,15 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     // Local-id cancellation is recorded during the invoked ACK,
                     // before HTTP work starts. Consume its one-shot entry here;
                     // there is no running server mutation to wait for in that case.
-                    const compactCancelledByLocalId = compactLocalId
+                    const compactCancelledByLocalId = prePostCompactCancelled || (compactLocalId
                         ? (this.options.isLocalIdCancelled?.(compactLocalId) ?? false)
-                        : false;
+                        : false);
                     const cancelledBeforeStart =
                         (this.compactResultSuppressed && !compactAbortController.signal.aborted)
                         || compactCancelledByLocalId;
                     if (cancelledBeforeStart) {
-                        delivery.commit();
+                        this.prePostCompactCancel = null;
+                        if (!prePostCompactCancelled) delivery.commit();
                         if (this.compactAbortController === compactAbortController) {
                             this.compactAbortController = null;
                             this.compactOperationPhase = 'idle';
@@ -1647,7 +1669,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         // operation never entered thinking=true. The queue's normal
                         // unflagged consumed ACK does not clear that grace; repeating
                         // the ACK with the session-level flag is idempotent.
-                        if (compactLocalId) {
+                        if (compactLocalId && !prePostCompactCancelled) {
                             session.client.emitMessagesConsumed([compactLocalId], { clearQueuedThinkingGrace: true });
                         }
                         // Plain Stop before summarize already emitted this
@@ -1673,6 +1695,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             compactAbortController,
                             compactLocalId,
                             () => {
+                                this.prePostCompactCancel = null;
                                 if (this.recoverChildExit) {
                                     delivery.commit();
                                     this.compactMutationMayBeInFlight = true;
@@ -1683,10 +1706,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                                 nativeHistoryMayHaveChanged = true;
                                 this.nativeHistoryUnverified = true;
                             },
-                            () => delivery.commit()
+                            () => {
+                                this.prePostCompactCancel = null;
+                                if (!prePostCompactCancelled) delivery.commit();
+                            },
+                            () => prePostCompactCancelled
                         );
                         if (!nativeHistoryMayHaveChanged) {
-                            if (!this.recoveryAttempt.loss) delivery.commit();
+                            if (!this.recoveryAttempt.loss && !prePostCompactCancelled) delivery.commit();
                             continue;
                         }
                         // Compaction starts a new identity epoch. Discard old
@@ -1703,6 +1730,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             }
                         }
                     } finally {
+                        this.prePostCompactCancel = null;
                         this.compactMutationMayBeInFlight = false;
                         this.nativeHistoryUnverified = false;
                         session.onThinkingChange(false);
@@ -1962,6 +1990,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
             } finally {
+                this.prePostCompactCancel = null;
                 delivery.finish(this.recoveryAttempt.loss !== null);
                 this.conversationHistory.setBusy(false);
                 releaseRuntime();
@@ -2991,7 +3020,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         compactAbortController: AbortController,
         localId?: string,
         onMutationIssued?: () => void,
-        onLocalCancel?: () => void
+        onLocalCancel?: () => void,
+        isPrePostCancelled?: () => boolean
     ): Promise<void> {
         const session = this.session;
         const announce = () => session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
@@ -3004,7 +3034,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         try {
             let locallyCancelled = false;
             const isCancelled = (): boolean => {
-                const cancelled = locallyCancelled || Boolean(localId && this.options.isLocalIdCancelled?.(localId));
+                const cancelled = locallyCancelled
+                    || Boolean(isPrePostCancelled?.())
+                    || Boolean(localId && this.options.isLocalIdCancelled?.(localId));
                 if (this.recoverChildExit && cancelled && !locallyCancelled) {
                     locallyCancelled = true;
                     onLocalCancel?.();

@@ -76,15 +76,17 @@ export class AcpRecoveryBatch {
         this.settled = true;
         this.callbacks.commit();
     }
+    release(): void {
+        if (this.settled) return;
+        this.settled = true;
+        this.callbacks.release();
+    }
     requeue(): void {
         if (!this.settled) this.settled = this.callbacks.requeue();
     }
     finish(recovering: boolean): void {
         if (recovering) this.requeue();
-        if (!this.settled) {
-            this.settled = true;
-            this.callbacks.release();
-        }
+        this.release();
     }
 }
 

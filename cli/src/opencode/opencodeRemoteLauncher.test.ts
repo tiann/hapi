@@ -9419,18 +9419,51 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         }
     });
 
-    linuxRecoveryTest.each([['2.3.1', 1], ['2.3.2', 0]] as const)(
-        'preserves the compact POST boundary for a cancellation during the snapshot on %s', async (version, posts) => {
+    linuxRecoveryTest.each([
+        ['2.3.1', 'snapshot', 1, false],
+        ['2.3.2', 'snapshot', 0, true],
+        ['2.3.2', 'setup', 0, true]
+    ] as const)(
+        'preserves the compact POST boundary for a cancellation during %s on %s', async (version, phase, posts, expectedCancel) => {
             harness.detectedVersion = 'v2';
             harness.exactVersion = version;
             harness.discoveredPort = 41234;
             harness.discoveredPassword = 'fixture-password';
             harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+            let cancelSteer: import('./utils/opencodeV2Steer').OpencodeSteerCancelHandler | null = null;
             const cancelled = new Set<string>();
-            compactHarness.snapshotV2Impl = async () => { cancelled.add('compact'); return []; };
-            const { session } = createSessionStub([{ message: '', mode: createCompactMode(), localId: 'compact' }]);
-            await opencodeRemoteLauncher(session as never, { isLocalIdCancelled: id => cancelled.delete(id) });
+            const { session, emitMessagesConsumedCalls } = createSessionStub([
+                { message: '', mode: createCompactMode(phase === 'setup' ? 'ollama/next' : undefined), localId: 'compact' }
+            ]);
+            const cancelQueuedMessage = (localId: string) => {
+                const steered = cancelSteer?.(localId);
+                if (steered !== undefined) return steered;
+                const removed = session.queue.cancelByLocalId(localId);
+                if (removed !== false) return removed;
+                cancelled.add(localId);
+                return false;
+            };
+            let cancelOutcome: unknown;
+            if (phase === 'setup') {
+                harness.setModelImpl = async () => {
+                    cancelOutcome = await cancelQueuedMessage('compact');
+                };
+            } else {
+                compactHarness.snapshotV2Impl = async () => {
+                    cancelOutcome = await cancelQueuedMessage('compact');
+                    return [];
+                };
+            }
+            await opencodeRemoteLauncher(session as never, {
+                onSteerCancelHandlerChange: handler => { cancelSteer = handler; },
+                isLocalIdCancelled: id => cancelled.delete(id)
+            });
+            expect(cancelOutcome).toBe(expectedCancel);
             expect(compactHarness.v2Calls).toHaveLength(posts);
+            if (expectedCancel === true) {
+                expect(emitMessagesConsumedCalls).toEqual([]);
+                expect(session.queue.cancelByLocalId('compact')).toBe(false);
+            }
         }
     );
 

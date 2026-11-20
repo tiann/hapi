@@ -893,6 +893,29 @@ describe('runOpencode set-session-config handler', () => {
         await vi.waitFor(() => expect(queue.queue.map(row => row.localId)).toEqual(['clear', 'held', 'parked-newer']));
     });
 
+    it('delegates pre-POST compact cancellation through the registered cancel handler', async () => {
+        await runOpencode({ startedBy: 'runner' });
+        const options = harness.opencodeLoopArgs[0]!;
+        const queue = options.messageQueue as MessageQueue2<OpencodeMode>;
+        const bind = options.onSteerCancelHandlerChange as
+            (handler: import('./utils/opencodeV2Steer').OpencodeSteerCancelHandler | null) => void;
+        const cancelHandler = harness.session.onCancelQueuedMessage.mock.calls[0]![0] as
+            (localId: string) => boolean | 'in-flight' | 'indeterminate' | 'consumed';
+        queue.pushIsolated('', { permissionMode: 'default', model: null, operation: 'compact' }, 'compact');
+        const batch = await queue.waitForDeferredBatch();
+        expect(batch?.items.map(item => item.localId)).toEqual(['compact']);
+        expect(cancelHandler('compact')).toBe('in-flight');
+        let cancelled = false;
+        bind((localId) => {
+            if (localId !== 'compact' || cancelled) return undefined;
+            cancelled = true;
+            queue.releaseBatch(batch!);
+            return true;
+        });
+        expect(cancelHandler('compact')).toBe(true);
+        expect(cancelHandler('compact')).toBe(false);
+    });
+
     it('releases the clear transition latch when the queued /clear is cancelled', async () => {
         await runOpencode({ startedBy: 'runner' });
 
