@@ -282,11 +282,28 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         } else {
             const rawOptions = Array.isArray(attrs.options) ? attrs.options : []
             const options: IssueFormCheckboxOption[] = []
+            const seenOptionLabels = new Set<string>()
             for (const rawOption of rawOptions) {
                 const optionLabel = asString(asRecord(rawOption).label)
                 if (!optionLabel) {
                     return { id, name, kind: 'unsupported', reason: `Checkboxes field "${label}" has a malformed option`, githubValid: false }
                 }
+                // Same structural defect the dropdown-options and
+                // field-id checks already catch (bot review,
+                // tiann/hapi#2147, follow-up) — GitHub requires a
+                // checkboxes field's own option labels to be distinct
+                // too. Arguably worse here than for dropdown: this
+                // codebase's own validateIssueFormAnswers checks a
+                // checked answer against the field's declared option
+                // labels by string match, so a duplicate makes a
+                // required-option check satisfiable by an ambiguous
+                // value, and the dialog renders and keys both checkboxes
+                // by that same label, with no way for the user to tell
+                // which one they ticked.
+                if (seenOptionLabels.has(optionLabel)) {
+                    return { id, name, kind: 'unsupported', reason: `Checkboxes field "${label}" has duplicate options`, githubValid: false }
+                }
+                seenOptionLabels.add(optionLabel)
                 options.push({ label: optionLabel, required: asRecord(rawOption).required === true })
             }
             if (options.length === 0) {

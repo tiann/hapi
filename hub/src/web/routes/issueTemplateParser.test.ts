@@ -409,6 +409,21 @@ body:
         expect(template.githubValid).toBe(false)
         expect(template.reason).toContain('Severity')
     })
+
+    // Regression (Meta review, tiann/hapi#2147, follow-up): checkboxes'
+    // own option labels were never checked for duplicates either — the
+    // direct structural sibling of the dropdown-options check above.
+    // GitHub requires checkbox option labels to be distinct too.
+    it('is genuinely invalid when a checkboxes field has duplicate option labels', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: checkboxes\n    id: terms\n    attributes:\n      label: Terms\n      options:\n        - label: I agree\n        - label: I agree'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('Terms')
+    })
 })
 
 describe('parseLegacyIssueTemplate', () => {
