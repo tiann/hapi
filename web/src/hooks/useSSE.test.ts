@@ -491,4 +491,39 @@ describe('useSSE user-activity ordering', () => {
         expect(data?.sessions[0]?.lastUserMessageAt).toBe(9_000)
         unmount()
     })
+
+    it('keeps an overflow request visible through an SSE agentState patch, after its oldest 200 siblings are dismissed (cold-review round 24)', () => {
+        // The REST projection already passes dismissal keys into
+        // computePendingRequestRefs, prioritizing an undismissed request
+        // over a dismissed one past the 200-ref cap. This incremental SSE
+        // patch path recomputed the same field without them, so it reverted
+        // to plain oldest-first truncation — a 201st request arriving by
+        // patch, genuinely unanswered, dropped off the capped list the web
+        // actually reads until the next full refresh.
+        const { queryClient, unmount } = renderUseSSE()
+        // Explicit, strictly-ascending `createdAt` so oldest-first truncation
+        // has an unambiguous newest-of-201 to drop — ids alone sort
+        // lexicographically ('r200' < 'r3'), which would mask the bug.
+        const requests: Record<string, { tool: string; arguments: Record<string, never>; createdAt: number }> = {}
+        for (let i = 0; i < 200; i++) requests[`r${i}`] = { tool: 'Bash', arguments: {}, createdAt: i }
+        const dismissedKeys = Array.from({ length: 200 }, (_, i) => `request:r${i}`)
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
+            id: 'session-1',
+            pendingRequestsCount: 200,
+            agentStateVersion: 1,
+            blockedAck: { at: Date.now(), reason: 'handled', keys: dismissedKeys }
+        })] })
+
+        // A new, 201st (and NEWEST) request arrives via an incremental
+        // agentState patch — not a full-session refresh.
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: { agentState: { version: 2, value: { requests: { ...requests, r200: { tool: 'Bash', arguments: {}, createdAt: 300 } } } } }
+        }))
+
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        const refs = data?.sessions[0]?.pendingRequestRefs ?? []
+        expect(refs.map((r) => r.id)).toContain('r200')
+        unmount()
+    })
 })

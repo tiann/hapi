@@ -554,12 +554,12 @@ export const SessionNotifySignalSchema = z.object({
 export const SessionBlockedAckSchema = z.object({
     at: z.number(),
     reason: z.string(),
-    // Bounded by SUPPORTED_LIVE_DISMISSAL_CAP, not an arbitrary round number
-    // (#1717 cold-review round 22, corrected round 23): a key can stay
-    // dismissed-but-live for as long as its request is tracked at all, PLUS
-    // one more for the current footer, which shares the same dismissal
-    // budget — a cap that forgot the footer rejected a full-session snapshot
-    // whose dismissals were all still genuinely live.
+    // Bounded by SUPPORTED_LIVE_DISMISSAL_CAP (#1717 cold-review rounds
+    // 22-24): a key must stay dismissed-but-live for as long as its request
+    // (or the current footer) is tracked at all, and `AgentState.requests`
+    // has no enforced limit, so this is a generous practical ceiling, not a
+    // derived one — a cap tied to an unrelated preview limit rejected a
+    // full-session snapshot at 202 genuinely live dismissals.
     keys: z.array(z.string().max(256)).max(SUPPORTED_LIVE_DISMISSAL_CAP).nullish()
 })
 

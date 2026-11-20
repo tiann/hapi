@@ -863,6 +863,39 @@ describe('a maintenance turn does not invalidate the footer (#1717)', () => {
         cache.handleSessionAlive({ sid: id, time: Date.now() + 3, thinking: true })
         expect(cache.getSession(id)?.thinkingConfirmed).toBe(true)
     })
+
+    it('never confirms an IMMEDIATE /compact sent through the ordinary queue path (cold-review round 24)', () => {
+        // Sending /compact as an ordinary message (e.g. from HAPI itself,
+        // rather than OpenCode scheduling it internally) queues it first —
+        // `markMessageQueued` flips `thinking` true and `thinkingConfirmed`
+        // false BEFORE the CLI ever acknowledges it is maintenance. By the
+        // time `markMaintenanceTurn` arrives, there is no `!wasThinking`
+        // rising edge left for the round-23 fix to catch — thinking was
+        // already true. The first genuine keepalive that follows would
+        // then confirm the turn and hide the footer, exactly the bug round
+        // 23 fixed, just reached through a different sequencing.
+        const { cache } = makeCache()
+        const id = seedBlocked(cache, 'immediate-compact')
+
+        cache.markMessageQueued(id)
+        expect(cache.getSession(id)?.thinking).toBe(true)
+        expect(cache.getSession(id)?.thinkingConfirmed).toBe(false)
+
+        // The CLI's ack that this queued command is maintenance arrives
+        // AFTER thinking already rose.
+        cache.markMaintenanceTurn(id)
+        expect(cache.getSession(id)?.thinkingConfirmed).toBe(false)
+
+        // The CLI's first genuine keepalive for the compaction itself.
+        cache.handleSessionAlive({ sid: id, time: Date.now(), thinking: true })
+        expect(cache.getSession(id)?.thinkingConfirmed).toBe(false)
+        expect(cache.getSession(id)?.lastNotify?.status).toBe('blocked')
+
+        // Compaction ends; the NEXT genuine turn still confirms normally.
+        cache.handleSessionAlive({ sid: id, time: Date.now() + 1, thinking: false })
+        cache.handleSessionAlive({ sid: id, time: Date.now() + 2, thinking: true })
+        expect(cache.getSession(id)?.thinkingConfirmed).toBe(true)
+    })
 })
 
 describe('notify revision is whatever SQLite says (#1717)', () => {
@@ -1078,6 +1111,46 @@ describe('the acknowledgement broadcast stays inside its own schema (#1717)', ()
         expect(keys).toHaveLength(201)
         expect(keys).toContain(`notify:${footerAt}`)
         for (let i = 0; i < 200; i++) {
+            expect(keys).toContain(`request:r${i}`)
+        }
+        expect(() => SessionBlockedAckSchema.parse({ at: Date.now(), reason: 'handled', keys })).not.toThrow()
+    })
+
+    it('keeps a full-session snapshot inside its own schema at 202 live dismissals, past the OLD 201 cap (cold-review round 24)', () => {
+        // `PENDING_REQUEST_REFS_CAP` (200) is a preview cap on what one
+        // summary SURFACES, not a ceiling on how many requests
+        // `AgentState.requests` can actually hold at once — it has no
+        // enforced max. Sizing round 23's fix at `PENDING_REQUEST_REFS_CAP +
+        // 1` (for the footer) treated the preview cap as if it WERE that
+        // ceiling, so 202 simultaneously pending-and-dismissed requests —
+        // one more than the 201 it allowed — broke the exact same way again.
+        // There is no footer in this repro at all; 202 request keys alone
+        // are enough.
+        const store = new Store(':memory:')
+        const emitted: SyncEvent[] = []
+        const cache = new SessionCache(store, {
+            emit: (event: SyncEvent) => { emitted.push(event) }
+        } as EventPublisher)
+        const requests: Record<string, { tool: string; arguments: Record<string, never> }> = {}
+        for (let i = 0; i < 202; i++) {
+            requests[`r${i}`] = { tool: 'Bash', arguments: {} }
+        }
+        const session = cache.getOrCreateSession(
+            'ack-bound-202-live',
+            { path: '/tmp/project', host: 'localhost' },
+            { requests, completedRequests: {} },
+            'default'
+        )
+
+        for (let i = 0; i < 202; i++) {
+            cache.setSessionBlockedAck(session.id, 'handled', Date.now() + i, `request:r${i}`)
+        }
+
+        const row = store.sessions.getSessionByNamespace(session.id, 'default')
+        const keys = row?.blockedAckKeys ?? []
+
+        expect(keys).toHaveLength(202)
+        for (let i = 0; i < 202; i++) {
             expect(keys).toContain(`request:r${i}`)
         }
         expect(() => SessionBlockedAckSchema.parse({ at: Date.now(), reason: 'handled', keys })).not.toThrow()

@@ -148,7 +148,7 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
 export type CopyStoredMessageInput = Pick<
     StoredMessage,
     'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'
-> & Partial<Pick<StoredMessage, 'receivedAt' | 'agentDelivered' | 'imported'>>
+> & Partial<Pick<StoredMessage, 'receivedAt' | 'agentDelivered' | 'imported' | 'reconciledInvokedAt'>>
 
 export function addMessage(
     db: Database,
@@ -765,10 +765,10 @@ export function copyMessageToSession(
         prepareCached(db, `
             INSERT INTO messages (
                 id, session_id, content, created_at, received_at, agent_delivered,
-                seq, local_id, invoked_at, scheduled_at, delivery_state, imported
+                seq, local_id, invoked_at, scheduled_at, delivery_state, imported, reconciled_invoked_at
             ) VALUES (
                 @id, @session_id, @content, @created_at, @received_at, @agent_delivered,
-                @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state, @imported
+                @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state, @imported, @reconciledInvokedAt
             )
         `).run({
             id,
@@ -792,7 +792,16 @@ export function copyMessageToSession(
             delivery_state: message.deliveryState ?? 'queued',
             // Carried too: provenance is a fact about the original event, not
             // the copy (#1717 cold-review round 23).
-            imported: message.imported ? 1 : null
+            imported: message.imported ? 1 : null,
+            // A row already reconciled by an earlier merge must not lose that
+            // recovery on a SECOND one: a later import surviving as the new
+            // canonical copies this row across, and without carrying the
+            // value forward, the copy reverts to its raw (possibly still
+            // synthetic) `invoked_at` for reconciliation purposes — exactly
+            // the stranded-timing bug this column exists to prevent, just
+            // triggered by a second merge instead of the first (#1717
+            // cold-review round 24).
+            reconciledInvokedAt: message.reconciledInvokedAt ?? null
         })
         indexMessageContent(db, {
             id,

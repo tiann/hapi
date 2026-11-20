@@ -1324,13 +1324,12 @@ export function parseAckKeys(raw: string | null | undefined): string[] | null {
 
 /**
  * Exported so tests can exercise the retention boundary without a magic
- * number. Pinned to `SUPPORTED_LIVE_DISMISSAL_CAP`, not an arbitrary round
- * number (#1717 cold-review round 22, corrected round 23): that is the
- * system's own ceiling on how many pending-request identities one session
- * tracks PLUS the current footer, which shares the same dismissal budget —
- * `SessionBlockedAckSchema.keys` is bounded by the same constant, so
- * retention and the wire schema can never disagree about how many keys are
- * allowed through.
+ * number. Pinned to `SUPPORTED_LIVE_DISMISSAL_CAP` (#1717 cold-review rounds
+ * 22-24) — `SessionBlockedAckSchema.keys` is bounded by the SAME constant,
+ * so retention and the wire schema can never disagree about how many keys
+ * are allowed through, which is the actual invariant; the constant itself is
+ * a generous practical ceiling, not derived from any true limit (there is
+ * none — `AgentState.requests` has no enforced cap).
  */
 export const ACK_KEYS_RETENTION_LIMIT = SUPPORTED_LIVE_DISMISSAL_CAP
 

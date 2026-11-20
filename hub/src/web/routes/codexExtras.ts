@@ -884,9 +884,24 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     // column, unrelated to `messages`).
     const isImported = (message: StoredMessage): boolean => {
         if (message.imported !== null && message.imported !== undefined) return message.imported
-        return isOperatorReplyMessage(message.content)
-            ? message.invokedAt !== null && message.invokedAt === message.createdAt
-            : message.receivedAt !== null && message.receivedAt === message.createdAt
+        if (isOperatorReplyMessage(message.content)) {
+            return message.invokedAt !== null && message.invokedAt === message.createdAt
+        }
+        // A footer's `invokedAt` is NEVER a usable signal — it always mirrors
+        // its own `createdAt`, live or imported — so `receivedAt` is the only
+        // fallback signal available. But `received_at` is ALSO a plain
+        // additive column with no backfill, so a row old enough to predate
+        // IT is `imported: null` AND `receivedAt: null` together, with no
+        // signal at all (#1717 cold-review round 24). Defaulting that to
+        // "imported" is the safe direction: a genuinely live footer this
+        // ancient getting matched against a duplicate and inheriting a real
+        // `receivedAt` from it is harmless (even useful — it backfills a
+        // value this row never had), while defaulting to "live" reproduces
+        // the exact bug this round found — a canonical footer never becomes
+        // upgrade-eligible, so its paired reply's independently-recovered
+        // timing strands it with a stale synthetic stamp.
+        if (message.receivedAt === null) return true
+        return message.receivedAt === message.createdAt
     }
     const contentKeyOf = (message: StoredMessage): string =>
         getComparableStoredMessageKey(message)
@@ -1014,7 +1029,12 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 agentDelivered: message.agentDelivered,
                 // Provenance is a fact about the original event, not the copy
                 // (#1717 cold-review round 23).
-                imported: message.imported
+                imported: message.imported,
+                // A row already reconciled by an earlier merge must carry
+                // that recovery through a SECOND one, or a later survivor
+                // strands it right back at its raw, possibly-synthetic
+                // `invokedAt` (#1717 cold-review round 24).
+                reconciledInvokedAt: message.reconciledInvokedAt
             })
             // Update BOTH tallies for every copied row, and record a
             // synthetic stamp if this one had it. Bumping only the tally this

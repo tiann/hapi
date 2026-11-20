@@ -618,9 +618,17 @@ export function useSSE(options: {
                     // previous value meant a sixth prompt arriving by patch had
                     // no identity, so the classifier saw nothing unacknowledged
                     // beyond the already-dismissed five.
+                    // Pass the cached dismissal keys so an overflow request
+                    // beyond the 200-ref cap stays visible after it is
+                    // dismissed while still pending, matching the REST
+                    // projection (#1717 cold-review round 24) — otherwise
+                    // this patch path alone reverts to plain oldest-first
+                    // truncation and can drop a genuinely unanswered request
+                    // off the capped list until the next full refresh.
                     nextSummary.pendingRequestRefs = computePendingRequestRefs(
                         patch.agentState.value,
-                        nextSummary.updatedAt
+                        nextSummary.updatedAt,
+                        nextSummary.blockedAck?.keys ? new Set(nextSummary.blockedAck.keys) : undefined
                     )
                     nextSummary.agentStateVersion = patch.agentState.version
                 }

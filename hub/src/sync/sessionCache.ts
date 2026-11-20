@@ -1206,6 +1206,20 @@ export class SessionCache {
      * one turn and a genuine prompt afterwards still clears the footer.
      */
     markMaintenanceTurn(sessionId: string): void {
+        const session = this.sessions.get(sessionId)
+        // Sending a command like /compact through the ordinary queue path
+        // (`markMessageQueued`) already flips `thinking` true, with no
+        // rising edge left for the usual one-shot-mark consumption to catch
+        // once this CLI acknowledgement arrives after it. Mark the turn as
+        // maintenance immediately in that case and retroactively
+        // un-confirm, or the next keepalive confirms the turn and hides the
+        // footer the maintenance exemption exists to protect (#1717
+        // cold-review round 24).
+        if (session?.thinking) {
+            this.activeMaintenanceTurnSessionIds.add(sessionId)
+            session.thinkingConfirmed = false
+            return
+        }
         this.maintenanceTurnSessionIds.add(sessionId)
     }
 

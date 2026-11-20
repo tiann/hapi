@@ -52,24 +52,29 @@ const INPUT_REQUEST_TOOLS = new Set([
  *  is the authoritative total — `pendingRequests.length` may be smaller. */
 export const PENDING_REQUEST_SUMMARY_CAP = 5
 
-/** Cap on `pendingRequestRefs` and, by extension, on the number of live keys
- *  `SessionBlockedAck.keys` can carry (#1717 cold-review round 22): a key
- *  cannot be dismissed-but-live for a request the system never tracks an
- *  identity for in the first place, so this is the real ceiling to size that
- *  schema's `.max()` against, not an arbitrary round number. */
+/** Cap on `pendingRequestRefs`: how many pending-request identities the
+ *  SUMMARY surfaces for preview/dismissal-matching purposes. NOT a ceiling on
+ *  how many requests can exist — `AgentState.requests` is `z.record(...)`
+ *  with no `.max()`, so an agent can genuinely hold more than this many
+ *  simultaneously pending tool/question requests at once; this just bounds
+ *  what one list-row payload carries (#1717 cold-review round 22, corrected
+ *  round 24 — see `SUPPORTED_LIVE_DISMISSAL_CAP`, which used to be derived
+ *  from this value as if it WERE that ceiling and broke at 202 live
+ *  dismissals as a result). */
 export const PENDING_REQUEST_REFS_CAP = 200
 
 /**
- * The true ceiling on live, simultaneously-dismissible keys (#1717
- * cold-review round 23): every tracked request PLUS the current footer —
- * `SessionBlockedAck.keys` can carry a `notifyBlockerKey` for the footer
- * alongside a `requestBlockerKey` for each of up to `PENDING_REQUEST_REFS_CAP`
- * requests, so sizing the schema's `.max()` at `PENDING_REQUEST_REFS_CAP`
- * alone rejected a snapshot with exactly that many live keys dismissed
- * together with the footer — one single key over a cap that forgot the
- * footer shares the same budget.
+ * The practical ceiling on live, simultaneously-dismissible keys
+ * (#1717 cold-review round 23, corrected round 24). `SessionBlockedAck.keys`
+ * must never evict a key whose request is still pending (round 21), but the
+ * TRUE source of how many such requests can exist — `AgentState.requests` —
+ * has no enforced limit, so no fixed number here is a real ceiling, only a
+ * practical one. Sized generously beyond any realistic concurrent-request
+ * count (previously derived from `PENDING_REQUEST_REFS_CAP`, an unrelated
+ * preview cap, which is how this broke at 202 real live dismissals — one
+ * key over the old 201).
  */
-export const SUPPORTED_LIVE_DISMISSAL_CAP = PENDING_REQUEST_REFS_CAP + 1
+export const SUPPORTED_LIVE_DISMISSAL_CAP = 2_000
 
 export type PendingRequest = {
     id: string
