@@ -71,7 +71,16 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         return { id, name: id, kind: 'unsupported', reason: 'Template is not a valid issue form', githubValid: false }
     }
     const obj = doc as Record<string, unknown>
-    const name = asString(obj.name) ?? id
+    // GitHub requires `name` on an issue form — the legacy .md path
+    // already enforces this via hasRequiredLegacyTemplateFrontmatter, but
+    // this .yml path fell back to the filename instead of rejecting it,
+    // so a file missing it was accepted as a usable form and counted
+    // toward local .github-inheritance coverage even though GitHub's own
+    // chooser would never have offered it (review finding, tiann/hapi#2147).
+    const name = asString(obj.name)
+    if (!name) {
+        return { id, name: id, kind: 'unsupported', reason: 'Template is missing the required "name" field', githubValid: false }
+    }
     const bodyRaw = obj.body
     if (!Array.isArray(bodyRaw) || bodyRaw.length === 0) {
         return { id, name, kind: 'unsupported', reason: 'Template has no body elements', githubValid: false }

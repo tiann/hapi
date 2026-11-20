@@ -157,7 +157,7 @@ body:
     })
 
     it('is unsupported when a non-markdown field is missing a label', () => {
-        const missingLabel = parseIssueFormYaml('x.yml', 'body:\n  - type: input\n    id: field\n    attributes: {}')
+        const missingLabel = parseIssueFormYaml('x.yml', 'name: Bug\nbody:\n  - type: input\n    id: field\n    attributes: {}')
         expect(missingLabel.kind).toBe('unsupported')
     })
 
@@ -166,7 +166,7 @@ body:
     // is still a valid, GitHub-accepted form, so it gets a generated id
     // rather than rejecting the whole template (review finding).
     it('generates a stable slug id for a field missing one, instead of rejecting the template', () => {
-        const template = parseIssueFormYaml('x.yml', 'body:\n  - type: input\n    attributes:\n      label: Contact Details')
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\nbody:\n  - type: input\n    attributes:\n      label: Contact Details')
         expect(template.kind).toBe('form')
         if (template.kind !== 'form') return
         expect(template.fields).toEqual([{
@@ -177,6 +177,7 @@ body:
 
     it('resolves a generated-id collision against another field\'s explicit or generated id', () => {
         const yaml = `
+name: Bug
 body:
   - type: input
     attributes:
@@ -199,6 +200,7 @@ body:
 
     it('parses validations.min_length for input/textarea fields', () => {
         const yaml = `
+name: Bug
 body:
   - type: textarea
     id: repro
@@ -216,10 +218,20 @@ body:
     })
 
     it('is unsupported when a dropdown or checkboxes field has no options', () => {
-        const dropdown = parseIssueFormYaml('x.yml', 'body:\n  - type: dropdown\n    id: d\n    attributes:\n      label: D\n      options: []')
+        const dropdown = parseIssueFormYaml('x.yml', 'name: Bug\nbody:\n  - type: dropdown\n    id: d\n    attributes:\n      label: D\n      options: []')
         expect(dropdown.kind).toBe('unsupported')
-        const checkboxes = parseIssueFormYaml('x.yml', 'body:\n  - type: checkboxes\n    id: c\n    attributes:\n      label: C\n      options: []')
+        const checkboxes = parseIssueFormYaml('x.yml', 'name: Bug\nbody:\n  - type: checkboxes\n    id: c\n    attributes:\n      label: C\n      options: []')
         expect(checkboxes.kind).toBe('unsupported')
+    })
+
+    // Review finding (tiann/hapi#2147): GitHub requires `name` on an issue
+    // form — a file missing it used to fall back to the filename and be
+    // accepted as usable, even though GitHub's own chooser would never
+    // have offered it, letting it wrongly suppress .github inheritance.
+    it('is unsupported when name is missing, rather than falling back to the filename', () => {
+        const template = parseIssueFormYaml('x.yml', 'body:\n  - type: markdown\n    attributes:\n      value: Hi')
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
     })
 })
 

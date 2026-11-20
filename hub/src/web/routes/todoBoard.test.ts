@@ -2241,7 +2241,7 @@ body:
                     repository: {
                         issueTemplateDir: {
                             entries: [
-                                { name: 'weird.yml', object: { text: 'body:\n  - type: some-future-type\n    id: x\n    attributes:\n      label: X' } },
+                                { name: 'weird.yml', object: { text: 'name: Weird\nbody:\n  - type: some-future-type\n    id: x\n    attributes:\n      label: X' } },
                                 { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
                             ]
                         }
