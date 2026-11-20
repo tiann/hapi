@@ -2583,6 +2583,19 @@ body:
     // Regression (bot review, hapi#238, follow-up): templateId existing
     // isn't enough — a maintainer can edit a template's fields/labels in
     // place between picker-open and submit, same id, different content.
+    //
+    // The fixture must be a genuinely USABLE template (bot review,
+    // tiann/hapi#2147, follow-up) — an earlier version of this test used a
+    // form with no `description` and a markdown-only body, which
+    // `parseIssueFormYaml` now rejects as `unsupported` on its own merits
+    // (two independent, unrelated fixes landed earlier this same PR). That
+    // made the request 409 via the EARLIER "this template is no longer
+    // available" branch (current template unresolvable) rather than the
+    // revision-mismatch branch this test claims to exercise — both return
+    // the same `code: 'template_conflict'`, so the assertion passed for
+    // the wrong reason without ever reaching `current.revision !==
+    // templateRevision` at all. Asserting the exact message (not just the
+    // shared code) keeps that distinction honest going forward.
     it('rejects a submission against a template whose content changed since the picker fetched it', async () => {
         const calls: string[] = []
         const app = await createApp(
@@ -2597,7 +2610,7 @@ body:
                     repository: {
                         issueTemplateDir: {
                             entries: [
-                                { name: 'bug_report.yml', object: { text: 'name: Bug report\nbody:\n  - type: markdown\n    attributes:\n      value: Still current\n' } }
+                                { name: 'bug_report.yml', object: { text: 'name: Bug report\ndescription: File a bug report\nbody:\n  - type: input\n    id: contact\n    attributes:\n      label: Contact\n' } }
                             ]
                         }
                     }
@@ -2616,8 +2629,9 @@ body:
         // template_conflict handling needs a machine-readable signal, not
         // just this message's wording, to know it's safe to refetch and
         // send the user back to pick again rather than retry as-is.
-        const body = await response.json() as { code: string }
+        const body = await response.json() as { code: string, error: string }
         expect(body.code).toBe('template_conflict')
+        expect(body.error).toBe('This template has changed since you opened it — review it again and try again')
         expect(calls).toEqual([])
     })
 
