@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { catalogConfiguration, isUltrafastAvailable, isUltrafastEnabled, inheritedResumeTier, resumeTierContext, resolveUltrafastLaunch } from './serviceTier';
 
+it('preserves the native tier while lost-write confirmation is pending', async () => {
+    const readConfig = vi.fn();
+    expect(await inheritedResumeTier({ readConfig }, {}, false, '/project', 'standard', undefined, true)).toEqual({});
+    expect(await inheritedResumeTier({ readConfig }, {}, false, '/project', 'fast', 'standard', true)).toEqual({ serviceTier: null });
+    expect(readConfig).not.toHaveBeenCalled();
+});
+
 it('leaves the requested tier untouched when the same provider changes catalog endpoint', async () => {
     const configuration = (baseUrl: string) => ({
         config: { model_provider: 'custom' },

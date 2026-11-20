@@ -1708,7 +1708,7 @@ it('provides Standard recovery before an attached Ultrafast model change with un
     const f = await fixture({ attached: true }); await f.root.activate();
     f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' }, true);
     const request = vi.spyOn(f.root.client, 'request');
-    await expect(f.root.applySettings({ model: 'standard-only' })).rejects.toThrow('Switch to Standard before changing models');
+    await expect(f.root.applySettings({ model: 'standard-only' })).rejects.toThrow('Choose Standard in HAPI');
     expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
     await f.root.applySettings({ serviceTier: 'standard' });
     expect((await f.root.applySettings({ model: 'standard-only' })).applied).toMatchObject({ model: 'standard-only', serviceTier: 'standard' });
@@ -1724,13 +1724,38 @@ it('keeps an actually applied Ultrafast launch without a fallback notice', async
     const f = await fixture(); f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' }, true);
     f.events.mockClear(); await f.root.confirmUltrafastLaunch(); expect(f.events).not.toHaveBeenCalled();
 });
-it('uses provider-scoped native discovery for an attached modern engine', async () => {
+it('keeps Standard available when an attached engine cannot verify Ultrafast catalog provenance', async () => {
     const f = await fixture({ attached: true });
     vi.spyOn(f.root.client, 'supportsProviderScopedModels').mockReturnValue(true);
-    f.root.acceptSettings({ model: 'mock', modelProvider: 'provider-a', serviceTier: 'ultrafast' }, true);
+    f.root.acceptSettings({ model: 'mock', modelProvider: 'provider-a', serviceTier: 'priority' }, true);
+    await f.root.activate();
     const catalog = vi.spyOn(f.root.client, 'listModels');
-    expect((await f.root.applySettings({ model: 'mock' })).applied.serviceTier).toBe('ultrafast');
+    await expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('externally attached thread');
+    expect(catalog).not.toHaveBeenCalled();
+    const result = await f.rpc.get(RPC_METHODS.ListCodexModels)!({ includeHidden: true });
+    expect(result).toMatchObject({ success: true, models: [{ id: 'mock', serviceTiers: [] }, { id: 'standard-only' }] });
     expect(catalog).toHaveBeenCalledWith({ includeHidden: true, modelProvider: 'provider-a' });
+    expect((await f.root.applySettings({ serviceTier: 'standard' })).applied.serviceTier).toBe('standard');
+});
+
+it.each(['priority', 'default'])('reconciles a lost native turn reply from an independent %s snapshot without replaying input', async serviceTier => {
+    const f = await fixture({ bindTier: 'default' });
+    await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    let supplySnapshot!: (value: unknown) => void;
+    const snapshot = new Promise(resolve => { supplySnapshot = resolve; });
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume') return await snapshot as never;
+        return original(method, params);
+    });
+    const recovering = f.root.recoverLostNativeTurn({ serviceTier: 'priority' }, true, 'default');
+    expect(f.metadata().codexTierConfirmationPending).toBe(true);
+    await expect(f.root.nativeQueueMutation('thread/queue/start', { threadId: 'thread' })).rejects.toThrow('tier confirmation');
+    supplySnapshot({ model: 'mock', serviceTier });
+    await recovering;
+    expect(f.metadata().codexTierConfirmationPending).toBe(serviceTier !== 'priority');
+    expect(f.metadata().codexServiceTierExplicit).toBe(serviceTier === 'priority');
+    expect(request.mock.calls.map(([method]) => method)).toEqual(['thread/resume']);
 });
 
 it('confirms an identical tier from a fresh snapshot without requiring a duplicate event', async () => {
@@ -2198,7 +2223,7 @@ it.each(['suspend', 'close'])('does not submit input released from the second ga
     vi.useFakeTimers();
     try {
         f.submit('/deferred message', 'second-gate-input'); await started;
-        const failure = f.root.applySettings({ serviceTier: 'ultrafast' }).catch(() => {});
+        const failure = f.root.applySettings({ serviceTier: action === 'close' ? 'standard' : 'ultrafast' }).catch(() => {});
         await vi.advanceTimersByTimeAsync(25_000); await failure;
         expect(f.root.needsTierConfirmation).toBe(true);
         release(); await (action === 'suspend' ? f.root.suspend() : f.root.close(false));

@@ -687,6 +687,7 @@ export class SharedCodexRoot {
         if (config.serviceTier === null) config.serviceTier = 'standard';
         let fallbackNotice: string | undefined;
         if (config.serviceTier === 'ultrafast' || config.model && this.hasUltrafastTier && config.serviceTier === undefined) {
+            if (this.host.attached) throw new Error('Cannot verify Ultrafast for an externally attached thread. Choose Standard in HAPI or set the tier in the owning Codex client.');
             const discoveryDeadline = Math.min(deadline - 15_000, Date.now() + 10_000);
             for (;;) {
                 const model = config.model ?? this.settings.model;
@@ -768,6 +769,7 @@ export class SharedCodexRoot {
         const requestedModel = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
         let fallbackNotice: string | undefined;
         if (params.serviceTier === 'ultrafast' || requestedModel && params.serviceTier === undefined && this.hasUltrafastTier) {
+            if (this.host.attached) throw new Error('Cannot verify Ultrafast for an externally attached thread. Choose Standard in HAPI or set the tier in the owning Codex client.');
             const deadline = Math.min(operationDeadline - 15_000, Date.now() + 10_000);
             for (;;) {
                 const model = requestedModel ?? this.settings.model;
@@ -814,8 +816,35 @@ export class SharedCodexRoot {
         this.settingsWrites = operation;
         return operation;
     }
-    async prepareNativeTurn(params: Record<string, unknown>): Promise<{ params: Record<string, unknown>; fallbackNotice?: string }> {
-        return this.resolveNativeSettings(params);
+    async prepareNativeTurn(params: Record<string, unknown>): Promise<{ params: Record<string, unknown>; fallbackNotice?: string; previousTier: unknown }> {
+        const resolved = await this.resolveNativeSettings(params);
+        return { ...resolved, previousTier: this.settingsNative.serviceTier };
+    }
+    async recoverLostNativeTurn(params: Record<string, unknown>, explicitTier: boolean, previousTier: unknown, fallbackNotice?: string): Promise<void> {
+        this.notice('Native turn delivery is unconfirmed after transport loss. Check the conversation before retrying the message.');
+        if (params.serviceTier === undefined || this.closed || this.stopping) return;
+        const operationId = ++this.tierOperationCounter;
+        this.pauseTierConfirmation(operationId);
+        const expected = { serviceTier: params.serviceTier };
+        // An unchanged value cannot establish that the request was accepted.
+        if (previousTier === undefined || settingsMatch({ serviceTier: previousTier }, expected)) return;
+        const revision = this.settingsRevision;
+        const current = () => !this.closed && !this.stopping && this.settingsRevision === revision
+            && operationId >= this.confirmedTierOperation && operationId >= this.pendingTierOperation;
+        const deadline = Date.now() + 10_000;
+        try {
+            const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
+            if (!current() || !settingsMatch(snapshot, expected)) return;
+            if (params.serviceTier === 'ultrafast' && !await isUltrafastEnabled(this.client, this.threadId, deadline)) return;
+            if (!current()) return;
+            this.acceptSettings(snapshot, true);
+            if (explicitTier) this.markTierExplicit();
+            this.completeTierConfirmation();
+            this.alive();
+            if (fallbackNotice) this.notice(fallbackNotice);
+        } catch {
+            // Preserve the pending state for a deliberate tier selection.
+        }
     }
     /** Called only after native turn acceptance; a rejected input leaves intent unchanged. */
     async confirmNativeTurn(params: Record<string, unknown>, explicitTier: boolean, fallbackNotice?: string): Promise<void> {
@@ -1017,7 +1046,8 @@ export class SharedCodexRoot {
             const models = []; let cursor: string | undefined;
             do {
                 const response = await this.client.listModels({ includeHidden: record(raw).includeHidden === true, cursor, ...(this.client.supportsProviderScopedModels() && this.modelProvider ? { modelProvider: this.modelProvider } : {}) });
-                models.push(...(response.data ?? []).map(entry => normalizeCodexModel(entry, this.client.supportsEffectiveUltrafastLaunch())).filter(model => model !== null)); cursor = response.nextCursor ?? undefined;
+                const canVerifyUltrafast = !this.host.attached && this.host.startupCatalogConfig != null && this.client.supportsEffectiveUltrafastLaunch();
+                models.push(...(response.data ?? []).map(entry => normalizeCodexModel(entry, canVerifyUltrafast)).filter(model => model !== null)); cursor = response.nextCursor ?? undefined;
             } while (cursor);
             return { success: true, models };
         });

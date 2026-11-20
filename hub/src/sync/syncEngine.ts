@@ -4277,8 +4277,10 @@ export class SyncEngine {
     }
 
     private codexResumeTier(session: Pick<Session, 'metadata' | 'serviceTier'>): string | undefined {
-        return session.metadata?.codexPendingServiceTier
-            ?? (session.metadata?.codexServiceTierExplicit === false ? undefined : session.serviceTier ?? undefined)
+        const metadata = session.metadata
+        if (metadata?.codexPendingServiceTier !== undefined) return metadata.codexPendingServiceTier
+        if (metadata?.codexTierConfirmationPending || metadata?.codexServiceTierExplicit === false) return undefined
+        return session.serviceTier ?? undefined
     }
 
     async applySessionConfig(

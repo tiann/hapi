@@ -79,7 +79,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const pendingAdmission = new Set<string>();
     const resumingThreads = new Set<string>();
     const retryableBindings = new Map<string, Reservation>();
-    const nativeTurns = new Map<string, { root: SharedCodexRoot; params: Record<string, unknown>; explicitTier: boolean; fallbackNotice?: string }>();
+    const nativeTurns = new Map<string, { root: SharedCodexRoot; params: Record<string, unknown>; explicitTier: boolean; previousTier: unknown; fallbackNotice?: string }>();
     const runtime: CodexRuntimeRecord = { id, pid: process.pid, marker: getProcessStartMarker(process.pid) ?? '',
         endpoint: '', command: command.command, args: command.args, codexHome: home, hub: configuration.apiUrl, authHash: runtimeAuthHash(), sessions: {} };
     if (!runtime.marker) throw new Error('Cannot verify the runtime process generation');
@@ -401,11 +401,13 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             if (request.method !== 'thread/resume') {
                 runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
             }
+            const metadata = root.session.getMetadata();
             const resolved = request.method === 'thread/resume'
-                ? await inheritedResumeTier(control, params, root.session.getMetadata()?.codexServiceTierExplicit, cwd, root.bootstrap.sessionInfo.serviceTier, root.session.getMetadata()?.codexPendingServiceTier) : params;
+                ? await inheritedResumeTier(control, params, metadata?.codexServiceTierExplicit, cwd, root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending)
+                : params;
             const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, catalogProvider, savedThread, startupCatalogConfig);
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
-                serviceTierExplicit: params.serviceTier !== undefined || request.method === 'thread/resume' && root.session.getMetadata()?.codexPendingServiceTier !== undefined
+                serviceTierExplicit: params.serviceTier !== undefined || request.method === 'thread/resume' && metadata?.codexPendingServiceTier !== undefined
                     ? true : request.method === 'thread/resume' ? undefined : false,
                 requestedUltrafast: tier.params.serviceTier === 'ultrafast', downgraded: tier.downgraded });
             if (request.method === 'thread/resume' && threadId && (tier.downgraded || tier.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true)) pendingAdmission.add(threadId);
@@ -518,7 +520,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 for (const [key, turn] of nativeTurns) {
                     if (!key.startsWith(`${connection}:`)) continue;
                     nativeTurns.delete(key);
-                    turn.root.session.sendSessionEvent({ type: 'message', message: 'Native turn settings are unconfirmed after transport loss. Inspect the conversation before retrying.' });
+                    void operation(() => turn.root.recoverLostNativeTurn(turn.params, turn.explicitTier, turn.previousTier, turn.fallbackNotice))
+                        .catch(error => logger.debug('[Codex shared] lost turn tier reconciliation', error));
                 }
                 for (const [key, reservation] of reservations) {
                     if (!key.startsWith(`${connection}:`)) continue;
@@ -557,7 +560,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await reserveRecord(root, threadId); return root;
             });
             const metadata = root.session.getMetadata();
-            const resumeParams = await inheritedResumeTier(control, launch.threadParams, metadata?.codexServiceTierExplicit, root.bootstrap.workingDirectory, root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier);
+            const resumeParams = await inheritedResumeTier(control, launch.threadParams, metadata?.codexServiceTierExplicit, root.bootstrap.workingDirectory, root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending);
             const resolved = await resolveUltrafastLaunch(control, 'thread/resume', { ...resumeParams, cwd: root.bootstrap.workingDirectory }, root.bootstrap.workingDirectory, catalogProvider, thread, startupCatalogConfig);
             const downgraded = resolved.downgraded;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
