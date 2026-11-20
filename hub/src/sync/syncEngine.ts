@@ -607,7 +607,19 @@ export class SyncEngine {
         let boundaryAt: number | null = null
         for (const message of scanned) {
             if (!isDeliveredOperatorReply(message)) continue
-            const here: [number, number] = [deliveredOperatorReplyAt(message), message.seq]
+            // A reply with no `localId` never went through the hub queue — a
+            // prompt typed straight into a local Claude terminal — so nothing
+            // ever hub-stamped it and `invoked_at` is the runner's transcript
+            // clock. Measuring that against a footer's hub arrival is the
+            // cross-clock comparison this whole area exists to avoid: on a
+            // slow-enough runner a LATER local reply sorted before an EARLIER
+            // footer's arrival, and a rewind retaining both restored a blocker
+            // the operator had already answered. The row's own hub arrival is
+            // the right stand-in, because that is when the hub saw the reply.
+            const deliveredAt = message.localId === null
+                ? messageReceivedAt(message)
+                : deliveredOperatorReplyAt(message)
+            const here: [number, number] = [deliveredAt, message.seq]
             if (boundary === null || !atOrBefore(here, boundary)) {
                 boundary = here
                 boundaryAt = here[0]
@@ -625,6 +637,17 @@ export class SyncEngine {
         // before the boundary belongs to a turn the reply superseded, so
         // nothing authored at or before the newest of those can be current.
         let authorCutoff: number | null = null
+        // Identities of the footers the boundary superseded. A Claude replay
+        // is the SAME footer stored a second time — same status, same note,
+        // same author timestamp — and it arrives after the reply, so neither
+        // arrival nor a strict author comparison can reject it. Identity can.
+        // This is what keeps the strict comparison below safe: equal author
+        // times are accepted for a genuinely new footer (an untimestamped
+        // import synthesizes one timestamp for every row) but refused for an
+        // exact duplicate of something already answered.
+        const supersededIdentities = new Set<string>()
+        const identity = (signal: { status: string; at: number; note: string | null }): string =>
+            `${signal.status}\u0000${signal.at}\u0000${signal.note ?? ''}`
         const footers: Array<{
             signal: { status: string; at: number; note: string | null }
             position: [number, number]
@@ -636,6 +659,7 @@ export class SyncEngine {
             footers.push({ signal, position: here })
             if (boundary !== null && atOrBefore(here, boundary)) {
                 if (authorCutoff === null || signal.at > authorCutoff) authorCutoff = signal.at
+                supersededIdentities.add(identity(signal))
             }
         }
 
@@ -658,6 +682,8 @@ export class SyncEngine {
             // footer is after the boundary. A genuine replay is strictly
             // older than the footer it duplicates, so `<` still rejects it.
             if (authorCutoff !== null && footer.signal.at < authorCutoff) continue
+            // An exact duplicate of a footer the reply already answered.
+            if (supersededIdentities.has(identity(footer.signal))) continue
             if (best === null
                 || footer.signal.at > best.signal.at
                 || (footer.signal.at === best.signal.at && !atOrBefore(footer.position, best.position))) {

@@ -237,6 +237,42 @@ describe('SessionList blocked chrome (#1717)', () => {
             .toBe('half-typed rationale')
     })
 
+    it('returns focus to the row when the dismissal dialog closes', async () => {
+        // The selector looked for a button INSIDE the element carrying
+        // `data-session-id` — but that element is the row button itself, so it
+        // matched nothing and focus fell to the document body.
+        renderList([blocked('stuck-one'), makeSession({ id: 'fine-one' })])
+
+        const row = document.querySelector('[data-session-id="stuck-one"]') as HTMLElement
+        fireEvent.contextMenu(row)
+        fireEvent.click(await screen.findByTestId('session-action-mark-unblocked'))
+        expect(screen.getByTestId('unblock-reason-dialog')).toBeTruthy()
+
+        fireEvent.keyDown(screen.getByTestId('unblock-reason-dialog'), { key: 'Escape' })
+
+        expect(screen.queryByTestId('unblock-reason-dialog')).toBeNull()
+        expect(document.activeElement).toBe(row)
+    })
+
+    it('still has somewhere to put focus when the last blocker is dismissed', async () => {
+        // The jump pill was the fallback, but dismissing the LAST blocker
+        // unmounts it — so with the row gone too, focus had nowhere to go but
+        // the document body. The header row is always mounted.
+        const { rerender } = renderList([blocked('stuck-one')])
+
+        const row = document.querySelector('[data-session-id="stuck-one"]') as HTMLElement
+        fireEvent.contextMenu(row)
+        fireEvent.click(await screen.findByTestId('session-action-mark-unblocked'))
+
+        // The blocker clears and the row drops out of the list entirely.
+        rerender(wrapList([]))
+        fireEvent.keyDown(screen.getByTestId('unblock-reason-dialog'), { key: 'Escape' })
+
+        expect(screen.queryByTestId('blocked-jump-pill')).toBeNull()
+        expect(document.activeElement).not.toBe(document.body)
+        expect(document.activeElement).toBe(screen.getByTestId('session-list-header-row'))
+    })
+
     it('does not offer Mark unblocked on an unblocked row', async () => {
         renderList([makeSession({ id: 'fine-one' })])
 

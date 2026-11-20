@@ -865,7 +865,12 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 createdAt: message.createdAt,
                 localId: message.localId,
                 invokedAt: message.invokedAt,
-                scheduledAt: message.scheduledAt
+                scheduledAt: message.scheduledAt,
+                // Arrival and delivery disposition belong to the original
+                // event, so the combined transcript can still be ordered
+                // after the copy (#1717).
+                receivedAt: message.receivedAt,
+                agentDelivered: message.agentDelivered
             })
             knownKeys.add(comparableKey)
             appendedMessages.push(copied)
@@ -899,6 +904,11 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
 
     if (appendedMessages.length > 0) {
         emitImportedMessageEvents(engine, canonical.sessionId, appendedMessages)
+        // Live ingestion installs each copied footer as it replays, and a
+        // copied reply never passes through the delivery callback — so the
+        // canonical row entered Blocked on a footer its own combined
+        // transcript answers. Derive once from the whole thing instead (#1717).
+        engine?.reconcileNotifySignalAfterImport(canonical.sessionId)
     }
 
     if (engine) {

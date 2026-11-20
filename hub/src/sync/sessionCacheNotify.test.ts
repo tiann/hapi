@@ -341,6 +341,97 @@ describe('importing a transcript does not reopen an answered blocker (#1717)', (
         expect(engine.getSession(session.id)?.lastNotify?.note).toBe('turn two')
     })
 
+    it('rejects an EXACT replay of an answered footer on rewind', async () => {
+        // Claude transcript rows keep their author timestamp and arrive with
+        // no outer local id, so the same footer can be stored a second time
+        // after the reply that answered it. Live ingestion refuses it on the
+        // equal author timestamp — but making the reconciliation comparison
+        // strict (so untimestamped imports could work at all) meant an equal
+        // author time now PASSED there. Identity is what separates the two: a
+        // replay is the same status, note and timestamp as something already
+        // superseded; a new footer in an untimestamped import is not.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'rewind-exact-replay',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const base = Date.now() - 600_000
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+        const agentFooter = () => ({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        })
+
+        store.messages.addMessage(session.id, agentFooter(), undefined, null, base, base)
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'here you go' },
+            meta: { sentFrom: 'webapp' }
+        }, 'reply-1', null, base + 1_000, base + 1_000)
+        store.messages.markMessagesInvoked(session.id, ['reply-1'], base + 2_000)
+        // The SAME footer stored again, after the reply.
+        store.messages.addMessage(session.id, agentFooter(), undefined, null, base, base + 3_000)
+
+        engine.reconcileNotifySignalAfterImport(session.id)
+
+        expect(engine.getSession(session.id)?.lastNotify ?? null).toBeNull()
+    })
+
+    it('uses hub arrival for a LOCAL reply, whose invokedAt is the runner clock', async () => {
+        // A prompt typed straight into a local Claude terminal never went
+        // through the hub queue, so it has no local id and `invoked_at` is the
+        // transcript's own clock. Measuring that against a footer's hub
+        // arrival is the cross-clock comparison this area exists to avoid: on
+        // a slow-enough runner a LATER local reply sorted before an EARLIER
+        // footer's arrival, and a rewind retaining both restored a blocker the
+        // operator had already answered.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'rewind-local-reply',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const hubNow = Date.now()
+        const RUNNER_BEHIND = 3_600_000
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+
+        // Footer: arrived at the hub an hour ago by the hub's clock.
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, undefined, null, hubNow - RUNNER_BEHIND, hubNow - 60_000)
+        // Local reply, answering it: no localId, so its invokedAt is the
+        // runner's clock and reads as an hour BEFORE the footer's arrival.
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'here you go' },
+            meta: { sentFrom: 'cli' }
+        }, undefined, null, hubNow - RUNNER_BEHIND + 1_000, hubNow)
+
+        engine.reconcileNotifySignalAfterImport(session.id)
+
+        expect(engine.getSession(session.id)?.lastNotify ?? null).toBeNull()
+    })
+
     it('persists the replay cutoff across a rewind, so a late footer still cannot return', async () => {
         // Reconciliation computes an author cutoff from the retained history,
         // and the replacement write used to reset it to null. A footer from
@@ -584,6 +675,51 @@ describe('transferBlockedAck across a merge that copies its own messages (#1717)
 
         const keys = store.sessions.getSessionByNamespace(canonical.id, 'default')?.blockedAckKeys ?? []
         expect([...keys].sort()).toEqual(['request:a', 'request:b'])
+    })
+
+    it('carries arrival and delivery across a message copy, so the pair stays ordered', () => {
+        // The duplicate merge copies a footer AND the reply that answered it.
+        // Re-stamping arrival at copy time made every copied row look like it
+        // reached the hub now, so the footer no longer sat before its answer —
+        // and with the copied reply never passing through the delivery
+        // callback, the canonical row entered Blocked on a footer its own
+        // combined transcript answers.
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, { emit: (_e: SyncEvent) => {} } as EventPublisher)
+        const session = cache.getOrCreateSession('copy-order', { path: '/tmp', host: 'h' }, null, 'default')
+        const base = Date.now() - 600_000
+
+        const copied = store.messages.copyMessageToSession(session.id, {
+            content: { role: 'user', content: { type: 'text', text: 'here you go' }, meta: { sentFrom: 'webapp' } },
+            createdAt: base,
+            localId: null,
+            invokedAt: base + 1_000,
+            scheduledAt: null,
+            deliveryState: undefined,
+            receivedAt: base,
+            agentDelivered: 1
+        })
+
+        expect(copied.receivedAt).toBe(base)
+        expect(copied.agentDelivered).toBe(1)
+    })
+
+    it('falls back to createdAt when copying history written before the column existed', () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, { emit: (_e: SyncEvent) => {} } as EventPublisher)
+        const session = cache.getOrCreateSession('copy-legacy', { path: '/tmp', host: 'h' }, null, 'default')
+        const base = Date.now() - 600_000
+
+        const copied = store.messages.copyMessageToSession(session.id, {
+            content: { role: 'user', content: { type: 'text', text: 'old' }, meta: { sentFrom: 'webapp' } },
+            createdAt: base,
+            localId: null,
+            invokedAt: base,
+            scheduledAt: null,
+            deliveryState: undefined
+        })
+
+        expect(copied.receivedAt).toBe(base)
     })
 
     it('is a no-op when the source never dismissed anything', () => {

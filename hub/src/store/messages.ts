@@ -144,7 +144,7 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
 export type CopyStoredMessageInput = Pick<
     StoredMessage,
     'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'
->
+> & Partial<Pick<StoredMessage, 'receivedAt' | 'agentDelivered'>>
 
 export function addMessage(
     db: Database,
@@ -760,9 +760,11 @@ export function copyMessageToSession(
         const id = randomUUID()
         prepareCached(db, `
             INSERT INTO messages (
-                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at, delivery_state
+                id, session_id, content, created_at, received_at, agent_delivered,
+                seq, local_id, invoked_at, scheduled_at, delivery_state
             ) VALUES (
-                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
+                @id, @session_id, @content, @created_at, @received_at, @agent_delivered,
+                @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
             )
         `).run({
             id,
@@ -771,6 +773,14 @@ export function copyMessageToSession(
             // sessions, so no truncation here even for pre-codec oversized rows.
             content: encodeMessageContent(message.content),
             created_at: createdAt,
+            // Carried, not re-stamped (#1717). A copy moves existing history
+            // between sessions, so its hub arrival and its delivery
+            // disposition belong to the original event — re-stamping arrival
+            // at copy time made every copied row look like it reached the hub
+            // now, which put a copied footer after the copied reply that
+            // answered it. Falls back to `created_at` for pre-column history.
+            received_at: message.receivedAt ?? createdAt,
+            agent_delivered: message.agentDelivered ?? null,
             seq: nextSeq,
             local_id: localId ?? null,
             invoked_at: invokedAt ?? null,

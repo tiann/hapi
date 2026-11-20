@@ -686,11 +686,17 @@ function UnblockDialogHost(props: {
             // opened from may have moved, or be gone from the DOM entirely.
             // The jump pill is the stable fallback, so focus never lands on
             // the document body.
+            // The element carrying `data-session-id` IS the row button, so a
+            // descendant selector found nothing. And the jump pill is not a
+            // safe fallback: dismissing the LAST blocker unmounts it, which
+            // left focus on the document body. The header row is always
+            // mounted and carries `tabIndex={-1}` for exactly this.
             returnFocusTo={() => props.scrollContainer.current
                 ?.querySelector<HTMLElement>(
-                    `[data-session-id="${CSS.escape(target.sessionId)}"] button`
+                    `[data-session-id="${CSS.escape(target.sessionId)}"]`
                 )
-                ?? document.querySelector<HTMLElement>('[data-testid="blocked-jump-pill"]')}
+                ?? document.querySelector<HTMLElement>('[data-testid="blocked-jump-pill"]')
+                ?? document.querySelector<HTMLElement>('[data-testid="session-list-header-row"]')}
             onClose={props.onClose}
             onConfirm={async (reason) => {
                 await acknowledgeBlocked({
@@ -3961,8 +3967,23 @@ export function SessionList(props: {
         schedule()
         container.addEventListener('scroll', schedule, { passive: true })
         window.addEventListener('resize', schedule)
+        // Collapsing a section with the viewport stationary fires neither
+        // event, and the measurement taken on the click still sees the rows
+        // mounted — `CollapsiblePanel` removes them only after its 250ms
+        // transition. The arrow could therefore keep pointing at rows that no
+        // longer exist until some unrelated update happened to remeasure.
+        // Observing the content box catches the transition settling, whatever
+        // its duration, and covers Pinned and Blocked alike.
+        const observer = typeof ResizeObserver === 'undefined'
+            ? null
+            : new ResizeObserver(schedule)
+        if (observer) {
+            observer.observe(container)
+            for (const child of Array.from(container.children)) observer.observe(child)
+        }
         return () => {
             if (frame) cancelAnimationFrame(frame)
+            observer?.disconnect()
             container.removeEventListener('scroll', schedule)
             window.removeEventListener('resize', schedule)
         }
@@ -3987,7 +4008,11 @@ export function SessionList(props: {
                 <div
                     ref={headerRowRef}
                     data-testid="session-list-header-row"
-                    className="@container flex min-w-0 w-full flex-nowrap items-center gap-1 px-2 py-1"
+                    // Focusable only programmatically: the last resort when a
+                    // dialog closes and neither its row nor the jump pill is
+                    // still mounted, so focus never falls to the document body.
+                    tabIndex={-1}
+                    className="@container flex min-w-0 w-full flex-nowrap items-center gap-1 px-2 py-1 outline-none"
                     // Collapse on departure from the ROW, not from the search
                     // container (#1717). The blocked controls are siblings of
                     // that container, so once it stops collapsing on focus
