@@ -32,7 +32,12 @@ describe('mergeSessionMetadataForSessionMerge externalRefs', () => {
         expect(merged.name).toBe('PR session')
     })
 
-    it('lets the new row win when it explicitly sets externalRefs', () => {
+    // The new row's own primary PR wins the one-true-primary slot over the
+    // old row's different primary PR, but (round 13 fix) the old row's
+    // link is demoted to secondary rather than dropped — "the new row's
+    // explicit set wins" means it wins the PRIMARY role, not that old's
+    // independent link disappears entirely.
+    it('lets the new row\'s explicit primary win the role, demoting the old row\'s primary to secondary', () => {
         const oldMetadata = {
             path: '/old',
             host: 'old-host',
@@ -53,7 +58,10 @@ describe('mergeSessionMetadataForSessionMerge externalRefs', () => {
 
         const merged = mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata) as Record<string, unknown>
 
-        expect(merged.externalRefs).toEqual(replacement)
+        expect(merged.externalRefs).toEqual([
+            replacement[0],
+            { ...prRef, role: 'secondary' }
+        ])
     })
 
     // Review finding (hapi#2147, follow-up): an explicit `externalRefs: []`
@@ -143,5 +151,56 @@ describe('mergeSessionMetadataForSessionMerge externalRefs', () => {
         // Union of 34 distinct refs exceeds the 32 cap.
         expect(() => mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata))
             .toThrow(ExternalRefsMergeCapExceededError)
+    })
+
+    // Review finding (tiann/hapi#2147, round 13): the surviving row has PR
+    // A as primary and PR B as secondary; the about-to-be-deleted old row
+    // has a NEWER primary link to that same PR B. Reconciliation correctly
+    // picks old's fresher entry for PR B's identity, which leaves two
+    // refs both marked primary (A from new, B from old) — a genuine
+    // one-true-primary conflict, but the fix used to resolve it by
+    // dropping every primary that wasn't the chosen one outright, losing
+    // PR B's link entirely rather than just demoting it back to the
+    // secondary role it already held. Demoting, not dropping, keeps both
+    // real links alive with the invariant satisfied.
+    it('demotes a losing primary conflict to secondary instead of dropping the ref entirely', () => {
+        const prA = {
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1,
+            url: 'https://github.com/tiann/hapi/pull/1',
+            role: 'primary' as const,
+            linkedAt: 1
+        }
+        const prBAsSecondary = {
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 2,
+            url: 'https://github.com/tiann/hapi/pull/2',
+            role: 'secondary' as const,
+            linkedAt: 1
+        }
+        const prBAsNewerPrimary = {
+            ...prBAsSecondary,
+            role: 'primary' as const,
+            linkedAt: 2
+        }
+        const newMetadata = {
+            path: '/new',
+            host: 'new-host',
+            externalRefs: [prA, prBAsSecondary]
+        }
+        const oldMetadata = {
+            path: '/old',
+            host: 'old-host',
+            externalRefs: [prBAsNewerPrimary]
+        }
+
+        const merged = mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata) as Record<string, unknown>
+
+        const refs = merged.externalRefs as Array<{ number: number; role: string }>
+        expect(refs).toHaveLength(2)
+        expect(refs.find(r => r.number === 1)).toMatchObject({ role: 'primary' })
+        expect(refs.find(r => r.number === 2)).toMatchObject({ role: 'secondary' })
     })
 })

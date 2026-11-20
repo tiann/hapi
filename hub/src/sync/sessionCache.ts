@@ -136,8 +136,11 @@ export function mergeSessionMetadataForSessionMerge(
         // also happens to carry one (hapi#238). The one invariant a union
         // must not violate: ExternalRefsSchema allows at most one primary
         // github_pr, so if combining would produce two, the new row's own
-        // primary wins and old's is dropped rather than left to fail
-        // downstream schema validation.
+        // primary wins the role and the other is demoted to secondary
+        // (round 13: demoted, not dropped — a losing primary is still a
+        // real, independent link, not something to discard just because
+        // it lost a role tiebreak) rather than left to fail downstream
+        // schema validation.
         //
         // This runs even when newObj.externalRefs is an explicit `[]`
         // (review finding, hapi#238, follow-up): that only records the
@@ -158,8 +161,21 @@ export function mergeSessionMetadataForSessionMerge(
             let combined = reconcileExternalRefs(newRefs, oldRefs)
             const primaries = combined.filter(ref => ref.kind === 'github_pr' && ref.role === 'primary')
             if (primaries.length > 1) {
+                // Demote the losing primary/primaries to secondary rather
+                // than dropping them (review finding, tiann/hapi#2147,
+                // round 13): reconcileExternalRefs already deduped by
+                // identity above, so a ref that loses this role tiebreak
+                // is a real, distinct link — often one the surviving
+                // session already held as a valid secondary before this
+                // merge, or one that just won a freshness tie as the
+                // source's primary. Only the one-true-primary invariant
+                // needs resolving here, not the ref's existence.
                 const newPrimary = newRefs.find(ref => ref.kind === 'github_pr' && ref.role === 'primary')
-                combined = combined.filter(ref => !(ref.kind === 'github_pr' && ref.role === 'primary') || ref === newPrimary)
+                combined = combined.map(ref =>
+                    ref.kind === 'github_pr' && ref.role === 'primary' && ref !== newPrimary
+                        ? { ...ref, role: 'secondary' as const }
+                        : ref
+                )
             }
             // Two valid sessions can each independently sit near
             // MAX_EXTERNAL_REFS; their union has no upper bound of its own
