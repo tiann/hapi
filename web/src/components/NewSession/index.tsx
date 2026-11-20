@@ -187,6 +187,7 @@ export function NewSession(props: {
     const [error, setError] = useState<string | null>(null)
     const [codexImportSessions, setCodexImportSessions] = useState<CodexLocalSessionSummary[]>([])
     const [selectedCodexImportSessionId, setSelectedCodexImportSessionId] = useState<string | null>(null)
+    const [codexImportTier, setCodexImportTier] = useState<NewSessionServiceTier | 'default'>('default')
     const [codexImportMachineId, setCodexImportMachineId] = useState<string | null>(null)
     const [isLoadingCodexImportSessions, setIsLoadingCodexImportSessions] = useState(false)
     const [codexImportError, setCodexImportError] = useState<string | null>(null)
@@ -1910,6 +1911,7 @@ export function NewSession(props: {
 
     const handleSelectCodexImportSession = useCallback((session: CodexLocalSessionSummary) => {
         setSelectedCodexImportSessionId(session.id)
+        setCodexImportTier('default')
         if (session.cwd?.trim()) {
             setDirectory(session.cwd.trim())
         }
@@ -2073,7 +2075,7 @@ export function NewSession(props: {
                     machineId: codexImportMachineId ?? machineId,
                     model: resolvedModel ?? null,
                     modelReasoningEffort: resolvedModelReasoningEffort ?? null,
-                    serviceTier: resolvedServiceTier,
+                    serviceTier: codexImportTier === 'default' ? undefined : codexImportTier,
                     collaborationMode: resolvedCollaborationMode ?? 'default',
                     yolo: nativePermissionMode === 'yolo'
                 })
@@ -2279,10 +2281,12 @@ export function NewSession(props: {
             && model !== 'auto'
             && piModelsState.isLoading)
     const hasExplicitCatalogModel = model !== 'auto' && codexModelsState.models.some(candidate => candidate.id === model)
+    const importingCodex = agent === 'codex' && Boolean(selectedCodexImportSessionId)
+    const selectedTier = importingCodex ? codexImportTier : serviceTierExplicit ? serviceTier : 'default'
     const fastModeSelectionPending = agent === 'codex'
-        && serviceTier !== 'standard'
-        && (codexModelsState.isLoading || (serviceTier === 'ultrafast' && (Boolean(codexModelsState.error) || Boolean(selectedCodexImportSessionId) || !hasExplicitCatalogModel)))
-    const verifySavedUltrafastOnLaunch = agent === 'codex' && serviceTierExplicit && serviceTier === 'ultrafast'
+        && selectedTier !== 'standard' && selectedTier !== 'default'
+        && (codexModelsState.isLoading || (selectedTier === 'ultrafast' && (Boolean(codexModelsState.error) || importingCodex || !hasExplicitCatalogModel)))
+    const verifySavedUltrafastOnLaunch = agent === 'codex' && !importingCodex && selectedTier === 'ultrafast'
         && !showCodexUltrafastMode && !fastModeSelectionPending
     const canCreate = Boolean(
         machineId
@@ -2606,15 +2610,21 @@ export function NewSession(props: {
                 onChange={setCopilotAgentMode}
             />
             <FastModeSelector
-                visible={showCodexFastMode || showCodexUltrafastMode || (agent === 'codex' && (Boolean(selectedCodexImportSessionId) || serviceTier === 'ultrafast' || serviceTierExplicit && !codexModelsState.isLoading))}
+                visible={showCodexFastMode || showCodexUltrafastMode || importingCodex || (agent === 'codex' && (selectedTier === 'ultrafast' || selectedTier !== 'default' && !codexModelsState.isLoading))}
                 fastAvailable={showCodexFastMode}
                 ultrafastAvailable={showCodexUltrafastMode}
-                keepExistingTier={Boolean(selectedCodexImportSessionId)}
+                keepExistingTier={importingCodex}
                 verifySavedUltrafastOnLaunch={verifySavedUltrafastOnLaunch}
-                availabilityUnverified={agent === 'codex' && (Boolean(codexModelsState.error) || Boolean(selectedCodexImportSessionId) && serviceTier === 'ultrafast') && serviceTierExplicit && serviceTier !== 'standard'}
-                value={serviceTierExplicit ? serviceTier : 'default'}
+                availabilityUnverified={agent === 'codex' && Boolean(codexModelsState.error) && (importingCodex || selectedTier !== 'default' && selectedTier !== 'standard')}
+                value={selectedTier}
                 isDisabled={isFormDisabled}
-                onChange={value => { setServiceTier(value === 'default' ? 'standard' : value); setServiceTierExplicit(value !== 'default') }}
+                onChange={value => {
+                    if (importingCodex) setCodexImportTier(value)
+                    else {
+                        setServiceTier(value === 'default' ? 'standard' : value)
+                        setServiceTierExplicit(value !== 'default')
+                    }
+                }}
             />
 
             {(error ?? spawnError) ? (

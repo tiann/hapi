@@ -2825,22 +2825,29 @@ describe('NewSession launch preferences', () => {
     })
 })
 
-it('withholds Ultrafast on native import until the retained provider can be verified', async () => {
+it.each(['ultrafast', 'standard'] as const)('keeps the imported tier separately from a saved %s launch preference', async preferredTier => {
     savePreferredAgent('codex');
-    savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: 'ultrafast' });
-    const importApi = { ...api, getCodexSessions: vi.fn(async () => ({ sessions: [{ id: 'native-import', title: 'Native import', cwd: 'C:\\repo' }], machineId: 'machine-1' })) } as unknown as ApiClient;
+    savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: preferredTier });
+    const syncCodexSession = vi.fn(async () => ({ success: true, hapiSessionIds: ['imported-session'] }));
+    const importApi = {
+        ...api, syncCodexSession, resumeSession: vi.fn(async () => 'imported-session'),
+        getCodexSessions: vi.fn(async () => ({ sessions: [{ id: 'native-import', title: 'Native import', cwd: 'C:\\repo' }], machineId: 'machine-1' })),
+    } as unknown as ApiClient;
     renderWithQuery(<NewSession api={importApi} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />);
-    expect(await screen.findByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('ultrafast');
+    expect(await screen.findByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue(preferredTier);
     expect(screen.getByRole('option', { name: 'Account default' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'codexSync.newSessionInline.choose' }));
     await waitFor(() => expect(screen.getByTestId('select-codex-history')).toBeEnabled());
     fireEvent.click(screen.getByTestId('select-codex-history'));
-    await waitFor(() => expect(screen.getByRole('option', { name: 'misc.fastModeUltrafast' })).toBeDisabled());
-    expect(screen.getByRole('option', { name: 'Keep existing tier' })).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: 'Keep existing tier' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('default');
+    expect(screen.queryByRole('option', { name: 'misc.fastModeUltrafast' })).not.toBeInTheDocument();
     expect(screen.queryByRole('option', { name: 'Account default' })).not.toBeInTheDocument();
-    expect(screen.getByTestId('create')).toBeDisabled();
-    fireEvent.change(screen.getByRole('combobox', { name: 'newSession.fastMode' }), { target: { value: 'standard' } });
     await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('create'));
+    await waitFor(() => expect(syncCodexSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: undefined })));
+    await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('imported-session'));
+    expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe(preferredTier);
 });
 
 it('offers Standard for a native import even when the untouched model has no fast tier and catalog lookup fails', async () => {

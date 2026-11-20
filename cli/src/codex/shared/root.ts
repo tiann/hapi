@@ -748,12 +748,11 @@ export class SharedCodexRoot {
         this.serviceTierExplicit = true;
         this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: true, codexPendingServiceTier: undefined }));
     }
-    private completeTierConfirmation(): void {
+    private completeTierConfirmation(operationId = ++this.tierOperationCounter): void {
+        if (operationId < this.pendingTierOperation || operationId < this.confirmedTierOperation) return;
+        this.confirmedTierOperation = operationId;
+        this.confirmedTierValue = this.settingsNative.serviceTier;
         this.tierConfirmationResolved = true;
-        // Completion observes native state after dispatch, independently of
-        // when this request entered the local settings queue.
-        const operationId = this.rememberTierConfirmation();
-        if (operationId < this.pendingTierOperation) return;
         const paused = this.tierConfirmationPending;
         if (!paused && this.session.getMetadata()?.codexTierConfirmationPending !== true) return;
         this.tierConfirmationPending = false;
@@ -761,10 +760,6 @@ export class SharedCodexRoot {
         this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
         this.publishSteering();
         if (paused && this.activated) { this.alive(); this.inputReady(); this.session.emitSessionReady(); }
-    }
-    private rememberTierConfirmation(): number {
-        this.confirmedTierValue = this.settingsNative.serviceTier;
-        return this.confirmedTierOperation = ++this.tierOperationCounter;
     }
     /** Resolve native intent without committing settings before input is accepted. */
     private async resolveNativeSettings(params: Record<string, unknown>, operationDeadline = Date.now() + 25_000): Promise<{ params: Record<string, unknown>; fallbackNotice?: string }> {
@@ -822,7 +817,7 @@ export class SharedCodexRoot {
     }
     async prepareNativeTurn(params: Record<string, unknown>): Promise<{ params: Record<string, unknown>; fallbackNotice?: string; previousTier: unknown; generation: number }> {
         const resolved = await this.resolveNativeSettings(params);
-        return { ...resolved, previousTier: this.settingsNative.serviceTier, generation: this.tierOperationCounter };
+        return { ...resolved, previousTier: this.settingsNative.serviceTier, generation: ++this.tierOperationCounter };
     }
     async recoverLostNativeTurn(params: Record<string, unknown>, explicitTier: boolean, previousTier: unknown, generation: number, fallbackNotice?: string): Promise<void> {
         this.notice('Native turn delivery is unconfirmed after transport loss. Check the conversation before retrying the message.');
@@ -836,7 +831,7 @@ export class SharedCodexRoot {
                 const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
                 if (!this.closed && !this.stopping && this.confirmedTierOperation === latestConfirmation && this.settingsRevision === revision
                     && snapshot.serviceTier !== undefined && snapshot.serviceTier !== latestTier) {
-                    this.pauseTierConfirmation(++this.tierOperationCounter);
+                    this.pauseTierConfirmation(latestConfirmation);
                 }
             } catch {
                 // An older unknown reply cannot invalidate a newer confirmation by itself.
@@ -844,7 +839,7 @@ export class SharedCodexRoot {
             return;
         }
         if (generation < this.pendingTierOperation) return;
-        const operationId = ++this.tierOperationCounter;
+        const operationId = generation;
         this.pauseTierConfirmation(operationId);
         const expected = { serviceTier: params.serviceTier };
         // An unchanged value cannot establish that the request was accepted.
@@ -858,7 +853,7 @@ export class SharedCodexRoot {
             if (!current()) return;
             this.acceptSettings(snapshot, true);
             if (explicitTier) this.markTierExplicit();
-            this.completeTierConfirmation();
+            this.completeTierConfirmation(operationId);
             this.alive();
             if (fallbackNotice) this.notice(fallbackNotice);
         } catch {
@@ -866,10 +861,10 @@ export class SharedCodexRoot {
         }
     }
     /** Called only after native turn acceptance; a rejected input leaves intent unchanged. */
-    async confirmNativeTurn(params: Record<string, unknown>, explicitTier: boolean, fallbackNotice?: string): Promise<void> {
+    async confirmNativeTurn(params: Record<string, unknown>, explicitTier: boolean, fallbackNotice?: string, operationId = ++this.tierOperationCounter): Promise<void> {
         const verifyUltrafast = params.serviceTier === 'ultrafast' || params.serviceTier === undefined && this.hasUltrafastTier;
-        const operationId = ++this.tierOperationCounter;
-        const current = () => operationId >= this.confirmedTierOperation;
+        const current = () => operationId >= this.confirmedTierOperation && operationId >= this.pendingTierOperation;
+        if (!current()) return;
         // Native acceptance establishes intent even when a later client changes the model.
         if (explicitTier) this.markTierExplicit();
         const revision = this.settingsRevision;
@@ -883,10 +878,10 @@ export class SharedCodexRoot {
             if (this.settingsRevision !== revision) {
                 if (verifyUltrafast && this.hasUltrafastTier) {
                     await this.confirmEffectiveUltrafast(deadline, operationId);
-                    if (current()) this.rememberTierConfirmation();
+                    if (current()) this.completeTierConfirmation(operationId);
                 }
                 else if (params.serviceTier !== undefined && settingsMatch(this.settingsNative, { serviceTier: params.serviceTier })) {
-                    this.rememberTierConfirmation();
+                    this.completeTierConfirmation(operationId);
                     if (fallbackNotice && this.hasConfirmedStandardTier) this.notice(fallbackNotice);
                 }
                 return;
@@ -894,12 +889,12 @@ export class SharedCodexRoot {
             this.acceptSettings(snapshot, true);
             if (verifyUltrafast && !this.hasUltrafastTier && this.settings.serviceTier !== 'fast') {
                 await this.writeNativeSettings({ threadId: this.threadId, serviceTier: null }, { serviceTier: null }, deadline, operationId);
-                if (current()) this.rememberTierConfirmation();
+                if (current()) this.completeTierConfirmation(operationId);
                 this.notice('Codex did not apply Ultrafast; changed to Standard.');
                 this.alive(); return;
             }
             if (!settingsMatch(this.settingsNative, expected)) throw new Error('Native turn settings are not confirmed');
-            if (verifyUltrafast || params.serviceTier !== undefined) this.rememberTierConfirmation();
+            if (verifyUltrafast || params.serviceTier !== undefined) this.completeTierConfirmation(operationId);
             this.alive();
             if (fallbackNotice) this.notice(fallbackNotice);
         } catch {
