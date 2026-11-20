@@ -19,6 +19,7 @@ import { PASSKEY_CREDENTIALS_TABLE_SQL, PasskeyStore } from './passkeyStore'
 import { TurnStore } from './turnStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
+import { TELEMETRY_TABLES_SQL, TelemetryStore } from './telemetry'
 import {
     backfillMessageContentSearchLookup,
     backfillMessageContentSearchShortIndex,
@@ -54,13 +55,14 @@ export { TurnStore } from './turnStore'
 export type { SessionTurn, SessionTurnEndReason, SessionTurnTrigger } from './turns'
 export { UsageStore } from './usageStore'
 export { WorkGraphStore } from './workGraphStore'
+export { TelemetryStore, TELEMETRY_TABLES_SQL, perfRawWindowHours } from './telemetry'
 export {
     WorkGraphNotFoundError,
     WorkGraphPrincipalError,
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 36
+export const SCHEMA_VERSION: number = 37
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -80,7 +82,13 @@ const REQUIRED_TABLES = [
     'event_links',
     'session_turns',
     'session_redirects',
-    'passkey_credentials'
+    'passkey_credentials',
+    'telemetry_events',
+    'perf_samples',
+    'perf_sse_episodes',
+    'perf_web_vitals',
+    'perf_rollup_daily',
+    'perf_deploy_marks'
 ] as const
 
 export class Store {
@@ -101,6 +109,7 @@ export class Store {
     readonly usage: UsageStore
     readonly turns: TurnStore
     readonly workGraph: WorkGraphStore
+    readonly telemetry: TelemetryStore
 
     /**
      * Filesystem path of the underlying SQLite database, or ':memory:' for
@@ -159,6 +168,7 @@ export class Store {
         this.usage = new UsageStore(this.db)
         this.turns = new TurnStore(this.db)
         this.workGraph = new WorkGraphStore(this.db)
+        this.telemetry = new TelemetryStore(this.db)
     }
 
     /**
@@ -394,7 +404,8 @@ export class Store {
             // #1404 session_jobs at v31→v32 (after upstream FTS v30→v31); run_id fence at v32→v33;
             // #1489 wake-on-terminal at v33→v34; session_redirects at v34→v35;
             // passkey_credentials at v35→v36
-            // (jobs remapped again after upstream took 28/29/30).
+            // (jobs remapped again after upstream took 28/29/30);
+            // telemetry six-table family (telemetry_events + perf_*) at v36→v37.
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
@@ -410,6 +421,8 @@ export class Store {
             33: () => this.migrateFromV33ToV34(),
             34: () => this.migrateFromV34ToV35(),
             35: () => this.migrateFromV35ToV36(),
+            // telemetry six-table family (telemetry_events + perf_*)
+            36: () => this.migrateFromV36ToV37(),
         })
 
         if (currentVersion === 0) {
@@ -454,6 +467,7 @@ export class Store {
             this.migrateFromV33ToV34()
             this.migrateFromV34ToV35()
             this.migrateFromV35ToV36()
+            this.migrateFromV36ToV37()
             this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
@@ -750,6 +764,9 @@ export class Store {
                 WHERE ended_at IS NULL;
         `)
         createMessageContentSearchTable(this.db)
+        // Telemetry table family (v39): same DDL as the step migration —
+        // fresh databases get it at creation, upgraded ones via the ladder.
+        this.db.exec(TELEMETRY_TABLES_SQL)
     }
 
     private migrateLegacySchemaIfNeeded(): void {
@@ -1395,6 +1412,11 @@ export class Store {
     /** v35→v36: WebAuthn credentials that can be exchanged for a web JWT. */
     private migrateFromV35ToV36(): void {
         this.db.exec(PASSKEY_CREDENTIALS_TABLE_SQL)
+    }
+
+    /** v37: telemetry six-table family (generic events + narrow perf tables). */
+    private migrateFromV36ToV37(): void {
+        this.db.exec(TELEMETRY_TABLES_SQL)
     }
 
     private ensureUsageScanParserVersion(): void {

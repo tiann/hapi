@@ -58,7 +58,9 @@ import { getDraftAttachments } from '@/lib/composer-attachment-drafts'
 import { refreshSessionDetailPreservingActive } from '@/lib/session-detail-optimistic'
 import { inactiveSessionCanResume, resolveCursorReopenGate } from '@/lib/sessionResume'
 import { isOnSessionPage, resolveVoiceSession } from '@/lib/dictationSend'
-import { configureSessionReadState, observeSessionReadStates } from '@/lib/sessionLastSeen'
+import { configureSessionReadState, getSessionLastSeenAt, observeSessionReadStates } from '@/lib/sessionLastSeen'
+import { recordSessionEntry } from '@/chat/sessionVisitTelemetry'
+import { useSessionVisitTelemetry } from '@/hooks/useSessionVisitTelemetry'
 import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
 import { clearCodexImportedSession } from '@/lib/codexImportedSessions'
 import { getMergedSessionRedirectId, getSupersedingSessionId, prepareFollowSupersedingSession, shouldFollowSupersedingSession } from '@/routes/sessions/followSupersedingSession'
@@ -241,6 +243,19 @@ function SessionsPage() {
         targetMessageQuery?: string,
         pendingRequestId?: string
     ) => {
+        // Observation only (session_open entry): record WHY this navigation
+        // selects the session — a pending permission request, a content-search
+        // hit (carrying its target message), or a plain list click. Consumed
+        // one-shot by the SessionPage visit effect.
+        try {
+            recordSessionEntry(
+                sessionId,
+                pendingRequestId ? 'permission-jump' : targetMessageId ? 'search-hit' : 'list-click',
+                targetMessageId
+            )
+        } catch {
+            // fail-silent
+        }
         if (pendingRequestId) {
             navigate({
                 to: '/sessions/$sessionId',
@@ -446,6 +461,25 @@ function SessionPage() {
         error: sessionError,
         refetch: refetchSession,
     } = useSession(api, sessionId)
+
+    // Observation only (session_open / session_close / pause-resume visit
+    // semantics — see chat/sessionVisitTelemetry). The seen-tail closure is
+    // evaluated once at close time: the read-state watermark vs the
+    // session's content revision.
+    useSessionVisitTelemetry(sessionId, {
+        searchHint: { messageId, pendingRequestId },
+        getSeenTail: () => {
+            try {
+                const revision = session?.contentRevision
+                if (revision === undefined) {
+                    return undefined
+                }
+                return getSessionLastSeenAt(sessionId) >= revision
+            } catch {
+                return undefined
+            }
+        }
+    })
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,

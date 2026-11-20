@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage } from '@/types/api'
 import {
@@ -17,6 +17,17 @@ import {
     type NewerLoadOutcome,
     type OlderLoadOutcome,
 } from '@/lib/message-window-store'
+import { telemetryClient } from '@/lib/telemetryClient'
+
+/**
+ * load_slow thresholds (diag, observation only). The aTrust round-trip tax is
+ * ~400ms per leg and the window design is cache-first, so a session view that
+ * takes longer than 3s to first show settled content (cached tail or fresh
+ * page) is a regression signal; the authoritative tail reconcile may walk
+ * several catch-up pages, hence the looser 5s budget there.
+ */
+const SESSION_DETAIL_SLOW_MS = 3_000
+const TAIL_SYNC_SLOW_MS = 5_000
 
 export const EMPTY_STATE: MessageWindowState = {
     sessionId: 'unknown',
@@ -99,9 +110,36 @@ export function useMessages(
             }
         }
         let active = true
+        const syncStartedAt = Date.now()
+        // Read BEFORE the sync starts: activation (the first layout effect)
+        // sets preferLatestOnActivation when a persisted v3 window served a
+        // usable cursor, and the sync's own updates clear it on landing.
+        const cacheHitOnActivate = getMessageWindowState(sessionId).preferLatestOnActivation
         void syncTailMessages(api, sessionId).then(() => {
             if (active) {
                 setInitialSyncReadyKey(sessionId)
+            }
+            // Observation only: the initial reconcile settled (data_loaded,
+            // ux) and its duration against the slow threshold (load_slow,
+            // diag). Emitted even when the page already moved on — the sync
+            // itself really did settle.
+            try {
+                const settledAt = Date.now()
+                const durationMs = settledAt - syncStartedAt
+                telemetryClient.capture('ux', 'data_loaded', {
+                    cacheHitOnActivate,
+                    messageCountAfterSync: getMessageWindowState(sessionId).messages.length,
+                    settledAt
+                }, { sessionId })
+                if (durationMs > TAIL_SYNC_SLOW_MS) {
+                    telemetryClient.capture('diag', 'load_slow', {
+                        phase: 'tail-sync',
+                        durationMs,
+                        fromCache: cacheHitOnActivate
+                    }, { sessionId })
+                }
+            } catch {
+                // fail-silent
             }
         })
         return () => {
@@ -109,6 +147,79 @@ export function useMessages(
             setMessageWindowTargetLock(sessionId, false)
         }
     }, [api, sessionId, options.skipInitialTailSync])
+
+    // Observation only (load_slow / 'session-detail'): time from the session
+    // becoming active until the window first publishes settled, non-empty
+    // content — the "open a session and see the tail" metric. A v3 cache hit
+    // settles near-instantly; a cold open waits for the network leg. Passive
+    // effect: observes the same publications the layout effects produce. A
+    // small poll backs the store subscription (publications are throttled
+    // and coalesced, so the settle moment would otherwise smear up to the
+    // throttle window). Level 0 (telemetry off / old hub) skips the whole
+    // effect — the poll would be pure observational overhead; the poll also
+    // stops itself once the metric settles or the window is confirmed empty.
+    useEffect(() => {
+        if (!sessionId) {
+            return
+        }
+        if (telemetryClient.getLevel() <= 0) {
+            return
+        }
+        const startedAt = Date.now()
+        let settled = false
+        let poll: ReturnType<typeof setInterval> | null = null
+        const stopPoll = () => {
+            if (poll !== null) {
+                clearInterval(poll)
+                poll = null
+            }
+        }
+        const check = () => {
+            if (settled) {
+                return
+            }
+            try {
+                const state = getMessageWindowState(sessionId)
+                if (state.isSyncingTail) {
+                    return
+                }
+                if (state.messages.length === 0) {
+                    if (state.epoch !== null) {
+                        // Confirmed empty window: the authoritative sync
+                        // completed with zero messages — nothing further can
+                        // arrive on its own, stop watching. (epoch null means
+                        // no sync ran yet, e.g. a search-target open whose
+                        // context load is still pending — keep watching.)
+                        settled = true
+                        stopPoll()
+                    }
+                    return
+                }
+                settled = true
+                stopPoll()
+                const durationMs = Date.now() - startedAt
+                if (durationMs > SESSION_DETAIL_SLOW_MS) {
+                    telemetryClient.capture('diag', 'load_slow', {
+                        phase: 'session-detail',
+                        durationMs,
+                        fromCache: state.preferLatestOnActivation
+                    }, { sessionId })
+                }
+            } catch {
+                settled = true
+                stopPoll()
+                // fail-silent
+            }
+        }
+        check()
+        const unsubscribe = subscribeMessageWindow(sessionId, check)
+        poll = setInterval(check, 500)
+        return () => {
+            stopPoll()
+            settled = true
+            unsubscribe()
+        }
+    }, [sessionId])
 
     const loadMore = useCallback(async (onBeforeApply?: (historyVersion: number) => boolean) => {
         if (!api || !sessionId) {

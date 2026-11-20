@@ -8,6 +8,7 @@ import { serveStatic } from 'hono/bun'
 import { getConfiguration } from '../configuration'
 import { FOLLOW_SESSION_REDIRECTS_HEADER, PROTOCOL_VERSION } from '@hapi/protocol'
 import { buildGeminiLiveSetupMessage, QWEN_REALTIME_MODEL } from '@hapi/protocol/voice'
+import { TELEMETRY_SELF_HEADER, TELEMETRY_TRACE_HEADER } from '@hapi/protocol/telemetry'
 import { getProviderEnvironment } from '../config/providerCredentials'
 import { readTitleProviderConfig } from '../sync/titleSuggestion'
 import { createQwenProxyWebSocketHandler } from './qwenProxyHandler'
@@ -41,6 +42,8 @@ import { createDevicesRoutes } from './routes/devices'
 import { createVoiceRoutes } from './routes/voice'
 import { createHubSettingsRoutes } from './routes/hubSettings'
 import { createWorkGraphRoutes } from './routes/workGraph'
+import { createTelemetryRoutes } from './routes/telemetry'
+import { createPerfTimingMiddleware } from './perfTimingMiddleware'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import type { Server as BunServer, ServerWebSocket } from 'bun'
@@ -323,6 +326,14 @@ export function createWebApp(options: {
 }): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
+    // Hub-plane perf timing (telemetry P0): outermost so the sample spans the
+    // whole stack (CORS, auth, handlers, compression). Fail-silent; skips the
+    // non-API planes and SDK self-uploads (TELEMETRY_SELF_HEADER) so telemetry
+    // never feeds back on itself. Mounted before logger() on purpose.
+    app.use('*', createPerfTimingMiddleware((sample) => {
+        options.store.telemetry.recordHubSample(sample)
+    }))
+
     app.use('*', logger())
 
     const configuration = getConfiguration()
@@ -333,7 +344,16 @@ export function createWebApp(options: {
         allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         // last-event-id: browsers attach it to EventSource reconnects for
         // SSE replay; allow it in case a browser preflights the request.
-        allowHeaders: ['authorization', 'content-type', 'last-event-id', FOLLOW_SESSION_REDIRECTS_HEADER]
+        // x-hapi-telemetry / x-hapi-trace-id: telemetry SDK upload + trace
+        // echo (cross-origin web apps need them in the preflight allowlist).
+        allowHeaders: [
+            'authorization',
+            'content-type',
+            'last-event-id',
+            FOLLOW_SESSION_REDIRECTS_HEADER,
+            TELEMETRY_SELF_HEADER,
+            TELEMETRY_TRACE_HEADER
+        ]
     })
     app.use('/health', corsMiddleware)
     app.use('/api/*', corsMiddleware)
@@ -400,7 +420,9 @@ export function createWebApp(options: {
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createMachinesRoutes(options.getSyncEngine, { dataDir: configuration.dataDir }))
     app.route('/api', createStorageRoutes(configuration.dbPath))
-    app.route('/api', createHubSettingsRoutes(configuration.dataDir, options.getSyncEngine))
+    // Store wired in for the telemetryLevel PUT: the route eagerly refreshes
+    // the hub-plane perf level cache after the write (review finding #1).
+    app.route('/api', createHubSettingsRoutes(configuration.dataDir, options.getSyncEngine, options.store))
     app.route('/api', createUsageRoutes(options.store, options.getSyncEngine))
     app.route('/api', createActivityRoutes(options.store))
     app.route('/api', createGitRoutes(options.getSyncEngine))
@@ -423,6 +445,8 @@ export function createWebApp(options: {
     app.route('/api', createVoiceRoutes({ dataDir: configuration.dataDir }))
     // Path is intentionally NOT `/api/events` — that route is the SSE stream.
     app.route('/api', createWorkGraphRoutes(options.store))
+    // Telemetry ingest + owner-only read endpoints (research report §6.1).
+    app.route('/api', createTelemetryRoutes(options.store, configuration.dataDir))
 
     // Skip static serving in relay mode, show helpful message on root
     if (options.relayMode) {

@@ -292,6 +292,33 @@ describe('isRenderIrrelevantPatch', () => {
         expect(isRenderIrrelevantPatch(makeSummary(), makeSummary())).toBe(true)
     })
 
+    it('does not throw when the slim projection omitted the pending fields on both sides', () => {
+        // Regression: the slim list projection deletes empty pendingRequestKinds/
+        // pendingRequests (typed required, omitted on the wire), and the bare
+        // `.length` compare threw a TypeError as an unhandled rejection on every
+        // keep-alive patch of a slim list entry (telemetry fingerprint
+        // TypeError:bf50c0bb, caught live 2026-11-20).
+        const strip = (s: SessionSummary): SessionSummary => {
+            const copy = { ...s } as Partial<SessionSummary>
+            delete copy.pendingRequestKinds
+            delete copy.pendingRequests
+            return copy as SessionSummary
+        }
+        const current = strip(makeSummary({ activeAt: 1_000 }))
+        const next = strip(makeSummary({ activeAt: 11_000 }))
+
+        expect(() => isRenderIrrelevantPatch(current, next)).not.toThrow()
+        expect(isRenderIrrelevantPatch(current, next)).toBe(true)
+    })
+
+    it('reports pending fields appearing (absent → present) as relevant', () => {
+        const current = makeSummary({ activeAt: 1_000 })
+        delete (current as Partial<SessionSummary>).pendingRequestKinds
+        const next = makeSummary({ activeAt: 11_000, pendingRequestKinds: [] })
+
+        expect(isRenderIrrelevantPatch(current, next)).toBe(false)
+    })
+
     it.each([
         ['active', { active: false }],
         ['thinking', { thinking: true }],

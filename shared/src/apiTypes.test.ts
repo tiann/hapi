@@ -5,7 +5,9 @@ import {
     ListCodexSessionsRpcResponseSchema,
     ListPiSessionsRpcResponseSchema,
     MessagesQuerySchema,
-    SendMessageRequestSchema
+    SendMessageRequestSchema,
+    HubSettingsResponseSchema,
+    UpdateHubSettingsRequestSchema
 } from './apiTypes'
 
 describe('ListCodexSessionsRpcResponseSchema', () => {
@@ -143,5 +145,36 @@ describe('SendMessageRequestSchema deliveryMode', () => {
             expect(parsed.error.issues.some((issue) => issue.path[0] === 'deliveryMode')).toBe(true)
             expect(parsed.error.issues.some((issue) => issue.message.includes('cannot use steer'))).toBe(true)
         }
+    })
+})
+
+describe('telemetry hub setting wire shapes', () => {
+    it('UpdateHubSettingsRequestSchema accepts a lone telemetryLevel payload, enforces the level range, and still rejects empty bodies', () => {
+        expect(UpdateHubSettingsRequestSchema.safeParse({ telemetryLevel: 2 }).success).toBe(true)
+        expect(UpdateHubSettingsRequestSchema.safeParse({ telemetryLevel: 4 }).success).toBe(false)
+        expect(UpdateHubSettingsRequestSchema.safeParse({ telemetryLevel: 'high' }).success).toBe(false)
+        expect(UpdateHubSettingsRequestSchema.safeParse({}).success).toBe(false)
+    })
+
+    it('HubSettingsResponseSchema requires the telemetry fields (developer-mode switch state)', () => {
+        const base = {
+            sessionSummaryContract: false,
+            sessionSummaryInChat: false,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: { agent: 'cursor', permissionMode: 'default', models: {} }
+        }
+        expect(HubSettingsResponseSchema.safeParse({
+            ...base,
+            telemetryLevel: 0,
+            telemetryLevelSource: 'default'
+        }).success).toBe(true)
+        // missing telemetry fields -> rejected
+        expect(HubSettingsResponseSchema.safeParse(base).success).toBe(false)
+        // out-of-range level -> rejected
+        expect(HubSettingsResponseSchema.safeParse({
+            ...base,
+            telemetryLevel: 4,
+            telemetryLevelSource: 'default'
+        }).success).toBe(false)
     })
 })
