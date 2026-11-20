@@ -478,7 +478,8 @@ describe('claudeRemote in-process /clear', () => {
         'unacknowledged-input-eof', 'acknowledged-input-eof', 'failed-clear-input-eof',
         'follow-up-result', 'legacy-follow-up-result', 'follow-up-after-compact',
         'later-follow-up-result', 'idle-background-output', 'native-slash-follow-up', 'native-slash-follow-up-without-hook',
-        'native-slash-follow-up-init', 'native-slash-follow-up-init-eof', 'native-slash-follow-up-receipt-first'
+        'native-slash-follow-up-init', 'native-slash-follow-up-init-eof', 'native-slash-follow-up-receipt-first',
+        'native-slash-follow-up-untagged-hook'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -494,8 +495,9 @@ describe('claudeRemote in-process /clear', () => {
         const idleBackgroundOutput = outcome === 'idle-background-output';
         const aliasInit = outcome === 'native-slash-follow-up-init' || outcome === 'native-slash-follow-up-init-eof';
         const aliasReceiptFirst = outcome === 'native-slash-follow-up-receipt-first';
+        const aliasUntaggedHook = outcome === 'native-slash-follow-up-untagged-hook';
         const nativeSlashFollowUp = outcome === 'native-slash-follow-up' || outcome === 'native-slash-follow-up-without-hook'
-            || aliasInit || aliasReceiptFirst;
+            || aliasInit || aliasReceiptFirst || aliasUntaggedHook;
         const hasFollowUpResult = outcome === 'follow-up-result' || legacyFollowUp || interveningCompact || hasLaterFollowUp;
         const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook'
             || outcome === 'result-eof' || exitsAfterFollowUp || hasFollowUpResult || idleBackgroundOutput || nativeSlashFollowUp;
@@ -507,7 +509,7 @@ describe('claudeRemote in-process /clear', () => {
         let awaitingLateClearHook = false;
         const dequeuedFollowUp = deferred<void>();
         const finishFollowUp = deferred<void>();
-        const clearContextTokens: Array<number | undefined> = [];
+        const clearContextTokens: number[] = [];
         const thinking: boolean[] = [];
         const result: SDKMessage = {
             type: 'result', subtype: 'success', is_error: false, session_id: priorId, user_message_uuid: 'first-input'
@@ -584,13 +586,17 @@ describe('claudeRemote in-process /clear', () => {
                     if (!aliasInit && !aliasReceiptFirst) {
                         yield { type: 'user', isReplay: true, uuid: alias.value?.uuid };
                     }
-                    if (outcome === 'native-slash-follow-up') hookSessionId = 'native-alias-session';
+                    if (outcome === 'native-slash-follow-up' || aliasUntaggedHook) hookSessionId = 'native-alias-session';
                     if (aliasInit) {
                         yield { type: 'system', subtype: 'init', session_id: 'native-alias-session' };
                         expect(order).not.toContain('session:native-alias-session');
                         if (outcome === 'native-slash-follow-up-init-eof') return;
                     }
-                    nativeSlashResult = { ...autonomousResult, session_id: 'native-alias-session', local_command: 'clear' };
+                    nativeSlashResult = {
+                        ...autonomousResult,
+                        session_id: 'native-alias-session',
+                        local_command: aliasUntaggedHook ? undefined : 'clear'
+                    };
                     yield nativeSlashResult;
                     expect(order).toContain('follow-up');
                     if (aliasInit || aliasReceiptFirst) yield { type: 'user', isReplay: true, uuid: alias.value?.uuid };
@@ -675,7 +681,7 @@ describe('claudeRemote in-process /clear', () => {
                 },
                 onInputUndelivered: () => { inputs.unshift('follow-up'); },
                 onReady: (event, _summary, contextTokens) => {
-                    if (event === 'Context was reset') clearContextTokens.push(contextTokens);
+                    if (contextTokens !== undefined) clearContextTokens.push(contextTokens);
                     order.push(event ?? 'ready');
                 },
                 onResultAccepted: (keepClearHookPending) => {
@@ -730,12 +736,12 @@ describe('claudeRemote in-process /clear', () => {
                 expect(order).toEqual(success
                     ? [`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset',
                         ...(interveningCompact ? ['/compact', 'accepted', '📦 Compacted'] : []),
-                        ...(nativeSlashFollowUp ? ['/reset', 'reset', 'session:native-alias-session', 'ready'] : []),
+                        ...(nativeSlashFollowUp ? ['/reset', 'accepted', 'reset', 'session:native-alias-session', 'ready'] : []),
                         'follow-up', ...(hasFollowUpResult ? ['ready'] : []),
                         ...(hasLaterFollowUp ? ['later follow-up', 'ready'] : [])]
                     : [`session:${priorId}`, 'ready', '/clear', 'accepted', completion, 'follow-up']);
             }
-            expect(clearContextTokens).toEqual(outcome === 'native-slash-follow-up-init-eof' ? [0, 0] : success || lateRotation ? [0] : []);
+            expect(clearContextTokens).toEqual(nativeSlashFollowUp ? [0, 0] : success || lateRotation ? [0] : []);
             if (outcome === 'result-eof' || outcome === 'unacknowledged-input-eof' || outcome === 'failed-clear-input-eof') {
                 expect(inputs).toEqual(['follow-up']);
             }
@@ -1495,6 +1501,61 @@ describe('claudeRemote compact summary promotion', () => {
         if (transcriptDir) {
             await rm(transcriptDir, { recursive: true, force: true });
             transcriptDir = null;
+        }
+    });
+
+    it('looks up live compact summaries in the transcript rotated by a clear alias', async () => {
+        const { claudeRemote } = await import('./claudeRemote');
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        transcriptDir = await mkdtemp(join(tmpdir(), 'claude-compact-after-alias-'));
+        const projectDir = getProjectPath(transcriptDir);
+        const rotatedId = 'rotated-by-alias';
+        const rotatedTranscript = join(projectDir, `${rotatedId}.jsonl`);
+        const inputs = ['ordinary prompt', '/reset', '/compact'];
+        let clearHookId: string | undefined;
+        await mkdir(projectDir, { recursive: true });
+        await writeFile(join(projectDir, 's-9.jsonl'), 'old transcript');
+        await writeFile(rotatedTranscript, 'fresh');
+        queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string; message: { content: string } }> }) => ({
+            async *[Symbol.asyncIterator]() {
+                const input = prompt[Symbol.asyncIterator]();
+                const first = await input.next();
+                yield initMessage;
+                yield { ...resultMessage, user_message_uuid: first.value.uuid };
+                expect((await input.next()).value.message.content).toBe('/reset');
+                clearHookId = rotatedId;
+                yield { ...resultMessage, session_id: rotatedId };
+                const compact = await input.next();
+                expect(compact.value.message.content).toBe('/compact');
+                yield { type: 'system', subtype: 'compact_boundary', session_id: rotatedId, compact_metadata: { trigger: 'manual' } };
+                yield { ...resultMessage, session_id: rotatedId, user_message_uuid: compact.value.uuid };
+            }
+        }));
+        try {
+            await claudeRemote({
+                sessionId: 's-9',
+                path: transcriptDir,
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => {
+                    const message = inputs.shift();
+                    return message ? { message, mode: { permissionMode: 'default' } } : null;
+                },
+                onReady: () => {},
+                isAborted: () => false,
+                onMessage: () => {},
+                onSessionFound: () => {},
+                getClearHookSessionId: () => clearHookId
+            });
+            expect(findLatestCompactSummaryMock).toHaveBeenCalledWith(
+                rotatedTranscript,
+                expect.objectContaining({ minBytes: 5 })
+            );
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+            await rm(projectDir, { recursive: true, force: true });
         }
     });
 

@@ -58,6 +58,7 @@ interface ActiveCompact {
 interface ActiveClear {
     uuid: string;
     previousSessionId: string | null;
+    nativeAlias: boolean;
     init?: SDKSystemMessage;
 }
 
@@ -578,7 +579,7 @@ export async function claudeRemote(opts: {
     let correlatesResults: boolean | null = null;
     let promptResultsHaveUuid = false;
     let waitingForClearFollowUp = false;
-    let clearFollowUp: { uuid: string; sessionId: string | null; command?: string; init?: SDKSystemMessage } | undefined;
+    let clearFollowUp: { uuid: string; sessionId: string | null; command?: string } | undefined;
     const clearedSessionIds = new Set<string>();
     const compactCompletionAbort = new AbortController();
     let compactCompletion: Promise<CompactCompletion> | null = null;
@@ -646,19 +647,20 @@ export async function claudeRemote(opts: {
                     return;
                 }
                 const nextSpecialCommand = parseSpecialCommand(next.message);
+                const nativeCommand = nextSpecialCommand.type === null ? getClaudeNativeSlashCommand(next.message) : undefined;
+                const clearAlias = nativeCommand === 'clear' && !opts.claudeArgs?.includes('--disable-slash-commands');
                 mode = next.mode;
                 specialCommand = nextSpecialCommand;
                 const followUpUuid = pushUserMessage(next.message);
-                if (waitingForClearFollowUp && nextSpecialCommand.type === null) {
-                    const command = getClaudeNativeSlashCommand(next.message);
-                    clearFollowUp = { uuid: followUpUuid, sessionId: currentSessionId, command };
-                    waitingForClearFollowUp = command !== undefined;
+                if (waitingForClearFollowUp && nextSpecialCommand.type === null && !clearAlias) {
+                    clearFollowUp = { uuid: followUpUuid, sessionId: currentSessionId, command: nativeCommand };
+                    waitingForClearFollowUp = nativeCommand !== undefined;
                 }
                 if (nextSpecialCommand.type === 'compact') {
                     beginCompactCommand(followUpUuid, false);
                     startCommandResultTimeout();
-                } else if (nextSpecialCommand.type === 'clear') {
-                    clearState.active = { uuid: followUpUuid, previousSessionId: currentSessionId };
+                } else if (nextSpecialCommand.type === 'clear' || clearAlias) {
+                    clearState.active = { uuid: followUpUuid, previousSessionId: currentSessionId, nativeAlias: clearAlias };
                     startCommandResultTimeout();
                 }
                 // See applyInitialTurn: only plain prompts are resolvable
@@ -666,7 +668,7 @@ export async function claudeRemote(opts: {
                 if (nextSpecialCommand.type === null) {
                     opts.onInputSubmitted?.(followUpUuid);
                 }
-                setSteerable(nextSpecialCommand.type === null);
+                setSteerable(nextSpecialCommand.type === null && !clearAlias);
                 // A follow-up prompt starts a new turn; only the first turn gets system/init.
                 updateThinking(true);
                 logger.debug(
@@ -855,11 +857,6 @@ export async function claudeRemote(opts: {
                 clear.init = message as SDKSystemMessage;
                 continue;
             }
-            if (clearFollowUp?.command === 'clear' && message.type === 'system' && message.subtype === 'init'
-                && typeof message.session_id === 'string' && message.session_id !== clearFollowUp.sessionId) {
-                clearFollowUp.init = message as SDKSystemMessage;
-                continue;
-            }
             const clearSessionId = clear ? getClearRotation(clear) : undefined;
             const matchesClearSession = clearSessionId !== undefined && message.session_id === clearSessionId;
             const isClearResult = clear !== null
@@ -869,31 +866,6 @@ export async function claudeRemote(opts: {
                 && isCommandResult(message, timedOutCommand.uuid, timedOutCommand.command, false)) {
                 continue;
             }
-            if (clearFollowUp && message.type === 'result') {
-                const matchesUuid = message.user_message_uuid === clearFollowUp.uuid;
-                const isMatchingCommand = clearFollowUp.command !== undefined && message.local_command === clearFollowUp.command;
-                const isClear = clearFollowUp.command === 'clear';
-                const confirmedRotation = isClear ? clearFollowUp.init?.session_id ?? opts.getClearHookSessionId?.() : undefined;
-                const resultRotation = isClear && (matchesUuid || isMatchingCommand)
-                    ? getClearResultSessionId(message, clearFollowUp.sessionId) : undefined;
-                const rotatedId = confirmedRotation ?? resultRotation;
-                const nativeSessionId = isClear ? rotatedId ?? currentSessionId : clearFollowUp.sessionId;
-                const acknowledged = !pushedUuids.has(clearFollowUp.uuid);
-                const matchesClearRotation = isMatchingCommand && rotatedId !== undefined
-                    && rotatedId !== clearFollowUp.sessionId && message.session_id === rotatedId;
-                const matchesAcknowledgedInput = acknowledged
-                    && (isMatchingCommand || (!promptResultsHaveUuid && message.local_command == null));
-                const canAcceptWithoutUuid = message.user_message_uuid == null && nativeSessionId !== null
-                    && message.session_id === nativeSessionId && (matchesClearRotation || matchesAcknowledgedInput);
-                if (!matchesUuid && !canAcceptWithoutUuid) {
-                    opts.onMessage(message);
-                    continue;
-                }
-                if (rotatedId && rotatedId !== clearFollowUp.sessionId) bindClearSession(rotatedId, clearFollowUp.init);
-                if (!matchesClearRotation) pushedUuids.delete(clearFollowUp.uuid);
-                clearFollowUp = undefined;
-            }
-
             const compactMetadata =
                 message.type === 'system' && message.subtype === 'compact_boundary'
                     ? (message as any).compact_metadata
@@ -1025,6 +997,17 @@ export async function claudeRemote(opts: {
                     updateThinking(false);
                     continue;
                 }
+                if (clearFollowUp) {
+                    const matchesUuid = message.user_message_uuid === clearFollowUp.uuid;
+                    const matchesCommand = clearFollowUp.command !== undefined && message.local_command === clearFollowUp.command;
+                    const canAcceptWithoutUuid = !pushedUuids.has(clearFollowUp.uuid)
+                        && message.user_message_uuid == null && clearFollowUp.sessionId !== null
+                        && message.session_id === clearFollowUp.sessionId
+                        && (matchesCommand || (!promptResultsHaveUuid && message.local_command == null));
+                    if (!matchesUuid && !canAcceptWithoutUuid) continue;
+                    pushedUuids.delete(clearFollowUp.uuid);
+                    clearFollowUp = undefined;
+                }
                 resultSeq += 1;
                 if (correlatesResults === null && (typeof message.user_message_uuid === 'string' || typeof message.local_command === 'string')) {
                     correlatesResults = true;
@@ -1034,16 +1017,14 @@ export async function claudeRemote(opts: {
                     const rotatedId = clearSessionId ?? getClearResultSessionId(message, clear.previousSessionId);
                     cancelCommandResultTimeout();
                     clearState.active = null;
-                    pushedUuids.delete(clear.uuid);
+                    if (!clear.nativeAlias) pushedUuids.delete(clear.uuid);
                     opts.onResultAccepted?.();
                     updateThinking(false);
                     waitingForClearFollowUp = !inputEnded;
-                    if (rotatedId) {
-                        bindClearSession(rotatedId, clear.init);
-                        await opts.onReady('Context was reset', undefined, 0);
-                    } else {
-                        await opts.onReady('Could not reset context');
-                    }
+                    if (rotatedId) bindClearSession(rotatedId, clear.init);
+                    if (clear.nativeAlias) opts.onMessage(message);
+                    const completion = clear.nativeAlias ? undefined : rotatedId ? 'Context was reset' : 'Could not reset context';
+                    await opts.onReady(completion, undefined, rotatedId ? 0 : undefined);
                     scheduleNextMessage();
                     continue;
                 }
@@ -1146,7 +1127,7 @@ export async function claudeRemote(opts: {
         const clear = clearState.active;
         const compact = compactState.active;
         const pending = clear ?? (compact?.initial === false ? compact : null);
-        if (clearFollowUp && !clearFollowUp.init && pushedUuids.has(clearFollowUp.uuid) && !opts.signal?.aborted) {
+        if (clearFollowUp && pushedUuids.has(clearFollowUp.uuid) && !opts.signal?.aborted) {
             opts.onInputUndelivered?.();
         }
         if (pending && !timedOutCommand && !opts.signal?.aborted && !(clear && getClearRotation(clear))) {
@@ -1179,11 +1160,6 @@ export async function claudeRemote(opts: {
         if (rotatedId) {
             opts.onResultAccepted?.();
             bindClearSession(rotatedId, clear?.init);
-            await opts.onReady('Context was reset', undefined, 0);
-        }
-        if (clearFollowUp?.init?.session_id) {
-            opts.onResultAccepted?.();
-            bindClearSession(clearFollowUp.init.session_id, clearFollowUp.init);
             await opts.onReady('Context was reset', undefined, 0);
         }
         if (compactCompletion) {
