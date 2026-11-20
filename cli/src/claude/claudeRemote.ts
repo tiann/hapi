@@ -869,6 +869,30 @@ export async function claudeRemote(opts: {
                 && isCommandResult(message, timedOutCommand.uuid, timedOutCommand.command, false)) {
                 continue;
             }
+            if (clearFollowUp && message.type === 'result') {
+                const matchesUuid = message.user_message_uuid === clearFollowUp.uuid;
+                const isMatchingCommand = clearFollowUp.command !== undefined && message.local_command === clearFollowUp.command;
+                const isClear = clearFollowUp.command === 'clear';
+                const confirmedRotation = isClear ? clearFollowUp.init?.session_id ?? opts.getClearHookSessionId?.() : undefined;
+                const resultRotation = isClear && (matchesUuid || isMatchingCommand)
+                    ? getClearResultSessionId(message, clearFollowUp.sessionId) : undefined;
+                const rotatedId = confirmedRotation ?? resultRotation;
+                const nativeSessionId = isClear ? rotatedId ?? currentSessionId : clearFollowUp.sessionId;
+                const acknowledged = !pushedUuids.has(clearFollowUp.uuid);
+                const matchesConfirmedRotation = isMatchingCommand && confirmedRotation !== undefined
+                    && message.session_id === confirmedRotation;
+                const matchesAcknowledgedInput = acknowledged
+                    && (isMatchingCommand || (!promptResultsHaveUuid && message.local_command == null));
+                const canAcceptWithoutUuid = message.user_message_uuid == null && nativeSessionId !== null
+                    && message.session_id === nativeSessionId && (matchesConfirmedRotation || matchesAcknowledgedInput);
+                if (!matchesUuid && !canAcceptWithoutUuid) {
+                    opts.onMessage(message);
+                    continue;
+                }
+                if (rotatedId && rotatedId !== clearFollowUp.sessionId) bindClearSession(rotatedId, clearFollowUp.init);
+                if (!matchesConfirmedRotation) pushedUuids.delete(clearFollowUp.uuid);
+                clearFollowUp = undefined;
+            }
 
             const compactMetadata =
                 message.type === 'system' && message.subtype === 'compact_boundary'
@@ -1000,23 +1024,6 @@ export async function claudeRemote(opts: {
                 if (timedOutCommand && !isClearResult) {
                     updateThinking(false);
                     continue;
-                }
-                if (clearFollowUp) {
-                    const matchesUuid = message.user_message_uuid === clearFollowUp.uuid;
-                    const isMatchingCommand = clearFollowUp.command !== undefined && message.local_command === clearFollowUp.command;
-                    const isClear = clearFollowUp.command === 'clear';
-                    const confirmedRotation = isClear ? clearFollowUp.init?.session_id ?? opts.getClearHookSessionId?.() : undefined;
-                    const resultRotation = isClear && (matchesUuid || isMatchingCommand)
-                        ? getClearResultSessionId(message, clearFollowUp.sessionId) : undefined;
-                    const rotatedId = confirmedRotation ?? resultRotation;
-                    const nativeSessionId = isClear ? rotatedId ?? currentSessionId : clearFollowUp.sessionId;
-                    const canAcceptWithoutUuid = !pushedUuids.has(clearFollowUp.uuid)
-                        && message.user_message_uuid == null && nativeSessionId !== null && message.session_id === nativeSessionId
-                        && (isMatchingCommand || (!promptResultsHaveUuid && message.local_command == null));
-                    if (!matchesUuid && !canAcceptWithoutUuid) continue;
-                    if (rotatedId && rotatedId !== clearFollowUp.sessionId) bindClearSession(rotatedId, clearFollowUp.init);
-                    pushedUuids.delete(clearFollowUp.uuid);
-                    clearFollowUp = undefined;
                 }
                 resultSeq += 1;
                 if (correlatesResults === null && (typeof message.user_message_uuid === 'string' || typeof message.local_command === 'string')) {

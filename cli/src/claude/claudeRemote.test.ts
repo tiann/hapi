@@ -580,7 +580,7 @@ describe('claudeRemote in-process /clear', () => {
                 if (nativeSlashFollowUp) {
                     const alias = await input.next();
                     expect(alias.value?.message.content).toBe('/reset');
-                    if (outcome !== 'native-slash-follow-up-init-eof') {
+                    if (!aliasInit) {
                         yield { type: 'user', isReplay: true, uuid: alias.value?.uuid };
                     }
                     if (outcome === 'native-slash-follow-up') hookSessionId = 'native-alias-session';
@@ -592,6 +592,7 @@ describe('claudeRemote in-process /clear', () => {
                     nativeSlashResult = { ...autonomousResult, session_id: 'native-alias-session', local_command: 'clear' };
                     yield nativeSlashResult;
                     expect(order).toContain('follow-up');
+                    if (aliasInit) yield { type: 'user', isReplay: true, uuid: alias.value?.uuid };
                     yield { type: 'system', subtype: 'init', session_id: resultId };
                     expect(order.filter((item) => item === `session:${resultId}`)).toHaveLength(1);
                 }
@@ -683,7 +684,11 @@ describe('claudeRemote in-process /clear', () => {
                 isAborted: () => false,
                 onSessionFound: (id) => { order.push(`session:${id}`); },
                 onThinkingChange: (value) => { thinking.push(value); },
-                onMessage: (message) => { forwarded.push(message); },
+                onMessage: (message) => {
+                    if (message === nativeSlashResult) expect(order).toContain('session:native-alias-session');
+                    expect(message.type === 'user' && message.isReplay === true).toBe(false);
+                    forwarded.push(message);
+                },
                 onCompletionEvent: outcome === 'acknowledged' || lateRotation ? (event) => { order.push(event); } : undefined,
                 getClearHookSessionId: () => hookSessionId,
                 onSessionReset: () => order.push('reset')
