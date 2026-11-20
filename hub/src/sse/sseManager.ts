@@ -33,13 +33,24 @@ export type SSEResumeResult = {
 }
 
 /** How many broadcast events are kept for reconnect replay. */
-const EVENT_BUFFER_CAPACITY = 256
+const EVENT_BUFFER_CAPACITY = 512
 /**
  * Byte budget for the replay buffer (sum of JSON-encoded events). Bounds
  * memory when large message payloads flow; evicting early just means older
  * cursors resync via REST like they always did.
  */
 const EVENT_BUFFER_MAX_BYTES = 2 * 1024 * 1024
+/**
+ * Gap #4 fix: message-received events carry full message content and can
+ * consume the entire replay ring during streaming bursts (one chatty session
+ * evicts every other session's lifecycle events). Reserve at most half the
+ * byte budget for message events; once the cap is hit, subsequent
+ * message-received events are recorded as lightweight messages-invalidated
+ * markers instead. A reconnecting client that replays a marker does a
+ * targeted message refetch — far cheaper than the full REST resync a 'gap'
+ * verdict triggers.
+ */
+const MESSAGE_EVENT_MAX_BYTES = EVENT_BUFFER_MAX_BYTES / 2
 
 export class SSEManager {
     private readonly connections: Map<string, SSEConnection> = new Map()
@@ -59,6 +70,8 @@ export class SSEManager {
     private nextSeq = 1
     private readonly eventBuffer: Array<{ seq: number; event: SyncEvent; serialized: string; bytes: number }> = []
     private eventBufferBytes = 0
+    /** Running byte total of message-received entries currently in the ring. */
+    private messageEventBytes = 0
     private readonly namespaceTags = new Map<string, string>()
 
     constructor(heartbeatMs = 30_000, visibilityTracker: VisibilityTracker) {
@@ -201,9 +214,29 @@ export class SSEManager {
 
     private recordEvent(event: SyncEvent, serialized: string): number {
         const seq = this.nextSeq++
-        const bytes = serialized.length
-        this.eventBuffer.push({ seq, event, serialized, bytes })
+        let ringEvent = event
+        let ringSerialized = serialized
+        if (event.type === 'message-received') {
+            const rawBytes = serialized.length
+            if (this.messageEventBytes + rawBytes > MESSAGE_EVENT_MAX_BYTES) {
+                // Message events consumed their byte budget share (streaming
+                // burst). Record a lightweight marker so other sessions'
+                // lifecycle events survive in the replay ring; a reconnecting
+                // client does a targeted message refetch for the marker.
+                ringEvent = {
+                    type: 'messages-invalidated' as const,
+                    sessionId: event.sessionId,
+                    namespace: event.namespace
+                }
+                ringSerialized = JSON.stringify(ringEvent)
+            }
+        }
+        const bytes = ringSerialized.length
+        this.eventBuffer.push({ seq, event: ringEvent, serialized: ringSerialized, bytes })
         this.eventBufferBytes += bytes
+        if (ringEvent.type === 'message-received') {
+            this.messageEventBytes += bytes
+        }
         while (
             this.eventBuffer.length > EVENT_BUFFER_CAPACITY
             || (this.eventBufferBytes > EVENT_BUFFER_MAX_BYTES && this.eventBuffer.length > 1)
@@ -211,6 +244,9 @@ export class SSEManager {
             const evicted = this.eventBuffer.shift()
             if (evicted) {
                 this.eventBufferBytes -= evicted.bytes
+                if (evicted.event.type === 'message-received') {
+                    this.messageEventBytes -= evicted.bytes
+                }
             }
         }
         return seq

@@ -259,8 +259,8 @@ describe('SSEManager reconnect replay', () => {
     it('reports a gap when the cursor has been evicted from the ring', () => {
         const manager = new SSEManager(0, new VisibilityTracker())
         const { sent } = subscribeCollecting(manager, 'a')
-        // Overflow the 256-entry ring so the first event is evicted
-        for (let i = 0; i < 300; i++) {
+        // Overflow the 512-entry ring so the first event is evicted
+        for (let i = 0; i < 550; i++) {
             manager.broadcast({ type: 'session-updated', sessionId: `s${i}`, namespace: 'alpha' })
         }
         manager.unsubscribe('a')
@@ -268,10 +268,10 @@ describe('SSEManager reconnect replay', () => {
         const stale = subscribeCollecting(manager, 'b', { resumeFrom: sent[0]?.eventId })
         expect(stale.resume).toBe('gap')
 
-        const fresh = subscribeCollecting(manager, 'c', { resumeFrom: sent[298]?.eventId })
+        const fresh = subscribeCollecting(manager, 'c', { resumeFrom: sent[548]?.eventId })
         expect(fresh.resume).toBe('ok')
         expect(fresh.replay).toHaveLength(1)
-        expect(fresh.replay[0]?.event).toMatchObject({ sessionId: 's299' })
+        expect(fresh.replay[0]?.event).toMatchObject({ sessionId: 's549' })
     })
 
     it('queues live broadcasts during replay and drains them in order', async () => {
@@ -452,5 +452,75 @@ describe('SSEManager agy catalog announcements', () => {
         } finally {
             JSON.stringify = stringifyCallsBefore
         }
+    })
+})
+
+// Gap #4 regression: message-received events that exceed the message byte
+// budget are recorded as lightweight messages-invalidated markers, so a
+// streaming burst cannot evict other sessions' lifecycle events from the ring.
+describe('SSEManager message byte budget (Gap #4)', () => {
+    it('replaces oversized message-received with a marker once the budget is consumed', () => {
+        const manager = new SSEManager(0, new VisibilityTracker())
+
+        // Subscribe first to get a cursor
+        const firstSent: Array<{ event: SyncEvent; eventId?: string }> = []
+        const firstResult = manager.subscribe({
+            id: 'budget-a',
+            namespace: 'alpha',
+            all: true,
+            send: (event, eventId) => { firstSent.push({ event, eventId }) },
+            sendHeartbeat: () => {},
+        })
+
+        // Streaming burst: many large message-received events for session A.
+        const largeContent = 'x'.repeat(50_000)
+        for (let i = 0; i < 30; i++) {
+            manager.broadcast({
+                type: 'message-received',
+                sessionId: 'session-a',
+                namespace: 'alpha',
+                message: {
+                    id: `msg-${i}`,
+                    seq: i,
+                    localId: null,
+                    role: 'assistant',
+                    content: largeContent,
+                    createdAt: Date.now(),
+                },
+            } as SyncEvent)
+        }
+
+        // A session-updated event for session B must survive in the ring.
+        manager.broadcast({
+            type: 'session-updated',
+            sessionId: 'session-b',
+            namespace: 'alpha',
+        } as SyncEvent)
+
+        // Capture the cursor from the first connection's last event
+        // Use an early cursor (after the first few messages) so the replay
+        // must span the remaining burst AND session-b's update.
+        const cursor = firstSent[0]?.eventId ?? null
+        expect(cursor).toBeDefined()
+
+        // Reconnect with resume: session-b's update must be replayable,
+        // and session-a's messages must appear as markers.
+        manager.unsubscribe('budget-a')
+        const replayEvents: SyncEvent[] = []
+        const reconnect = manager.subscribe({
+            id: 'budget-b',
+            namespace: 'alpha',
+            all: true,
+            resumeFrom: cursor,
+            send: (event) => { replayEvents.push(event) },
+            sendHeartbeat: () => {},
+        })
+        expect(reconnect.resume).toBe('ok')
+
+        const hasSessionB = reconnect.replay.some(e => e.event.type === 'session-updated' && e.event.sessionId === 'session-b')
+        expect(hasSessionB).toBe(true)
+
+        const hasMarker = reconnect.replay.some(e => e.event.type === 'messages-invalidated' && e.event.sessionId === 'session-a')
+        expect(hasMarker).toBe(true)
     })
 })
