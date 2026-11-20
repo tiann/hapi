@@ -49,11 +49,21 @@ const WRITE: &[&str] = &[
     "spawn_peer",
     "spawn peer",
 ];
+const LINK_PR: &[&str] = &[
+    "link_pr",
+    "link pull request",
+    "happy__link_pr",
+    "hapi_link_pr",
+    "hapi__link_pr",
+    "mcp__hapi__link_pr",
+    "mcp__happy__link_pr",
+];
 #[derive(Default)]
 pub struct ApprovalRules<'a> {
     pub names: Option<&'a [&'a str]>,
     pub ids: Option<&'a [&'a str]>,
     pub writes: Option<&'a [&'a str]>,
+    pub trusted_hapi_mcp: bool,
 }
 pub fn auto_approval(
     mode: &str,
@@ -63,11 +73,16 @@ pub fn auto_approval(
 ) -> Option<&'static str> {
     let tool = tool.to_lowercase();
     let id = call_id.to_lowercase();
+    let link_pr = LINK_PR.contains(&tool.as_str());
+    if link_pr && mode == "read-only" {
+        return None;
+    }
     if matches!(mode, "always-proceed" | "yolo") {
         return Some("approved_for_session");
     }
     let contains = |s: &str, words: &[&str]| words.iter().any(|w| s.contains(w));
-    (EXACT.contains(&tool.as_str())
+    (link_pr && rules.trusted_hapi_mcp
+        || EXACT.contains(&tool.as_str())
         || contains(&tool, rules.names.unwrap_or(ALWAYS))
         || contains(&id, rules.ids.unwrap_or(&["change_title", "save_memory"]))
         || mode == "safe-yolo"
@@ -106,6 +121,7 @@ pub struct PermissionHooks {
 pub struct BasePermissionHandler<T> {
     hooks: PermissionHooks,
     requests: Arc<Mutex<Requests<T>>>,
+    transitions: Mutex<()>,
     update: Update,
 }
 struct ResponseGuard<T> {
@@ -158,6 +174,7 @@ impl<T: Send + 'static> BasePermissionHandler<T> {
                 pending: HashMap::new(),
                 in_flight: HashSet::new(),
             })),
+            transitions: Mutex::new(()),
             update,
             hooks,
         }
@@ -229,6 +246,7 @@ impl<T: Send + 'static> BasePermissionHandler<T> {
         }
         entry["arguments"] = input.clone();
         entry["createdAt"] = now().into();
+        let _order = self.transitions.lock().unwrap();
         self.requests
             .lock()
             .unwrap()
@@ -265,6 +283,7 @@ impl<T: Send + 'static> BasePermissionHandler<T> {
         result: Result<T, String>,
         completion: Completion,
     ) -> bool {
+        let _order = self.transitions.lock().unwrap();
         let mut requests = self.requests.lock().unwrap();
         let Some(pending) = requests.pending.remove(id) else {
             return false;
@@ -326,6 +345,7 @@ impl<T: Send + 'static> BasePermissionHandler<T> {
         filter: Option<ToolFilter>,
     ) {
         let matches = move |tool: &str| filter.as_ref().is_none_or(|f| f(tool));
+        let _order = self.transitions.lock().unwrap();
         let mut r = self.requests.lock().unwrap();
         for (_, p) in r.pending.extract_if(|_, p| matches(&p.tool)) {
             let _ = p.reply.send(Err(reject.clone()));
@@ -418,6 +438,7 @@ mod tests {
             names: Some(&["trusted"]),
             ids: Some(&["known"]),
             writes: Some(&["custom"]),
+            ..Default::default()
         };
         for (mode, tool, id, ok) in [
             ("default", "change_title", "save_memory", false),
@@ -473,6 +494,73 @@ mod tests {
             );
         }
         assert_eq!(state.lock().unwrap()["extra"], 4);
+    }
+    #[test]
+    fn cancel_during_registration_leaves_no_live_prompt() {
+        let state = Arc::new(Mutex::new(json!({})));
+        let sink = state.clone();
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (resume, resume_rx) = std::sync::mpsc::channel::<()>();
+        let resume_rx = Mutex::new(resume_rx);
+        let h = Arc::new(BasePermissionHandler::<()>::new(
+            Arc::new(move |f| {
+                let mut v = sink.lock().unwrap();
+                *v = f(&v);
+            }),
+            PermissionHooks {
+                on_registered: Some(Box::new(move |_, _, _| {
+                    entered_tx.send(()).unwrap();
+                    resume_rx.lock().unwrap().recv().unwrap();
+                })),
+                on_response: None,
+            },
+        ));
+        let adder = h.clone();
+        let add =
+            std::thread::spawn(move || adder.add("r".into(), "tool".into(), Value::Null, None));
+        entered.recv().unwrap();
+        let canceler = h.clone();
+        let cancel =
+            std::thread::spawn(move || canceler.cancel("stop".into(), "reject".into(), None, None));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        resume.send(()).unwrap();
+        let rx = add.join().unwrap();
+        cancel.join().unwrap();
+        assert_eq!(rx.blocking_recv().unwrap(), Err("reject".into()));
+        let s = state.lock().unwrap();
+        assert!(s["requests"]["r"].is_null());
+        assert_eq!(s["completedRequests"]["r"]["status"], "canceled");
+    }
+    #[test]
+    fn link_pr_requires_trusted_transport_and_never_read_only() {
+        let trusted = || ApprovalRules {
+            trusted_hapi_mcp: true,
+            ..Default::default()
+        };
+        for t in LINK_PR {
+            assert_eq!(auto_approval("default", t, "id", Default::default()), None);
+            assert_eq!(
+                auto_approval("default", t, "id", trusted()),
+                Some("approved")
+            );
+            assert_eq!(
+                auto_approval("yolo", t, "id", trusted()),
+                Some("approved_for_session")
+            );
+            for rules in [Default::default(), trusted()] {
+                assert_eq!(auto_approval("read-only", t, "id", rules), None);
+            }
+        }
+        assert_eq!(
+            auto_approval("default", "LINK_PR", "id", trusted()),
+            Some("approved")
+        );
+        for (t, id) in [
+            ("link_pr_write_file", "id"),
+            ("dangerous_tool", "link_pr-forged-id"),
+        ] {
+            assert_eq!(auto_approval("default", t, id, trusted()), None);
+        }
     }
     #[tokio::test]
     async fn flavor_abort_and_steer_settle_pending_replies() {
