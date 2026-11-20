@@ -94,7 +94,13 @@ export function NewCardDialog(props: NewCardDialogProps) {
     // case too. The abandonment decision now happens where it can actually
     // be verified — the form→review transition — by comparing the current
     // submission against this snapshot, not by assuming any Back means an edit.
+    // `repo` included (review finding, tiann/hapi#2147, follow-up on this
+    // same fix): the user can go all the way back to the repo picker,
+    // switch repos, and re-enter the exact same title/body there — without
+    // comparing repo too, that reads as "unchanged" and retries the
+    // original repo's issue against whatever repo is now selected.
     const [orphanedSubmissionSnapshot, setOrphanedSubmissionSnapshot] = useState<{
+        repo: string
         title: string
         body: string
         templateId: string | null
@@ -197,7 +203,8 @@ export function NewCardDialog(props: NewCardDialogProps) {
         // changed, which orphaned the first issue and created a duplicate
         // for a plain Back-then-Next with no edits.
         if (orphanedIssueUrl && orphanedSubmissionSnapshot) {
-            const unchanged = orphanedSubmissionSnapshot.title === finalTitle
+            const unchanged = orphanedSubmissionSnapshot.repo === repoInput.trim()
+                && orphanedSubmissionSnapshot.title === finalTitle
                 && orphanedSubmissionSnapshot.body === formattedBody
                 && orphanedSubmissionSnapshot.templateId === (selectedTemplate?.id ?? null)
             if (!unchanged) {
@@ -251,7 +258,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
             const url = getApiErrorUrl(err)
             if (url) {
                 setOrphanedIssueUrl(url)
-                setOrphanedSubmissionSnapshot({ title: finalTitle, body: formattedBody, templateId: selectedTemplate?.id ?? null })
+                setOrphanedSubmissionSnapshot({ repo: repoInput.trim(), title: finalTitle, body: formattedBody, templateId: selectedTemplate?.id ?? null })
             }
         } finally {
             setIsSubmitting(false)

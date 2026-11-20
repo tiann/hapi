@@ -381,6 +381,60 @@ describe('NewCardDialog', () => {
         expect(screen.getByText('This template has changed since you opened it — review it again and try again')).toBeInTheDocument()
     })
 
+    // Review finding (tiann/hapi#2147, follow-up on the Back-then-Next
+    // snapshot comparison above): the snapshot compared title/body/
+    // templateId but not repo, so going all the way back to the repo
+    // picker, switching repos, and re-entering the same title/body read as
+    // "unchanged" — the dialog would submit the new repo with the old
+    // repo's orphaned issue URL still attached.
+    it('abandons the retry-attach association when the repo changes, even with identical title/body', async () => {
+        const onSubmit = vi.fn()
+            .mockRejectedValueOnce(new ApiError(
+                'Issue created at https://github.com/heavygee/repo-a/issues/42 but could not be added to the board: boom',
+                502, undefined, JSON.stringify({ url: 'https://github.com/heavygee/repo-a/issues/42' })
+            ))
+            .mockResolvedValueOnce('https://github.com/heavygee/repo-b/issues/99')
+        renderDialog({ templates: [], blankAllowed: true, onSubmit })
+
+        fireEvent.change(screen.getByPlaceholderText('owner/repo'), { target: { value: 'heavygee/repo-a' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(await screen.findByText('Open a blank issue'))
+        fireEvent.change(screen.getAllByRole('textbox')[0]!, { target: { value: 'Same title' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Create issue' }))
+
+        await screen.findByRole('button', { name: 'Retry adding to board' })
+
+        // All the way back to the repo picker (review → form → template →
+        // repo), switch repos.
+        fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+        fireEvent.change(screen.getByPlaceholderText('owner/repo'), { target: { value: 'heavygee/repo-b' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(await screen.findByText('Open a blank issue'))
+        fireEvent.change(screen.getAllByRole('textbox')[0]!, { target: { value: 'Same title' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+
+        // Not "Retry adding to board" — the repo changed, so the
+        // association to repo-a's orphaned issue must be gone.
+        expect(screen.queryByRole('button', { name: 'Retry adding to board' })).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'Create issue' }))
+
+        await waitFor(() => {
+            expect(onSubmit).toHaveBeenLastCalledWith({
+                repo: 'heavygee/repo-b',
+                title: 'Same title',
+                body: '',
+                templateId: null,
+                templateRevision: null,
+                existingIssueUrl: undefined,
+                labels: [],
+                assignees: []
+            })
+        })
+    })
+
     it('does not offer "Open a blank issue" when blankAllowed is false but a usable template exists', async () => {
         renderDialog({ templates: [FORM_TEMPLATE], blankAllowed: false })
 

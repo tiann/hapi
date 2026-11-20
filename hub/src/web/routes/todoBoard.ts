@@ -787,8 +787,15 @@ function parseIssueTemplateDirResponse(response: GhIssueTemplateDirResponse): { 
         if (!entry || typeof entry.object?.text !== 'string') continue
         const lowerName = entry.name.toLowerCase()
         if (lowerName === 'config.yml' || lowerName === 'config.yaml') {
-            blankIssuesEnabled = parseIssueTemplateConfig(entry.object.text).blankIssuesEnabled
-            hasConfig = true
+            const parsedConfig = parseIssueTemplateConfig(entry.object.text)
+            blankIssuesEnabled = parsedConfig.blankIssuesEnabled
+            // Only a config.yml that actually parsed counts as a local
+            // override for inheritance-eligibility purposes (review
+            // finding, tiann/hapi#2147, follow-up) — the fail-open default
+            // above is the right call for "don't block blank issues over a
+            // broken file," but an unparseable file provides no real
+            // configuration to override the owner's .github policy with.
+            hasConfig = parsedConfig.valid
         } else if (lowerName.endsWith('.yml') || lowerName.endsWith('.yaml')) {
             templates.push(parseIssueFormYaml(entry.name, entry.object.text))
         } else if (
@@ -2003,6 +2010,16 @@ export function createBoardRoutes(
             // whose project-attach step failed — do not call createIssue
             // again, or this exact retry would be the duplicate it exists to
             // prevent (review finding, hapi#238).
+            //
+            // Validated against the submitted repo, not trusted as-is
+            // (review finding, tiann/hapi#2147, follow-up): the dialog's
+            // own draft-comparison can be fooled into retrying issue A's
+            // URL against a since-switched repo B — this is the actual
+            // trust boundary, not a client-side bug fix alone.
+            const validated = parseValidatedItemUrl(parsed.data.existingIssueUrl, board)
+            if (!validated || `${validated.owner}/${validated.repo}`.toLowerCase() !== parsed.data.repo.toLowerCase()) {
+                return c.json({ error: 'The issue being retried does not belong to the submitted repository' }, 400)
+            }
             issueUrl = parsed.data.existingIssueUrl
         } else {
             try {

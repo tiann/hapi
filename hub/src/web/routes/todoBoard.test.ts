@@ -2008,6 +2008,47 @@ body:
         expect(calls).toEqual(['malformed-only', '.github'])
     })
 
+    // Review finding (tiann/hapi#2147, follow-up): a config.yml that
+    // exists but doesn't parse used to count as hasConfig: true (the
+    // fail-open blankIssuesEnabled default also set hasConfig, not just
+    // the flag value), wrongly blocking inheritance of the owner's
+    // blank_issues_enabled: false even though the local file provides no
+    // real configuration to override it with.
+    it('falls back to .github when the target directory exists but only has an unparseable config.yml', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'PUBLIC',
+                                issueTemplateDir: {
+                                    entries: [{ name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }]
+                                }
+                            }
+                        }
+                    }
+                }
+                return {
+                    data: {
+                        repository: {
+                            issueTemplateDir: { entries: [{ name: 'config.yml', object: { text: ': : not yaml {{{' } }] }
+                        }
+                    }
+                }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/bad-config`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['bad-config', '.github'])
+    })
+
     it('does not recurse when the target repo being queried is already .github', async () => {
         const calls: string[] = []
         const app = await createApp(
@@ -2391,6 +2432,29 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
         const body = await response.json() as { ok: true; url: string }
         expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
         expect(calls).toEqual(['addItemToProject:https://github.com/heavygee/hapi/issues/42'])
+    })
+
+    // Review finding (tiann/hapi#2147, follow-up): the dialog's own
+    // draft-comparison can be fooled into retrying one repo's orphaned
+    // issue URL against a since-switched repo — existingIssueUrl must be
+    // validated against the submitted repo here, not trusted as-is, since
+    // this is the actual trust boundary.
+    it('rejects a retry-attach whose existingIssueUrl does not belong to the submitted repo', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+            addItemToProject: async (target) => { calls.push(`should-not-be-called:${target.issueUrl}`) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/a-different-repo', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42'
+            })
+        })
+        expect(response.status).toBe(400)
+        expect(calls).toEqual([])
     })
 
     // A retry-attach creates nothing, so there is nothing for a changed
