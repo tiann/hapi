@@ -316,6 +316,13 @@ export function computePendingRequestsCount(agentState: AgentState | null | unde
  * requests, the 201st — genuinely unanswered — falls off this list entirely,
  * and `getSessionBlockedState` (which only ever sees THIS list, not the full
  * `agentState`) reads the session as clear.
+ *
+ * Truncation also prefers a QUESTION over a PERMISSION within the same
+ * dismissed/undismissed tier (#1717 cold-review round 27): the classifier
+ * ranks a question ahead of a permission among whatever refs it is handed,
+ * but only ever sees this capped list — oldest-first (or dismissal-blind-to-
+ * kind) truncation could drop the one question off a page of 200 older
+ * permissions before the classifier ever got the chance to contest it.
  */
 export function computePendingRequestRefs(
     agentState: AgentState | null | undefined,
@@ -323,13 +330,34 @@ export function computePendingRequestRefs(
     dismissedKeys?: ReadonlySet<string>
 ): Array<{ id: string; kind: PendingRequestKind; since: number }> {
     const all = computePendingRequests(agentState, fallbackSince, Number.MAX_SAFE_INTEGER)
-    if (all.length <= PENDING_REQUEST_REFS_CAP || !dismissedKeys || dismissedKeys.size === 0) {
+    if (all.length <= PENDING_REQUEST_REFS_CAP) {
         return all.slice(0, PENDING_REQUEST_REFS_CAP).map(({ id, kind, since }) => ({ id, kind, since }))
     }
-    const undismissed = all.filter((request) => !dismissedKeys.has(requestBlockerKey(request.id)))
-    const dismissed = all.filter((request) => dismissedKeys.has(requestBlockerKey(request.id)))
+    // Oldest-first truncation alone drops whichever request happens to be
+    // newest once the cap is full — even an undismissed QUESTION, if 200
+    // older undismissed permissions already fill every slot (#1717
+    // cold-review round 27). `getSessionAttentionReason` ranks a question
+    // ahead of a permission among whatever refs it is GIVEN, but it only
+    // ever sees this capped list, never the full request set — so a
+    // question truncated away here never gets the chance to win that
+    // contest, and the chip/dialog silently fall back to the lower-priority
+    // permission instead.
+    //
+    // Four buckets, not two: dismissed-vs-undismissed (round 23) still
+    // matters, but within each, an undismissed/dismissed QUESTION now also
+    // outranks a same-dismissal-state PERMISSION, so the single most
+    // important pending request is never the one truncation discards.
+    const isUndismissed = (request: { id: string }) =>
+        !dismissedKeys?.has(requestBlockerKey(request.id))
+    const isQuestion = (request: { kind: PendingRequestKind }) => request.kind === 'input'
+    const buckets = [
+        all.filter((request) => isUndismissed(request) && isQuestion(request)),
+        all.filter((request) => isUndismissed(request) && !isQuestion(request)),
+        all.filter((request) => !isUndismissed(request) && isQuestion(request)),
+        all.filter((request) => !isUndismissed(request) && !isQuestion(request))
+    ]
     const selectedIds = new Set(
-        [...undismissed, ...dismissed].slice(0, PENDING_REQUEST_REFS_CAP).map((request) => request.id)
+        buckets.flat().slice(0, PENDING_REQUEST_REFS_CAP).map((request) => request.id)
     )
     // `all` is already oldest-first; filtering it (rather than re-sorting the
     // prioritized selection) keeps the returned order chronological.
