@@ -64,7 +64,7 @@ pub struct SessionClient {
     heartbeat_enabled: watch::Sender<bool>,
     closed: watch::Sender<bool>,
     pub(super) filter: Mutex<super::incoming_filter::IncomingFilter>,
-    pub(super) backfill_lock: tokio::sync::Mutex<()>,
+    pub(super) backfill_lock: Arc<tokio::sync::Mutex<()>>,
     pub echoes: Mutex<super::echo::Echoes>,
     pub(super) latest: Mutex<Value>,
     incoming: Mutex<Incoming>,
@@ -146,7 +146,7 @@ impl SessionClient {
             heartbeat_enabled,
             closed,
             filter: Mutex::default(),
-            backfill_lock: tokio::sync::Mutex::default(),
+            backfill_lock: Arc::default(),
             echoes: Mutex::default(),
             latest: Mutex::new(json!({"thinking":false})),
             incoming: Mutex::default(),
@@ -377,10 +377,10 @@ impl SessionClient {
         let mut attempted = Some(attempted);
         let mut delay = Duration::from_millis(500);
         loop {
+            let result = tokio::select! {biased; _=link.wait_for(|v|v!=current)=>return,_=closed.wait_for(|v|*v)=>return,_=archived.wait_for(|v|*v)=>return,result=Self::backfill(&weak, start_cursor)=>result};
             let Some(client) = weak.upgrade() else {
                 return;
             };
-            let result = tokio::select! {biased; _=link.wait_for(|v|v!=current)=>return,_=closed.wait_for(|v|*v)=>return,_=archived.wait_for(|v|*v)=>return,result=client.backfill(start_cursor)=>result};
             if result.is_ok() && link.get() == current {
                 client.filter.lock().unwrap().finish_backfill();
             }
