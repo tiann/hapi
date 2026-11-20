@@ -1631,4 +1631,55 @@ describe('startup notify backfill (#1717)', () => {
         expect(engine.backfillRecentNotifySignals({ now })).toBe(1)
         expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
     })
+
+    it('reaches a recently-active session ranked past the per-batch cap (cold-review round 27)', async () => {
+        // Candidates are sorted newest-first and the batch cap is 2 here.
+        // Two NEWER sessions have nothing to stamp; a third, OLDER session
+        // (still inside the 24h window) carries a genuine unanswered
+        // footer. A single `.slice(0, maxSessions)` cutoff excludes that
+        // third session from the scan entirely — permanently, since this
+        // backfill runs once per restart and the same two newer sessions
+        // would occupy the cap again next time.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const now = Date.now()
+
+        // `addMessage` stamps `updatedAt` from the real insert clock, not
+        // the message's own (backdated) `createdAt` — pin it explicitly so
+        // the candidate sort order ("newest-first") does not depend on
+        // which of these three `getOrCreateSession`/`addMessage` calls the
+        // test happens to run first in real wall-clock time.
+        const sessionTags: Array<[string, number]> = [['newer-a', now + 20_000], ['newer-b', now + 10_000]]
+        for (const [tag, pinnedUpdatedAt] of sessionTags) {
+            const session = engine.getOrCreateSession(
+                `backfill-batch-${tag}`, { path: '/tmp/project', host: 'localhost' }, null, 'default'
+            )
+            store.messages.addMessage(session.id, {
+                role: 'user', content: { type: 'text', text: 'hello' }, meta: { sentFrom: 'webapp' }
+            }, `${tag}-msg`, null, now - 1_000)
+            engine.recordSessionActivity(session.id, pinnedUpdatedAt)
+        }
+
+        const olderBlocked = engine.getOrCreateSession(
+            'backfill-batch-older', { path: '/tmp/project', host: 'localhost' }, null, 'default'
+        )
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+        store.messages.addMessage(olderBlocked.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, undefined, null, now - 60_000, now - 60_000)
+        engine.recordSessionActivity(olderBlocked.id, now + 1_000)
+
+        const stamped = engine.backfillRecentNotifySignals({ now, maxSessions: 2 })
+
+        expect(stamped).toBe(1)
+        expect(engine.getSession(olderBlocked.id)?.lastNotify?.status).toBe('blocked')
+    })
 })

@@ -565,6 +565,16 @@ export class SyncEngine {
      * restart. That is accepted: the candidate set is already bounded by both
      * the 24h window and `NOTIFY_BACKFILL_MAX_SESSIONS`, and a "we looked and
      * found nothing" marker would be more state than the scan costs.
+     *
+     * `maxSessions` bounds each BATCH's transcript-scanning work, not the
+     * total candidate set (#1717 cold-review round 27): a `.slice` cutting
+     * the newest-first-sorted list off at the cap permanently excluded the
+     * 201st-and-later recently-active session, even one whose last message
+     * is a genuinely unanswered footer — every restart kept rescanning the
+     * same 200 newer sessions and never reached it until something else
+     * made it speak again. Looping in batches instead covers every
+     * candidate inside the 24h window while still scanning transcripts
+     * `maxSessions` at a time per batch.
      */
     backfillRecentNotifySignals(options: { now?: number; maxSessions?: number } = {}): number {
         const now = options.now ?? Date.now()
@@ -573,11 +583,13 @@ export class SyncEngine {
             .filter((session) => !session.lastNotify
                 && now - session.updatedAt <= BLOCKED_NOTIFY_STALE_MS)
             .sort((a, b) => b.updatedAt - a.updatedAt)
-            .slice(0, maxSessions)
 
         let stamped = 0
-        for (const session of candidates) {
-            if (this.restoreNotifySignalFromTranscript(session.id)) stamped += 1
+        for (let offset = 0; offset < candidates.length; offset += maxSessions) {
+            const batch = candidates.slice(offset, offset + maxSessions)
+            for (const session of batch) {
+                if (this.restoreNotifySignalFromTranscript(session.id)) stamped += 1
+            }
         }
         return stamped
     }
