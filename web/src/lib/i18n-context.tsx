@@ -34,6 +34,10 @@ const localeLoadPending = new Map<Locale, Promise<void>>()
  * dictionary is available in `loadedDictionaries`; failures reject and clear
  * the in-flight marker so a later switch can retry.
  */
+export function isLocaleDictionaryLoaded(locale: Locale): boolean {
+    return locale === 'en' || Boolean(loadedDictionaries[locale])
+}
+
 export function loadLocaleDictionary(locale: Locale): Promise<void> {
     if (locale === 'en' || loadedDictionaries[locale]) return Promise.resolve()
     let pending = localeLoadPending.get(locale)
@@ -153,10 +157,15 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const [dictVersion, setDictVersion] = useState(0)
 
   useEffect(() => {
+    // English ships in the entry bundle — nothing to load, no version bump.
+    // A bump would rebuild `t` (and every row reading it) even when the
+    // dictionary never changed, which defeats row memoization.
+    if (locale === 'en') return
     let cancelled = false
+    const wasLoaded = isLocaleDictionaryLoaded(locale)
     loadLocaleDictionary(locale)
       .then(() => {
-        if (!cancelled) setDictVersion((version) => version + 1)
+        if (!cancelled && !wasLoaded) setDictVersion((version) => version + 1)
       })
       .catch(() => {
         // Keep the English fallback; switching again retries the load.
