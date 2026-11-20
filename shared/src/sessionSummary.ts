@@ -3,6 +3,7 @@ import type { SessionReadState } from './sessionReadState'
 import type { ConversationHistoryCapabilities } from './conversationHistory'
 import { isKnownFlavor } from './flavors'
 import type { SessionBlockedAck, SessionNotifySignal } from './notifyAttention'
+import { requestBlockerKey } from './notifyAttention'
 import type { AgentFlavor } from './modes'
 
 export type ForkSessionSummary = {
@@ -57,6 +58,18 @@ export const PENDING_REQUEST_SUMMARY_CAP = 5
  *  identity for in the first place, so this is the real ceiling to size that
  *  schema's `.max()` against, not an arbitrary round number. */
 export const PENDING_REQUEST_REFS_CAP = 200
+
+/**
+ * The true ceiling on live, simultaneously-dismissible keys (#1717
+ * cold-review round 23): every tracked request PLUS the current footer —
+ * `SessionBlockedAck.keys` can carry a `notifyBlockerKey` for the footer
+ * alongside a `requestBlockerKey` for each of up to `PENDING_REQUEST_REFS_CAP`
+ * requests, so sizing the schema's `.max()` at `PENDING_REQUEST_REFS_CAP`
+ * alone rejected a snapshot with exactly that many live keys dismissed
+ * together with the footer — one single key over a cap that forgot the
+ * footer shares the same budget.
+ */
+export const SUPPORTED_LIVE_DISMISSAL_CAP = PENDING_REQUEST_REFS_CAP + 1
 
 export type PendingRequest = {
     id: string
@@ -262,13 +275,36 @@ export function computePendingRequestsCount(agentState: AgentState | null | unde
  * could be drawn as a Permission with another prompt's timestamp. Carrying the
  * kind and `since` with the id keeps the chip, the dismissal target and the
  * age all describing the same request. Same order as `pendingRequests`, so the
- * capped list is always this list's prefix.
+ * capped list is always this list's prefix — UNLESS truncation had to choose,
+ * in which case the smaller list is still guaranteed to be a SUBSET (see
+ * below), just not necessarily a strict prefix.
+ *
+ * `dismissedKeys` lets truncation prefer an UNDISMISSED request over a
+ * dismissed one when there are more than `PENDING_REQUEST_REFS_CAP` pending
+ * at once (#1717 cold-review round 23). Without it, truncation is purely
+ * oldest-first: if the operator dismisses the oldest 200 of 201 pending
+ * requests, the 201st — genuinely unanswered — falls off this list entirely,
+ * and `getSessionBlockedState` (which only ever sees THIS list, not the full
+ * `agentState`) reads the session as clear.
  */
 export function computePendingRequestRefs(
     agentState: AgentState | null | undefined,
-    fallbackSince: number
+    fallbackSince: number,
+    dismissedKeys?: ReadonlySet<string>
 ): Array<{ id: string; kind: PendingRequestKind; since: number }> {
-    return computePendingRequests(agentState, fallbackSince, PENDING_REQUEST_REFS_CAP)
+    const all = computePendingRequests(agentState, fallbackSince, Number.MAX_SAFE_INTEGER)
+    if (all.length <= PENDING_REQUEST_REFS_CAP || !dismissedKeys || dismissedKeys.size === 0) {
+        return all.slice(0, PENDING_REQUEST_REFS_CAP).map(({ id, kind, since }) => ({ id, kind, since }))
+    }
+    const undismissed = all.filter((request) => !dismissedKeys.has(requestBlockerKey(request.id)))
+    const dismissed = all.filter((request) => dismissedKeys.has(requestBlockerKey(request.id)))
+    const selectedIds = new Set(
+        [...undismissed, ...dismissed].slice(0, PENDING_REQUEST_REFS_CAP).map((request) => request.id)
+    )
+    // `all` is already oldest-first; filtering it (rather than re-sorting the
+    // prioritized selection) keeps the returned order chronological.
+    return all
+        .filter((request) => selectedIds.has(request.id))
         .map(({ id, kind, since }) => ({ id, kind, since }))
 }
 
@@ -403,7 +439,11 @@ export function toSessionSummary(
         pendingRequestKinds: computePendingRequestKinds(session.agentState),
         pendingRequests: computePendingRequests(session.agentState, session.updatedAt),
         pendingRequestsNewestAt: computePendingRequestsNewestAt(session.agentState, session.updatedAt),
-        pendingRequestRefs: computePendingRequestRefs(session.agentState, session.updatedAt),
+        pendingRequestRefs: computePendingRequestRefs(
+            session.agentState,
+            session.updatedAt,
+            session.blockedAck?.keys ? new Set(session.blockedAck.keys) : undefined
+        ),
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
         derivedToolWork: session.derivedToolWork === true,
         lastNotify: session.lastNotify ?? null,

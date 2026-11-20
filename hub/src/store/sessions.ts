@@ -8,7 +8,7 @@ import type { StoredSession, VersionedUpdateResult } from './types'
 import { safeJsonParse } from './json'
 import { updateVersionedField } from './versionedUpdates'
 import { removeMessageContentSearchForSession } from './messageContentSearch'
-import { PENDING_REQUEST_REFS_CAP } from '@hapi/protocol'
+import { SUPPORTED_LIVE_DISMISSAL_CAP } from '@hapi/protocol'
 
 function runInTransaction<T>(db: Database, operation: () => T): T {
     return db.inTransaction ? operation() : db.transaction(operation)()
@@ -1324,14 +1324,15 @@ export function parseAckKeys(raw: string | null | undefined): string[] | null {
 
 /**
  * Exported so tests can exercise the retention boundary without a magic
- * number. Pinned to `PENDING_REQUEST_REFS_CAP`, not an arbitrary round number
- * (#1717 cold-review round 22): that is already the system's own ceiling on
- * how many pending-request identities one session tracks, and a live key can
- * only exist for a request that has one. `SessionBlockedAckSchema.keys` is
- * bounded by the same constant, so retention and the wire schema can never
- * disagree about how many keys are allowed through.
+ * number. Pinned to `SUPPORTED_LIVE_DISMISSAL_CAP`, not an arbitrary round
+ * number (#1717 cold-review round 22, corrected round 23): that is the
+ * system's own ceiling on how many pending-request identities one session
+ * tracks PLUS the current footer, which shares the same dismissal budget —
+ * `SessionBlockedAckSchema.keys` is bounded by the same constant, so
+ * retention and the wire schema can never disagree about how many keys are
+ * allowed through.
  */
-export const ACK_KEYS_RETENTION_LIMIT = PENDING_REQUEST_REFS_CAP
+export const ACK_KEYS_RETENTION_LIMIT = SUPPORTED_LIVE_DISMISSAL_CAP
 
 function serialiseAckKeys(keys: string[] | null | undefined, livePendingKeys?: ReadonlySet<string>): string | null {
     if (!keys || keys.length === 0) return null

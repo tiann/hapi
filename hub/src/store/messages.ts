@@ -27,6 +27,8 @@ type DbMessageRow = {
     seq: number
     local_id: string | null
     invoked_at: number | null
+    reconciled_invoked_at?: number | null
+    imported?: number | null
     swept_at?: number | null
     received_at?: number | null
     agent_delivered?: number | null
@@ -83,9 +85,9 @@ export function addImportedMessage(
         const canonicalContent = truncateOversizedMessageContent(content)
         prepareCached(db, `
             INSERT INTO messages (
-                id, session_id, content, created_at, received_at, seq, local_id, invoked_at, scheduled_at
+                id, session_id, content, created_at, received_at, seq, local_id, invoked_at, scheduled_at, imported
             ) VALUES (
-                @id, @session_id, @content, @created_at, @received_at, @seq, @local_id, @invoked_at, NULL
+                @id, @session_id, @content, @created_at, @received_at, @seq, @local_id, @invoked_at, NULL, 1
             )
         `).run({
             id,
@@ -132,6 +134,8 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         seq: row.seq,
         localId: row.local_id,
         invokedAt: row.invoked_at ?? null,
+        reconciledInvokedAt: row.reconciled_invoked_at ?? null,
+        imported: row.imported === 1,
         sweptAt: row.swept_at ?? null,
         receivedAt: row.received_at ?? null,
         agentDelivered: row.agent_delivered ?? null,
@@ -144,7 +148,7 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
 export type CopyStoredMessageInput = Pick<
     StoredMessage,
     'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'
-> & Partial<Pick<StoredMessage, 'receivedAt' | 'agentDelivered'>>
+> & Partial<Pick<StoredMessage, 'receivedAt' | 'agentDelivered' | 'imported'>>
 
 export function addMessage(
     db: Database,
@@ -761,10 +765,10 @@ export function copyMessageToSession(
         prepareCached(db, `
             INSERT INTO messages (
                 id, session_id, content, created_at, received_at, agent_delivered,
-                seq, local_id, invoked_at, scheduled_at, delivery_state
+                seq, local_id, invoked_at, scheduled_at, delivery_state, imported
             ) VALUES (
                 @id, @session_id, @content, @created_at, @received_at, @agent_delivered,
-                @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
+                @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state, @imported
             )
         `).run({
             id,
@@ -785,7 +789,10 @@ export function copyMessageToSession(
             local_id: localId ?? null,
             invoked_at: invokedAt ?? null,
             scheduled_at: message.scheduledAt ?? null,
-            delivery_state: message.deliveryState ?? 'queued'
+            delivery_state: message.deliveryState ?? 'queued',
+            // Carried too: provenance is a fact about the original event, not
+            // the copy (#1717 cold-review round 23).
+            imported: message.imported ? 1 : null
         })
         indexMessageContent(db, {
             id,
@@ -824,26 +831,31 @@ export function copyMessageToSession(
  * unanswered blocker. The real stamp replaces the synthetic one on whichever
  * row survives — "prefer the real stamp" does not care which session's copy
  * of the event happened to be the one still on disk.
+ *
+ * `reconciledInvokedAt` writes a SEPARATE column, not `invoked_at` itself
+ * (#1717 cold-review round 23). `invoked_at` is also the display-position
+ * key (`COALESCE(invoked_at, created_at)`), so round 22's version of this
+ * function — which wrote the recovered time straight into `invoked_at` —
+ * could move a reply's conversation position earlier than the footer it
+ * answers, whenever that footer was not itself upgraded in the same pass
+ * (e.g. a THIRD session merge where only the reply has a live duplicate).
+ * Reconciliation (`deliveredOperatorReplyAt`) reads the override when
+ * present; display never does.
  */
 export function upgradeMessageDeliveryStamp(
     db: Database,
     messageId: string,
-    stamp: { invokedAt: number | null; receivedAt?: number | null; agentDelivered?: number | null }
+    stamp: { reconciledInvokedAt: number | null; receivedAt?: number | null; agentDelivered?: number | null }
 ): boolean {
-    // `invokedAt` is COALESCEd too (#1717 cold-review round 22): a footer
-    // upgrade passes `null` deliberately — a footer's `invoked_at` carries no
-    // real delivery-time information, so overwriting it would move the
-    // footer's sort position for no reason. Only an operator-reply upgrade
-    // passes a real value here.
     const result = prepareCached(db, `
         UPDATE messages
-        SET invoked_at = COALESCE(@invokedAt, invoked_at),
+        SET reconciled_invoked_at = COALESCE(@reconciledInvokedAt, reconciled_invoked_at),
             received_at = COALESCE(@receivedAt, received_at),
             agent_delivered = COALESCE(@agentDelivered, agent_delivered)
         WHERE id = @id
     `).run({
         id: messageId,
-        invokedAt: stamp.invokedAt,
+        reconciledInvokedAt: stamp.reconciledInvokedAt,
         receivedAt: stamp.receivedAt ?? null,
         agentDelivered: stamp.agentDelivered ?? null
     })

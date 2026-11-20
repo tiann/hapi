@@ -835,6 +835,34 @@ describe('a maintenance turn does not invalidate the footer (#1717)', () => {
         cache.handleSessionAlive({ sid: id, time: Date.now(), thinking: true })
         expect(cache.getSession(id)?.lastNotify ?? null).toBeNull()
     })
+
+    it('never confirms a maintenance turn, even across a second tick of the same turn (cold-review round 23)', () => {
+        // The footer surviving in STORAGE (asserted above) is necessary but
+        // not sufficient: `thinkingConfirmed` drives whether the WEB hides
+        // the chip while `thinking` is true. Confirming it during compaction
+        // hid the same still-unanswered footer, and unhiding it when
+        // compaction ended made the arrival tracker read it as a brand-new
+        // blocker. `maintenanceTurnSessionIds` is a ONE-SHOT mark consumed on
+        // the first tick, so a naive fix that only checks it on the rising
+        // edge would correctly protect tick one and then confirm tick two —
+        // OpenCode can send `thinking: true` more than once while /compact
+        // runs.
+        const { cache } = makeCache()
+        const id = seedBlocked(cache, 'maintenance-turn-confirmed')
+
+        cache.markMaintenanceTurn(id)
+        cache.handleSessionAlive({ sid: id, time: Date.now(), thinking: true })
+        expect(cache.getSession(id)?.thinkingConfirmed).toBe(false)
+
+        // Second tick, same turn: still thinking, no new mark to consume.
+        cache.handleSessionAlive({ sid: id, time: Date.now() + 1, thinking: true })
+        expect(cache.getSession(id)?.thinkingConfirmed).toBe(false)
+
+        // Compaction ends; the NEXT genuine turn confirms normally.
+        cache.handleSessionAlive({ sid: id, time: Date.now() + 2, thinking: false })
+        cache.handleSessionAlive({ sid: id, time: Date.now() + 3, thinking: true })
+        expect(cache.getSession(id)?.thinkingConfirmed).toBe(true)
+    })
 })
 
 describe('notify revision is whatever SQLite says (#1717)', () => {
@@ -1006,6 +1034,50 @@ describe('the acknowledgement broadcast stays inside its own schema (#1717)', ()
         // count stays comfortably inside SessionBlockedAckSchema's bound.
         expect(keys).toHaveLength(65)
         for (let i = 0; i < 65; i++) {
+            expect(keys).toContain(`request:r${i}`)
+        }
+        expect(() => SessionBlockedAckSchema.parse({ at: Date.now(), reason: 'handled', keys })).not.toThrow()
+    })
+
+    it('keeps a full-session snapshot inside its own schema when the footer shares the live dismissal budget (cold-review round 23)', () => {
+        // PENDING_REQUEST_REFS_CAP (200) alone forgot that a dismissal can
+        // ALSO cover the current footer, which is a separate live key
+        // (`notify:<at>`) from any of the up-to-200 request keys. 200 live
+        // request dismissals plus one live footer dismissal is 201 keys,
+        // every one of them genuinely live — the fix bounds both the
+        // retention limit and the schema at that true ceiling instead.
+        const store = new Store(':memory:')
+        const emitted: SyncEvent[] = []
+        const cache = new SessionCache(store, {
+            emit: (event: SyncEvent) => { emitted.push(event) }
+        } as EventPublisher)
+        const requests: Record<string, { tool: string; arguments: Record<string, never> }> = {}
+        for (let i = 0; i < 200; i++) {
+            requests[`r${i}`] = { tool: 'Bash', arguments: {} }
+        }
+        const session = cache.getOrCreateSession(
+            'ack-bound-footer-plus-requests',
+            { path: '/tmp/project', host: 'localhost' },
+            { requests, completedRequests: {} },
+            'default'
+        )
+        const footerAt = Date.now()
+        cache.setSessionLastNotify(session.id, { status: 'blocked', at: footerAt, note: 'needs creds' })
+
+        cache.setSessionBlockedAck(session.id, 'handled', footerAt, `notify:${footerAt}`)
+        for (let i = 0; i < 200; i++) {
+            cache.setSessionBlockedAck(session.id, 'handled', Date.now() + i, `request:r${i}`)
+        }
+
+        const row = store.sessions.getSessionByNamespace(session.id, 'default')
+        const keys = row?.blockedAckKeys ?? []
+
+        // All 201 survive — the footer key is just as live as any request
+        // key, so none is evicted — and the count still validates against
+        // SessionBlockedAckSchema.
+        expect(keys).toHaveLength(201)
+        expect(keys).toContain(`notify:${footerAt}`)
+        for (let i = 0; i < 200; i++) {
             expect(keys).toContain(`request:r${i}`)
         }
         expect(() => SessionBlockedAckSchema.parse({ at: Date.now(), reason: 'handled', keys })).not.toThrow()

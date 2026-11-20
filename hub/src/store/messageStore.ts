@@ -131,7 +131,7 @@ export class MessageStore {
 
     upgradeMessageDeliveryStamp(
         messageId: string,
-        stamp: { invokedAt: number | null; receivedAt?: number | null; agentDelivered?: number | null }
+        stamp: { reconciledInvokedAt: number | null; receivedAt?: number | null; agentDelivered?: number | null }
     ): boolean {
         return upgradeMessageDeliveryStamp(this.db, messageId, stamp)
     }

@@ -4,7 +4,7 @@ import { COPILOT_AGENT_MODES, type CopilotAgentMode } from './copilotModes'
 import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
 import { AgentConfigDescriptorSchema } from './agentConfig'
 import { githubPrIdentityKey, isValidGitHubHost } from './projectRegistry'
-import { PENDING_REQUEST_REFS_CAP } from './sessionSummary'
+import { SUPPORTED_LIVE_DISMISSAL_CAP } from './sessionSummary'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
@@ -554,13 +554,13 @@ export const SessionNotifySignalSchema = z.object({
 export const SessionBlockedAckSchema = z.object({
     at: z.number(),
     reason: z.string(),
-    // Bounded by PENDING_REQUEST_REFS_CAP, not an arbitrary round number
-    // (#1717 cold-review round 22): a key can stay dismissed-but-live for as
-    // long as its request is tracked at all, and the system never tracks more
-    // than that many identities for one session, so this is the real ceiling
-    // — a lower one rejected a full-session snapshot whose dismissals were
-    // all still genuinely live.
-    keys: z.array(z.string().max(256)).max(PENDING_REQUEST_REFS_CAP).nullish()
+    // Bounded by SUPPORTED_LIVE_DISMISSAL_CAP, not an arbitrary round number
+    // (#1717 cold-review round 22, corrected round 23): a key can stay
+    // dismissed-but-live for as long as its request is tracked at all, PLUS
+    // one more for the current footer, which shares the same dismissal
+    // budget — a cap that forgot the footer rejected a full-session snapshot
+    // whose dismissals were all still genuinely live.
+    keys: z.array(z.string().max(256)).max(SUPPORTED_LIVE_DISMISSAL_CAP).nullish()
 })
 
 export const ThreadGoalStatusSchema = z.enum([

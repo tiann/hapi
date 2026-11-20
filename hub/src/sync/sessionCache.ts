@@ -196,6 +196,16 @@ export class SessionCache {
      * arrives; see `recordTurn`.
      */
     private readonly maintenanceTurnSessionIds = new Set<string>()
+    /**
+     * Sessions currently inside a maintenance turn's full duration, not just
+     * its rising edge (#1717 cold-review round 23). `maintenanceTurnSessionIds`
+     * is consumed once, on the first `thinking` tick, so it cannot by itself
+     * keep a LATER tick of the same turn (e.g. OpenCode's /compact reporting
+     * `thinking: true` more than once while it runs) from confirming the
+     * turn and hiding the stored footer the maintenance exemption already
+     * protects from being cleared.
+     */
+    private readonly activeMaintenanceTurnSessionIds = new Set<string>()
     private readonly interruptedTurnSessionIds: Set<string> = new Set()
     private readonly sessionIdleTimeoutMs: number = resolveSessionIdleTimeoutMs()
 
@@ -379,6 +389,7 @@ export class SessionCache {
             const namespace = cached?.namespace
             const existed = this.sessions.delete(sessionId)
             this.pendingThinkingUntilBySessionId.delete(sessionId)
+            this.activeMaintenanceTurnSessionIds.delete(sessionId)
             this.runtimeConfigUpdatedAtBySessionId.delete(sessionId)
             this.agentProgressAtBySessionId.delete(sessionId)
             if (existed) {
@@ -941,7 +952,22 @@ export class SessionCache {
 
         if (patch.active !== undefined) session.active = patch.active
         if (patch.thinking !== undefined) session.thinking = patch.thinking
-        if (patch.thinkingConfirmed !== undefined) session.thinkingConfirmed = patch.thinkingConfirmed
+        if (patch.thinkingConfirmed !== undefined) {
+            session.thinkingConfirmed = patch.thinkingConfirmed
+        } else if (patch.thinking) {
+            // No existing caller of this generic patch path sends
+            // `thinkingConfirmed` explicitly, so without this a session
+            // queued via `markMessageQueued` (thinkingConfirmed: false) and
+            // then genuinely confirmed ONLY through this path — never through
+            // `handleSessionAlive` — would stay unconfirmed forever. Same
+            // maintenance exemption as the clear below (#1717 cold-review
+            // round 23): a caller that never learned about this field must
+            // not confirm a maintenance turn either.
+            if (!wasThinking && this.maintenanceTurnSessionIds.has(session.id)) {
+                this.activeMaintenanceTurnSessionIds.add(session.id)
+            }
+            session.thinkingConfirmed = !this.activeMaintenanceTurnSessionIds.has(session.id)
+        }
         if (patch.activeAt !== undefined) session.activeAt = patch.activeAt
         if (patch.contentRevision !== undefined) session.contentRevision = Math.max(session.contentRevision ?? 0, patch.contentRevision)
         if (patch.readState) session.readState = mergeReadState(session.readState, patch.readState)
@@ -977,7 +1003,10 @@ export class SessionCache {
             session.agentState = patch.agentState.value
             session.agentStateVersion = patch.agentState.version
         }
-        if (patch.thinking === false) this.forgetInterruptedTurn(session.id)
+        if (patch.thinking === false) {
+            this.forgetInterruptedTurn(session.id)
+            this.activeMaintenanceTurnSessionIds.delete(session.id)
+        }
         this.recordTurn(session, wasThinking, Date.now(), 'patch', 'idle')
 
         // #1717: last, because clearing re-seats the cached Session object and
@@ -1041,15 +1070,28 @@ export class SessionCache {
         session.activeAt = Math.max(session.activeAt, hubNow)
         session.thinking = requestedThinking || preserveQueuedThinking
         session.thinkingAt = t
+        // A rising edge within a maintenance turn's one-shot exemption window
+        // stays marked for the turn's whole duration, not just this tick —
+        // OpenCode's /compact can report `thinking: true` more than once
+        // while it runs, and `maintenanceTurnSessionIds` itself is consumed
+        // (deleted) on the first tick below (#1717 cold-review round 23).
+        if (!wasThinking && session.thinking && this.maintenanceTurnSessionIds.has(session.id)) {
+            this.activeMaintenanceTurnSessionIds.add(session.id)
+        }
         // The CLI's OWN report, not the hub's queue-grace override, is what
-        // confirms a turn actually started (#1717 cold-review round 22).
-        // `preserveQueuedThinking` alone leaves it exactly as `markMessageQueued`
-        // set it — still unconfirmed.
-        if (requestedThinking) session.thinkingConfirmed = true
+        // confirms a turn actually started (#1717 cold-review round 22) —
+        // UNLESS this is a maintenance turn: the clear-exemption below already
+        // keeps the stored footer from being cleared for one, so confirming
+        // it here hid the footer anyway, and ending compaction made the SAME
+        // unanswered blocker look newly arrived (#1717 cold-review round 23).
+        if (requestedThinking) {
+            session.thinkingConfirmed = !this.activeMaintenanceTurnSessionIds.has(session.id)
+        }
         if (!requestedThinking && preserveQueuedThinking && hasUnconsumedPrompt) {
             session.activeTurnStartedAt = hubNow
         } else if (wasThinking && !session.thinking) {
             session.activeTurnStartedAt = null
+            this.activeMaintenanceTurnSessionIds.delete(session.id)
         }
         if (requestedThinking || pendingThinkingUntil <= hubNow) {
             this.pendingThinkingUntilBySessionId.delete(session.id)
@@ -1580,6 +1622,7 @@ export class SessionCache {
         session.backgroundTasks = []
         session.derivedToolWork = false
         this.pendingThinkingUntilBySessionId.delete(session.id)
+        this.activeMaintenanceTurnSessionIds.delete(session.id)
 
         this.publisher.emit({
             type: 'session-updated',
@@ -1624,6 +1667,7 @@ export class SessionCache {
             // The last keepalive is the last time the agent was known to be working.
             this.recordTurn(session, wasThinking, session.activeAt, 'agent', 'expired')
             this.pendingThinkingUntilBySessionId.delete(session.id)
+            this.activeMaintenanceTurnSessionIds.delete(session.id)
             expired.push(session.id)
             this.publisher.emit({
                 type: 'session-updated',
@@ -2433,6 +2477,7 @@ export class SessionCache {
         this.lastBroadcastAtBySessionId.delete(sessionId)
         this.todoBackfillAttemptedSessionIds.delete(sessionId)
         this.pendingThinkingUntilBySessionId.delete(sessionId)
+        this.activeMaintenanceTurnSessionIds.delete(sessionId)
         this.agentProgressAtBySessionId.delete(sessionId)
         this.attachedJobEmitVersion.delete(sessionId)
 

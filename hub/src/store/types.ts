@@ -65,6 +65,19 @@ export type StoredMessage = {
     seq: number
     localId: string | null
     invokedAt: number | null
+    /** Recovered delivery time for BLOCKER RECONCILIATION only — never for
+     *  display position, which stays `COALESCE(invokedAt, createdAt)` off
+     *  `invokedAt` alone. Set when a session merge recovers a duplicate's
+     *  genuine delivery time onto the row that survives, so the recovery
+     *  cannot move the row's place in the transcript (#1717 cold-review
+     *  round 23). */
+    reconciledInvokedAt?: number | null
+    /** True when this row was created by `addImportedMessage`, set once at
+     *  insert time. The explicit provenance fact — never infer it from a
+     *  clock coincidence; `invokedAt === createdAt` is true for every live
+     *  footer too, and `receivedAt === createdAt` can coincide for a
+     *  genuine live message (#1717 cold-review round 23). */
+    imported?: boolean
     /** Set when the session-end sweep stamped `invokedAt` without a runtime
      *  ACK, so a reply can be told apart from one the agent actually got. */
     sweptAt?: number | null

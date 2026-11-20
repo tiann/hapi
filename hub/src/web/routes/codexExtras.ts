@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import type { Store, StoredMessage } from '../../store'
-import { isDeliveredOperatorReply, isOperatorReplyMessage, operatorReplyDeliveredAt } from '../../sync/workGraphNotifyIngest'
+import { isDeliveredOperatorReply, operatorReplyDeliveredAt } from '../../sync/workGraphNotifyIngest'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { SyncEngine } from '../../sync/syncEngine'
 import { collectImportCandidates, type ImportCandidate } from './localSessions/matchContentPrefix'
@@ -860,39 +860,15 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     // genuinely later delivery of the same text. Counting is what the native
     // transcript id was wrongly standing in for.
     // A delivery stamp is only usable for alignment when BOTH sides have a
-    // real one. An imported row's `invoked_at` is the transcript time the
-    // importer synthesized — equal to its `created_at` — while the live Codex
-    // projection of the same prompt carries a genuine hub acknowledgement
-    // time. Comparing those made one event look like two, so the prompt was
-    // appended again, and its later timestamp let reconciliation read an
-    // initiating prompt as a reply and hide the blocker.
-    const isSyntheticDelivery = (message: StoredMessage): boolean =>
-        message.invokedAt !== null && message.invokedAt === message.createdAt
-    // `isSyntheticDelivery` only tells an imported row apart from a live one
-    // for an operator reply, whose `invoked_at` starts `null` and only
-    // diverges from `created_at` once the real ack flow stamps it. A footer
-    // (agent-authored, no `localId`) has no ack path — `addMessage` stamps
-    // its `invoked_at` to its own `created_at` immediately, live or
-    // imported — so `isSyntheticDelivery` is true for EVERY footer and
-    // cannot distinguish them. `received_at` is the role-agnostic signal:
-    // `addImportedMessage` always sets it equal to `created_at` (the
-    // transcript's own time), while a live row of any role gets the real hub
-    // arrival time instead (#1717 cold-review round 22).
-    const isSyntheticArrival = (message: StoredMessage): boolean =>
-        message.receivedAt !== null && message.receivedAt === message.createdAt
-    // Dispatches to whichever signal is actually meaningful for the
-    // message's shape: an operator-reply-shaped row's `invoked_at`
-    // genuinely diverges from `created_at` on real delivery (even before
-    // delivery happens, while it is still `null`), but a footer's never
-    // does — so a footer needs the `received_at`-based check instead.
-    // Dispatching on `isDeliveredOperatorReply` instead of
-    // `isOperatorReplyMessage` would route an UNDELIVERED scheduled reply
-    // (`invokedAt === null`, so `isDeliveredOperatorReply` is false) into
-    // the footer check, where its `received_at` happening to equal its own
-    // `created_at` — true of most freshly-written live rows, reply or not —
-    // would wrongly mark it synthetic (round 22).
-    const isSyntheticStamp = (message: StoredMessage): boolean =>
-        isOperatorReplyMessage(message.content) ? isSyntheticDelivery(message) : isSyntheticArrival(message)
+    // real one — `message.imported` is the answer, an explicit fact recorded
+    // at insert time by `addImportedMessage` (#1717 cold-review round 23).
+    // Two clock-coincidence heuristics stood in for it before this, and each
+    // collided with a real case: `invoked_at === created_at` is true for
+    // EVERY live footer too (no ack path — `addMessage` stamps it
+    // immediately), and `received_at === created_at` can coincide for a
+    // genuine live Codex message that never carried its own `created_at` at
+    // all. Neither clock was ever the fact being asked about; provenance is
+    // a fact about how the row was WRITTEN, not about what time it carries.
     const contentKeyOf = (message: StoredMessage): string =>
         getComparableStoredMessageKey(message)
     const timedKeyOf = (message: StoredMessage): string =>
@@ -918,7 +894,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         // with a reply must be upgradeable the same way the reply is, or
         // upgrading only the reply's stamp and leaving the footer's
         // untouched synthetic one breaks the order between them.
-        if (isSyntheticStamp(message)) syntheticContents.add(content)
+        if (message.imported) syntheticContents.add(content)
         if (!isDeliveredOperatorReply(message)) continue
         canonicalTimedCounts.set(timedKeyOf(message), (canonicalTimedCounts.get(timedKeyOf(message)) ?? 0) + 1)
     }
@@ -947,7 +923,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     // real stamp is the truthful one, so it wins deterministically.
     const sourcesByStampFidelity = sessionStates.slice(1).slice().sort((a, b) => {
         const real = (candidate: typeof a): number => candidate.storedMessages.some(
-            (message) => isDeliveredOperatorReply(message) && !isSyntheticDelivery(message)
+            (message) => isDeliveredOperatorReply(message) && !message.imported
         ) ? 0 : 1
         return real(a) - real(b)
     })
@@ -959,7 +935,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             // Fall back to content-only alignment when a delivery stamp on
             // either side is synthesized, since the two cannot be compared.
             const alignOnContent = !isDeliveredOperatorReply(message)
-                || isSyntheticDelivery(message)
+                || message.imported
                 || syntheticContents.has(content)
             const comparableKey = alignOnContent ? content : timedKeyOf(message)
             const have = alignOnContent
@@ -985,20 +961,19 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 // footer and the reply that answers it must upgrade together
                 // — upgrading only the reply left the footer at its original
                 // synthetic stamp and could invert their order.
-                if (alignOnContent && syntheticContents.has(content) && !isSyntheticStamp(message)) {
+                if (alignOnContent && syntheticContents.has(content) && !message.imported) {
                     const canonicalId = canonicalContentOccurrences.get(content)?.[ordinal - 1]
                     if (canonicalId) {
                         options.store.messages.upgradeMessageDeliveryStamp(canonicalId, {
-                            // Only an operator reply's `invokedAt` carries
-                            // real delivery-time information — the ack flow
-                            // stamps it distinctly from `createdAt`. A
-                            // footer's `invokedAt` is always a mirror of its
-                            // own `createdAt` (no ack path), so upgrading it
-                            // would overwrite the footer's sort position with
-                            // an unrelated clock value instead of leaving it
-                            // alone; `null` here COALESCEs to the canonical
-                            // row's existing `invoked_at` (round 22).
-                            invokedAt: isDeliveredOperatorReply(message) ? message.invokedAt : null,
+                            // Only an operator reply's invocation carries real
+                            // delivery-time information for reconciliation —
+                            // a footer has no ack path, so there is nothing to
+                            // recover for it here. Writes a SEPARATE column,
+                            // never `invoked_at` itself, so recovering the
+                            // real time cannot move the row's conversation
+                            // position (#1717 cold-review round 23); `null`
+                            // COALESCEs to the canonical row's existing value.
+                            reconciledInvokedAt: isDeliveredOperatorReply(message) ? message.invokedAt : null,
                             receivedAt: message.receivedAt,
                             agentDelivered: message.agentDelivered
                         })
@@ -1017,7 +992,10 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 // event, so the combined transcript can still be ordered
                 // after the copy (#1717).
                 receivedAt: message.receivedAt,
-                agentDelivered: message.agentDelivered
+                agentDelivered: message.agentDelivered,
+                // Provenance is a fact about the original event, not the copy
+                // (#1717 cold-review round 23).
+                imported: message.imported
             })
             // Update BOTH tallies for every copied row, and record a
             // synthetic stamp if this one had it. Bumping only the tally this
@@ -1030,7 +1008,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             // Tracked for ANY role, same as the initial canonical tally
             // (round 22) — a copied footer can still be the surviving
             // synthetic occurrence a later duplicate's upgrade targets.
-            if (isSyntheticStamp(message)) syntheticContents.add(content)
+            if (message.imported) syntheticContents.add(content)
             if (isDeliveredOperatorReply(message)) {
                 const timed = timedKeyOf(message)
                 canonicalTimedCounts.set(timed, (canonicalTimedCounts.get(timed) ?? 0) + 1)

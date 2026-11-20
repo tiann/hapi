@@ -681,6 +681,7 @@ export function operatorReplyDeliveredAt(
         receivedAt?: number | null
         scheduledAt: number | null
         invokedAt: number | null
+        reconciledInvokedAt?: number | null
         localId?: string | null
     }
 ): number {
@@ -689,14 +690,23 @@ export function operatorReplyDeliveredAt(
         : deliveredOperatorReplyAt(message)
 }
 
-/** When the agent actually saw a delivered reply. */
+/**
+ * When the agent actually saw a delivered reply.
+ *
+ * `reconciledInvokedAt` is preferred when a session merge recovered it
+ * (#1717 cold-review round 23): it carries the SAME fact `invokedAt` would
+ * if a synthetic import stamp had never been written in the first place,
+ * without touching `invokedAt` itself — which also drives this row's
+ * conversation position and must not move just because reconciliation
+ * learned a truer time.
+ */
 export function deliveredOperatorReplyAt(
-    message: { createdAt: number; scheduledAt: number | null; invokedAt: number | null }
+    message: { createdAt: number; scheduledAt: number | null; invokedAt: number | null; reconciledInvokedAt?: number | null }
 ): number {
     // Invocation time, always. A reply composed before a footer can be
     // invoked after it; ordering on `createdAt` would let that reply "answer"
     // a footer written while it was still queued.
-    return message.invokedAt ?? message.createdAt
+    return message.reconciledInvokedAt ?? message.invokedAt ?? message.createdAt
 }
 
 /**
