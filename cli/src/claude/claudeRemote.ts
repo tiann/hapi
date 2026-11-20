@@ -573,6 +573,7 @@ export async function claudeRemote(opts: {
     let promptResultsHaveUuid = false;
     let waitingForClearFollowUp = false;
     let clearFollowUp: { uuid: string; sessionId: string | null } | undefined;
+    const clearedSessionIds = new Set<string>();
     const compactCompletionAbort = new AbortController();
     let compactCompletion: Promise<CompactCompletion> | null = null;
     let timedOutCommand: { uuid: string; command: 'compact' | 'clear' } | null = null;
@@ -601,6 +602,7 @@ export async function claudeRemote(opts: {
         return id && id !== clear.previousSessionId ? id : undefined;
     };
     const bindClearSession = (id: string, init?: SDKSystemMessage) => {
+        if (currentSessionId && currentSessionId !== id) clearedSessionIds.add(currentSessionId);
         opts.onSessionReset?.(id);
         currentSessionId = id;
         opts.onSessionFound(id);
@@ -804,6 +806,12 @@ export async function claudeRemote(opts: {
                 `subtype=${'subtype' in message ? String((message as any).subtype) : 'n/a'}`
             );
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
+
+            const isSessionControl = message.type === 'result' || (message.type === 'system'
+                && (message.subtype === 'init' || message.subtype === 'status' || message.subtype === 'compact_boundary'));
+            if (isSessionControl && typeof message.session_id === 'string' && clearedSessionIds.has(message.session_id)) {
+                continue;
+            }
 
             // Autonomous rounds (background tasks, scheduled follow-ups) stream
             // assistant messages after the previous result flipped thinking off;

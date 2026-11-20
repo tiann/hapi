@@ -476,7 +476,7 @@ describe('claudeRemote in-process /clear', () => {
         'autonomous-eof', 'acknowledged', 'hook', 'late-result', 'late-init',
         'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout', 'result-eof',
         'unacknowledged-input-eof', 'acknowledged-input-eof', 'failed-clear-input-eof',
-        'follow-up-result', 'legacy-follow-up-result', 'follow-up-after-compact'
+        'follow-up-result', 'legacy-follow-up-result', 'follow-up-after-compact', 'later-follow-up-result'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -488,7 +488,8 @@ describe('claudeRemote in-process /clear', () => {
         const exitsAfterFollowUp = outcome === 'unacknowledged-input-eof' || outcome === 'acknowledged-input-eof';
         const legacyFollowUp = outcome === 'legacy-follow-up-result';
         const interveningCompact = outcome === 'follow-up-after-compact';
-        const hasFollowUpResult = outcome === 'follow-up-result' || legacyFollowUp || interveningCompact;
+        const hasLaterFollowUp = outcome === 'later-follow-up-result';
+        const hasFollowUpResult = outcome === 'follow-up-result' || legacyFollowUp || interveningCompact || hasLaterFollowUp;
         const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook'
             || outcome === 'result-eof' || exitsAfterFollowUp || hasFollowUpResult;
         const resultId = success || lateRotation ? 'fresh-native-session' : priorId;
@@ -506,7 +507,11 @@ describe('claudeRemote in-process /clear', () => {
         const unmatchedResult = { ...result, is_error: true, user_message_uuid: outcome === 'tagged-timeout' ? 'autonomous-input' : undefined };
         const autonomousResult = { ...result, user_message_uuid: undefined };
         const firstResult = legacyFollowUp ? { ...autonomousResult, local_command: 'compact' } : result;
+        const foreignResults = [result, autonomousResult].map((message) => ({
+            ...message, session_id: legacyFollowUp ? priorId : resultId
+        }));
         let followUpResult: SDKMessage | undefined;
+        let laterFollowUpResult: SDKMessage | undefined;
         let compactResult: SDKMessage | undefined;
 
         queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string; message: { content: string } }> }) => ({
@@ -557,6 +562,7 @@ describe('claudeRemote in-process /clear', () => {
                 if (interveningCompact) {
                     const compact = await input.next();
                     expect(compact.value?.message.content).toBe('/compact');
+                    yield { type: 'system', subtype: 'status', session_id: priorId, compact_result: 'failed' };
                     yield { type: 'system', subtype: 'status', status: 'compacting' };
                     compactResult = { ...result, session_id: resultId, user_message_uuid: compact.value?.uuid };
                     yield compactResult;
@@ -588,17 +594,26 @@ describe('claudeRemote in-process /clear', () => {
                         yield { type: 'user', isReplay: true, uuid: followUp.value?.uuid };
                     }
                     if (hasFollowUpResult) {
-                        yield result;
-                        yield autonomousResult;
+                        yield* foreignResults;
                         expect(order.at(-1)).toBe('follow-up');
                         followUpResult = { ...result, session_id: resultId, user_message_uuid: legacyFollowUp ? undefined : followUp.value?.uuid };
                         yield followUpResult;
+                    }
+                    if (hasLaterFollowUp) {
+                        const laterFollowUp = await input.next();
+                        expect(laterFollowUp.value?.message.content).toBe('later follow-up');
+                        yield { type: 'system', subtype: 'init', session_id: priorId };
+                        yield autonomousResult;
+                        expect(order.at(-1)).toBe('later follow-up');
+                        laterFollowUpResult = { ...result, session_id: resultId, user_message_uuid: laterFollowUp.value?.uuid };
+                        yield laterFollowUpResult;
                     }
                 }
             }
         }));
 
-        const inputs = ['first', '/clear', ...(interveningCompact ? ['/compact'] : []), 'follow-up'];
+        const inputs = ['first', '/clear', ...(interveningCompact ? ['/compact'] : []), 'follow-up',
+            ...(hasLaterFollowUp ? ['later follow-up'] : [])];
         if (timesOut) vi.useFakeTimers();
         try {
             const execution = claudeRemote({
@@ -610,7 +625,7 @@ describe('claudeRemote in-process /clear', () => {
                 nextMessage: async (correlatesResults, signal) => {
                     const message = inputs.shift();
                     if (message === '/clear') expect(correlatesResults).toBe(true);
-                    if (message === '/clear' || message === '/compact' || message === 'follow-up') order.push(message);
+                    if (message && message !== 'first') order.push(message);
                     if (message === 'follow-up' && outcome === 'result-eof') {
                         signal?.addEventListener('abort', () => finishFollowUp.resolve(undefined), { once: true });
                         dequeuedFollowUp.resolve(undefined);
@@ -657,7 +672,8 @@ describe('claudeRemote in-process /clear', () => {
                 expect(order).toEqual(success
                     ? [`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset',
                         ...(interveningCompact ? ['/compact', 'accepted', '📦 Compacted'] : []),
-                        'follow-up', ...(hasFollowUpResult ? ['ready'] : [])]
+                        'follow-up', ...(hasFollowUpResult ? ['ready'] : []),
+                        ...(hasLaterFollowUp ? ['later follow-up', 'ready'] : [])]
                     : [`session:${priorId}`, 'ready', '/clear', 'accepted', completion, 'follow-up']);
             }
             expect(clearContextTokens).toEqual(success || lateRotation ? [0] : []);
@@ -668,9 +684,9 @@ describe('claudeRemote in-process /clear', () => {
             const forwardedResults = forwarded.filter((message) => message.type === 'result');
             const expectedResults = [firstResult, result];
             if (timesOut && outcome !== 'silent-timeout') expectedResults.push(unmatchedResult);
-            if (outcome === 'unacknowledged-input-eof') expectedResults.push(result);
             if (compactResult) expectedResults.push({ ...compactResult, hapi_compact_turn: true });
-            if (followUpResult) expectedResults.push(result, autonomousResult, followUpResult);
+            if (followUpResult) expectedResults.push(...(legacyFollowUp ? [] : foreignResults), followUpResult);
+            if (laterFollowUpResult) expectedResults.push(laterFollowUpResult);
             expect(forwardedResults).toEqual(expectedResults);
         } finally {
             finishFollowUp.resolve(undefined);
