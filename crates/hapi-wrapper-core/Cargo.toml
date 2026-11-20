@@ -18,9 +18,11 @@ serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 futures-util = { version = "0.3", features = ["sink", "std"], default-features = false }
 uuid = { version = "1", features = ["v4"] }
 percent-encoding = "2"
+sha2 = "0.11"
+base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.32", features = ["signal", "hostname"] }
+nix = { version = "0.32", features = ["signal", "hostname", "fs"] }
 
 [dev-dependencies]
 tokio = { version = "1.54", features = ["test-util", "process", "io-util"] }
