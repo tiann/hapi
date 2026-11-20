@@ -581,10 +581,12 @@ describe('NewSession launch preferences', () => {
         fireEvent.click(screen.getByTestId('model'))
         expect(tier).toHaveValue('ultrafast')
         await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
+        expect(screen.getByText('newSession.ultrafastNeedsModel')).toBeInTheDocument()
         mocks.nextModelValue = 'gpt-6.2-sol'
         fireEvent.click(screen.getByTestId('model'))
         await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
         expect(tier).toHaveValue('ultrafast')
+        expect(screen.queryByText('newSession.ultrafastNeedsModel')).not.toBeInTheDocument()
     })
 
     it('sends a saved Ultrafast choice for execution-time validation when the current catalog omits it', async () => {

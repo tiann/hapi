@@ -536,6 +536,7 @@ export default {
   'newSession.collaborationMode': 'コラボレーションモード',
   'newSession.copilotAgentMode': 'Agent モード',
   'newSession.fastMode': '高速モード',
+  'newSession.ultrafastNeedsModel': 'Ultrafast を使うには一覧からモデルを選択してください。別のサービスティアに変更することもできます。',
   'newSession.yolo': 'YOLO モード',
   'newSession.yolo.title': '承認とサンドボックスをバイパス',
   'newSession.yolo.desc': '起動時に危険なエージェントフラグを使用します。',

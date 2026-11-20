@@ -576,8 +576,8 @@ export class SharedCodexQueue {
             }
             const queued = nativeIds.size > 0 && (await this.list()).some(item => nativeIds.has(item.id));
             if (!canResume()) return;
-            this.deferredStarts.clear();
             if (queued) await this.client.request('thread/queue/start', { threadId: this.threadId });
+            this.deferredStarts.clear();
         });
     }
     private async enqueueLegacy(id: string, input: QueueInput, resumeInterrupted: boolean): Promise<void> {

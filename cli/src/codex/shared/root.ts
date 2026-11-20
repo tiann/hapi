@@ -709,7 +709,11 @@ export class SharedCodexRoot {
                     logger.debug('[Codex shared] reconnect', error); await new Promise(resolve => setTimeout(resolve, 1_000));
                 }
             }
-        } finally { this.reconnecting = false; this.publishSteering(); this.publishPlan(); }
+        } finally {
+            this.reconnecting = false;
+            this.publishSteering(); this.publishPlan();
+            this.resumeDeferredQueue();
+        }
     }
     private settingsWrites: Promise<unknown> = Promise.resolve();
     applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
@@ -801,10 +805,13 @@ export class SharedCodexRoot {
         this.publishSteering();
         if (paused && this.activated) {
             this.alive(); this.inputReady(); this.session.emitSessionReady();
-            void this.queue.resumeDeferredStart(() => this.interrupted && !this.currentTurn && !this.closed
-                && !this.stopping && !this.needsTierConfirmation && this.client.isInitialized())
-                .catch(error => logger.debug('[Codex shared] deferred queue start', error));
+            this.resumeDeferredQueue();
         }
+    }
+    private resumeDeferredQueue(): void {
+        void this.queue.resumeDeferredStart(() => this.interrupted && !this.currentTurn && !this.closed
+            && !this.stopping && !this.reconnecting && !this.needsTierConfirmation && this.client.isInitialized())
+            .catch(error => logger.debug('[Codex shared] deferred queue start', error));
     }
     /** Resolve native intent without committing settings before input is accepted. */
     private async resolveNativeSettings(params: Record<string, unknown>, operationDeadline = Date.now() + 25_000): Promise<{ params: Record<string, unknown>; fallbackNotice?: string }> {

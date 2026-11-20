@@ -461,6 +461,7 @@ export default {
   'newSession.collaborationMode': 'Режим совместной работы',
   'newSession.copilotAgentMode': 'Режим агента',
   'newSession.fastMode': 'Быстрый режим',
+  'newSession.ultrafastNeedsModel': 'Выберите модель из списка для Ultrafast или смените режим.',
   'newSession.yolo': 'Режим YOLO',
   'newSession.yolo.title': 'Обойти подтверждения и песочницу',
   'newSession.yolo.desc': 'Использует опасные флаги агента при запуске.',

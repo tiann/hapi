@@ -2617,6 +2617,8 @@ export function NewSession(props: {
                 ultrafastAvailable={showCodexUltrafastMode}
                 keepExistingTier={importingCodex}
                 verifySavedUltrafastOnLaunch={verifySavedUltrafastOnLaunch}
+                ultrafastNeedsModel={agent === 'codex' && selectedTier === 'ultrafast' && !importingCodex
+                    && !codexModelsState.isLoading && !codexModelsState.error && !hasExplicitCatalogModel}
                 availabilityUnverified={agent === 'codex' && Boolean(codexModelsState.error) && (importingCodex || selectedTier !== 'default' && selectedTier !== 'standard')}
                 value={selectedTier}
                 isDisabled={isFormDisabled}

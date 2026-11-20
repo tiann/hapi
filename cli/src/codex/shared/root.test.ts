@@ -302,14 +302,22 @@ it.each([false, true])('holds input paused during queue preflight and submits it
     expect(request.mock.calls.some(([method]) => method === (batch ? 'thread/queue/update' : 'thread/queue/add'))).toBe(true);
 });
 
-it('starts an interrupted native queue after tier recovery without submitting the accepted input again', async () => {
+it.each([false, true])('starts admitted input after tier recovery without re-enqueueing (disconnect %s)', async disconnect => {
     const f = await fixture();
     f.native.thread.turns = [{ id: 'interrupted', status: 'interrupted', items: [] }];
     await f.root.refresh();
     await f.root.activate();
     const original = f.root.client.request.bind(f.root.client);
+    let starts = 0;
     const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
-        if (method === 'thread/queue/start') return {};
+        if (method === 'thread/queue/start') {
+            if (++starts === 1 && disconnect) {
+                f.native.initialized = false;
+                f.native.abandoned();
+                throw new Error('fixture Codex connection closed before queue start');
+            }
+            return {};
+        }
         const response = await original(method, params);
         if (method === 'thread/queue/add') {
             const root = f.root as unknown as { pauseTierConfirmation: (operationId: number) => void; tierOperationCounter: number };
@@ -324,7 +332,8 @@ it('starts an interrupted native queue after tier recovery without submitting th
     });
     expect(request.mock.calls.some(([method]) => method === 'thread/queue/start')).toBe(false);
     await f.root.applySettings({ serviceTier: 'standard' });
-    await vi.waitFor(() => expect(request.mock.calls.filter(([method]) => method === 'thread/queue/start')).toHaveLength(1));
+    await vi.waitFor(() => expect(starts).toBe(disconnect ? 2 : 1));
+    if (disconnect) expect(request).toHaveBeenCalledWith('thread/read', expect.objectContaining({ threadId: 'thread' }));
     expect(request.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(1);
 });
 

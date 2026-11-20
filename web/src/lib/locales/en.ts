@@ -582,6 +582,7 @@ export default {
   'newSession.collaborationMode': 'Collaboration mode',
   'newSession.copilotAgentMode': 'Agent mode',
   'newSession.fastMode': 'Fast mode',
+  'newSession.ultrafastNeedsModel': 'Choose a listed model to use Ultrafast, or select another service tier.',
   'newSession.yolo': 'YOLO mode',
   'newSession.yolo.title': 'Bypass approvals and sandbox',
   'newSession.yolo.desc': 'Uses dangerous agent flags when spawning.',

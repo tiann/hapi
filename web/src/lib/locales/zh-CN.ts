@@ -580,6 +580,7 @@ export default {
   'newSession.collaborationMode': '协作模式',
   'newSession.copilotAgentMode': '代理模式',
   'newSession.fastMode': '快速模式',
+  'newSession.ultrafastNeedsModel': '要使用 Ultrafast，请从列表中选择模型，或改用其他服务档位。',
   'newSession.yolo': 'YOLO 模式',
   'newSession.yolo.title': '跳过审批和沙箱',
   'newSession.yolo.desc': '启动时使用危险的代理标志。',
