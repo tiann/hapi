@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { SelectControl } from '@/components/ui/select-control'
 import { Spinner } from '@/components/Spinner'
 import { IssueFormFieldView } from '@/components/IssueFormField'
-import { getApiErrorCode, getApiErrorMessage, getApiErrorUrl } from '@/lib/apiErrorMessage'
+import { getApiErrorCode, getApiErrorMessage, getApiErrorRecoveryToken, getApiErrorUrl } from '@/lib/apiErrorMessage'
 import { useTranslation } from '@/lib/use-translation'
 import {
     formatIssueBody,
@@ -54,7 +54,7 @@ export type NewCardDialogProps = {
      */
     onTemplateConflict: () => void
     onRepoChange: (repo: string | null) => void
-    onSubmit: (payload: { repo: string; title: string; body: string; answers?: IssueFormAnswer[]; templateId: string | null; templateRevision: string | null; existingIssueUrl?: string; labels: string[]; assignees: string[] }) => Promise<string>
+    onSubmit: (payload: { repo: string; title: string; body: string; answers?: IssueFormAnswer[]; templateId: string | null; templateRevision: string | null; recoveryToken?: string; labels: string[]; assignees: string[] }) => Promise<string>
 }
 
 /**
@@ -85,6 +85,13 @@ export function NewCardDialog(props: NewCardDialogProps) {
     // (operator ruling, hapi#238): the user has an orphaned issue to go
     // handle by hand, and a bare "closed dialog" would hide that entirely.
     const [orphanedIssueUrl, setOrphanedIssueUrl] = useState<string | null>(null)
+    // The actual retry-authorization input (review finding, tiann/hapi#2147,
+    // follow-up) — orphanedIssueUrl above is display-only now; the hub
+    // trusts only this hub-signed token, never a URL the client echoes
+    // back, so an owner-namespace request can't point a retry at an
+    // arbitrary issue in the repo and have the hub edit its assignees or
+    // attach it to the board. Always set together with orphanedIssueUrl.
+    const [orphanedRecoveryToken, setOrphanedRecoveryToken] = useState<string | null>(null)
     // Snapshot of exactly what was submitted when orphanedIssueUrl was set
     // (review finding, hapi#238, follow-up): the retry-attach path only
     // ever attaches that already-created issue, ignoring title/body, so an
@@ -118,6 +125,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
         setAnswers({})
         setError(null)
         setOrphanedIssueUrl(null)
+        setOrphanedRecoveryToken(null)
         setOrphanedSubmissionSnapshot(null)
         setIsSubmitting(false)
     }, [isOpen]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -194,6 +202,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
                 && orphanedSubmissionSnapshot.templateId === (selectedTemplate?.id ?? null)
             if (!unchanged) {
                 setOrphanedIssueUrl(null)
+                setOrphanedRecoveryToken(null)
                 setOrphanedSubmissionSnapshot(null)
             }
         }
@@ -220,12 +229,16 @@ export function NewCardDialog(props: NewCardDialogProps) {
                 // Retrying after a partial failure attaches the issue that
                 // already exists rather than creating a second one (review
                 // finding, hapi#238) — only present once a prior attempt's
-                // create succeeded but its project-attach step didn't.
-                existingIssueUrl: orphanedIssueUrl ?? undefined,
+                // create succeeded but its project-attach and/or
+                // assignee-application step didn't. A hub-signed token, not
+                // the url itself (review finding, tiann/hapi#2147,
+                // follow-up) — see orphanedRecoveryToken's own comment.
+                recoveryToken: orphanedRecoveryToken ?? undefined,
                 labels: selectedTemplate?.labels ?? [],
                 assignees: selectedTemplate?.assignees ?? []
             })
             setOrphanedIssueUrl(null)
+            setOrphanedRecoveryToken(null)
             setOrphanedSubmissionSnapshot(null)
             onClose()
         } catch (err) {
@@ -246,10 +259,16 @@ export function NewCardDialog(props: NewCardDialogProps) {
             // Keep showing the previously-known orphaned issue (if any) when
             // this retry's own failure carries no URL of its own — a
             // transient network error on the attach retry must not make the
-            // already-created issue's link disappear from view.
+            // already-created issue's link disappear from view. Same for
+            // the recovery token (review finding, tiann/hapi#2147,
+            // follow-up): a transient failure here (e.g. this exact request
+            // never reached the hub) carries neither, and the previous
+            // token is still the only valid one to retry with.
             const url = getApiErrorUrl(err)
-            if (url) {
+            const recoveryToken = getApiErrorRecoveryToken(err)
+            if (url && recoveryToken) {
                 setOrphanedIssueUrl(url)
+                setOrphanedRecoveryToken(recoveryToken)
                 setOrphanedSubmissionSnapshot({ repo: repoInput.trim(), title: finalTitle, body: formattedBody, templateId: selectedTemplate?.id ?? null })
             }
         } finally {

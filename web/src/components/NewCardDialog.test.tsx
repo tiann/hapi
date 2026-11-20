@@ -224,11 +224,11 @@ describe('NewCardDialog', () => {
     // Regression (bot review, hapi#238): a retry after "issue created, but
     // not added to the board" used to resubmit the exact same payload,
     // filing a second, duplicate issue instead of retrying only the attach.
-    it('retries only the attach step (existingIssueUrl) after a partial create-but-not-attached failure', async () => {
+    it('retries only the attach step (recoveryToken) after a partial create-but-not-attached failure', async () => {
         const onSubmit = vi.fn()
             .mockRejectedValueOnce(new ApiError(
                 'Issue created at https://github.com/heavygee/hapi/issues/42 but could not be added to the board: boom',
-                502, undefined, JSON.stringify({ url: 'https://github.com/heavygee/hapi/issues/42' })
+                502, undefined, JSON.stringify({ url: 'https://github.com/heavygee/hapi/issues/42', recoveryToken: 'signed-recovery-token' })
             ))
             .mockResolvedValueOnce('https://github.com/heavygee/hapi/issues/42')
         renderDialog({ templates: [], blankAllowed: true, onSubmit })
@@ -254,7 +254,7 @@ describe('NewCardDialog', () => {
                 body: 'Plain body text',
                 templateId: null,
                 templateRevision: null,
-                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42',
+                recoveryToken: 'signed-recovery-token',
                 labels: [],
                 assignees: []
             })
@@ -270,7 +270,7 @@ describe('NewCardDialog', () => {
         const onSubmit = vi.fn()
             .mockRejectedValueOnce(new ApiError(
                 'Issue created at https://github.com/heavygee/hapi/issues/42 but could not be added to the board: boom',
-                502, undefined, JSON.stringify({ url: 'https://github.com/heavygee/hapi/issues/42' })
+                502, undefined, JSON.stringify({ url: 'https://github.com/heavygee/hapi/issues/42', recoveryToken: 'signed-recovery-token' })
             ))
             .mockResolvedValueOnce('https://github.com/heavygee/hapi/issues/99')
         renderDialog({ templates: [], blankAllowed: true, onSubmit })
@@ -302,7 +302,7 @@ describe('NewCardDialog', () => {
                 body: 'Original body',
                 templateId: null,
                 templateRevision: null,
-                existingIssueUrl: undefined,
+                recoveryToken: undefined,
                 labels: [],
                 assignees: []
             })
@@ -319,7 +319,7 @@ describe('NewCardDialog', () => {
         const onSubmit = vi.fn()
             .mockRejectedValueOnce(new ApiError(
                 'Issue created at https://github.com/heavygee/hapi/issues/42 but could not be added to the board: boom',
-                502, undefined, JSON.stringify({ url: 'https://github.com/heavygee/hapi/issues/42' })
+                502, undefined, JSON.stringify({ url: 'https://github.com/heavygee/hapi/issues/42', recoveryToken: 'signed-recovery-token' })
             ))
             .mockResolvedValueOnce('https://github.com/heavygee/hapi/issues/42')
         renderDialog({ templates: [], blankAllowed: true, onSubmit })
@@ -348,7 +348,7 @@ describe('NewCardDialog', () => {
                 body: 'Original body',
                 templateId: null,
                 templateRevision: null,
-                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42',
+                recoveryToken: 'signed-recovery-token',
                 labels: [],
                 assignees: []
             })
@@ -392,7 +392,7 @@ describe('NewCardDialog', () => {
         const onSubmit = vi.fn()
             .mockRejectedValueOnce(new ApiError(
                 'Issue created at https://github.com/heavygee/repo-a/issues/42 but could not be added to the board: boom',
-                502, undefined, JSON.stringify({ url: 'https://github.com/heavygee/repo-a/issues/42' })
+                502, undefined, JSON.stringify({ url: 'https://github.com/heavygee/repo-a/issues/42', recoveryToken: 'signed-recovery-token' })
             ))
             .mockResolvedValueOnce('https://github.com/heavygee/repo-b/issues/99')
         renderDialog({ templates: [], blankAllowed: true, onSubmit })
@@ -429,7 +429,7 @@ describe('NewCardDialog', () => {
                 body: '',
                 templateId: null,
                 templateRevision: null,
-                existingIssueUrl: undefined,
+                recoveryToken: undefined,
                 labels: [],
                 assignees: []
             })
@@ -555,7 +555,8 @@ describe('NewCardDialog', () => {
     it('surfaces the orphaned issue\'s own URL as a link when the issue was created but adding it to the board failed', async () => {
         const apiError = new ApiError('HTTP 502', 502, undefined, JSON.stringify({
             error: 'Issue created at https://github.com/heavygee/hapi/issues/42 but could not be added to the board: boom',
-            url: 'https://github.com/heavygee/hapi/issues/42'
+            url: 'https://github.com/heavygee/hapi/issues/42',
+            recoveryToken: 'signed-recovery-token'
         }))
         const onSubmit = vi.fn().mockRejectedValue(apiError)
         const { props } = renderDialog({ templates: [], blankAllowed: true, onSubmit })
@@ -570,5 +571,30 @@ describe('NewCardDialog', () => {
         const link = await screen.findByRole('link', { name: 'https://github.com/heavygee/hapi/issues/42' })
         expect(link).toHaveAttribute('href', 'https://github.com/heavygee/hapi/issues/42')
         expect(props.onClose).not.toHaveBeenCalled()
+    })
+
+    // Bot review, tiann/hapi#2147, follow-up: without a recoveryToken there
+    // is no safe way to retry at all (a url alone used to be enough, which
+    // is exactly the trust the fix removes) — a malformed/legacy error body
+    // carrying url but no token must not offer a retry affordance the hub
+    // would then reject anyway.
+    it('does not offer a retry affordance when the error carries a url but no recoveryToken', async () => {
+        const apiError = new ApiError('HTTP 502', 502, undefined, JSON.stringify({
+            error: 'Issue created at https://github.com/heavygee/hapi/issues/42 but could not be added to the board: boom',
+            url: 'https://github.com/heavygee/hapi/issues/42'
+        }))
+        const onSubmit = vi.fn().mockRejectedValue(apiError)
+        renderDialog({ templates: [], blankAllowed: true, onSubmit })
+
+        fireEvent.change(screen.getByPlaceholderText('owner/repo'), { target: { value: 'heavygee/hapi' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(await screen.findByText('Open a blank issue'))
+        fireEvent.change(screen.getAllByRole('textbox')[0]!, { target: { value: 'T' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Create issue' }))
+
+        await screen.findByText('Issue created at https://github.com/heavygee/hapi/issues/42 but could not be added to the board: boom')
+        expect(screen.queryByRole('link', { name: 'https://github.com/heavygee/hapi/issues/42' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Retry adding to board' })).toBeNull()
     })
 })

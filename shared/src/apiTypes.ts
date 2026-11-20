@@ -1732,11 +1732,17 @@ export const CreateBoardItemRequestSchema = z.object({
     // check).
     templateRevision: z.string().nullable(),
     // Set on a retry after a prior submission's issue was created but
-    // project-attachment failed (review finding, hapi#238) — resubmitting
-    // without this re-ran the whole create+attach flow and filed a second,
-    // duplicate issue instead of retrying just the attach step for the one
-    // that already exists.
-    existingIssueUrl: z.string().url().optional()
+    // project-attachment and/or assignee-application failed (review
+    // finding, hapi#238; tightened tiann/hapi#2147, follow-up). A hub-signed
+    // token, not a bare URL+assignees pair the client supplies: an
+    // owner-namespace request could otherwise point this at an arbitrary
+    // issue in the right repo and have the hub edit its assignees or attach
+    // it to the board, despite Boards never having created it. The token
+    // (`signBoardItemRecoveryToken`/`verifyBoardItemRecoveryToken`, hub-side)
+    // binds the board, repo, issue url, and the assignees the hub itself
+    // originally resolved for that submission — the hub trusts only what's
+    // embedded in a token it signed, never anything the client echoes back.
+    recoveryToken: z.string().optional()
 })
 export type CreateBoardItemRequest = z.infer<typeof CreateBoardItemRequestSchema>
 

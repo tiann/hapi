@@ -7,6 +7,7 @@ import { Hono } from 'hono'
 import type { BoardItemsResponse, BoardsResponse } from '@hapi/protocol'
 import type { WebAppEnv } from '../middleware/auth'
 import { createBoardRoutes, CreateIssueAssigneesFailedError, fetchAllItemComments, fetchAllProjectItems, GhGraphqlNotFoundError, isGhVersionBelow, makeBoardId, parseGhVersion, parseProjectUrl, parseValidatedItemUrl, PROJECT_QUERY, PROJECT_QUERY_FILTERED, resolveProjectView } from './todoBoard'
+import { signBoardItemRecoveryToken, verifyBoardItemRecoveryToken } from '../authTokens'
 
 const ENV_KEYS = [
     'HAPI_BOARD_HOST',
@@ -53,7 +54,9 @@ afterEach(async () => {
     await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
-const UNUSED_ACTIONS: Parameters<typeof createBoardRoutes>[4] = {
+const TEST_JWT_SECRET = new TextEncoder().encode('todo-board-test-secret')
+
+const UNUSED_ACTIONS: Parameters<typeof createBoardRoutes>[5] = {
     close: async () => { throw new Error('close action not mocked for this test') },
     reopen: async () => { throw new Error('reopen action not mocked for this test') },
     comment: async () => { throw new Error('comment action not mocked for this test') },
@@ -70,20 +73,20 @@ const UNUSED_ACTIONS: Parameters<typeof createBoardRoutes>[4] = {
 // describe block). Echoes the target's own owner/number back so it always
 // satisfies isMemberOfProject's comparison, regardless of which board/env
 // config a given test uses.
-const ALWAYS_MEMBER: Parameters<typeof createBoardRoutes>[5] = (target) => ({
+const ALWAYS_MEMBER: Parameters<typeof createBoardRoutes>[6] = (target) => ({
     data: { resource: { projectItems: { nodes: [{ project: { number: target.projectNumber, owner: { login: target.ownerLogin } } }] } } }
 })
 
 async function createApp(
-    runGraphql: Parameters<typeof createBoardRoutes>[1],
-    runGraphqlTitle?: Parameters<typeof createBoardRoutes>[2],
+    runGraphql: Parameters<typeof createBoardRoutes>[2],
+    runGraphqlTitle?: Parameters<typeof createBoardRoutes>[3],
     namespace = 'default',
-    runGraphqlView?: Parameters<typeof createBoardRoutes>[3],
-    actions?: Parameters<typeof createBoardRoutes>[4],
-    runGraphqlMembership?: Parameters<typeof createBoardRoutes>[5],
-    runGraphqlAssignableUsers?: Parameters<typeof createBoardRoutes>[6],
-    runGraphqlIssueTemplateDir?: Parameters<typeof createBoardRoutes>[7],
-    runGraphqlComments?: Parameters<typeof createBoardRoutes>[8]
+    runGraphqlView?: Parameters<typeof createBoardRoutes>[4],
+    actions?: Parameters<typeof createBoardRoutes>[5],
+    runGraphqlMembership?: Parameters<typeof createBoardRoutes>[6],
+    runGraphqlAssignableUsers?: Parameters<typeof createBoardRoutes>[7],
+    runGraphqlIssueTemplateDir?: Parameters<typeof createBoardRoutes>[8],
+    runGraphqlComments?: Parameters<typeof createBoardRoutes>[9]
 ) {
     const dataDir = await mkdtemp(join(tmpdir(), 'hapi-todo-board-'))
     directories.push(dataDir)
@@ -97,6 +100,7 @@ async function createApp(
     // accidentally make a network call just because they didn't pass a mock.
     app.route('/api', createBoardRoutes(
         dataDir,
+        TEST_JWT_SECRET,
         runGraphql,
         runGraphqlTitle ?? (() => ({ data: { repositoryOwner: {} } })),
         runGraphqlView ?? (() => ({ data: { repositoryOwner: {} } })),
@@ -2668,10 +2672,15 @@ body:
             body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null })
         })
         expect(response.status).toBe(502)
-        const body = await response.json() as { error: string; url: string }
+        const body = await response.json() as { error: string; url: string; recoveryToken: string }
         expect(body.error).toContain('https://github.com/heavygee/hapi/issues/42')
         expect(body.error).toContain('could not find user "ghost"')
         expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
+        // The token must bind the exact board/repo/url/assignees this
+        // submission resolved — not just be present (bot review,
+        // tiann/hapi#2147, follow-up).
+        const claims = await verifyBoardItemRecoveryToken(TEST_JWT_SECRET, body.recoveryToken)
+        expect(claims).toEqual({ boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: [] })
     })
 
     it('surfaces a failed createIssue as a 502 without attempting to add anything to the project', async () => {
@@ -2700,26 +2709,31 @@ body:
             body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null })
         })
         expect(response.status).toBe(502)
-        const body = await response.json() as { error: string; url: string }
+        const body = await response.json() as { error: string; url: string; recoveryToken: string }
         expect(body.error).toContain('https://github.com/heavygee/hapi/issues/42')
         expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
+        const claims = await verifyBoardItemRecoveryToken(TEST_JWT_SECRET, body.recoveryToken)
+        expect(claims).toEqual({ boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: [] })
     })
 
     // Regression (bot review, hapi#238): a retry after "created but not
     // added to board" used to re-run createIssue too, filing a second,
-    // duplicate issue. existingIssueUrl makes the retry attach-only.
-    it('retries only the project-attach step for an existingIssueUrl, without creating a second issue', async () => {
+    // duplicate issue. A recovery token makes the retry attach-only.
+    it('retries only the project-attach step for a recoveryToken, without creating a second issue', async () => {
         const calls: string[] = []
         const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
             ...UNUSED_ACTIONS,
             createIssue: async () => { calls.push('createIssue'); return 'https://github.com/heavygee/hapi/issues/99' },
             addItemToProject: async (target) => { calls.push(`addItemToProject:${target.issueUrl}`) }
         })
+        const recoveryToken = await signBoardItemRecoveryToken(TEST_JWT_SECRET, {
+            boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: []
+        })
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',
             body: JSON.stringify({
                 repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
-                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42'
+                recoveryToken
             })
         })
         expect(response.status).toBe(200)
@@ -2728,12 +2742,41 @@ body:
         expect(calls).toEqual(['addItemToProject:https://github.com/heavygee/hapi/issues/42'])
     })
 
-    // Review finding (tiann/hapi#2147, follow-up): the dialog's own
-    // draft-comparison can be fooled into retrying one repo's orphaned
-    // issue URL against a since-switched repo — existingIssueUrl must be
-    // validated against the submitted repo here, not trusted as-is, since
-    // this is the actual trust boundary.
-    it('rejects a retry-attach whose existingIssueUrl does not belong to the submitted repo', async () => {
+    // Bot review, tiann/hapi#2147, follow-up: an owner-namespace request
+    // could otherwise point a retry at an arbitrary issue in the right repo
+    // and have the hub edit its assignees or attach it to the board, despite
+    // Boards never having created it — a raw existingIssueUrl field is no
+    // longer accepted at all; the token is the only trust boundary. Also
+    // covers the original repo-mismatch case: a token signed for one repo
+    // must not validate against a submission that changed repos.
+    it('rejects a retry-attach whose recovery token was signed for a different repo', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+            addItemToProject: async (target) => { calls.push(`should-not-be-called:${target.issueUrl}`) }
+        })
+        const recoveryToken = await signBoardItemRecoveryToken(TEST_JWT_SECRET, {
+            boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: []
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/a-different-repo', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                recoveryToken
+            })
+        })
+        expect(response.status).toBe(400)
+        expect(calls).toEqual([])
+    })
+
+    // Bot review, tiann/hapi#2147, follow-up: a raw URL is no longer a valid
+    // way to request a retry at all — it must be a token this hub itself
+    // signed. A bare existingIssueUrl-shaped body (the pre-fix request
+    // shape) must not be mistaken for a fresh creation either, since the
+    // schema no longer has that field; it's simply ignored and this
+    // proceeds as a normal creation attempt.
+    it('rejects an attempt to retry with a garbage/forged recoveryToken', async () => {
         const calls: string[] = []
         const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
             ...UNUSED_ACTIONS,
@@ -2743,8 +2786,34 @@ body:
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',
             body: JSON.stringify({
-                repo: 'heavygee/a-different-repo', title: 'T', body: 'B', templateId: null, templateRevision: null,
-                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42'
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                recoveryToken: 'not-a-real-token'
+            })
+        })
+        expect(response.status).toBe(400)
+        expect(calls).toEqual([])
+    })
+
+    // Bot review, tiann/hapi#2147, follow-up: a token signed for a
+    // different board must not validate just because the repo happens to
+    // match — the board is part of the trust boundary too (a board swap in
+    // the same tab, or a token replayed against a different board on the
+    // same repo).
+    it('rejects a retry-attach whose recovery token was signed for a different board', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+            addItemToProject: async (target) => { calls.push(`should-not-be-called:${target.issueUrl}`) }
+        })
+        const recoveryToken = await signBoardItemRecoveryToken(TEST_JWT_SECRET, {
+            boardId: 'github.com::heavygee::999', repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: []
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                recoveryToken
             })
         })
         expect(response.status).toBe(400)
@@ -2775,11 +2844,14 @@ body:
                 }
             })
         )
+        const recoveryToken = await signBoardItemRecoveryToken(TEST_JWT_SECRET, {
+            boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: []
+        })
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',
             body: JSON.stringify({
                 repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
-                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42'
+                recoveryToken
             })
         })
         expect(response.status).toBe(200)
@@ -2790,8 +2862,12 @@ body:
     // used to only ever re-run addItemToProject, so an assignee-application
     // failure (same { error, url } shape) silently and permanently dropped
     // the assignees once the client retried — this proves the retry path
-    // re-applies them too, before attaching to the project.
-    it('re-applies assignees on a retry-attach, before attaching to the project', async () => {
+    // re-applies them too, before attaching to the project. Also proves the
+    // hub uses the token's OWN assignees, not whatever the request body
+    // separately claims (bot review, tiann/hapi#2147, follow-up): the body
+    // here deliberately sends a different, bogus login the token never
+    // mentions, and it must never reach setAssignees.
+    it('re-applies the token\'s own assignees on a retry-attach, ignoring any assignees in the request body', async () => {
         const calls: string[] = []
         const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
             ...UNUSED_ACTIONS,
@@ -2799,12 +2875,15 @@ body:
             setAssignees: async (target, addLogins, removeLogins) => { calls.push(`setAssignees:${target.url}:${addLogins.join(',')}:${removeLogins.join(',')}`) },
             addItemToProject: async (target) => { calls.push(`addItemToProject:${target.issueUrl}`) }
         })
+        const recoveryToken = await signBoardItemRecoveryToken(TEST_JWT_SECRET, {
+            boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: ['ghost']
+        })
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',
             body: JSON.stringify({
                 repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
-                assignees: ['ghost'],
-                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42'
+                assignees: ['someone-else-entirely'],
+                recoveryToken
             })
         })
         expect(response.status).toBe(200)
@@ -2828,12 +2907,14 @@ body:
             setAssignees: async () => { throw new Error('could not find user "ghost"') },
             addItemToProject: async (target) => { calls.push(`addItemToProject:${target.issueUrl}`) }
         })
+        const recoveryToken = await signBoardItemRecoveryToken(TEST_JWT_SECRET, {
+            boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: ['ghost']
+        })
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',
             body: JSON.stringify({
                 repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
-                assignees: ['ghost'],
-                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42'
+                recoveryToken
             })
         })
         expect(response.status).toBe(200)

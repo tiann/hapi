@@ -37,6 +37,26 @@ export function getApiErrorUrl(err: unknown): string | null {
 }
 
 /**
+ * Extracts an optional hub-signed `recoveryToken` from an error body — the
+ * create-card partial-failure response (issue created, then assignees
+ * and/or project-attach failed) carries one so a retry can be trusted
+ * without the client re-submitting the issue's url/assignees as free-form
+ * fields the hub would otherwise have to take on faith (review finding,
+ * tiann/hapi#2147, follow-up).
+ */
+export function getApiErrorRecoveryToken(err: unknown): string | null {
+    if (err instanceof ApiError && err.body) {
+        try {
+            const parsed = JSON.parse(err.body) as { recoveryToken?: unknown }
+            if (typeof parsed.recoveryToken === 'string' && parsed.recoveryToken.trim()) return parsed.recoveryToken
+        } catch {
+            // fall through
+        }
+    }
+    return null
+}
+
+/**
  * Extracts an optional machine-readable `code` the hub attached to an error
  * body — distinct from the human-readable `error` message, which can vary
  * in wording across the several conditions that share one code (review

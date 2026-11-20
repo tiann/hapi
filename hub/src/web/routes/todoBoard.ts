@@ -28,6 +28,7 @@ import { GithubRepoSlugSchema } from '@hapi/protocol/schemas'
 import type { WebAppEnv } from '../middleware/auth'
 import { getSettingsFile, readSettingsOrThrow, updateSettings, type StoredTodoBoard } from '../../config/settings'
 import { hasRequiredLegacyTemplateFrontmatter, parseIssueFormYaml, parseIssueTemplateConfig, parseLegacyIssueTemplate } from './issueTemplateParser'
+import { signBoardItemRecoveryToken, verifyBoardItemRecoveryToken } from '../authTokens'
 
 /**
  * First shippable slice of the board view (hapi#235): GitHub Projects
@@ -1474,6 +1475,7 @@ const OWNER_ONLY_ERROR = 'To-do boards are only available to the hub owner'
 
 export function createBoardRoutes(
     dataDir: string,
+    jwtSecret: Uint8Array,
     runGraphql: (target: ProjectQueryTarget) => GhProjectV2Response | Promise<GhProjectV2Response> = runGhGraphql,
     runGraphqlTitle: (target: ProjectLookupTarget) => GhProjectTitleResponse | Promise<GhProjectTitleResponse> = runGhGraphqlTitle,
     runGraphqlView: (target: ProjectViewLookupTarget) => GhProjectViewResponse | Promise<GhProjectViewResponse> = runGhGraphqlView,
@@ -2088,7 +2090,7 @@ export function createBoardRoutes(
         // this submit. A 409 here preserves the client's draft (it never
         // clears on a failed submit) rather than filing something the repo's
         // current policy no longer allows. Skipped on a retry-attach
-        // (existingIssueUrl set): that issue was already created under the
+        // (recoveryToken set): that issue was already created under the
         // policy that applied at the time, and this request creates nothing
         // new — only (re)attaching it to the project.
         //
@@ -2110,7 +2112,7 @@ export function createBoardRoutes(
         let issueBody = parsed.data.body
         let issueLabels = parsed.data.labels
         let issueAssignees = parsed.data.assignees
-        if (!parsed.data.existingIssueUrl) {
+        if (!parsed.data.recoveryToken) {
             const [repoOwner, repoName] = parsed.data.repo.split('/') as [string, string]
             try {
                 const { templates, blankIssuesEnabled } = await resolveIssueTemplatesForRepo(board.host, repoOwner, repoName)
@@ -2160,22 +2162,31 @@ export function createBoardRoutes(
         // some record that the assignees are outstanding (review finding,
         // tiann/hapi#2147, follow-up).
         let assigneesWarning: string | undefined
-        if (parsed.data.existingIssueUrl) {
+        if (parsed.data.recoveryToken) {
             // Retry-attach: the issue already exists from a prior submission
-            // whose project-attach step failed — do not call createIssue
-            // again, or this exact retry would be the duplicate it exists to
-            // prevent (review finding, hapi#238).
+            // whose assignee-application and/or project-attach step failed —
+            // do not call createIssue again, or this exact retry would be
+            // the duplicate it exists to prevent (review finding, hapi#238).
             //
-            // Validated against the submitted repo, not trusted as-is
-            // (review finding, tiann/hapi#2147, follow-up): the dialog's
-            // own draft-comparison can be fooled into retrying issue A's
-            // URL against a since-switched repo B — this is the actual
-            // trust boundary, not a client-side bug fix alone.
-            const validated = parseValidatedItemUrl(parsed.data.existingIssueUrl, board)
-            if (!validated || `${validated.owner}/${validated.repo}`.toLowerCase() !== parsed.data.repo.toLowerCase()) {
-                return c.json({ error: 'The issue being retried does not belong to the submitted repository' }, 400)
+            // Trusts only what's embedded in a token this hub itself signed,
+            // never a client-submitted URL/assignees pair (bot review,
+            // tiann/hapi#2147, follow-up): an owner-namespace request could
+            // otherwise point a retry at an arbitrary issue in the right
+            // repo and have the hub edit its assignees or attach it to the
+            // board, despite Boards never having created it — the regular
+            // assignee-edit route verifies project membership first, and
+            // this retry path had nothing equivalent, since the issue isn't
+            // on the project yet by definition. The `repo` check below is a
+            // belt-and-suspenders sanity check, not the actual trust
+            // boundary; the signature itself is.
+            const claims = await verifyBoardItemRecoveryToken(jwtSecret, parsed.data.recoveryToken)
+            if (!claims || claims.boardId !== board.id || claims.repo.toLowerCase() !== parsed.data.repo.toLowerCase()) {
+                return c.json({ error: 'This retry has expired or no longer matches — start the submission over' }, 400)
             }
-            issueUrl = parsed.data.existingIssueUrl
+            issueUrl = claims.url
+            // From the token, not parsed.data.assignees — the hub's own
+            // original resolution, never whatever the client supplies.
+            issueAssignees = claims.assignees
             // Re-apply assignees too, not just the project attach (review
             // finding, tiann/hapi#2147, follow-up): the prior failure that
             // produced this retry may have been the assignee application
@@ -2223,9 +2234,13 @@ export function createBoardRoutes(
                 // The issue itself exists even though this call failed —
                 // same treatment as the addItemToProject failure below:
                 // report the URL explicitly rather than inviting a retry
-                // that creates a second, duplicate issue.
+                // that creates a second, duplicate issue. The recovery
+                // token binds this exact url+assignees to this board+repo
+                // so the client's eventual retry can be trusted without
+                // re-submitting either as free-form fields.
                 if (error instanceof CreateIssueAssigneesFailedError) {
-                    return c.json({ error: `Issue created at ${error.url} but assignees could not be applied: ${error.message}`, url: error.url }, 502)
+                    const recoveryToken = await signBoardItemRecoveryToken(jwtSecret, { boardId: board.id, repo: parsed.data.repo, url: error.url, assignees: issueAssignees })
+                    return c.json({ error: `Issue created at ${error.url} but assignees could not be applied: ${error.message}`, url: error.url, recoveryToken }, 502)
                 }
                 return c.json({ error: error instanceof Error ? error.message : 'Failed to create issue' }, 502)
             }
@@ -2238,7 +2253,8 @@ export function createBoardRoutes(
             // bare 502 that reads as "nothing happened," which would invite
             // a retry that creates a second, duplicate issue.
             const message = error instanceof Error ? error.message : 'unknown error'
-            return c.json({ error: `Issue created at ${issueUrl} but could not be added to the board: ${message}`, url: issueUrl }, 502)
+            const recoveryToken = await signBoardItemRecoveryToken(jwtSecret, { boardId: board.id, repo: parsed.data.repo, url: issueUrl, assignees: issueAssignees })
+            return c.json({ error: `Issue created at ${issueUrl} but could not be added to the board: ${message}`, url: issueUrl, recoveryToken }, 502)
         }
 
         const body: CreateBoardItemResponse = { ok: true, url: issueUrl, ...(assigneesWarning ? { warning: assigneesWarning } : {}) }

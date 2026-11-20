@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from '@/api/client'
-import { getApiErrorCode, getApiErrorMessage, getApiErrorUrl } from './apiErrorMessage'
+import { getApiErrorCode, getApiErrorMessage, getApiErrorRecoveryToken, getApiErrorUrl } from './apiErrorMessage'
 
 describe('getApiErrorMessage', () => {
     it('extracts the hub\'s { error } message from an ApiError body', () => {
@@ -34,6 +34,26 @@ describe('getApiErrorUrl', () => {
 
     it('returns null for a non-ApiError value', () => {
         expect(getApiErrorUrl(new Error('boom'))).toBeNull()
+    })
+})
+
+describe('getApiErrorRecoveryToken', () => {
+    it('extracts a recoveryToken the hub attached alongside the error, for a partial-failure write', () => {
+        const err = new ApiError('HTTP 502', 502, undefined, JSON.stringify({
+            error: 'Issue created at https://github.com/heavygee/hapi/issues/42 but could not be added to the board: boom',
+            url: 'https://github.com/heavygee/hapi/issues/42',
+            recoveryToken: 'signed.jwt.token'
+        }))
+        expect(getApiErrorRecoveryToken(err)).toBe('signed.jwt.token')
+    })
+
+    it('returns null when the error body carries no recoveryToken', () => {
+        const err = new ApiError('HTTP 502', 502, undefined, JSON.stringify({ error: 'rate limited' }))
+        expect(getApiErrorRecoveryToken(err)).toBeNull()
+    })
+
+    it('returns null for a non-ApiError value', () => {
+        expect(getApiErrorRecoveryToken(new Error('boom'))).toBeNull()
     })
 })
 
