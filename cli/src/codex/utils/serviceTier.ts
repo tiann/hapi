@@ -171,6 +171,7 @@ export async function inheritedResumeTier(client: Pick<CodexAppServerClient, 're
         if (tier === 'standard') return { ...params, serviceTier: null };
         if (tier === 'fast') return { ...params, serviceTier: 'priority' };
         if (tier === 'ultrafast') return { ...params, serviceTier: 'ultrafast' };
+        if (tier === 'flex') return { ...params, serviceTier: 'flex' };
     }
     if (explicit !== false) return params;
     const configured = (await client.readConfig({ cwd, includeLayers: false })).config.service_tier;

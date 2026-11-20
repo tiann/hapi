@@ -1781,19 +1781,59 @@ it('accepts null as an explicit Standard reset rather than account inheritance',
     expect(f.root.freshParams().serviceTier).toBe('default');
 });
 
-it('reports a newer Fast selection before an Ultrafast write can be confirmed', async () => {
+it.each(['priority', 'flex'])('preserves a newer %s selection during Ultrafast confirmation', async tier => {
     const f = await fixture(); await f.root.activate();
     const original = f.root.client.request.bind(f.root.client);
     const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
         if (method === 'thread/resume' && f.native.settings.serviceTier === 'ultrafast') {
-            f.native.settings.serviceTier = 'priority';
+            f.native.settings.serviceTier = tier;
         }
         return original(method, params);
     });
-    await expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('superseded by a newer Fast selection');
-    expect(f.native.settings.serviceTier).toBe('priority');
+    await expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('superseded by a newer tier selection');
+    expect(f.native.settings.serviceTier).toBe(tier);
     const writes = request.mock.calls.filter(([method]) => method === 'thread/settings/update');
     expect(writes).toEqual([['thread/settings/update', expect.objectContaining({ serviceTier: 'ultrafast' })]]);
+});
+
+it('does not reset a native Flex turn accepted while an older Ultrafast read is pending', async () => {
+    const f = await fixture(); await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    let entered!: () => void;
+    let release!: (value: unknown) => void;
+    const reading = new Promise<void>(resolve => { entered = resolve; });
+    const snapshot = new Promise<unknown>(resolve => { release = resolve; });
+    let held = false;
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume' && f.native.settings.serviceTier === 'ultrafast' && !held) {
+            held = true; entered();
+            return await snapshot as never;
+        }
+        return original(method, params);
+    });
+    const update = expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('superseded by a newer tier selection');
+    await reading;
+    const choice = await f.root.prepareNativeTurn({ serviceTier: 'flex' });
+    f.native.settings.serviceTier = 'flex';
+    await f.root.confirmNativeTurn(choice.params, true, choice.fallbackNotice, choice.generation);
+    release({ model: 'mock', serviceTier: 'default' });
+    await update;
+    expect(f.root.freshParams().serviceTier).toBe('flex');
+    expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update'))
+        .toEqual([['thread/settings/update', expect.objectContaining({ serviceTier: 'ultrafast' })]]);
+});
+
+it.each([
+    { expectFast: true, effective: 'priority', ready: true },
+    { expectFast: true, effective: 'flex', ready: false },
+    { expectFast: false, effective: 'priority', ready: false },
+])('restores input after cold resume only for the matching Fast override (%j)', async ({ expectFast, effective, ready }) => {
+    const f = await fixture({ initialTierPending: true });
+    await f.root.bind('thread', { model: 'mock', serviceTier: effective, thread: { turns: [] } }, false, expectFast);
+    await f.root.activate();
+    expect(f.metadata().codexTierConfirmationPending).toBe(!ready);
+    expect(f.root.needsTierConfirmation).toBe(!ready);
+    expect(f.sessionReady).toHaveBeenCalledTimes(Number(ready));
 });
 
 it('preserves settings when an active thread provider differs from the startup catalog', async () => {

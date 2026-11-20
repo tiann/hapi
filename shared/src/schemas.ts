@@ -403,7 +403,8 @@ export const MetadataSchema = z.object({
     codexArchivedFork: z.object({
         operationId: z.string().uuid(), childSessionId: z.string().uuid(),
         boundaryLocalId: z.string().optional(), boundaryTurnId: z.string().optional(),
-        nativeSessionId: z.string().optional(), spawnAttempted: z.boolean().optional()
+        nativeSessionId: z.string().optional(), spawnAttempted: z.boolean().optional(),
+        nativeServiceTier: z.literal('flex').optional()
     }).optional(),
     // A timed-out resume can still activate later; retain until native ready or proven stopped.
     codexResumePending: z.object({ machineId: z.string(), nativeSessionId: z.string() }).optional(),

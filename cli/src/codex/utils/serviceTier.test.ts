@@ -222,11 +222,10 @@ it.each([['priority', 'priority'], ['ultrafast', 'ultrafast'], ['default', null]
 it('does not replace explicit or legacy native tier intent', async () => {
     const readConfig = vi.fn();
     expect(await inheritedResumeTier({ readConfig }, { serviceTier: 'ultrafast' }, true, '/project')).toEqual({ serviceTier: 'ultrafast' });
-    expect(await inheritedResumeTier({ readConfig }, {}, true, '/project', 'flex')).toEqual({});
     expect(await inheritedResumeTier({ readConfig }, {}, undefined, '/project')).toEqual({});
     expect(readConfig).not.toHaveBeenCalled();
 });
-it.each([['standard', null], ['fast', 'priority'], ['ultrafast', 'ultrafast']] as const)('restores an explicit saved HAPI %s tier before native resume', async (saved, native) => {
+it.each([['standard', null], ['fast', 'priority'], ['ultrafast', 'ultrafast'], ['flex', 'flex']] as const)('restores an explicit saved %s tier before native resume', async (saved, native) => {
     const readConfig = vi.fn();
     expect(await inheritedResumeTier({ readConfig }, {}, true, '/project', saved)).toEqual({ serviceTier: native });
     expect(await inheritedResumeTier({ readConfig }, { serviceTier: null }, true, '/project', saved)).toEqual({ serviceTier: null });

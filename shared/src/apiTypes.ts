@@ -880,7 +880,8 @@ export const ForkArchivedCodexRequestSchema = z.object({
     sourceSessionId: z.string().uuid(),
     sourceThreadId: z.string().min(1),
     directory: z.string().min(1),
-    boundary: z.object({ localId: z.string().min(1), turnId: z.string().min(1) }).optional()
+    boundary: z.object({ localId: z.string().min(1), turnId: z.string().min(1) }).optional(),
+    nativeServiceTier: z.literal('flex').optional()
 })
 export type ForkArchivedCodexRequest = z.infer<typeof ForkArchivedCodexRequestSchema>
 export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: string; rollbackSafe: boolean }

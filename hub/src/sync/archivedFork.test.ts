@@ -462,10 +462,21 @@ it.each([
         expect(f.engine.getSession(f.source.id)?.serviceTier).toBe(effective);
         if (pending) await f.engine.applySessionConfig(f.source.id, { serviceTier: 'standard' });
         let tier: string | undefined;
+        let nativeTier: string | undefined;
+        const forkNative = f.rpc.forkArchivedCodex;
+        f.rpc.forkArchivedCodex = async (machine, request) => {
+            nativeTier = request.nativeServiceTier;
+            return forkNative(machine, request);
+        };
         const spawn = f.rpc.spawnSession;
-        f.rpc.spawnSession = async (...args) => { tier = args[11]; return spawn.apply(f.rpc, args); };
+        f.rpc.spawnSession = async (...args) => {
+            tier = args[11];
+            if (nativeTier) expect(f.store.sessions.getSession(args[12]!)?.serviceTier).toBe(nativeTier);
+            return spawn.apply(f.rpc, args);
+        };
         expect((await f.engine.forkConversation(f.source.id, 'ns')).type).toBe('success');
         expect(tier).toBe(expected);
+        expect(nativeTier).toBe(effective === 'flex' && !pending ? 'flex' : undefined);
     } finally { f.engine.stop(); }
 });
 

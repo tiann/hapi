@@ -274,7 +274,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         }
         return root.config(tier.params);
     };
-    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, requestedUltrafast = false, downgraded = false, resume?: Reservation) => {
+    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, requestedUltrafast = false, downgraded = false, resume?: Reservation,
+        expectFast = resume?.executionParams.serviceTier === 'priority') => {
         assertRunning();
         const threadId = string(record(response.thread).id);
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
@@ -292,12 +293,15 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             roots.set(threadId, root);
         }
         if (!resume?.rootBound || subscribe && !root.client.isInitialized()) {
-            await root.bind(threadId, response, subscribe);
+            await root.bind(threadId, response, subscribe, expectFast);
             // A new thread starts with zero cumulative usage. Seed once before
             // activation, including when the first bind had to be retried.
             if (freshThread && !resume?.rootBound) root.seedFreshUsage();
             if (resume) resume.rootBound = true;
-        } else root.acceptSettings(response, true);
+        } else {
+            root.acceptSettings(response, true);
+            if (expectFast) root.confirmFastResume(response);
+        }
         assertRunning();
         if (resume?.controlSubscription !== controlGeneration) {
             const generation = controlGeneration;
@@ -674,7 +678,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await root.client.request('thread/unarchive', { threadId });
                 response = record(await root.client.request('thread/resume', params));
             }
-            await bind(root, response, false, options, false, launch.threadParams.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined ? true : undefined, resolved.params.serviceTier === 'ultrafast', downgraded);
+            await bind(root, response, false, options, false, launch.threadParams.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined ? true : undefined,
+                resolved.params.serviceTier === 'ultrafast', downgraded, undefined, resolved.params.serviceTier === 'priority');
         } else root = await create('thread/start', { ...launch.threadParams, cwd: launch.cwd }, undefined, options);
         assertRunning();
         onReady?.({ sessionId: root.session.sessionId, runtime });

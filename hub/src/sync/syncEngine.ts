@@ -2508,7 +2508,9 @@ export class SyncEngine {
             }
             if (!attempt) {
                 attempt = { operationId: randomUUID(), childSessionId: randomUUID(),
-                    ...(messageLocalId ? { boundaryLocalId: messageLocalId, boundaryTurnId: turnId! } : {}) }
+                    ...(messageLocalId ? { boundaryLocalId: messageLocalId, boundaryTurnId: turnId! } : {}),
+                    ...(metadata.codexServiceTierExplicit === true && metadata.codexPendingServiceTier === undefined && source.serviceTier === 'flex'
+                        ? { nativeServiceTier: 'flex' } : {}) }
                 this.setArchivedForkAttempt(source.id, namespace, attempt)
             }
             const childId = attempt.childSessionId
@@ -2536,7 +2538,8 @@ export class SyncEngine {
                 const result = await this.rpcGateway.forkArchivedCodex(machineId, {
                     operationId: attempt.operationId, sourceSessionId: source.id,
                     sourceThreadId: codexSessionId, directory: path,
-                    ...(messageLocalId ? { boundary: { localId: messageLocalId, turnId: turnId! } } : {})
+                    ...(messageLocalId ? { boundary: { localId: messageLocalId, turnId: turnId! } } : {}),
+                    ...(attempt.nativeServiceTier ? { nativeServiceTier: attempt.nativeServiceTier } : {})
                 })
                 if ('error' in result) {
                     if (result.rollbackSafe) {
@@ -2552,11 +2555,17 @@ export class SyncEngine {
             child = this.sessionCache.refreshSession(childId)!
             const updated = this.store.sessions.updateSessionMetadata(childId,
                 { ...child.metadata!, codexSessionId: attempt.nativeSessionId,
-                    codexServiceTierExplicit: source.metadata?.codexServiceTierExplicit,
+                    codexServiceTierExplicit: attempt.nativeServiceTier ? true : source.metadata?.codexServiceTierExplicit,
                     codexPreserveNativeTier: this.codexUsesNativeTier(source.metadata) ? true : undefined
                 }, child.metadataVersion, namespace, { touchUpdatedAt: false })
             if (updated.result !== 'success') throw new Error('Failed to bind native fork to its child')
-            this.sessionCache.refreshSession(childId)
+            if (attempt.nativeServiceTier) {
+                this.store.sessions.setSessionServiceTier(childId, attempt.nativeServiceTier, namespace, { touchUpdatedAt: false })
+            }
+            child = this.sessionCache.refreshSession(childId)
+            if (attempt.nativeServiceTier && child?.serviceTier !== attempt.nativeServiceTier) {
+                throw new Error('Failed to preserve the native tier for the archived fork child')
+            }
             attempt = { ...attempt, spawnAttempted: true }
             this.setArchivedForkAttempt(source.id, namespace, attempt)
             const spawn = await this.rpcGateway.spawnSession(machineId, path, 'codex',

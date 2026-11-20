@@ -61,6 +61,48 @@ vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => 
 // Explicit opt-in: installed official binary, entirely isolated CODEX_HOME, mock Responses API only.
 describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Codex shared runtime', () => {
     afterEach(() => { vi.unstubAllEnvs(); state.sessions.clear(); state.beforeBootstrap = undefined; });
+    it('forks an archived Flex thread against a Standard directory default', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-shared-flex-fork-'));
+        const cwd = join(home, 'work');
+        const ch = join(home, 'codex');
+        await mkdir(cwd); await mkdir(ch);
+        await writeFile(join(ch, 'config.toml'), [
+            'model = "mock-model"', 'model_provider = "mock"', 'service_tier = "default"',
+            '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
+            'wire_api = "responses"', 'requires_openai_auth = false',
+            '[analytics]', 'enabled = false', '[feedback]', 'enabled = false', ''
+        ].join('\n'));
+        vi.stubEnv('CODEX_HOME', ch);
+        const client = new CodexAppServerClient({ cwd });
+        try {
+            await initializeSharedClient(client);
+            const source = await client.request<{ thread: { id: string; cwd: string }; serviceTier: string }>('thread/start', { cwd, serviceTier: 'flex' });
+            expect(source.serviceTier).toBe('flex');
+            await client.request('thread/metadata/update', { threadId: source.thread.id, gitInfo: { branch: null } });
+            await client.request('thread/archive', { threadId: source.thread.id });
+            const archived = await client.request<{ thread: { cwd: string } }>('thread/read', { threadId: source.thread.id, includeTurns: true });
+            const { performArchivedFork } = await import('./archivedFork');
+            const request = { operationId: randomUUID(), sourceSessionId: randomUUID(),
+                sourceThreadId: source.thread.id, directory: archived.thread.cwd, nativeServiceTier: 'flex' as const };
+            const journal = { request, done: false, restoreRequired: false, forkIssued: false };
+            let childTier: unknown;
+            const observe = { request: async <T>(method: string, params?: unknown): Promise<T> => {
+                const result = await client.request<T>(method, params);
+                if (method === 'thread/fork') childTier = record(result).serviceTier;
+                return result;
+            } };
+            const child = await performArchivedFork(observe, request, journal, async () => {}, async () => {});
+            expect(child).not.toBe(source.thread.id);
+            expect(childTier).toBe('flex');
+            await client.request('thread/unarchive', { threadId: child });
+            const { inheritedResumeTier } = await import('../utils/serviceTier');
+            const params = await inheritedResumeTier(client, { threadId: child, excludeTurns: true }, true, cwd, childTier);
+            expect(await client.request('thread/resume', params)).toMatchObject({ thread: { id: child }, serviceTier: 'flex' });
+        } finally {
+            await client.disconnect({ gracefulTimeoutMs: 2_000 });
+            await rm(home, { recursive: true, force: true });
+        }
+    }, 30_000);
     it('releases a failed gateway cold resume for retry from another runtime without pinning inherited tier', async () => {
         const home = await mkdtemp(join(tmpdir(), 'hapi-shared-tier-retry-')); state.home = home;
         const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
