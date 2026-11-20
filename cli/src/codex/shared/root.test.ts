@@ -145,6 +145,10 @@ it('acknowledges cancellation of a held Web message and submits only the remaini
     await f.root.applySettings({ serviceTier: 'standard' });
     await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
     expect(f.native.queue[0].input).toEqual([{ type: 'text', text: 'keep this message' }]);
+    await expect(f.retry('held-canceled', true)).resolves.toBe(true);
+    expect((await f.ledger()).entries['held-canceled']?.canceledBeforeAdmission).toBeUndefined();
+    f.submit('explicit retry text', 'held-canceled');
+    await vi.waitFor(() => expect(f.native.queue.flatMap(entry => entry.input)).toContainEqual({ type: 'text', text: 'explicit retry text' }));
 });
 
 it('does not publish cold-resume readiness before startup controls are registered', async () => {
@@ -356,7 +360,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     return {
 session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
         ledger: async () => JSON.parse(await readFile(join(directory, 'sid.queue.json'), 'utf8')),
-        retry: (id: string) => retryMessage?.(id),
+        retry: (id: string, cancellationAcknowledged?: boolean) => retryMessage?.(id, cancellationAcknowledged),
         cancel: (id: string) => cancelMessage?.(id),
         submit: (text: string, id: string) => userMessage?.({ role: 'user', content: { type: 'text', text } }, id), metadata: () => metadata, state: () => state, updateState,
         drain: () => (root as unknown as { notifications: Promise<void> }).notifications,

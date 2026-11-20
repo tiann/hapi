@@ -113,6 +113,17 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 releaseSnapshot();
                 standard.abort.abort(); await standard.done;
             } finally { releaseSnapshot(); stalledCatalog.mockRestore(); }
+            const legacyCatalog = vi.spyOn(CodexAppServerClient.prototype, 'usesStartupModelCatalog').mockReturnValue(true);
+            const legacyLaunch = vi.spyOn(CodexAppServerClient.prototype, 'supportsEffectiveUltrafastLaunch').mockReturnValue(false);
+            const legacyReadConfig = vi.spyOn(CodexAppServerClient.prototype, 'readConfig');
+            extraSpies.push(legacyCatalog, legacyLaunch, legacyReadConfig);
+            try {
+                const standard = await start({ serviceTier: 'standard' });
+                const standardThread = standard.runtime.sessions[standard.sessionId].threadId;
+                expect(await standard.client.request('thread/resume', { threadId: standardThread, excludeTurns: true })).toMatchObject({ serviceTier: 'default' });
+                expect(legacyReadConfig).not.toHaveBeenCalled();
+                standard.abort.abort(); await standard.done;
+            } finally { legacyCatalog.mockRestore(); legacyLaunch.mockRestore(); legacyReadConfig.mockRestore(); }
             const original = await start(); const threadId = original.runtime.sessions[original.sessionId].threadId;
             original.abort.abort(); await original.done;
             await configure('default');
@@ -334,6 +345,35 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(second.runtime.sessions[fork.sessionId]).toMatchObject({ threadId: webForkThread, active: true });
             expect(Object.values(second.runtime.sessions).filter(binding => !beforeWebFork.has(binding.threadId))).toHaveLength(1);
             failWebForkSubscription.mockRestore(); selectedUltrafast.mockRestore();
+            await retainedSession!.rpc.get(RPC_METHODS.SetSessionConfig)!({ collaborationMode: 'plan' });
+            const beforePlanFork = new Set(Object.values(second.runtime.sessions).map(binding => binding.threadId));
+            let planForkThread: string | undefined;
+            let nativeForks = 0;
+            const failPlanUpdate = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                const options = record(params);
+                if (!clients.includes(this) && method === 'thread/fork') nativeForks++;
+                if (!planForkThread && !clients.includes(this) && method === 'thread/settings/update'
+                    && record(options.collaborationMode).mode === 'plan'
+                    && typeof options.threadId === 'string' && !beforePlanFork.has(options.threadId)) {
+                    planForkThread = options.threadId;
+                    return Promise.reject(new Error('fixture inherited Plan update unavailable'));
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            const selectedStandard = vi.spyOn(SharedCodexRoot.prototype, 'freshParams').mockReturnValueOnce({
+                cwd, model: 'gpt-6-astra', serviceTier: null, approvalPolicy: 'never', sandbox: 'read-only'
+            });
+            extraSpies.push(failPlanUpdate, selectedStandard);
+            const planFork = await retainedSession!.rpc.get(RPC_METHODS.ForkConversation)!({}) as { sessionId: string; nativeSessionId: string };
+            expect(planForkThread).toBeTruthy();
+            expect(planFork.nativeSessionId).toBe(planForkThread);
+            expect(nativeForks).toBe(1);
+            expect(second.runtime.sessions[planFork.sessionId]).toMatchObject({ threadId: planForkThread, active: true });
+            expect(await second.client.request('thread/resume', { threadId: planFork.nativeSessionId, excludeTurns: true })).toMatchObject({
+                serviceTier: 'default', collaborationMode: { mode: 'plan' },
+            });
+            failPlanUpdate.mockRestore(); selectedStandard.mockRestore();
+            await retainedSession!.rpc.get(RPC_METHODS.SetSessionConfig)!({ collaborationMode: 'default' });
             const originalStandard = SharedCodexRoot.prototype.confirmStandardLaunch;
             const standardRace = vi.spyOn(SharedCodexRoot.prototype, 'confirmStandardLaunch').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, explicit) {
                 await this.client.request('thread/settings/update', { threadId: this.threadId, serviceTier: 'priority' });

@@ -227,13 +227,16 @@ export class SharedCodexRoot {
             }
         });
         // Absence from history is NOT proof an uncertain mutation failed.
-        this.session.onRetryQueuedMessage(async id => {
+        this.session.onRetryQueuedMessage(async (id, cancellationAcknowledged) => {
             await this.bound;
             if (this.stopping) return false;
+            if (cancellationAcknowledged) {
+                await this.queue.retryHeldCancellation(id);
+                return true;
+            }
             await this.refresh();
-            await this.queue.retryHeldCancellation(id);
             return ['rejected', 'canceled', 'released'].includes(this.queue.state(id) ?? '');
-        });
+        }, { afterCancellation: true });
         this.session.onReconnect(() => {
             if (!this.threadId || this.closed || this.stopping) return;
             const wasActivated = Boolean(this.heartbeat);
