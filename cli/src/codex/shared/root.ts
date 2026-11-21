@@ -1176,7 +1176,7 @@ export class SharedCodexRoot {
                     onMutation?.();
                 })) return;
             } catch (error) {
-                if (current()) this.pauseTierConfirmation(operationId);
+                if (shouldPause()) this.pauseTierConfirmation(operationId);
                 throw error;
             }
             if (!current()) throw new Error('Codex settings were superseded by a newer tier selection; refresh before retrying');
