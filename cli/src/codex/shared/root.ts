@@ -508,7 +508,9 @@ export class SharedCodexRoot {
         this.settingsRevision++;
         if ('collaborationMode' in value && 'sandboxPolicy' in value) this.settingsNotification = value;
         this.settingsNative = { ...this.settingsNative, ...value };
-        if ('serviceTier' in value && value.serviceTier !== null && value.serviceTier !== 'default') this.confirmedNativeStandardReset = false;
+        if ('serviceTier' in value && value.serviceTier !== null) {
+            this.confirmedNativeStandardReset = value.serviceTier === 'default';
+        }
         this.modelProvider = string(value.modelProvider) ?? this.modelProvider;
         const sandbox = record(value.sandboxPolicy ?? value.sandbox).type;
         this.settings = { ...this.settings, model: value.model,
@@ -1083,17 +1085,23 @@ export class SharedCodexRoot {
         const requestedUltrafast = expected.serviceTier === 'ultrafast';
         const verifyUltrafast = requestedUltrafast || expected.serviceTier === undefined && this.hasUltrafastTier;
         const changesTier = expected.serviceTier !== undefined || verifyUltrafast;
+        // A disabled Fast feature can hide a known Standard selection in the
+        // effective snapshot. A bare native null must still require a reset.
+        const matches = (settings: Record<string, unknown>) => settingsMatch(
+            this.confirmedNativeStandardReset && this.settingsNative.serviceTier === null
+                ? { ...this.settingsNative, serviceTier: 'default' } : this.settingsNative,
+            settings);
         // Native suppresses identical notifications. Verify a current loaded
         // snapshot rather than waiting for an event that will never be emitted.
         const comparable = Object.fromEntries(Object.entries(params).filter(([key, value]) => value !== null || key === 'serviceTier'));
-        if (settingsMatch(this.settingsNative, comparable)) {
+        if (matches(comparable)) {
             const revision = this.settingsRevision;
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
             if (canWrite && !canWrite()) return;
             if (this.settingsRevision === revision) this.acceptSettings(snapshot, true);
             else if (canWrite) return;
             if (canWrite && !canWrite()) return;
-            if (settingsMatch(this.settingsNative, comparable)) {
+            if (matches(comparable)) {
                 if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, requestedUltrafast);
                 return operationId;
             }
@@ -1102,7 +1110,7 @@ export class SharedCodexRoot {
         let changed!: () => void;
         let timer: ReturnType<typeof setTimeout> | undefined;
         const accepted = new Promise<void>((resolve, reject) => {
-            changed = () => { if (this.settingsRevision > revision && settingsMatch(this.settingsNative, expected)) resolve(); };
+            changed = () => { if (this.settingsRevision > revision && matches(expected)) resolve(); };
             this.settingsListeners.add(changed);
             timer = setTimeout(() => { if (changesTier) this.pauseTierConfirmation(operationId); reject(new Error(changesTier ? 'Native settings confirmation is pending; confirm Standard in settings' : 'Native settings confirmation is pending; reconnect before changing settings')); }, Math.min(15_000, Math.max(0, deadline - Date.now())));
         });

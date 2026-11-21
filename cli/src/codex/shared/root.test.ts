@@ -2430,6 +2430,33 @@ it('persists a native Standard fallback when Codex reports no override and resto
     expect(reopened.root.freshParams().serviceTier).toBe('default');
 });
 
+it('reconfirms Standard without a duplicate settings notification when native Fast is disabled', async () => {
+    const f = await fixture(); await f.root.activate();
+    f.native.settings.serviceTier = null;
+    f.root.acceptSettings({ ...f.native.settings }, true);
+    const original = f.root.client.request.bind(f.root.client);
+    let selectedStandard = false;
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume') {
+            return { ...f.native.settings, serviceTier: null, thread: structuredClone(f.native.thread) } as never;
+        }
+        if (method === 'thread/settings/update') {
+            if (selectedStandard) return {} as never;
+            selectedStandard = true;
+        }
+        return original(method, params);
+    });
+
+    await f.root.applySettings({ serviceTier: 'standard' });
+    expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update')).toHaveLength(1);
+    await expect(f.root.applySettings({ serviceTier: 'standard' })).resolves.toMatchObject({ applied: { serviceTier: 'standard' } });
+    expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update')).toHaveLength(1);
+    expect(f.metadata().codexConfirmedServiceTier).toBe('standard');
+    expect(f.root.needsTierConfirmation).toBe(false);
+    f.submit('still admitted', 'standard-twice');
+    await vi.waitFor(async () => expect((await f.ledger()).entries['standard-twice']?.state).toBe('queued'));
+});
+
 it('does not reset a newer Fast choice during model-only native turn discovery', async () => {
     const f = await fixture(); await f.root.activate();
     f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' }, true);
