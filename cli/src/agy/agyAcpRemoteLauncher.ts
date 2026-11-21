@@ -879,6 +879,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.recordAvailableCommands(commands);
             });
             backend.setUserMessageChunkListener((text) => this.handleUserEcho(text));
+            backend.setIgnoredIdleToolResultListener?.((result) => this.reconcileIdleBackgroundToolResult(result));
             backend.onStderrError((error) => {
                 logger.debug('[agy-acp] stderr error', error);
                 session.sendSessionEvent({ type: 'message', message: error.message });
@@ -977,6 +978,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     /** Stops a backend for good: late permission requests are cancelled, not approved. */
     private async retireBackend(backend: AcpSdkBackend): Promise<void> {
         backend.setAvailableCommandsUpdateListener?.(null);
+        backend.setIgnoredIdleToolResultListener?.(null);
         backend.onPermissionRequest((request) => {
             void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
         });
@@ -1747,6 +1749,26 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const shown = asQuestionCard(message);
         if (shown.shownLabels && message.type === 'tool_call') this.questionLabels.set(message.id, shown.shownLabels);
         return shown.message;
+    }
+
+    /**
+     * Settles an already-visible background command whose terminal ACP update
+     * arrived while no turn was open (ignored by `ignoreIdleUpdates`). Splicing
+     * the entry from `backgroundCommands` also prevents `convertAgyReactiveSteps`
+     * from emitting a duplicate tool result if the transcript wakeup later completes.
+     */
+    private reconcileIdleBackgroundToolResult(result: Extract<AgentMessage, { type: 'tool_result' }>): void {
+        if (this.shouldExit) return;
+        const turn = this.turn;
+        if (turn?.openCommands.delete(result.id)) {
+            this.forwardAgentMessage(result);
+            return;
+        }
+        const bgIdx = this.backgroundCommands.findIndex((entry) => entry.callId === result.id);
+        if (bgIdx < 0) return;
+        this.backgroundCommands.splice(bgIdx, 1);
+        this.noteBackgroundTaskSettled(result.id);
+        this.forwardAgentMessage(result);
     }
 
     /** Tracks commands agy moved to the background; the generation clock reads the same updates. */

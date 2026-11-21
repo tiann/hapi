@@ -394,7 +394,7 @@ function isMetadataOnlyRawOutput(rawOutput: unknown): rawOutput is { metadata: u
  * When rawOutput carries only `metadata` and content normalizes, the
  * normalized content becomes the output and the metadata is kept next to it.
  */
-function resolveToolResultOutput(rawOutput: unknown, content: unknown): unknown {
+export function resolveToolResultOutput(rawOutput: unknown, content: unknown): unknown {
     if (rawOutput !== undefined) {
         if (isMetadataOnlyRawOutput(rawOutput)) {
             const normalized = normalizeAcpToolContent(content);

@@ -2,7 +2,7 @@ import type { AgentFlavor } from '@hapi/protocol';
 import type { AgentBackend, AgentMessage, AgentSessionConfig, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
 import { AcpStdioTransport, isAcpIndeterminateError, type AcpStderrError } from './AcpStdioTransport';
-import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
+import { AcpMessageHandler, resolveToolResultOutput, type AcpTextChunkMode } from './AcpMessageHandler';
 import { ACP_SESSION_UPDATE_TYPES, OPENCODE_CHILD_SESSION_UPDATES, OPENCODE_CHILD_UPDATE_METHOD } from './constants';
 import { thinkingHintFromSessionUpdate } from './shouldBumpThinkingFromSessionUpdate';
 import {
@@ -173,6 +173,7 @@ export class AcpSdkBackend implements AgentBackend {
     private usageUpdateListener: ((msg: AgentMessage) => void) | null = null;
     private sessionInfoUpdateListener: ((update: AcpSessionInfoUpdate) => void) | null = null;
     private userMessageChunkListener: ((text: string) => void) | null = null;
+    private ignoredIdleToolResultListener: ((result: Extract<AgentMessage, { type: 'tool_result' }>) => void) | null = null;
     /** Fired on foreground ACP state / permission so launchers can bump hub thinking (#1470). */
     private agentActivityListener: AgentActivityListener | null = null;
     /** Debounce timer for state_update running → thinking (#1502 chatter). */
@@ -1592,9 +1593,9 @@ export class AcpSdkBackend implements AgentBackend {
         const update = handler
             ? this.withToolCallLifetimeId(params.update, MAIN_TOOL_CALL_SCOPE)
             : params.update;
-        if (!handler && this.options.ignoreIdleUpdates) {
-            this.closeTrackedIdleToolCallLifetime(params.update);
-        }
+        const idleToolResult = !handler && this.options.ignoreIdleUpdates
+            ? this.closeTrackedIdleToolCallLifetime(params.update)
+            : null;
         // Title/usage/commands stay synchronous (#1028). Only message-handler
         // work is queued so async image registration preserves event order.
         if (sessionId) {
@@ -1610,6 +1611,9 @@ export class AcpSdkBackend implements AgentBackend {
         this.sessionUpdateQueue = this.sessionUpdateQueue
             .then(async () => {
                 await handler?.handleUpdate(update);
+                if (idleToolResult) {
+                    this.ignoredIdleToolResultListener?.(idleToolResult);
+                }
                 if (echoedText !== null) {
                     handler?.drainBuffers();
                     this.userMessageChunkListener?.(echoedText);
@@ -1916,16 +1920,36 @@ export class AcpSdkBackend implements AgentBackend {
         }
     }
 
-    private closeTrackedIdleToolCallLifetime(update: unknown): void {
-        if (!isObject(update)) return;
+    /**
+     * Receives terminal tool_call/tool_call_update results for already-tracked
+     * lifetimes that arrive while the message handler is retired under
+     * `ignoreIdleUpdates`.
+     */
+    setIgnoredIdleToolResultListener(
+        listener: ((result: Extract<AgentMessage, { type: 'tool_result' }>) => void) | null
+    ): void {
+        this.ignoredIdleToolResultListener = listener;
+    }
+
+    private closeTrackedIdleToolCallLifetime(
+        update: unknown
+    ): Extract<AgentMessage, { type: 'tool_result' }> | null {
+        if (!isObject(update)) return null;
         const sessionUpdate = asString(update.sessionUpdate);
         if (sessionUpdate !== ACP_SESSION_UPDATE_TYPES.toolCallUpdate && sessionUpdate !== ACP_SESSION_UPDATE_TYPES.toolCall) {
-            return;
+            return null;
         }
-        if (update.status !== 'completed' && update.status !== 'failed') return;
+        if (update.status !== 'completed' && update.status !== 'failed') return null;
         const agentToolCallId = asString(update.toolCallId);
-        if (!agentToolCallId) return;
-        this.toolCallLifetimes.closeIfTracked(agentToolCallId, MAIN_TOOL_CALL_SCOPE);
+        if (!agentToolCallId) return null;
+        const lifetimeId = this.toolCallLifetimes.closeIfTracked(agentToolCallId, MAIN_TOOL_CALL_SCOPE);
+        if (!lifetimeId) return null;
+        return {
+            type: 'tool_result',
+            id: lifetimeId,
+            output: resolveToolResultOutput(update.rawOutput, update.content),
+            status: update.status === 'failed' ? 'failed' : 'completed'
+        };
     }
 
     private notifyResponseComplete(): void {

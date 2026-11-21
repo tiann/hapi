@@ -4221,6 +4221,182 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         }
     });
 
+    it('reconciles an idle terminal tool_call_update for a visible background command when the wakeup stalls and deduplicates later transcript completion', async () => {
+        const acpSessionId = 'conv-real-acp-idle-stall';
+        const backend = new AcpSdkBackend({
+            command: 'agy',
+            args: ['acp'],
+            flavor: 'agy',
+            ignoreIdleUpdates: true,
+            toolCallLifetimeStore: null
+        });
+        const internal = backend as unknown as {
+            transport: unknown;
+            initializeResult: unknown;
+            handleNotification: (method: string, params: unknown) => void;
+        };
+        const ctor = AcpSdkBackend as unknown as Record<string, number>;
+        const savedTimings = {
+            LATE_FLUSH_POLL_INTERVAL_MS: ctor.LATE_FLUSH_POLL_INTERVAL_MS,
+            LATE_FLUSH_QUIET_PERIOD_MS: ctor.LATE_FLUSH_QUIET_PERIOD_MS,
+            LATE_FLUSH_WINDOW_MS: ctor.LATE_FLUSH_WINDOW_MS
+        };
+        ctor.LATE_FLUSH_POLL_INTERVAL_MS = 10;
+        ctor.LATE_FLUSH_QUIET_PERIOD_MS = 20;
+        ctor.LATE_FLUSH_WINDOW_MS = 60;
+
+        try {
+            let alive = true;
+            const notify = (update: Record<string, unknown>) => {
+                internal.handleNotification('session/update', { sessionId: acpSessionId, update });
+            };
+            internal.transport = {
+                sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
+                    if (method === 'session/new') {
+                        return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
+                    }
+                    if (method === 'session/resume') return { sessionId: String(params.sessionId) };
+                    if (method === 'session/set_mode' || method === 'session/set_model') return {};
+                    if (method === 'session/list') return { sessions: [] };
+                    if (method === 'session/prompt') {
+                        notify({
+                            sessionUpdate: 'tool_call',
+                            toolCallId: 'call-bg-stall-1',
+                            name: 'run_command',
+                            title: 'sleep 2 && echo DONE_BG',
+                            status: 'in_progress',
+                            rawInput: { CommandLine: 'sleep 2 && echo DONE_BG' }
+                        });
+                        notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'STARTED' } });
+                        writeTranscript(tempBrainDir, acpSessionId, [
+                            { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run bg' },
+                            {
+                                step_index: 1,
+                                source: 'MODEL',
+                                type: 'PLANNER_RESPONSE',
+                                status: 'DONE',
+                                tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 2 && echo DONE_BG"' } }]
+                            },
+                            {
+                                step_index: 2,
+                                source: 'MODEL',
+                                type: 'RUN_COMMAND',
+                                status: 'RUNNING',
+                                content: `Tool is running as a background task with task id: ${acpSessionId}/task-stall-1`
+                            },
+                            { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'STARTED' }
+                        ]);
+                        return { stopReason: 'end_turn', usage: { inputTokens: 40, outputTokens: 10 } };
+                    }
+                    return {};
+                }),
+                sendNotification: vi.fn(),
+                onNotification: () => {},
+                onStderrError: () => {},
+                registerRequestHandler: () => {},
+                isAlive: () => alive,
+                getProcessPid: () => 4242,
+                close: async () => { alive = false; return true; }
+            };
+            internal.initializeResult = {
+                protocolVersion: 1,
+                agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } }
+            };
+
+            const { session, queue, client } = makeHarness('always-proceed');
+            const launcher = new AgyAcpRemoteLauncher(session, {
+                createBackend: () => backend,
+                brainDir: tempBrainDir,
+                reactivePollMs: 15,
+                reactiveSettleMs: 25,
+                reactiveMaxIdleMs: 80
+            });
+            const runPromise = launcher.launch();
+
+            queue.push('run bg', { permissionMode: 'always-proceed' }, 'msg-1');
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+            client.sendSessionEvent.mockClear();
+            client.sendAgentMessage.mockClear();
+            client.sendClaudeSessionMessage.mockClear();
+
+            // Idle terminal update arrives for the visible background command,
+            // while the wakeup transcript only writes SYSTEM_MESSAGE and stalls
+            // before any terminal PLANNER_RESPONSE.
+            notify({
+                sessionUpdate: 'tool_call_update',
+                toolCallId: 'call-bg-stall-1',
+                status: 'completed',
+                rawOutput: { output: 'Command exited with code 0.\n\nCommand output:\nDONE_BG', exit_code: 0 }
+            });
+
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, acpSessionId)!;
+            appendFileSync(
+                compactPath,
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${acpSessionId}/task-stall-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDONE_BG\n</SYSTEM_MESSAGE>`
+                }) + '\n',
+                'utf8'
+            );
+
+            // Even while the wakeup stalls without a terminal planner response,
+            // the command card gets its real result and the background indicator clears.
+            await vi.waitFor(() => {
+                expect(client.sendAgentMessage.mock.calls.map(([msg]) => msg)).toContainEqual(
+                    expect.objectContaining({
+                        type: 'tool-call-result',
+                        callId: expect.stringMatching(/^call-bg-stall-1#/),
+                        is_error: false,
+                        output: { stdout: 'DONE_BG', exit_code: 0 }
+                    })
+                );
+                expect(client.sendClaudeSessionMessage.mock.calls.map(([msg]) => msg)).toContainEqual(
+                    expect.objectContaining({
+                        type: 'system',
+                        subtype: 'background_tasks_changed',
+                        tasks: []
+                    })
+                );
+            });
+
+            // Once the wakeup later writes its terminal planner response, the text
+            // renders once and the already-reconciled tool result is not emitted twice.
+            appendFileSync(
+                compactPath,
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'FINISHED:DONE_BG'
+                }) + '\n',
+                'utf8'
+            );
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+
+            const allMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg as {
+                type?: string;
+                callId?: string;
+                message?: string;
+                output?: { stdout?: string };
+            });
+            expect(
+                allMessages.filter((msg) => msg.type === 'tool-call-result' && msg.output?.stdout === 'DONE_BG')
+            ).toHaveLength(1);
+            expect(
+                allMessages.filter((msg) => msg.type === 'message').map((msg) => msg.message?.trim())
+            ).toEqual(['FINISHED:DONE_BG']);
+
+            queue.close();
+            await runPromise;
+        } finally {
+            Object.assign(ctor, savedTimings);
+        }
+    });
+
     it('advances past separately flushed wakeup replies in transcript order and stops before an unstreamed later wakeup', () => {
         expect(advanceAgyTurnTranscriptCursor(
             [
