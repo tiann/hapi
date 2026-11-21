@@ -61,6 +61,8 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
         this.startedBy = opts.startedBy;
         this.runtimeGate = opts.runtimeGate ?? new OpenCodeRuntimeGate();
         this.queue.beforeDequeue = () => {
+            // Only the failed-session message loop remains; it cannot dispatch native work.
+            if (this.runtimeGate.nativeSessionUnavailable.aborted) return;
             // A plain Stop preserves queued input: refuse to shift+ACK a batch
             // while a cancellation drain is in flight, so the launcher re-loops
             // (its cancellation-idle fence parks it) and dequeues after the

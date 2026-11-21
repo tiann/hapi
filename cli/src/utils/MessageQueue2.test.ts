@@ -9,6 +9,16 @@ describe('MessageQueue2', () => {
         expect(queue.isClosed()).toBe(false);
     });
 
+    it('keeps the closed generation signal aborted when the queue resets', () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const previous = queue.closeSignal;
+        queue.close();
+        queue.reset();
+        expect(previous.aborted).toBe(true);
+        expect(queue.closeSignal.aborted).toBe(false);
+        expect(queue.isClosed()).toBe(false);
+    });
+
     it('answers in-flight for a dequeued-but-uncommitted localId so a Cancel holds the row busy instead of double-delivering', async () => {
         // Round-7 cross-review §3.1 sequence A: with the ACK deferred to the
         // dispatch commit, a Cancel landing inside the dequeue→commit window

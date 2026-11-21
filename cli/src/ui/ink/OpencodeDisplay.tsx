@@ -8,6 +8,9 @@ interface OpencodeDisplayProps {
     logPath?: string;
     onExit?: () => void;
     onSwitchToLocal?: () => void;
+    canSwitch?: () => boolean;
+    canExit?: () => boolean;
+    immediateExit?: () => boolean;
 }
 
 function extractTag(messages: BufferedMessage[], tag: 'MODEL' | 'MODE'): string | null {
@@ -32,13 +35,19 @@ export const OpencodeDisplay: React.FC<OpencodeDisplayProps> = ({
     messageBuffer,
     logPath,
     onExit,
-    onSwitchToLocal
+    onSwitchToLocal,
+    canSwitch,
+    canExit,
+    immediateExit
 }) => {
     const [messages, setMessages] = useState<BufferedMessage[]>([]);
     const [model, setModel] = useState<string | null>(null);
     const [permissionMode, setPermissionMode] = useState<string | null>(null);
     const { confirmationMode, actionInProgress } = useSwitchControls({
         onExit,
+        canExit,
+        immediateExit,
+        canSwitch,
         onSwitch: onSwitchToLocal
     });
     const { stdout } = useStdout();

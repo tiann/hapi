@@ -264,6 +264,15 @@ describe('cli OpenCode clear route', () => {
         expect(response.status).toBe(400)
     })
 
+    it.each([['opencode_handoff_refused', 409], ['clear_admission_unavailable', 503]] as const)(
+        'returns %s to the reserving CLI with HTTP %i', async (code, status) => {
+            const app = createApp({ reserveOpenCodeClearSession: async () => ({ type: 'error', code, message: 'Clear admission' }) })
+            const response = await app.request('/cli/sessions/source-session/clear-opencode/reserve', {
+                method: 'POST', headers: authHeaders()
+            })
+            expect(response.status).toBe(status)
+            expect(await response.json()).toMatchObject({ code })
+        })
     it('durably reserves through the namespace-scoped engine route', async () => {
         const reserveOpenCodeClearSession = mock(() => ({ type: 'success' as const, sessionId: 'reserved-session' }))
         const app = createApp({ reserveOpenCodeClearSession } as never)

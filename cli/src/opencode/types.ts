@@ -17,6 +17,7 @@ export interface OpencodeMode {
     // line" ahead of prompts that were already queued when it arrived.
     // `undefined` for normal prompts.
     operation?: 'compact' | 'clear';
+    clearGeneration?: number;
 }
 
 export type OpencodeHookEvent = {

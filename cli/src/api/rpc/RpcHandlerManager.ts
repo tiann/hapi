@@ -4,6 +4,7 @@
  */
 
 import { logger as defaultLogger } from '@/ui/logger'
+import { OpenCodeHandoffRefusedError } from './types'
 import type { RpcHandler, RpcHandlerConfig, RpcHandlerMap, RpcRequest } from './types'
 import type { Socket } from 'socket.io-client'
 
@@ -56,6 +57,7 @@ export class RpcHandlerManager {
                 : { error: String(error) }
             this.logger('[RPC] [ERROR] Error handling request', details)
             return JSON.stringify({
+                ...(error instanceof OpenCodeHandoffRefusedError ? { code: 'opencode_handoff_refused' } : {}),
                 error: error instanceof Error ? error.message : 'Unknown error'
             })
         }

@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type { ReactNode, TextareaHTMLAttributes } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { ApiClient } from '@/api/client'
+import { ApiClient } from '@/api/client'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
@@ -135,6 +135,9 @@ vi.mock('@/components/AssistantChat/ComposerButtons', () => ({
     ComposerButtons: (props: {
         onSend: () => void
         onAbort: () => void
+        onSwitch: () => void
+        showSwitchButton: boolean
+        switchDisabled: boolean
         abortDisabled: boolean
         onSchedule: (pending: PendingSchedule) => void
         onClearSchedule: () => void
@@ -146,6 +149,7 @@ vi.mock('@/components/AssistantChat/ComposerButtons', () => ({
         onModelValueToggle?: () => void
     }) => (
         <div>
+            {props.showSwitchButton && <button type="button" disabled={props.switchDisabled} onClick={props.onSwitch}>Switch</button>}
             <button type="button" disabled={props.abortDisabled} onClick={props.onAbort}>Abort</button>
             <button type="button" onClick={props.onExpandedToggle}>
                 {props.expanded ? 'collapse' : 'expand'}
@@ -646,6 +650,27 @@ describe('HappyComposer send intent gestures', () => {
     })
 })
 
+
+it('shows the Hub refusal when switching an OpenCode session and lets the user retry', async () => {
+    const reason = 'The previous server could not be identified. Use /clear to start a new conversation.'
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(Response.json({
+        error: reason,
+        code: 'opencode_handoff_refused'
+    }, { status: 409 })).mockResolvedValueOnce(Response.json({ success: true }))
+    try {
+        const api = new ApiClient('test')
+        render(<I18nProvider><HappyComposer active controlledByUser onSwitchToRemote={() => api.switchSession('s')} /></I18nProvider>)
+        const button = screen.getByRole('button', { name: 'Switch' })
+        fireEvent.click(button)
+        expect(await screen.findByRole('alert')).toHaveTextContent(reason)
+        expect(button).toBeEnabled()
+        fireEvent.click(button)
+        await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+        expect(fetch).toHaveBeenCalledTimes(2)
+    } finally {
+        fetch.mockRestore()
+    }
+})
 
 describe('HappyComposer Abort request settlement', () => {
     it.each(['success', 'failure'] as const)('allows a second Stop after %s without an idle render', async (outcome) => {

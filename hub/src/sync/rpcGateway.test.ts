@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import type { Server, Socket } from 'socket.io'
 import { getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { RpcRegistry } from '../socket/rpcRegistry'
-import { PermissionRequestNotFoundError, RpcGateway, RpcTargetMissingError } from './rpcGateway'
+import { OpenCodeHandoffRefusal, PermissionRequestNotFoundError, RpcGateway, RpcTargetMissingError } from './rpcGateway'
 
 function createGateway() {
     const timeouts: number[] = []
@@ -213,6 +213,19 @@ describe('RpcGateway no-target diagnostics (tiann/hapi#916)', () => {
         const gateway = new RpcGateway({ of: () => { throw new Error('must not call generic socket') } } as unknown as Server, registry)
         await expect(gateway.killSession('session-1', { prepareOnly: true, expectedMachineId: 'machine-1',
             expectedPid: 42, expectedProcessStartMarker: 'old-generation' })).rejects.toBeInstanceOf(RpcTargetMissingError)
+    })
+
+    it('propagates a tagged OpenCode refusal and preserves generic handoff responses', async () => {
+        let response: { error: string; code?: string } = { error: 'upstream handler error' }
+        const io = { of: () => ({ sockets: { get: () => ({ timeout: () => ({
+            emitWithAck: async () => JSON.stringify(response)
+        }) }) } }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, registry)
+        await expect(gateway.switchSession('claude', 'local')).resolves.toBeUndefined()
+        response = { error: 'OpenCode is recovering', code: 'opencode_handoff_refused' }
+        await expect(gateway.handoffSessionToLocal('opencode')).rejects.toThrow('OpenCode is recovering')
+        await expect(gateway.checkOpenCodeHandoff('opencode')).rejects.toBeInstanceOf(OpenCodeHandoffRefusal)
     })
 
     it('rejects a KillSession error envelope instead of allowing runner force termination', async () => {

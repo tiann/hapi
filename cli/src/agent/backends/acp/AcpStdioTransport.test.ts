@@ -21,7 +21,7 @@ const spawnState = vi.hoisted(() => ({
     stdoutDataHandlers: [] as Array<(chunk: string) => void>,
     stdinErrorHandlers: [] as Array<(error: Error) => void>,
     stdinEnd: vi.fn(),
-    stdinWrite: vi.fn<(chunk: string) => boolean>(() => true),
+    stdinWrite: vi.fn<(chunk: string, callback?: (error?: Error) => void) => boolean>(() => true),
     kill: vi.fn(),
     exitCode: null as number | null,
     pid: 424242 as number | undefined,
@@ -79,7 +79,7 @@ vi.mock('node:child_process', () => ({
                     if (event === 'error') spawnState.stdinErrorHandlers.push(handler);
                 }),
                 end: (...args: unknown[]) => spawnState.stdinEnd(...args),
-                write: (chunk: string) => spawnState.stdinWrite(chunk)
+                write: (chunk: string, callback?: (error?: Error) => void) => spawnState.stdinWrite(chunk, callback)
             },
             on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
                 if (event === 'exit') {
@@ -90,6 +90,12 @@ vi.mock('node:child_process', () => ({
                 }
                 handlers.set(`proc:${event}`, [...(handlers.get(`proc:${event}`) ?? []), handler]);
             }),
+            once(event: string, handler: () => void) {
+                if (event === 'exit') spawnState.exitHandlers.push(handler);
+            },
+            off(event: string, handler: () => void) {
+                if (event === 'exit') spawnState.exitHandlers = spawnState.exitHandlers.filter(fn => fn !== handler);
+            },
             kill: (...args: unknown[]) => spawnState.kill(...args)
         };
         return proc;
@@ -131,6 +137,178 @@ describe('AcpStdioTransport agent CLI guard', () => {
         spawnState.exitHandlers = [];
         spawnState.closeHandlers = [];
         spawnState.stdoutDataHandlers = [];
+    });
+
+    test.each(['pipe first', 'exit first'])('reports generation loss and preserves confirmed death: %s', async order => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode' });
+        const seen: boolean[] = [];
+        transport.onUnexpectedExit((_error, details) => {
+            seen.push(details.childProcessExited);
+            throw new Error('observer failed');
+        });
+        const pipe = () => spawnState.stdinErrorHandlers.forEach(handler => handler(new Error('EPIPE')));
+        const exit = () => spawnState.exitHandlers.forEach(handler => handler(null, 'SIGKILL'));
+        if (order === 'pipe first') {
+            pipe();
+            expect(seen).toEqual([false]);
+            exit();
+        } else {
+            exit();
+            pipe();
+        }
+        spawnState.closeHandlers.forEach(handler => handler(null, 'SIGKILL'));
+        expect(seen).toEqual(order === 'pipe first' ? [false, true] : [true]);
+        await expect(transport.sendRequest('session/new')).rejects.toThrow('SIGKILL');
+    });
+
+    test('a stdio close without a child exit leaves an unguarded child unconfirmed', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode' });
+        const loss = vi.fn();
+        transport.onUnexpectedExit(loss);
+        spawnState.closeHandlers.forEach(handler => handler(null, 'SIGKILL'));
+        expect(loss).toHaveBeenCalledExactlyOnceWith(expect.any(Error), { childProcessExited: false });
+    });
+
+    test('refreshes the captured server before every prompt write and skips other requests', async () => {
+        const events: string[] = [];
+        const transport = await AcpStdioTransport.create({
+            command: 'opencode',
+            captureChildExitFence: () => ({ complete: true, refresh: () => events.push('refresh'), verify: async () => true })
+        });
+        transport.captureChildExitFence();
+        spawnState.stdinWrite.mockImplementation(line => {
+            const { id, method } = JSON.parse(line);
+            events.push(method);
+            emitStdout(JSON.stringify({ jsonrpc: '2.0', id, result: {} }) + '\n');
+            return true;
+        });
+        await transport.sendRequest('session/load');
+        await transport.sendRequest('session/prompt');
+        await transport.sendRequest('session/prompt');
+        expect(events).toEqual(['session/load', 'refresh', 'session/prompt', 'refresh', 'session/prompt']);
+    });
+
+    test.each(['write accepted', 'early response', 'closed', 'write failure'] as const)(
+        'reports dispatch at the stdin boundary for %s', async outcome => {
+            const transport = await AcpStdioTransport.create({ command: 'opencode' });
+            if (outcome === 'closed') spawnState.closeHandlers.forEach(handler => handler(1, null));
+            const events: string[] = [];
+            const request = transport.sendRequest('session/prompt', {}, {
+                onDispatchStart: () => events.push('start'),
+                onSent: () => {
+                    events.push('sent');
+                    if (outcome === 'write accepted') throw new Error('observer failed');
+                }
+            });
+            if (outcome === 'closed') {
+                await expect(request).rejects.toThrow();
+                expect(spawnState.stdinWrite).not.toHaveBeenCalled();
+                expect(events).toEqual([]);
+                return;
+            }
+            const [line, callback] = spawnState.stdinWrite.mock.calls[0]!;
+            expect(events).toEqual(['start']);
+            if (outcome === 'write failure') {
+                const failure = new Error('write EPIPE');
+                const rejected = expect(request).rejects.toBe(failure);
+                callback!(failure);
+                await rejected;
+                expect(events).toEqual(['start']);
+                return;
+            }
+            if (outcome === 'write accepted') {
+                callback!();
+                await Promise.resolve();
+                expect(events).toEqual(['start', 'sent']);
+            }
+            emitStdout(JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(line).id, result: 'ok' }) + '\n');
+            await expect(request).resolves.toBe('ok');
+            if (outcome === 'early response') callback!();
+            expect(events).toEqual(['start', 'sent']);
+        }
+    );
+
+    test('uses tree teardown for normal close and only the owned child handle for recovery', async () => {
+        const verify = vi.fn(async () => true);
+        const options = { command: 'opencode', captureChildExitFence: () => ({ complete: true, verify, refresh: () => {} }) };
+        const normal = await AcpStdioTransport.create(options);
+        normal.captureChildExitFence();
+        vi.mocked(killProcessByChildProcess).mockResolvedValueOnce(true);
+        await expect(normal.close()).resolves.toBe(true);
+        expect(killProcessByChildProcess).toHaveBeenCalledOnce();
+        expect(verify).not.toHaveBeenCalled();
+
+        const lost = await AcpStdioTransport.create(options);
+        lost.captureChildExitFence();
+        spawnState.kill.mockImplementationOnce(() => {
+            spawnState.exitHandlers.forEach(handler => handler(null, 'SIGTERM'));
+            return true;
+        });
+        await expect(lost.close({ recovery: true })).resolves.toBe(true);
+        expect(spawnState.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM');
+        expect(killProcessByChildProcess).toHaveBeenCalledOnce();
+        expect(verify).toHaveBeenCalledOnce();
+    });
+
+    test('verifies a pidless spawn before its asynchronous error event', async () => {
+        spawnState.pid = undefined;
+        const transport = await AcpStdioTransport.create({ command: 'missing' });
+        await expect(transport.close({ recovery: true })).resolves.toBe(true);
+        expect(killProcessByChildProcess).not.toHaveBeenCalled();
+    });
+
+    test('does not report an unexpected exit when HAPI closes the transport', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode', args: ['acp'] });
+        const exits: Error[] = [];
+        transport.onUnexpectedExit((error) => exits.push(error));
+
+        await transport.close();
+        for (const handler of spawnState.closeHandlers) {
+            handler(null, 'SIGKILL');
+        }
+
+        expect(exits).toEqual([]);
+    });
+
+    test.each([false, true])('refreshes the child exit fence before checking close-entry liveness (diedDuringRefresh=%s)', async (diedDuringRefresh) => {
+        spawnState.pid = process.pid;
+        let refreshes = 0;
+        const transport = await AcpStdioTransport.create({
+            command: 'opencode',
+            args: ['acp'],
+            captureChildExitFence: () => ({
+                complete: true,
+                verify: async () => true,
+                refresh: () => {
+                    if (++refreshes === 1 && diedDuringRefresh) {
+                        spawnState.exitCode = 0;
+                    }
+                }
+            })
+        });
+        transport.captureChildExitFence();
+        const exits: Array<{ error: Error; childProcessExited: boolean }> = [];
+        transport.onUnexpectedExit((error, details) => exits.push({ error, childProcessExited: details.childProcessExited }));
+
+        vi.mocked(killProcessByChildProcess).mockImplementationOnce(async () => {
+            for (const handler of spawnState.exitHandlers) {
+                handler(diedDuringRefresh ? 0 : null, diedDuringRefresh ? null : 'SIGTERM');
+            }
+            return true;
+        });
+        await transport.close();
+        for (const handler of spawnState.closeHandlers) {
+            handler(diedDuringRefresh ? 0 : null, diedDuringRefresh ? null : 'SIGTERM');
+        }
+
+        expect(refreshes).toBe(1);
+        if (diedDuringRefresh) {
+            expect(exits).toEqual([
+                { error: expect.objectContaining({ message: expect.stringContaining('ACP process exited') }), childProcessExited: true }
+            ]);
+        } else {
+            expect(exits).toEqual([]);
+        }
     });
 
     test('registers cross-process guard only for Cursor agent command', async () => {
@@ -330,7 +508,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
         }
     });
 
-    test('rejects new requests after the ACP process exits instead of throwing from stdin.write', async () => {
+    test('rejects new requests after stdio closes without claiming a child exit', async () => {
         const transport = await AcpStdioTransport.create({ command: 'gemini' });
         spawnState.exitCode = 1;
         spawnState.stdinWrite.mockImplementation(() => {
@@ -342,7 +520,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
         }
 
         await expect(transport.sendRequest('session/new')).rejects.toThrow(
-            'ACP process exited (code=1, signal=null)'
+            'ACP transport closed (code=1, signal=null)'
         );
         expect(() => transport.sendNotification('session/cancel', {})).not.toThrow();
     });
@@ -367,7 +545,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
         }
 
         await expect(transport.sendRequest('session/load')).rejects.toThrow(
-            /ACP process exited \(code=1, signal=null(?:, childPid=\d+, lock=[^)]+)?\)\. stderr: Cannot use this model: grok-4\.5\[fast=true\]/
+            /ACP transport closed \(code=1, signal=null(?:, childPid=\d+, lock=[^)]+)?\)\. stderr: Cannot use this model: grok-4\.5\[fast=true\]/
         );
     });
 
@@ -642,6 +820,8 @@ describe('AcpStdioTransport closed stdin writes', () => {
         vi.useFakeTimers();
         try {
             const transport = await AcpStdioTransport.create({ command: 'gemini' });
+            const signal = vi.fn();
+            transport.onUnexpectedExit(signal);
             const request = transport.sendRequestWithDispatch('session/prompt', {}, {
                 timeoutMs: Infinity,
                 dispatchTimeoutMs: 10
@@ -655,6 +835,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
             await completed;
             expect(isAcpIndeterminateError(dispatchError)).toBe(true);
             expect(isAcpIndeterminateError(completedError)).toBe(true);
+            expect(signal).toHaveBeenCalledExactlyOnceWith(expect.any(Error), { childProcessExited: false });
             await transport.close();
         } finally {
             vi.useRealTimers();
