@@ -2694,10 +2694,11 @@ it('rejects steering before changing the native queue when tier admission is pau
     expect(f.state().steeringActive).toBe(false);
 });
 
-it.each(['legacy', 'single-member batch', 'multi-member batch'])('restores %s input once after tier confirmation interrupts steering', async kind => {
+it.each(['legacy', 'single-member batch', 'multi-member batch', 'in-flight steer'])('restores %s input once after tier confirmation interrupts steering', async kind => {
     const f = await fixture(); await f.root.activate();
     const legacy = kind === 'legacy';
-    const hasSibling = kind === 'multi-member batch';
+    const inFlight = kind === 'in-flight steer';
+    const hasSibling = kind === 'multi-member batch' || inFlight;
     f.submit('queued for steering', 'paused-steer', legacy);
     if (hasSibling) f.submit('leave queued', 'sibling');
     await vi.waitFor(async () => expect((await f.ledger()).entries[hasSibling ? 'sibling' : 'paused-steer']?.state).toBe('queued'));
@@ -2705,8 +2706,12 @@ it.each(['legacy', 'single-member batch', 'multi-member batch'])('restores %s in
     const tier = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
     const original = f.root.client.request.bind(f.root.client);
     const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (inFlight && method === 'turn/steer') {
+            await f.root.recoverLostNativeTurn(tier.params, true, undefined, tier.generation);
+            throw new Error('Expected active turn no longer matches');
+        }
         const response = await original(method, params);
-        if (method === (hasSibling ? 'thread/queue/update' : 'thread/queue/delete')) {
+        if (!inFlight && method === (hasSibling ? 'thread/queue/update' : 'thread/queue/delete')) {
             await f.root.recoverLostNativeTurn(tier.params, true, undefined, tier.generation);
         }
         return response;
@@ -2715,7 +2720,9 @@ it.each(['legacy', 'single-member batch', 'multi-member batch'])('restores %s in
     expect(f.root.needsTierConfirmation).toBe(true);
     expect((await f.ledger()).entries['paused-steer'].state).toBe('released');
     expect(f.native.queue).toHaveLength(hasSibling ? 1 : 0);
-    expect(request.mock.calls.some(([method]) => method === 'turn/steer' || method === 'thread/queue/add')).toBe(false);
+    expect(request.mock.calls.filter(([method]) => method === 'turn/steer')).toHaveLength(inFlight ? 1 : 0);
+    expect(request.mock.calls.filter(([method]) => method === 'thread/queue/update')).toHaveLength(hasSibling ? 1 : 0);
+    expect(request.mock.calls.some(([method]) => method === 'thread/queue/add')).toBe(false);
     expect(f.session.setSteerDeliveryState).toHaveBeenCalledWith(['paused-steer'], 'queued');
     expect(f.state().steeringActive).toBe(false);
 

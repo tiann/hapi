@@ -912,12 +912,17 @@ export class SharedCodexQueue {
             if (isIndeterminateError(error)) { batch.state = 'unknown'; this.uncertain([id]); await this.save(); return { steered: false, indeterminate: true }; }
             // Definite rejection: restore the removed input safely, keeping siblings.
             if (proposal && !(error instanceof QueueAdmissionPaused)) {
+                const appliedVersion = batch.current;
+                const appliedState = batch.state;
                 const restoration = this.version(version.input, version.members);
                 batch.versions.push(restoration); batch.current = batch.versions.length - 1;
                 // Write ahead: the batch outcome is unknown until the restoration is confirmed.
                 if (batch.state === 'queued') batch.state = 'unknown';
                 await this.save();
+                let dispatched = false;
                 try {
+                    this.assertInputAdmission();
+                    dispatched = true;
                     const response = await this.client.request('thread/queue/update', { threadId: this.threadId, queuedSubmissionId: batch.nativeId, input: version.input });
                     this.validateUpdate(response, batch, version.input);
                     // The proven restored group is authoritative again; keep its aliases ACKable.
@@ -928,7 +933,14 @@ export class SharedCodexQueue {
                     delete entry.detachedSteer;
                 } catch (restoreError) {
                     if (this.state(id) === 'consumed') return { steered: true };
-                    if (!indeterminate(restoreError) && queuedSubmissionNotFound(restoreError)) {
+                    if (!dispatched) {
+                        // The shrink still owns the siblings. The held member
+                        // can return separately once admission reopens.
+                        restoration.status = 'superseded';
+                        batch.current = appliedVersion;
+                        if (batch.state === 'unknown') batch.state = appliedState;
+                        await this.restoreDetachedSteer(entry, id, input);
+                    } else if (!indeterminate(restoreError) && queuedSubmissionNotFound(restoreError)) {
                         restoration.status = 'superseded';
                         await this.restoreDetachedSteer(entry, id, input);
                     } else { entry.state = 'unknown'; batch.state = 'unknown'; this.uncertain([id]); }

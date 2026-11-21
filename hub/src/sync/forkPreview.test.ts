@@ -475,7 +475,7 @@ describe('preview-capable shared runtime', () => {
         expect(await engine.forkPreview(source.id, 'default', 'message', 'u1')).toEqual(expected)
     })
 
-    it('answers the preview for an eligible archived Codex session', async () => {
+    it.each([false, true])('checks the tier recovery guard for an eligible archived Codex session (%s)', async pending => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
         engine.getOrCreateMachine('machine', { host: 'test', platform: 'win32', happyCliVersion: '1',
@@ -484,12 +484,19 @@ describe('preview-capable shared runtime', () => {
         const source = engine.getOrCreateSession('source', {
             path: '/tmp/work', host: 'test', machineId: 'machine', hostPid: 42, flavor: 'codex',
             lifecycleState: 'archived', codexSessionId: 'native-source',
+            codexTierConfirmationPending: pending,
             capabilities: { conversationHistory: { forkCurrent: true } }
         }, { controlledByUser: false }, 'default')
         store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'u1' } }, 'u1')
         store.messages.markMessagesInvoked(source.id, ['u1'], Date.now())
         const result = await engine.forkPreview(source.id, 'default', 'current')
-        expect(result).toMatchObject({ type: 'success', preview: { mode: 'current' } })
+        if (pending) {
+            const recovery = { type: 'error' as const, message: 'Resume the source and confirm its service tier in settings before forking.' }
+            expect(result).toEqual(recovery)
+            expect(await engine.forkConversation(source.id, 'default')).toEqual(recovery)
+        } else {
+            expect(result).toMatchObject({ type: 'success', preview: { mode: 'current' } })
+        }
     })
 
     it('refuses an archived message preview without a native history point', async () => {

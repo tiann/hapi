@@ -2705,6 +2705,19 @@ export class SyncEngine {
         }
     }
 
+    private forkAdmissionError(source: Session | undefined, sessionId: string, namespace: string): string | undefined {
+        if (source?.metadata?.codexTierConfirmationPending) {
+            return 'Resume the source and confirm its service tier in settings before forking.'
+        }
+        if (source?.metadata?.codexResumePending) {
+            return 'Codex resume startup is unconfirmed; retry resume or archive to confirm its process stopped before forking'
+        }
+        if (this.archivedForkPending(sessionId, namespace) && (!source?.metadata?.codexArchivedFork || source.active)) {
+            return 'Archived fork is pending; wait for its child binding before creating another branch'
+        }
+        return undefined
+    }
+
     async forkConversation(
         sessionId: string,
         namespace: string,
@@ -2713,15 +2726,8 @@ export class SyncEngine {
         boundary?: ForkBoundary
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string; code?: ForkBoundaryErrorCode }> {
         const candidate = this.sessionCache.getSessionByNamespace(sessionId, namespace)
-        if (candidate?.metadata?.codexTierConfirmationPending) {
-            return { type: 'error', message: 'Resume the source and confirm its service tier in settings before forking.' }
-        }
-        if (candidate?.metadata?.codexResumePending) {
-            return { type: 'error', message: 'Codex resume startup is unconfirmed; retry resume or archive to confirm its process stopped before forking' }
-        }
-        if (this.archivedForkPending(sessionId, namespace) && (!candidate?.metadata?.codexArchivedFork || candidate.active)) {
-            return { type: 'error', message: 'Archived fork is pending; wait for its child binding before creating another branch' }
-        }
+        const admissionError = this.forkAdmissionError(candidate, sessionId, namespace)
+        if (admissionError) return { type: 'error', message: admissionError }
         if (this.historyActionsInFlight.has(sessionId)) {
             return { type: 'error', message: 'Conversation history action already in progress' }
         }
@@ -2887,12 +2893,8 @@ export class SyncEngine {
         // preview must never open a dialog whose confirm the engine refuses
         // outright. (The rewind confirm runs its own guards, so rewind
         // previews keep theirs.)
-        if (source.metadata?.codexResumePending) {
-            return { type: 'error', message: 'Codex resume startup is unconfirmed; retry resume or archive to confirm its process stopped before forking' }
-        }
-        if (this.archivedForkPending(sessionId, namespace) && (!source.metadata?.codexArchivedFork || source.active)) {
-            return { type: 'error', message: 'Archived fork is pending; wait for its child binding before creating another branch' }
-        }
+        const admissionError = this.forkAdmissionError(source, sessionId, namespace)
+        if (admissionError) return { type: 'error', message: admissionError }
 
         if (!source.active) {
             // Archived fork is hub-decided and the transcript is static; run
