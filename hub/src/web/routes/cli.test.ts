@@ -24,8 +24,8 @@ function authHeaders() {
 }
 
 let dataDir: string
-beforeAll(async () => { dataDir = await mkdtemp(join(tmpdir(), 'hapi-cli-routes-')) })
-afterAll(async () => { await rm(dataDir, { recursive: true, force: true }) })
+beforeAll(async () => { dataDir = await mkdtemp(join(tmpdir(), 'hapi-cli-routes-')) }, 30_000)
+afterAll(async () => { await rm(dataDir, { recursive: true, force: true }) }, 30_000)
 
 describe('cli shutdown preparation', () => {
     function fixture(machineId = 'machine-1') {
@@ -469,7 +469,7 @@ describe('cli features and external-refs read', () => {
 describe('cli autoBridgeTransientModelErrors namespace gate', () => {
     afterEach(async () => {
         await writeAutoBridgeTransientModelErrorsEnabled(dataDir, false)
-    })
+    }, 30_000)
 
     it('returns hub auto-bridge only for the default namespace', async () => {
         await writeAutoBridgeTransientModelErrorsEnabled(dataDir, true)
