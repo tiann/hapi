@@ -93,6 +93,7 @@ export class SharedCodexRoot {
     private settings: RuntimeSettings = {};
     private settingsNative: Record<string, unknown> = {};
     private nativeSelectedServiceTier: unknown;
+    private protectFastUntilMetadataAck = false;
     private modelProvider?: string;
     private serviceTierExplicit?: boolean;
     private confirmedNativeStandardReset = false;
@@ -455,11 +456,13 @@ export class SharedCodexRoot {
         const verifyFast = this.requiresEffectiveFastConfirmation(expected, explicitTier);
         const effective = fromCodexServiceTier(response.serviceTier) === tier && this.settings.serviceTier === tier;
         if (verifyFast && !effective) {
+            this.protectFastUntilMetadataAck = true;
             this.pauseTierConfirmation(++this.tierOperationCounter, {
                 retainConfirmedTier: true, pendingTier: 'fast',
                 message: 'Codex could not confirm the requested Fast tier. Input is paused. Select a service tier in settings to continue.'
             });
         } else if (effective && (verifyFast || metadata?.codexTierConfirmationPending === true)) {
+            this.protectFastUntilMetadataAck = false;
             this.tierConfirmationResolved = true;
             this.tierConfirmationPending = false;
         }
@@ -518,7 +521,14 @@ export class SharedCodexRoot {
     private alive(): void {
         this.publishSteering();
         this.publishPlan();
-        if (!this.closed && !this.stopping) this.session.keepAlive(Boolean(this.currentTurn), undefined, this.settings);
+        if (!this.closed && !this.stopping) this.session.keepAlive(Boolean(this.currentTurn), undefined, this.settingsForHub());
+    }
+    private settingsForHub(): RuntimeSettings {
+        if (!this.protectFastUntilMetadataAck || this.session.getMetadata()?.codexPendingServiceTier === 'fast') return this.settings;
+        // Until the Hub saves the retry intent, its tier column may be the
+        // only durable record of the user's Fast choice.
+        const { serviceTier: _unconfirmed, ...settings } = this.settings;
+        return settings;
     }
     private availablePlanId(): string | null {
         if (this.currentTurn || this.latestTurn?.status !== 'completed' || this.settings.collaborationMode !== 'plan'
@@ -834,7 +844,7 @@ export class SharedCodexRoot {
                 break;
             }
         }
-        if (Object.keys(config).length === 0) return { applied: this.settings };
+        if (Object.keys(config).length === 0) return { applied: this.settingsForHub() };
         if (typeof config.modelReasoningEffort === 'string') config.modelReasoningEffort = parseReasoningEffortValue(config.modelReasoningEffort);
         if (discoversEffort) {
             // Native public null means "leave effort alone", not reset. Resolve
@@ -877,7 +887,7 @@ export class SharedCodexRoot {
         const confirmed = await this.writeNativeSettings(params, params, deadline, operationId, undefined, onMutation);
         if (config.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
         await this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, fallbackNotice, onMutation);
-        this.alive(); return { applied: this.settings };
+        this.alive(); return { applied: this.settingsForHub() };
     }
     private async confirmSettingsWrite(operationId: number | undefined, explicitTier: boolean, confirmsTier: boolean, fallbackNotice?: string, onMutation?: () => void): Promise<void> {
         if (operationId === undefined || !this.isCurrentTierOperation(operationId)) return;
@@ -908,6 +918,7 @@ export class SharedCodexRoot {
             throw new Error('Codex applied the tier, but HAPI could not confirm saving it. Reconnect before changing the service tier.');
         }
         if (!this.isCurrentTierOperation(operationId) || this.closed || this.stopping) return;
+        this.protectFastUntilMetadataAck = false;
         this.tierConfirmationResolved = true;
         const resumeInput = this.tierConfirmationPending;
         this.tierConfirmationPending = false;

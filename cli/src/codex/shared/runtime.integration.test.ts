@@ -856,8 +856,9 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             // The Runner opens the native thread before its HAPI root is bound.
             await configure('default', false);
             const savedFast = state.sessions.get(childSid)!;
+            savedFast.serviceTier = 'fast';
             savedFast.metadata.codexServiceTierExplicit = true;
-            savedFast.metadata.codexConfirmedServiceTier = 'fast';
+            savedFast.metadata.codexConfirmedServiceTier = undefined;
             savedFast.metadata.codexPendingServiceTier = undefined;
             savedFast.metadata.codexTierConfirmationPending = false;
             let enterFastBind!: () => void;
@@ -865,6 +866,14 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             const fastBindGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
             const fastBind = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
                 if (method === 'thread/metadata/update' && record(params).threadId === child.thread.id) {
+                    const session = state.sessions.get(childSid)!;
+                    const updateMetadata = session.updateMetadata.bind(session);
+                    let held = false;
+                    extraSpies.push(vi.spyOn(session, 'updateMetadata').mockImplementation(update => {
+                        // Simulate the Hub metadata lock held behind an unacknowledged write.
+                        held ||= update(session.metadata).codexPendingServiceTier === 'fast';
+                        if (!held) updateMetadata(update);
+                    }));
                     enterFastBind(); return fastBindGate.then(() => originalRequest.call(this, method, params)) as Promise<T>;
                 }
                 return originalRequest.call(this, method, params) as Promise<T>;
@@ -888,16 +897,20 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             } finally { releaseLaunch(); }
             await Promise.race([fastReady, stoppedEarly]);
             const paused = state.sessions.get(childSid)!;
-            expect(paused.metadata).toMatchObject({
-                codexConfirmedServiceTier: 'fast', codexPendingServiceTier: 'fast', codexTierConfirmationPending: true
-            });
+            expect(paused.metadata.codexPendingServiceTier).toBeUndefined();
+            expect(paused.serviceTier).toBe('fast');
             expect(paused.readySignals).toBe(0);
             expect(paused.messages).toContainEqual({ type: 'message', message: expect.stringContaining('could not confirm the requested Fast tier') });
             await expect(fastClient.request('turn/start', turnInput)).rejects.toThrow('tier confirmation is pending');
-            await fastClient.request('thread/settings/update', { threadId: child.thread.id, serviceTier: null });
-            expect(paused.metadata).toMatchObject({ codexConfirmedServiceTier: 'standard', codexTierConfirmationPending: false });
-            expect(paused.metadata.codexPendingServiceTier).toBeUndefined();
-            expect(paused.readySignals).toBe(1);
+            // Crash-equivalent cleanup before the Hub receives any queued recovery metadata.
+            fastAbort.abort(); await fastDone;
+            expect(paused.serviceTier).toBe('fast');
+            fastBind.mockRestore();
+            await configure('default');
+            const recovered = await start({ startedBy: 'runner', existingSessionId: childSid, resumeSessionId: child.thread.id });
+            await expect(recovered.client.request('thread/resume', { threadId: child.thread.id, excludeTurns: true }))
+                .resolves.toMatchObject({ serviceTier: 'priority' });
+            expect(state.sessions.get(childSid)?.readySignals).toBe(1);
         } finally {
             releaseLaunch();
             for (const spy of extraSpies.reverse()) spy.mockRestore();
