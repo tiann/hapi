@@ -694,6 +694,7 @@ export function advanceAgyTurnTranscriptCursor(
                 }
             }
 
+            // Conservative trade-off: text-only matching lets identical leftover turn text match a wakeup, while tool-bearing drain-window wakeups stop here rather than risking skipped tool cards.
             if (
                 unstreamed
                 || terminalIdx < 0

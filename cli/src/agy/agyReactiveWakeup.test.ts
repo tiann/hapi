@@ -4237,11 +4237,11 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         };
         const ctor = AcpSdkBackend as unknown as Record<string, number>;
         const savedTimings = {
-            LATE_FLUSH_POLL_INTERVAL_MS: ctor.LATE_FLUSH_POLL_INTERVAL_MS,
+            LATE_FLUSH_INTERVAL_MS: ctor.LATE_FLUSH_INTERVAL_MS,
             LATE_FLUSH_QUIET_PERIOD_MS: ctor.LATE_FLUSH_QUIET_PERIOD_MS,
             LATE_FLUSH_WINDOW_MS: ctor.LATE_FLUSH_WINDOW_MS
         };
-        ctor.LATE_FLUSH_POLL_INTERVAL_MS = 10;
+        ctor.LATE_FLUSH_INTERVAL_MS = 10;
         ctor.LATE_FLUSH_QUIET_PERIOD_MS = 20;
         ctor.LATE_FLUSH_WINDOW_MS = 60;
 
@@ -4410,6 +4410,33 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             -1,
             new Map([['STARTED', 1], ['FINISHED:DONE_BG', 1]])
         )).toBe(3);
+    });
+
+    it('stops before a post-terminal tool-bearing wakeup slice even when its text was streamed', () => {
+        expect(advanceAgyTurnTranscriptCursor(
+            [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run bg' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'STARTED' },
+                { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>done1</SYSTEM_MESSAGE>' },
+                {
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"echo next"' } }]
+                },
+                {
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'DONE',
+                    content: 'Command exited with code 0.\n\nCommand output:\nnext'
+                },
+                { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'FINISHED:next' }
+            ],
+            -1,
+            new Map([['STARTED', 1], ['FINISHED:next', 1]])
+        )).toBe(1);
     });
 
     it('peels coalesced drain-window text only at whitespace boundaries and stops before genuinely unstreamed wakeups', () => {
