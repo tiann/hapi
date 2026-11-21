@@ -110,6 +110,7 @@ export class SharedCodexRoot {
     private settings: RuntimeSettings = {};
     private settingsNative: Record<string, unknown> = {};
     private nativeSelectedServiceTier: unknown;
+    // Full settings notifications can repeat the last tier during unrelated edits.
     private nativeTierSelectionRevision = 0;
     private tierPublicationProtection?: 'fast' | 'ultrafast';
     private pendingUltrafastLaunchTarget?: UltrafastTarget;
@@ -584,7 +585,7 @@ export class SharedCodexRoot {
         this.settingsNative = { ...this.settingsNative, ...value };
         // A read may filter the selected tier to null. Keep the selection for
         // duplicate-write detection, separate from the effective tier.
-        if ('serviceTier' in value && (!effective || value.serviceTier !== null)) {
+        if ('serviceTier' in value && (!effective || value.serviceTier !== null) && value.serviceTier !== this.nativeSelectedServiceTier) {
             this.nativeSelectedServiceTier = value.serviceTier;
             this.nativeTierSelectionRevision = this.settingsRevision;
         }
@@ -1385,7 +1386,7 @@ export class SharedCodexRoot {
             if (!observed) this.acceptSettings(snapshot, true);
             if (snapshot.serviceTier === 'ultrafast' && this.settings.serviceTier === 'ultrafast') return;
             // A concurrent native client may have selected a different tier.
-            if (this.hasOtherNativeTierSince(previousTierSelectionRevision)) {
+            if (this.isOtherNativeTier(snapshot.serviceTier) || this.hasOtherNativeTierSince(previousTierSelectionRevision)) {
                 if (snapshot.serviceTier === null) {
                     if (shouldPause()) this.pauseTierConfirmation(operationId, { retainConfirmedTier: true });
                     throw new Error('Codex reported a different tier selection without an effective tier. Select a service tier in settings to continue.');
@@ -1412,8 +1413,11 @@ export class SharedCodexRoot {
             : 'Codex settings changed during effective tier confirmation; refresh before retrying');
     }
     private hasOtherNativeTierSince(revision: number): boolean {
-        const tier = fromCodexServiceTier(this.nativeSelectedServiceTier);
-        return this.nativeTierSelectionRevision > revision && tier != null && tier !== 'standard' && tier !== 'ultrafast';
+        return this.nativeTierSelectionRevision > revision && this.isOtherNativeTier(this.nativeSelectedServiceTier);
+    }
+    private isOtherNativeTier(value: unknown): boolean {
+        const tier = fromCodexServiceTier(value);
+        return tier != null && tier !== 'standard' && tier !== 'ultrafast';
     }
     async confirmUltrafastLaunch(explicitTier = true): Promise<void> {
         if (this.pendingUltrafastLaunchTarget && !this.matchesUltrafastTarget(this.settingsNative, this.pendingUltrafastLaunchTarget)) {

@@ -1000,6 +1000,73 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await rm(home, { recursive: true, force: true, maxRetries: 3 });
         }
     }, 45_000);
+    it('keeps a Runner cold resume recoverable when its Ultrafast catalog is unavailable', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-runner-tier-discovery-')); state.home = home;
+        const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        await writeFile(join(ch, 'config.toml'), [
+            'model = "gpt-6-astra"', 'model_provider = "mock"', '[features]', 'ultrafast_mode = true', 'fast_mode = true',
+            '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
+            'wire_api = "responses"', 'requires_openai_auth = false', '[analytics]', 'enabled = false',
+            '[feedback]', 'enabled = false', ''
+        ].join('\n'));
+        vi.stubEnv('CODEX_HOME', ch);
+        const { runSharedRuntime } = await import('./runtime');
+        const running: Array<{ abort: AbortController; done: Promise<void> }> = [];
+        const start = async (options: import('./launch').SharedLaunchOptions) => {
+            const abort = new AbortController();
+            let reportReady!: (value: import('./runtime').RuntimeReady) => void;
+            const ready = new Promise<import('./runtime').RuntimeReady>(resolve => { reportReady = resolve; });
+            const done = runSharedRuntime({ workingDirectory: cwd, ...options }, reportReady, abort.signal);
+            running.push({ abort, done });
+            const runtime = await Promise.race([ready, done.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            return { ...runtime, abort, done };
+        };
+        let client: CodexAppServerClient | undefined;
+        let catalog: { mockRestore(): void } | undefined;
+        try {
+            const old = await start({ serviceTier: 'standard' });
+            const sessionId = old.sessionId;
+            const threadId = old.runtime.sessions[sessionId].threadId;
+            old.abort.abort(); await old.done;
+            const saved = state.sessions.get(sessionId)!;
+            saved.serviceTier = 'ultrafast';
+            saved.metadata.codexServiceTierExplicit = true;
+            saved.metadata.codexConfirmedServiceTier = 'ultrafast';
+            saved.metadata.codexPendingServiceTier = undefined;
+            vi.mocked(bootstrapExistingSession).mockImplementation(async options => {
+                const session = new MockSession(options.workingDirectory, saved.sessionId);
+                session.metadata = { ...saved.metadata };
+                session.serviceTier = saved.serviceTier;
+                state.sessions.set(session.sessionId, session);
+                return { session, sessionInfo: { id: session.sessionId, namespace: 'test', serviceTier: session.serviceTier }, metadata: session.metadata,
+                    workingDirectory: options.workingDirectory, machineId: 'test', startedBy: options.startedBy, api: {} } as never;
+            });
+            catalog = vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockRejectedValue(new Error('Catalog unavailable'));
+            const resumed = await start({ startedBy: 'runner', existingSessionId: sessionId, resumeSessionId: threadId, serviceTier: 'ultrafast' });
+            expect(resumed.sessionId).toBe(sessionId);
+            expect(resumed.runtime.sessions[sessionId].threadId).toBe(threadId);
+            const session = state.sessions.get(sessionId)!;
+            expect(session.metadata).toMatchObject({ codexTierConfirmationPending: true, codexPendingServiceTier: 'ultrafast' });
+            expect(session.readySignals).toBe(0);
+            expect(session.messages).toContainEqual({ type: 'message', message: expect.stringContaining('catalog could not verify Ultrafast') });
+            expect(vi.mocked(notifyRunnerSessionStarted)).toHaveBeenCalledWith(sessionId, expect.objectContaining({ codexTierConfirmationPending: true }));
+
+            client = new CodexAppServerClient({ endpoint: resumed.runtime.endpoint, token: resumed.runtime.token });
+            await initializeSharedClient(client);
+            await expect(client.request('turn/start', { threadId, input: [{ type: 'text', text: 'Must wait' }] })).rejects.toThrow('tier confirmation');
+            await session.rpc.get(RPC_METHODS.SetSessionConfig)!({ serviceTier: 'standard' });
+            expect(session.readySignals).toBe(1);
+            expect(session.serviceTier).toBe('standard');
+            expect(session.metadata.codexTierConfirmationPending).toBe(false);
+        } finally {
+            catalog?.mockRestore();
+            for (const item of running) item.abort.abort();
+            await Promise.allSettled(running.map(item => item.done));
+            await client?.disconnect();
+            vi.mocked(bootstrapExistingSession).mockReset();
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 45_000);
     it('retains a fork for recovery if its native model changes after Ultrafast discovery', async () => {
         const home = await mkdtemp(join(tmpdir(), 'hapi-fork-tier-target-')); state.home = home;
         const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);

@@ -3160,20 +3160,25 @@ it.each(['web', 'native', 'turn', 'web-model', 'native-model', 'turn-model'])('c
     expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
 });
 
-it.each([false, true])('distinguishes cached Fast from a fresh competing selection when Ultrafast is filtered (fresh=%s)', async fresh => {
+it.each(['cached', 'effort edit', 'competing selection', 'effective'])('reconciles Ultrafast with %s Fast evidence', async evidence => {
     const f = await fixture({ bindTier: 'priority' });
     await f.root.activate();
     const turn = await f.root.prepareNativeTurn({ serviceTier: 'ultrafast' });
     const original = f.root.client.request.bind(f.root.client);
-    f.native.settings = { ...f.native.settings, serviceTier: 'ultrafast' };
-    if (fresh) {
-        f.native.settings.serviceTier = 'priority';
-        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
-        await f.drain();
+    const fresh = evidence === 'competing selection';
+    if (evidence === 'effort edit') {
+        f.native.notify('thread/settings/updated', { threadId: 'thread',
+            threadSettings: { ...f.native.settings, serviceTier: 'priority', effort: 'high' } });
     }
+    if (fresh) {
+        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { ...f.native.settings, serviceTier: 'ultrafast' } });
+        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { ...f.native.settings, serviceTier: 'priority' } });
+    }
+    await f.drain();
+    f.native.settings = { ...f.native.settings, serviceTier: fresh ? 'priority' : 'ultrafast' };
     const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
         if (method === 'thread/resume' && f.native.settings.serviceTier !== 'default') {
-            return { model: 'mock', serviceTier: null, thread: structuredClone(f.native.thread) } as never;
+            return { model: 'mock', serviceTier: evidence === 'effective' ? 'priority' : null, thread: structuredClone(f.native.thread) } as never;
         }
         return original(method, params);
     });
@@ -3182,9 +3187,10 @@ it.each([false, true])('distinguishes cached Fast from a fresh competing selecti
 
     const standardWritten = request.mock.calls.some(([method, params]) => method === 'thread/settings/update'
         && (params as { serviceTier?: unknown }).serviceTier === null);
-    expect(standardWritten).toBe(!fresh);
+    expect(standardWritten).toBe(!fresh && evidence !== 'effective');
     expect(f.root.needsTierConfirmation).toBe(fresh);
     if (fresh) expect(f.metadata().codexPendingServiceTier).toBe('ultrafast');
+    else if (evidence === 'effective') expect(f.root.freshParams().serviceTier).toBe('priority');
     else {
         expect(f.root.hasConfirmedStandardTier).toBe(true);
         expect(f.root.freshParams().serviceTier).toBe('default');

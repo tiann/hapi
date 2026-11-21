@@ -306,7 +306,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         return root.config(tier.params);
     };
     const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, ultrafastTarget?: UltrafastTarget, downgraded = false, resume?: Reservation,
-        expectedResumeTier = resume?.executionParams.serviceTier) => {
+        expectedResumeTier = resume?.executionParams.serviceTier, tierDiscoveryPending = false) => {
         assertRunning();
         const threadId = string(record(response.thread).id);
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
@@ -320,7 +320,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
         };
         const requestedUltrafast = ultrafastTarget !== undefined;
-        const confirmBeforeInput = requiresTierAdmission(root, requestedUltrafast ? 'ultrafast' : expectedResumeTier, downgraded, serviceTierExplicit);
+        const confirmBeforeInput = tierDiscoveryPending || requiresTierAdmission(root, requestedUltrafast ? 'ultrafast' : expectedResumeTier, downgraded, serviceTierExplicit);
         const explicitTier = serviceTierExplicit ?? root.session.getMetadata()?.codexServiceTierExplicit === true;
         if (resume || confirmBeforeInput) pendingAdmission.add(threadId);
         if (!reserved) await reserve(root, threadId);
@@ -330,7 +330,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
             assertRunning();
             if (ending.has(root)) throw new Error('Codex thread was archived during binding');
-            if (confirmBeforeInput) root.beginTierConfirmation(explicitTier && (requestedUltrafast || downgraded), ultrafastTarget);
+            if (confirmBeforeInput) root.beginTierConfirmation(explicitTier && (requestedUltrafast || downgraded || tierDiscoveryPending), ultrafastTarget);
             roots.set(threadId, root);
         } else if (confirmBeforeInput) root.beginTierConfirmation(false, ultrafastTarget);
         if (!resume?.rootBound || subscribe && !root.client.isInitialized()) {
@@ -350,7 +350,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             if (resume) resume.controlSubscription = generation;
         }
         if (ending.has(root)) throw new Error('Codex thread was archived during binding');
-        let tierConfirmationPending = resume?.tierConfirmationPending ?? false;
+        let tierConfirmationPending = tierDiscoveryPending || (resume?.tierConfirmationPending ?? false);
+        if (tierDiscoveryPending) root.session.sendSessionEvent({ type: 'message', message: 'The Codex model catalog could not verify Ultrafast. Input is paused. Select a service tier in settings to continue.' });
         let standardConfirmed = false;
         if (resume?.tierConfirmationPending === undefined && (requestedUltrafast || downgraded)) {
             try {
@@ -738,11 +739,20 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             const resumeParams = await inheritedResumeTier(control, explicitParams, metadata?.codexServiceTierExplicit, root.bootstrap.workingDirectory,
                 metadata?.codexConfirmedServiceTier ?? root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier,
                 metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined);
-            const resolved = await resolveUltrafastLaunch(control, 'thread/resume', { ...resumeParams, cwd: root.bootstrap.workingDirectory }, root.bootstrap.workingDirectory, undefined, thread, startupCatalogConfig);
-            const downgraded = resolved.downgraded;
+            const candidate: Record<string, unknown> = { ...resumeParams, cwd: root.bootstrap.workingDirectory };
+            const resolved = await resolveUltrafastLaunch(control, 'thread/resume', candidate, root.bootstrap.workingDirectory, undefined, thread, startupCatalogConfig)
+                .then(tier => ({ ...tier, tierDiscoveryPending: false }), error => {
+                    if (resumeParams.serviceTier !== 'ultrafast' || options.startedBy !== 'runner' || !options.existingSessionId) throw error;
+                    // Bind the existing session without requesting an unverified
+                    // override. Settings recovery can then confirm Standard.
+                    logger.debug('[Codex shared] cold resume tier discovery unavailable', error);
+                    const { serviceTier: _unverified, ...params } = candidate;
+                    return { params, downgraded: false, ultrafastTarget: undefined, tierDiscoveryPending: true };
+                });
+            const { downgraded, tierDiscoveryPending } = resolved;
             const serviceTierExplicit = explicitParams.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined ? true : undefined;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
-            if (requiresTierAdmission(root, resolved.params.serviceTier, downgraded, serviceTierExplicit)) pendingAdmission.add(threadId);
+            if (tierDiscoveryPending || requiresTierAdmission(root, resolved.params.serviceTier, downgraded, serviceTierExplicit)) pendingAdmission.add(threadId);
             const response = await serializeNativeLifecycle(threadId, async () => {
                 assertRunning();
                 if (ownedRoot(threadId) !== root || ending.has(root)) throw new Error('Codex thread was archived during resume');
@@ -759,7 +769,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 }
             });
             await bind(root, response, false, options, false, serviceTierExplicit,
-                resolved.ultrafastTarget, downgraded, undefined, resolved.params.serviceTier);
+                resolved.ultrafastTarget, downgraded, undefined, resolved.params.serviceTier, tierDiscoveryPending);
         } else root = await create('thread/start', { ...launch.threadParams, cwd: launch.cwd }, undefined, options);
         assertRunning();
         onReady?.({ sessionId: root.session.sessionId, runtime });
