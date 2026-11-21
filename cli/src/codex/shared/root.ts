@@ -29,6 +29,7 @@ import { inheritedSandbox, settingsMatch } from './settings';
 import { planImplementationMessageId, planProposalForItem, planProposalForTurn } from './plan';
 
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
+type HeldDelivery = { cancellation?: ReturnType<SharedCodexQueue['cancel']> };
 export type RootHost = {
     directory: string; generation: string; endpoint: string; token?: string;
     attached?: boolean;
@@ -104,7 +105,7 @@ export class SharedCodexRoot {
     private readonly bound = new Promise<void>(resolve => { this.ready = resolve; });
     private inputReady!: () => void;
     private inputGateResolved = false;
-    private readonly heldMessages = new Map<string, symbol | null>();
+    private readonly heldMessages = new Map<string, HeldDelivery>();
     private inputGate = new Promise<void>(resolve => { this.inputReady = () => { this.inputGateResolved = true; resolve(); }; });
     private tierOperationCounter = 0;
     private confirmedTierOperation = 0;
@@ -173,13 +174,14 @@ export class SharedCodexRoot {
         this.session.onUserMessage((message, localId) => {
             const id = localId ?? randomUUID();
             if (this.heldMessages.has(id) || this.queue?.isHeldCancellation(id)) return;
-            const attempt = Symbol();
+            const attempt: HeldDelivery = {};
             this.heldMessages.set(id, attempt);
             const stillHeld = () => this.heldMessages.get(id) === attempt;
             const releaseHeld = () => { if (stillHeld()) this.heldMessages.delete(id); };
             this.work = this.work.catch(() => {}).then(async () => {
                 await this.bound;
                 await this.inputGate;
+                while (attempt.cancellation) await attempt.cancellation;
                 if (this.closed || this.stopping || !stillHeld() || this.queue.isHeldCancellation(id)) return;
                 if (this.host.attached) await this.refresh();
                 if (this.closed || this.stopping || !stillHeld()) return;
@@ -189,10 +191,11 @@ export class SharedCodexRoot {
                 if (slash) {
                     for (;;) {
                         if (this.needsTierConfirmation) await this.inputGate;
+                        if (attempt.cancellation) { await attempt.cancellation; continue; }
                         if (this.closed || this.stopping || !stillHeld() || this.queue.isHeldCancellation(id)) return;
                         try {
                             resolved = await this.queue.command(id, () => this.command(text), () => {
-                                if (!stillHeld()) throw new QueueAdmissionPaused('Command was canceled before dispatch.');
+                                if (!stillHeld() || attempt.cancellation) throw new QueueAdmissionPaused('Command cancellation is pending.');
                                 // The command ledger takes over cancellation
                                 // only after the durable preflight succeeds.
                                 releaseHeld();
@@ -208,6 +211,7 @@ export class SharedCodexRoot {
                 const input = buildUserInputFromMessage(resolved);
                 for (;;) {
                     if (this.needsTierConfirmation) await this.inputGate;
+                    if (attempt.cancellation) { await attempt.cancellation; continue; }
                     if (this.closed || this.stopping || !stillHeld()) return;
                     // Current settings can change while input waits for
                     // preceding work or tier confirmation.
@@ -225,19 +229,26 @@ export class SharedCodexRoot {
             }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`)).finally(releaseHeld);
         });
         this.session.onCancelQueuedMessage(async id => {
-            const held = this.heldMessages.has(id);
-            // Keep redeliveries held until the cancel is recorded durably.
-            if (held) this.heldMessages.set(id, null);
-            await this.bound;
-            if (this.stopping) return 'indeterminate';
-            try {
-                const result = held && await this.queue.cancelHeld(id) ? true : await this.queue.cancel(id);
-                if (held && (result === true || result === 'consumed')) this.heldMessages.delete(id);
-                return result;
-            } catch (error) {
-                logger.debug('[Codex shared] queue cancellation could not be saved', error);
-                return 'indeterminate';
-            }
+            const held = this.heldMessages.get(id);
+            if (held?.cancellation) return held.cancellation;
+            // Keep the original waiter until durable cancellation succeeds.
+            const cancellation: ReturnType<SharedCodexQueue['cancel']> = (async () => {
+                await this.bound;
+                if (this.stopping) return 'indeterminate';
+                try {
+                    const result = held && await this.queue.cancelHeld(id) ? true : await this.queue.cancel(id);
+                    if (held && (result === true || result === 'consumed') && this.heldMessages.get(id) === held) {
+                        this.heldMessages.delete(id);
+                    }
+                    return result;
+                } catch (error) {
+                    logger.debug('[Codex shared] queue cancellation could not be saved', error);
+                    return 'indeterminate';
+                }
+            })();
+            if (held) held.cancellation = cancellation;
+            try { return await cancellation; }
+            finally { if (held?.cancellation === cancellation) delete held.cancellation; }
         });
         // Absence from history is NOT proof an uncertain mutation failed.
         this.session.onRetryQueuedMessage(async (id, cancellationAcknowledged) => {
@@ -247,7 +258,7 @@ export class SharedCodexRoot {
                 if (this.queue.isHeldCancellation(id)) {
                     // Invalidate any redelivery already waiting for admission
                     // before clearing its durable cancellation for this retry.
-                    const resetting = Symbol();
+                    const resetting: HeldDelivery = {};
                     this.heldMessages.set(id, resetting);
                     try { await this.queue.retryHeldCancellation(id); }
                     finally { if (this.heldMessages.get(id) === resetting) this.heldMessages.delete(id); }

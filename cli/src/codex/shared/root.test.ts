@@ -139,6 +139,28 @@ it('allows cancellation while tier confirmation keeps queued input paused', asyn
     await expect(f.root.nativeQueueMutation('thread/queue/start', { threadId: 'thread' })).rejects.toThrow('tier confirmation');
 });
 
+it('delivers the original held message when its cancellation cannot be saved', async () => {
+    const f = await fixture(); await f.root.activate({}, false, true);
+    const queue = (f.root as unknown as { queue: { save(): Promise<void> } }).queue;
+    let entered!: () => void;
+    let fail!: (error: Error) => void;
+    const writing = new Promise<void>(resolve => { entered = resolve; });
+    const blocked = new Promise<void>((_, reject) => { fail = reject; });
+    vi.spyOn(queue, 'save').mockImplementationOnce(() => { entered(); return blocked; });
+
+    f.submit('original held input', 'held-write-failure');
+    const cancellation = f.cancel('held-write-failure');
+    await writing;
+    try {
+        await f.root.applySettings({ serviceTier: 'standard' });
+        expect(f.native.queue).toHaveLength(0);
+        f.submit('duplicate redelivery', 'held-write-failure');
+    } finally { fail(new Error('fixture ledger write failed')); }
+    await expect(cancellation).resolves.toBe('indeterminate');
+    await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+    expect(f.native.queue[0].input).toMatchObject([{ text: 'original held input' }]);
+});
+
 it('dispatches the explicit retry of a held message after tier recovery without replaying its stale delivery', async () => {
     const f = await fixture();
     await f.root.activate({}, false, true);

@@ -10,7 +10,7 @@ import type { ApiSessionClient } from '@/api/apiSession';
 import { CodexAppServerClient, INDETERMINATE_SYMBOL } from '../codexAppServerClient';
 import { initializeSharedClient } from './launch';
 import { record } from './gateway';
-import { saveRuntime, withThreadOwnership } from './registry';
+import { findRuntime, saveRuntime, withThreadOwnership } from './registry';
 import { runtimeControl } from './frontend';
 import { isProcessAlive } from '@/utils/process';
 import { notifyRunnerSessionStarted } from '@/runner/controlClient';
@@ -796,6 +796,36 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(vi.mocked(bootstrapExistingSession).mock.calls.at(-1)?.[0].workingDirectory).toBe(validatedCwd);
             const saved = await runner.client.request<{ thread: { cwd: string } }>('thread/read', { threadId: unsetThread, includeTurns: false });
             expect((await realpath(saved.thread.cwd)).toLowerCase()).toBe((await realpath(validatedCwd)).toLowerCase());
+
+            runner.abort.abort(); await runner.done;
+            const archiveWitness = await start();
+            let enterColdCatalog!: () => void;
+            const coldCatalogEntered = new Promise<void>(resolve => { enterColdCatalog = resolve; });
+            const coldCatalogGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
+            const coldCatalog = vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockImplementationOnce(async () => {
+                enterColdCatalog(); await coldCatalogGate; return { data: [] } as never;
+            });
+            extraSpies.push(coldCatalog);
+            const coldReady = vi.fn();
+            const coldAbort = new AbortController();
+            const coldDone = runSharedRuntime({ startedBy: 'runner', workingDirectory: validatedCwd, resumeSessionId: unsetThread,
+                existingSessionId: unset.sessionId, serviceTier: 'ultrafast' }, coldReady, coldAbort.signal);
+            running.push({ abort: coldAbort, done: coldDone });
+            await Promise.race([coldCatalogEntered, coldDone.then(() => { throw new Error('Cold runtime exited before catalog discovery'); })]);
+            const coldRuntime = await findRuntime(unset.sessionId);
+            expect(coldRuntime?.sessions[unset.sessionId]).toMatchObject({ threadId: unsetThread, active: true });
+            const resumeAfterArchive = vi.spyOn(CodexAppServerClient.prototype, 'request');
+            extraSpies.push(resumeAfterArchive);
+            try {
+                await expect(runtimeControl(coldRuntime!, 'hapi/stopSession', unset.sessionId)).resolves.toEqual({ stopped: true });
+            } finally { releaseLaunch(); }
+            await expect(coldDone).rejects.toThrow('archived during resume');
+            expect(coldReady).not.toHaveBeenCalled();
+            expect(resumeAfterArchive.mock.calls.some(([method, params]) => ['thread/resume', 'thread/unarchive'].includes(method)
+                && record(params).threadId === unsetThread)).toBe(false);
+            await expect(archiveWitness.client.request('thread/list', { archived: true, limit: 100 }))
+                .resolves.toMatchObject({ data: expect.arrayContaining([expect.objectContaining({ id: unsetThread })]) });
+            coldCatalog.mockRestore(); resumeAfterArchive.mockRestore();
         } finally {
             releaseLaunch();
             for (const spy of extraSpies.reverse()) spy.mockRestore();
@@ -805,7 +835,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await Promise.allSettled(clients.map(client => client.disconnect()));
             await rm(home, { recursive: true, force: true, maxRetries: 3 });
         }
-    }, 90_000);
+    }, 120_000);
     it('projects native async questions and delivers answers during generation and after completion', async () => {
         const home = await mkdtemp('/tmp/hapi-shared-async-'); state.home = home;
         const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);

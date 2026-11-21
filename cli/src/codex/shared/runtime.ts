@@ -91,6 +91,14 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     let finish!: () => void;
     const done = new Promise<void>(resolve => { finish = resolve; });
     const ending = new Set<SharedCodexRoot>();
+    const nativeLifecycles = new Map<string, Promise<unknown>>();
+    const serializeNativeLifecycle = <T>(threadId: string, work: () => Promise<T>): Promise<T> => {
+        const pending = (nativeLifecycles.get(threadId) ?? Promise.resolve()).catch(() => {}).then(work);
+        nativeLifecycles.set(threadId, pending);
+        return pending.finally(() => {
+            if (nativeLifecycles.get(threadId) === pending) nativeLifecycles.delete(threadId);
+        });
+    };
     const roots = new Map<string, SharedCodexRoot>();
     const prepared = new Set<SharedCodexRoot>();
     const reservations = new Map<string, Reservation>();
@@ -187,16 +195,17 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             const binding = runtime.sessions[root.session.sessionId];
             return binding?.active && binding.threadId === threadId;
         });
-    const endOwnedThread = async (root: SharedCodexRoot, threadId: string, nativeArchive: boolean): Promise<void> => {
+    const endOwnedThread = (root: SharedCodexRoot, threadId: string, nativeArchive: boolean): Promise<unknown> => serializeNativeLifecycle(threadId, async () => {
         if (ownedRoot(threadId) !== root || ending.has(root)) return;
         ending.add(root);
+        let result: unknown;
         try {
             if (nativeArchive) {
                 // A retained binding may have lost its side connection before
                 // activation. Archive the same thread through the live control.
                 const client = root.client.isInitialized() ? root.client : control;
                 if (!client.isInitialized()) throw new Error('Codex is disconnected; retry archive after reconnect');
-                await client.request('thread/archive', { threadId });
+                result = await client.request('thread/archive', { threadId });
             }
         } catch (error) { ending.delete(root); throw error; }
         root.stopAccepting();
@@ -216,8 +225,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 if (prepared.size === 0 && roots.size === 0 && reservations.size === 0 && retryableBindings.size === 0) await shutdown();
             }).catch(error => logger.debug('[Codex shared] root cleanup', error));
         }, 100);
-    };
-    const end = (root: SharedCodexRoot, nativeArchive = true): Promise<void> => endOwnedThread(root, root.threadId, nativeArchive);
+        return result;
+    });
+    const end = async (root: SharedCodexRoot, nativeArchive = true): Promise<void> => { await endOwnedThread(root, root.threadId, nativeArchive); };
     const prepare = async (cwd: string, existingSessionId?: string, parent?: SharedCodexRoot): Promise<SharedCodexRoot> => {
         assertRunning();
         // Seed the generated title before Shared Codex replays inherited history.
@@ -444,6 +454,14 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const key = (connection: string, request: Envelope) => `${connection}:${typeof request.id}:${request.id}`;
     const before = (request: Envelope, connection: string): Promise<Envelope> => operation(async () => {
         const params = ['thread/start', 'thread/resume', 'thread/fork'].includes(request.method ?? '') ? nativeTierParams(record(request.params)) : record(request.params);
+        if (request.method === 'thread/archive') {
+            const threadId = string(params.threadId);
+            const owner = threadId ? ownedRoot(threadId) : undefined;
+            if (owner && threadId) {
+                if (request.id === undefined) throw new Error('Lifecycle operations require a JSON-RPC request ID');
+                return { id: request.id, result: await endOwnedThread(owner, threadId, true) ?? {} };
+            }
+        }
         const queueRoot = roots.get(string(params.threadId) ?? '');
         const queueMutation = ['thread/queue/add', 'thread/queue/update', 'thread/queue/delete', 'thread/queue/reorder', 'thread/queue/start'].includes(request.method ?? '');
         const initializing = pendingAdmission.has(string(params.threadId) ?? '');
@@ -698,18 +716,21 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             const downgraded = resolved.downgraded;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
             if (downgraded || resolved.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
-            let response: Record<string, unknown>;
-            try {
-                response = record(await root.client.request('thread/resume', params));
-            } catch (error) {
-                // Reopening a HAPI binding also restores its native archive.
-                // Only retry an explicit archived rejection, never a transport
-                // failure whose resume outcome may be unknown.
-                if (!options.existingSessionId || !(error instanceof Error)
-                    || !error.message.startsWith(`session ${threadId} is archived.`)) throw error;
-                await root.client.request('thread/unarchive', { threadId });
-                response = record(await root.client.request('thread/resume', params));
-            }
+            const response = await serializeNativeLifecycle(threadId, async () => {
+                assertRunning();
+                if (ownedRoot(threadId) !== root || ending.has(root)) throw new Error('Codex thread was archived during resume');
+                try {
+                    return record(await root.client.request('thread/resume', params));
+                } catch (error) {
+                    // Reopening a HAPI binding also restores its native archive.
+                    // Only retry an explicit archived rejection, never a transport
+                    // failure whose resume outcome may be unknown.
+                    if (!options.existingSessionId || !(error instanceof Error)
+                        || !error.message.startsWith(`session ${threadId} is archived.`)) throw error;
+                    await root.client.request('thread/unarchive', { threadId });
+                    return record(await root.client.request('thread/resume', params));
+                }
+            });
             await bind(root, response, false, options, false, launch.threadParams.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined ? true : undefined,
                 resolved.params.serviceTier === 'ultrafast', downgraded, undefined, resolved.params.serviceTier);
         } else root = await create('thread/start', { ...launch.threadParams, cwd: launch.cwd }, undefined, options);
