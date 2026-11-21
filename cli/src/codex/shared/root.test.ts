@@ -98,14 +98,17 @@ it.each([false, true])('observes effective attached desktop Ultrafast without ov
     let entered!: () => void, release!: () => void;
     const reading = new Promise<void>(resolve => { entered = resolve; });
     const held = new Promise<void>(resolve => { release = resolve; });
-    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+    vi.spyOn(f.root.client, 'request').mockImplementationOnce(async (method, params) => {
         if (method === 'thread/resume') { entered(); await held; return { model: 'mock', serviceTier: 'ultrafast' } as never; }
         return original(method, params);
     });
     const keepAlive = vi.spyOn(f.session, 'keepAlive');
     f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'ultrafast' } });
     await reading;
-    if (superseded) f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'priority' } });
+    if (superseded) {
+        f.native.settings.serviceTier = 'priority';
+        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+    }
     release(); await f.drain();
     await vi.waitFor(() => expect((f.root as unknown as { attachedTierObservation?: Promise<void> }).attachedTierObservation).toBeUndefined());
     expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBe(superseded ? 'fast' : 'ultrafast');
@@ -2533,6 +2536,35 @@ it.each(['web', 'native'])('holds recovery when the first %s Fast write is selec
     expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update')).toHaveLength(1);
     await f.root.applySettings({ serviceTier: 'standard' });
     expect(f.root.needsTierConfirmation).toBe(false);
+});
+
+it('keeps a late Fast selection provisional after the settings confirmation times out', async () => {
+    const f = await fixture({ bindTier: 'default' }); await f.root.activate();
+    let sent!: () => void;
+    const dispatched = new Promise<void>(resolve => { sent = resolve; });
+    const original = f.root.client.request.bind(f.root.client);
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/settings/update' && (params as { serviceTier?: unknown }).serviceTier === 'priority') {
+            sent(); return {} as never;
+        }
+        return original(method, params);
+    });
+    const keepAlive = vi.spyOn(f.session, 'keepAlive');
+    vi.useFakeTimers();
+    try {
+        const settings = f.root.applySettings({ serviceTier: 'fast' });
+        const rejected = expect(settings).rejects.toThrow('confirmation is pending');
+        await dispatched;
+        await vi.advanceTimersByTimeAsync(15_000);
+        await rejected;
+        f.native.settings.serviceTier = 'priority';
+        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'running' } });
+        await f.drain();
+        expect(f.root.needsTierConfirmation).toBe(true);
+        expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBe('standard');
+        expect(f.metadata().codexConfirmedServiceTier).toBeUndefined();
+    } finally { vi.useRealTimers(); }
 });
 
 it('persists a native Standard fallback when Codex reports no override and restores it on cold resume', async () => {
