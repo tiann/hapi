@@ -567,18 +567,12 @@ export function resolveAgyBackgroundTaskIds(
  */
 function consumeAgyStreamedText(
     text: string,
-    pool: Map<string, number>,
-    coalescedRemainders?: Map<string, number>
+    pool: Map<string, number>
 ): boolean {
     const exact = pool.get(text) ?? 0;
     if (exact > 0) {
         if (exact === 1) pool.delete(text);
         else pool.set(text, exact - 1);
-        if (coalescedRemainders) {
-            const remCount = coalescedRemainders.get(text) ?? 0;
-            if (remCount === 1) coalescedRemainders.delete(text);
-            else if (remCount > 1) coalescedRemainders.set(text, remCount - 1);
-        }
         return true;
     }
     for (const [candidate, count] of pool) {
@@ -595,12 +589,6 @@ function consumeAgyStreamedText(
         if (count === 1) pool.delete(candidate);
         else pool.set(candidate, count - 1);
         pool.set(remainder, (pool.get(remainder) ?? 0) + 1);
-        if (coalescedRemainders) {
-            const prevRem = coalescedRemainders.get(candidate) ?? 0;
-            if (prevRem === 1) coalescedRemainders.delete(candidate);
-            else if (prevRem > 1) coalescedRemainders.set(candidate, prevRem - 1);
-            coalescedRemainders.set(remainder, (coalescedRemainders.get(remainder) ?? 0) + 1);
-        }
         return true;
     }
     return false;
@@ -618,7 +606,6 @@ export function advanceAgyTurnTranscriptCursor(
 ): number {
     let cursor = currentCursor;
     const remainingTexts = new Map(streamedTextCounts);
-    const coalescedRemainders = new Map<string, number>();
 
     const isTerminalPlanner = (step: AgyTranscriptStep): boolean =>
         step.source === 'MODEL'
@@ -674,13 +661,13 @@ export function advanceAgyTurnTranscriptCursor(
     for (let i = startIdx; i < stepsAfterStart.length; i += 1) {
         const step = stepsAfterStart[i]!;
         if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
-            if (sawTerminalPlanner && coalescedRemainders.size === 0) break;
+            if (sawTerminalPlanner && remainingTexts.size === 0) break;
 
             let terminalIdx = -1;
             let unstreamed = false;
             let matchedTexts = 0;
+            let hasToolCalls = false;
             const probeTexts = new Map(remainingTexts);
-            const probeRemainders = new Map(coalescedRemainders);
             for (let j = i + 1; j < stepsAfterStart.length; j += 1) {
                 const ahead = stepsAfterStart[j]!;
                 if (ahead.source === 'MODEL' && ahead.type === 'PLANNER_RESPONSE') {
@@ -688,9 +675,12 @@ export function advanceAgyTurnTranscriptCursor(
                         unstreamed = true;
                         break;
                     }
+                    if (Array.isArray(ahead.tool_calls) && ahead.tool_calls.length > 0) {
+                        hasToolCalls = true;
+                    }
                     const text = ahead.content?.trim();
                     if (text) {
-                        if (!consumeAgyStreamedText(text, probeTexts, probeRemainders)) {
+                        if (!consumeAgyStreamedText(text, probeTexts)) {
                             unstreamed = true;
                             break;
                         }
@@ -704,7 +694,11 @@ export function advanceAgyTurnTranscriptCursor(
                 }
             }
 
-            if (unstreamed || terminalIdx < 0 || (sawTerminalPlanner && matchedTexts === 0)) {
+            if (
+                unstreamed
+                || terminalIdx < 0
+                || (sawTerminalPlanner && (matchedTexts === 0 || hasToolCalls))
+            ) {
                 break;
             }
             if (step.step_index > cursor) cursor = step.step_index;
@@ -714,7 +708,7 @@ export function advanceAgyTurnTranscriptCursor(
         if (step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE') {
             const text = step.content?.trim();
             if (text) {
-                consumeAgyStreamedText(text, remainingTexts, coalescedRemainders);
+                consumeAgyStreamedText(text, remainingTexts);
             }
             if (isTerminalPlanner(step)) {
                 sawTerminalPlanner = true;

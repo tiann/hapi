@@ -4221,9 +4221,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         }
     });
 
-    it('peels coalesced drain-window text only at whitespace boundaries and does not stay latched for later wakeups', () => {
-        // Whitespace boundary ("STARTED\n\nFINISHED:DONE_BG") advances past the streamed slice (step 3),
-        // then stops before a later unstreamed SYSTEM_MESSAGE (step 4) instead of staying latched.
+    it('advances past separately flushed wakeup replies in transcript order and stops before an unstreamed later wakeup', () => {
         expect(advanceAgyTurnTranscriptCursor(
             [
                 { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run bg' },
@@ -4234,7 +4232,24 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'SECOND_WAKEUP' }
             ],
             -1,
-            new Map([['STARTED\n\nFINISHED:DONE_BG', 1], ['SECOND_WAKEUP', 1]])
+            new Map([['STARTED', 1], ['FINISHED:DONE_BG', 1]])
+        )).toBe(3);
+    });
+
+    it('peels coalesced drain-window text only at whitespace boundaries and stops before genuinely unstreamed wakeups', () => {
+        // Whitespace boundary ("STARTED\n\nFINISHED:DONE_BG") advances past the streamed slice (step 3),
+        // then stops before a later unstreamed SYSTEM_MESSAGE (step 4).
+        expect(advanceAgyTurnTranscriptCursor(
+            [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run bg' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'STARTED' },
+                { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>done1</SYSTEM_MESSAGE>' },
+                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'FINISHED:DONE_BG' },
+                { step_index: 4, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>done2</SYSTEM_MESSAGE>' },
+                { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'SECOND_WAKEUP' }
+            ],
+            -1,
+            new Map([['STARTED\n\nFINISHED:DONE_BG', 1]])
         )).toBe(3);
 
         // Mid-word prefix ("OKAY" vs "OK") must not peel "AY" into a synthetic remainder.
@@ -4250,7 +4265,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         )).toBe(1);
 
         // 3-part coalesced chain ("A\n\nB\n\nC"): peeling A -> "B\n\nC" -> "C" empties
-        // coalescedRemainders once C is consumed, so a following SYSTEM_MESSAGE stops the cursor.
+        // the streamed pool once C is consumed, so a following unstreamed SYSTEM_MESSAGE stops the cursor.
         expect(advanceAgyTurnTranscriptCursor(
             [
                 { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'chain' },
@@ -4263,7 +4278,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'NEXT_WAKEUP' }
             ],
             -1,
-            new Map([['A\n\nB\n\nC', 1], ['NEXT_WAKEUP', 1]])
+            new Map([['A\n\nB\n\nC', 1]])
         )).toBe(5);
     });
 });
