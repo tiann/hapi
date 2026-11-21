@@ -11,6 +11,7 @@ import { CodexAppServerClient, INDETERMINATE_SYMBOL } from '../codexAppServerCli
 import { initializeSharedClient } from './launch';
 import { record } from './gateway';
 import { saveRuntime, withThreadOwnership } from './registry';
+import { runtimeControl } from './frontend';
 import { isProcessAlive } from '@/utils/process';
 import { notifyRunnerSessionStarted } from '@/runner/controlClient';
 import { bootstrapExistingSession } from '@/agent/sessionFactory';
@@ -641,11 +642,15 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             extraSpies.push(abandonedMetadata);
             await expect(third.client.request('thread/resume', { threadId: abandoned.thread.id, excludeTurns: true })).rejects.toThrow('before archive');
             expect(third.runtime.sessions[abandonedSid].active).toBe(true);
-            await third.client.request('thread/archive', { threadId: abandoned.thread.id });
+            await expect(runtimeControl(third.runtime, 'hapi/stopSession', abandonedSid)).resolves.toEqual({ stopped: true });
             abandonedMetadata.mockRestore();
             await vi.waitFor(() => expect(state.sessions.get(abandonedSid)?.dead).toBe(true));
             expect(state.sessions.get(abandonedSid)?.metadata.lifecycleState).toBe('archived');
             expect(third.runtime.sessions[abandonedSid].active).toBe(false);
+            expect(third.runtime.sessions[importedSid].active).toBe(true);
+            expect(state.sessions.get(importedSid)?.dead).toBe(false);
+            await expect(third.client.request('thread/read', { threadId: imported.thread.id, includeTurns: false }))
+                .resolves.toMatchObject({ thread: { id: imported.thread.id } });
             await expect(withThreadOwnership(third.runtime.codexHome, abandoned.thread.id, 'archive-verifier', async () => true)).resolves.toBe(true);
             const archiveClient = new CodexAppServerClient({ endpoint: third.runtime.endpoint, token: third.runtime.token });
             clients.push(archiveClient); await initializeSharedClient(archiveClient);

@@ -631,12 +631,17 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                     logger.debug('[Codex shared] quarantined lifecycle reservation', { runtimeId: id, sessionId: reservation.root.session.sessionId });
                 }
             }, control: (method, params) => operation(async () => {
-                const sid = string(record(params).sessionId); const root = [...roots.values()].find(root => root.session.sessionId === sid);
-                const retryThread = sid && runtime.sessions[sid]?.threadId;
-                if (!root && method === 'hapi/attach' && retryThread && retryableBindings.has(retryThread)) return { threadId: retryThread };
-                if (!root) throw new Error('Shared session not found');
-                if (method === 'hapi/stopSession') { await end(root); return { stopped: true }; }
-                if (method === 'hapi/attach') return { threadId: root.threadId };
+                const sid = string(record(params).sessionId);
+                const binding = sid ? runtime.sessions[sid] : undefined;
+                if (!binding?.active) throw new Error('Shared session not found');
+                const { threadId } = binding;
+                const root = ownedRoot(threadId);
+                if (!root || root.session.sessionId !== sid) throw new Error('Shared session not found');
+                if (method === 'hapi/stopSession') { await endOwnedThread(root, threadId, true); return { stopped: true }; }
+                if (method === 'hapi/attach') {
+                    if (roots.get(threadId) === root || retryableBindings.get(threadId)?.root === root) return { threadId };
+                    throw new Error('Shared session not found');
+                }
                 throw new Error('Unknown runtime control');
             }) } });
         if (stopping) { await gateway.close(); assertRunning(); }
