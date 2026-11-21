@@ -69,7 +69,8 @@ describe('getEffectiveCodexServiceTier', () => {
             model.id === 'gpt-5.5' ? { ...model, defaultServiceTier: 'priority' } : model
         ))
 
-        expect(getEffectiveCodexServiceTier(null, null, modelsWithDefault)).toBe('priority')
+        expect(getEffectiveCodexServiceTier(undefined, null, modelsWithDefault)).toBe('priority')
+        expect(getEffectiveCodexServiceTier(null, null, modelsWithDefault)).toBeNull()
         expect(getEffectiveCodexServiceTier('standard', null, modelsWithDefault)).toBe('standard')
     })
     it('keeps a confirmed native Flex tier when the model catalog defaults to Fast', () => {
@@ -80,8 +81,8 @@ describe('getEffectiveCodexServiceTier', () => {
     })
     it('does not infer Fast from the catalog during tier recovery', () => {
         const catalog = [{ id: 'gpt-5.5', isDefault: true, defaultServiceTier: 'priority' }]
-        expect(getEffectiveCodexServiceTier(null, 'gpt-5.5', catalog, true)).toBeNull()
-        expect(getEffectiveCodexServiceTier(null, 'gpt-5.5', catalog, false)).toBe('priority')
+        expect(getEffectiveCodexServiceTier(undefined, 'gpt-5.5', catalog, true)).toBeUndefined()
+        expect(getEffectiveCodexServiceTier(undefined, 'gpt-5.5', catalog, false)).toBe('priority')
     })
 })
 

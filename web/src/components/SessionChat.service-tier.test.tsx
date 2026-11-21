@@ -161,12 +161,12 @@ it('keeps Standard recovery available for a paused launch without a usable tier 
     expect(button).toBeEnabled(); fireEvent.click(button);
     await waitFor(() => expect(setServiceTier).toHaveBeenCalledWith('tier-session', 'standard'));
 });
-it('withholds a catalog-derived Fast badge while the session tier needs recovery', async () => {
+it.each([true, false])('withholds a catalog-derived Fast badge when the effective tier is null (recovery: %s)', async confirmationPending => {
     const catalog = vi.fn(async () => ({ success: true, models: [
         { id: 'mock', isDefault: true, serviceTiers: ['priority'], defaultServiceTier: 'priority' }
     ] }));
     const session = { id: 'tier-session', active: true, model: 'mock', serviceTier: null, metadata: {
-        flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexTierConfirmationPending: true,
+        flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexTierConfirmationPending: confirmationPending,
         capabilities: { concurrentClients: true }
     } } as unknown as Session;
     render(shell(session, catalog, vi.fn()));

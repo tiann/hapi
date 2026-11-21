@@ -995,6 +995,64 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await rm(home, { recursive: true, force: true, maxRetries: 3 });
         }
     }, 45_000);
+    it('retains a fork for recovery if its native model changes after Ultrafast discovery', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-fork-tier-target-')); state.home = home;
+        const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        const configure = (model: string) => writeFile(join(ch, 'config.toml'), [
+            `model = "${model}"`, 'model_provider = "mock"', '[features]', 'fast_mode = true', 'ultrafast_mode = true',
+            '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
+            'wire_api = "responses"', 'requires_openai_auth = false',
+            '[analytics]', 'enabled = false', '[feedback]', 'enabled = false', ''
+        ].join('\n'));
+        await configure('gpt-6-astra');
+        vi.stubEnv('CODEX_HOME', ch);
+        const { runSharedRuntime } = await import('./runtime');
+        const abort = new AbortController();
+        let ready!: (value: import('./runtime').RuntimeReady) => void;
+        const readiness = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
+        const running = runSharedRuntime({ workingDirectory: cwd, serviceTier: 'standard' }, ready, abort.signal);
+        let client: CodexAppServerClient | undefined;
+        const spies: Array<{ mockRestore(): void }> = [];
+        try {
+            const { runtime, sessionId } = await Promise.race([readiness, running.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            const parentThread = runtime.sessions[sessionId].threadId;
+            client = new CodexAppServerClient({ endpoint: runtime.endpoint, token: runtime.token });
+            await initializeSharedClient(client);
+            let catalogRead = false, changed = false;
+            const readConfig = CodexAppServerClient.prototype.readConfig;
+            spies.push(vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockImplementation(async () => {
+                catalogRead = true;
+                return { data: [{ id: 'gpt-6-astra', serviceTiers: [{ id: 'ultrafast' }] }] } as never;
+            }));
+            spies.push(vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockImplementation(async function(this: CodexAppServerClient, params) {
+                const snapshot = await readConfig.call(this, params);
+                if (catalogRead && params.includeLayers && !changed) {
+                    changed = true;
+                    await configure('gpt-6.1-sol');
+                }
+                return snapshot;
+            }));
+            const fork = await client.request<{ model: string; thread: { id: string } }>(
+                'thread/fork', { threadId: parentThread, cwd, serviceTier: 'ultrafast' });
+            expect(changed).toBe(true);
+            expect(fork.model).toBe('gpt-6.1-sol');
+            const child = [...state.sessions.values()].find(session => session.metadata.codexSessionId === fork.thread.id)!;
+            expect(child.metadata.codexTierConfirmationPending).toBe(true);
+            expect(child.readySignals).toBe(0);
+            expect(child.serviceTier).not.toBe('ultrafast');
+            expect(child.messages).toContainEqual({ type: 'message', message: expect.stringContaining('changed after Ultrafast validation') });
+            await expect(client.request('turn/start', { threadId: fork.thread.id, input: [{ type: 'text', text: 'Must not run' }] }))
+                .rejects.toThrow('tier confirmation is pending');
+            await client.request('thread/settings/update', { threadId: fork.thread.id, serviceTier: null });
+            expect(child.readySignals).toBe(1);
+            expect(child.serviceTier).toBe('standard');
+        } finally {
+            for (const spy of spies.reverse()) spy.mockRestore();
+            abort.abort(); await running.catch(() => {});
+            await client?.disconnect();
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 45_000);
     it('projects native async questions and delivers answers during generation and after completion', async () => {
         const home = await mkdtemp('/tmp/hapi-shared-async-'); state.home = home;
         const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);

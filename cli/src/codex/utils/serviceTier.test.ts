@@ -44,7 +44,9 @@ it.each([
     const requested = { ...params, serviceTier: 'ultrafast' };
     const launch = resolveUltrafastLaunch(client, 'thread/start', requested, '/project', undefined, undefined, await catalogConfiguration(original));
     if (changed) await expect(launch).rejects.toThrow('effective Codex model or provider changed');
-    else await expect(launch).resolves.toEqual({ params: requested, downgraded: false });
+    else await expect(launch).resolves.toEqual({
+        params: requested, downgraded: false, ultrafastTarget: { model: 'eligible', provider: 'original-provider' }
+    });
     expect(client.listModels).toHaveBeenCalledExactlyOnceWith({ includeHidden: true, modelProvider: 'original-provider' });
     expect(client.readConfig).toHaveBeenCalledTimes(2);
 });

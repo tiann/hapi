@@ -65,7 +65,9 @@ export function getEffectiveCodexServiceTier(
     models: ReadonlyArray<CodexModelCatalogEntry>,
     confirmationPending = false
 ): string | null | undefined {
-    if (serviceTier != null || confirmationPending) return serviceTier
+    // A null native result means no effective tier. Only an absent report
+    // leaves room to display a provisional account default.
+    if (serviceTier !== undefined || confirmationPending) return serviceTier
     const catalogTier = findActiveModel(sessionModel, models)?.defaultServiceTier
     // Ultrafast requires an effective native confirmation; the account catalog
     // default can still advertise it when the thread feature is disabled.

@@ -1,5 +1,5 @@
 import { fromCodexServiceTier, toCodexServiceTier } from '@hapi/protocol';
-import { catalogConfigurationMatches, discoverUltrafastTarget, isUltrafastEnabled, ULTRAFAST_FALLBACK_NOTICE, ULTRAFAST_DISABLED_NOTICE } from '../utils/serviceTier';
+import { catalogConfigurationMatches, discoverUltrafastTarget, isUltrafastEnabled, ULTRAFAST_FALLBACK_NOTICE, ULTRAFAST_DISABLED_NOTICE, type UltrafastTarget } from '../utils/serviceTier';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -31,7 +31,6 @@ import { planImplementationMessageId, planProposalForItem, planProposalForTurn }
 
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
 type HeldDelivery = { cancellation?: ReturnType<SharedCodexQueue['cancel']> };
-type UltrafastTarget = { model?: string; provider?: string };
 type PreparedNativeTurn = {
     params: Record<string, unknown>;
     fallbackNotice?: string;
@@ -57,6 +56,9 @@ export type RootHost = {
 };
 const FAST_UNAVAILABLE = 'Fast is unavailable for the current Codex session.';
 const ULTRAFAST_TARGET_CHANGED = 'Codex model or provider changed during Ultrafast confirmation; refresh before retrying.';
+export class UltrafastTargetChangedError extends Error {
+    constructor() { super(ULTRAFAST_TARGET_CHANGED); }
+}
 
 const SettingsSchema = z.object({
     permissionMode: z.enum(['default', 'read-only', 'autoReview', 'yolo']).optional(),
@@ -108,6 +110,7 @@ export class SharedCodexRoot {
     private settingsNative: Record<string, unknown> = {};
     private nativeSelectedServiceTier: unknown;
     private tierPublicationProtection?: 'fast' | 'ultrafast';
+    private pendingUltrafastLaunchTarget?: UltrafastTarget;
     private modelProvider?: string;
     private serviceTierExplicit?: boolean;
     private confirmedNativeStandardReset = false;
@@ -115,8 +118,9 @@ export class SharedCodexRoot {
     private tierConfirmationResolved = false;
     get hasUltrafastTier(): boolean { return this.settingsNative.serviceTier === 'ultrafast'; }
     private tierAdmissionPending = false;
-    beginTierConfirmation(preserveUltrafast = false): void {
+    beginTierConfirmation(preserveUltrafast = false, launchTarget?: UltrafastTarget): void {
         this.tierAdmissionPending = true;
+        this.pendingUltrafastLaunchTarget = launchTarget;
         if (preserveUltrafast) {
             this.tierPublicationProtection = 'ultrafast';
             this.session.updateMetadata(metadata => ({ ...metadata, codexPendingServiceTier: 'ultrafast' }));
@@ -548,8 +552,9 @@ export class SharedCodexRoot {
         if (!this.closed && !this.stopping) this.session.keepAlive(Boolean(this.currentTurn), undefined, this.settingsForHub());
     }
     private settingsForHub(): RuntimeSettings {
-        if (!this.tierPublicationProtection || this.settings.serviceTier === this.tierPublicationProtection
-            || this.session.getMetadata()?.codexPendingServiceTier === this.tierPublicationProtection) {
+        const unconfirmedLaunchTier = this.pendingUltrafastLaunchTarget && this.settings.serviceTier === 'ultrafast';
+        if (!unconfirmedLaunchTier && (!this.tierPublicationProtection || this.settings.serviceTier === this.tierPublicationProtection
+            || this.session.getMetadata()?.codexPendingServiceTier === this.tierPublicationProtection)) {
             return this.settings;
         }
         // Until the Hub saves the retry intent, its tier column may be the
@@ -961,6 +966,7 @@ export class SharedCodexRoot {
         }
         if (!this.isCurrentTierOperation(operationId) || this.closed || this.stopping) return;
         this.tierPublicationProtection = undefined;
+        this.pendingUltrafastLaunchTarget = undefined;
         this.tierConfirmationResolved = true;
         const resumeInput = this.tierConfirmationPending;
         this.tierConfirmationPending = false;
@@ -1154,7 +1160,7 @@ export class SharedCodexRoot {
                 if (this.settingsRevision !== revision) continue;
                 if (confirmsTier && (typeof snapshot.model !== 'string'
                     || snapshot.serviceTier !== null && typeof snapshot.serviceTier !== 'string')) continue;
-                if (verifyUltrafast && !this.matchesUltrafastTarget(snapshot, target)) throw new Error(ULTRAFAST_TARGET_CHANGED);
+                if (verifyUltrafast && !this.matchesUltrafastTarget(snapshot, target)) throw new UltrafastTargetChangedError();
                 if (params.serviceTier !== undefined && snapshot.serviceTier === null) {
                     // A successfully accepted Standard reset can appear as null
                     // when Codex filters native tiers. Keep that explicit intent.
@@ -1241,7 +1247,7 @@ export class SharedCodexRoot {
         const requestedFast = expected.serviceTier === 'priority';
         const verifyUltrafast = requestedUltrafast || expected.serviceTier === undefined && this.hasUltrafastTier;
         const target = ultrafastTarget ?? { model: string(expected.model) ?? this.settings.model ?? undefined, provider: this.modelProvider };
-        if (verifyUltrafast && target.provider && this.modelProvider && target.provider !== this.modelProvider) throw new Error(ULTRAFAST_TARGET_CHANGED);
+        if (verifyUltrafast && target.provider && this.modelProvider && target.provider !== this.modelProvider) throw new UltrafastTargetChangedError();
         const changesTier = expected.serviceTier !== undefined || verifyUltrafast;
         const confirmCollaborationMode = () => {
             if (expected.collaborationMode !== undefined && record(expected.collaborationMode).mode === this.settings.collaborationMode) {
@@ -1265,7 +1271,7 @@ export class SharedCodexRoot {
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
             if (canWrite && !canWrite()) return;
             const snapshotCurrent = this.settingsRevision === revision;
-            if (snapshotCurrent && verifyUltrafast && !this.matchesUltrafastTarget(snapshot, target)) throw new Error(ULTRAFAST_TARGET_CHANGED);
+            if (snapshotCurrent && verifyUltrafast && !this.matchesUltrafastTarget(snapshot, target)) throw new UltrafastTargetChangedError();
             if (snapshotCurrent) this.acceptSettings(snapshot, true);
             else if (canWrite) return;
             if (canWrite && !canWrite()) return;
@@ -1356,7 +1362,7 @@ export class SharedCodexRoot {
             if (this.settingsRevision !== revision) continue;
             if (!this.matchesUltrafastTarget(snapshot, target)) {
                 if (shouldPause()) this.pauseTierConfirmation(operationId, { retainConfirmedTier: true });
-                throw new Error(ULTRAFAST_TARGET_CHANGED);
+                throw new UltrafastTargetChangedError();
             }
             if (!observed) this.acceptSettings(snapshot, true);
             if (snapshot.serviceTier === 'ultrafast' && this.settings.serviceTier === 'ultrafast') return;
@@ -1388,6 +1394,9 @@ export class SharedCodexRoot {
         return tier != null && tier !== 'standard' && tier !== 'ultrafast';
     }
     async confirmUltrafastLaunch(explicitTier = true): Promise<void> {
+        if (this.pendingUltrafastLaunchTarget && !this.matchesUltrafastTarget(this.settingsNative, this.pendingUltrafastLaunchTarget)) {
+            throw new UltrafastTargetChangedError();
+        }
         // Native launch configuration filters a disabled feature before its
         // response. Unlike live updates, it does not require another discovery
         // RPC after creation that could strand a known, unactivated child.

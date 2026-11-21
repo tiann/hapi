@@ -8,6 +8,7 @@ import type { CodexAppServerClient } from '../codexAppServerClient';
 /** Validate against the same native account/provider that will execute the thread. */
 export const ULTRAFAST_FALLBACK_NOTICE = 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.';
 export const ULTRAFAST_DISABLED_NOTICE = 'Ultrafast is disabled in the current Codex configuration; changed to Standard.';
+export type UltrafastTarget = { model?: string; provider?: string };
 
 const providerConfigKeys = new Set([
     'model_providers', 'openai_base_url', 'chatgpt_base_url', 'model_catalog_json',
@@ -187,7 +188,7 @@ export async function resolveUltrafastLaunch(
     method: string, params: Record<string, unknown>, cwd: string, catalogProvider?: string,
     savedThread?: Record<string, unknown>,
     startupCatalogConfig?: unknown,
-): Promise<{ params: Record<string, unknown>; downgraded: boolean }> {
+): Promise<{ params: Record<string, unknown>; downgraded: boolean; ultrafastTarget?: UltrafastTarget }> {
     params = nativeTierParams(params);
     if (params.serviceTier !== 'ultrafast') return { params, downgraded: false };
     const deadline = Date.now() + 10_000;
@@ -212,5 +213,7 @@ export async function resolveUltrafastLaunch(
             ...(context.modelProvider === undefined ? { modelProvider: effectiveProvider } : {})
         };
     }
-    return { params: available ? params : { ...params, serviceTier: null }, downgraded: !available };
+    return available
+        ? { params, downgraded: false, ultrafastTarget: { model, provider: effectiveProvider } }
+        : { params: { ...params, serviceTier: null }, downgraded: true };
 }

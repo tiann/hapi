@@ -1,4 +1,4 @@
-import { catalogConfiguration, nativeTierParams, inheritedResumeTier, resolveUltrafastLaunch, ULTRAFAST_FALLBACK_NOTICE } from '../utils/serviceTier';
+import { catalogConfiguration, nativeTierParams, inheritedResumeTier, resolveUltrafastLaunch, ULTRAFAST_FALLBACK_NOTICE, type UltrafastTarget } from '../utils/serviceTier';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdir, mkdtemp, chmod, rm, realpath } from 'node:fs/promises';
@@ -14,7 +14,7 @@ import { CodexAppServerClient, isIndeterminateError } from '../codexAppServerCli
 import { codexHome, saveRuntime, runtimeDirectory, runtimeAuthHash, findColdBinding, withThreadOwnership, type CodexRuntimeRecord } from './registry';
 import { startCodexGateway, record, string, type Envelope } from './gateway';
 import { resolveSharedCodex, sharedLaunchConfig, coldResumeDirectory, initializeSharedClient, checkSharedCapabilities, takeReservedSessionId, type SharedLaunchOptions } from './launch';
-import { SharedCodexRoot } from './root';
+import { SharedCodexRoot, UltrafastTargetChangedError } from './root';
 import { buildForkSessionSummary } from '@hapi/protocol';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
@@ -25,7 +25,7 @@ type Reservation = {
     freshThread?: boolean;
     initialOptions?: SharedLaunchOptions;
     serviceTierExplicit?: boolean;
-    requestedUltrafast?: boolean;
+    ultrafastTarget?: UltrafastTarget;
     downgraded?: boolean;
     rootBound?: boolean;
     controlSubscription?: number;
@@ -298,14 +298,14 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const tier = await resolveUltrafastLaunch(client, 'thread/resume', { ...reservation.executionParams, ...view },
             root.bootstrap.workingDirectory, undefined, savedThread, startupCatalogConfig);
         reservation.tierConfirmationPending = undefined;
+        reservation.ultrafastTarget = tier.ultrafastTarget;
         if (tier.downgraded) {
             reservation.executionParams = { ...reservation.executionParams, serviceTier: null };
-            reservation.requestedUltrafast = false;
             reservation.downgraded = true;
         }
         return root.config(tier.params);
     };
-    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, requestedUltrafast = false, downgraded = false, resume?: Reservation,
+    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, ultrafastTarget?: UltrafastTarget, downgraded = false, resume?: Reservation,
         expectedResumeTier = resume?.executionParams.serviceTier) => {
         assertRunning();
         const threadId = string(record(response.thread).id);
@@ -319,6 +319,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 throw new Error('Codex thread was archived during binding');
             }
         };
+        const requestedUltrafast = ultrafastTarget !== undefined;
         const confirmBeforeInput = requiresTierAdmission(root, requestedUltrafast ? 'ultrafast' : expectedResumeTier, downgraded, serviceTierExplicit);
         const explicitTier = serviceTierExplicit ?? root.session.getMetadata()?.codexServiceTierExplicit === true;
         if (resume || confirmBeforeInput) pendingAdmission.add(threadId);
@@ -329,9 +330,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
             assertRunning();
             if (ending.has(root)) throw new Error('Codex thread was archived during binding');
-            if (confirmBeforeInput) root.beginTierConfirmation(explicitTier && (requestedUltrafast || downgraded));
+            if (confirmBeforeInput) root.beginTierConfirmation(explicitTier && (requestedUltrafast || downgraded), ultrafastTarget);
             roots.set(threadId, root);
-        }
+        } else if (confirmBeforeInput) root.beginTierConfirmation(false, ultrafastTarget);
         if (!resume?.rootBound || subscribe && !root.client.isInitialized()) {
             await root.bind(threadId, response, subscribe, expectedResumeTier, serviceTierExplicit);
             // A new thread starts with zero cumulative usage. Seed once before
@@ -357,10 +358,13 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 else await root.confirmUltrafastLaunch(explicitTier);
             }
             catch (error) {
-                tierConfirmationPending = downgraded || !root.hasConfirmedStandardTier;
-                root.session.sendSessionEvent({ type: 'message', message: tierConfirmationPending
-                    ? 'Ultrafast was not applied and Standard could not be confirmed. Input is paused. Select a service tier in settings to retry on this conversation.'
-                    : 'Ultrafast was not applied; Standard is active.' });
+                const targetChanged = error instanceof UltrafastTargetChangedError;
+                tierConfirmationPending = targetChanged || downgraded || !root.hasConfirmedStandardTier;
+                root.session.sendSessionEvent({ type: 'message', message: targetChanged
+                    ? 'The Codex model or provider changed after Ultrafast validation. Input is paused. Select a service tier in settings to continue.'
+                    : tierConfirmationPending
+                        ? 'Ultrafast was not applied and Standard could not be confirmed. Input is paused. Select a service tier in settings to retry on this conversation.'
+                        : 'Ultrafast was not applied; Standard is active.' });
                 logger.debug('[Codex shared] tier confirmation pending', error);
             }
         }
@@ -394,7 +398,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const threadId = reservation.resumeId;
         try {
             await bind(reservation.root, result, true, reservation.initialOptions, reservation.freshThread,
-                reservation.serviceTierExplicit, reservation.requestedUltrafast, reservation.downgraded, threadId ? reservation : undefined);
+                reservation.serviceTierExplicit, reservation.ultrafastTarget, reservation.downgraded, threadId ? reservation : undefined);
         } catch (error) {
             if (threadId && threadId === nativeThreadId && !stopping && !ending.has(reservation.root) && !reservation.root.isActivated) {
                 retryableBindings.set(threadId, reservation);
@@ -431,7 +435,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             const response = record(await root.client.request(method, request));
             nativeSucceeded = true;
             const reservation: Reservation = { root, initialOptions, freshThread: method === 'thread/start', executionParams: resolved.params,
-                serviceTierExplicit, requestedUltrafast: resolved.params.serviceTier === 'ultrafast', downgraded: resolved.downgraded };
+                serviceTierExplicit, ultrafastTarget: resolved.ultrafastTarget, downgraded: resolved.downgraded };
             try {
                 await bindAccepted(reservation, response);
             } catch (error) {
@@ -579,7 +583,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
                 freshThread: request.method === 'thread/start', executionParams: tier.params,
                 serviceTierExplicit,
-                requestedUltrafast: tier.params.serviceTier === 'ultrafast', downgraded: tier.downgraded });
+                ultrafastTarget: tier.ultrafastTarget, downgraded: tier.downgraded });
             if (request.method === 'thread/resume' && threadId && requiresTierAdmission(root, tier.params.serviceTier, tier.downgraded, serviceTierExplicit)) {
                 pendingAdmission.add(threadId);
             }
@@ -755,7 +759,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 }
             });
             await bind(root, response, false, options, false, serviceTierExplicit,
-                resolved.params.serviceTier === 'ultrafast', downgraded, undefined, resolved.params.serviceTier);
+                resolved.ultrafastTarget, downgraded, undefined, resolved.params.serviceTier);
         } else root = await create('thread/start', { ...launch.threadParams, cwd: launch.cwd }, undefined, options);
         assertRunning();
         onReady?.({ sessionId: root.session.sessionId, runtime });
