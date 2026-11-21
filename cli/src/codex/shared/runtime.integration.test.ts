@@ -1207,7 +1207,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             web.user?.({ content: { text: 'HELLO FROM WEB' } }, 'web-1');
             await vi.waitFor(() => expect(web.consumed).toContain('web-1'), { timeout: 15_000 });
             await vi.waitFor(() => expect(web.messages).toContainEqual(expect.objectContaining({ type: 'message', message: 'MOCK ANSWER' })), { timeout: 15_000 });
-            const newResponse = record(await first.request('thread/start', { cwd }));
+            const newResponse = record(await first.request('thread/start', { cwd, serviceTier: null }));
             const next = String(record(newResponse.thread).id); roots.push(next);
             expect(next).not.toBe(initial); expect(state.sessions.size).toBe(2);
             const nextSession = [...state.sessions.values()].find(session => session.metadata.codexSessionId === next)!;
@@ -1215,10 +1215,14 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(process.env.HAPI_SESSION_ID).toBe('parent-must-not-leak');
             // A thread created through the gateway (native /new) is fresh: the
             // first turn must measure from the zero seed, not a null baseline.
-            await first.request('turn/start', { threadId: next, input: [{ type: 'text', text: 'HELLO NEW THREAD', text_elements: [] }] });
+            await first.request('turn/start', { threadId: next, serviceTierForTurn: 'priority',
+                input: [{ type: 'text', text: 'HELLO NEW THREAD', text_elements: [] }] });
             await vi.waitFor(() => expect(nextSession.messages).toContainEqual(expect.objectContaining({
                 type: 'turn_duration', generationMs: expect.any(Number), generationOutputTokens: 3
             })), { timeout: 15_000 });
+            await expect(first.request('thread/resume', { threadId: next, excludeTurns: true })).resolves.toMatchObject({ serviceTier: 'default' });
+            expect(nextSession.metadata.codexPendingServiceTier).toBeUndefined();
+            expect(nextSession.serviceTier).toBe('standard');
             await first.request('thread/archive', { threadId: next }); roots = [initial];
             await vi.waitFor(() => expect(nextSession.dead).toBe(true)); expect(web.dead).toBe(false);
             await second.request('turn/start', { threadId: initial, model: 'second-mock', input: [{ type: 'text', text: 'HELLO FROM TERMINAL', text_elements: [] }], clientUserMessageId: 'native-1' });

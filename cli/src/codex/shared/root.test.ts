@@ -1222,6 +1222,41 @@ describe('shared plan actions', () => {
         expect(f.native.queue).toHaveLength(1);
     });
 
+    it.each([false, true])('keeps a safe implementation retry after the mode switch and tier recovery (later mode change: %s)', async changedMode => {
+        const f = await fixture({ bindTier: 'ultrafast' });
+        f.native.settings.serviceTier = 'ultrafast';
+        await f.root.activate({}, true);
+        const id = await completePlan(f);
+        const action = () => f.rpc.get(RPC_METHODS.ImplementCodexPlan)!({ planId: id });
+        const original = f.root.client.request.bind(f.root.client);
+        let failEffectiveRead = true;
+        const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/resume' && failEffectiveRead) {
+                failEffectiveRead = false;
+                expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'default' });
+                throw new Error('effective tier read failed after the mode write');
+            }
+            return original(method, params);
+        });
+        await expect(action()).resolves.toMatchObject({ ok: false, code: 'unavailable' });
+        expect(f.root.needsTierConfirmation).toBe(true);
+        expect(f.native.queue).toHaveLength(0);
+        expect(f.state().codexPlanProposalId).toBeNull();
+        await f.root.applySettings({ serviceTier: 'standard' });
+        expect(f.state().codexPlanProposalId).toBe(id);
+        if (changedMode) {
+            await f.root.applySettings({ collaborationMode: 'plan' });
+            await f.root.applySettings({ collaborationMode: 'default' });
+            expect(f.state().codexPlanProposalId).toBeNull();
+            await expect(action()).resolves.toMatchObject({ ok: false, code: 'stale_plan' });
+        } else {
+            request.mockClear();
+            await expect(action()).resolves.toEqual({ ok: true });
+            expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+            expect(f.native.queue).toHaveLength(1);
+        }
+    });
+
     it('rejects stale proposals and native activity arriving during the mode switch', async () => {
         const f = await fixture();
         await f.root.activate();
