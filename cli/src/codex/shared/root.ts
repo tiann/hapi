@@ -1106,6 +1106,7 @@ export class SharedCodexRoot {
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
         if (canWrite && !canWrite()) return;
         const requestedUltrafast = expected.serviceTier === 'ultrafast';
+        const requestedFast = expected.serviceTier === 'priority';
         const verifyUltrafast = requestedUltrafast || expected.serviceTier === undefined && this.hasUltrafastTier;
         const changesTier = expected.serviceTier !== undefined || verifyUltrafast;
         // A disabled Fast feature can hide a known Standard selection in the
@@ -1114,13 +1115,13 @@ export class SharedCodexRoot {
             this.confirmedNativeStandardReset && this.settingsNative.serviceTier === null
                 ? { ...this.settingsNative, serviceTier: 'default' } : this.settingsNative,
             settings);
-        const matchesSelectedUltrafast = (settings: Record<string, unknown>) => requestedUltrafast
-            && this.nativeSelectedServiceTier === 'ultrafast'
-            && settingsMatch({ ...this.settingsNative, serviceTier: 'ultrafast' }, settings);
+        const matchesSelectedTier = (settings: Record<string, unknown>) => (requestedFast || requestedUltrafast)
+            && this.nativeSelectedServiceTier === expected.serviceTier
+            && settingsMatch({ ...this.settingsNative, serviceTier: this.nativeSelectedServiceTier }, settings);
         // Native suppresses identical notifications. Verify a current loaded
         // snapshot rather than waiting for an event that will never be emitted.
         const comparable = Object.fromEntries(Object.entries(params).filter(([key, value]) => value !== null || key === 'serviceTier'));
-        if (matches(comparable) || matchesSelectedUltrafast(comparable)) {
+        if (matches(comparable) || matchesSelectedTier(comparable)) {
             const revision = this.settingsRevision;
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
             if (canWrite && !canWrite()) return;
@@ -1128,8 +1129,14 @@ export class SharedCodexRoot {
             if (snapshotCurrent) this.acceptSettings(snapshot, true);
             else if (canWrite) return;
             if (canWrite && !canWrite()) return;
-            if (matches(comparable) || matchesSelectedUltrafast(comparable)) {
-                const firstSnapshot = snapshotCurrent && typeof snapshot.model === 'string' ? snapshot : undefined;
+            const firstSnapshot = snapshotCurrent && typeof snapshot.model === 'string' ? snapshot : undefined;
+            if (requestedFast && matchesSelectedTier(comparable)) {
+                if (!firstSnapshot || firstSnapshot.serviceTier === undefined) {
+                    throw new Error('Could not confirm Fast for the current Codex session. Retry after refreshing.');
+                }
+                if (firstSnapshot.serviceTier === null) throw new Error('Fast is unavailable for the current Codex session.');
+            }
+            if (matches(comparable) || requestedUltrafast && matchesSelectedTier(comparable)) {
                 const confirmedUltrafast = firstSnapshot !== undefined
                     && snapshot.serviceTier === 'ultrafast' && this.settings.serviceTier === 'ultrafast';
                 if (verifyUltrafast && !confirmedUltrafast) {

@@ -2470,12 +2470,20 @@ it('preserves accepted explicit tier intent across a later model-only change', a
     expect(f.metadata().codexConfirmedServiceTier).toBe('fast');
     expect(f.root.freshParams()).toMatchObject({ model: 'changed-model', serviceTier: 'priority' });
 });
-it('clears in-flight Fast intent when Codex confirms an accepted turn has no effective override', async () => {
+it('clears filtered Fast intent after an accepted turn and rejects a repeated selection without pausing input', async () => {
     const f = await fixture({ bindTier: 'default' });
     await f.root.activate();
     const keepAlive = vi.spyOn(f.session, 'keepAlive');
     const operation = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
-    f.native.settings.serviceTier = null;
+    f.native.settings.serviceTier = 'priority';
+    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+    await f.drain();
+    const original = f.root.client.request.bind(f.root.client);
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume') return { ...f.native.settings, serviceTier: null } as never;
+        if (method === 'thread/settings/update') return {} as never;
+        return original(method, params);
+    });
     await f.root.confirmNativeTurn(operation.params, true, operation.fallbackNotice, operation.generation);
     expect(f.metadata().codexServiceTierExplicit).toBe(false);
     expect(f.metadata().codexPendingServiceTier).toBeUndefined();
@@ -2483,6 +2491,12 @@ it('clears in-flight Fast intent when Codex confirms an accepted turn has no eff
     expect(f.root.needsTierConfirmation).toBe(false);
     expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBeNull();
     expect(f.root.freshParams().serviceTier).toBeUndefined();
+    await expect(f.root.applyNativeSettings({ threadId: 'thread', serviceTier: 'priority' })).rejects.toThrow('Fast is unavailable');
+    await expect(f.root.applySettings({ serviceTier: 'fast' })).rejects.toThrow('Fast is unavailable');
+    expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+    expect(f.root.needsTierConfirmation).toBe(false);
+    f.submit('still admitted', 'filtered-fast-repeat');
+    await vi.waitFor(async () => expect((await f.ledger()).entries['filtered-fast-repeat']?.state).toBe('queued'));
 });
 
 it('persists a native Standard fallback when Codex reports no override and restores it on cold resume', async () => {

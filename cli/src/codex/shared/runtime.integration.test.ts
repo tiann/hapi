@@ -79,6 +79,10 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             });
         });
         const client = new CodexAppServerClient({ cwd: home });
+        const selections: unknown[] = [];
+        client.setNotificationHandler((method, params) => {
+            if (method === 'thread/settings/updated') selections.push(record(record(params).threadSettings).serviceTier);
+        });
         try {
             await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
             const port = (http.address() as { port: number }).port;
@@ -104,6 +108,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                     .toMatchObject({ thread: { status: { type: 'idle' } } });
             }, { timeout: 10_000 });
             expect(await client.request('thread/resume', { threadId, excludeTurns: true })).toMatchObject({ serviceTier: null });
+            if (serviceTier === 'priority') expect(selections).toContain('priority');
         } finally {
             await client.disconnect({ gracefulTimeoutMs: 2_000 });
             await new Promise<void>(resolve => http.close(() => resolve()));
