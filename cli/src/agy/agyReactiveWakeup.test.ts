@@ -4837,6 +4837,32 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.finish();
         });
 
+        it('binds a preempted wakeup command to its own task id after late rows of the previous prompt', async () => {
+            const acp = 'conv-live-late-rows';
+            const h = startLive(acp, (n, notify) => {
+                if (n === 1) { turnRows(acp); return; }
+                notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OK' } });
+                h.append([
+                    { step_index: 9, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'next' },
+                    { step_index: 10, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'OK' }
+                ]);
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.append([
+                { step_index: 2, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 5"' } }] },
+                { step_index: 3, source: 'MODEL', type: 'RUN_COMMAND', status: 'RUNNING', content: `Tool is running as a background task with task id: ${acp}/task-5` },
+                ...bgRows(4, 'sleep 9', `${acp}/task-7`, false)
+            ]);
+            h.notify(bgCall('call-w-5', 'sleep 9'));
+            h.queue.push('next', { permissionMode: 'always-proceed' }, 'msg-2');
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(1));
+            expect(h.bgEntries()[0]).toMatchObject({ callId: expect.stringMatching(/^call-w-5#/), taskId: `${acp}/task-7` });
+            await h.finish();
+        });
+
         it('seals buffered wakeup text when the wakeup times out', async () => {
             const acp = 'conv-live-timeout';
             const h = startLive(acp, () => { turnRows(acp); }, { reactiveMaxIdleMs: 60 });

@@ -1156,25 +1156,21 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // Live agy does not replay a preempted wakeup into this prompt: it
             // settles on its own handler turn, and this turn's window starts after it.
             const live = this.liveIdleWakeups();
-            if (live) await this.settleLiveWakeup(preSyncStepIndex);
-            if (!relaunched && !(live && !internalWakeup)) {
-                const baseAfterStep = Math.min(
-                    opts.replayAfterStepIndex ?? preSyncStepIndex,
-                    preSyncStepIndex,
-                    turnStartStepIndex
-                );
-                if (baseAfterStep < turnStartStepIndex) {
-                    // Only rows from a pending autonomous `SYSTEM_MESSAGE` wakeup onward
-                    // can be replayed by `agy`; earlier rows are late-flushed steps from
-                    // the already-completed previous turn.
-                    const interTurnSteps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, baseAfterStep);
-                    const firstWakeupStep = interTurnSteps.find(
-                        (step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE'
-                    );
-                    if (firstWakeupStep !== undefined) {
-                        commandWindowAfterStepIndex = Math.max(baseAfterStep, firstWakeupStep.step_index - 1);
-                    }
-                }
+            const baseAfterStep = Math.min(
+                opts.replayAfterStepIndex ?? preSyncStepIndex,
+                preSyncStepIndex,
+                turnStartStepIndex
+            );
+            // Only rows from a pending autonomous `SYSTEM_MESSAGE` wakeup onward
+            // can belong to it; earlier rows are late-flushed steps from the
+            // already-completed previous turn.
+            const firstWakeupStep = !relaunched && baseAfterStep < turnStartStepIndex
+                ? readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, baseAfterStep)
+                    .find((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')
+                : undefined;
+            if (live) await this.settleLiveWakeup((firstWakeupStep?.step_index ?? turnStartStepIndex + 1) - 1);
+            if (firstWakeupStep && !(live && !internalWakeup)) {
+                commandWindowAfterStepIndex = Math.max(baseAfterStep, firstWakeupStep.step_index - 1);
             }
             turn.turnStartStepIndex = commandWindowAfterStepIndex;
             turn.priorBackgroundCallIds = new Set(this.backgroundCommands.map((entry) => entry.callId));
