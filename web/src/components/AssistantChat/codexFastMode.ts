@@ -62,9 +62,10 @@ export function isFastServiceTier(serviceTier?: string | null): boolean {
 export function getEffectiveCodexServiceTier(
     serviceTier: string | null | undefined,
     sessionModel: string | null | undefined,
-    models: ReadonlyArray<CodexModelCatalogEntry>
+    models: ReadonlyArray<CodexModelCatalogEntry>,
+    confirmationPending = false
 ): string | null | undefined {
-    if (serviceTier != null) return serviceTier
+    if (serviceTier != null || confirmationPending) return serviceTier
     const catalogTier = findActiveModel(sessionModel, models)?.defaultServiceTier
     // Ultrafast requires an effective native confirmation; the account catalog
     // default can still advertise it when the thread feature is disabled.

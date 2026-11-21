@@ -81,7 +81,7 @@ export function resumeTierContext(params: Record<string, unknown>, saved: Record
         modelProvider: typeof provider === 'string' ? provider : undefined };
 }
 
-async function discoverUltrafastTarget(
+export async function discoverUltrafastTarget(
     client: Pick<CodexAppServerClient, 'listModels' | 'readConfig'> & Partial<Pick<CodexAppServerClient, 'supportsProviderScopedModels' | 'supportsEffectiveUltrafastLaunch'>>,
     model: unknown,
     cwd?: string,

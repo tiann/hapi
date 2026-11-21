@@ -1221,7 +1221,8 @@ function SessionChatInner(props: SessionChatProps) {
         ? getEffectiveCodexServiceTier(
             props.session.serviceTier,
             props.session.model,
-            codexModelsState.models
+            codexModelsState.models,
+            metadata?.codexTierConfirmationPending
         )
         : undefined
     const codexModelOptions = useMemo(() => {

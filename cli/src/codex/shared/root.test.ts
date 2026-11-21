@@ -2109,6 +2109,30 @@ it('accepts null as an explicit Standard reset rather than account inheritance',
     expect(f.root.freshParams().serviceTier).toBe('default');
 });
 
+it.each(['model', 'provider'])('does not confirm Ultrafast after a concurrent native %s change', async changed => {
+    const f = await fixture({ bindTier: 'default' });
+    await f.root.activate();
+    f.root.acceptSettings({ model: 'mock', modelProvider: 'openai', serviceTier: 'default' }, true);
+    const original = f.root.client.request.bind(f.root.client);
+    let reads = 0;
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method !== 'thread/resume') return original(method, params);
+        if (++reads === 1) {
+            f.native.settings = { ...f.native.settings, model: changed === 'model' ? 'standard-only' : 'mock',
+                modelProvider: changed === 'provider' ? 'another-provider' : 'openai' };
+            f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+        }
+        return original(method, params);
+    });
+    await expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('model or provider changed during Ultrafast confirmation');
+    expect(reads).toBe(2);
+    expect(f.root.needsTierConfirmation).toBe(true);
+    expect(f.metadata().codexConfirmedServiceTier).toBeUndefined();
+    expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update')).toEqual([
+        ['thread/settings/update', expect.objectContaining({ model: 'mock', serviceTier: 'ultrafast' })]
+    ]);
+});
+
 it.each(['priority', 'flex'])('preserves a newer %s selection during Ultrafast confirmation', async tier => {
     const f = await fixture(); await f.root.activate();
     const original = f.root.client.request.bind(f.root.client);

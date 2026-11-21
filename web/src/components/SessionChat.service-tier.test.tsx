@@ -29,9 +29,10 @@ if (typeof Element.prototype.scrollTo !== 'function') {
 
 vi.mock('@/components/AssistantChat/HappyComposer', () => ({ HappyComposer: (props: {
     onModelChange?: (model: string) => Promise<void>; onServiceTierChange?: (tier: string) => Promise<void>; fastAvailable?: boolean; ultrafastAvailable?: boolean
+    serviceTier?: string | null
 }) => <><button onClick={() => void props.onModelChange?.('changed-model')}>Change model</button><button disabled={!props.onServiceTierChange} onClick={() => void props.onServiceTierChange?.('standard')}>
     Reset Standard / fast:{String(props.fastAvailable)} / ultra:{String(props.ultrafastAvailable)}
-</button></> }))
+</button><span data-testid="effective-tier">{props.serviceTier ?? 'none'}</span></> }))
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
     function shell(session: Session, catalog: ReturnType<typeof vi.fn>, setServiceTier: ReturnType<typeof vi.fn>, sessionCatalog = catalog,
         queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })): ReactNode {
@@ -159,6 +160,18 @@ it('keeps Standard recovery available for a paused launch without a usable tier 
     const button = await screen.findByRole('button', { name: 'Reset Standard / fast:false / ultra:false' });
     expect(button).toBeEnabled(); fireEvent.click(button);
     await waitFor(() => expect(setServiceTier).toHaveBeenCalledWith('tier-session', 'standard'));
+});
+it('withholds a catalog-derived Fast badge while the session tier needs recovery', async () => {
+    const catalog = vi.fn(async () => ({ success: true, models: [
+        { id: 'mock', isDefault: true, serviceTiers: ['priority'], defaultServiceTier: 'priority' }
+    ] }));
+    const session = { id: 'tier-session', active: true, model: 'mock', serviceTier: null, metadata: {
+        flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexTierConfirmationPending: true,
+        capabilities: { concurrentClients: true }
+    } } as unknown as Session;
+    render(shell(session, catalog, vi.fn()));
+    expect(await screen.findByRole('button', { name: 'Reset Standard / fast:true / ultra:false' })).toBeEnabled();
+    expect(screen.getByTestId('effective-tier')).toHaveTextContent('none');
 });
 it('does not offer a tier control solely from an unverified owned Ultrafast catalog', async () => {
     const catalog = vi.fn(async () => ({ success: true, models: [{ id: 'gpt-6.2-sol', model: 'gpt-6.2-sol', serviceTiers: ['ultrafast'] }] }));

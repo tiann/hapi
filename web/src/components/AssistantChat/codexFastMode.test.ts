@@ -78,6 +78,11 @@ describe('getEffectiveCodexServiceTier', () => {
         expect(effectiveTier).toBe('flex')
         expect(isFastServiceTier(effectiveTier)).toBe(false)
     })
+    it('does not infer Fast from the catalog during tier recovery', () => {
+        const catalog = [{ id: 'gpt-5.5', isDefault: true, defaultServiceTier: 'priority' }]
+        expect(getEffectiveCodexServiceTier(null, 'gpt-5.5', catalog, true)).toBeNull()
+        expect(getEffectiveCodexServiceTier(null, 'gpt-5.5', catalog, false)).toBe('priority')
+    })
 })
 
 describe('getDisplayedCodexServiceTier', () => {
