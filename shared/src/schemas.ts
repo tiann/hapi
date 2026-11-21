@@ -3,6 +3,7 @@ import { SessionReadStateSchema } from './sessionReadState'
 import { COPILOT_AGENT_MODES, type CopilotAgentMode } from './copilotModes'
 import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
 import { AgentConfigDescriptorSchema } from './agentConfig'
+import { githubPrIdentityKey, isValidGitHubHost } from './projectRegistry'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
@@ -35,7 +36,9 @@ const ConversationHistoryCapabilitiesSchema = z.object({
     forkCurrent: z.boolean().optional(),
     forkLatestCompleted: z.boolean().optional(),
     forkAtMessage: z.boolean().optional(),
-    rewindToMessage: z.boolean().optional()
+    rewindToMessage: z.boolean().optional(),
+    /** Runner answers fork-preview boundary questions for this session. */
+    forkPreview: z.boolean().optional()
 })
 
 // Written to an archived OpenCode source before the runner is asked to spawn.
@@ -65,6 +68,118 @@ export const WorktreeMetadataSchema = z.object({
 })
 
 export type WorktreeMetadata = z.infer<typeof WorktreeMetadataSchema>
+
+/** owner/name — GitHub-style repo slug (no leading slash, exactly one slash). */
+export const GithubRepoSlugSchema = z.string()
+    .max(140, 'owner/name is too long')
+    .regex(
+        /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
+        'expected owner/name'
+    )
+
+/**
+ * Structured link from a HAPI session to an external contribution surface.
+ * v1: GitHub pull requests only. Do not parse session titles for this identity.
+ * tiann/hapi#1160 / #1163.
+ *
+ * Optional forge snapshot fields are GitHub-shaped facts only. Babysit / Meta
+ * vocabulary lives in estate display config (`pr-chip-display.json`), not here.
+ */
+
+/** PR open/closed/merged/draft as reported by GitHub (cached). */
+export const GithubPrOpenStateSchema = z.enum(['open', 'closed', 'merged', 'draft'])
+export type GithubPrOpenState = z.infer<typeof GithubPrOpenStateSchema>
+
+/** CI / status-check rollup (cached). */
+export const GithubPrChecksSchema = z.enum(['pass', 'fail', 'pending', 'none', 'unknown'])
+export type GithubPrChecks = z.infer<typeof GithubPrChecksSchema>
+
+/**
+ * Merge readiness subset of GitHub `mergeStateStatus` (cached).
+ * Not a babysit disposition — estate codes overlay presentation.
+ */
+export const GithubPrMergeSchema = z.enum([
+    'clean',
+    'conflicting',
+    'blocked',
+    'behind',
+    'unstable',
+    'draft',
+    'unknown'
+])
+export type GithubPrMerge = z.infer<typeof GithubPrMergeSchema>
+
+export const GithubPrExternalRefSchema = z.object({
+    kind: z.literal('github_pr'),
+    repo: GithubRepoSlugSchema,
+    number: z.number().int().positive(),
+    url: z.string().url(),
+    role: z.enum(['primary', 'secondary']),
+    // Optional provenance. Absent source reads as trusted ('user') for pre-#1162 refs.
+    source: z.enum(['agent', 'user', 'inferred']).optional(),
+    linkedAt: z.number().int().positive().optional(),
+    // Optional cached forge snapshot. Not live GitHub; browser never queries.
+    openState: GithubPrOpenStateSchema.optional(),
+    checks: GithubPrChecksSchema.optional(),
+    merge: GithubPrMergeSchema.optional(),
+    statusCheckedAt: z.number().int().positive().optional(),
+    // Opaque estate classifier code; only pr-chip-display estateCodes interpret it.
+    estateCode: z.string().min(1).max(64).optional()
+}).superRefine((ref, ctx) => {
+    let parsed: URL
+    try {
+        parsed = new URL(ref.url)
+    } catch {
+        ctx.addIssue({
+            code: 'custom',
+            path: ['url'],
+            message: 'expected GitHub PR URL matching repo and number'
+        })
+        return
+    }
+    const pathOk = parsed.pathname === `/${ref.repo}/pull/${ref.number}`
+        || parsed.pathname === `/${ref.repo}/pull/${ref.number}/`
+    if (parsed.protocol !== 'https:' || !isValidGitHubHost(parsed.hostname) || !pathOk) {
+        ctx.addIssue({
+            code: 'custom',
+            path: ['url'],
+            message: 'expected GitHub PR URL matching repo and number'
+        })
+    }
+})
+
+export type GithubPrExternalRef = z.infer<typeof GithubPrExternalRefSchema>
+
+/** Expand with more kinds via discriminatedUnion when needed. */
+export const ExternalRefSchema = GithubPrExternalRefSchema
+export type ExternalRef = z.infer<typeof ExternalRefSchema>
+
+export const MAX_EXTERNAL_REFS = 32
+
+/** Array boundary: at most one github_pr with role primary; bounded count. */
+export const ExternalRefsSchema = z.array(ExternalRefSchema)
+    .max(MAX_EXTERNAL_REFS, `at most ${MAX_EXTERNAL_REFS} external refs are allowed`)
+    .superRefine((refs, ctx) => {
+    if (refs.filter((ref) => ref.kind === 'github_pr' && ref.role === 'primary').length > 1) {
+        ctx.addIssue({
+            code: 'custom',
+            message: 'at most one primary GitHub PR is allowed'
+        })
+    }
+    const identities = new Set<string>()
+    refs.forEach((ref, index) => {
+        const key = githubPrIdentityKey(ref.repo, ref.number, ref.url)
+        if (identities.has(key)) {
+            ctx.addIssue({
+                code: 'custom',
+                path: [index],
+                message: 'duplicate external ref identity'
+            })
+        }
+        identities.add(key)
+    })
+})
+export type ExternalRefs = z.infer<typeof ExternalRefsSchema>
 
 export const MetadataSchema = z.object({
     path: z.string(),
@@ -119,6 +234,7 @@ export const MetadataSchema = z.object({
     // 原始 Codex thread id。导入 Codex 历史后，HAPI 会 fork 出自己的续写 thread；
     // codexSessionId 保存 fork 后的 thread，codexSourceSessionId 保留来源 thread 便于同步/展示。
     codexSourceSessionId: z.string().optional(),
+    codexImportedAt: z.number().nullable().optional(),
     geminiSessionId: z.string().optional(),
     opencodeSessionId: z.string().optional(),
     grokSessionId: z.string().optional(),
@@ -237,6 +353,30 @@ export const MetadataSchema = z.object({
     // Pi localId → append-only session entry id mapping. Pi entry ids are the
     // only stable native boundary accepted by its fork API.
     conversationHistoryEntryIds: z.record(z.string(), z.string().min(1)).optional(),
+    // Durable re-arm record for Claude's native rewind (--resume-session-at,
+    // v2.1.223+). Presence means the native branch is still pending: the hub
+    // already truncated at rewind-RPC success, and the CLI derives the
+    // boundary flag on every spawn until the dropped turns leave the native
+    // active chain. History RPCs (fork/rewind) must refuse while this is set.
+    // A malformed value (e.g. an older shape written by a previous hub) parses
+    // as undefined instead of failing MetadataSchema: the hub would otherwise
+    // drop the whole session metadata (flavor, machine, path, lifecycle).
+    claudeRewind: z.object({
+        targetLocalId: z.string().min(1),
+        truncateFromLocalId: z.string().min(1),
+        keepBoundary: z.string().min(1),
+        droppedPrompts: z.array(z.string().min(1)),
+        // Hub-owned confirmation that the transcript cut for this intent was
+        // applied. The CLI's native proof (the re-parented post-rewind input)
+        // only clears the intent once this marker is visible, so a lost RPC
+        // reply leaves the intent in place for the hub's timeout/reconnect
+        // reconcile instead of stranding the transcript mismatched.
+        hubCutApplied: z.boolean().optional(),
+        // Newest transcript seq at dispatch (echoed by the CLI from the RPC
+        // payload): the hub's cut never deletes rows created after it. Absent
+        // on intents written by an older CLI or hub, which cut unbounded.
+        discardedThroughSeq: z.number().int().nonnegative().optional()
+    }).optional().catch(undefined),
     // Latest Pi append-log entry observed by HAPI. Import uses it as the
     // incremental cursor so native history already streamed live is not copied twice.
     piHistoryLeafEntryId: z.string().optional(),
@@ -269,6 +409,8 @@ export const MetadataSchema = z.object({
     // the provider so web can resolve the exact model when two providers
     // share a modelId.
     piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
+    // Structured session↔contribution links (e.g. GitHub PRs). tiann/hapi#1160.
+    externalRefs: ExternalRefsSchema.optional(),
     lastModelError: z.object({
         /** Stable identity for this error event (not wall-clock order). */
         eventId: z.string().min(1),
@@ -487,6 +629,11 @@ export const SessionSchema = z.object({
     activeTurnStartedAt: z.number().nullable().optional(),
     backgroundTaskCount: z.number().optional(),
     backgroundTasks: z.array(BackgroundTaskSchema).optional(),
+    // Hub-derived "open tool work exists in the transcript tail" signal
+    // (work-scoped liveness). Transient — never persisted, recomputed by the
+    // hub's inactivity tick; covers autonomous rounds the CLI's turn-scoped
+    // `thinking` flag misses.
+    derivedToolWork: z.boolean().optional(),
     todos: TodosSchema.optional(),
     teamState: TeamStateSchema.optional(),
     // Watermarks for structured SSE patches (PR #897). Dual EventSource
@@ -641,6 +788,10 @@ export const SessionPatchSchema = z.object({
     copilotAgentMode: CopilotAgentModeSchema.optional(),
     backgroundTaskCount: z.number().optional(),
     backgroundTasks: z.array(BackgroundTaskSchema).optional(),
+    // Hub-derived open-tool-work signal (see SessionSchema). Emitted by the
+    // hub's derived-work sweep so list rows can render a working state for
+    // autonomous rounds that carry no `thinking` flag.
+    derivedToolWork: z.boolean().optional(),
     // tiann/hapi#893 (scratchlist v2). Bumped whenever any entry on the
     // session_scratchlist table mutates. Web client uses the change as a
     // trigger to refetch the entries query - the timestamp itself is the

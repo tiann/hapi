@@ -1,4 +1,5 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { watch, type FSWatcher, mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -25,6 +26,10 @@ import {
     type AgyTranscriptStep
 } from './agyReactiveWakeup';
 
+vi.mock('node:fs', async (load) => {
+    const fs = await load<typeof import('node:fs')>();
+    return { ...fs, watch: vi.fn(fs.watch) };
+});
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
@@ -470,6 +475,75 @@ describe('agyReactiveWakeup pure helpers', () => {
         ]);
     });
 
+    it('does not register a replayed background command whose task a live turn already tracks', () => {
+        // A live turn streamed step 37 and registered its command under the live
+        // call id; the reactive slice then replays steps 36-39 from the transcript.
+        const bgCommands: AgyOpenBackgroundCommand[] = [{ callId: 'call-live-37', taskId: 'conv-dup/task-38' }];
+        const replay = convertAgyReactiveSteps('conv-dup', [
+            {
+                step_index: 36,
+                source: 'SYSTEM',
+                type: 'SYSTEM_MESSAGE',
+                status: 'DONE',
+                content: '<SYSTEM_MESSAGE>\nTask id "conv-dup/task-31" finished with result:\nCommand exited with code 0.\n\nCommand output:\nEARLIER\n</SYSTEM_MESSAGE>'
+            },
+            {
+                step_index: 37,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                tool_calls: [{ name: 'run_command', args: { CommandLine: '"python3 scan.py"' } }]
+            },
+            {
+                step_index: 38,
+                source: 'MODEL',
+                type: 'RUN_COMMAND',
+                status: 'RUNNING',
+                content: 'Created At: 2026-11-17T22:37:38-05:00\nTool is running as a background task with task id: conv-dup/task-38'
+            },
+            { step_index: 39, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Comparing the folders.' },
+            {
+                step_index: 40,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                tool_calls: [{ name: 'run_command', args: { CommandLine: '"python3 move.py"' } }]
+            },
+            {
+                step_index: 41,
+                source: 'MODEL',
+                type: 'RUN_COMMAND',
+                status: 'RUNNING',
+                content: 'Created At: 2026-11-17T22:39:06-05:00\nTool is running as a background task with task id: conv-dup/task-42'
+            }
+        ], bgCommands);
+
+        // No second card or entry for task-38; a genuinely new background command still registers.
+        expect(replay.messages.some((message) => 'id' in message && message.id === 'agy-wakeup-conv-dup-37-0')).toBe(false)
+        expect(replay.messages.filter((message) => message.type === 'tool_call').map((message) => 'id' in message && message.id))
+            .toEqual(['agy-wakeup-conv-dup-40-0'])
+        expect(bgCommands.map((entry) => [entry.callId, entry.taskId])).toEqual([
+            ['call-live-37', 'conv-dup/task-38'],
+            ['agy-wakeup-conv-dup-40-0', 'conv-dup/task-42']
+        ]);
+
+        // task-38's single completion settles the live card, leaving only task-42 open.
+        const completion = convertAgyReactiveSteps('conv-dup', [{
+            step_index: 42,
+            source: 'SYSTEM',
+            type: 'SYSTEM_MESSAGE',
+            status: 'DONE',
+            content: '<SYSTEM_MESSAGE>\nTask id "conv-dup/task-38" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSCANNED\n</SYSTEM_MESSAGE>'
+        }], bgCommands);
+        expect(completion.messages).toEqual([{
+            type: 'tool_result',
+            id: 'call-live-37',
+            status: 'completed',
+            output: { output: 'Command exited with code 0.\n\nCommand output:\nSCANNED', exit_code: 0 }
+        }]);
+        expect(bgCommands.map((entry) => entry.callId)).toEqual(['agy-wakeup-conv-dup-40-0']);
+    });
+
     it('matches background task completions in reverse order and ignores unmatched task IDs', () => {
         const bgCommands: AgyOpenBackgroundCommand[] = [
             { callId: 'call-first', taskId: 'conv-rev/task-1' },
@@ -669,6 +743,104 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
 
     afterEach(() => {
         rmSync(tempBrainDir, { recursive: true, force: true });
+    });
+
+    it.each(['silent', 'rename', 'late directory', 'silent replacement'])('recovers a transcript wakeup with a %s watcher', async (mode) => {
+        vi.useFakeTimers();
+        const { session } = makeHarness();
+        const launcher = new AgyAcpRemoteLauncher(session, { brainDir: tempBrainDir, reactivePollMs: 350 });
+        const id = 'agy-watcher';
+        launcher['acpSessionId'] = id;
+        launcher['backend'] = new WakeupTestBackend() as unknown as AcpSdkBackend;
+        const controller = new AbortController();
+        const existingTimers = vi.getTimerCount();
+        const watchers: Array<ReturnType<typeof makeWatcher>> = [];
+        function makeWatcher() {
+            return Object.assign(new EventEmitter(), { close: vi.fn(), unref: vi.fn() });
+        }
+        const mocked = vi.mocked(watch);
+        const original = mocked.getMockImplementation()!;
+        let available = mode !== 'late directory';
+        mocked.mockImplementation(() => {
+            if (!available) throw Error('ENOENT');
+            const watcher = makeWatcher();
+            watchers.push(watcher);
+            return watcher as unknown as FSWatcher;
+        });
+        mocked.mockClear();
+        try {
+            writeTranscript(tempBrainDir, id, []);
+            const waiting = launcher['waitForNextBatchOrWakeup'](controller.signal);
+            let settled = false;
+            void waiting.then(() => { settled = true; });
+            if (!available) {
+                available = true;
+                await vi.advanceTimersByTimeAsync(350);
+            }
+            expect(watchers).toHaveLength(1);
+            if (mode === 'rename') {
+                const listener = mocked.mock.calls.at(-1)![1] as (event: string) => void;
+                listener('rename');
+            } else if (mode === 'silent replacement') {
+                renameSync(join(tempBrainDir, id), join(tempBrainDir, id + '-old'));
+                writeTranscript(tempBrainDir, id, []);
+                await vi.advanceTimersByTimeAsync(30_000);
+                expect(settled).toBe(false);
+            }
+            if (mode === 'rename' || mode === 'silent replacement') {
+                expect(watchers[0].close).toHaveBeenCalledOnce();
+                expect(watchers).toHaveLength(2);
+            }
+            writeTranscript(tempBrainDir, id, [{ step_index: 1, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE' }]);
+            if (mode === 'rename' || mode === 'silent replacement') {
+                const listener = mocked.mock.calls.at(-1)![1] as (event: string) => void;
+                listener('change');
+            } else {
+                await vi.advanceTimersByTimeAsync(29_999);
+                expect(settled).toBe(false);
+                await vi.advanceTimersByTimeAsync(1);
+            }
+            await expect(waiting).resolves.toEqual({ kind: 'wakeup' });
+            expect(vi.getTimerCount()).toBe(existingTimers);
+        } finally {
+            controller.abort();
+            mocked.mockImplementation(original);
+            vi.useRealTimers();
+        }
+    });
+
+    it('rechecks a partial SYSTEM_MESSAGE after the final watcher event is dropped', async () => {
+        vi.useFakeTimers();
+        const controller = new AbortController();
+        try {
+            const { session } = makeHarness();
+            const id = 'agy-burst';
+            const launcher = new AgyAcpRemoteLauncher(session, { brainDir: tempBrainDir, reactivePollMs: 350 });
+            launcher['acpSessionId'] = id;
+            launcher['backend'] = new WakeupTestBackend() as unknown as AcpSdkBackend;
+            const { compactPath } = writeTranscript(tempBrainDir, id, []);
+            const baseline = vi.getTimerCount();
+            const watcher = Object.assign(new EventEmitter(), { close: vi.fn() });
+            vi.mocked(watch).mockReturnValueOnce(watcher as unknown as FSWatcher);
+            const waiting = launcher['waitForNextBatchOrWakeup'](controller.signal);
+            const settled = vi.fn();
+            void waiting.then(settled);
+            const change = vi.mocked(watch).mock.calls.at(-1)![1] as (event: string) => void;
+            appendFileSync(compactPath, '{"step_index":1,');
+            change('change');
+            await vi.advanceTimersByTimeAsync(200);
+            appendFileSync(compactPath, '"source":"SYSTEM",');
+            change('change');
+            appendFileSync(compactPath, '"type":"SYSTEM_MESSAGE","status":"DONE"}\n');
+            await vi.advanceTimersByTimeAsync(349);
+            expect(settled).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1);
+            expect(settled).toHaveBeenCalledWith({ kind: 'wakeup' });
+            expect(vi.getTimerCount()).toBe(baseline);
+        } finally {
+            controller.abort();
+            vi.useRealTimers();
+        }
     });
 
     it('wakes up on completed background turn, emits background Bash result + text + summary, and advances cursor via resumeSession', async () => {
@@ -1838,6 +2010,148 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 tasks: []
             })
         );
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('keeps one background entry when a live turn streams a wakeup run_command the watcher then replays', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+        const acp = backend.sessionIdToCreate;
+
+        // The turn ends, an earlier task's SYSTEM_MESSAGE wakes agy, and the same
+        // live ACP stream carries the wakeup's backgrounded run_command and text.
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-live-33',
+                name: 'manage_task',
+                title: 'manage_task',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'manage_task',
+                nativeArgs: { Action: 'update' }
+            });
+            onUpdate({ type: 'tool_result', id: 'call-live-33', status: 'completed', output: 'Task list updated.' });
+            onUpdate({ type: 'text', text: 'Task list updated.' });
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-live-37',
+                name: 'python3 scan.py',
+                title: 'python3 scan.py',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'python3 scan.py' }
+            });
+            onUpdate({ type: 'text', text: 'Comparing the folders.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, acp, [
+                { step_index: 32, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'continue' },
+                {
+                    step_index: 33,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'manage_task', args: { Action: '"update"' } }]
+                },
+                { step_index: 34, source: 'MODEL', type: 'GENERIC', status: 'DONE', content: 'Task list updated.' },
+                { step_index: 35, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Task list updated.' },
+                {
+                    step_index: 36,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-31" finished with result:\nCommand exited with code 0.\n\nCommand output:\nEARLIER\n</SYSTEM_MESSAGE>`
+                },
+                {
+                    step_index: 37,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"python3 scan.py"' } }]
+                },
+                {
+                    step_index: 38,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${acp}/task-38`
+                },
+                { step_index: 39, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Comparing the folders.' }
+            ]);
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 60
+        });
+        const runPromise = launcher.launch();
+
+        // The turn-end cursor stops at the terminal planner (35), so right after
+        // the turn's ready the watcher replays 36-39 as a reactive wakeup.
+        const readyCount = () => client.sendSessionEvent.mock.calls
+            .filter(([event]) => event.type === 'ready').length;
+        queue.push('continue', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(backend.resumeCalls).toEqual([acp]);
+            expect(readyCount()).toBe(2);
+        });
+        client.sendSessionEvent.mockClear();
+
+        // task-38's single completion arrives in a later wakeup.
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, acp)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 40,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-38" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSCANNED\n</SYSTEM_MESSAGE>`
+                }),
+                JSON.stringify({
+                    step_index: 41,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Scan finished.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(backend.resumeCalls).toEqual([acp, acp]);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        // The replayed step 37 never becomes a second card.
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages.filter((msg) =>
+            typeof msg.callId === 'string' && msg.callId.startsWith('agy-wakeup-')
+        )).toEqual([]);
+        // The completion lands on the live card.
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'call-live-37',
+            is_error: false,
+            output: { stdout: 'SCANNED', exit_code: 0 }
+        }));
+
+        // The indicator only ever tracked the live call id, and empties at the end.
+        const snapshots = client.sendClaudeSessionMessage.mock.calls
+            .map(([msg]) => msg)
+            .filter((msg) => msg.type === 'system' && msg.subtype === 'background_tasks_changed');
+        expect(snapshots.map((msg) => msg.tasks.map((task: { task_id: string }) => task.task_id))).toEqual([
+            ['call-live-37'],
+            []
+        ]);
 
         queue.close();
         await runPromise;

@@ -19,6 +19,14 @@ export function inputText(input: unknown): string {
     }).filter(Boolean).join('\n');
 }
 
+/** Hub-visible text for a native userMessage item: the exact display text
+ *  `sendUserMessage` commits, so an empty result emits no hub row at all. */
+export function userMessageDisplayText(item: Record<string, unknown>): string {
+    const text = inputText(item.content);
+    const replies = asyncQuestionReplies(text);
+    return replies.length ? replies.map(reply => [reply.question, reply.answer].filter(Boolean).join('\n')).join('\n\n') : text;
+}
+
 function requestedTitle(item: Record<string, unknown>): string | undefined {
     if (item.type !== 'mcpToolCall' || item.server !== 'hapi' || item.tool !== 'change_title') return;
     return normalizeSessionDisplayTitle(string(record(item.arguments).title)) ?? undefined;

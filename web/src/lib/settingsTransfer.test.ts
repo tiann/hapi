@@ -43,6 +43,7 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi-session-list-machine-filter',
     'hapi.scratchlist-collapsed.v1.',
     // Onboarding and dismissals
+    'hapi.nativeAppPromo.v1',
     'hapi.fue.v1.',
     'hapi.fue.v1.scratchlist-toggle',
     'hapi-voice-context-notice',

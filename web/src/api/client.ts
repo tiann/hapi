@@ -14,6 +14,8 @@ import type {
     CodexDesktopStatusResponse,
     CodexArchiveSessionResponse,
     DecryptedMessage,
+    ForkBoundary,
+    ForkPreviewResponse,
     CodexCollaborationMode,
     CopilotAgentMode,
     FileSearchResponse,
@@ -39,6 +41,7 @@ import type {
     SessionResponse,
     SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
+    ScratchlistSessionIdsResponse,
     SessionsResponse,
     SessionContentSearchResponse
 } from '@/types/api'
@@ -414,6 +417,11 @@ export class ApiClient {
 
     async getSessions(): Promise<SessionsResponse> {
         return await this.request<SessionsResponse>('/api/sessions')
+    }
+
+    async getScratchlistSessionIds(): Promise<string[]> {
+        const response = await this.request<ScratchlistSessionIdsResponse>('/api/sessions/scratchlist-status')
+        return response.sessionIds
     }
 
     async getHealth(): Promise<HubHealthResponse> {
@@ -912,22 +920,36 @@ export class ApiClient {
         })
     }
 
-    async forkConversation(sessionId: string, messageLocalId?: string, latestCompleted = false): Promise<{ sessionId: string }> {
+    async forkConversation(sessionId: string, messageLocalId?: string, latestCompleted = false, boundary?: ForkBoundary): Promise<{ sessionId: string }> {
         return await this.request<{ sessionId: string }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
             {
                 method: 'POST',
-                body: JSON.stringify(latestCompleted ? { latestCompleted: true } : messageLocalId ? { messageLocalId } : {})
+                body: JSON.stringify({
+                    ...(latestCompleted ? { latestCompleted: true } : {}),
+                    ...(messageLocalId ? { messageLocalId } : {}),
+                    ...(boundary ? { boundary } : {})
+                })
             }
         )
     }
 
-    async rewindConversation(sessionId: string, messageLocalId: string): Promise<{ success: true }> {
+    async forkPreview(sessionId: string, intent: 'current' | 'message' | 'rewind', messageLocalId?: string): Promise<ForkPreviewResponse> {
+        return await this.request<ForkPreviewResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/fork-preview`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ intent, ...(messageLocalId ? { messageLocalId } : {}) })
+            }
+        )
+    }
+
+    async rewindConversation(sessionId: string, messageLocalId: string, boundary?: ForkBoundary): Promise<{ success: true }> {
         return await this.request<{ success: true }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/rewind`,
             {
                 method: 'POST',
-                body: JSON.stringify({ messageLocalId })
+                body: JSON.stringify({ messageLocalId, ...(boundary ? { boundary } : {}) })
             }
         )
     }
@@ -1451,6 +1473,51 @@ export class ApiClient {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
             method: 'PATCH',
             body: JSON.stringify({ name, titleLocked })
+        })
+    }
+
+    async getFeatures(): Promise<{
+        githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
+        prChipDisplay: import('@hapi/protocol').PrChipDisplayProfile
+    }> {
+        return await this.request('/api/features')
+    }
+
+    async patchFeatures(patch: { githubPrAwareness?: boolean }): Promise<{
+        githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
+        prChipDisplay: import('@hapi/protocol').PrChipDisplayProfile
+    }> {
+        return await this.request('/api/features', {
+            method: 'PATCH',
+            body: JSON.stringify(patch)
+        })
+    }
+
+    async setSessionExternalRefs(
+        sessionId: string,
+        externalRefs: import('@/types/api').ExternalRef[]
+    ): Promise<{ ok: true; externalRefs: import('@/types/api').ExternalRef[] }> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/external-refs`, {
+            method: 'PUT',
+            body: JSON.stringify({ externalRefs })
+        })
+    }
+
+    async upsertSessionExternalRef(
+        sessionId: string,
+        ref: import('@/types/api').ExternalRef
+    ): Promise<{ ok: true; externalRefs: import('@/types/api').ExternalRef[] }> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/external-refs/upsert`, {
+            method: 'POST',
+            body: JSON.stringify({ ref })
+        })
+    }
+
+    async removePrimarySessionExternalRef(
+        sessionId: string
+    ): Promise<{ ok: true; externalRefs: import('@/types/api').ExternalRef[] }> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/external-refs/remove-primary`, {
+            method: 'POST'
         })
     }
 

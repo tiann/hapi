@@ -60,4 +60,10 @@ describe('BranchConversationDialog', () => {
         await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(3))
         expect(onSubmit.mock.calls[2][0].requestId).not.toBe(onSubmit.mock.calls[0][0].requestId)
     })
+    it('shows a hub rejection when a branch request reaches the dialog', async () => {
+        mount(vi.fn().mockRejectedValue(new Error('A Claude rewind is pending; send a message to settle it first')))
+        fireEvent.change(screen.getByLabelText('First instruction in the new branch'), { target: { value: 'Continue' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Create branch' }))
+        expect(await screen.findByRole('alert')).toHaveTextContent('A Claude rewind is pending; send a message to settle it first')
+    })
 })

@@ -1,4 +1,5 @@
 import React from 'react';
+import { settleAcpLauncherShutdown } from '@/modules/common/remote/settleAcpLauncherShutdown';
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { logger } from '@/ui/logger';
@@ -83,6 +84,12 @@ import {
     MAX_LAST_USER_MESSAGE_CHARS
 } from './cursorModelErrorBridge';
 import { getAutoBridgeTransientModelErrors } from './cursorModelErrorBridgePrefs';
+import { formatUnexpectedStopBlockedFooter } from './unexpectedStopBlockedFooter';
+import {
+    CURSOR_POST_TOOL_INTERRUPT_AUTO_CONTINUE_STATUS,
+    CURSOR_POST_TOOL_INTERRUPT_CONTINUE,
+    CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE
+} from './cursorPostToolInterruptContinue';
 
 const CURSOR_ABORT_DRAIN_TIMEOUT_MS = 5_000;
 
@@ -90,6 +97,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
     private readonly titleSync: ReturnType<typeof createAcpSessionTitleSync>;
     private backend: ReturnType<typeof createCursorAcpBackend> | null = null;
+    private shutdownRequested = false;
+    private replacementBackend: AcpSdkBackend | null = null;
+    private readonly backendDisconnects = new WeakMap<AcpSdkBackend, Promise<void>>();
     private acpSessionId: string | null = null;
     private permissionAdapter: PermissionAdapter | null = null;
     private extensionAdapter: CursorExtensionAdapter | null = null;
@@ -195,10 +205,34 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
-        return this.start({
+        let shutdown: Promise<void> | undefined;
+        const running = this.start({
             onExit: () => this.handleExitFromUi(),
             onSwitchToLocal: () => this.handleSwitchFromUi()
+        }).catch((error) => {
+            if (!this.shutdownRequested) throw error;
+            logger.debug('[cursor-acp] Launcher failed during shutdown', error);
+            return 'exit' as const;
         });
+        this.session.setKillHandler(() => shutdown ??= settleAcpLauncherShutdown({
+            logTag: 'cursor-acp',
+            cancel: () => {
+                this.shutdownRequested = true;
+                this.exitReason = 'exit';
+                return this.requestExit('exit', () => this.handleAbort(true));
+            },
+            disconnect: () => {
+                const backend = this.replacementBackend ?? this.backend;
+                return backend ? this.disconnectBackend(backend) : undefined;
+            },
+            running
+        }));
+        try {
+            const reason = await running;
+            return this.shutdownRequested ? 'exit' : reason;
+        } finally {
+            this.session.setKillHandler(() => {});
+        }
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
@@ -216,6 +250,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             skillLookup: { workingDirectory: session.path, flavor: 'cursor' }
         });
         this.happyServer = happyServer;
+        if (this.shouldExit) return;
 
         // Install the workspace session-summary rule before the backend spawns
         // cursor-agent, so the `.cursor/rules` file is on disk when it reads
@@ -290,6 +325,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
             try {
                 await backend.initialize();
+                if (this.shouldExit) return;
                 break;
             } catch (error) {
                 const errMsg = error instanceof Error ? error.message : String(error);
@@ -299,8 +335,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     errMsg,
                     recentStderrHint
                 );
-                await backend.disconnect();
+                await this.disconnectBackend(backend);
                 this.backend = null;
+                if (this.shouldExit) return;
 
                 if (remapped && connectAttempt === 0) {
                     logger.info(`[cursor-acp] Remapping stale spawn model ${spawnModel} → ${remapped}`);
@@ -381,7 +418,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         spawnModel = remapped;
                         // Keep session.model as desiredModel; only the process --model remaps.
                         this.messageBuffer.addMessage(`[MODEL:${remapped}]`, 'system');
-                        await backend.disconnect();
+                        await this.disconnectBackend(backend);
+                        if (this.shouldExit) return;
                         backend = createCursorAcpBackend({
                             cwd: session.path,
                             model: spawnModel,
@@ -442,7 +480,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         logger.info(`[cursor-acp] Remapping stale spawn model ${spawnModel} → ${remapped}`);
                         spawnModel = remapped;
                         this.messageBuffer.addMessage(`[MODEL:${remapped}]`, 'system');
-                        await backend.disconnect();
+                        await this.disconnectBackend(backend);
+                        if (this.shouldExit) return;
                         backend = createCursorAcpBackend({
                             cwd: session.path,
                             model: spawnModel,
@@ -483,6 +522,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 }
             }
         }
+        if (this.shouldExit) return;
         if (!acpSessionId) {
             throw new Error('Failed to establish Cursor ACP session');
         }
@@ -1093,11 +1133,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
                     // skill_lookup discovery lives on the MCP tool description — do not
                     // prepend instructions onto user turns (prompt-injection false positive).
-                    const promptContent: PromptContent[] = [{
+                    let promptContent: PromptContent[] = [{
                         type: 'text',
                         text: batch.message
                     }];
 
+                    // One auto-Continue after post-tool interrupt (#1724) — not a full
+                    // prompt replay (duplicate tool risk). Matches operator "Continue".
+                    let postToolAutoContinueUsed = false;
                     for (let retryAttempt = 0; retryAttempt <= CURSOR_AUTO_RETRY_LIMIT; retryAttempt += 1) {
                         this.pendingRetryableError = null;
                         this.pendingRetryableFromStderr = false;
@@ -1147,9 +1190,40 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                 this.pendingRetryableError = null;
                             }
                             if (!this.pendingRetryableError) {
-                                const settled = this.pendingStderrFailure ?? this.pendingTextFailure;
+                                // `as` defeats a TS control-flow quirk: it narrows
+                                // these two private fields to the `null` they held
+                                // at loop-top and (wrongly) keeps that narrowing
+                                // across the `await … prompt()` above, even though
+                                // its onMessage callback can set them through
+                                // handleAgentMessage — the runtime value here is
+                                // whatever that callback last wrote, not null.
+                                const settled = (this.pendingStderrFailure ?? this.pendingTextFailure) as CursorAgentStreamFailure | null;
                                 if (settled && !this.turnHasModelError) {
-                                    this.recordModelError(settled);
+                                    // .raw can be a whole assistant response with the
+                                    // error marker buried in it (Cursor appends
+                                    // `Error: T: […]` after real prose) — use the
+                                    // trimmed snippet so the chat error / blocked
+                                    // summary carries the failure, not the response.
+                                    const settledMessage: string = rawSnippetForFailure(settled);
+                                    // This path ends the turn (break below) without
+                                    // retrying, same as the catch give-up branches —
+                                    // it must surface and stamp Blocked the same way,
+                                    // not just record the model error silently. A
+                                    // stderr-sourced failure already got its chat
+                                    // error row from wireStderrErrorListener at
+                                    // arrival time — do not show it twice.
+                                    this.surfacePromptFailure(settledMessage, {
+                                        deferFooter: true,
+                                        skipChatError: settled.source === 'stderr'
+                                    });
+                                    // Earlier attempt's tools (if any) already ran —
+                                    // attemptProducedToolActivity only covers *this*
+                                    // attempt, so force non-bridgeable explicitly too.
+                                    const { bridgeQueued } = this.recordModelError(
+                                        settled,
+                                        postToolAutoContinueUsed ? { bridgeable: false } : undefined
+                                    );
+                                    if (!bridgeQueued) this.stampBlockedFooter(settledMessage);
                                 }
                                 this.pendingStderrFailure = null;
                                 this.pendingTextFailure = null;
@@ -1157,40 +1231,99 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                 break;
                             }
                         } catch (error) {
+                            if (this.shouldExit) break;
                             logger.warn('[cursor-acp] prompt failed', error);
                             if (this.userAbortRequested) break;
                             if (!isRetryableCursorError(error)) {
-                                this.surfacePromptFailure(error instanceof Error ? error.message : String(error));
+                                const message = error instanceof Error ? error.message : String(error);
+                                this.surfacePromptFailure(message, { deferFooter: true });
                                 const failure = settleFailure(error);
                                 this.pendingStderrFailure = null;
                                 this.pendingTextFailure = null;
-                                if (failure) this.recordModelError(failure);
+                                // Same earlier-attempt-tools gap as the settled branch
+                                // above: this RPC rejection can land on the Continue
+                                // attempt, where attemptProducedToolActivity is false.
+                                const { bridgeQueued } = failure
+                                    ? this.recordModelError(
+                                        failure,
+                                        postToolAutoContinueUsed ? { bridgeable: false } : undefined
+                                    )
+                                    : { bridgeQueued: false };
+                                if (!bridgeQueued) this.stampBlockedFooter(message);
                                 break;
                             }
                             this.pendingRetryableError = error instanceof Error ? error.message : String(error);
                         }
 
                         if (this.attemptProducedToolActivity) {
-                            this.surfacePromptFailure('Cursor connection interrupted after tool activity; the prompt was not retried.');
+                            if (!postToolAutoContinueUsed) {
+                                postToolAutoContinueUsed = true;
+                                promptContent = [{
+                                    type: 'text',
+                                    text: CURSOR_POST_TOOL_INTERRUPT_CONTINUE
+                                }];
+                                this.messageBuffer.addMessage(
+                                    CURSOR_POST_TOOL_INTERRUPT_AUTO_CONTINUE_STATUS,
+                                    'status'
+                                );
+                                // Spend a fresh attempt budget on Continue (not the
+                                // original prompt). Reset so the for-loop can still run.
+                                retryAttempt = -1;
+                                continue;
+                            }
+                            this.surfacePromptFailure(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE, { deferFooter: true });
                             const failure = settleFailure(
                                 this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
                             );
                             this.pendingStderrFailure = null;
                             this.pendingTextFailure = null;
-                            if (failure) this.recordModelError(failure);
+                            // attemptProducedToolActivity is true this attempt, so
+                            // recordModelError already forces bridgeable:false —
+                            // bridgeQueued is always false here, footer always stamps.
+                            const { bridgeQueued } = failure
+                                ? this.recordModelError(failure)
+                                : { bridgeQueued: false };
+                            if (!bridgeQueued) this.stampBlockedFooter(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE);
+                            break;
+                        }
+                        if (postToolAutoContinueUsed) {
+                            // One-shot contract (#1724): a retryable failure on the
+                            // Continue attempt itself does not get the normal retry
+                            // budget — give up rather than resending Continue N times.
+                            this.surfacePromptFailure(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE, { deferFooter: true });
+                            const continueFailure = settleFailure(
+                                this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
+                            );
+                            this.pendingStderrFailure = null;
+                            this.pendingTextFailure = null;
+                            // attemptProducedToolActivity is per-attempt and this
+                            // (Continue) attempt made none, but the turn's earlier
+                            // attempt already ran tools — Bridge must not resend
+                            // lastUserMessage into them regardless, so bridgeQueued
+                            // is always false here too; footer always stamps.
+                            const { bridgeQueued } = continueFailure
+                                ? this.recordModelError(continueFailure, { bridgeable: false })
+                                : { bridgeQueued: false };
+                            if (!bridgeQueued) this.stampBlockedFooter(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE);
                             break;
                         }
                         if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
                             this.surfaceRetry(retryAttempt + 1);
                             continue;
                         }
-                        this.surfacePromptFailure(`Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`);
-                        const exhaustedFailure = settleFailure(
-                            this.pendingRetryableError ?? 'Cursor Agent failed after retries'
-                        );
-                        this.pendingStderrFailure = null;
-                        this.pendingTextFailure = null;
-                        if (exhaustedFailure) this.recordModelError(exhaustedFailure);
+                        {
+                            const message = `Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`;
+                            this.surfacePromptFailure(message, { deferFooter: true });
+                            const exhaustedFailure = settleFailure(
+                                this.pendingRetryableError ?? 'Cursor Agent failed after retries'
+                            );
+                            this.pendingStderrFailure = null;
+                            this.pendingTextFailure = null;
+                            const { bridgeQueued } = exhaustedFailure
+                                ? this.recordModelError(exhaustedFailure)
+                                : { bridgeQueued: false };
+                            if (!bridgeQueued) this.stampBlockedFooter(message);
+                        }
                     }
                 }
             } finally {
@@ -1309,6 +1442,16 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private async disconnectBackend(backend = this.backend): Promise<void> {
+        if (!backend) return;
+        let disconnect = this.backendDisconnects.get(backend);
+        if (!disconnect) {
+            disconnect = backend.disconnect({ waitForTransport: true });
+            this.backendDisconnects.set(backend, disconnect);
+        }
+        await disconnect;
+    }
+
     protected async cleanup(): Promise<void> {
         // Capture overlays before awaited teardown so a reject from
         // cancelAll/disconnect cannot leave a dead hapi-* MCP entry or a
@@ -1339,29 +1482,32 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 await this.acpRelaunchPromise.catch(() => {});
             }
 
-            if (this.permissionAdapter) {
-                await this.permissionAdapter.cancelAll('Session ended');
-                this.permissionAdapter = null;
-            }
+            try {
+                if (this.permissionAdapter) {
+                    await this.permissionAdapter.cancelAll('Session ended');
+                    this.permissionAdapter = null;
+                }
 
-            if (this.extensionAdapter) {
-                await this.extensionAdapter.cancelAll('Session ended');
-                this.extensionAdapter = null;
+                if (this.extensionAdapter) {
+                    await this.extensionAdapter.cancelAll('Session ended');
+                    this.extensionAdapter = null;
+                }
+            } finally {
+                await this.disconnectBackend();
             }
-
-            if (this.backend) {
-                await this.backend.disconnect();
-                this.backend = null;
-            }
-
-            if (this.happyServer) {
-                this.happyServer.stop();
-                this.happyServer = null;
-            }
+        } catch (error) {
+            if (!this.shutdownRequested) throw error;
+            logger.debug('[cursor-acp] Error during launcher cleanup', error);
         } finally {
-            overlay?.cleanup();
-            notifyOverlay?.cleanup();
-            setCursorAcpModelsSnapshot(null);
+            this.backend = null;
+            try {
+                this.happyServer?.stop();
+            } finally {
+                this.happyServer = null;
+                overlay?.cleanup();
+                notifyOverlay?.cleanup();
+                setCursorAcpModelsSnapshot(null);
+            }
         }
     }
 
@@ -1626,10 +1772,36 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         });
     }
 
-    private surfacePromptFailure(message: string): void {
-        const converted = convertAgentMessage({ type: 'error', message });
-        if (converted) this.session.sendAgentMessage(converted);
-        this.messageBuffer.addMessage(message, 'status');
+    /**
+     * `deferFooter` holds the blocked stamp back for a caller that still has
+     * to call recordModelError and may find Auto Bridge can still recover —
+     * stamping the footer first would mislabel a turn Bridge goes on to fix
+     * (#1724 bot Minor). Callers with no model-error decision to make
+     * (e.g. backend-unavailable infra failures) use the default immediate path.
+     */
+    /**
+     * `skipChatError` is for a failure wireStderrErrorListener already surfaced
+     * as a chat error row (CursorAgentStreamFailure.source === 'stderr' settled
+     * via pendingStderrFailure) — re-announcing it here would double it up.
+     */
+    private surfacePromptFailure(message: string, opts?: { deferFooter?: boolean; skipChatError?: boolean }): void {
+        if (!opts?.skipChatError) {
+            const converted = convertAgentMessage({ type: 'error', message });
+            if (converted) this.session.sendAgentMessage(converted);
+            this.messageBuffer.addMessage(message, 'status');
+        }
+        if (opts?.deferFooter) return;
+        this.stampBlockedFooter(message);
+    }
+
+    private stampBlockedFooter(message: string): void {
+        // Estate Blocked chrome (#1717) keys off lastNotify from AGENT_NOTIFY_SUMMARY
+        // on assistant text — not error rows (#1724).
+        const footer = convertAgentMessage({
+            type: 'text',
+            text: formatUnexpectedStopBlockedFooter({ summary: message })
+        });
+        if (footer) this.session.sendAgentMessage(footer);
     }
 
     private handleTextMessageClassification(text: string): void {
@@ -1654,15 +1826,20 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
      * via pendingTextFailure until prompt settles, then flushed here.
      * First recorded signal wins for the turn.
      */
+    /**
+     * `bridgeQueued` reflects only whether *this* call just enqueued an
+     * auto-Bridge retry — callers use it to hold a blocked footer when
+     * Bridge may still recover, not as a snapshot of ambient bridge state.
+     */
     private recordModelError(
         failure: CursorAgentStreamFailure,
         opts?: { bridgeable?: boolean }
-    ): void {
+    ): { bridgeQueued: boolean } {
         if (this.turnHasModelError) {
             logger.debug(
                 `[cursor-acp] modelError already recorded for this turn, dropping ${failure.source}/${failure.kind}`
             );
-            return;
+            return { bridgeQueued: false };
         }
         // Abort/Exit/Switch can settle as canceled *or* transport/process-close
         // shapes (ACP process exited, WritableIterable closed, …). Never promote
@@ -1673,7 +1850,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             );
             this.pendingTextFailure = null;
             this.pendingStderrFailure = null;
-            return;
+            return { bridgeQueued: false };
         }
         this.turnHasModelError = true;
         this.pendingTextFailure = null;
@@ -1739,14 +1916,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             priorAssistantClaimsDone
         });
 
-        if (
-            !bridgedFailure
+        const shouldAutoBridge = !bridgedFailure
             && bridgeable
             && failure.transient
-            && getAutoBridgeTransientModelErrors()
-        ) {
-            this.tryEnqueueModelErrorBridge('auto');
-        }
+            && getAutoBridgeTransientModelErrors();
+        const bridgeQueued = shouldAutoBridge && this.tryEnqueueModelErrorBridge('auto').ok;
+        return { bridgeQueued };
     }
 
     private async handleBridgeModelErrorRpc(payload: unknown): Promise<{ ok: boolean; reason?: string }> {
@@ -2281,11 +2456,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         const previousBackend = this.backend;
         if (previousBackend) {
-            await previousBackend.disconnect().catch((error) => {
+            await this.disconnectBackend(previousBackend).catch((error) => {
                 logger.debug('[cursor-acp] Prior ACP disconnect during relaunch', error);
             });
         }
         this.backend = null;
+        if (this.shouldExit || this.sessionTeardownStarted) {
+            throw new Error('Cannot relaunch Cursor ACP while the session is ending');
+        }
 
         try {
             await this.bindFreshAcpBackend({
@@ -2299,6 +2477,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 `[cursor-acp] In-place relaunch with --model ${cursorSpawnModelId(spawnModel) ?? spawnModel} (session=${this.acpSessionId})`
             );
         } catch (error) {
+            if (this.shouldExit || this.sessionTeardownStarted) throw error;
             logger.warn('[cursor-acp] In-place relaunch failed; attempting prior-spawn restore', error);
             try {
                 await this.bindFreshAcpBackend({
@@ -2321,7 +2500,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         resumeSessionId: string;
     }): Promise<void> {
         const session = this.session;
-        let recentStderrHint: string | null = null;
         const backend = createCursorAcpBackend({
             cwd: session.path,
             model: args.spawnModel,
@@ -2329,6 +2507,20 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             worktree: session.cursorWorktree,
             addDirs: session.cursorAddDirs
         });
+        this.replacementBackend = backend;
+        try {
+            await this.initializeReplacementBackend(backend, args);
+        } finally {
+            this.replacementBackend = null;
+        }
+    }
+
+    private async initializeReplacementBackend(
+        backend: AcpSdkBackend,
+        { resumeSessionId, autoReview, spawnModel }: { resumeSessionId: string; autoReview: boolean; spawnModel: string | null | undefined }
+    ): Promise<void> {
+        const session = this.session;
+        let recentStderrHint: string | null = null;
         // Publish this.backend only after initialize + session/load so the
         // message loop cannot prompt against a half-ready process.
         registerAcpSessionTitleSync(backend, session.client, this.titleSync);
@@ -2340,13 +2532,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         try {
             await backend.initialize();
+            if (this.shouldExit) throw new Error('Session ending; discarding replacement ACP backend');
             await backend.authenticateIfAvailable('cursor_login');
         } catch (error) {
             const message = classifyCursorAcpLoadError(error, {
                 recentStderr: recentStderrHint,
                 action: 'start'
             });
-            await backend.disconnect().catch(() => {});
+            await this.disconnectBackend(backend).catch(() => {});
             throw new Error(message);
         }
 
@@ -2364,7 +2557,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         );
 
         if (!backend.supportsLoadSession()) {
-            await backend.disconnect().catch(() => {});
+            await this.disconnectBackend(backend).catch(() => {});
             throw new Error(
                 'Cursor ACP session/load is not supported by this agent build; cannot relaunch in place'
             );
@@ -2373,24 +2566,24 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         let acpSessionId: string;
         try {
             acpSessionId = await backend.loadSession({
-                sessionId: args.resumeSessionId,
+                sessionId: resumeSessionId,
                 cwd: session.path,
                 mcpServers: []
             });
         } catch (error) {
             logger.warn('[cursor-acp] session/load failed during in-place relaunch', formatAcpLoadError(error));
             const message = classifyCursorAcpLoadError(error, { recentStderr: recentStderrHint });
-            await backend.disconnect().catch(() => {});
+            await this.disconnectBackend(backend).catch(() => {});
             throw new Error(message);
         }
 
-        if (acpSessionId !== args.resumeSessionId) {
+        if (acpSessionId !== resumeSessionId) {
             session.onSessionFoundWithProtocol(acpSessionId, 'acp');
             await session.client.flushMetadata();
         }
 
         if (this.sessionTeardownStarted || this.shouldExit) {
-            await backend.disconnect().catch(() => {});
+            await this.disconnectBackend(backend).catch(() => {});
             throw new Error('Session ending; discarding replacement ACP backend');
         }
 
@@ -2399,8 +2592,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         // Fresh ACP process — bookkeeping must reflect THIS spawn's flags, not
         // the prior process (e.g. started with --auto-review, relaunched without).
-        this.spawnedWithAutoReview = args.autoReview;
-        if (args.autoReview) {
+        this.spawnedWithAutoReview = autoReview;
+        if (autoReview) {
             // `/auto-review` is a toggle; drop any *internal* queued slash that was
             // meant for the old process so we do not turn Auto-review off on a
             // spawn that already has --auto-review. Preserve user-sent commands.

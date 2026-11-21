@@ -39,9 +39,6 @@ export async function kimiLocalLauncher(
             const created = await createKimiWireScanner({
                 wirePath,
                 onEvent: (event) => {
-                    if (shuttingDown) {
-                        return;
-                    }
                     const converted = convertKimiWireEvent(event, session.getModel() ?? opts.model);
                     if (!converted) {
                         return;

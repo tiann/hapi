@@ -6,7 +6,7 @@ import { MessageAttachments } from '@/components/AssistantChat/messages/MessageA
 import { UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } from '@/components/AssistantChat/messages/user-bubble'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
 import { getConversationMessageAnchorId } from '@/chat/outline'
-import { MessageActions } from '@/components/AssistantChat/messages/MessageActions'
+import { MessageActions, isConversationHistoryBlocked } from '@/components/AssistantChat/messages/MessageActions'
 import { useTranslation } from '@/lib/use-translation'
 import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTimestamp'
 
@@ -87,9 +87,12 @@ export function HappyUserMessage() {
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
     const showStatus = shouldShowMessageStatus(status)
 
-    const history = ctx.allowInactiveFork
-        ? { forkCurrent: true, forkAtMessage: true, rewindToMessage: false }
-        : ctx.metadata?.capabilities?.conversationHistory
+    const historyLocked = isConversationHistoryBlocked(ctx.metadata)
+    const history = historyLocked
+        ? undefined
+        : ctx.allowInactiveFork
+            ? { forkCurrent: true, forkAtMessage: true, rewindToMessage: false }
+            : ctx.metadata?.capabilities?.conversationHistory
     const hasNativePoint = typeof localId === 'string'
         && localId.length > 0
         && ctx.metadata?.conversationHistoryPoints?.[localId] === true
@@ -180,7 +183,7 @@ export function HappyUserMessage() {
                 align="end"
                 copyText={hasText ? text : undefined}
                 messageElementId={elementId}
-                onBranch={ctx.onBranchConversation && !isTranscriptEcho && (localId || sourceMessageId) && invokedAt != null
+                onBranch={!historyLocked && ctx.onBranchConversation && !isTranscriptEcho && (localId || sourceMessageId) && invokedAt != null
                     ? () => localId ? ctx.onBranchConversation?.(localId) : ctx.onBranchConversation?.(undefined, sourceMessageId) : undefined}
                 showFork={showFork}
                 allowForkWhileRunning={showHistoricalFork && ctx.metadata?.flavor === 'codex'}

@@ -20,6 +20,7 @@ const socketHarness = vi.hoisted(() => ({
         trigger: (event: string, ...args: any[]) => void
         triggerConnect: () => void
         triggerConnectError: () => void
+        timeoutEmits: Array<{ event: string; ms: number }>
         emitWithAckImpl: (event: string, ...args: unknown[]) => Promise<unknown>
     }>
 }))
@@ -40,6 +41,7 @@ vi.mock('socket.io-client', () => ({
             trigger: () => {},
             triggerConnect: () => {},
             triggerConnectError: () => {},
+            timeoutEmits: [] as Array<{ event: string; ms: number }>,
             emitWithAckImpl: async () => ({})
         }
         state.trigger = (event: string, ...args: any[]) => {
@@ -75,8 +77,23 @@ vi.mock('socket.io-client', () => ({
                 return socket
             },
             emitWithAck: async (event: string, ...args: unknown[]) => state.emitWithAckImpl(event, ...args),
-            timeout: () => ({
-                emitWithAck: async (event: string, ...args: unknown[]) => state.emitWithAckImpl(event, ...args)
+            timeout: (ms: number) => ({
+                emitWithAck: async (event: string, ...args: unknown[]) => {
+                    state.timeoutEmits.push({ event, ms })
+                    let timer: ReturnType<typeof setTimeout> | undefined
+                    try {
+                        return await Promise.race([
+                            state.emitWithAckImpl(event, ...args),
+                            new Promise<never>((_, reject) => {
+                                timer = setTimeout(() => reject(new Error('operation has timed out')), ms)
+                            })
+                        ])
+                    } finally {
+                        if (timer !== undefined) {
+                            clearTimeout(timer)
+                        }
+                    }
+                }
             }),
             connect: () => {
                 state.connectCalls += 1
@@ -1105,6 +1122,56 @@ describe('ApiSessionClient incoming user messages', () => {
         })
     })
 
+    describe('committed Claude rewind cursor', () => {
+        const intent = { targetLocalId: 'cut', truncateFromLocalId: 'cut', keepBoundary: 'boundary', droppedPrompts: ['p1'] }
+        const base = { path: '/tmp', host: 'test', flavor: 'claude' as const }
+        const prompt = (id: string, seq: number) => ({ id, seq, createdAt: seq, localId: id, invokedAt: null,
+            content: { role: 'user', content: { type: 'text', text: id }, meta: { sentFrom: 'webapp' } } })
+
+        // Hub truncation after a Claude rewind lets later prompts reuse seqs below
+        // the CLI's retained cursor; reconnect backfill must still retrieve them.
+        it.each(['intent still pending', 'intent cleared after native proof'] as const)(
+            'delivers a prompt that reuses a truncated seq after reconnect (%s)', async phase => {
+                socketHarness.sockets.length = 0
+                axiosHarness.get.mockReset()
+                const hubMessages = [prompt('queued-low', 4)]
+                const hubMetadata = { current: { ...base, claudeRewind: intent } as Record<string, unknown>, version: 2 }
+                axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) =>
+                    url.endsWith('/messages')
+                        ? { data: { messages: hubMessages.filter(m => m.seq > config.params!.afterSeq) } }
+                        : { data: { session: { metadataVersion: hubMetadata.version, metadata: hubMetadata.current } } })
+                const client = new ApiSessionClient('token', createSession({ metadataVersion: 1, metadata: base }))
+                const socket = socketHarness.sockets[0]
+                const received = vi.fn()
+                client.onUserMessage(received)
+                await Promise.resolve()
+                triggerIncomingUserMessage(socket, { id: 'old-tail', seq: 9, text: 'pre-rewind tail', sentFrom: 'webapp' })
+                socket.trigger('update', { body: { t: 'update-session', metadata: { version: 2, value: hubMetadata.current } } })
+                if (phase === 'intent cleared after native proof') {
+                    hubMetadata.current = { ...base }
+                    hubMetadata.version = 3
+                    socket.trigger('update', { body: { t: 'update-session', metadata: { version: 3, value: hubMetadata.current } } })
+                }
+                received.mockClear()
+                try {
+                    socket.connected = false
+                    socket.trigger('disconnect', 'transport close')
+                    socket.triggerConnect()
+                    await vi.waitFor(() => expect(received).toHaveBeenCalledTimes(1))
+                    expect(received.mock.calls.map(([, id]) => id)).toEqual(['queued-low'])
+                    expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                        expect.objectContaining({ params: { afterSeq: 0, limit: 200 } }))
+                    // A second reconnect must not deliver the prompt again.
+                    socket.connected = false
+                    socket.trigger('disconnect', 'transport close')
+                    socket.triggerConnect()
+                    await vi.waitFor(() => expect((client as unknown as { backfillInFlight: Promise<void> | null })
+                        .backfillInFlight).toBeNull())
+                    expect(received).toHaveBeenCalledTimes(1)
+                } finally { client.close() }
+            })
+    })
+
     describe('HAPI7-CURSOR-R1 unscanned recovery floor', () => {
         const metadata = (operationId = 'floor-a', cutoffSeq = 3) => ({
             path: '/tmp', host: 'test', flavor: 'opencode' as const,
@@ -2076,6 +2143,27 @@ describe('ApiSessionClient runtime heartbeat', () => {
         ])
         client.close()
     })
+
+    it('releases queued messages, latestKeepAlive, and terminal replay buffer on close()', () => {
+        const client = new ApiSessionClient('token', createSession())
+        client.emitAgentTerminalOutput('x'.repeat(4096))
+        client.keepAlive(true, 'remote', { model: 'gpt-5' })
+        const internals = client as unknown as {
+            pendingMessages: unknown[]
+            pendingHubPromptEchoes: unknown[]
+            agentTerminalLocalBuffer: string
+            latestKeepAlive: unknown
+        }
+        internals.pendingMessages.push({ message: { role: 'user', content: { type: 'text', text: 'queued' } } })
+        internals.pendingHubPromptEchoes.push({ text: 'echo', localIds: ['loc-1'] })
+
+        client.close()
+
+        expect(internals.agentTerminalLocalBuffer).toBe('')
+        expect(internals.pendingMessages).toEqual([])
+        expect(internals.pendingHubPromptEchoes).toEqual([])
+        expect(internals.latestKeepAlive).toBeNull()
+    })
 })
 
 
@@ -2089,3 +2177,364 @@ describe('ApiSessionClient durable status identity', () => {
         client.close();
     });
 });
+
+describe('ApiSessionClient metadata cancellation and reconnect ordering', () => {
+    it('abandons a retrying updateMetadata write without sending when signal aborts', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+            metadataVersion: 1
+        }))
+        const socket = socketHarness.sockets[0]!
+        let attempts = 0
+        const abortController = new AbortController()
+        socket.emitWithAckImpl = async (event) => {
+            if (event !== 'update-metadata') return {}
+            attempts += 1
+            abortController.abort()
+            throw new Error('transient failure')
+        }
+
+        client.updateMetadata((meta) => ({ ...meta, name: 'pending' }), { signal: abortController.signal })
+        await vi.waitFor(() => expect(attempts).toBe(1))
+
+        expect(await client.flushMetadata(5_000)).toBe(true)
+        expect(attempts).toBe(1)
+        expect(client.getMetadata()?.name).toBeUndefined()
+        client.close()
+    })
+
+    it('does not emit update-metadata while disconnected and skips if aborted before reconnect', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+            metadataVersion: 1
+        }))
+        const socket = socketHarness.sockets[0]!
+        socket.connected = false
+        let emitCalls = 0
+        const abortController = new AbortController()
+        socket.emitWithAckImpl = async (event) => {
+            if (event === 'update-metadata') emitCalls += 1
+            return { result: 'success', version: 2, metadata: { path: '/tmp', host: 'h', flavor: 'claude' } }
+        }
+
+        client.updateMetadata((meta) => ({ ...meta, name: 'pending' }), { signal: abortController.signal })
+        await new Promise((r) => setTimeout(r, 50))
+        expect(emitCalls).toBe(0)
+
+        abortController.abort()
+        socket.triggerConnect()
+        expect(await client.flushMetadata(5_000)).toBe(true)
+        expect(emitCalls).toBe(0)
+        client.close()
+    })
+
+    it('invokes onReconnect after refreshMetadata completes on reconnect', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockClear()
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+            metadataVersion: 1
+        }))
+        const socket = socketHarness.sockets[0]!
+
+        const refreshDeferred = deferred<{ data: { session: { metadataVersion: number; metadata: Record<string, unknown> } } }>()
+        axiosHarness.get.mockImplementation(async (url: string) => {
+            if (String(url).includes('/messages')) return { data: { messages: [] } }
+            return await refreshDeferred.promise
+        })
+
+        let observedName: unknown = 'not-called'
+        client.onReconnect(() => {
+            observedName = client.getMetadata()?.name ?? null
+        })
+
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+
+        await new Promise((r) => setTimeout(r, 20))
+        expect(observedName).toBe('not-called')
+
+        refreshDeferred.resolve({
+            data: {
+                session: {
+                    metadataVersion: 2,
+                    metadata: { path: '/tmp', host: 'h', flavor: 'claude', name: 'Refreshed' }
+                }
+            }
+        })
+
+        await vi.waitFor(() => expect(observedName).toBe('Refreshed'))
+        client.close()
+    })
+
+    it('does not apply a delayed ack locally after AbortSignal aborts (item 2)', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+            metadataVersion: 1
+        }))
+        const socket = socketHarness.sockets[0]!
+        const ackDeferred = deferred<Record<string, unknown>>()
+        let emitCalls = 0
+        socket.emitWithAckImpl = async (event, payload) => {
+            if (event !== 'update-metadata') return {}
+            emitCalls += 1
+            if (emitCalls === 1) {
+                return await ackDeferred.promise
+            }
+            const req = payload as { expectedVersion: number }
+            // Hub already cleared claudeRewind at version 3 via rejected RPC.
+            if (req.expectedVersion < 3) {
+                return {
+                    result: 'version-mismatch',
+                    version: 3,
+                    metadata: { path: '/tmp', host: 'h', flavor: 'claude' }
+                }
+            }
+            return {
+                result: 'success',
+                version: 4,
+                metadata: { ...(payload as { metadata: Record<string, unknown> }).metadata }
+            }
+        }
+
+        const abortController = new AbortController()
+        client.updateMetadata(
+            (meta) => ({
+                ...meta,
+                claudeRewind: {
+                    targetLocalId: 'm1',
+                    truncateFromLocalId: 'm1',
+                    keepBoundary: 'uuid-0',
+                    droppedPrompts: ['uuid-1']
+                }
+            }),
+            { signal: abortController.signal }
+        )
+
+        await vi.waitFor(() => expect(emitCalls).toBe(1))
+        abortController.abort()
+        // The delayed ack for the aborted write arrives after abort.
+        ackDeferred.resolve({
+            result: 'success',
+            version: 2,
+            metadata: {
+                path: '/tmp',
+                host: 'h',
+                flavor: 'claude',
+                claudeRewind: {
+                    targetLocalId: 'm1',
+                    truncateFromLocalId: 'm1',
+                    keepBoundary: 'uuid-0',
+                    droppedPrompts: ['uuid-1']
+                }
+            }
+        })
+
+        expect(await client.flushMetadata(5_000)).toBe(true)
+        // Must NOT regain claudeRewind locally after abort.
+        expect(client.getMetadata()?.claudeRewind).toBeUndefined()
+
+        // Subsequent write recovers via version-mismatch without resurrecting claudeRewind.
+        client.updateMetadata((meta) => ({ ...meta, name: 'AfterClear' }))
+        expect(await client.flushMetadata(5_000)).toBe(true)
+        expect(client.getMetadata()?.claudeRewind).toBeUndefined()
+        expect(client.getMetadata()?.name).toBe('AfterClear')
+        client.close()
+    })
+
+    it('passes metadataRefreshed flag to onReconnect handler on success vs failure (item 3a)', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockClear()
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+            metadataVersion: 1
+        }))
+        const socket = socketHarness.sockets[0]!
+        const seenFlags: Array<boolean | undefined> = []
+        client.onReconnect((refreshed?: boolean) => {
+            seenFlags.push(refreshed)
+        })
+
+        axiosHarness.get.mockImplementation(async (url: string) => {
+            if (String(url).includes('/messages')) return { data: { messages: [] } }
+            return { data: { session: { metadataVersion: 2, metadata: { path: '/tmp', host: 'h', flavor: 'claude' } } } }
+        })
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+        await vi.waitFor(() => expect(seenFlags).toEqual([true]))
+
+        axiosHarness.get.mockImplementation(async (url: string) => {
+            if (String(url).includes('/messages')) return { data: { messages: [] } }
+            throw new Error('network down')
+        })
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+        await vi.waitFor(() => expect(seenFlags).toEqual([true, false]))
+        client.close()
+    })
+
+    it('stops retrying updateMetadata when close() transitions state to closed (item 4)', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+            metadataVersion: 1
+        }))
+        const socket = socketHarness.sockets[0]!
+        socket.connected = false
+        let handlerCalls = 0
+        client.updateMetadata((meta) => {
+            handlerCalls += 1
+            return { ...meta, name: 'pending' }
+        })
+
+        await vi.waitFor(() => expect(handlerCalls).toBeGreaterThanOrEqual(1))
+        client.close()
+        const callsAtClose = handlerCalls
+
+        // Without stopping on closed state, backoff keeps retrying every 250-1000ms forever.
+        await new Promise((r) => setTimeout(r, 1_100))
+        expect(handlerCalls).toBe(callsAtClose)
+    })
+
+    it('retries timed-out updateMetadata ack, releases metadataLock, and allows subsequent writes', async () => {
+        vi.useFakeTimers()
+        try {
+            socketHarness.sockets.length = 0
+            axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+            const client = new ApiSessionClient('token', createSession({
+                namespace: 'default',
+                metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+                metadataVersion: 1
+            }))
+            const socket = socketHarness.sockets[0]!
+            const firstEmitStarted = deferred<void>()
+            let secondEmitAcked = false
+            let thirdEmitAcked = false
+            const seenNames: Array<unknown> = []
+
+            let emitCalls = 0
+            socket.emitWithAckImpl = async (event, payload) => {
+                if (event !== 'update-metadata') return {}
+                emitCalls += 1
+                const req = payload as { expectedVersion: number; metadata: Record<string, unknown> }
+                seenNames.push(req.metadata.name)
+                if (emitCalls === 1) {
+                    firstEmitStarted.resolve()
+                    return await new Promise<never>(() => {})
+                }
+                if (emitCalls === 2) {
+                    secondEmitAcked = true
+                    return {
+                        result: 'success',
+                        version: req.expectedVersion + 1,
+                        metadata: req.metadata
+                    }
+                }
+                thirdEmitAcked = true
+                return {
+                    result: 'success',
+                    version: req.expectedVersion + 1,
+                    metadata: req.metadata
+                }
+            }
+
+            client.updateMetadata((meta) => ({ ...meta, name: 'first' }))
+            client.updateMetadata((meta) => ({ ...meta, name: 'second' }))
+
+            await firstEmitStarted.promise
+            // Before the fix, update-metadata uses untimed emitWithAck, so advancing past 5s + backoff never retries.
+            await vi.advanceTimersByTimeAsync(5_000)
+            await vi.advanceTimersByTimeAsync(1_100)
+            await vi.advanceTimersByTimeAsync(10)
+
+            expect(socket.timeoutEmits.filter((entry) => entry.event === 'update-metadata')).toEqual([
+                { event: 'update-metadata', ms: 5_000 },
+                { event: 'update-metadata', ms: 5_000 },
+                { event: 'update-metadata', ms: 5_000 }
+            ])
+            expect(secondEmitAcked).toBe(true)
+            expect(thirdEmitAcked).toBe(true)
+            expect(seenNames).toEqual(['first', 'first', 'second'])
+            expect(client.getMetadata()?.name).toBe('second')
+            client.close()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('stops retrying an aborted updateMetadata write after ack timeout and releases metadataLock', async () => {
+        vi.useFakeTimers()
+        try {
+            socketHarness.sockets.length = 0
+            axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+            const client = new ApiSessionClient('token', createSession({
+                namespace: 'default',
+                metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+                metadataVersion: 1
+            }))
+            const socket = socketHarness.sockets[0]!
+            const firstEmitStarted = deferred<void>()
+            let subsequentAcked = false
+            const emittedNames: Array<unknown> = []
+
+            let emitCalls = 0
+            socket.emitWithAckImpl = async (event, payload) => {
+                if (event !== 'update-metadata') return {}
+                emitCalls += 1
+                const req = payload as { expectedVersion: number; metadata: Record<string, unknown> }
+                emittedNames.push(req.metadata.name)
+                if (emitCalls === 1) {
+                    firstEmitStarted.resolve()
+                    return await new Promise<never>(() => {})
+                }
+                subsequentAcked = true
+                return {
+                    result: 'success',
+                    version: req.expectedVersion + 1,
+                    metadata: req.metadata
+                }
+            }
+
+            const abortController = new AbortController()
+            client.updateMetadata(
+                (meta) => ({ ...meta, name: 'aborted-intent' }),
+                { signal: abortController.signal }
+            )
+
+            await firstEmitStarted.promise
+            abortController.abort()
+            client.updateMetadata((meta) => ({ ...meta, name: 'after-abort' }))
+
+            await vi.advanceTimersByTimeAsync(5_000)
+            await vi.advanceTimersByTimeAsync(1_100)
+            await vi.advanceTimersByTimeAsync(10)
+
+            expect(subsequentAcked).toBe(true)
+            expect(socket.timeoutEmits.filter((entry) => entry.event === 'update-metadata')).toEqual([
+                { event: 'update-metadata', ms: 5_000 },
+                { event: 'update-metadata', ms: 5_000 }
+            ])
+            expect(emittedNames).toEqual(['aborted-intent', 'after-abort'])
+            expect(client.getMetadata()?.name).toBe('after-abort')
+            client.close()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+})

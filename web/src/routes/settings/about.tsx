@@ -3,6 +3,7 @@ import { PROTOCOL_VERSION } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
 import { downloadBlob } from '@/lib/file-download'
 import { exportSettings, importSettings } from '@/lib/settingsTransfer'
+import { NativeAppStoreLinks } from '@/components/NativeAppPromo'
 import { SettingsPageContent, SettingsRow, SettingsSection } from '@/components/settings/SettingsPrimitives'
 
 const buttonClassName = 'cursor-pointer rounded-lg bg-[var(--app-button)] px-3 py-2 text-sm font-medium text-[var(--app-button-text)]'
@@ -39,6 +40,11 @@ export default function SettingsAboutPage() {
                 } />
                 <SettingsRow label={t('settings.about.appVersion')} trailing={<span className="text-[var(--app-hint)]">{__APP_VERSION__}</span>} />
                 <SettingsRow label={t('settings.about.protocolVersion')} trailing={<span className="text-[var(--app-hint)]">{PROTOCOL_VERSION}</span>} />
+            </SettingsSection>
+            <SettingsSection>
+                <SettingsRow label={t('settings.about.nativeApp.title')} description={t('settings.about.nativeApp.description')}>
+                    <div className="mt-2"><NativeAppStoreLinks /></div>
+                </SettingsRow>
             </SettingsSection>
             <SettingsSection>
                 <SettingsRow label={t('settings.about.backup.title')} description={t('settings.about.backup.description')} trailing={

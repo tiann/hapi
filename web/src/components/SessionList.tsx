@@ -18,6 +18,7 @@ import { useIsMutating } from '@tanstack/react-query'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
+import { LinkPrDialog } from '@/components/LinkPrDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
 import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
@@ -117,6 +118,7 @@ import { createSessionComparator, getSessionSortKey } from '@/lib/sessionListOrd
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
 import {
     getSessionLastSeenAt,
+    getSessionLastSeenSnapshot,
     getSessionManualUnreadAt,
     getUnreadSessionCount,
     markAllSessionsSeen,
@@ -132,14 +134,26 @@ import { getSessionProjectLabel, getSessionProjectPath } from '@/lib/sessionProj
 import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
-import { MachineFilterBar, MachineFilterMenu, MachineSummaryRow } from '@/components/MachineFilterBar'
+import { MachineFilterBar, MachineSummaryRow } from '@/components/MachineFilterBar'
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
+import { useForkFlow } from '@/hooks/useForkFlow'
+import { ForkPreviewDialog } from '@/components/AssistantChat/ForkPreviewDialog'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
+import { useFeatures, type FeaturesResponse } from '@/hooks/queries/useFeatures'
+import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
+import {
+    DEFAULT_PR_CHIP_DISPLAY,
+    getPrimaryGithubPrRef,
+    resolveGithubPrChipDisplay
+} from '@hapi/protocol'
+import { formatGithubPrChipDetailParts, SessionPrChip } from '@/components/SessionPrChip'
+import { useScratchlistSessionIds } from '@/hooks/queries/useScratchlistSessionIds'
+import { CalendarIcon, formatDateValue, parseLocalDate, SessionDateRangePicker } from '@/components/SessionDateFilter'
 import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
-import { useToast } from '@/lib/toast-context'
+import { useAddToast } from '@/lib/toast-context'
 import {
     shedToolbarSlots,
     toolbarActionBudget,
@@ -150,7 +164,10 @@ import {
 } from '@/components/sessionToolbarShed'
 
 /** Hit targets that must stay visible: icon, clear, calendar. Not the query text. */
-function measureSearchChrome(search: HTMLElement): number {
+function measureSearchChrome(
+    search: HTMLElement,
+    onMeasurePart?: (el: HTMLElement, width: number) => void
+): number {
     const parts = [...search.querySelectorAll<HTMLElement>('[data-toolbar-chrome]')]
     if (parts.length === 0) return search.offsetWidth
     const gap = Number.parseFloat(getComputedStyle(search).columnGap) || 0
@@ -159,7 +176,13 @@ function measureSearchChrome(search: HTMLElement): number {
     const triggerPad = triggerStyle
         ? (Number.parseFloat(triggerStyle.paddingLeft) || 0) + (Number.parseFloat(triggerStyle.paddingRight) || 0)
         : 0
-    return parts.reduce((sum, el) => sum + el.offsetWidth, 0) + triggerPad + gap * Math.max(0, parts.length - 1)
+    let total = 0
+    for (const el of parts) {
+        const width = el.offsetWidth
+        total += width
+        onMeasurePart?.(el, width)
+    }
+    return total + triggerPad + gap * Math.max(0, parts.length - 1)
 }
 
 export type SessionToolbarExtra = {
@@ -269,6 +292,30 @@ export function isPinnedInProgressSession(
     return hasRunningAttachedJob(session) || hasAgentInProgressActivity(session)
 }
 
+
+export type SessionTimeRange = {
+    start: number | null
+    end: number | null
+}
+
+export function getSessionTimeRange(start: string, end: string): SessionTimeRange | null {
+    const startDate = parseLocalDate(start)
+    const endDate = parseLocalDate(end)
+    if (!startDate || !endDate) return null
+    if (endDate) endDate.setDate(endDate.getDate() + 1)
+    return { start: startDate.getTime(), end: endDate.getTime() }
+}
+
+export function sessionMatchesTimeRange(
+    session: SessionSummary,
+    range: SessionTimeRange | null,
+    selectedSessionId?: string | null
+): boolean {
+    if (!range || session.id === selectedSessionId) return true
+    if (range.start !== null && session.updatedAt < range.start) return false
+    if (range.end !== null && session.updatedAt >= range.end) return false
+    return true
+}
 function SessionsEmptyState(props: {
     onNewSession: () => void
     onBrowse?: () => void
@@ -461,6 +508,33 @@ export function filterUnreadSessionsOnly<T extends Pick<SessionSummary, 'id'>>(
     selectedSessionId?: string | null
 ): T[] {
     return sessions.filter(session => session.id === selectedSessionId || isUnread(session))
+}
+
+// "Working only" view (#2002): same predicate as the running-sessions
+// "working" bucket — mid-turn or driving a background task, not merely
+// connected. The selected session stays visible, same rule as the other
+// ephemeral lenses.
+export function filterWorkingSessionsOnly(
+    sessions: SessionSummary[],
+    selectedSessionId?: string | null
+): SessionSummary[] {
+    return sessions.filter(session =>
+        session.id === selectedSessionId
+        || hasAgentForegroundWork(session)
+    )
+}
+
+// Keep the open session visible while filtering so changing the lens never
+// removes the conversation currently shown in the main pane.
+export function filterScratchlistSessionsOnly(
+    sessions: SessionSummary[],
+    selectedSessionId: string | null | undefined,
+    scratchlistSessionIds: ReadonlySet<string>
+): SessionSummary[] {
+    return sessions.filter(session =>
+        session.id === selectedSessionId
+        || scratchlistSessionIds.has(session.id)
+    )
 }
 
 // Paginated session previews move one batch at a time in either direction.
@@ -843,11 +917,70 @@ export function shouldShowPinnedDivider(sessions: SessionSummary[], index: numbe
     return Boolean(sessions[index - 1]?.pinned) && !sessions[index]?.pinned
 }
 
+/** Upper bound on how often the open-session tick re-measures during list churn. */
+const TICK_RECOMPUTE_THROTTLE_MS = 100
+
+/**
+ * Map the open session's row midpoint in the scroll content onto a 0..1 position
+ * on the session-list scroll rail. Returns null when a mark would lie: nothing
+ * overflows (no scrollbar), or the row has no laid-out height yet.
+ */
+export function computeOpenSessionTickRatio(input: {
+    scrollHeight: number
+    clientHeight: number
+    contentOffsetTop: number
+    targetHeight: number
+}): number | null {
+    const { scrollHeight, clientHeight, contentOffsetTop, targetHeight } = input
+    if (!(scrollHeight > 0) || !(clientHeight > 0)) return null
+    if (scrollHeight <= clientHeight) return null
+    if (!(targetHeight > 0)) return null
+    const ratio = (contentOffsetTop + targetHeight / 2) / scrollHeight
+    if (!Number.isFinite(ratio)) return null
+    return Math.min(1, Math.max(0, ratio))
+}
+
+export function shouldShowOpenSessionTick(input: {
+    selectedSessionId: string | null | undefined
+    rowFound: boolean
+    insideCollapsedPanel: boolean
+    tickRatio: number | null
+}): boolean {
+    if (!input.selectedSessionId) return false
+    if (!input.rowFound) return false
+    if (input.insideCollapsedPanel) return false
+    return input.tickRatio != null
+}
+
+/** True when the row sits inside a closed `.collapsible-panel` (group collapsed). */
+export function isSessionRowInsideCollapsedPanel(row: Element): boolean {
+    const panel = row.closest('.collapsible-panel')
+    return panel ? !panel.hasAttribute('data-open') : false
+}
+
+export function measureOpenSessionTickContentOffset(
+    container: HTMLElement,
+    row: HTMLElement
+): { contentOffsetTop: number; targetHeight: number } {
+    const containerRect = container.getBoundingClientRect()
+    const rowRect = row.getBoundingClientRect()
+    return {
+        contentOffsetTop: rowRect.top - containerRect.top + container.scrollTop,
+        targetHeight: rowRect.height,
+    }
+}
+
 export function SessionListSearch(props: {
+    searchRef?: (node: HTMLDivElement | null) => void
     value: string
     onChange: (value: string) => void
+    customStart?: string
+    customEnd?: string
+    sessionActivityDates?: ReadonlySet<string>
+    onDateRangeChange?: (start: string, end: string) => void
     expanded: boolean
     onExpandedChange: (expanded: boolean) => void
+    showDateFilter?: boolean
     searchMode?: 'metadata' | 'content'
     onSearchModeChange?: (mode: 'metadata' | 'content') => void
     searchMatchMode?: SessionSearchMode
@@ -869,13 +1002,107 @@ export function SessionListSearch(props: {
     const scopeButtonRef = useRef<HTMLButtonElement>(null)
     const scopeFue = useFue('session-list-search-scope')
 
+    const [datePickerOpen, setDatePickerOpen] = useState(false)
+    const dateButtonRef = useRef<HTMLButtonElement>(null)
+    const hasDateFilter = props.customStart !== undefined
+        && props.customEnd !== undefined
+        && props.sessionActivityDates !== undefined
+        && props.onDateRangeChange !== undefined
+    const hasDateRange = hasDateFilter && Boolean(props.customStart && props.customEnd)
+    const showDateFilter = props.showDateFilter !== false && hasDateFilter
+
     useEffect(() => {
         if (props.expanded) {
             inputRef.current?.focus()
         } else {
+            setDatePickerOpen(false)
             setSearchMatchModeOpen(false)
         }
     }, [props.expanded])
+
+    const returnDateFocus = () => {
+        if (props.expanded) {
+            inputRef.current?.focus()
+            return
+        }
+        dateButtonRef.current?.focus()
+    }
+
+    const renderDateButton = (variant: 'standalone' | 'embedded') => (
+        <div className={cn('shrink-0', variant === 'embedded' && 'flex items-stretch')}>
+            <button
+                ref={dateButtonRef}
+                type="button"
+                data-testid={variant === 'embedded'
+                    ? 'session-list-search-date-embedded'
+                    : 'session-list-search-date-standalone'}
+                data-toolbar-chrome=""
+                onClick={() => setDatePickerOpen(open => !open)}
+                className={cn(
+                    'relative flex shrink-0 items-center justify-center transition-colors',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] focus-visible:ring-inset',
+                    variant === 'standalone'
+                        ? cn(
+                            'min-h-[48px] min-w-[48px] rounded-full p-2',
+                            'hover:bg-[var(--app-subtle-bg)]',
+                            hasDateRange ? 'text-[var(--app-link)]' : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                        )
+                        : cn(
+                            'session-list-search-date-embedded min-h-[48px] min-w-[48px] border-l border-[var(--app-border)]',
+                            'hover:bg-[var(--app-subtle-bg)]',
+                            hasDateRange ? 'text-[var(--app-link)]' : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                        )
+                )}
+                title={hasDateRange
+                    ? props.customStart + ' - ' + props.customEnd
+                    : t('sessions.timeFilter.label')}
+                aria-label={hasDateRange
+                    ? t('sessions.timeFilter.label') + ': ' + props.customStart + ' - ' + props.customEnd
+                    : t('sessions.timeFilter.label')}
+                aria-expanded={datePickerOpen}
+            >
+                <CalendarIcon className="h-5 w-5 shrink-0" />
+                {hasDateRange ? (
+                    <span
+                        className={cn(
+                            'absolute h-1.5 w-1.5 rounded-full bg-[var(--app-link)]',
+                            variant === 'standalone' ? 'right-1 top-1' : 'right-1.5 top-1.5'
+                        )}
+                        aria-hidden="true"
+                    />
+                ) : null}
+            </button>
+        </div>
+    )
+
+    const datePicker = datePickerOpen ? (
+        <>
+            <button
+                type="button"
+                aria-label={t('sessions.timeFilter.close')}
+                className="fixed inset-0 z-20 cursor-default"
+                onClick={() => {
+                    setDatePickerOpen(false)
+                    returnDateFocus()
+                }}
+            />
+            <SessionDateRangePicker
+                start={props.customStart!}
+                end={props.customEnd!}
+                sessionActivityDates={props.sessionActivityDates!}
+                onChange={props.onDateRangeChange!}
+                onClear={() => {
+                    props.onDateRangeChange!('', '')
+                    returnDateFocus()
+                }}
+                onClose={() => {
+                    setDatePickerOpen(false)
+                    returnDateFocus()
+                }}
+                align={props.expanded ? 'right' : 'left'}
+            />
+        </>
+    ) : null
 
     const searchMode = props.searchMode ?? 'metadata'
     const searchMatchMode = props.searchMatchMode ?? 'default'
@@ -998,6 +1225,7 @@ export function SessionListSearch(props: {
             : 0
         return (
             <div
+                ref={props.searchRef}
                 data-testid="session-list-search"
                 data-expanded="false"
                 style={chromeFloor > 0 || reservedCap > 0
@@ -1069,12 +1297,17 @@ export function SessionListSearch(props: {
                         </button>
                     ) : null}
                 </div>
+
+                {showDateFilter ? renderDateButton('standalone') : null}
+                {showDateFilter ? datePicker : null}
+
             </div>
         )
     }
 
     return (
         <div
+            ref={props.searchRef}
             data-testid="session-list-search"
             data-expanded="true"
             className="relative min-w-0 flex-1"
@@ -1108,6 +1341,9 @@ export function SessionListSearch(props: {
                     title={searchLabel}
                     className="min-w-0 flex-1 appearance-none bg-transparent px-2 py-1.5 text-sm text-[var(--app-fg)] outline-none placeholder:text-[var(--app-hint)] [text-overflow:ellipsis] [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
                 />
+
+                {showDateFilter ? renderDateButton('embedded') : null}
+
                 {props.value ? (
                     <button
                         type="button"
@@ -1123,6 +1359,9 @@ export function SessionListSearch(props: {
                     </button>
                 ) : null}
             </div>
+
+            {showDateFilter ? datePicker : null}
+
         </div>
     )
 }
@@ -1165,11 +1404,13 @@ function CollapsiblePanel(props: { open: boolean; children: ReactNode }) {
     )
 }
 
-const SessionItem = memo(function SessionItem(props: {
+type SessionItemProps = {
     session: SessionSummary
     onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     showPath?: boolean
     api: ApiClient | null
+    features: FeaturesResponse | null
+    prNowMs: number
     titleSuggestionAvailable?: boolean
     selected?: boolean
     showDetailedStatus?: boolean
@@ -1181,14 +1422,28 @@ const SessionItem = memo(function SessionItem(props: {
     targetMessageId?: string
     targetMessageQuery?: string
     lastSeenVersion: number
-}) {
+    /** Stopped rows show the stop time they are ordered by (Active first). */
+    showStoppedTime?: boolean
+}
+
+function shallowEqualExcept<T extends object>(previous: T, next: T, ignored: keyof T): boolean {
+    if (previous === next) return true
+    const keys = Object.keys(previous) as Array<keyof T>
+    return keys.length === Object.keys(next).length
+        && keys.every(key => Object.hasOwn(next, key)
+            && (key === ignored || Object.is(previous[key], next[key])))
+}
+
+const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const { t } = useTranslation()
-    const { addToast } = useToast()
+    const addToast = useAddToast()
     const {
         session: s,
         onSelect,
         showPath = true,
         api,
+        features,
+        prNowMs,
         titleSuggestionAvailable = false,
         selected = false,
         showDetailedStatus = false,
@@ -1199,17 +1454,25 @@ const SessionItem = memo(function SessionItem(props: {
         contentSearchTruncated,
         targetMessageId,
         targetMessageQuery,
-        lastSeenVersion
+        lastSeenVersion,
+        showStoppedTime = false
     } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const [renameOpen, setRenameOpen] = useState(false)
+    const [linkPrOpen, setLinkPrOpen] = useState(false)
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
-    const [forkOpen, setForkOpen] = useState(false)
-    const [forkPending, setForkPending] = useState(false)
+    const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
+    const prChipDisplay = features?.prChipDisplay
+    const forkFlow = useForkFlow({
+        session: s,
+        api: api!,
+        onForked: (childSessionId) => onSelect(childSessionId)
+    })
+    const forkFlowOpen = forkFlow.flowOpen
     const pendingRequestPressedRef = useRef(false)
     const rowRef = useRef<HTMLDivElement>(null)
     const rowButtonRef = useRef<HTMLButtonElement>(null)
@@ -1240,14 +1503,14 @@ const SessionItem = memo(function SessionItem(props: {
         ? t('session.action.reopenCursorUnverified')
         : undefined
 
-    const { archiveSession, reopenSession, renameSession, suggestSessionTitle, updateSessionSummary, deleteSession, setPinMode, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, deleteSession, setPinMode, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
     )
     const [reopenError, setReopenError] = useState<string | null>(null)
     const holdPanel = useContext(CollapsiblePanelHoldContext)
-    const overlayOpen = menuOpen || renameOpen || exportOpen || archiveOpen || deleteOpen || forkOpen || reopenError !== null
+    const overlayOpen = menuOpen || renameOpen || linkPrOpen || exportOpen || archiveOpen || deleteOpen || forkFlowOpen || reopenError !== null
     useEffect(() => {
         if (!overlayOpen || !holdPanel) return
         holdPanel(true)
@@ -1424,6 +1687,18 @@ const SessionItem = memo(function SessionItem(props: {
         onSelect(s.id, undefined, undefined, pendingRequestId)
     }
     const sessionName = getSessionTitle(s)
+    const primaryPrRef = getPrimaryGithubPrRef(s.metadata?.externalRefs)
+    const linkedPr = useMemo(() => {
+        if (!githubPrAwarenessEnabled || !primaryPrRef) return null
+        const profile = prChipDisplay ?? DEFAULT_PR_CHIP_DISPLAY
+        const display = resolveGithubPrChipDisplay(primaryPrRef, profile, prNowMs)
+        const parts = formatGithubPrChipDetailParts(primaryPrRef, display, t)
+        return {
+            glyph: parts.glyph,
+            detail: parts.detail,
+            href: primaryPrRef.url
+        }
+    }, [githubPrAwarenessEnabled, primaryPrRef, prChipDisplay, prNowMs, t])
     const attention = useMemo(
         () => showDetailedStatus
             ? classifySessionAttention(s, {
@@ -1443,7 +1718,7 @@ const SessionItem = memo(function SessionItem(props: {
         <>
             <div
                 ref={rowRef}
-                className="session-list-row relative"
+                className="session-list-row relative flex w-full items-start"
                 data-session-row-id={s.id}
                 data-quick-action-count={quickActionCount > 0 ? quickActionCount : undefined}
                 data-quick-action-pending={quickArchivePending || quickUnpinPending ? '' : undefined}
@@ -1458,7 +1733,7 @@ const SessionItem = memo(function SessionItem(props: {
                             && event.target.closest('[data-session-pending-request-id]') !== null
                     }}
                     data-session-scroll-anchor
-                    className={`session-list-item group/session-row flex w-full flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
+                    className={`session-list-item group/session-row flex min-w-0 flex-1 flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
                     style={{ WebkitTouchCallout: 'none' }}
                     aria-current={selected ? 'page' : undefined}
                     aria-describedby={describedBy}
@@ -1472,14 +1747,35 @@ const SessionItem = memo(function SessionItem(props: {
                         attentionTooltipId={attentionId}
                         lastSeenVersion={lastSeenVersion}
                         scheduleTooltipId={scheduleId}
+                        githubPrAwarenessEnabled={githubPrAwarenessEnabled}
+                        showPrChip={!(githubPrAwarenessEnabled && primaryPrRef)}
+                        prChipDisplay={prChipDisplay}
+                        prNowMs={prNowMs}
                         inRunningSection={inRunningSection}
                         projectLabel={projectLabel}
                         machineLabel={machineLabel}
                         contentSnippet={contentSnippet}
                         contentSearchTruncated={contentSearchTruncated}
                         trailingClassName={hasQuickAction ? 'session-row-trailing' : undefined}
+                        showStoppedTime={showStoppedTime}
                     />
                 </button>
+                {githubPrAwarenessEnabled && primaryPrRef ? (
+                    <div
+                        data-testid="session-pr-chip-wrap"
+                        className="flex shrink-0 items-center self-start py-2 pr-2"
+                        style={hasQuickAction
+                            ? { paddingRight: 'calc(var(--session-row-action-span, 2rem) + 0.5rem)' }
+                            : undefined}
+                    >
+                        <SessionPrChip
+                            refs={s.metadata?.externalRefs}
+                            displayProfile={prChipDisplay}
+                            nowMs={prNowMs}
+                            interactive
+                        />
+                    </div>
+                ) : null}
                 {hasQuickAction ? (
                     <div className="session-row-quick-action absolute right-1 top-1.5 items-center gap-0.5">
                         {showQuickUnpin ? (
@@ -1524,10 +1820,12 @@ const SessionItem = memo(function SessionItem(props: {
                 sessionGlobalPinned={Boolean(s.globalPinned)}
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
                 onRename={() => setRenameOpen(true)}
+                onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
+                linkedPr={linkedPr}
                 onExport={() => setExportOpen(true)}
                 onMarkUnread={() => markSessionUnread(s.id, s.readState)}
                 onForkSession={api && ((supportsCurrentFork && (!s.thinking || supportsCompletedFork)) || supportsArchivedFork)
-                    ? () => setForkOpen(true)
+                    ? () => forkFlow.openFork()
                     : undefined}
                 forkDisabledReason={forkDisabledReason}
                 onArchive={() => setArchiveOpen(true)}
@@ -1538,28 +1836,48 @@ const SessionItem = memo(function SessionItem(props: {
                 anchorPoint={menuAnchorPoint}
             />
 
-            {forkOpen ? (
+            {forkFlow.preview ? (
+                <ForkPreviewDialog
+                    isOpen
+                    view={forkFlow.preview.view}
+                    prefixMayHaveMore={forkFlow.preview.view.prefixTruncated}
+                    stale={forkFlow.stale}
+                    loading={forkFlow.loading}
+                    onCancel={forkFlow.closePreview}
+                    onConfirm={forkFlow.confirmPreview}
+                />
+            ) : null}
+
+            {forkFlow.legacyFallback ? (
                 <ConfirmDialog
                     isOpen={true}
-                    onClose={() => { if (!forkPending) setForkOpen(false) }}
+                    onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
                     title={t('dialog.sessionFork.title')}
                     description={t(s.thinking && supportsCompletedFork ? 'dialog.sessionFork.completedDescription' : 'dialog.sessionFork.description')}
                     confirmLabel={t('dialog.sessionFork.confirm')}
                     confirmingLabel={t('dialog.sessionFork.confirming')}
-                    isPending={forkPending}
+                    isPending={forkFlow.confirming}
                     destructive
                     centerTitle
+                    onConfirm={forkFlow.confirmLegacy}
+                />
+            ) : null}
+
+            {forkFlow.errorMessage && !forkFlow.preview ? (
+                <ConfirmDialog
+                    isOpen={true}
+                    onClose={forkFlow.closePreview}
+                    title={t('dialog.sessionFork.title')}
+                    description={forkFlow.errorMessage}
+                    confirmLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                    confirmingLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                    isPending={forkFlow.loading}
+                    hideCancel
+                    keepOpenAfterConfirm={forkFlow.errorWasConnectFailure}
+                    centerTitle
                     onConfirm={async () => {
-                        if (!api) return
-                        setForkPending(true)
-                        try {
-                            const result = s.thinking && supportsCompletedFork
-                                ? await api.forkConversation(s.id, undefined, true)
-                                : await api.forkConversation(s.id)
-                            onSelect(result.sessionId)
-                        } finally {
-                            setForkPending(false)
-                        }
+                        if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
+                        else forkFlow.closePreview()
                     }}
                 />
             ) : null}
@@ -1591,6 +1909,15 @@ const SessionItem = memo(function SessionItem(props: {
                     isPending={isPending}
                 />
             ) : null}
+
+            <LinkPrDialog
+                isOpen={linkPrOpen}
+                onClose={() => setLinkPrOpen(false)}
+                currentPrimaryLabel={primaryPrRef ? `${primaryPrRef.repo}#${primaryPrRef.number}` : null}
+                onUpsert={upsertExternalRef}
+                onRemovePrimary={primaryPrRef ? removePrimaryExternalRef : undefined}
+                isPending={isPending}
+            />
 
             {exportOpen ? (
                 <SessionExportDialog
@@ -1625,7 +1952,11 @@ const SessionItem = memo(function SessionItem(props: {
             ) : null}
         </>
     )
-})
+}, (previous, next) =>
+    shallowEqualExcept(previous, next, 'session')
+    // The watermark orders REST and SSE updates in the cache. The row renders the job value.
+    && shallowEqualExcept(previous.session, next.session, 'attachedJobUpdatedAt')
+)
 
 type PullToRefreshState = 'idle' | 'pulling' | 'ready'
 
@@ -1688,11 +2019,35 @@ export function SessionList(props: {
         machinesById = {},
         onNewSessionInDirectory
     } = props
+    const { features } = useFeatures(api)
+    const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
+    const prClockTick = useMinuteTick(githubPrAwarenessEnabled)
+    // Stable between minute ticks so memoized SessionItem rows do not
+    // remount on unrelated SSE updates when awareness is off (or mid-minute).
+    const prNowMs = useMemo(
+        () => (githubPrAwarenessEnabled ? Date.now() : 0),
+        [prClockTick, githubPrAwarenessEnabled]
+    )
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { view: listView, setView: setListView } = useSessionListView()
     const listComparator = useMemo(() => createSessionComparator(listView), [listView])
     const lastSeenVersion = useSessionLastSeenVersion()
+
+    // Date, scratchlist, active, and working are transient; unread uses the
+    // upstream view store. showActiveOnly is deliberately independent of
+    // listView.status (persisted, backs the Settings "Active sessions only"
+    // toggle) — #2002 wants a temporary scan, not another write path onto
+    // that saved preference.
+    const [showScratchlistOnly, setShowScratchlistOnly] = useState(false)
+    const [showActiveOnly, setShowActiveOnly] = useState(false)
+    const [showWorkingOnly, setShowWorkingOnly] = useState(false)
+    const {
+        sessionIds: scratchlistSessionIds,
+        isLoading: isScratchlistStatusLoading,
+        error: scratchlistStatusError,
+        refetch: refetchScratchlistSessionIds
+    } = useScratchlistSessionIds(api, showScratchlistOnly)
     // Unread rows stay visible without a filter: collapsed project groups still
     // show them, and the preview limit never hides them.
     const isSessionUnread = useCallback(
@@ -1718,6 +2073,8 @@ export function SessionList(props: {
     const [contentSearchLoading, setContentSearchLoading] = useState(false)
     const [contentSearchError, setContentSearchError] = useState(false)
     const [searchExpanded, setSearchExpanded] = useState(false)
+    const [customStart, setCustomStart] = useState('')
+    const [customEnd, setCustomEnd] = useState('')
     const [markAllReadOpen, setMarkAllReadOpen] = useState(false)
     const quickUnpinFocusRef = useRef<QuickUnpinFocusTarget | null>(null)
     // Actions-box width is the real icon budget (#2039). Measuring the full
@@ -1725,21 +2082,91 @@ export function SessionList(props: {
     const headerRowRef = useRef<HTMLDivElement>(null)
     const headerActionsRef = useRef<HTMLDivElement>(null)
     const toolbarMeasureRef = useRef<HTMLDivElement>(null)
-    const machineMenuRef = useRef<HTMLDivElement>(null)
     const actionsObserverRef = useRef<ResizeObserver | null>(null)
     const [headerRowWidth, setHeaderRowWidth] = useState(0)
     const [toolbarSlotWidths, setToolbarSlotWidths] = useState<Record<string, number>>({})
-    const [toolbarChrome, setToolbarChrome] = useState({ morePx: TOOLBAR_MORE_PX, gapPx: TOOLBAR_GAP_PX, machinePx: 0 })
+    const [toolbarChrome, setToolbarChrome] = useState({ morePx: TOOLBAR_MORE_PX, gapPx: TOOLBAR_GAP_PX })
     const [searchChromePx, setSearchChromePx] = useState(0)
     const [searchMaxPx, setSearchMaxPx] = useState(0)
     // jsdom reports clientWidth 0; the row observer publishes the stubbed width.
     const [toolbarRowBoxPx, setToolbarRowBoxPx] = useState(0)
+
+    const searchChromeDirtyRef = useRef(true)
+    const prevSearchExpandedRef = useRef(searchExpanded)
+    const prevHasQueryRef = useRef(searchQuery.length > 0)
+    const [, bumpSearchChromeTick] = useState(0)
+    const searchNodeRef = useRef<HTMLElement | null>(null)
+    const searchMutationObserverRef = useRef<MutationObserver | null>(null)
+    const observedChromePartsRef = useRef<Set<HTMLElement>>(new Set())
+    const searchElementSizesRef = useRef<WeakMap<Element, { width: number; height: number }>>(new WeakMap())
+
+    const syncSearchChromeObservers = useCallback((search: HTMLElement | null) => {
+        if (typeof ResizeObserver === 'undefined') {
+            searchMutationObserverRef.current?.disconnect()
+            searchMutationObserverRef.current = null
+            return
+        }
+        const ro = actionsObserverRef.current
+        const prevSearch = searchNodeRef.current
+        if (prevSearch && prevSearch !== search) {
+            if (ro) {
+                ro.unobserve(prevSearch)
+                for (const el of observedChromePartsRef.current) ro.unobserve(el)
+            }
+            observedChromePartsRef.current.clear()
+            searchMutationObserverRef.current?.disconnect()
+            searchMutationObserverRef.current = null
+        }
+        searchNodeRef.current = search
+        if (!search) {
+            return
+        }
+        if (ro) {
+            ro.observe(search)
+            const currentParts = new Set(search.querySelectorAll<HTMLElement>('[data-toolbar-chrome]'))
+            for (const el of observedChromePartsRef.current) {
+                if (!currentParts.has(el)) {
+                    ro.unobserve(el)
+                    observedChromePartsRef.current.delete(el)
+                }
+            }
+            for (const el of currentParts) {
+                if (!observedChromePartsRef.current.has(el)) {
+                    ro.observe(el)
+                    observedChromePartsRef.current.add(el)
+                }
+            }
+        }
+        if (typeof MutationObserver !== 'undefined' && !searchMutationObserverRef.current) {
+            const mo = new MutationObserver(() => {
+                if (search.dataset.expanded === 'true') {
+                    return
+                }
+                const currentParts = new Set(search.querySelectorAll<HTMLElement>('[data-toolbar-chrome]'))
+                const partsChanged = currentParts.size !== observedChromePartsRef.current.size
+                    || [...currentParts].some((el) => !observedChromePartsRef.current.has(el))
+                if (!partsChanged) return
+                syncSearchChromeObservers(search)
+                searchChromeDirtyRef.current = true
+                bumpSearchChromeTick((v) => v + 1)
+            })
+            mo.observe(search, { childList: true, subtree: true })
+            searchMutationObserverRef.current = mo
+        }
+    }, [])
+
+    const setSearchNode = useCallback((node: HTMLDivElement | null) => {
+        syncSearchChromeObservers(node)
+        searchChromeDirtyRef.current = true
+    }, [syncSearchChromeObservers])
+
     // Search expand unmounts the actions box. A callback ref re-observes the
     // new node when search collapses; an effect keyed only on showHeaderRow does not.
     const setHeaderActionsNode = useCallback((node: HTMLDivElement | null) => {
         headerActionsRef.current = node
         actionsObserverRef.current?.disconnect()
         actionsObserverRef.current = null
+        observedChromePartsRef.current.clear()
         // Search expand unmounts this node — keep the last positive width so
         // we do not fall back to a permissive unmeasured budget mid-cycle.
         if (!node || typeof ResizeObserver === 'undefined') return
@@ -1753,6 +2180,7 @@ export function SessionList(props: {
         const ro = new ResizeObserver((entries) => {
             let actionsWidth = 0
             let sawActions = false
+            let sawSearch = false
             for (const entry of entries) {
                 const target = entry.target
                 const reported = entry.contentRect.width ?? 0
@@ -1765,17 +2193,38 @@ export function SessionList(props: {
                     sawActions = true
                     actionsWidth = width
                 }
+                if (target instanceof HTMLElement && (target.dataset.testid === 'session-list-search' || target.hasAttribute('data-toolbar-chrome'))) {
+                    const isExpanded = target.dataset.expanded === 'true'
+                        || target.closest('[data-testid="session-list-search"]')?.getAttribute('data-expanded') === 'true'
+                    if (isExpanded) continue
+                    const prev = searchElementSizesRef.current.get(target)
+                    const reportedW = entry.contentRect.width ?? 0
+                    const targetW = target.offsetWidth || target.clientWidth || (Number.parseFloat(target.style.minWidth) || reportedW)
+                    if (!prev || Math.abs(prev.width - targetW) >= 0.5) {
+                        sawSearch = true
+                        searchElementSizesRef.current.set(target, { width: targetW, height: 0 })
+                    }
+                }
             }
             if (sawActions) publishActions(actionsWidth)
+            if (sawSearch) {
+                searchChromeDirtyRef.current = true
+                bumpSearchChromeTick((v) => v + 1)
+            }
         })
         ro.observe(node)
         const row = headerRowRef.current
         if (row && row !== node) ro.observe(row)
         actionsObserverRef.current = ro
+        const search = searchNodeRef.current ?? headerRowRef.current?.querySelector<HTMLElement>('[data-testid="session-list-search"]') ?? null
+        syncSearchChromeObservers(search)
         publishActions(node.clientWidth || node.getBoundingClientRect().width)
-    }, [])
+    }, [syncSearchChromeObservers])
     const normalizedQuery = normalizeSearch(searchQuery)
-    const isFiltering = normalizedQuery.length > 0
+    const timeRange = getSessionTimeRange(customStart, customEnd)
+    const isSearchFiltering = normalizedQuery.length > 0 || timeRange !== null
+    const isFiltering = isSearchFiltering || listView.unreadOnly || showScratchlistOnly || showActiveOnly || showWorkingOnly
+
     const contentSearchActive = searchMode === 'content' && normalizedQuery.length > 0
     const contentSearchReady = contentSearchActive
         && Array.from(normalizedQuery).length >= MIN_CONTENT_SEARCH_QUERY_LENGTH
@@ -1803,27 +2252,33 @@ export function SessionList(props: {
         () => props.sessions.filter(session => shouldShowSessionInSidebar(session, selectedSessionId)),
         [props.sessions, selectedSessionId]
     )
+    // Keep status filtering separate from the unread lens. Machine choices are
+    // derived from this set, so selecting a machine with no unread matches must
+    // stay an empty intersection instead of falling back to another machine.
     const allSessions = useMemo(
-        () => {
-            // Jobs-aware status filter (#1404), then optional Unread-only (#2294).
-            const byStatus = filterSessionsForListStatus(sidebarSessions, listView.status, selectedSessionId)
-            return listView.unreadOnly
-                ? filterUnreadSessionsOnly(byStatus, isSessionUnread, selectedSessionId)
-                : byStatus
-        },
-        [sidebarSessions, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread]
+        () => filterSessionsForListStatus(sidebarSessions, listView.status, selectedSessionId),
+        [sidebarSessions, selectedSessionId, listView.status]
     )
     const unreadSessionCount = useMemo(
         () => getUnreadSessionCount(readableSessions),
         [lastSeenVersion, readableSessions]
     )
+    const sessionActivityDates = useMemo(
+        () => new Set(allSessions.map(session => formatDateValue(new Date(session.updatedAt)))),
+        [allSessions]
+    )
     const hasTextQuery = normalizedQuery.length > 0 && !contentSearchActive
+    const timeScopedSessions = useMemo(
+        () => timeRange === null
+            ? allSessions
+            : allSessions.filter(session => sessionMatchesTimeRange(session, timeRange, selectedSessionId)),
+        [allSessions, selectedSessionId, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
+    )
     const searchScoreIndex = useMemo(
-
         () => searchMatchMode === 'default' && hasTextQuery
-            ? buildSessionSearchScoreIndex(allSessions, normalizedQuery, resolveMachineLabel)
+            ? buildSessionSearchScoreIndex(timeScopedSessions, normalizedQuery, resolveMachineLabel)
             : null,
-        [hasTextQuery, searchMatchMode, allSessions, normalizedQuery, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
+        [hasTextQuery, searchMatchMode, timeScopedSessions, normalizedQuery, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const visibleSessions = useMemo(
         () => {
@@ -1831,21 +2286,22 @@ export function SessionList(props: {
                 const results = contentSearchResponse?.results.map((result) => result.session) ?? []
                 const prepared = prepareSidebarSessions(results, selectedSessionId)
                 const byStatus = filterSessionsForListStatus(prepared, listView.status, selectedSessionId)
-                return listView.unreadOnly
+                const unreadFiltered = listView.unreadOnly
                     ? filterUnreadSessionsOnly(byStatus, isSessionUnread, selectedSessionId)
                     : byStatus
+                return unreadFiltered.filter(session => sessionMatchesTimeRange(session, timeRange, selectedSessionId))
             }
             if (!isFiltering) return allSessions
             const matched = searchMatchMode === 'exclude'
-                ? allSessions.filter(session => sessionMatchesSearchMode(
+                ? timeScopedSessions.filter(session => sessionMatchesSearchMode(
                     session,
                     normalizedQuery,
                     resolveMachineLabel(session.metadata?.machineId ?? null),
                     'exclude'
                 ))
                 : searchScoreIndex
-                    ? allSessions.filter(session => searchScoreIndex.matchedIds.has(session.id))
-                    : allSessions.filter(session => sessionMatchesQuery(
+                    ? timeScopedSessions.filter(session => searchScoreIndex.matchedIds.has(session.id))
+                    : timeScopedSessions.filter(session => sessionMatchesQuery(
                         session,
                         normalizedQuery,
                         resolveMachineLabel(session.metadata?.machineId ?? null)
@@ -1855,7 +2311,7 @@ export function SessionList(props: {
             }
             return matched
         },
-        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchMatchMode, searchScoreIndex, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
+        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchMatchMode, searchScoreIndex, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread, machineLabelsById, timeScopedSessions, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const contentSnippetBySessionId = useMemo(() => {
         const snippets = new Map<string, string>()
@@ -1930,14 +2386,47 @@ export function SessionList(props: {
         && machineFilters.some(mg => (mg.machineId ?? UNKNOWN_MACHINE_ID) === machineFilter)
         ? machineFilter
         : null
-    const contentSearchCandidateSessions = useMemo(
-        () => activeMachineFilter === null
-            ? allSessions
-            : allSessions.filter(session =>
+
+    const contentSearchCandidateSessions = useMemo(() => {
+        let filtered = allSessions.filter(session => sessionMatchesTimeRange(session, timeRange, selectedSessionId))
+        if (listView.unreadOnly) {
+            filtered = filterUnreadSessionsOnly(
+                filtered,
+                isSessionUnread,
+                selectedSessionId
+            )
+        }
+        if (showActiveOnly) {
+            filtered = filterActiveSessionsOnly(filtered, selectedSessionId)
+        }
+        if (showWorkingOnly) {
+            filtered = filterWorkingSessionsOnly(filtered, selectedSessionId)
+        }
+        if (showScratchlistOnly) {
+            if (isScratchlistStatusLoading || scratchlistStatusError) return []
+            filtered = filterScratchlistSessionsOnly(filtered, selectedSessionId, scratchlistSessionIds)
+        }
+        return activeMachineFilter === null
+            ? filtered
+            : filtered.filter(session =>
                 (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === activeMachineFilter
-            ),
-        [allSessions, activeMachineFilter]
-    )
+            )
+    }, [
+        allSessions,
+        activeMachineFilter,
+        isScratchlistStatusLoading,
+        lastSeenVersion,
+        scratchlistSessionIds,
+        scratchlistStatusError,
+        selectedSessionId,
+        showScratchlistOnly,
+        showActiveOnly,
+        showWorkingOnly,
+        listView.unreadOnly,
+        timeRange?.start,
+        timeRange?.end
+    ])
+
     const contentSearchSessionIds = useMemo(
         () => contentSearchCandidateSessions.map(session => session.id),
         [contentSearchCandidateSessions]
@@ -1991,13 +2480,56 @@ export function SessionList(props: {
         }
     }, [api, contentSearchReady, contentSearchSessionIds, normalizedQuery])
 
+
+    // Apply the session lens after search/time and before machine scope — so
+    // machineFilters (from allSessions) stay stable. Filtering into allSessions
+    // would drop machines with zero matching sessions and clear a persisted
+    // machine selection.
+    const sessionFilteredSessions = useMemo(() => {
+        let filtered = listView.unreadOnly
+            ? filterUnreadSessionsOnly(visibleSessions, isSessionUnread, selectedSessionId)
+            : visibleSessions
+        // Active and Working are AND-composed with the other lenses (#2002).
+        // Both are ephemeral, independent of the persisted listView.status
+        // ("Active sessions only" in Settings) — a temporary scan should not
+        // read or write that saved preference.
+        if (showActiveOnly) {
+            filtered = filterActiveSessionsOnly(filtered, selectedSessionId)
+        }
+        if (showWorkingOnly) {
+            filtered = filterWorkingSessionsOnly(filtered, selectedSessionId)
+        }
+        if (showScratchlistOnly) {
+            if (isScratchlistStatusLoading || scratchlistStatusError) {
+                return []
+            }
+            filtered = filterScratchlistSessionsOnly(
+                filtered,
+                selectedSessionId,
+                scratchlistSessionIds
+            )
+        }
+        return filtered
+    }, [
+        isScratchlistStatusLoading,
+        lastSeenVersion,
+        scratchlistSessionIds,
+        scratchlistStatusError,
+        selectedSessionId,
+        showScratchlistOnly,
+        showActiveOnly,
+        showWorkingOnly,
+        listView.unreadOnly,
+        visibleSessions
+    ])
     const machineFilteredSessions = useMemo(
         () => activeMachineFilter === null
-            ? visibleSessions
-            : visibleSessions.filter(session =>
+            ? sessionFilteredSessions
+            : sessionFilteredSessions.filter(session =>
                 (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === activeMachineFilter
             ),
-        [visibleSessions, activeMachineFilter]
+        [sessionFilteredSessions, activeMachineFilter]
+
     )
     const globalPinnedSessions = useMemo(() => {
         const pinned = machineFilteredSessions.filter((session) => Boolean(session.globalPinned))
@@ -2015,6 +2547,10 @@ export function SessionList(props: {
         }
         return bucketRunningSessions(machineFilteredSessions, effectivePinInProgressMode, byRelevanceOrRecent)
     }, [machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
+    // Stopped rows show their stop time only where the list orders them by it:
+    // Active first, and no text query (which orders rows by relevance or, for
+    // project rows in either search mode, by the legacy comparator).
+    const stoppedTimeShown = listView.activeFirst && !hasTextQuery
     const runningSessionTotal = runningSessions.jobs.length
         + runningSessions.working.length
         + runningSessions.pending.length
@@ -2044,8 +2580,10 @@ export function SessionList(props: {
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
     // stay available (no rows to group, but the project itself is live).
+
     // Based on the same machineFilteredSessions set as `groups` so the machine
     // filter stays consistent.
+
     const allDirectoryGroups = useMemo(
         () => groupSessionsByDirectory(
             machineFilteredSessions.filter((session) => !session.globalPinned),
@@ -2240,6 +2778,8 @@ export function SessionList(props: {
                                             onSelect={props.onSelect}
                                             showPath={false}
                                             api={api}
+                                            features={features}
+                                            prNowMs={prNowMs}
                                             titleSuggestionAvailable={titleSuggestionAvailable}
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
@@ -2253,6 +2793,7 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}
                                 </div>
@@ -2320,6 +2861,8 @@ export function SessionList(props: {
             onSelect={props.onSelect}
             showPath={false}
             api={api}
+            features={features}
+            prNowMs={prNowMs}
             titleSuggestionAvailable={titleSuggestionAvailable}
             selected={s.id === selectedSessionId}
             showDetailedStatus={showDetailedStatus}
@@ -2328,6 +2871,7 @@ export function SessionList(props: {
             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
             lastSeenVersion={lastSeenVersion}
+            showStoppedTime={stoppedTimeShown}
         />
     )
 
@@ -2606,16 +3150,37 @@ export function SessionList(props: {
     }, [showSearch])
 
     const showHeaderRow = showSearch || renderHeader || Boolean(props.headerActions) || Boolean(props.toolbarExtras?.length)
+    const sessionListRef = useRef<HTMLDivElement>(null)
 
     useEffect(() => () => {
         actionsObserverRef.current?.disconnect()
+        searchMutationObserverRef.current?.disconnect()
     }, [])
+
     useLayoutEffect(() => {
+        const hasQuery = searchQuery.length > 0
+        if (prevSearchExpandedRef.current !== searchExpanded || prevHasQueryRef.current !== hasQuery) {
+            prevSearchExpandedRef.current = searchExpanded
+            prevHasQueryRef.current = hasQuery
+            searchChromeDirtyRef.current = true
+            const searchNode = headerRowRef.current?.querySelector<HTMLElement>('[data-testid="session-list-search"]') ?? null
+            syncSearchChromeObservers(searchNode)
+        }
         const search = headerRowRef.current?.querySelector<HTMLElement>('[data-testid="session-list-search"]')
-        const nextChrome = search && search.dataset.expanded !== 'true'
-            ? measureSearchChrome(search)
-            : 0
-        setSearchChromePx((previous) => previous === nextChrome ? previous : nextChrome)
+        if (searchChromeDirtyRef.current || typeof ResizeObserver === 'undefined') {
+            searchChromeDirtyRef.current = false
+            const hasRO = typeof ResizeObserver !== 'undefined'
+            const nextChrome = search && search.dataset.expanded !== 'true'
+                ? measureSearchChrome(search, hasRO ? (el, width) => {
+                    searchElementSizesRef.current.set(el, { width, height: 0 })
+                } : undefined)
+                : 0
+            if (hasRO && search && search.dataset.expanded !== 'true') {
+                const searchWidth = search.offsetWidth || search.clientWidth || (Number.parseFloat(search.style.minWidth) || nextChrome)
+                searchElementSizesRef.current.set(search, { width: searchWidth, height: 0 })
+            }
+            setSearchChromePx((previous) => previous === nextChrome ? previous : nextChrome)
+        }
         const root = toolbarMeasureRef.current
         if (!root) return
         const next: Record<string, number> = {}
@@ -2637,14 +3202,12 @@ export function SessionList(props: {
         const parsedGap = Number.parseFloat(getComputedStyle(root).columnGap)
         const morePx = moreNode && moreNode.offsetWidth > 0 ? moreNode.offsetWidth : TOOLBAR_MORE_PX
         const gapPx = Number.isFinite(parsedGap) && parsedGap > 0 ? parsedGap : TOOLBAR_GAP_PX
-        const machinePx = machineMenuRef.current?.offsetWidth ?? 0
         setToolbarChrome((previous) => (
-            previous.morePx === morePx && previous.gapPx === gapPx && previous.machinePx === machinePx
+            previous.morePx === morePx && previous.gapPx === gapPx
                 ? previous
-                : { morePx, gapPx, machinePx }
+                : { morePx, gapPx }
         ))
-        // Search may use a 9rem chip. Reserve padding + gap + visible machine
-        // menu + More so that chip cannot eat the trailing controls (#2040).
+        // Reserve padding + gap + More so search cannot eat the trailing controls (#2040).
         const row = headerRowRef.current
         const rowBox = row && row.clientWidth > 0 ? row.clientWidth : toolbarRowBoxPx
         const rowStyle = row ? getComputedStyle(row) : null
@@ -2652,7 +3215,6 @@ export function SessionList(props: {
             ? (Number.parseFloat(rowStyle.paddingLeft) || 0) + (Number.parseFloat(rowStyle.paddingRight) || 0)
             : 0
         const trailing = gapPx
-            + (machinePx > 0 ? machinePx + gapPx : 0)
             + morePx
         const nextSearchMax = rowBox > 0 ? Math.max(0, rowBox - rowPad - trailing) : 0
         setSearchMaxPx((previous) => previous === nextSearchMax ? previous : nextSearchMax)
@@ -2668,9 +3230,106 @@ export function SessionList(props: {
     const [isRefreshing, setIsRefreshing] = useState(false)
     const isRefreshingRef = useRef(false)
     const onRefreshRef = useRef(props.onRefresh)
+    const scratchlistFilterEnabledRef = useRef(showScratchlistOnly)
+    const refetchScratchlistSessionIdsRef = useRef(refetchScratchlistSessionIds)
     useEffect(() => {
         onRefreshRef.current = props.onRefresh
-    }, [props.onRefresh])
+        scratchlistFilterEnabledRef.current = showScratchlistOnly
+        refetchScratchlistSessionIdsRef.current = refetchScratchlistSessionIds
+    }, [props.onRefresh, refetchScratchlistSessionIds, showScratchlistOnly])
+
+    // Visual-only tick on the session-list scroll rail showing where the open
+    // session sits in the whole list. The mark is not a button — you drag the
+    // native scrollbar to it. Hidden when the row is filtered out or collapsed
+    // away so it never points somewhere wrong.
+    const [openSessionTickRatio, setOpenSessionTickRatio] = useState<number | null>(null)
+    useEffect(() => {
+        const container = scrollContainerRef.current
+        if (!container || !selectedSessionId) {
+            setOpenSessionTickRatio(null)
+            return
+        }
+
+        let frame = 0
+        let throttle: ReturnType<typeof setTimeout> | undefined
+        let measuredAt = 0
+
+        const measureTick = () => {
+            cancelAnimationFrame(frame)
+            frame = requestAnimationFrame(() => {
+                measuredAt = Date.now()
+                // `aria-current="page"` marks the open row; measure the whole
+                // list item it belongs to, not just whichever node carries it.
+                const marked = container.querySelector<HTMLElement>('[aria-current="page"]')
+                const row = marked?.closest<HTMLElement>('.session-list-item') ?? marked
+                const insideCollapsedPanel = row ? isSessionRowInsideCollapsedPanel(row) : false
+                const tickRatio = row && !insideCollapsedPanel
+                    ? computeOpenSessionTickRatio({
+                        scrollHeight: container.scrollHeight,
+                        clientHeight: container.clientHeight,
+                        ...measureOpenSessionTickContentOffset(container, row),
+                    })
+                    : null
+                const visible = shouldShowOpenSessionTick({
+                    selectedSessionId,
+                    rowFound: Boolean(row),
+                    insideCollapsedPanel,
+                    tickRatio,
+                })
+                setOpenSessionTickRatio(visible ? tickRatio : null)
+            })
+        }
+
+        // Sidebar churn is chatty — rows reorder as sessions update, badges and
+        // spinners mount — and each measurement reads layout. The mark only has
+        // to look right, not be frame-exact, so coalesce bursts to ~10/s. The
+        // first measurement and the transition handler still run promptly.
+        const updateTick = () => {
+            if (throttle !== undefined) return
+            throttle = setTimeout(() => {
+                throttle = undefined
+                measureTick()
+            }, Math.max(0, TICK_RECOMPUTE_THROTTLE_MS - (Date.now() - measuredAt)))
+        }
+
+        measureTick()
+
+        // Sections animate `grid-template-rows` for 250ms (see `.collapsible-panel`),
+        // so the scroll container's own box never changes while a group above the
+        // open row collapses — only the scrolled content grows or shrinks. Observe
+        // the content element as well, and recompute once the transition lands, so
+        // the tick settles on the final layout instead of an intermediate frame.
+        // Observing the container also covers viewport resizes: the sidebar is
+        // flex-sized, so a window resize changes its box (or rewraps the content).
+        const content = container.firstElementChild
+        const resizeObserver = typeof ResizeObserver !== 'undefined'
+            ? new ResizeObserver(updateTick)
+            : null
+        resizeObserver?.observe(container)
+        if (content instanceof HTMLElement) {
+            resizeObserver?.observe(content)
+        }
+        const mutationObserver = typeof MutationObserver !== 'undefined'
+            ? new MutationObserver(updateTick)
+            : null
+        mutationObserver?.observe(container, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['data-open'],
+        })
+        const handleTransitionEnd = (event: TransitionEvent) => {
+            if (event.propertyName === 'grid-template-rows') measureTick()
+        }
+        container.addEventListener('transitionend', handleTransitionEnd)
+        return () => {
+            cancelAnimationFrame(frame)
+            clearTimeout(throttle)
+            resizeObserver?.disconnect()
+            mutationObserver?.disconnect()
+            container.removeEventListener('transitionend', handleTransitionEnd)
+        }
+    }, [selectedSessionId])
 
     useEffect(() => {
         const container = scrollContainerRef.current
@@ -2692,7 +3351,11 @@ export function SessionList(props: {
             }
             isRefreshingRef.current = true
             setIsRefreshing(true)
-            void Promise.resolve(onRefreshRef.current()).finally(() => {
+            const refreshes = [Promise.resolve(onRefreshRef.current())]
+            if (scratchlistFilterEnabledRef.current) {
+                refreshes.push(refetchScratchlistSessionIdsRef.current())
+            }
+            void Promise.all(refreshes).finally(() => {
                 isRefreshingRef.current = false
                 setIsRefreshing(false)
             })
@@ -2749,7 +3412,7 @@ export function SessionList(props: {
     }, [])
 
     return (
-        <div className="flex min-h-0 w-full flex-1 flex-col">
+        <div ref={sessionListRef} className="flex min-h-0 w-full flex-1 flex-col">
             <div className="session-list-scrollbar-offset mx-auto w-full max-w-content shrink-0">
             {showHeaderRow ? (
                 // One toolbar row always. Never flex-wrap: wrapping burned a whole
@@ -2763,10 +3426,19 @@ export function SessionList(props: {
                 >
                     {showSearch ? (
                         <SessionListSearch
+                            searchRef={setSearchNode}
                             value={searchQuery}
                             onChange={setSearchQuery}
                             expanded={searchExpanded}
                             onExpandedChange={setSearchExpanded}
+                            customStart={customStart}
+                            customEnd={customEnd}
+                            sessionActivityDates={sessionActivityDates}
+                            onDateRangeChange={(start, end) => {
+                                setCustomStart(start)
+                                setCustomEnd(end)
+                            }}
+                            showDateFilter={false}
                             searchMode={searchMode}
                             onSearchModeChange={setSearchMode}
                             searchMatchMode={searchMatchMode}
@@ -2789,9 +3461,6 @@ export function SessionList(props: {
                                 // Shed one control at a time, highest keep first.
                                 // Do not ml-auto a lone ⋯ across empty space, and do
                                 // not fold the whole row at a single width gate (#2039).
-                                const machineAndGap = toolbarChrome.machinePx > 0
-                                    ? toolbarChrome.machinePx + toolbarChrome.gapPx
-                                    : 0
                                 // Prefer the flex allocation. It tracks the row, not the
                                 // icons already on it. If they all fit, More is empty.
                                 const allocated = headerActionsRef.current?.clientWidth ?? 0
@@ -2801,7 +3470,7 @@ export function SessionList(props: {
                                         ? headerRowWidth
                                         : 0
                                 const budget = gutter > 0
-                                    ? Math.max(0, gutter - machineAndGap)
+                                    ? gutter
                                     : toolbarActionBudget(0, searchQuery.length > 0)
                                 const slotWidth = (id: string, fallback: number) => {
                                     const measured = toolbarSlotWidths[id] ?? 0
@@ -2816,10 +3485,37 @@ export function SessionList(props: {
                                         <SessionListViewMenu
                                             view={listView}
                                             onChange={setListView}
-                                            onReset={() => setListView(DEFAULT_SESSION_LIST_VIEW)}
+                                            onReset={() => {
+                                                setListView(DEFAULT_SESSION_LIST_VIEW)
+                                                setShowScratchlistOnly(false)
+                                                setShowActiveOnly(false)
+                                                setShowWorkingOnly(false)
+                                                setCustomStart('')
+                                                setCustomEnd('')
+                                                setMachineFilter(null)
+                                            }}
+                                            scratchlistOnly={showScratchlistOnly}
+                                            onScratchlistChange={setShowScratchlistOnly}
+                                            activeOnly={showActiveOnly}
+                                            onActiveChange={setShowActiveOnly}
+                                            workingOnly={showWorkingOnly}
+                                            onWorkingChange={setShowWorkingOnly}
+                                            customStart={customStart}
+                                            customEnd={customEnd}
+                                            sessionActivityDates={sessionActivityDates}
+                                            onDateRangeChange={(start, end) => {
+                                                setCustomStart(start)
+                                                setCustomEnd(end)
+                                            }}
+                                            datePickerCenterRef={sessionListRef}
+                                            machines={showMachineFilterBar ? machineFilterItems : undefined}
+                                            machineFilter={activeMachineFilter}
+                                            onMachineChange={setMachineFilter}
+                                            totalCount={allSessions.length}
                                         />
                                     )
                                 })
+
                                 if (renderHeader) {
                                     definedSlots.push({
                                         id: 'new',
@@ -2895,20 +3591,6 @@ export function SessionList(props: {
                                             ))}
                                             <span data-measure-id="__more" className="inline-flex h-9 w-9 shrink-0" />
                                         </div>
-                                        {showMachineFilterBar ? (
-                                            <div
-                                                ref={machineMenuRef}
-                                                data-testid="session-list-header-machine-menu"
-                                                className="inline-flex shrink-0"
-                                            >
-                                                <MachineFilterMenu
-                                                    machines={machineFilterItems}
-                                                    totalCount={allSessions.length}
-                                                    value={activeMachineFilter}
-                                                    onChange={setMachineFilter}
-                                                />
-                                            </div>
-                                        ) : null}
                                         {visible.map((slot) => (
                                             <span key={slot.id} data-testid={`session-toolbar-slot-${slot.id}`} className="contents">
                                                 {slot.node}
@@ -2974,6 +3656,25 @@ export function SessionList(props: {
                     />
                 ) : null}
 
+                {props.sessions.length > 0 && isScratchlistStatusLoading && showScratchlistOnly ? (
+                    <div role="status" className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
+                        {t('sessions.filter.loading')}
+                    </div>
+                ) : null}
+
+                {props.sessions.length > 0 && scratchlistStatusError && showScratchlistOnly ? (
+                    <div role="alert" className="flex flex-col items-center gap-2 px-4 py-8 text-center text-sm text-[var(--app-hint)]">
+                        {t('sessions.filter.error')}
+                        <button
+                            type="button"
+                            onClick={() => { void refetchScratchlistSessionIds() }}
+                            className="rounded-md px-2 py-1 text-[var(--app-link)] hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                        >
+                            {t('sessions.filter.retry')}
+                        </button>
+                    </div>
+                ) : null}
+
                 {props.sessions.length > 0 && contentSearchLoading ? (
                     <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
                         {t('sessions.search.content.loading')}
@@ -3001,7 +3702,7 @@ export function SessionList(props: {
                     </div>
                 ) : null}
 
-                {props.sessions.length > 0 && !contentSearchLoading && !contentSearchError && !contentSearchHasIncompleteResults && (isFiltering || activeMachineFilter !== null || listView.status !== 'all' || listView.unreadOnly) && groups.length === 0 && runningSessionTotal === 0 && globalPinnedSessions.length === 0 ? (
+                {props.sessions.length > 0 && !contentSearchLoading && !contentSearchError && !contentSearchHasIncompleteResults && !isScratchlistStatusLoading && !scratchlistStatusError && (isFiltering || activeMachineFilter !== null || listView.status !== 'all' || listView.unreadOnly) && groups.length === 0 && runningSessionTotal === 0 && globalPinnedSessions.length === 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
                         {contentSearchActive
                             ? contentSearchReady
@@ -3050,6 +3751,8 @@ export function SessionList(props: {
                                             onSelect={props.onSelect}
                                             showPath={false}
                                             api={api}
+                                            features={features}
+                                            prNowMs={prNowMs}
                                             titleSuggestionAvailable={titleSuggestionAvailable}
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
@@ -3063,6 +3766,7 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}
                                 </div>
@@ -3084,6 +3788,14 @@ export function SessionList(props: {
             </SessionListScrollAnchor>
             </QuickUnpinFocusContext.Provider>
             </div>
+            {openSessionTickRatio != null ? (
+                <span
+                    className="session-list-open-tick"
+                    style={{ top: `${openSessionTickRatio * 100}%` }}
+                    title={t('sessions.openTick.tooltip')}
+                    aria-hidden="true"
+                />
+            ) : null}
             </div>
             <ConfirmDialog
                 isOpen={markAllReadOpen}

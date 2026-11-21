@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { settleAcpLauncherShutdown } from '@/modules/common/remote/settleAcpLauncherShutdown'
 import React from 'react'
 import { logger } from '@/ui/logger'
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge'
@@ -37,6 +38,8 @@ type GrokRemoteLauncherOptions = {
 
 export class GrokRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createGrokBackend> | null = null
+    private shutdownRequested = false
+    private disconnectPromise: Promise<void> | undefined
     private permissionHandler: GrokPermissionHandler | null = null
     private happyServer: { stop: () => void } | null = null
     private abortController = new AbortController()
@@ -58,10 +61,31 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
-        return this.start({
+        let shutdown: Promise<void> | undefined
+        const running = this.start({
             onExit: () => this.handleExitFromUi(),
             onSwitchToLocal: () => this.handleSwitchFromUi()
+        }).catch((error) => {
+            if (!this.shutdownRequested) throw error
+            logger.debug('[grok-remote] Launcher failed during shutdown', error)
+            return 'exit' as const
         })
+        this.session.setKillHandler(() => shutdown ??= settleAcpLauncherShutdown({
+            logTag: 'grok-remote',
+            cancel: () => {
+                this.shutdownRequested = true
+                this.exitReason = 'exit'
+                return this.requestExit('exit', () => this.handleAbort(true))
+            },
+            disconnect: () => this.backend ? this.disconnectBackend() : undefined,
+            running
+        }))
+        try {
+            const reason = await running
+            return this.shutdownRequested ? 'exit' : reason
+        } finally {
+            this.session.setKillHandler(() => {})
+        }
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
@@ -74,6 +98,7 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
             skillLookup: { workingDirectory: session.path, flavor: 'grok' }
         })
         this.happyServer = server
+        if (this.shouldExit) return
 
         const backend = createGrokBackend({
             cwd: session.path,
@@ -103,6 +128,7 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
         })
 
         await backend.initialize()
+        if (this.shouldExit) return
 
         const acpMcpServers = toAcpMcpServers(mcpServers)
         // Fork children must load the exact native id hub forked. Falling back to
@@ -118,6 +144,7 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
                         mcpServers: acpMcpServers
                     })
                 } catch (error) {
+                    if (this.shouldExit) return
                     if (strictForkResume) {
                         throw error
                     }
@@ -138,11 +165,13 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
                 })
             }
         } catch (error) {
+            if (this.shouldExit) return
             const message = formatGrokError(error)
             session.sendSessionEvent({ type: 'message', message })
             throw new Error(message, { cause: error })
         }
 
+        if (this.shouldExit) return
         session.registerExistingNativeSession(acpSessionId)
         this.conversationHistory.setSession(acpSessionId, session.path)
         this.conversationHistory.setPublishCapabilities(async () => {
@@ -426,6 +455,7 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
                     }))
                 }
             } catch (error) {
+                if (this.shouldExit) break
                 const message = formatGrokError(error)
                 logger.warn('[grok-remote] prompt failed', error)
                 session.sendSessionEvent({ type: 'message', message: `Grok prompt failed: ${message}` })
@@ -447,19 +477,31 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private async disconnectBackend(): Promise<void> {
+        this.disconnectPromise ??= this.backend?.disconnect({ waitForTransport: true })
+        await this.disconnectPromise
+    }
+
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager)
-        if (this.permissionHandler) {
-            await this.permissionHandler.cancelAll('Session ended')
-            this.permissionHandler = null
-        }
-        if (this.backend) {
-            await this.backend.disconnect()
+        try {
+            try {
+                if (this.permissionHandler) {
+                    await this.permissionHandler.cancelAll('Session ended')
+                    this.permissionHandler = null
+                }
+            } finally {
+                await this.disconnectBackend()
+            }
+        } catch (error) {
+            if (!this.shutdownRequested) throw error
+            logger.debug('[grok-remote] Error during launcher cleanup', error)
+        } finally {
             this.backend = null
-        }
-        if (this.happyServer) {
-            this.happyServer.stop()
-            this.happyServer = null
+            if (this.happyServer) {
+                this.happyServer.stop()
+                this.happyServer = null
+            }
         }
     }
 

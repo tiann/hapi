@@ -421,11 +421,13 @@ export class AcpStdioTransport {
         this.writePayload(payload);
     }
 
-    async close(): Promise<void> {
+    /** Ends the agent process; resolves true once its whole process tree is confirmed gone. */
+    async close(): Promise<boolean> {
         this.process.stdin.end();
-        await killProcessByChildProcess(this.process);
+        const treeGone = await killProcessByChildProcess(this.process);
         this.releaseAgentCliGuard();
         this.markClosed(new Error('ACP transport closed'));
+        return treeGone;
     }
 
     private formatExitAttribution(code: number | null, signal: NodeJS.Signals | null): string {

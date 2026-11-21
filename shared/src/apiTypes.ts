@@ -1,9 +1,12 @@
 import { z } from 'zod'
+import { ForkBoundarySchema } from './forkBoundary'
 import {
     AttachmentMetadataSchema,
     CodexCollaborationModeSchema,
     CopilotAgentModeSchema,
     DecryptedMessageSchema,
+    ExternalRefSchema,
+    ExternalRefsSchema,
     MachineSchema,
     PermissionModeSchema,
     SessionSchema,
@@ -138,6 +141,7 @@ export type AuthResponse = {
 }
 
 export type SessionsResponse = { sessions: SessionSummary[] }
+export type ScratchlistSessionIdsResponse = { sessionIds: string[] }
 export type SessionContentMatch = {
     messageId: string
     role: 'user' | 'assistant'
@@ -596,6 +600,27 @@ export const ScratchlistEntryUpdateRequestSchema = z.object({
 
 export type ScratchlistEntryUpdateRequest = z.infer<typeof ScratchlistEntryUpdateRequestSchema>
 
+export const SetExternalRefsRequestSchema = z.object({
+    externalRefs: ExternalRefsSchema
+})
+
+export type SetExternalRefsRequest = z.infer<typeof SetExternalRefsRequestSchema>
+
+/** Atomic primary/secondary attach — hub merges against the latest metadata version. */
+export const UpsertExternalRefRequestSchema = z.object({
+    ref: ExternalRefSchema
+})
+
+export type UpsertExternalRefRequest = z.infer<typeof UpsertExternalRefRequestSchema>
+
+export const FeaturesPatchRequestSchema = z.object({
+    githubPrAwareness: z.boolean().optional()
+}).refine((value) => value.githubPrAwareness !== undefined, {
+    message: 'at least one feature flag is required'
+})
+
+export type FeaturesPatchRequest = z.infer<typeof FeaturesPatchRequestSchema>
+
 /** Dismiss the model-error banner for a specific displayed error (by eventId). */
 export const AcknowledgeModelErrorRequestSchema = z.object({
     eventId: z.string().min(1)
@@ -780,7 +805,9 @@ export type BranchConversationResponse = { sessionId: string; warning?: string }
 
 export const ForkConversationRequestSchema = z.object({
     messageLocalId: z.string().min(1).optional(),
-    latestCompleted: z.boolean().optional()
+    latestCompleted: z.boolean().optional(),
+    /** Echo of the fork-preview boundary; absent keeps the legacy behavior. */
+    boundary: ForkBoundarySchema.optional()
 }).refine(value => !(value.messageLocalId && value.latestCompleted), { message: 'Choose one fork boundary mode' })
 
 export type ForkConversationRequest = z.infer<typeof ForkConversationRequestSchema>
@@ -802,7 +829,9 @@ export type ImplementCodexPlanResult = { ok: true } | {
 }
 
 export const RewindConversationRequestSchema = z.object({
-    messageLocalId: z.string().min(1)
+    messageLocalId: z.string().min(1),
+    /** Echo of the fork-preview boundary; absent keeps the legacy behavior. */
+    boundary: ForkBoundarySchema.optional()
 })
 
 export type RewindConversationRequest = z.infer<typeof RewindConversationRequestSchema>
@@ -820,12 +849,29 @@ export type ForkConversationRpcResult = {
     sessionId?: string
     /** When true, hub must spawn with --fork-session (Claude). */
     forkSession?: boolean
+    /** Claude fork at a message: resume the child truncated to this entry uuid. */
+    resumeSessionAt?: string
 }
 
 /** Raw RPC response, including generic serialized handler failures. */
 export type ForkConversationRpcResponse = ForkConversationRpcResult | {
     /** Serialized CLI handler failure returned through the generic RPC layer. */
     error: string
+}
+
+/** hub → CLI ask: where would this fork cut the native history right now? */
+export type PreviewForkBoundaryRequest = {
+    mode: 'current' | 'message' | 'latestCompleted'
+    messageLocalId?: string
+}
+
+/** CLI answer for a shared-runtime fork preview; the hub cuts its kept tail
+ *  at `cutBeforeLocalId` and confirm pins `nativeTurnId` as lastTurnId. */
+export type PreviewForkBoundaryResult = {
+    /** Inclusive native cutoff turn the fork would use. */
+    nativeTurnId?: string
+    /** First hub localId on the excluded side of the cut, when any. */
+    cutBeforeLocalId?: string
 }
 
 /** Machine-scoped native history operation; never sends a source prompt. */
@@ -842,6 +888,7 @@ export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: s
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
     | 'ambiguous_native_boundary_fork_safe'
+    | 'boundary_moved'
 
 export const OpenCodeRewindReportSchema = z.object({
     operation: OpenCodeRewindSchema,
