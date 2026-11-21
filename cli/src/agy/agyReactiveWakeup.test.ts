@@ -4467,21 +4467,184 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             new Map([['OKAY', 1]])
         )).toBe(1);
 
-        // 3-part coalesced chain ("A\n\nB\n\nC"): peeling A -> "B\n\nC" -> "C" empties
-        // the streamed pool once C is consumed, so a following unstreamed SYSTEM_MESSAGE stops the cursor.
-        expect(advanceAgyTurnTranscriptCursor(
-            [
-                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'chain' },
-                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'A' },
-                { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m1</SYSTEM_MESSAGE>' },
-                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'B' },
-                { step_index: 4, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m2</SYSTEM_MESSAGE>' },
-                { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'C' },
-                { step_index: 6, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m3</SYSTEM_MESSAGE>' },
-                { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'NEXT_WAKEUP' }
-            ],
-            -1,
-            new Map([['A\n\nB\n\nC', 1]])
-        )).toBe(5);
+            // 3-part coalesced chain ("A\n\nB\n\nC"): peeling A -> "B\n\nC" -> "C" empties
+            // the streamed pool once C is consumed, so a following unstreamed SYSTEM_MESSAGE stops the cursor.
+            expect(advanceAgyTurnTranscriptCursor(
+                [
+                    { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'chain' },
+                    { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'A' },
+                    { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m1</SYSTEM_MESSAGE>' },
+                    { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'B' },
+                    { step_index: 4, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m2</SYSTEM_MESSAGE>' },
+                    { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'C' },
+                    { step_index: 6, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m3</SYSTEM_MESSAGE>' },
+                    { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'NEXT_WAKEUP' }
+                ],
+                -1,
+                new Map([['A\n\nB\n\nC', 1]])
+            )).toBe(5);
+        });
+
+    it('publishes a completed unrendered idle wakeup before a queued user prompt advances the cursor', async () => {
+        const acpSessionId = 'conv-real-acp-queued-preempt';
+        const backend = new AcpSdkBackend({
+            command: 'agy',
+            args: ['acp'],
+            flavor: 'agy',
+            ignoreIdleUpdates: true,
+            toolCallLifetimeStore: null
+        });
+        const internal = backend as unknown as {
+            transport: unknown;
+            initializeResult: unknown;
+            handleNotification: (method: string, params: unknown) => void;
+        };
+        const ctor = AcpSdkBackend as unknown as Record<string, number>;
+        const savedTimings = {
+            LATE_FLUSH_INTERVAL_MS: ctor.LATE_FLUSH_INTERVAL_MS,
+            LATE_FLUSH_QUIET_PERIOD_MS: ctor.LATE_FLUSH_QUIET_PERIOD_MS,
+            LATE_FLUSH_WINDOW_MS: ctor.LATE_FLUSH_WINDOW_MS
+        };
+        ctor.LATE_FLUSH_INTERVAL_MS = 10;
+        ctor.LATE_FLUSH_QUIET_PERIOD_MS = 20;
+        ctor.LATE_FLUSH_WINDOW_MS = 60;
+
+        try {
+            let promptCount = 0;
+            let alive = true;
+            const rpcOrder: string[] = [];
+            const notify = (update: Record<string, unknown>) => {
+                internal.handleNotification('session/update', { sessionId: acpSessionId, update });
+            };
+            internal.transport = {
+                sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
+                    rpcOrder.push(method);
+                    if (method === 'session/new') {
+                        return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
+                    }
+                    if (method === 'session/resume') return { sessionId: String(params.sessionId) };
+                    if (method === 'session/set_mode' || method === 'session/set_model') return {};
+                    if (method === 'session/list') return { sessions: [] };
+                    if (method === 'session/prompt') {
+                        promptCount += 1;
+                        if (promptCount === 1) {
+                            notify({
+                                sessionUpdate: 'tool_call',
+                                toolCallId: 'call-bg-preempt-1',
+                                name: 'run_command',
+                                title: 'sleep 2 && echo DONE_BG',
+                                status: 'in_progress',
+                                rawInput: { CommandLine: 'sleep 2 && echo DONE_BG' }
+                            });
+                            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'STARTED' } });
+                            writeTranscript(tempBrainDir, acpSessionId, [
+                                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run bg' },
+                                {
+                                    step_index: 1,
+                                    source: 'MODEL',
+                                    type: 'PLANNER_RESPONSE',
+                                    status: 'DONE',
+                                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 2 && echo DONE_BG"' } }]
+                                },
+                                {
+                                    step_index: 2,
+                                    source: 'MODEL',
+                                    type: 'RUN_COMMAND',
+                                    status: 'RUNNING',
+                                    content: `Tool is running as a background task with task id: ${acpSessionId}/task-preempt-1`
+                                },
+                                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'STARTED' }
+                            ]);
+                        } else {
+                            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OK' } });
+                        }
+                        return { stopReason: 'end_turn', usage: { inputTokens: 40, outputTokens: 10 } };
+                    }
+                    return {};
+                }),
+                sendNotification: vi.fn(),
+                onNotification: () => {},
+                onStderrError: () => {},
+                registerRequestHandler: () => {},
+                isAlive: () => alive,
+                getProcessPid: () => 4242,
+                close: async () => { alive = false; return true; }
+            };
+            internal.initializeResult = {
+                protocolVersion: 1,
+                agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } }
+            };
+
+            const { session, queue, client } = makeHarness('always-proceed');
+            const launcher = new AgyAcpRemoteLauncher(session, {
+                createBackend: () => backend,
+                brainDir: tempBrainDir,
+                reactivePollMs: 15,
+                reactiveSettleMs: 5_000,
+                reactiveToolParkMs: 5_000
+            });
+            const runPromise = launcher.launch();
+
+            queue.push('run bg', { permissionMode: 'always-proceed' }, 'msg-1');
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+            client.sendSessionEvent.mockClear();
+            client.sendAgentMessage.mockClear();
+
+            // Idle wakeup streams over ACP (dropped by retired handler) and completes in transcript,
+            // then a user prompt is queued before reactiveSettleMs elapses.
+            notify({
+                sessionUpdate: 'tool_call_update',
+                toolCallId: 'call-bg-preempt-1',
+                status: 'completed',
+                rawOutput: { output: 'Command exited with code 0.\n\nCommand output:\nDONE_BG', exit_code: 0 }
+            });
+            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'FINISHED:DONE_BG' } });
+
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, acpSessionId)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({
+                        step_index: 4,
+                        source: 'SYSTEM',
+                        type: 'SYSTEM_MESSAGE',
+                        status: 'DONE',
+                        content: `<SYSTEM_MESSAGE>\nTask id "${acpSessionId}/task-preempt-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDONE_BG\n</SYSTEM_MESSAGE>`
+                    }),
+                    JSON.stringify({
+                        step_index: 5,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        content: 'FINISHED:DONE_BG',
+                        input_tokens: 50,
+                        output_tokens: 5
+                    })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+
+            // Queue Turn 2 with a model switch immediately before the 5s settle timer fires.
+            rpcOrder.length = 0;
+            queue.push('Reply with only OK.', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+
+            const texts = client.sendAgentMessage.mock.calls
+                .map(([msg]) => msg as { type?: string; message?: string })
+                .filter((msg) => msg.type === 'message')
+                .map((msg) => msg.message?.trim());
+            expect(texts).toEqual(['FINISHED:DONE_BG', 'OK']);
+            const wakeupSummary = client.sendAgentMessage.mock.calls
+                .map(([msg]) => msg as { type?: string; summary?: { model?: string } })
+                .find((msg) => msg.type === 'round-summary');
+            expect(wakeupSummary?.summary?.model).toBe('gemini-3.8-flash-low');
+            expect(rpcOrder.indexOf('session/resume')).toBeGreaterThanOrEqual(0);
+            expect(rpcOrder.indexOf('session/set_model')).toBeGreaterThan(rpcOrder.indexOf('session/resume'));
+
+            queue.close();
+            await runPromise;
+        } finally {
+            Object.assign(ctor, savedTimings);
+        }
     });
 });

@@ -732,38 +732,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 if (inspection.state === 'completed') {
-                    this.pausedWakeupStepIndex = null;
-                    this.lastTranscriptStepIndex = Math.max(this.lastTranscriptStepIndex, inspection.latestStepIndex);
-                    const wakeupFirstStepIndex = inspection.steps[0]?.step_index;
-                    resolveAgyBackgroundTaskIds(
-                        this.brainDir,
-                        acpSessionId,
-                        this.backgroundCommands,
-                        wakeupFirstStepIndex !== undefined ? wakeupFirstStepIndex - 1 : undefined
-                    );
-                    this.reconcileRetainedAmbiguousCompletions(null);
-                    const converted = convertAgyReactiveSteps(
-                        acpSessionId,
-                        inspection.steps,
-                        this.backgroundCommands
-                    );
-                    if (!this.backgroundCommands.some((entry) => entry.synthetic)) {
-                        this.retainedAmbiguousCompletions.length = 0;
-                    }
-                    await this.advanceBackendCursor();
-                    for (const msg of converted.messages) {
-                        this.forwardAgentMessage(this.showQuestionCard(msg));
-                    }
-                    this.registerTranscriptBackgroundTasks();
-                    this.retireSettledBackgroundTasks();
-                    if (converted.usage) {
-                        const wakeupNumTurns = inspection.steps.filter((step) =>
-                            step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE'
-                        ).length;
-                        session.sendAgentMessage(
-                            agyRoundSummary(converted.usage, converted.durationMs, this.currentModelId, null, wakeupNumTurns)
-                        );
-                    }
+                    await this.publishCompletedReactiveWakeup(acpSessionId, inspection);
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
                         session.sendSessionEvent({ type: 'ready' });
@@ -803,6 +772,45 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (this.reactiveWakeupAbort === abortController) {
                 this.reactiveWakeupAbort = null;
             }
+        }
+    }
+
+    private async publishCompletedReactiveWakeup(
+        acpSessionId: string,
+        inspection: Extract<ReturnType<typeof inspectAgyReactiveSteps>, { state: 'completed' }>
+    ): Promise<void> {
+        this.pausedWakeupStepIndex = null;
+        this.lastTurnTranscriptState = null;
+        this.lastTranscriptStepIndex = Math.max(this.lastTranscriptStepIndex, inspection.latestStepIndex);
+        const wakeupFirstStepIndex = inspection.steps[0]?.step_index;
+        resolveAgyBackgroundTaskIds(
+            this.brainDir,
+            acpSessionId,
+            this.backgroundCommands,
+            wakeupFirstStepIndex !== undefined ? wakeupFirstStepIndex - 1 : undefined
+        );
+        this.reconcileRetainedAmbiguousCompletions(null);
+        const converted = convertAgyReactiveSteps(
+            acpSessionId,
+            inspection.steps,
+            this.backgroundCommands
+        );
+        if (!this.backgroundCommands.some((entry) => entry.synthetic)) {
+            this.retainedAmbiguousCompletions.length = 0;
+        }
+        await this.advanceBackendCursor();
+        for (const msg of converted.messages) {
+            this.forwardAgentMessage(this.showQuestionCard(msg));
+        }
+        this.registerTranscriptBackgroundTasks();
+        this.retireSettledBackgroundTasks();
+        if (converted.usage) {
+            const wakeupNumTurns = inspection.steps.filter((step) =>
+                step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE'
+            ).length;
+            this.session.sendAgentMessage(
+                agyRoundSummary(converted.usage, converted.durationMs, this.currentModelId, null, wakeupNumTurns)
+            );
         }
     }
 
@@ -1133,6 +1141,24 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (!backend || !acpSessionId || turn.aborted) {
                 restoreIfUserTurn();
                 return;
+            }
+            if (!internalWakeup && !relaunched) {
+                this.advanceCursorFromLastTurnState();
+                const pendingSteps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, this.lastTranscriptStepIndex);
+                const pendingWakeup = inspectAgyReactiveSteps(
+                    pendingSteps,
+                    session.path,
+                    Date.now(),
+                    Date.now(),
+                    { ...this.reactiveTimings, settleMs: 0 }
+                );
+                if (pendingWakeup.state === 'completed') {
+                    await this.publishCompletedReactiveWakeup(acpSessionId, pendingWakeup);
+                    if (turn.aborted) {
+                        restoreIfUserTurn();
+                        return;
+                    }
+                }
             }
             if (!await this.applyTurnConfig(backend, acpSessionId, mode) || turn.aborted) {
                 restoreIfUserTurn();
