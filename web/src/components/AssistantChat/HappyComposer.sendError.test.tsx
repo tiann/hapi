@@ -15,7 +15,7 @@ import { HappyComposer, type ComposerSendError } from './HappyComposer'
  * composer store. This focused harness supplies the small subset of that
  * store necessary to exercise send → user interaction → delayed error races.
  */
-type FakeAttachment = { id: string; status: { type: 'complete' } }
+type FakeAttachment = { id: string; file?: File; path?: string; status: { type: 'complete' } }
 type MockComposerInputProps = TextareaHTMLAttributes<HTMLTextAreaElement> & {
     asChild?: boolean
     maxRows?: number
@@ -35,6 +35,7 @@ const runtime = vi.hoisted(() => ({
     setSnapshot: null as null | ((updater: (current: FakeRuntimeState) => FakeRuntimeState) => void),
     pendingSendIntentRef: null as null | { current: ComposerSendIntent },
     sentIntents: [] as ComposerSendIntent[],
+    restaged: [] as File[],
     modelChanges: [] as Array<{ provider: string; modelId: string } | string | null>,
     cancelRun: () => {},
     composerEnterBehavior: 'send' as 'send' | 'newline',
@@ -63,7 +64,7 @@ vi.mock('@assistant-ui/react', async () => {
                     composer: { text: '', attachments: [] },
                 }))
             },
-            addAttachment: async () => {},
+            addAttachment: async (file: File) => { runtime.restaged.push(file) },
         }),
         thread: () => ({ cancelRun: () => runtime.cancelRun() }),
     }
@@ -168,7 +169,7 @@ vi.mock('@/components/AssistantChat/ComposerButtons', () => ({
 
 type HarnessControls = {
     setError: (error: ComposerSendError | null) => void
-    addAttachment: () => void
+    addAttachment: (file?: File) => void
     removeAttachments: () => void
     acceptAndClearSchedule: () => void
     remount: () => void
@@ -201,11 +202,11 @@ function ComposerHarness(props: {
     runtime.pendingSendIntentRef = pendingSendIntentRef
     props.controls.current = {
         setError: sendError => setSendError(sendError),
-        addAttachment: () => setSnapshot((current) => ({
+        addAttachment: (file?: File) => setSnapshot((current) => ({
             ...current,
             composer: {
                 ...current.composer,
-                attachments: [{ id: 'new-attachment', status: { type: 'complete' } }],
+                attachments: [{ id: 'new-attachment', file, path: file ? '/expired' : undefined, status: { type: 'complete' } }],
             },
         })),
         removeAttachments: () => setSnapshot((current) => ({
@@ -264,6 +265,7 @@ function renderComposer(
     composerEnterBehavior: 'send' | 'newline' = 'send',
 ) {
     const controls: { current: HarnessControls | null } = { current: null }
+    runtime.restaged = []
     runtime.sentIntents = []
     runtime.modelChanges = []
     runtime.composerEnterBehavior = composerEnterBehavior
@@ -347,6 +349,35 @@ describe('HappyComposer send-error atomic restore', () => {
 
         expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded')
         expect(screen.queryByTestId('composer-send-error')).toBeNull()
+    })
+
+    it('restages the submitted file without reusing its expired upload metadata', async () => {
+        const controls = renderComposer('failed text', null)
+        const file = new File(['hello'], 'example.txt', { type: 'text/plain', lastModified: 123 })
+        act(() => controls.current!.addAttachment(file))
+        send()
+        setError(controls, { ...fail(1, 'failed text', null), reuploadPaths: ['/expired'] })
+        await waitFor(() => expect(runtime.restaged).toHaveLength(1))
+        expect(runtime.restaged[0]).not.toBe(file)
+        expect(runtime.restaged[0]).toMatchObject({ name: file.name, type: file.type, size: file.size, lastModified: 123 })
+        expect(input()).toHaveValue('failed text')
+    })
+
+    it('keeps the failed attachment recovery action when a replacement draft prevents restoration', async () => {
+        const controls = renderComposer('original', null)
+        const file = new File(['draft'], 'draft.txt')
+        act(() => controls.current!.addAttachment(file))
+        send()
+        fireEvent.change(input(), { target: { value: 'replacement draft' } })
+        const onRestored = vi.fn()
+        const error = { ...fail(1, 'original', null), reuploadPaths: ['/expired'], onRestored }
+        setError(controls, error)
+        expect(input()).toHaveValue('replacement draft')
+        expect(onRestored).not.toHaveBeenCalled()
+        fireEvent.change(input(), { target: { value: '' } })
+        setError(controls, { ...error, id: 2, retryRecovery: true, mutationStarted: false })
+        await waitFor(() => expect(onRestored).toHaveBeenCalledTimes(1))
+        expect(input()).toHaveValue('original')
     })
 
     it('restores untouched text and its absolute schedule after accepted-send clear', async () => {
@@ -554,7 +585,8 @@ describe('HappyComposer send intent gestures', () => {
     afterEach(() => {
         cleanup()
         runtime.pendingSendIntentRef = null
-        runtime.sentIntents = []
+        runtime.restaged = []
+    runtime.sentIntents = []
     })
 
     it('ignores Alt/Option+Enter (the old explicit-queue gesture) entirely', () => {

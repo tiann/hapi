@@ -13,6 +13,7 @@ import {
     ImplementCodexPlanRequestSchema,
     InitChunkedUploadRequestSchema,
     getPermissionModesForFlavor,
+    isHibernatedLifecycleState,
     isLiveLifecycleState,
     isPermissionModeAllowedForFlavor,
     RenameSessionRequestSchema,
@@ -1149,6 +1150,7 @@ export function createSessionsRoutes(
         // reconciled as keepalive-only must stay archivable once its socket
         // finally drops, exactly like a stale `running` row.
         if (!sessionResult.session.active && !isLiveLifecycleState(lifecycleState)
+            && !isHibernatedLifecycleState(lifecycleState)
             && !(runnerOwned && lifecycleState === 'archived')) {
             return c.json({ error: 'Session is inactive' }, 409)
         }
@@ -1778,6 +1780,7 @@ export function createSessionsRoutes(
             await engine.deleteSession(sessionResult.sessionId)
             return c.json({ ok: true })
         } catch (error) {
+            if (error instanceof ArchiveCleanupError) return c.json({ error: error.message, code: error.code }, error.status)
             const message = error instanceof Error ? error.message : 'Failed to delete session'
             // Map lifecycle conflicts to 409 (active race, or running attached job)
             if (message.includes('active') || message.includes('attached job')) {

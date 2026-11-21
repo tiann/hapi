@@ -320,6 +320,8 @@ export default {
   'session.item.prStatus.checksPassed': 'checks passed',
   'session.item.thinking': 'thinking',
   'session.item.running': 'Running',
+  'session.item.hibernated': 'Hibernated',
+  'session.composer.waking': 'Waking session…',
   'session.item.attachedJob': 'Jobs',
   'session.item.attachedJob.left': 'left',
   'session.item.attachedJob.running': 'running',

@@ -69,6 +69,7 @@ request is made without a configured provider.
 - `HAPI_IOS_PUSH` - `relay` (default), `apns`, or `off`.
 - `HAPI_PUSH_RELAY_URL` - Shared Android/iOS push relay (default: `https://push.hapi.run`; persisted as `iosPushRelayUrl`). Independent of the `--relay` network tunnel.
 - `HAPI_SESSION_IDLE_TIMEOUT_MS` - Keep-alive-idle window in ms (default: 43200000 / 12 h; `0` disables). See "Session liveness" below.
+- `HAPI_SESSION_HIBERNATE_MS` - Idle window before stopping eligible runner sessions (default 7200000 ms, or 2 h). Set to `0` to disable. Values from 1 to 59999 are raised to 60000 ms.
 
 Official native apps register their encryption keys automatically; no push
 provider setup is needed on a fresh hub. See the [native companion push
@@ -292,14 +293,37 @@ See `src/sync/syncEngine.ts` for the main session/message manager:
 Two separate signals, deliberately (tiann/hapi#1820):
 
 - **`active` / `activeAt`** - transport. The CLI socket is connected; `session-alive` refreshes it every ~2 s. `sessionCache.expireInactive` drops `active` after 30 s of silence.
-- **`metadata.lifecycleState`** - agent health. `running` -> `idle` -> `running`, plus `archived`.
+- **`metadata.lifecycleState`** - agent health. `running` -> `idle` -> `running`, plus `hibernated` and `archived`.
 
 Keep-alives prove a socket, not an agent. A session can therefore heartbeat for days with no messages, no thinking and no background tasks - `active: true` forever, which `expireInactive` can never catch. `sessionCache.reconcileKeepaliveIdle` (same 5 s tick) closes that gap: after `HAPI_SESSION_IDLE_TIMEOUT_MS` with no agent progress it moves `lifecycleState` `running` -> `idle`.
 
 - `active` is left alone on purpose. The CLI really is reachable, and flipping it would let `resumeSession` spawn a second agent against a live process, and unlock dedup-merge / delete on it.
 - Progress means a message in either direction, a queued prompt, or a background task - never a keep-alive. Sessions that are thinking, running background tasks or holding a pending permission request are never marked.
 - `idle` reverts to `running` on the next progress, within one tick.
+- After `HAPI_SESSION_HIBERNATE_MS` without progress or live work, the hub stops eligible runner sessions. A confirmed stop marks the session `hibernated` and inactive. Hibernation uses the same stop path as archive. Children that detach from the wrapper’s process tree, such as an MCP server that daemonises, may keep running. The next send resumes the same ID.
 - `metadata.idleReconcileExempt: true` opts a session out entirely.
+
+### Hibernation transitions
+
+The hub tracks transport liveness separately from the durable hibernation marker. “Waking” below means the original row still carries its settled marker while a resume is in progress or awaiting confirmation.
+
+| Starting state | Event | Outcome |
+|---|---|---|
+| Running or idle | The idle window and hub startup grace have elapsed | Start a stop only for an eligible runner-owned worker with no live work, a heartbeat from that wrapper reporting no peer reply watch or chunked upload, and connected runner stop and inspection handlers. A single-request upload reserves the worker until its RPC returns. A chunked upload also keeps the worker awake between chunks until finalize, abort, or expiry. Workers missing either report stay running. The runner must also attest that it can recreate the launch without a per-session credential. |
+| Eligible | Before sending `KillSession` | Reserve the row and persist `stopping` with the machine, PID and wrapper start marker. Address shutdown to that worker and use the existing generation-checked runner PID stop. Terminal creation and competing deliveries wait. |
+| Stopping | The archive stop path returns `stopped` or `already_gone` and the same wrapper still owns the row | Mark the row inactive and hibernated. Retire the stopped generation’s recovered spawn entry before acknowledging the stop so an immediate wake starts a new worker. Preserve the session ID, order, and unconsumed prompts. |
+| Stopping | Runner explicitly returns `still_alive` or `unknown` after the archive fallbacks | Keep the stopping marker while shutdown may still be completing. The next idle sweep checks the recorded generation after ten minutes. A wake request can check sooner. |
+| Stopping | A reply is lost, the runner disconnects, or the hub restarts during the stop | Retain the recorded identity. On a sweep or a wake request, ask the original runner to inspect the recorded PID and start marker. This read-only query checks the process generation without terminating it. |
+| Interrupted stop | Probe completes | An absent PID or a different start marker confirms the original wrapper exited. Recovery is read-only. The original runner must also have observed exit for the session and find no remaining tracked wrapper or matching orphan. A positive start-marker mismatch at runner startup counts as exit of the old generation. A verified replacement retires the stop reservation without signalling it. An inconclusive inspection keeps the attempt retryable. A matching generation with a fresh worker report after ten minutes can return to running. A replaced owner or an explicit archive retires the old attempt without ending the replacement. Older markers without an identity are cleared on startup. |
+| Hibernated | Immediate send, explicit resume/reopen, retry of an indeterminate message, implicit peer wake, or due scheduled prompt | Request the original HAPI ID on its recorded machine; concurrent sends join the authorized wake. A future scheduled prompt alone leaves the session asleep. |
+| Hibernated | A local terminal prepares to resume, including a handoff overtaken by hibernation | Wait for any remote wake and recheck ownership. An accepted local preparation reserves the row for up to one minute across hub restarts. A confirmed local bootstrap clears the marker. |
+| Waking | Same-ID spawn confirms activity and any required native readiness | Clear the marker and backoff, record progress and allow delivery. A local terminal bootstrap and matching late Codex readiness can also confirm a wake. |
+| Waking | Error, timeout, or hub restart with an active but unconfirmed transport | A definite rejection before a new child starts releases that wake reservation and leaves the row hibernated. An ambiguous reply retains the reservation. For Claude, OpenCode, and Pi, a heartbeat, due prompt or immediate wake request can recover the lost acknowledgement. The runner must confirm the recorded wake attempt, original HAPI ID and replacement process generation, and the hub verifies the machine and native conversation before releasing delivery. Pi and OpenCode must also report that the replacement generation loaded the requested native conversation. OpenCode refuses to fall back to a blank conversation during a wake. The worker heartbeat repeats that evidence after reconnect. Until confirmation, immediate sends receive a retryable conflict and scheduled delivery and CLI reconnect backfill stay held. Matching late Codex readiness can finish its wake. If the worker exits or expires, restore hibernation; an operator can explicitly archive and reopen an unresponsive worker. |
+| Waking | Spawn returns a different ID | Reject the wake, leave the returned row untouched, and retry a due prompt after ten minutes. The reply contains no proof of child ownership; an unexpected child may remain running, and the runner can return the cached mismatch on every retry until that child exits. |
+| Hibernated or unconfirmed wake | Hub restarts with the row inactive | Keep the sleeping row or restore it from the surviving marker, including a CLI self-archive during startup. Preserve explicit hub archives and superseded rows. Due messages are reconsidered on the inactivity tick. An interrupted Pi attempt on an inactive row requires runner confirmation before another same-ID spawn. |
+| Hibernated | Explicit archive | An outstanding wake requires fresh stop confirmation from its runner for the logical session. A settled sleeper with no outstanding wake can archive using its original confirmation. Remove the marker on successful archive. A later reopen follows the ordinary archive flow. |
+| Inactive | Delete requested | An unresolved stop, wake, or unexpired local preparation returns a lifecycle conflict. A settled hibernated row with no reservation may be deleted. |
+| Any | Retry of an already-invoked attachment message | Acknowledge the authorized session's exact local ID without waking, validating deleted uploads, or dispatching a duplicate. New or unconsumed attachment messages still require the applicable worker checks. If an upload expired, the web composer shows the reupload error, restores the draft, and stages available local files again. If another draft prevents restoration, the failed bubble retains the recovery action. |
 
 ## Storage
 

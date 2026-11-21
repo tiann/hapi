@@ -36,7 +36,7 @@ import type {
 import { AgentStateSchema, CliMessagesResponseSchema, MetadataSchema, UserMessageSchema } from './types'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
-import { cleanupUploadDir, preserveUploadDirOnExit } from '../modules/common/handlers/uploads'
+import { cleanupUploadDir, hasActiveChunkedUpload, preserveUploadDirOnExit } from '../modules/common/handlers/uploads'
 import { TerminalManager } from '@/terminal/TerminalManager'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildHubRequestHeaders, buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
@@ -223,6 +223,8 @@ export class ApiSessionClient extends EventEmitter {
     private needsBackfill = false
     private hasConnectedOnce = false
     // Replayed on (re)connect: a volatile heartbeat sent while disconnected is dropped (#2053).
+    private nativeResumeReady?: { nativeId: string; pid: number; startMarker: string }
+    private peerReplyWatches = 0
     private latestKeepAlive: Omit<Parameters<ClientToServerEvents['session-alive']>[0], 'sid' | 'time'> | null = null
     readonly rpcHandlerManager: RpcHandlerManager
     private readonly terminalManager: TerminalManager
@@ -275,7 +277,7 @@ export class ApiSessionClient extends EventEmitter {
         })
 
         if (this.metadata?.path) {
-            registerCommonHandlers(this.rpcHandlerManager, this.metadata.path)
+            registerCommonHandlers(this.rpcHandlerManager, this.metadata.path, () => this.sessionId, () => this.publishWorkState())
         }
 
         this.socket = io(`${configuration.apiUrl}/cli`, {
@@ -330,12 +332,7 @@ if (isReconnect) {
                 if (this.state === 'active' && this.allowReconnect) this.emit('connected')
             })
             this.hasConnectedOnce = true
-            this.socket.emit('session-alive', {
-                sid: this.sessionId,
-                time: Date.now(),
-                thinking: false,
-                ...this.latestKeepAlive
-            })
+            this.socket.emit('session-alive', this.alivePayload())
         })
 
         this.socket.on('rpc-request', async (data: { method: string; params: string }, callback: (response: string) => void) => {
@@ -1358,6 +1355,29 @@ if (isReconnect) {
         }, 30)
     }
 
+    private alivePayload(): Parameters<ClientToServerEvents['session-alive']>[0] {
+        return {
+            sid: this.sessionId, time: Date.now(), thinking: false, ...this.latestKeepAlive,
+            hasPeerReplyWatch: this.peerReplyWatches > 0,
+            hasActiveUpload: hasActiveChunkedUpload(this.sessionId),
+            ...(this.nativeResumeReady ? { nativeResumeReady: this.nativeResumeReady } : {})
+        }
+    }
+
+    private publishWorkState(): void {
+        if (this.state === 'active' && this.socket.connected) this.socket.emit('session-alive', this.alivePayload())
+    }
+
+    async trackPeerReplyWatch(watch: () => Promise<void>): Promise<void> {
+        this.peerReplyWatches++
+        try {
+            if (this.peerReplyWatches === 1) this.publishWorkState()
+            await watch()
+        } finally {
+            if (--this.peerReplyWatches === 0) this.publishWorkState()
+        }
+    }
+
     keepAlive(
         thinking: boolean,
         mode: 'local' | 'remote' | undefined,
@@ -1375,15 +1395,15 @@ if (isReconnect) {
         if (this.state !== 'active' || !this.socket.connected) {
             return
         }
-        this.socket.volatile.emit('session-alive', {
-            sid: this.sessionId,
-            time: Date.now(),
-            ...this.latestKeepAlive
-        })
+        this.socket.volatile.emit('session-alive', this.alivePayload())
     }
 
     /** Hub waits for this before mergeSessions on Cursor ACP reopen (tiann/hapi#939). */
-    emitSessionReady(): void {
+    emitSessionReady(readyNativeId?: string): void {
+        if (readyNativeId && this.metadata?.hostStartMarker) {
+            this.nativeResumeReady = { nativeId: readyNativeId, pid: process.pid, startMarker: this.metadata.hostStartMarker }
+            this.publishWorkState()
+        }
         this.emitOrQueue(() => {
             this.socket.emit('session-ready', {
                 sid: this.sessionId,

@@ -450,6 +450,23 @@ describe('useSendMessage', () => {
             expect(info.text).toBe('hi from resumed')
         })
 
+        it('keeps expired attachments in a failed bubble until the composer acknowledges recovery', async () => {
+            const error = new ApiError('Upload the file again', 409, 'attachment_reupload_required')
+            const onError = vi.fn()
+            const api = createMockApi(async () => { throw error })
+            const { result } = renderHook(() => useSendMessage(api, 'session-A', { onError }), { wrapper: createWrapper() })
+            act(() => { void result.current.sendMessage('look', [
+                { id: 'a', filename: 'a.txt', size: 1, mimeType: 'text/plain', path: '/expired' }
+            ]) })
+            await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+                text: 'look', sessionId: 'session-A', error, reuploadPaths: ['/expired']
+            })))
+            const { removeOptimisticMessage } = await import('@/lib/message-window-store')
+            expect(removeOptimisticMessage).not.toHaveBeenCalled()
+            onError.mock.calls[0]![0].onRestored()
+            expect(removeOptimisticMessage).toHaveBeenCalledWith('session-A', 'local-id-1')
+        })
+
         it('attachment send: keeps the failed row in the thread and skips composer-restore', async () => {
             // The composer-restore path can't reinstate uploaded attachment
             // metadata, so for sends with attachments we fall back to the
@@ -626,6 +643,44 @@ describe('useSendMessage', () => {
             acceptedPromise = result.current.sendMessage('hello')
         })
         await expect(acceptedPromise!).resolves.toEqual({ attemptId: 'local-id-1' })
+    })
+
+    it('posts a future scheduled prompt to the hibernated ID without waking it', async () => {
+        const send = vi.fn(async () => {})
+        const resolveSessionId = vi.fn(async () => ({ sessionId: 'sleeping', resumed: true }))
+        const api = createMockApi(send)
+        const scheduledAt = Date.now() + 60_000
+        const { result } = renderHook(() => useSendMessage(api, 'sleeping', { resolveSessionId, isSessionHibernated: true }),
+            { wrapper: createWrapper() })
+        await act(async () => { await result.current.sendMessage('later', undefined, scheduledAt) })
+        await waitFor(() => expect(send).toHaveBeenCalledWith('sleeping', 'later', expect.any(String), undefined, scheduledAt, 'queue'))
+        expect(resolveSessionId).not.toHaveBeenCalled()
+    })
+
+    it('reports isResolving only while the pre-send resume is pending', async () => {
+        const resume = deferred<{ sessionId: string; resumed: boolean }>()
+        const { result, rerender } = renderHook(
+            ({ sleeping }) => useSendMessage(createMockApi(), 'session-hibernated', {
+                isSessionHibernated: sleeping,
+                resolveSessionId: () => resume.promise,
+                onSessionResolved: vi.fn(),
+            }),
+            { wrapper: createWrapper(), initialProps: { sleeping: true } },
+        )
+        expect(result.current.isResolving).toBe(false)
+        let acceptedPromise: Promise<SendMessageAcceptance | false> | undefined
+        act(() => {
+            acceptedPromise = result.current.sendMessage('hello')
+        })
+        await waitFor(() => expect(result.current.isResolving).toBe(true))
+        rerender({ sleeping: false })
+        expect(result.current.isWaking).toBe(true)
+        await act(async () => {
+            resume.resolve({ sessionId: 'session-hibernated', resumed: true })
+            await acceptedPromise
+        })
+        await waitFor(() => expect(result.current.isResolving).toBe(false))
+        expect(result.current.isWaking).toBe(false)
     })
 
     it('awaits onSessionResolved before starting the send mutation', async () => {

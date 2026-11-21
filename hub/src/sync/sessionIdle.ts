@@ -14,7 +14,7 @@
  * keepalives for the configured window.
  */
 
-import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
+import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING, isLiveLifecycleState } from '@hapi/protocol'
 import type { Session } from '@hapi/protocol/types'
 
 /** Keepalive-only for this long ⇒ reconcile `running` → `idle`. */
@@ -38,14 +38,51 @@ export function resolveSessionIdleTimeoutMs(
     return parsed
 }
 
+/**
+ * Hub-side work signals that do not live on the Session row itself. The
+ * keepalive-idle reconciler passes none; hibernation passes all of them.
+ */
+export type LiveWorkSignals = {
+    peerReplyWatch?: boolean
+    /** Queued-prompt thinking grace (`markMessageQueued`) still running. */
+    pendingThinking?: boolean
+    /** Attached session job currently running. */
+    runningJob?: boolean
+    /** Active team member or in-progress team task. */
+    activeTeamWork?: boolean
+    /** Open web terminals on this session. */
+    openTerminals?: number
+    /** Queued or scheduled messages not yet delivered. */
+    undeliveredMessages?: number
+    /** resume / archive / history action / pty or pi resume in flight. */
+    operationInFlight?: boolean
+}
+
 /** Work the hub can see that must never be reconciled away as a zombie. */
-function hasLiveWork(session: Session): boolean {
+export function hasLiveWork(session: Session, signals?: LiveWorkSignals): boolean {
     if (session.thinking) return true
+    if (session.derivedToolWork === true) return true
     if ((session.backgroundTaskCount ?? 0) > 0) return true
     // A permission / input request waiting on the operator is real state the
     // agent is blocked on, not an abandoned socket.
     const requests = session.agentState?.requests
     if (requests && Object.keys(requests).length > 0) return true
+    if (!signals) return false
+    if (signals.pendingThinking || signals.peerReplyWatch) return true
+    if (signals.runningJob) return true
+    if (signals.activeTeamWork) return true
+    if ((signals.openTerminals ?? 0) > 0) return true
+    if ((signals.undeliveredMessages ?? 0) > 0) return true
+    if (signals.operationInFlight) return true
+    return false
+}
+
+/** Active sub-agent member or a team task still in progress. */
+export function hasActiveTeamWork(session: Session): boolean {
+    const team = session.teamState
+    if (!team) return false
+    if (team.members?.some((member) => member.status === 'active')) return true
+    if (team.tasks?.some((task) => task.status === 'in_progress')) return true
     return false
 }
 
@@ -91,4 +128,105 @@ export function shouldClearKeepaliveIdle(
     // Opting out after the fact still lifts an existing mark.
     if (session.metadata.idleReconcileExempt === true) return true
     return timeoutMs > 0 && now - agentProgressAt <= timeoutMs
+}
+
+/** Keepalive-only with no agent progress for this long ⇒ hibernate. */
+export const DEFAULT_SESSION_HIBERNATE_MS = 7_200_000
+export const MIN_SESSION_HIBERNATE_MS = 60_000
+
+/**
+ * `HAPI_SESSION_HIBERNATE_MS` window, in ms. `0` disables hibernation; unset
+ * or unparseable falls back to the default; 1..59999 is raised to 60000.
+ */
+export function resolveSessionHibernateMs(
+    env: Record<string, string | undefined> = process.env
+): number {
+    const raw = env.HAPI_SESSION_HIBERNATE_MS
+    if (raw === undefined) return DEFAULT_SESSION_HIBERNATE_MS
+    const trimmed = raw.trim()
+    if (!/^\d+$/.test(trimmed)) return DEFAULT_SESSION_HIBERNATE_MS
+    const parsed = Number(trimmed)
+    if (!Number.isSafeInteger(parsed)) return DEFAULT_SESSION_HIBERNATE_MS
+    if (parsed === 0) return 0
+    return Math.max(parsed, MIN_SESSION_HIBERNATE_MS)
+}
+
+export const HIBERNATE_ELIGIBLE_FLAVORS = ['claude', 'codex', 'opencode', 'pi'] as const
+
+export type HibernateEligibleFlavor = typeof HIBERNATE_ELIGIBLE_FLAVORS[number]
+
+export function isHibernateEligibleFlavor(flavor: unknown): flavor is HibernateEligibleFlavor {
+    return typeof flavor === 'string' && (HIBERNATE_ELIGIBLE_FLAVORS as readonly string[]).includes(flavor)
+}
+
+/** Live-work signals plus the resolved native resume token (rule 9). */
+export type HibernationSignals = LiveWorkSignals & {
+    resumeId: string | null
+}
+
+/** Subset of `RunnerState.capabilities` hibernation reads. */
+export type HibernationRunnerCapabilities = {
+    sessionHibernation?: boolean
+    piExistingSessionResume?: boolean
+} | null | undefined
+
+function isPtySession(session: Session): boolean {
+    const agentStartingMode = (session.agentState as { startingMode?: unknown } | null)?.startingMode
+    return agentStartingMode === 'pty' || session.metadata?.startingMode === 'pty'
+}
+
+function hasFlavorBlocker(
+    session: Session,
+    flavor: HibernateEligibleFlavor,
+    runnerCapable: HibernationRunnerCapabilities
+): boolean {
+    const metadata = session.metadata
+    if (!metadata) return true
+    switch (flavor) {
+        case 'codex':
+            return metadata.codexRuntime?.kind === 'attached'
+                || metadata.codexArchivedFork !== undefined
+                || metadata.codexResumePending !== undefined
+        case 'opencode':
+            return ['reserved', 'prepared', 'unknown'].includes(metadata.opencodeRewind?.phase ?? '')
+                || metadata.opencodeForkPending === true
+                || (metadata.opencodeClearOperation !== undefined && metadata.opencodeClearOperation.state !== 'aborted')
+        case 'pi':
+            return runnerCapable?.piExistingSessionResume !== true
+                || metadata.piResumeAttempt !== undefined
+        case 'claude':
+            return false
+    }
+}
+
+/**
+ * Should this session's wrapper and agent be stopped and the row marked
+ * `hibernated` right now?
+ *
+ * `agentProgressAt` must already be `max(getAgentProgressAt, lifecycleStateSince)`.
+ */
+export function shouldHibernate(
+    session: Session,
+    signals: HibernationSignals | (() => HibernationSignals),
+    agentProgressAt: number,
+    now: number,
+    hibernateMs: number,
+    runnerCapable: HibernationRunnerCapabilities
+): boolean {
+    if (!(hibernateMs > 0)) return false
+    if (!session.active) return false
+    const metadata = session.metadata
+    if (!metadata || !isLiveLifecycleState(metadata.lifecycleState)) return false
+    if (metadata.replayableRunnerLaunch !== true || metadata.capabilities?.concurrentClients === true || metadata.idleReconcileExempt === true) return false
+    if (metadata.startedBy !== 'runner' && metadata.startedFromRunner !== true) return false
+    if (session.agentState?.controlledByUser === true) return false
+    if (isPtySession(session)) return false
+    const flavor = metadata.flavor ?? 'claude'
+    if (!isHibernateEligibleFlavor(flavor)) return false
+    if (hasFlavorBlocker(session, flavor, runnerCapable)) return false
+    if (runnerCapable?.sessionHibernation !== true) return false
+    if (!(now - agentProgressAt > hibernateMs)) return false
+    if (hasLiveWork(session)) return false
+    const liveSignals = typeof signals === 'function' ? signals() : signals
+    return Boolean(liveSignals.resumeId) && !hasLiveWork(session, liveSignals)
 }

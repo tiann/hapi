@@ -89,6 +89,13 @@ function rpcUploadError(error: string, code: UploadErrorCode): { success: false;
     return { success: false, error, code }
 }
 
+export function hasActiveChunkedUpload(sessionId: string): boolean {
+    for (const upload of activeChunkedUploads.values()) {
+        if (upload.sessionKey === getSessionKey(sessionId)) return true
+    }
+    return false
+}
+
 function scheduleUploadExpiration(state: ActiveChunkedUpload, ttlMs: number): void {
     clearTimeout(state.timer)
     state.timer = setTimeout(() => {
@@ -305,12 +312,29 @@ function buildUniqueUploadFilename(filename: string, reserveSuffixBytes: number 
 
 export function registerUploadHandlers(
     rpcHandlerManager: RpcHandlerManager,
-    options?: { activeUploadTtlMs?: number }
+    options?: { activeUploadTtlMs?: number; getSessionId?: () => string; onUploadStarted?: () => void }
 ): void {
     const activeUploadTtlMs = options?.activeUploadTtlMs ?? ACTIVE_UPLOAD_TTL_MS
     if (!cleanupRegistered) {
         cleanupRegistered = true
         process.once('exit', cleanupUploadDirsSync)
+    }
+
+    const getSessionId = options?.getSessionId
+    if (getSessionId) {
+        rpcHandlerManager.registerHandler<{ files: { path: string; size: number }[] }, boolean>(
+            RPC_METHODS.ValidateSessionUploads, async data => {
+                const sessionId = getSessionId()
+                const registered = uploadFileIdentities.get(getSessionKey(sessionId))
+                if (!registered || !Array.isArray(data?.files)) return false
+                for (const file of data.files) {
+                    if (!file || typeof file.path !== 'string' || !registered.has(file.path)) return false
+                    const stats = await lstat(file.path).catch(() => null)
+                    if (!stats?.isFile() || stats.size !== file.size || !isAuthorizedUploadFile(file.path, sessionId, stats)) return false
+                }
+                return true
+            }
+        )
     }
 
     rpcHandlerManager.registerHandler<UploadFileRequest, UploadFileResponse>(RPC_METHODS.UploadFile, async (data) => {
@@ -444,6 +468,7 @@ export function registerUploadHandlers(
             }
             state.timer.unref?.()
             activeChunkedUploads.set(uploadId, state)
+            options?.onUploadStarted?.()
 
             return {
                 success: true,

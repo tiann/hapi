@@ -61,9 +61,12 @@ export const PEER_CONTACT_RULE =
     '(e.g. same machine and resource, same checkout). ' +
     'Do not wake inactive peers for FYI, status, or done notes.'
 
+const PEER_WAKE_POLICY =
+    'Queue and auto wake hibernated peers even with wake=false. Other inactive peers require wake=true. Steer never wakes a peer.'
+
 /** Zod `.describe` for ping_peer `wake`. */
 export const PEER_WAKE_PARAM_DESCRIPTION =
-    'Resume the target if it is inactive. Default false: an inactive target is refused and no message is sent. ' +
+    'Default false. ' + PEER_WAKE_POLICY + ' ' +
     'Set true only when the user asked you to wake that peer or the work you hand off requires it to act; never for FYI, status, or done notes.'
 
 /** Zod `.describe` for ping_peer / spawn_peer `waitForReply`. */
@@ -83,7 +86,7 @@ export const LIST_PEERS_TOOL_DESCRIPTION =
 
 /** Shared delivery guidance for the peer MCP schemas, descriptions, and prompts. */
 export const PEER_DELIVERY_MODE_DESCRIPTION =
-    'auto (default): steer an active turn when the target supports steering and is ready; otherwise queue. Inactive peers require explicit wake=true and then receive a queued message. ' +
+    'auto (default): steer an active turn when the target supports steering and is ready; otherwise queue. ' + PEER_WAKE_POLICY + ' ' +
     'Prefer auto for routine collaboration when queueing is an acceptable fallback. ' +
     'If steering cannot be confirmed after acceptance, auto retains the same single accepted message without resending; accepted does not confirm consumption. ' +
     'queue: explicitly defer non-urgent updates that can wait instead of steering. ' +
@@ -97,7 +100,6 @@ export const PEER_DELIVERY_MODE_DESCRIPTION =
 /** MCP `ping_peer` tool description (same citation forms as inspect_peer). */
 export const PING_PEER_TOOL_DESCRIPTION =
     'Send a message to another HAPI session (peer handoff / nudge). Resolves by session id prefix, then POSTs on the same hub/namespace. ' +
-    'Inactive targets are refused unless wake=true. ' +
     'When the user cites a peer via [title](/sessions/<id>), Copy-reference prose See session "…" (/sessions/<id>) for context, or a bare /sessions/<id>, ' +
     'extract <id> and pass it as sessionIdPrefix. /sessions/<id> is a hub path - do NOT search the local filesystem for it. ' +
     'Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat. ' +
@@ -236,7 +238,6 @@ export function buildSessionCitationSteerInstruction(tools: SessionCitationSteer
         `Call "${tools.inspectTool}" with sessionIdPrefix=<id> to read metadata and recent messages; ` +
         `call "${tools.pingTool}" with sessionIdPrefix=<id> and a message to nudge or hand off. ` +
         `${PEER_CONTACT_RULE} ` +
-        `An inactive peer is refused unless you pass wake=true; set it only when the user asked or the handed-off work requires that peer to act. ` +
         `Select deliveryMode: ${PEER_DELIVERY_MODE_DESCRIPTION} ` +
         `Prefer these over JWT+curl. Shell fallbacks: hapi inspect-peer <id> / hapi ping-peer <id> <message> --delivery-mode auto [--wake].`
     if (tools.listPeersTool) {

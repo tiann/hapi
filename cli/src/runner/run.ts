@@ -46,6 +46,7 @@ import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
 import { readRuntimes, runtimeMayBeAlive, runtimeAuthHash } from '@/codex/shared/registry';
+import { inspectWorkerGeneration } from './workerGeneration';
 import { readWindowsProcessTable } from '@/utils/windowsProcessStop';
 import { coalesceStopRequests } from './stopSessionRequests';
 import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
@@ -157,8 +158,8 @@ export function releaseRecoveredSpawnDedupe(
 ): void {
   const existingSessionId = existingSessionIdByChildPid.get(pid);
   if (!existingSessionId) return;
-  spawnSession.onChildExited(existingSessionId);
   existingSessionIdByChildPid.delete(pid);
+  if (![...existingSessionIdByChildPid.values()].includes(existingSessionId)) spawnSession.onChildExited(existingSessionId);
 }
 
 export async function startRunner(options: { workspaceRoots?: string[] } = {}): Promise<void> {
@@ -373,6 +374,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     type PersistedResumeProcess = {
       requestedSessionId: string;
       confirmedSessionId?: string;
+      wakeAttemptId?: string;
       pid: number;
       processStartMarker: string;
       bootId?: string;
@@ -394,6 +396,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (!requestedSessionId || typeof record.pid !== 'number' || typeof record.processStartMarker !== 'string') return [];
           return [[record.pid, {
             requestedSessionId,
+            wakeAttemptId: typeof record.wakeAttemptId === 'string' ? record.wakeAttemptId : undefined,
             confirmedSessionId: typeof record.confirmedSessionId === 'string' ? record.confirmedSessionId : undefined,
             pid: record.pid,
             processStartMarker: record.processStartMarker,
@@ -417,13 +420,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     };
     for (const [pid, record] of [...persistedResumeProcesses]) {
       const alive = isProcessAlive(pid);
-      const generation = probeRecoveredProcessGeneration(pid, record);
+      const liveMarker = alive ? getProcessStartMarker(pid) : null;
+      const generation = probeRecoveredProcessGeneration(pid, record, liveMarker, alive);
       if (generation === 'verified') {
         pidToRequestedSessionId.set(pid, record.requestedSessionId);
         if (record.confirmedSessionId) pidToConfirmedSessionId.set(pid, record.confirmedSessionId);
       } else if (generation === 'exited') {
         persistedResumeProcesses.delete(pid);
-        if (!alive) {
+        if (!alive || (liveMarker && liveMarker !== record.processStartMarker)) {
           rememberVerifiedExit(record.requestedSessionId);
           if (record.confirmedSessionId) rememberVerifiedExit(record.confirmedSessionId);
         }
@@ -612,8 +616,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           pidToTrackedSession.set(pid, adopted);
           pidToConfirmedSessionId.set(pid, sessionId);
           if (processStartMarker) {
+            const previous = persistedResumeProcesses.get(pid);
             persistedResumeProcesses.set(pid, {
               requestedSessionId: sessionId,
+              wakeAttemptId: previous?.requestedSessionId === sessionId && previous.processStartMarker === processStartMarker
+                ? previous.wakeAttemptId : undefined,
               confirmedSessionId: sessionId,
               pid,
               processStartMarker,
@@ -877,7 +884,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             // high-water mark. Placed before process.env so users can override it.
             BUN_JSC_forceRAMSize: String(256 * 1024 * 1024),
             ...process.env,
-            ...extraEnv
+            ...extraEnv,
+            HAPI_RUNNER_REPLAYABLE_LAUNCH: options.token ? '0' : '1'
           }
         });
         happyProcess.once('exit', () => {
@@ -998,6 +1006,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (processStartMarker) {
             persistedResumeProcesses.set(pid, {
               requestedSessionId: trackedSession.requestedHappySessionId,
+              wakeAttemptId: options.wakeAttemptId,
               pid,
               processStartMarker,
               bootId: getSystemBootId() ?? undefined,
@@ -1750,10 +1759,21 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       sessionId: string,
       opts?: { processStartMarker?: string }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+      const pid = opts?.processStartMarker && sessionId.startsWith('PID-') ? Number(sessionId.slice(4)) : undefined;
+      const recovered = pid !== undefined && !pidToTrackedSession.get(pid)?.childProcess
+        ? persistedResumeProcesses.get(pid) : undefined;
       const intentional = markIntentionalStop(sessionId);
       const terminated = new Set<number>();
       try {
-        return await attemptStopSession(sessionId, opts, terminated);
+        const status = await attemptStopSession(sessionId, opts, terminated);
+        if (pid !== undefined && recovered && recovered.processStartMarker === opts?.processStartMarker
+          && persistedResumeProcesses.get(pid) === recovered && existingSessionIdByChildPid.get(pid) === recovered.requestedSessionId
+          && (status === 'already_gone' || (status === 'stopped' && terminated.has(pid)))) {
+          rememberVerifiedExit(recovered.requestedSessionId);
+          if (recovered.confirmedSessionId) rememberVerifiedExit(recovered.confirmedSessionId);
+          discardStaleProcess(pid);
+        }
+        return status;
       } finally {
         for (const pid of intentional.marked) {
           if (!(intentional.withExitListener.has(pid) && terminated.has(pid))) intentionallyStoppedPids.delete(pid);
@@ -1918,6 +1938,30 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // Set RPC handlers
     apiMachine.setRPCHandlers({
+      inspectWorker: async ({ sessionId, pid, startMarker, wakeAttemptId }) => {
+        const actual = await inspectWorkerGeneration(pid, startMarker);
+        const record = persistedResumeProcesses.get(pid);
+        const confirmedWake = actual === 'matching' && !!wakeAttemptId && record?.wakeAttemptId === wakeAttemptId
+          && record.requestedSessionId === sessionId && record.confirmedSessionId === sessionId
+          && record.processStartMarker === startMarker;
+        if (!wakeAttemptId && (actual === 'gone' || actual === 'replaced')) {
+          for (const binding of persistedResumeProcesses.values()) {
+            if (binding.requestedSessionId !== sessionId && binding.confirmedSessionId !== sessionId) continue;
+            if (binding.pid === pid && binding.processStartMarker === startMarker) continue;
+            const owner = await inspectWorkerGeneration(binding.pid, binding.processStartMarker);
+            if (owner === 'matching' && binding.confirmedSessionId === sessionId) {
+              return { state: actual, confirmedWake, stopState: 'new-owner' };
+            }
+            if (owner === 'unknown' || owner === 'matching') return { state: actual, confirmedWake };
+          }
+          const targets = await findStopSessionOrphanTargets(sessionId, () => false);
+          if (targets !== 'scan_failed' && targets.length === 0 && hasVerifiedExit(sessionId)
+            && ![...pidToTrackedSession.values()].some(child => child.happySessionId === sessionId || child.requestedHappySessionId === sessionId)) {
+            return { state: actual, confirmedWake, stopState: 'clear' };
+          }
+        }
+        return { state: actual, confirmedWake };
+      },
       spawnSession,
       stopSession,
       requestShutdown: () => requestShutdown('hapi-app')
@@ -2023,10 +2067,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
         const persisted = persistedResumeProcesses.get(pid);
         if (persisted) {
-          const currentMarker = heartbeatTable ? heartbeatTable.get(pid)?.marker ?? null : undefined;
-          const generation = probeRecoveredProcessGeneration(pid, persisted, currentMarker, !!heartbeatTable);
+          const currentMarker = heartbeatTable ? heartbeatTable.get(pid)?.marker ?? null : getProcessStartMarker(pid);
+          const generation = probeRecoveredProcessGeneration(pid, persisted, currentMarker, true);
           if (generation === 'exited') {
             logger.debug(`[RUNNER RUN] Removing stale session with reused PID ${pid}`);
+            if (!pidToTrackedSession.get(pid)?.childProcess && currentMarker && currentMarker !== persisted.processStartMarker) {
+              rememberVerifiedExit(persisted.requestedSessionId);
+              if (persisted.confirmedSessionId && persisted.confirmedSessionId !== persisted.requestedSessionId) {
+                rememberVerifiedExit(persisted.confirmedSessionId);
+              }
+            }
             discardStaleProcess(pid);
           } else if (generation === 'verified' && pidToRequestedSessionId.get(pid) !== persisted.requestedSessionId) {
             pidToRequestedSessionId.set(pid, persisted.requestedSessionId);

@@ -1,5 +1,5 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, getGenerationKillMethod, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease, type InspectWorkerRequest, type WorkerInspection } from '@hapi/protocol/rpcMethods'
 import {
     UsageQueryResultSchema,
     UsageQuerySettingsResponseSchema,
@@ -239,6 +239,8 @@ export class RpcGateway {
                 throw new Error('Process shutdown preparation requires machine and process generation')
             }
             method = getSessionStopPreparationMethod(options.expectedMachineId, options.expectedPid)
+        } else if (options.expectedMachineId && options.expectedPid && options.expectedProcessStartMarker) {
+            method = getGenerationKillMethod(options.expectedMachineId, options.expectedPid)
         }
         const result = await this.sessionRpc(sessionId, method, options)
         if (result && typeof result === 'object' && ('error' in result || ('success' in result && result.success === false))) {
@@ -256,6 +258,21 @@ export class RpcGateway {
             ...(preparationLease ? { preparationLease } : {}),
             ...(typeof machineId === 'string' ? { machineId } : {}),
         }
+    }
+
+    hasConnectedStopTarget(machineId: string, namespace: string): boolean {
+        const id = this.rpcRegistry.getSocketIdForMethod(`${machineId}:${RPC_METHODS.StopSession}`)
+        if (!id || this.rpcRegistry.getSocketIdForMethod(`${machineId}:${RPC_METHODS.InspectWorker}`) !== id) return false
+        const socket = this.io.of('/cli').sockets.get(id)
+        return socket?.connected === true && socket.data.namespace === namespace && socket.rooms.has(`machine:${machineId}`)
+    }
+
+    async inspectWorker(machineId: string, request: InspectWorkerRequest): Promise<WorkerInspection> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.InspectWorker, request) as Partial<WorkerInspection> | null
+        const state = result?.state
+        if (state !== 'matching' && state !== 'replaced' && state !== 'gone') return { state: 'unknown', confirmedWake: false }
+        return { state, confirmedWake: state === 'matching' && result?.confirmedWake === true,
+            stopState: result?.stopState === 'clear' || result?.stopState === 'new-owner' ? result.stopState : undefined }
     }
 
     async stopRunnerSession(
@@ -332,7 +349,8 @@ export class RpcGateway {
         /** Fresh machine-spawn stub — distinct from reopen existingSessionId. */
         reservedSessionId?: string,
         /** Claude: resume the spawned child truncated to this entry uuid. */
-        resumeSessionAt?: string
+        resumeSessionAt?: string,
+        wakeAttemptId?: string
     ): Promise<
         | { type: 'success'; sessionId: string }
         | {
@@ -363,6 +381,7 @@ export class RpcGateway {
                     serviceTier,
                     existingSessionId,
                     reservedSessionId,
+                    ...(wakeAttemptId ? { wakeAttemptId } : {}),
                     // Local HTTP / tracking may still read sessionId; prefer
                     // reserved stub id, then reopen id.
                     sessionId: reservedSessionId ?? existingSessionId,
@@ -576,6 +595,11 @@ export class RpcGateway {
 
     async abortChunkedUpload(sessionId: string, uploadId: string): Promise<AbortChunkedUploadResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.UploadAbort, { sessionId, uploadId }) as AbortChunkedUploadResponse
+    }
+
+    async validateSessionUploads(sessionId: string, files: { path: string; size: number }[], required: boolean): Promise<boolean> {
+        if (!required && !this.rpcRegistry.getSocketIdForMethod(`${sessionId}:${RPC_METHODS.ValidateSessionUploads}`)) return true
+        return await this.sessionRpc(sessionId, RPC_METHODS.ValidateSessionUploads, { files }) === true
     }
 
     async deleteUploadFile(sessionId: string, path: string): Promise<RpcDeleteUploadResponse> {

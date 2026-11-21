@@ -417,7 +417,7 @@ export class PiSession {
         // It must precede piSessionId metadata publication, while prompt drain
         // may wait for the append-log baseline below.
         this.nativeReadyAnnounced = true;
-        this.client.emitSessionReady();
+        this.client.emitSessionReady(this.expectedNativeSessionId ?? undefined);
         if (this.nativeReadyPreparation) {
             this.nativeReadyPreparationStarted = true;
             void this.nativeReadyPreparation()

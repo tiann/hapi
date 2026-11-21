@@ -1,6 +1,6 @@
 import { useMutation } from '@tanstack/react-query'
 import { useRef, useState } from 'react'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
 import { makeClientSideId } from '@/lib/messages'
 import {
@@ -56,11 +56,8 @@ type BlockedReason = 'no-api' | 'no-session' | 'pending'
  *   recovery retains queue, while turn-scoped steer safely degrades to queue
  *   because the original Pi generation can no longer be proven.
  *
- * Only fired for text-only sends.  Sends with attachments fall back to
- * the legacy failed-bubble UX (the optimistic row stays as `failed` and
- * the user retries via the in-thread retry button); the composer-restore
- * path can't reinstate uploaded attachment metadata, so doing the swap
- * for attachment sends would silently drop the attachments.
+ * Expired uploads return to the composer so it can stage the files again.
+ * Other attachment errors retain the failed bubble and its retry action.
  */
 export type SendErrorInfo = {
     sessionId: string
@@ -70,6 +67,9 @@ export type SendErrorInfo = {
     deliveryMode: MessageDeliveryMode
     /** True only after the message mutation was started. */
     mutationStarted: boolean
+    reuploadPaths?: string[]
+    retryRecovery?: boolean
+    onRestored?: () => void
 }
 
 export type ResolvedSession = {
@@ -98,6 +98,7 @@ type UseSendMessageOptions = {
     onBlocked?: (reason: BlockedReason) => void
     onSuccess?: (sessionId: string) => void
     onError?: (info: SendErrorInfo) => void
+    isSessionHibernated?: boolean
     isSessionThinking?: boolean
 }
 
@@ -197,9 +198,12 @@ export function useSendMessage(
     ) => Promise<SendMessageAcceptance | false>
     retryMessage: (localId: string) => boolean
     isSending: boolean
+    isResolving: boolean
+    isWaking: boolean
 } {
     const { haptic } = usePlatform()
-    const [isResolving, setIsResolving] = useState(false)
+    const [resolving, setResolving] = useState<{ sessionId: string; waking: boolean } | null>(null)
+    const isResolving = resolving !== null
     const resolveGuardRef = useRef(false)
     const isSessionThinkingRef = useRef(options?.isSessionThinking ?? false)
     isSessionThinkingRef.current = options?.isSessionThinking ?? false
@@ -233,26 +237,21 @@ export function useSendMessage(
             options?.onSuccess?.(input.sessionId)
         },
         onError: (error, input) => {
-            // Attachment sends keep the legacy failed-bubble UX: the
-            // composer-restore path can only re-seat text + scheduledAt,
-            // not the uploaded attachment metadata.  Removing the row
-            // would destroy the attachment preview AND leave the operator
-            // with no retry surface for it.  Keep the row as `failed` so
-            // the in-thread retry button can re-fire the send (with
-            // attachments) via retryMessage.
-            if (input.attachments && input.attachments.length > 0) {
+            const reupload = error instanceof ApiError && error.code === 'attachment_reupload_required'
+            if (input.attachments?.length && !reupload) {
                 updateMessageStatus(input.sessionId, input.localId, 'failed')
                 haptic.notification('error')
                 return
             }
-            // Text-only sends use the composer-restore path: drop the
+            // For composer recovery, drop the
             // optimistic row from the thread (otherwise the failed bubble
             // would visually duplicate the same text the composer is
             // about to restore, and the operator could stack a stale
             // failed turn next to a fresh send) and hand the text +
             // scheduledAt + sessionId back so the route can put both
             // back into the composer keyed to the right session.
-            removeOptimisticMessage(input.sessionId, input.localId)
+            if (reupload) updateMessageStatus(input.sessionId, input.localId, 'failed', true)
+            else removeOptimisticMessage(input.sessionId, input.localId)
             haptic.notification('error')
             options?.onError?.({
                 sessionId: input.sessionId,
@@ -261,6 +260,10 @@ export function useSendMessage(
                 scheduledAt: input.scheduledAt ?? null,
                 deliveryMode: input.deliveryMode,
                 mutationStarted: true,
+                ...(reupload ? {
+                    reuploadPaths: input.attachments?.map(file => file.path),
+                    onRestored: () => removeOptimisticMessage(input.sessionId, input.localId),
+                } : {}),
             })
         },
     })
@@ -289,9 +292,10 @@ export function useSendMessage(
         const createdAt = Date.now()
         let targetSessionId = sessionId
         let sendAttachments = attachments
-        if (options?.resolveSessionId) {
+        const deferWake = options?.isSessionHibernated && typeof scheduledAt === 'number' && scheduledAt > createdAt
+        if (options?.resolveSessionId && !deferWake) {
             resolveGuardRef.current = true
-            setIsResolving(true)
+            setResolving({ sessionId, waking: options.isSessionHibernated === true })
             try {
                 const resolved = await options.resolveSessionId(sessionId)
                 targetSessionId = resolved.sessionId
@@ -335,7 +339,7 @@ export function useSendMessage(
                 return false
             } finally {
                 resolveGuardRef.current = false
-                setIsResolving(false)
+                setResolving(null)
             }
         }
         mutation.mutate({
@@ -367,7 +371,16 @@ export function useSendMessage(
         }
 
         const message = findMessageByLocalId(sessionId, localId)
-        if (!message?.originalText) return false
+        if (message?.originalText === undefined) return false
+        if (message.reuploadRequired) {
+            options?.onError?.({
+                sessionId, text: message.originalText, error: new ApiError('Upload the attachments again before sending.', 409, 'attachment_reupload_required'),
+                scheduledAt: message.scheduledAt ?? null, deliveryMode: getRetryDeliveryMode(getMessageDeliveryMode(message)),
+                mutationStarted: false, retryRecovery: true, reuploadPaths: getMessageAttachments(message)?.map(file => file.path),
+                onRestored: () => removeOptimisticMessage(sessionId, localId),
+            })
+            return true
+        }
 
         updateMessageStatus(sessionId, localId, 'sending')
 
@@ -387,5 +400,7 @@ export function useSendMessage(
         sendMessage,
         retryMessage,
         isSending: mutation.isPending || isResolving,
+        isResolving,
+        isWaking: resolving !== null && resolving.sessionId === sessionId && resolving.waking,
     }
 }

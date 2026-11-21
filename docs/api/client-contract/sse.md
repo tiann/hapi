@@ -213,6 +213,7 @@ A session can keep `active: true` indefinitely on keep-alives alone, with no mes
 
 - `running` — live working session (stamped by the CLI at session start)
 - `idle` — the hub has seen nothing but keep-alives for `HAPI_SESSION_IDLE_TIMEOUT_MS` (default 12 h). Reversible and non-destructive: `active` stays `true`, and the next message, queued prompt or background task flips it back to `running` within one hub tick
+- `hibernated` — the hub confirmed the idle runner session stopped and set `active: false`. The next send resumes it under the same session ID.
 - `archived` — session closed
 
 Client rules:

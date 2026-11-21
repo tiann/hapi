@@ -13,6 +13,36 @@ function renderStatus(requests: AgentState['requests'], onClick = vi.fn()) {
     return onClick
 }
 
+describe('StatusBar hibernated sessions', () => {
+    it('shows Hibernated instead of offline', () => {
+        render(
+            <I18nProvider>
+                <StatusBar active={false} thinking={false} agentState={null} lifecycleState="hibernated" />
+            </I18nProvider>
+        )
+        expect(screen.getByText('Hibernated')).toBeInTheDocument()
+        expect(screen.queryByText('offline')).not.toBeInTheDocument()
+    })
+
+    it('shows the waking label while the pre-send resume is pending', () => {
+        render(
+            <I18nProvider>
+                <StatusBar active={false} thinking={false} agentState={null} lifecycleState="hibernated" waking />
+            </I18nProvider>
+        )
+        expect(screen.getByText('Waking session…')).toBeInTheDocument()
+    })
+
+    it('stays offline for non-hibernated inactive sessions', () => {
+        render(
+            <I18nProvider>
+                <StatusBar active={false} thinking={false} agentState={null} waking />
+            </I18nProvider>
+        )
+        expect(screen.getByText('offline')).toBeInTheDocument()
+    })
+})
+
 describe('StatusBar pending requests', () => {
     it('labels a question as awaiting an answer and locates it directly', () => {
         const onClick = renderStatus({

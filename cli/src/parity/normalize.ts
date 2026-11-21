@@ -101,7 +101,7 @@ export function normalize(rows: Row[], facts: ProcessFacts, launches: unknown[],
                 assert.equal(Number(port), facts.mcpPort)
                 return host + token(ports, port, 'port') + '/'
             })
-            .replace(/(killSession\/process\/[^/]+\/)(\d+)$/, (_, prefix, pid) => {
+            .replace(/(killSession\/(?:process|generation)\/[^/]+\/)(\d+)$/, (_, prefix, pid) => {
                 assert.equal(pid, String(facts.pid))
                 return prefix + '<pid>'
             })

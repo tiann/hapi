@@ -678,6 +678,8 @@ type SessionChatProps = {
     isCatchingUpFromCache: boolean
     isLoadingMoreMessages: boolean
     isSending: boolean
+    /** Pre-send resume (or Reopen) of a hibernated session is in flight. */
+    isWaking?: boolean
     viewMode: 'tail' | 'history'
     messagesVersion: number
     historyVersion: number
@@ -2658,6 +2660,8 @@ function SessionChatInner(props: SessionChatProps) {
                                 : claudeEffortOptions
                         }
                         active={props.session.active}
+                        lifecycleState={props.session.metadata?.lifecycleState}
+                        waking={props.isWaking ?? false}
                         allowSendWhenInactive
                         resolveSessionIdForVoice={props.resolveSessionIdForVoice}
                         onVoiceSessionResolved={props.onVoiceSessionResolved}

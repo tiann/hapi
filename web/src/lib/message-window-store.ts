@@ -2182,14 +2182,14 @@ export function appendOptimisticMessage(sessionId: string, message: DecryptedMes
     }, true)
 }
 
-export function updateMessageStatus(sessionId: string, localId: string, status: MessageStatus): void {
+export function updateMessageStatus(sessionId: string, localId: string, status: MessageStatus, reuploadRequired?: boolean): void {
     if (!localId) return
     updateState(sessionId, (previous) => {
         let changed = false
         const messages = previous.messages.map((message) => {
-            if (message.localId !== localId || message.status === status) return message
+            if (message.localId !== localId || (message.status === status && message.reuploadRequired === reuploadRequired)) return message
             changed = true
-            return { ...message, status }
+            return { ...message, status, reuploadRequired }
         })
         return changed ? buildState(previous, { messages }) : previous
     })

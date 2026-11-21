@@ -114,7 +114,7 @@ import {
     compareDescWithKeyTiebreak,
     compareSessionsByOrderKeyDesc
 } from '@hapi/protocol'
-import { createSessionComparator, getSessionSortKey } from '@/lib/sessionListOrder'
+import { createSessionComparator, getSessionSortKey, isSessionActiveForList } from '@/lib/sessionListOrder'
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
 import {
     getSessionLastSeenAt,
@@ -418,6 +418,9 @@ export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selecte
         group.sort((a, b) => {
             // Active session always wins — it's the live connection
             if (a.active !== b.active) return a.active ? -1 : 1
+            const aListActive = isSessionActiveForList(a)
+            const bListActive = isSessionActiveForList(b)
+            if (aListActive !== bListActive) return aListActive ? -1 : 1
             // Among inactive duplicates, keep the selected one visible
             if (a.id === selectedSessionId) return -1
             if (b.id === selectedSessionId) return 1
@@ -433,7 +436,7 @@ export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selecte
         // A second live Claude row is a real process the hub will not merge;
         // hiding it would leave no way to reach (or stop) it.
         for (const duplicate of group.slice(1)) {
-            if (hasRunningAttachedJob(duplicate) || (duplicate.active && duplicate.metadata?.flavor === 'claude')) {
+            if (isHibernatedSession(duplicate) || hasRunningAttachedJob(duplicate) || (duplicate.active && duplicate.metadata?.flavor === 'claude')) {
                 result.push(duplicate)
             }
         }
@@ -481,7 +484,12 @@ export function filterActiveSessionsOnly(sessions: SessionSummary[], selectedSes
         session.active
         || session.id === selectedSessionId
         || hasRunningAttachedJob(session)
+        || isHibernatedSession(session)
     )
+}
+
+function isHibernatedSession(session: Pick<SessionSummary, 'active' | 'metadata'>): boolean {
+    return !session.active && isSessionActiveForList(session)
 }
 
 /**
@@ -497,7 +505,7 @@ export function filterSessionsForListStatus(
     if (status === 'active') return filterActiveSessionsOnly(sessions, selectedSessionId)
     return sessions.filter(session =>
         session.id === selectedSessionId
-        || (!session.active && !hasRunningAttachedJob(session))
+        || (!session.active && !hasRunningAttachedJob(session) && !isHibernatedSession(session))
     )
 }
 
@@ -583,7 +591,7 @@ export function groupSessionsByDirectory(
                 (max, s) => Math.max(max, getSessionSortKey(s, order.sort)),
                 -Infinity
             )
-            const hasActiveSession = group.sessions.some(s => s.active)
+            const hasActiveSession = group.sessions.some(isSessionActiveForList)
             const hasPinnedSession = group.sessions.some(s => s.pinned)
             const displayName = getSessionProjectLabel(group.directory)
 
@@ -1614,7 +1622,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const archiveNeedsConfirmation = s.thinking || s.pendingRequestsCount > 0 || (s.backgroundTaskCount ?? 0) > 0
     // The row can turn inactive before the archive request settles (the hub
     // still confirms cleanup); keep the spinner until it does.
-    const showQuickArchive = s.active || quickArchivePending
+    const showQuickArchive = s.active || isHibernatedSession(s) || quickArchivePending
     const quickActionCount = (showQuickUnpin ? 1 : 0) + (showQuickArchive ? 1 : 0)
     const hasQuickAction = quickActionCount > 0
     const handleQuickArchive = async () => {

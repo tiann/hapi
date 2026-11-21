@@ -236,6 +236,8 @@ export default {
   'session.item.pending': 'ожидание',
   'session.item.thinking': 'размышление',
   'session.item.running': 'Выполняется',
+  'session.item.hibernated': 'Спящий режим',
+  'session.composer.waking': 'Пробуждение сессии…',
   'session.item.attachedJob': 'Задачи',
   'session.item.attachedJob.left': 'осталось',
   'session.item.attachedJob.running': 'выполняется',

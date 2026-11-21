@@ -27,6 +27,7 @@ type FakeRuntimeState = {
 }
 
 const runtime = vi.hoisted(() => ({
+    statusBarProps: null as Record<string, unknown> | null,
     snapshot: {
         composer: { text: '', attachments: [] as FakeAttachment[] },
         thread: { isRunning: false, isDisabled: false },
@@ -114,7 +115,12 @@ vi.mock('@/hooks/useActiveWord', () => ({ useActiveWord: () => null }))
 vi.mock('@/hooks/useActiveSuggestions', () => ({ useActiveSuggestions: () => [[], -1, () => {}, () => {}, () => {}] }))
 vi.mock('@/components/ChatInput/FloatingOverlay', () => ({ FloatingOverlay: ({ children }: { children: ReactNode }) => <>{children}</> }))
 vi.mock('@/components/ChatInput/Autocomplete', () => ({ Autocomplete: () => null }))
-vi.mock('@/components/AssistantChat/StatusBar', () => ({ StatusBar: () => null }))
+vi.mock('@/components/AssistantChat/StatusBar', () => ({
+    StatusBar: (props: Record<string, unknown>) => {
+        runtime.statusBarProps = props
+        return null
+    }
+}))
 
 function renderComposer(agentFlavor: string, overrides: Partial<Parameters<typeof HappyComposer>[0]> = {}) {
     render(
@@ -136,6 +142,18 @@ function renderComposer(agentFlavor: string, overrides: Partial<Parameters<typeo
         </I18nProvider>
     )
 }
+
+describe('HappyComposer status bar hibernation', () => {
+    afterEach(() => {
+        cleanup()
+        runtime.statusBarProps = null
+    })
+
+    it('forwards lifecycleState and waking to the status bar', () => {
+        renderComposer('claude', { active: false, lifecycleState: 'hibernated', waking: true })
+        expect(runtime.statusBarProps).toMatchObject({ active: false, lifecycleState: 'hibernated', waking: true })
+    })
+})
 
 describe('HappyComposer generic model/effort value buttons', () => {
     afterEach(() => {

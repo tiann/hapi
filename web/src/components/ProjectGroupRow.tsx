@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { MutationObserver, useMutation, useQueryClient } from '@tanstack/react-query'
-import { isLiveLifecycleState } from '@hapi/protocol'
+import { isHibernatedLifecycleState, isLiveLifecycleState } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { useTranslation } from '@/lib/use-translation'
@@ -16,7 +16,8 @@ import { ArchiveIcon, CopyIcon, PlusIcon } from '@/components/icons'
 
 // Same liveness the hub archive route accepts.
 function isArchivable(session: SessionSummary): boolean {
-    return session.active || isLiveLifecycleState(session.metadata?.lifecycleState)
+    const lifecycleState = session.metadata?.lifecycleState
+    return session.active || isLiveLifecycleState(lifecycleState) || isHibernatedLifecycleState(lifecycleState)
 }
 
 /**

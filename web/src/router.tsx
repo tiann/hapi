@@ -46,8 +46,9 @@ import { createDeferredSuggestions } from '@/lib/deferredSuggestions'
 import type { Suggestion, SuggestionRequestContext } from '@/hooks/useActiveSuggestions'
 import { useSendMessage, type SendErrorInfo } from '@/hooks/mutations/useSendMessage'
 import type { ComposerSendError } from '@/components/AssistantChat/HappyComposer'
-import { ApiError } from '@/api/client'
+import { ApiError, apiErrorMessage } from '@/api/client'
 import type { MessageDeliveryMode } from '@hapi/protocol'
+import { isHibernatedLifecycleState } from '@hapi/protocol'
 import { queryKeys } from '@/lib/query-keys'
 import { useAddToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
@@ -413,6 +414,9 @@ function classifySendError(
     error: unknown,
     t: (key: string) => string,
 ): { message: string; code: string | null } {
+    if (error instanceof ApiError && error.code === 'attachment_reupload_required') {
+        return { message: apiErrorMessage(error, t('chat.sendError.fallback')), code: error.code }
+    }
     if (error instanceof ApiError && error.status === 409 && error.code === 'session_inactive') {
         return { message: t('chat.sendError.sessionInactive'), code: 'session_inactive' }
     }
@@ -503,6 +507,9 @@ function SessionPage() {
     // record} x {current reopen state}.  See classifySendError + the
     // Reopen affordance below.
     type RawSendError = {
+        reuploadPaths?: string[]
+        retryRecovery?: boolean
+        onRestored?: () => void
         id: number
         text: string
         message: string
@@ -513,7 +520,8 @@ function SessionPage() {
         restoreSuppressed: boolean
     }
     const [sendErrors, setSendErrors] = useState<Record<string, RawSendError>>({})
-    const [reopeningSessionId, setReopeningSessionId] = useState<string | null>(null)
+    const [reopening, setReopening] = useState<{ id: string; waking: boolean } | null>(null)
+    const reopeningSessionId = reopening?.id
     const sendErrorIdRef = useRef(0)
     const clearSendError = useCallback(() => {
         setSendErrors((prev) => {
@@ -544,7 +552,7 @@ function SessionPage() {
     // restored composer text once Reopen lands.
     const reopenFromErrorAffordance = useCallback((errorSessionId: string) => {
         if (!api) return
-        setReopeningSessionId((prev) => prev ?? errorSessionId)
+        setReopening(prev => prev ?? { id: errorSessionId, waking: session?.id === errorSessionId && isHibernatedLifecycleState(session.metadata?.lifecycleState) })
         void (async () => {
             try {
                 const result = await api.reopenSession(errorSessionId)
@@ -580,10 +588,10 @@ function SessionPage() {
                     url: ''
                 })
             } finally {
-                setReopeningSessionId(null)
+                setReopening(null)
             }
         })()
-    }, [api, queryClient, navigate, addToast, t])
+    }, [api, queryClient, navigate, addToast, t, session])
 
     const cursorReopenGate = resolveCursorReopenGate({
         applicable: cursorChatStoreApplicable,
@@ -606,6 +614,9 @@ function SessionPage() {
     const sendError: ComposerSendError | null = rawSendError
         ? {
             id: rawSendError.id,
+            reuploadPaths: rawSendError.reuploadPaths,
+            retryRecovery: rawSendError.retryRecovery,
+            onRestored: rawSendError.onRestored,
             text: rawSendError.text,
             message: rawSendError.message,
             scheduledAt: rawSendError.scheduledAt,
@@ -716,7 +727,9 @@ function SessionPage() {
         sendMessage,
         retryMessage,
         isSending,
+        isWaking,
     } = useSendMessage(api, sessionId, {
+        isSessionHibernated: !session?.active && isHibernatedLifecycleState(session?.metadata?.lifecycleState),
         isSessionThinking: session?.thinking ?? false,
         onSuccess: (sentSessionId) => {
             clearDraftsAfterSend(sentSessionId, sessionId)
@@ -739,6 +752,9 @@ function SessionPage() {
                 [info.sessionId]: {
                     id: sendErrorIdRef.current,
                     text: info.text,
+                    reuploadPaths: info.reuploadPaths,
+                    retryRecovery: info.retryRecovery,
+                    onRestored: info.onRestored,
                     message,
                     code,
                     scheduledAt: info.scheduledAt,
@@ -970,6 +986,7 @@ function SessionPage() {
             isCatchingUpFromCache={messagesCatchingUpFromCache}
             isLoadingMoreMessages={messagesLoadingMore}
             isSending={isSending}
+            isWaking={isWaking || (reopening?.id === sessionId && reopening.waking)}
             viewMode={messagesViewMode}
             messagesVersion={messagesVersion}
             historyVersion={historyVersion}

@@ -92,6 +92,16 @@ describe('resumeCommand', () => {
         existsSyncMock.mockReturnValue(true)
     })
 
+    it('awaits hub handoff before opening an active single-wrapper Codex session', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'single-codex', flavor: 'codex', directory: '/tmp/project', machineId: 'machine-1',
+            active: true, thinking: false, controlledByUser: false, concurrentClients: false, agentSessionId: 'native-codex'
+        })
+        await resumeCommand.run(createContext(['single-codex']))
+        expect(handoffSessionToLocalMock).toHaveBeenCalledWith('single-codex')
+        expect(handoffSessionToLocalMock.mock.invocationCallOrder[0]).toBeLessThan(runCodexMock.mock.invocationCallOrder[0]!)
+    })
+
     it('resumes a Codex target by HAPI session id', async () => {
         getLocalResumeTargetMock.mockResolvedValue({
             sessionId: 'hapi-session-1',
@@ -422,6 +432,7 @@ describe('resumeCommand', () => {
 
             expect(renderMock).toHaveBeenCalledOnce()
             expect(getLocalResumeTargetMock).toHaveBeenCalledWith('picked-session')
+            expect(prepareSessionForLocalResumeMock).toHaveBeenCalledWith('picked-session')
             expect(runCodexMock).toHaveBeenCalledWith(expect.objectContaining({
                 existingSessionId: 'picked-session',
                 resumeSessionId: 'codex-thread-1'

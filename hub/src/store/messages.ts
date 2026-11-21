@@ -1335,6 +1335,29 @@ export function countMessages(db: Database, sessionId: string): number {
     return row?.count ?? 0
 }
 
+/** Count queued or scheduled user prompts not yet delivered (invoked).
+ *  Same scope as getImmediateQueuedLocalMessages plus scheduled rows:
+ *  indeterminate rows and non-user rows with a durable localId (e.g. OpenCode
+ *  compaction session events) are excluded so they cannot pin live work. */
+export function countUndeliveredForSession(db: Database, sessionId: string): number {
+    const queued = `
+        SELECT content FROM messages
+        WHERE session_id = ? AND invoked_at IS NULL AND local_id IS NOT NULL AND delivery_state = 'queued'
+    `
+    const queries = [
+        queued + ' AND scheduled_at IS NULL ORDER BY seq ASC',
+        queued + ' AND scheduled_at IS NOT NULL ORDER BY scheduled_at ASC'
+    ]
+    let count = 0
+    for (const query of queries) {
+        const rows = prepareCached(db, query).all(sessionId) as Pick<DbMessageRow, 'content'>[]
+        for (const row of rows) {
+            if (unwrapRoleWrappedRecordEnvelope(decodeMessageContent(row.content))?.role === 'user') count++
+        }
+    }
+    return count
+}
+
 /** Count uninvoked local messages scheduled for a future time (session list indicator). */
 export function countFutureScheduledLocalMessages(
     db: Database,
