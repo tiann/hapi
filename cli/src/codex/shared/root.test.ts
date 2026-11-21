@@ -381,6 +381,50 @@ it.each(['/new', '/clear'])('defers %s when tier confirmation pauses during the 
     expect(create).toHaveBeenCalledTimes(1);
 });
 
+it.each(['resume', 'cancel', 'partial clear'])('handles a tier pause during a Web goal command (%s)', async action => {
+    const f = await fixture();
+    await f.root.activate();
+    const root = f.root as unknown as { pauseTierConfirmation(id: number): void; tierOperationCounter: number };
+    const original = f.root.client.request.bind(f.root.client);
+    let reached!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { reached = resolve; });
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/goal/get') {
+            if (action !== 'partial clear') { reached(); await hold; }
+            return { goal: action === 'partial clear' ? { status: 'complete' } : null } as never;
+        }
+        if (method === 'thread/goal/clear') {
+            reached(); await hold;
+            return {} as never;
+        }
+        if (method === 'thread/goal/set') return { goal: { status: 'active' } } as never;
+        return original(method, params);
+    });
+
+    f.submit('/goal Finish the local test', 'goal');
+    await entered;
+    root.pauseTierConfirmation(++root.tierOperationCounter);
+    const cancellation = action === 'cancel' ? f.cancel('goal') : undefined;
+    release();
+    if (cancellation) await expect(cancellation).resolves.toBe(true);
+    else await vi.waitFor(async () => expect((await f.ledger()).entries.goal?.state)
+        .toBe(action === 'partial clear' ? 'unknown' : undefined));
+    if (action === 'partial clear') await vi.waitFor(() => expect(f.uncertain).toHaveBeenCalledWith(['goal']));
+    else expect(f.uncertain).not.toHaveBeenCalled();
+    const goalWrites = () => request.mock.calls.filter(([method]) => method === 'thread/goal/set');
+    expect(goalWrites()).toHaveLength(0);
+
+    await f.root.applySettings({ serviceTier: 'standard' });
+    if (action === 'resume') {
+        await vi.waitFor(async () => expect((await f.ledger()).entries.goal?.state).toBe('consumed'));
+        expect(goalWrites()).toEqual([['thread/goal/set', { threadId: 'thread', objective: 'Finish the local test' }]]);
+    } else {
+        expect((await f.ledger()).entries.goal?.state).toBe(action === 'cancel' ? 'canceled' : 'unknown');
+        expect(goalWrites()).toHaveLength(0);
+    }
+});
+
 it.each([false, true])('starts admitted input after tier recovery without re-enqueueing (disconnect %s)', async disconnect => {
     const f = await fixture();
     f.native.thread.turns = [{ id: 'interrupted', status: 'interrupted', items: [] }];
@@ -2050,7 +2094,7 @@ describe('Ultrafast native settings', () => {
         const f = await fixture();
         await f.root.applySettings({ model: 'standard-only', serviceTier: 'standard' });
         f.events.mockClear();
-        await (f.root as unknown as { command(text: string): Promise<string | null> }).command('/ultrafast on');
+        await (f.root as unknown as { command(text: string, assertAdmission: () => void): Promise<string | null> }).command('/ultrafast on', () => {});
         expect(f.events).toHaveBeenCalledOnce();
         expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
     });

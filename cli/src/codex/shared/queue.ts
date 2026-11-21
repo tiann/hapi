@@ -238,15 +238,18 @@ export class SharedCodexQueue {
                 this.uncertain([id]); throw new Error('Previous command outcome is unknown; not replaying');
             }
             this.entries[id] = { input: [], state: 'unknown' }; await this.save();
+            const restoreEntry = async () => {
+                if (existing) this.entries[id] = existing;
+                else delete this.entries[id];
+                await this.save();
+            };
             try {
                 this.assertInputAdmission();
                 beforeDispatch?.();
             } catch (error) {
                 // No native command ran. Restore the ledger before the
                 // caller waits or cancels outside this serialized operation.
-                if (existing) this.entries[id] = existing;
-                else delete this.entries[id];
-                await this.save();
+                await restoreEntry();
                 throw error;
             }
             try {
@@ -255,7 +258,9 @@ export class SharedCodexQueue {
                 else { delete this.entries[id]; await this.save(); }
                 return result;
             } catch (error) {
-                if (error instanceof QueueCommandRejected) {
+                if (error instanceof QueueAdmissionPaused) {
+                    await restoreEntry();
+                } else if (error instanceof QueueCommandRejected) {
                     if (this.entries[id]?.state !== 'consumed') {
                         this.entries[id] = { input: [], state: 'rejected' };
                         await this.save();

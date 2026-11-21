@@ -230,17 +230,17 @@ export class SharedCodexRoot {
                 const slash = text.trim().startsWith('/');
                 let resolved: string | null = text;
                 if (slash) {
+                    const assertAdmission = () => {
+                        if (this.closed || this.stopping || this.needsTierConfirmation || !stillHeld() || attempt.cancellation) {
+                            throw new QueueAdmissionPaused('Command admission is paused.');
+                        }
+                    };
                     for (;;) {
                         if (this.needsTierConfirmation) await this.inputGate;
                         if (attempt.cancellation) { await attempt.cancellation; continue; }
                         if (this.closed || this.stopping || !stillHeld() || this.queue.isHeldCancellation(id)) return;
                         try {
-                            const command = await this.queue.command(id, () => this.command(text), () => {
-                                if (!stillHeld() || attempt.cancellation) throw new QueueAdmissionPaused('Command cancellation is pending.');
-                                // The command ledger takes over cancellation
-                                // only after the durable preflight succeeds.
-                                releaseHeld();
-                            });
+                            const command = await this.queue.command(id, () => this.command(text, assertAdmission), assertAdmission);
                             if (command === undefined) return;
                             resolved = command;
                             break;
@@ -248,7 +248,6 @@ export class SharedCodexRoot {
                             if (!(error instanceof QueueAdmissionPaused)) throw error;
                         }
                     }
-                    if (resolved !== null && !this.heldMessages.has(id)) this.heldMessages.set(id, attempt);
                 }
                 if (resolved === null) { this.session.emitMessagesConsumed([id], { clearQueuedThinkingGrace: true }); return; }
                 const input = buildUserInputFromMessage(resolved);
@@ -1733,7 +1732,7 @@ export class SharedCodexRoot {
         if (this.host.attached) throw new Error('Create new conversations in the owning desktop, then attach them explicitly');
         return this.host.create('thread/start', this.freshParams(), undefined, { collaborationMode: this.settings.collaborationMode });
     }
-    private async command(text: string): Promise<string | null> {
+    private async command(text: string, assertAdmission: () => void): Promise<string | null> {
         const command = text.trim();
         if (command === '/clear' || command === '/new') {
             const child = await this.newConversation(); this.notice(`New conversation: /sessions/${child.session.sessionId}`); return null;
@@ -1751,8 +1750,15 @@ export class SharedCodexRoot {
             const params = { threadId: this.threadId };
             const goal = slash.action === 'set'
                 ? record(record(await this.client.request('thread/goal/get', params)).goal) : null;
+            if (slash.action === 'set' || slash.action === 'resume') assertAdmission();
             if (goal?.status === 'complete') {
                 await this.client.request('thread/goal/clear', params);
+                try { assertAdmission(); }
+                catch (error) {
+                    // Clearing the old goal already mutated native state. A
+                    // paused activation must not replay the entire command.
+                    throw new Error('The previous goal was cleared before activation paused. Check the goal before retrying.', { cause: error });
+                }
             }
             const response = slash.action === 'show' ? await this.client.request('thread/goal/get', params)
                 : slash.action === 'clear' ? await this.client.request('thread/goal/clear', params)
