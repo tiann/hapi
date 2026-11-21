@@ -5211,8 +5211,8 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.finish();
         });
 
-        it('holds a first-seen command start after Stop and discards it at the next handler swap', async () => {
-            const acp = 'conv-live-quarantine';
+        it('lets a first-seen command start after ready through as a normal wakeup command (accepted limit)', async () => {
+            const acp = 'conv-live-first-seen';
             let release = () => {};
             const gate = new Promise<void>((resolve) => { release = resolve; });
             const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
@@ -5225,20 +5225,19 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             release();
             await h.ready();
             h.client.sendSessionEvent.mockClear();
-            // First seen after ready: its owner is unknown until a new wakeup row or the next prompt.
+            // After ready nothing tells a first-seen start of the stopped wakeup from a new wakeup's:
+            // it is tracked like any wakeup command (it can show as running; the next prompt registers it).
             h.notify(bgCall('call-first-seen', 'sleep 9'));
             await new Promise((r) => setTimeout(r, 40));
             h.queue.push('again', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-3');
             await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
             await h.ready();
-            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
-            expect(results.filter((m) => m.callId?.startsWith('call-first-seen#'))).toHaveLength(0);
-            expect(h.bgEntries().filter((e) => e.callId.startsWith('call-first-seen#'))).toHaveLength(0);
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-first-seen#'))).toBe(true);
             await h.finish();
         });
 
-        it('releases a held command start when a new wakeup row proves ownership', async () => {
-            const acp = 'conv-live-quarantine-release';
+        it('registers a later wakeup command whose start precedes its row after a Stop', async () => {
+            const acp = 'conv-live-later-wakeup';
             let release = () => {};
             const gate = new Promise<void>((resolve) => { release = resolve; });
             const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
@@ -5251,7 +5250,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             release();
             await h.ready();
             h.client.sendSessionEvent.mockClear();
-            // A new autonomous wakeup: its start precedes its SYSTEM_MESSAGE row, then the row flushes.
+            // A later autonomous wakeup: its first-seen start precedes its SYSTEM_MESSAGE row, then the row flushes.
             h.notify(bgCall('call-new-wakeup', 'sleep 9'));
             await new Promise((r) => setTimeout(r, 40));
             h.append(bgRows(2, 'sleep 9', `${acp}/task-9`));
@@ -5259,128 +5258,6 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
             expect(results.filter((m) => m.type === 'tool-call' && m.callId?.startsWith('call-new-wakeup#'))).toHaveLength(1);
             expect(h.bgEntries().some((e) => e.callId.startsWith('call-new-wakeup#'))).toBe(true);
-            await h.finish();
-        });
-
-        it('releases only the held start that a new wakeup row plans, not the stopped wakeup start', async () => {
-            const acp = 'conv-live-quarantine-owned';
-            let release = () => {};
-            const gate = new Promise<void>((resolve) => { release = resolve; });
-            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
-            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
-            await h.ready();
-            h.client.sendSessionEvent.mockClear();
-            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
-            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
-            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
-            release();
-            await h.ready();
-            h.client.sendSessionEvent.mockClear();
-            // Both starts are first seen after the stop: one is the stopped wakeup's, one the new wakeup's.
-            h.notify(bgCall('call-stopped-held', 'sleep 5'));
-            h.notify(bgCall('call-new-owned', 'sleep 9'));
-            await new Promise((r) => setTimeout(r, 40));
-            h.append(bgRows(2, 'sleep 9', `${acp}/task-9`));
-            await h.ready();
-            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
-            expect(results.filter((m) => m.callId?.startsWith('call-new-owned#') && m.type === 'tool-call')).toHaveLength(1);
-            expect(h.bgEntries().some((e) => e.callId.startsWith('call-new-owned#'))).toBe(true);
-            expect(results.filter((m) => m.callId?.startsWith('call-stopped-held#'))).toHaveLength(0);
-            expect(h.bgEntries().some((e) => e.callId.startsWith('call-stopped-held#'))).toBe(false);
-            // The quarantine ended with that wakeup: a later wakeup planning the stopped command line
-            // does not bring the stopped start back.
-            h.client.sendSessionEvent.mockClear();
-            await new Promise((r) => setTimeout(r, 40));
-            h.append(bgRows(10, 'sleep 5', `${acp}/task-10`));
-            await h.ready();
-            const later = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
-            expect(later.filter((m) => m.callId?.startsWith('call-stopped-held#'))).toHaveLength(0);
-            expect(h.bgEntries().some((e) => e.callId.startsWith('call-stopped-held#'))).toBe(false);
-            await h.finish();
-        });
-
-        it('releases no held start when two share a command line but only one planner entry exists', async () => {
-            const acp = 'conv-live-quarantine-dup';
-            let release = () => {};
-            const gate = new Promise<void>((resolve) => { release = resolve; });
-            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
-            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
-            await h.ready();
-            h.client.sendSessionEvent.mockClear();
-            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
-            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
-            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
-            release();
-            await h.ready();
-            h.client.sendSessionEvent.mockClear();
-            // A stopped start and a new start share a command line; the new wakeup plans it once.
-            h.notify(bgCall('call-dup-stopped', 'sleep 9'));
-            h.notify(bgCall('call-dup-new', 'sleep 9'));
-            await new Promise((r) => setTimeout(r, 40));
-            h.append(bgRows(2, 'sleep 9', `${acp}/task-9`, false));
-            await new Promise((r) => setTimeout(r, 300)); // several watcher ticks over the same rows
-            h.append([{ step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'done' }]);
-            await h.ready();
-            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
-            expect(results.filter((m) => m.callId?.startsWith('call-dup-'))).toHaveLength(0);
-            expect(h.bgEntries().some((e) => e.callId.startsWith('call-dup-'))).toBe(false);
-            await h.finish();
-        });
-
-        it('counts a held command once when it arrives as several events with the same call id', async () => {
-            const acp = 'conv-live-quarantine-events';
-            let release = () => {};
-            const gate = new Promise<void>((resolve) => { release = resolve; });
-            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
-            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
-            await h.ready();
-            h.client.sendSessionEvent.mockClear();
-            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
-            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
-            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
-            release();
-            await h.ready();
-            h.client.sendSessionEvent.mockClear();
-            // One new command, announced twice (start, then an in-progress event) before its row.
-            h.notify(bgCall('call-two-events', 'sleep 9'));
-            h.notify(bgCall('call-two-events', 'sleep 9'));
-            await new Promise((r) => setTimeout(r, 40));
-            h.append(bgRows(2, 'sleep 9', `${acp}/task-9`));
-            await h.ready();
-            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
-            expect(results.some((m) => m.type === 'tool-call' && m.callId?.startsWith('call-two-events#'))).toBe(true);
-            expect(h.bgEntries().some((e) => e.callId.startsWith('call-two-events#'))).toBe(true);
-            await h.finish();
-        });
-
-        it('keeps holding unowned starts after the last held command was released', async () => {
-            const acp = 'conv-live-quarantine-gap';
-            let release = () => {};
-            const gate = new Promise<void>((resolve) => { release = resolve; });
-            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
-            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
-            await h.ready();
-            h.client.sendSessionEvent.mockClear();
-            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
-            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
-            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
-            release();
-            await h.ready();
-            h.client.sendSessionEvent.mockClear();
-            h.notify(bgCall('call-gap-owned', 'sleep 9'));
-            await new Promise((r) => setTimeout(r, 40));
-            // The new wakeup plans its command; its row is still open, so the wakeup has not settled.
-            h.append(bgRows(2, 'sleep 9', `${acp}/task-9`, false));
-            const sent = () => h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
-            await vi.waitFor(() => expect(sent().some((m) => m.type === 'tool-call' && m.callId?.startsWith('call-gap-owned#'))).toBe(true));
-            // A first-seen start the wakeup does not plan arrives in the gap before settlement.
-            h.notify(bgCall('call-gap-stopped', 'sleep 5'));
-            await new Promise((r) => setTimeout(r, 60));
-            h.append([{ step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'done' }]);
-            await h.ready();
-            expect(sent().filter((m) => m.callId?.startsWith('call-gap-stopped#'))).toHaveLength(0);
-            expect(h.bgEntries().some((e) => e.callId.startsWith('call-gap-stopped#'))).toBe(false);
-            expect(h.bgEntries().some((e) => e.callId.startsWith('call-gap-owned#'))).toBe(true);
             await h.finish();
         });
 
