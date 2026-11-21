@@ -2163,6 +2163,29 @@ it.each(['priority', 'default'])('reconciles a lost native turn reply from an in
     expect(request.mock.calls.map(([method]) => method)).toEqual(['thread/resume']);
 });
 
+it.each(['next-model', 'other-model'])('reconciles a model-only Ultrafast turn with a lost reply and %s in the snapshot', async effectiveModel => {
+    const f = await fixture({ bindTier: 'ultrafast' });
+    await f.root.activate({}, false);
+    vi.spyOn(f.root.client, 'listModels').mockResolvedValue({
+        data: [{ id: 'next-model', serviceTiers: [{ id: 'ultrafast' }] }]
+    } as never);
+    const heartbeat = vi.spyOn(f.session, 'keepAlive');
+    const prepared = await f.root.prepareNativeTurn({ model: 'next-model' });
+    expect(prepared.params.serviceTier).toBeUndefined();
+    expect(prepared.reconcileUltrafastModel).toBe('next-model');
+    f.root.acceptSettings({ model: 'next-model', serviceTier: 'ultrafast' }, false);
+    f.native.settings = { model: effectiveModel, serviceTier: 'ultrafast' };
+    const request = vi.spyOn(f.root.client, 'request');
+    await f.root.recoverLostNativeTurn(prepared.params, false, prepared.previousTier, prepared.generation,
+        prepared.fallbackNotice, prepared.reconcileUltrafastModel);
+    expect(f.root.needsTierConfirmation).toBe(effectiveModel !== 'next-model');
+    if (effectiveModel === 'next-model') expect(heartbeat.mock.lastCall?.[2]?.serviceTier).toBe('ultrafast');
+    expect(f.metadata().codexServiceTierExplicit).toBe(false);
+    expect(f.events).toHaveBeenCalledWith({ type: 'message', message: expect.stringContaining('delivery is unconfirmed') });
+    expect(request.mock.calls.map(([method]) => method)).toEqual(effectiveModel === 'next-model'
+        ? ['thread/resume', 'experimentalFeature/list'] : ['thread/resume']);
+});
+
 it.each(['ultrafast', 'default'])('preserves accepted native Ultrafast if the wrapper stops before an effective %s read', async effective => {
     const f = await fixture({ bindTier: 'default' });
     await f.root.activate();

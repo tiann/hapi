@@ -109,7 +109,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const pendingAdmission = new Set<string>();
     const resumingThreads = new Set<string>();
     const retryableBindings = new Map<string, Reservation>();
-    const nativeTurns = new Map<string, { root: SharedCodexRoot; params: Record<string, unknown>; explicitTier: boolean; previousTier: unknown; generation: number; fallbackNotice?: string }>();
+    const nativeTurns = new Map<string, { root: SharedCodexRoot; explicitTier: boolean } & Awaited<ReturnType<SharedCodexRoot['prepareNativeTurn']>>>();
     const runtime: CodexRuntimeRecord = { id, pid: process.pid, marker: getProcessStartMarker(process.pid) ?? '',
         endpoint: '', command: command.command, args: command.args, codexHome: home, hub: configuration.apiUrl, authHash: runtimeAuthHash(), sessions: {} };
     if (!runtime.marker) throw new Error('Cannot verify the runtime process generation');
@@ -312,6 +312,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
         };
         const confirmBeforeInput = requiresTierAdmission(root, requestedUltrafast ? 'ultrafast' : expectedResumeTier, downgraded, serviceTierExplicit);
+        const explicitTier = serviceTierExplicit ?? root.session.getMetadata()?.codexServiceTierExplicit === true;
         if (resume || confirmBeforeInput) pendingAdmission.add(threadId);
         if (!reserved) await reserve(root, threadId);
         if (ending.has(root)) throw new Error('Codex thread was archived during binding');
@@ -320,7 +321,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
             assertRunning();
             if (ending.has(root)) throw new Error('Codex thread was archived during binding');
-            if (confirmBeforeInput) root.beginTierConfirmation();
+            if (confirmBeforeInput) root.beginTierConfirmation(explicitTier && (requestedUltrafast || downgraded));
             roots.set(threadId, root);
         }
         if (!resume?.rootBound || subscribe && !root.client.isInitialized()) {
@@ -344,9 +345,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         let standardConfirmed = false;
         if (resume?.tierConfirmationPending === undefined && (requestedUltrafast || downgraded)) {
             try {
-                const explicit = serviceTierExplicit ?? root.session.getMetadata()?.codexServiceTierExplicit === true;
-                if (downgraded) { await root.confirmStandardLaunch(explicit); standardConfirmed = true; }
-                else await root.confirmUltrafastLaunch(explicit);
+                if (downgraded) { await root.confirmStandardLaunch(explicitTier); standardConfirmed = true; }
+                else await root.confirmUltrafastLaunch(explicitTier);
             }
             catch (error) {
                 tierConfirmationPending = downgraded || !root.hasConfirmedStandardTier;
@@ -589,7 +589,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const turn = nativeTurns.get(key(connection, request)); nativeTurns.delete(key(connection, request));
         if (turn && !response.error) {
             // Native acceptance must reach the frontend without waiting for a side-client snapshot.
-            void operation(() => turn.root.confirmNativeTurn(turn.params, turn.explicitTier, turn.fallbackNotice, turn.generation))
+            void operation(() => turn.root.confirmNativeTurn(turn.params, turn.explicitTier, turn.fallbackNotice, turn.generation, turn.reconcileUltrafastModel))
                 .catch(error => logger.debug('[Codex shared] native tier reconciliation', error));
         }
         const reservation = reservations.get(key(connection, request)); reservations.delete(key(connection, request));
@@ -670,7 +670,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 for (const [key, turn] of nativeTurns) {
                     if (!key.startsWith(`${connection}:`)) continue;
                     nativeTurns.delete(key);
-                    void operation(() => turn.root.recoverLostNativeTurn(turn.params, turn.explicitTier, turn.previousTier, turn.generation, turn.fallbackNotice))
+                    void operation(() => turn.root.recoverLostNativeTurn(
+                        turn.params, turn.explicitTier, turn.previousTier, turn.generation, turn.fallbackNotice, turn.reconcileUltrafastModel))
                         .catch(error => logger.debug('[Codex shared] lost turn tier reconciliation', error));
                 }
                 for (const [key, reservation] of reservations) {

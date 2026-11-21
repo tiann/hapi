@@ -168,10 +168,10 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         const home = await mkdtemp(join(tmpdir(), 'hapi-shared-tier-retry-')); state.home = home;
         const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
         vi.stubEnv('CODEX_HOME', ch);
-        const configure = (tier?: string, fastMode = true) => writeFile(join(ch, 'config.toml'), [
+        const configure = (tier?: string) => writeFile(join(ch, 'config.toml'), [
             'model = "gpt-6-astra"', 'model_provider = "mock"',
             ...(tier === undefined ? [] : [`service_tier = "${tier}"`]),
-            '[features]', `fast_mode = ${fastMode}`, 'ultrafast_mode = false',
+            '[features]', 'fast_mode = true', 'ultrafast_mode = false',
             '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
             'wire_api = "responses"', 'requires_openai_auth = false',
             '[analytics]', 'enabled = false', '[feedback]', 'enabled = false', ''
@@ -853,64 +853,6 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 .resolves.toMatchObject({ data: expect.arrayContaining([expect.objectContaining({ id: unsetThread })]) });
             coldCatalog.mockRestore(); resumeAfterArchive.mockRestore();
 
-            // The Runner opens the native thread before its HAPI root is bound.
-            await configure('default', false);
-            const savedFast = state.sessions.get(childSid)!;
-            savedFast.serviceTier = 'fast';
-            savedFast.metadata.codexServiceTierExplicit = true;
-            savedFast.metadata.codexConfirmedServiceTier = undefined;
-            savedFast.metadata.codexPendingServiceTier = undefined;
-            savedFast.metadata.codexTierConfirmationPending = false;
-            let enterFastBind!: () => void;
-            const fastBindEntered = new Promise<void>(resolve => { enterFastBind = resolve; });
-            const fastBindGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
-            const fastBind = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
-                if (method === 'thread/metadata/update' && record(params).threadId === child.thread.id) {
-                    const session = state.sessions.get(childSid)!;
-                    const updateMetadata = session.updateMetadata.bind(session);
-                    let held = false;
-                    extraSpies.push(vi.spyOn(session, 'updateMetadata').mockImplementation(update => {
-                        // Simulate the Hub metadata lock held behind an unacknowledged write.
-                        held ||= update(session.metadata).codexPendingServiceTier === 'fast';
-                        if (!held) updateMetadata(update);
-                    }));
-                    enterFastBind(); return fastBindGate.then(() => originalRequest.call(this, method, params)) as Promise<T>;
-                }
-                return originalRequest.call(this, method, params) as Promise<T>;
-            });
-            extraSpies.push(fastBind);
-            const fastAbort = new AbortController();
-            let reportFastReady!: () => void;
-            const fastReady = new Promise<void>(resolve => { reportFastReady = resolve; });
-            const fastDone = runSharedRuntime({ startedBy: 'runner', workingDirectory: validatedCwd, resumeSessionId: child.thread.id,
-                existingSessionId: childSid }, reportFastReady, fastAbort.signal);
-            running.push({ abort: fastAbort, done: fastDone });
-            const stoppedEarly = fastDone.then(() => { throw new Error('Cold Fast runtime exited before activation'); });
-            await Promise.race([fastBindEntered, stoppedEarly]);
-            const fastRuntime = await findRuntime(childSid);
-            expect(fastRuntime?.sessions[childSid]).toMatchObject({ threadId: child.thread.id, active: true });
-            const fastClient = new CodexAppServerClient({ endpoint: fastRuntime!.endpoint, token: fastRuntime!.token });
-            clients.push(fastClient); await initializeSharedClient(fastClient);
-            const turnInput = { threadId: child.thread.id, input: [{ type: 'text', text: 'Must wait for tier confirmation', text_elements: [] }] };
-            try {
-                await expect(fastClient.request('turn/start', turnInput)).rejects.toThrow('tier confirmation is pending');
-            } finally { releaseLaunch(); }
-            await Promise.race([fastReady, stoppedEarly]);
-            const paused = state.sessions.get(childSid)!;
-            expect(paused.metadata.codexPendingServiceTier).toBeUndefined();
-            expect(paused.serviceTier).toBe('fast');
-            expect(paused.readySignals).toBe(0);
-            expect(paused.messages).toContainEqual({ type: 'message', message: expect.stringContaining('could not confirm the requested Fast tier') });
-            await expect(fastClient.request('turn/start', turnInput)).rejects.toThrow('tier confirmation is pending');
-            // Crash-equivalent cleanup before the Hub receives any queued recovery metadata.
-            fastAbort.abort(); await fastDone;
-            expect(paused.serviceTier).toBe('fast');
-            fastBind.mockRestore();
-            await configure('default');
-            const recovered = await start({ startedBy: 'runner', existingSessionId: childSid, resumeSessionId: child.thread.id });
-            await expect(recovered.client.request('thread/resume', { threadId: child.thread.id, excludeTurns: true }))
-                .resolves.toMatchObject({ serviceTier: 'priority' });
-            expect(state.sessions.get(childSid)?.readySignals).toBe(1);
         } finally {
             releaseLaunch();
             for (const spy of extraSpies.reverse()) spy.mockRestore();
@@ -921,6 +863,126 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await rm(home, { recursive: true, force: true, maxRetries: 3 });
         }
     }, 120_000);
+    it.each(['fast', 'ultrafast'] as const)('preserves saved %s when a cold resume stops before recovery metadata is acknowledged', async savedTier => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-shared-cold-tier-')); state.home = home;
+        const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        vi.stubEnv('CODEX_HOME', ch);
+        const configure = (enabled: boolean) => writeFile(join(ch, 'config.toml'), [
+            'model = "gpt-6-astra"', 'model_provider = "mock"',
+            '[features]', 'fast_mode = ' + enabled, 'ultrafast_mode = ' + enabled,
+            '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
+            'wire_api = "responses"', 'requires_openai_auth = false',
+            '[analytics]', 'enabled = false', '[feedback]', 'enabled = false', ''
+        ].join('\n'));
+        const running: Array<{ abort: AbortController; done: Promise<void> }> = [];
+        const clients: CodexAppServerClient[] = [];
+        const spies: Array<{ mockRestore(): void }> = [];
+        let releaseLaunch = () => {};
+        const { runSharedRuntime } = await import('./runtime');
+        const { SharedCodexRoot } = await import('./root');
+        const originalRequest = CodexAppServerClient.prototype.request;
+        const start = async (options: import('./launch').SharedLaunchOptions) => {
+            const abort = new AbortController();
+            let reportReady!: (value: import('./runtime').RuntimeReady) => void;
+            const ready = new Promise<import('./runtime').RuntimeReady>(resolve => { reportReady = resolve; });
+            const done = runSharedRuntime({ workingDirectory: cwd, ...options }, reportReady, abort.signal);
+            running.push({ abort, done });
+            const runtime = await Promise.race([ready, done.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            return { ...runtime, abort, done };
+        };
+        try {
+            vi.mocked(bootstrapExistingSession).mockImplementation(async options => {
+                const previous = state.sessions.get(options.sessionId)!;
+                const session = new MockSession(options.workingDirectory, previous.sessionId);
+                session.metadata = { ...previous.metadata }; session.serviceTier = previous.serviceTier;
+                state.sessions.set(session.sessionId, session);
+                return { session, sessionInfo: { id: session.sessionId, namespace: 'test', serviceTier: session.serviceTier }, metadata: session.metadata,
+                    workingDirectory: options.workingDirectory, machineId: 'test', startedBy: options.startedBy, api: {} } as never;
+            });
+            await configure(false);
+            const initial = await start({ serviceTier: 'standard' });
+            const sessionId = initial.sessionId;
+            const threadId = initial.runtime.sessions[sessionId].threadId;
+            initial.abort.abort(); await initial.done;
+            const saved = state.sessions.get(sessionId)!;
+            saved.serviceTier = savedTier;
+            saved.metadata.codexServiceTierExplicit = true;
+            saved.metadata.codexConfirmedServiceTier = undefined;
+            saved.metadata.codexPendingServiceTier = undefined;
+            saved.metadata.codexTierConfirmationPending = false;
+            const catalog = savedTier === 'ultrafast'
+                ? vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockResolvedValue({ data: [
+                    { id: 'gpt-6-astra', serviceTiers: [{ id: 'ultrafast' }] }
+                ] } as never) : undefined;
+            const failedFallback = savedTier === 'ultrafast'
+                ? vi.spyOn(SharedCodexRoot.prototype, 'confirmUltrafastLaunch').mockRejectedValueOnce(new Error('fixture Standard confirmation did not finish'))
+                : undefined;
+            if (catalog && failedFallback) spies.push(catalog, failedFallback);
+            let enterBind!: () => void;
+            const bindEntered = new Promise<void>(resolve => { enterBind = resolve; });
+            const bindGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
+            const delayBind = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (method === 'thread/metadata/update' && record(params).threadId === threadId) {
+                    const session = state.sessions.get(sessionId)!;
+                    const updateMetadata = session.updateMetadata.bind(session);
+                    let held = false;
+                    spies.push(vi.spyOn(session, 'updateMetadata').mockImplementation(update => {
+                        held ||= update(session.metadata).codexPendingServiceTier === savedTier;
+                        if (!held) updateMetadata(update);
+                    }));
+                    enterBind(); return bindGate.then(() => originalRequest.call(this, method, params)) as Promise<T>;
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            spies.push(delayBind);
+            const abort = new AbortController();
+            let reportReady!: () => void;
+            const ready = new Promise<void>(resolve => { reportReady = resolve; });
+            const resumeOptions = { startedBy: 'runner' as const, workingDirectory: cwd,
+                resumeSessionId: threadId, existingSessionId: sessionId };
+            const done = runSharedRuntime(resumeOptions, reportReady, abort.signal);
+            running.push({ abort, done });
+            const stoppedEarly = done.then(() => { throw new Error('Cold tier runtime exited before activation'); });
+            await Promise.race([bindEntered, stoppedEarly]);
+            const runtime = await findRuntime(sessionId);
+            expect(runtime?.sessions[sessionId]).toMatchObject({ threadId: threadId, active: true });
+            const client = new CodexAppServerClient({ endpoint: runtime!.endpoint, token: runtime!.token });
+            clients.push(client); await initializeSharedClient(client);
+            const turnInput = { threadId: threadId, input: [{ type: 'text', text: 'Must wait for tier confirmation', text_elements: [] }] };
+            try {
+                await expect(client.request('turn/start', turnInput)).rejects.toThrow('tier confirmation is pending');
+            } finally { releaseLaunch(); }
+            await Promise.race([ready, stoppedEarly]);
+            const paused = state.sessions.get(sessionId)!;
+            expect(paused.metadata.codexPendingServiceTier).toBeUndefined();
+            expect(paused.serviceTier).toBe(savedTier);
+            expect(paused.readySignals).toBe(0);
+            expect(paused.messages).toContainEqual({ type: 'message', message: expect.stringContaining(
+                savedTier === 'fast' ? 'could not confirm the requested Fast tier' : 'Standard could not be confirmed') });
+            await expect(client.request('turn/start', turnInput)).rejects.toThrow('tier confirmation is pending');
+            abort.abort(); await done;
+            expect(paused.serviceTier).toBe(savedTier);
+            delayBind.mockRestore();
+            failedFallback?.mockRestore();
+            await configure(true);
+            const resumed = vi.spyOn(CodexAppServerClient.prototype, 'request');
+            spies.push(resumed);
+            const recovered = await start(resumeOptions);
+            expect(resumed).toHaveBeenCalledWith('thread/resume', expect.objectContaining({
+                threadId, serviceTier: savedTier === 'fast' ? 'priority' : 'ultrafast'
+            }));
+            expect(state.sessions.get(sessionId)?.readySignals).toBe(1);
+            recovered.abort.abort(); await recovered.done;
+        } finally {
+            releaseLaunch();
+            for (const spy of spies.reverse()) spy.mockRestore();
+            for (const item of running) item.abort.abort();
+            await Promise.allSettled(running.map(item => item.done));
+            await Promise.allSettled(clients.map(client => client.disconnect()));
+            vi.mocked(bootstrapExistingSession).mockReset();
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 45_000);
     it('projects native async questions and delivers answers during generation and after completion', async () => {
         const home = await mkdtemp('/tmp/hapi-shared-async-'); state.home = home;
         const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
