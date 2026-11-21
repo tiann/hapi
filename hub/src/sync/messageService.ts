@@ -232,6 +232,8 @@ export class MessageService {
     private readonly scheduledMatureNotifiedLocalIds = new Set<string>()
     private readonly activeIndeterminateRetries = new Set<string>()
     private readonly activeDeliverNow = new Set<string>()
+    /** (session:localId) keys with a cancel probe in flight; deliver-now defers on them. */
+    private readonly activeCancels = new Set<string>()
 
     constructor(
         private readonly store: Store,
@@ -604,7 +606,34 @@ export class MessageService {
         }))
     }
 
+    /**
+     * Cancel a queued message. Coordinates with deliver-now on the same
+     * (session, localId): the two paths race on the CLI probe and the row,
+     * so while a forced delivery is in flight the cancel defers (busy) and
+     * vice versa — one action wins and the other can be retried afterwards.
+     */
     async cancelQueuedMessage(
+        sessionId: string,
+        messageId: string
+    ): Promise<CancelQueuedMessageResult> {
+        const coordinationLookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+        const coordinationLocalId = 'localId' in coordinationLookup ? (coordinationLookup.localId ?? null) : null
+        if (coordinationLocalId) {
+            const key = `${sessionId}:${coordinationLocalId}`
+            if (this.activeDeliverNow.has(key)) {
+                return { status: 'busy', localId: coordinationLocalId }
+            }
+            this.activeCancels.add(key)
+            try {
+                return await this.cancelQueuedMessageInner(sessionId, messageId)
+            } finally {
+                this.activeCancels.delete(key)
+            }
+        }
+        return this.cancelQueuedMessageInner(sessionId, messageId)
+    }
+
+    private async cancelQueuedMessageInner(
         sessionId: string,
         messageId: string
     ): Promise<CancelQueuedMessageResult> {
@@ -956,7 +985,7 @@ export class MessageService {
             return { status: 'scheduled', localId: lookup.localId }
         }
         const deliverKey = `${sessionId}:${lookup.localId}`
-        if (this.activeDeliverNow.has(deliverKey)) {
+        if (this.activeDeliverNow.has(deliverKey) || this.activeCancels.has(deliverKey)) {
             return { status: 'busy', localId: lookup.localId }
         }
         this.activeDeliverNow.add(deliverKey)
@@ -966,26 +995,35 @@ export class MessageService {
             if (this.store.isOpenCodeClearDeliveryGated(sessionId) || cliCount !== 1) {
                 return { status: 'unavailable', localId: lookup.localId }
             }
-            // Ordering guard: a queued OpenCode /clear must reach the worker
-            // before anything queued AFTER it. Force-delivering a later row
-            // would let it jump the pending /clear, so refuse those; rows
-            // queued before the clear are safe to deliver. The matcher
-            // mirrors the runner's resolveOpencodeSlashCommand: case-
-            // insensitive, leading whitespace, and trailing arguments all
-            // still resolve to a clear (a user extension overriding /clear
-            // cannot be known hub-side and stays out of scope).
+            // Ordering guard: an OpenCode /clear is a queue transition, and
+            // the runner's release path owns it — Send-now never force-
+            // delivers a clear row itself. For prompt rows, a queued clear
+            // must reach the worker before anything queued AFTER it, so
+            // those follow-ups are refused; rows queued before the clear are
+            // safe to deliver. The matcher mirrors the runner's
+            // resolveOpencodeSlashCommand (case-insensitive, leading
+            // whitespace, trailing arguments); a user extension overriding
+            // /clear cannot be known hub-side and stays out of scope.
+            // Future-scheduled rows are excluded from the boundary: they
+            // mature through the scheduler and their FIFO position only
+            // applies from maturity.
             {
                 const flavor = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.flavor
                 if (flavor === 'opencode') {
-                    const queuedRows = this.store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
                     const isClearRow = (row: { content: unknown }) => {
                         const content = row.content as { role?: unknown; content?: { type?: unknown; text?: unknown } } | null
                         return content?.role === 'user' && content.content?.type === 'text'
                             && /^\s*\/clear(?:\s|$)/i.test(String(content.content.text ?? ''))
                     }
-                    const firstClearIndex = queuedRows.findIndex(isClearRow)
+                    const queuedRows = this.store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
+                    const targetRow = queuedRows.find((row) => row.id === lookup.resolvedId)
+                    if (targetRow !== undefined && isClearRow(targetRow)) {
+                        return { status: 'unavailable', localId: lookup.localId }
+                    }
+                    const boundaryRows = queuedRows.filter((row) => row.scheduledAt == null || row.scheduledAt <= Date.now())
+                    const firstClearIndex = boundaryRows.findIndex(isClearRow)
                     if (firstClearIndex >= 0) {
-                        const targetIndex = queuedRows.findIndex((row) => row.id === lookup.resolvedId)
+                        const targetIndex = boundaryRows.findIndex((row) => row.id === lookup.resolvedId)
                         if (targetIndex > firstClearIndex) {
                             return { status: 'unavailable', localId: lookup.localId }
                         }
@@ -1033,25 +1071,15 @@ export class MessageService {
                     }
                 }
             }
-            // Bind the forced retry to a server-verified socket. The probe's
-            // responderId is client-reported, so verify it against the room's
-            // live membership before trusting it; a legacy ack without a
-            // socketId is only acceptable while the room still holds exactly
-            // the one socket that was counted before the probe. If neither
-            // holds — the answering CLI left, a second socket joined, or the
-            // report cannot be verified — no socket is proven to have been
-            // probed, so nothing is emitted.
+            // Bind the forced retry to the same server-selected socket the
+            // per-socket probe cleared. Membership can change between the two
+            // emits — if the answering socket left the room, no socket is
+            // proven to have been probed and nothing is emitted.
             const roomSockets = this.io.of('/cli').adapter.rooms.get(roomName)
-            let verifiedSocketId: string | null = null
-            if (probe.responderId !== null && roomSockets?.has(probe.responderId)) {
-                verifiedSocketId = probe.responderId
-            } else if (probe.responderId === null && roomSockets?.size === 1) {
-                verifiedSocketId = [...roomSockets][0]!
-            }
-            if (verifiedSocketId === null) {
+            if (probe.responderId === null || !roomSockets?.has(probe.responderId)) {
                 return { status: 'unavailable', localId: lookup.localId }
             }
-            const room = this.io.of('/cli').to(verifiedSocketId)
+            const room = this.io.of('/cli').to(probe.responderId)
             const accepted = await new Promise<boolean>((resolve) => {
                 room.timeout(500).emit(
                     'update',
@@ -1079,31 +1107,29 @@ export class MessageService {
      * Re-uses the existing 'update' event channel with a cancel-queued-message body,
      * matching the ack pattern already used by rpcGateway
      * (socket.timeout(ms).emitWithAck / BroadcastOperator.timeout(ms).emit + ack cb).
+     *
+     * The probe is emitted per socket (not broadcast to the room) so the
+     * SERVER records which socket answered — deliver-now binds its forced
+     * retry to that server-selected socket. A client-reported socketId in
+     * the ack is never trusted for targeting; the aggregation precedence is
+     * unchanged (an explicit in-flight/consumed report from any socket
+     * dominates a removed from another, so a stale duplicate socket cannot
+     * orphan an executing message).
      */
-    private requestCliCancelAck(
+    private async requestCliCancelAck(
         sessionId: string,
         localId: string,
         messageId: string,
         timeoutMs: number
     ): Promise<{ result: 'removed' | 'in-flight' | 'indeterminate' | 'consumed' | 'not-found' | 'timeout'; responderId: string | null }> {
-        return new Promise((resolve) => {
-            const room = this.io.of('/cli').to(`session:${sessionId}`)
-            // socket.io v4 BroadcastOperator: .timeout(ms).emit(event, data, ackCb)
-            // ack signature: (err: Error | null, responses: T[])
-            //
-            // The probe also records WHICH socket answered, when the client
-            // includes its socketId in the ack: deliver-now must send its
-            // forced retry to that same CLI, not re-broadcast to the room
-            // (room membership can change between the probe and the retry —
-            // a newly joined or stale duplicate socket could otherwise accept
-            // a forced copy the probe never cleared). Older clients that do
-            // not report a socketId yield null and the caller falls back to
-            // the room emit.
-            let firstResponderId: string | null = null
-            const noteResponder = (value: unknown) => {
-                if (typeof value === 'string' && value && firstResponderId === null) firstResponderId = value
-            }
-            room.timeout(timeoutMs).emit(
+        const roomName = `session:${sessionId}`
+        const socketIds = [...(this.io.of('/cli').adapter.rooms.get(roomName) ?? [])]
+        if (socketIds.length === 0) {
+            return { result: 'timeout', responderId: null }
+        }
+        type Ack = { removed?: boolean; inFlight?: boolean; indeterminate?: boolean; consumed?: boolean }
+        const answered = await Promise.all(socketIds.map((socketId: string) => new Promise<{ socketId: string; ack: Ack } | null>((resolve) => {
+            this.io.of('/cli').to(socketId).timeout(timeoutMs).emit(
                 'update',
                 {
                     id: randomUUID(),
@@ -1116,39 +1142,41 @@ export class MessageService {
                         localId
                     }
                 },
-                (err: Error | null, responses: Array<{ removed?: boolean; inFlight?: boolean; indeterminate?: boolean; consumed?: boolean; socketId?: string }>) => {
+                (err: Error | null, responses: Array<Ack>) => {
                     // Check responses before err: in a reconnect overlap or any room with
                     // multiple CLI sockets, Socket.IO may set err (one socket timed out)
                     // while still delivering successful responses from the sockets that did
                     // ack. An explicit in-flight report dominates: one socket may be
                     // dispatching the steer while a stale duplicate socket reports
                     // removed — deleting the row then would orphan the executing message.
-                    for (const r of responses ?? []) noteResponder(r.socketId)
-                    if (responses?.some((r) => r.consumed === true)) {
-                        resolve({ result: 'consumed', responderId: firstResponderId })
+                    const ack = responses?.[0]
+                    if (ack === undefined) {
+                        resolve(null)
                         return
                     }
-                    if (responses?.some((r) => r.indeterminate === true)) {
-                        resolve({ result: 'indeterminate', responderId: firstResponderId })
-                        return
-                    }
-                    if (responses?.some((r) => r.inFlight === true)) {
-                        resolve({ result: 'in-flight', responderId: firstResponderId })
-                        return
-                    }
-                    const removed = responses?.some((r) => r.removed === true) ?? false
-                    if (removed) {
-                        resolve({ result: 'removed', responderId: firstResponderId })
-                        return
-                    }
-                    if (err) {
-                        resolve({ result: 'timeout', responderId: firstResponderId })
-                        return
-                    }
-                    resolve({ result: 'not-found', responderId: firstResponderId })
+                    resolve({ socketId, ack })
                 }
             )
-        })
+        })))
+        const responses = answered.filter((entry): entry is { socketId: string; ack: Ack } => entry !== null)
+        const responderId = responses.length > 0 ? responses[0]!.socketId : null
+        if (responses.some((r) => r.ack.consumed === true)) {
+            return { result: 'consumed', responderId }
+        }
+        if (responses.some((r) => r.ack.indeterminate === true)) {
+            return { result: 'indeterminate', responderId }
+        }
+        if (responses.some((r) => r.ack.inFlight === true)) {
+            return { result: 'in-flight', responderId }
+        }
+        if (responses.some((r) => r.ack.removed === true)) {
+            return { result: 'removed', responderId }
+        }
+        if (responses.length < socketIds.length) {
+            // At least one probed socket failed to answer within the timeout.
+            return { result: 'timeout', responderId }
+        }
+        return { result: 'not-found', responderId }
     }
 
     async sendMessage(

@@ -2329,6 +2329,31 @@ describe('MessageService deliverQueuedMessageNow', () => {
         store.close()
     })
 
+    it('defers cancel while a deliver-now probe is in flight for the same row', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-cancel-race')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'race' } }, 'cr-q')
+        let release: () => void = () => {}
+        const gate = new Promise<void>(resolve => { release = resolve })
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                void gate.then(() => ack(null, [{ removed: false }]))
+                return
+            }
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        const delivering = service.deliverQueuedMessageNow(session.id, 'cr-q')
+        // The cancel lands while the deliver-now probe is pending: it defers
+        // instead of racing the probe, and can be retried afterwards.
+        expect(await service.cancelQueuedMessage(session.id, 'cr-q'))
+            .toEqual({ status: 'busy', localId: 'cr-q' })
+        release()
+        expect(await delivering).toEqual({ status: 'delivered', localId: 'cr-q' })
+        store.close()
+    })
+
     it('serializes concurrent clicks on the same row', async () => {
         const store = makeStore()
         const session = makeSession(store, 'deliver-race')
@@ -2448,15 +2473,14 @@ describe('MessageService deliverQueuedMessageNow', () => {
         const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
         expect(await service.deliverQueuedMessageNow(session.id, 'targeted-q'))
             .toEqual({ status: 'delivered', localId: 'targeted-q' })
-        // First emit addresses the room (probe); the forced retry addresses
-        // the answering socket only — room membership can change between the
-        // two emits, and a socket the probe never cleared must not receive a
-        // forced copy.
-        expect(targets).toEqual([`session:${session.id}`, 'socket-0'])
+        // The probe and the forced retry both address the server-selected
+        // answering socket — never the room, whose membership can change
+        // between the two emits.
+        expect(targets).toEqual(['socket-0', 'socket-0'])
         store.close()
     })
 
-    it('delivers to the room\'s single socket when the probe responder did not report its socketId', async () => {
+    it('targets the server-selected socket even when the client reports a different one', async () => {
         const store = makeStore()
         const session = makeSession(store, 'deliver-legacy-ack')
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'legacy' } }, 'legacy-q')
@@ -2467,7 +2491,7 @@ describe('MessageService deliverQueuedMessageNow', () => {
                 emit: (_event: string, _data: unknown, callback: AckCallback) => {
                     calls += 1
                     callback(null, calls === 1
-                        ? [{ removed: false }]
+                        ? [{ removed: false, socketId: 'client-claimed-other' }]
                         : [{ removed: false, accepted: true }])
                 }
             }),
@@ -2485,51 +2509,17 @@ describe('MessageService deliverQueuedMessageNow', () => {
         const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
         expect(await service.deliverQueuedMessageNow(session.id, 'legacy-q'))
             .toEqual({ status: 'delivered', localId: 'legacy-q' })
-        // The probe addresses the room; the forced retry is bound to the
-        // room's single live member (the socket that must have answered).
-        expect(targets).toEqual([`session:${session.id}`, 'socket-0'])
+        // The client-reported socketId is never trusted for targeting: both
+        // emits go to the socket the server selected for the probe.
+        expect(targets).toEqual(['socket-0', 'socket-0'])
         store.close()
     })
 
-    it('refuses the forced retry when the reported responder is no longer in the room', async () => {
+    it('refuses the forced retry when the answering socket left the room before it', async () => {
         const store = makeStore()
         const session = makeSession(store, 'deliver-stale-responder')
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'stale' } }, 'stale-q')
         const targets: string[] = []
-        let calls = 0
-        const broadcastRoom = {
-            timeout: (_ms: number) => ({
-                emit: (_event: string, _data: unknown, callback: AckCallback) => {
-                    calls += 1
-                    callback(null, calls === 1
-                        ? [{ removed: false, socketId: 'socket-gone' }]
-                        : [{ removed: false, accepted: true }])
-                }
-            }),
-            emit: () => {}
-        }
-        const io = {
-            of: (_ns: string) => ({
-                to: (target: string) => {
-                    targets.push(target)
-                    return broadcastRoom
-                },
-                adapter: { rooms: { get: () => new Set(['socket-0']) } }
-            })
-        } as unknown as Server
-        const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
-        expect(await service.deliverQueuedMessageNow(session.id, 'stale-q'))
-            .toEqual({ status: 'unavailable', localId: 'stale-q' })
-        // Only the probe left the hub; the unverified responder got nothing.
-        expect(calls).toBe(1)
-        expect(targets).toEqual([`session:${session.id}`])
-        store.close()
-    })
-
-    it('refuses the forced retry when a second socket joined before a legacy ack could be verified', async () => {
-        const store = makeStore()
-        const session = makeSession(store, 'deliver-legacy-joined')
-        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'joined' } }, 'joined-q')
         let calls = 0
         const broadcastRoom = {
             timeout: (_ms: number) => ({
@@ -2542,19 +2532,59 @@ describe('MessageService deliverQueuedMessageNow', () => {
             }),
             emit: () => {}
         }
-        // One socket at entry (the cliCount gate); a second joins before the
-        // forced retry would be emitted, so the legacy ack can no longer be
-        // bound to a verified socket.
+        // socket-0 answers the per-socket probe, then leaves the room; the
+        // membership recheck before the retry finds it gone.
         const io = {
             of: (_ns: string) => ({
-                to: (target: string) => broadcastRoom,
-                adapter: { rooms: { get: () => new Set(Array.from({ length: calls === 0 ? 1 : 2 }, (_, i) => `socket-${i}`)) } }
+                to: (target: string) => {
+                    targets.push(target)
+                    return broadcastRoom
+                },
+                adapter: { rooms: { get: () => (calls === 0 ? new Set(['socket-0']) : new Set<string>()) } }
+            })
+        } as unknown as Server
+        const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'stale-q'))
+            .toEqual({ status: 'unavailable', localId: 'stale-q' })
+        // Only the per-socket probe left the hub; the vanished socket got nothing.
+        expect(calls).toBe(1)
+        expect(targets).toEqual(['socket-0'])
+        store.close()
+    })
+
+    it('still targets the probed socket when another socket joins before the retry', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-legacy-joined')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'joined' } }, 'joined-q')
+        const targets: string[] = []
+        let calls = 0
+        const broadcastRoom = {
+            timeout: (_ms: number) => ({
+                emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                    calls += 1
+                    callback(null, calls === 1
+                        ? [{ removed: false }]
+                        : [{ removed: false, accepted: true }])
+                }
+            }),
+            emit: () => {}
+        }
+        // One socket at entry (the cliCount gate); a second joins after the
+        // probe. The retry still binds to the probed socket, so the joiner —
+        // which the probe never cleared — cannot receive a forced copy.
+        const io = {
+            of: (_ns: string) => ({
+                to: (target: string) => {
+                    targets.push(target)
+                    return broadcastRoom
+                },
+                adapter: { rooms: { get: () => new Set(calls === 0 ? ['socket-0'] : ['socket-0', 'socket-1']) } }
             })
         } as unknown as Server
         const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
         expect(await service.deliverQueuedMessageNow(session.id, 'joined-q'))
-            .toEqual({ status: 'unavailable', localId: 'joined-q' })
-        expect(calls).toBe(1)
+            .toEqual({ status: 'delivered', localId: 'joined-q' })
+        expect(targets).toEqual(['socket-0', 'socket-0'])
         store.close()
     })
 
@@ -2574,10 +2604,11 @@ describe('MessageService deliverQueuedMessageNow', () => {
             .toEqual({ status: 'unavailable', localId: 'after-q' })
         expect(calls).toBe(0)
         expect(store.messages.lookupQueuedMessage(session.id, 'after-q').status).toBe('queued')
-        // The /clear row itself stays deliverable in delivery order.
+        // The /clear row itself is never force-delivered: the runner's
+        // normal release path owns the clear transition.
         expect(await service.deliverQueuedMessageNow(session.id, 'clear-q'))
-            .toEqual({ status: 'delivered', localId: 'clear-q' })
-        expect(calls).toBe(2)
+            .toEqual({ status: 'unavailable', localId: 'clear-q' })
+        expect(calls).toBe(0)
         store.close()
     })
 

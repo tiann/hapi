@@ -213,8 +213,8 @@ export class ApiSessionClient extends EventEmitter {
     private cancelQueuedMessageCallback: ((localId: string) => QueueCancelResult | Promise<QueueCancelResult>) | null = null
     private retryQueuedMessageCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
     private beforeReuseLocalIdCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
-    /** localIds whose forced-retry reuse gate is currently awaiting flavor preparation. */
-    private readonly inFlightForcedRetries = new Set<string>()
+    /** localIds whose forced-retry reuse gate is currently awaiting flavor preparation, with overlap counts. */
+    private readonly inFlightForcedRetries = new Map<string, number>()
     /** localIds cancelled while their forced-retry gate was in flight; the retry must not dispatch. */
     private readonly invalidatedForcedRetries = new Set<string>()
     private readonly incomingFilter = new IncomingMessageFilter()
@@ -467,13 +467,23 @@ if (isReconnect) {
                             // cancel-queued-message for the same localId must
                             // still win: record the in-flight gate so the cancel
                             // handler can invalidate it instead of racing it.
-                            this.inFlightForcedRetries.add(data.body.localId)
+                            // Overlapping retries for one localId share the
+                            // bookkeeping; entries are only removed when the
+                            // LAST gate settles, so an invalidation recorded
+                            // against one retry still suppresses the others.
+                            const pending = this.inFlightForcedRetries.get(data.body.localId) ?? 0
+                            this.inFlightForcedRetries.set(data.body.localId, pending + 1)
                             try {
                                 const gateAllowed = await this.beforeReuseLocalIdCallback(data.body.localId) === true
                                 accepted = gateAllowed && !this.invalidatedForcedRetries.has(data.body.localId)
                             } finally {
-                                this.inFlightForcedRetries.delete(data.body.localId)
-                                this.invalidatedForcedRetries.delete(data.body.localId)
+                                const remaining = (this.inFlightForcedRetries.get(data.body.localId) ?? 1) - 1
+                                if (remaining <= 0) {
+                                    this.inFlightForcedRetries.delete(data.body.localId)
+                                    this.invalidatedForcedRetries.delete(data.body.localId)
+                                } else {
+                                    this.inFlightForcedRetries.set(data.body.localId, remaining)
+                                }
                             }
                         }
                     }
