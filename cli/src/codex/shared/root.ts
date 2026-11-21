@@ -118,6 +118,7 @@ export class SharedCodexRoot {
             this.session.updateMetadata(metadata => ({ ...metadata, codexPendingServiceTier: 'ultrafast' }));
         }
         this.publishSteering();
+        this.publishPlan();
     }
     get needsTierConfirmation(): boolean { return this.tierAdmissionPending || this.tierConfirmationPending; }
     requiresEffectiveFastConfirmation(tier: unknown, explicit?: boolean): boolean {
@@ -552,7 +553,7 @@ export class SharedCodexRoot {
     }
     private availablePlanId(): string | null {
         if (this.currentTurn || this.latestTurn?.status !== 'completed' || this.settings.collaborationMode !== 'plan'
-            || this.stopping || this.closed || this.reconnecting || this.submittingPlan || !this.client.isInitialized()) return null;
+            || this.stopping || this.closed || this.reconnecting || this.submittingPlan || this.needsTierConfirmation || !this.client.isInitialized()) return null;
         const id = this.latestTurn.planId;
         // An uncertain/accepted submission must never become a fresh Execute button after reconnect.
         return id && !this.queue?.owns(planImplementationMessageId(id)) ? id : null;
@@ -1176,6 +1177,7 @@ export class SharedCodexRoot {
                 this.inputGate = new Promise<void>(resolve => { this.inputReady = () => { this.inputGateResolved = true; resolve(); }; });
             }
             this.publishSteering();
+            this.publishPlan();
             this.notice(message);
         }
     }
@@ -1361,7 +1363,9 @@ export class SharedCodexRoot {
     private async implementPlan(planId: string): Promise<ImplementCodexPlanResult> {
         const unavailable = (): ImplementCodexPlanResult => ({ ok: false, code: 'unavailable', error: 'Codex is disconnected or stopping. Reconnect before implementing the plan.' });
         const stale = (): ImplementCodexPlanResult => ({ ok: false, code: 'stale_plan', error: 'This plan is no longer actionable. Refresh the conversation.' });
+        const tierPending = (): ImplementCodexPlanResult => ({ ok: false, code: 'unavailable', error: 'Confirm the service tier in settings before implementing the plan.' });
         const localId = planImplementationMessageId(planId);
+        let modeWriteStarted = false;
         if (this.closed || this.stopping || this.reconnecting || !this.client.isInitialized()) return unavailable();
         try {
             // A reconnect snapshot may have started before this action arrived.
@@ -1371,10 +1375,14 @@ export class SharedCodexRoot {
             if (prior === 'queued' || prior === 'consumed') return { ok: true };
             if (prior) return { ok: false, code: 'indeterminate', error: 'This implementation was already submitted. Check the queue and conversation before sending again.' };
             const before = await this.queue.list();
+            if (this.needsTierConfirmation) return tierPending();
             if (this.availablePlanId() !== planId || before.length) return stale();
             const revision = this.turnRevision;
             this.submittingPlan = true; this.publishPlan();
-            await this.applySettings({ collaborationMode: 'default' });
+            await this.applySettings({ collaborationMode: 'default' }, () => {
+                if (!modeWriteStarted && this.needsTierConfirmation) throw new QueueAdmissionPaused('Service tier confirmation is pending');
+                modeWriteStarted = true;
+            });
             const queued = await this.queue.list();
             if (this.closed || this.stopping || this.reconnecting || !this.client.isInitialized()) return unavailable();
             if (this.turnRevision !== revision || this.currentTurn || this.latestTurn?.planId !== planId
@@ -1382,6 +1390,7 @@ export class SharedCodexRoot {
             await this.queue.enqueue(localId, buildUserInputFromMessage('Implement the plan.'));
             return { ok: true };
         } catch (error) {
+            if (!modeWriteStarted && error instanceof QueueAdmissionPaused) return tierPending();
             const detail = error instanceof Error ? error.message : String(error);
             return { ok: false, code: isIndeterminateError(error) || this.queue.state(localId) === 'unknown' ? 'indeterminate' : 'failed',
                 error: `Plan implementation was not confirmed: ${detail}. Check the mode, queue and conversation before retrying.` };

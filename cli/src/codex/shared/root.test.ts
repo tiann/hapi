@@ -1186,6 +1186,42 @@ describe('shared plan actions', () => {
         expect(f.native.queue).toHaveLength(0);
     });
 
+    it('keeps the completed plan actionable when tier recovery starts before the mode write', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const id = await completePlan(f);
+        const action = () => f.rpc.get(RPC_METHODS.ImplementCodexPlan)!({ planId: id });
+        const originalRequest = f.root.client.request.bind(f.root.client);
+        const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/settings/update' && (params as { serviceTier?: string }).serviceTier === 'priority') return {} as never;
+            return originalRequest(method, params);
+        });
+        const originalSettings = f.root.applySettings.bind(f.root);
+        let enteredQueue!: () => void;
+        const modeQueued = new Promise<void>(resolve => { enteredQueue = resolve; });
+        vi.spyOn(f.root, 'applySettings').mockImplementation((raw, onMutation) => {
+            if ((raw as { collaborationMode?: string }).collaborationMode === 'default') enteredQueue();
+            return originalSettings(raw, onMutation);
+        });
+        vi.useFakeTimers();
+        const uncertainTier = expect(f.root.applySettings({ serviceTier: 'fast' })).rejects.toThrow('confirmation is pending');
+        const implementation = expect(action()).resolves.toMatchObject({ ok: false, code: 'unavailable' });
+        await modeQueued;
+        await vi.advanceTimersByTimeAsync(15_000);
+        await Promise.all([uncertainTier, implementation]);
+        expect(f.root.needsTierConfirmation).toBe(true);
+        expect(f.state().codexPlanProposalId).toBeNull();
+        expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update')).toEqual([
+            ['thread/settings/update', expect.objectContaining({ serviceTier: 'priority' })]
+        ]);
+        expect(f.native.queue).toHaveLength(0);
+        await f.root.applySettings({ serviceTier: 'standard' });
+        expect(f.state().codexPlanProposalId).toBe(id);
+        vi.useRealTimers();
+        await expect(action()).resolves.toEqual({ ok: true });
+        expect(f.native.queue).toHaveLength(1);
+    });
+
     it('rejects stale proposals and native activity arriving during the mode switch', async () => {
         const f = await fixture();
         await f.root.activate();
