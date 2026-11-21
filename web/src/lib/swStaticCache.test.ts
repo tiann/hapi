@@ -93,7 +93,7 @@ describe('computeStaticCacheVersion', () => {
 
 describe('isOutdatedStaticCacheName and cleanupOutdatedStaticCaches', () => {
     it('deletes outdated caches only for the owning HAPI deployment scope and preserves sibling deployments', async () => {
-        const scopeA = 'https://example.com/hapi/'
+        const scopeA = 'https://example.com/'
         const scopeB = 'https://example.com/hapi-preview/'
         const currentVersion = '0.36.5-1234abcd'
         const currentSyntaxA = getSyntaxGrammarsCacheName(currentVersion, scopeA)
@@ -123,10 +123,14 @@ describe('isOutdatedStaticCacheName and cleanupOutdatedStaticCaches', () => {
             },
         )
 
+        const clearExpiration = vi.fn()
+        const migrateGrammars = vi.fn()
         const deleted = await cleanupOutdatedStaticCaches(cacheStorage, currentVersion, {
-            scope: scopeA,
+            scope: scopeA, clearExpiration, migrateGrammars,
         })
 
+        expect(clearExpiration.mock.calls).toEqual([[oldSyntaxA]])
+        expect(migrateGrammars).toHaveBeenCalledWith('syntax-grammars', [{ url: `${scopeA}assets/shiki-ts-old.js` }])
         expect(deleted).toEqual([
             oldSyntaxA,
             oldStaticA,
@@ -242,7 +246,7 @@ describe('cleanupClientStaticCachesOnVersionChange', () => {
     })
 
     it('cleans outdated static caches directly and records new version when no service worker is active while preserving sibling scopes', async () => {
-        const scopeA = 'https://example.com/hapi/'
+        const scopeA = 'https://example.com/'
         const scopeB = 'https://example.com/hapi-preview/'
         const oldCacheA = getSyntaxGrammarsCacheName('0.36.4-11112222', scopeA)
         const currentCacheA = getSyntaxGrammarsCacheName('0.36.5-33334444', scopeA)

@@ -216,3 +216,15 @@ describe.each(['embeddedAssetMap', 'distDir'] as const)('web static asset servin
         expect(body.webBuildId).toMatch(/^[0-9a-f]{12}$/)
     })
 })
+
+it('refreshes the disk build fingerprint when sw.js changes without a restart', async () => {
+    const app = buildApp('distDir')
+    const readId = async () => (await (await app.request('/health')).json() as { webBuildId: string }).webBuildId
+    const original = await readId()
+    try {
+        writeFixture('/sw.js', SW_BODY + '// rebuilt')
+        expect(await readId()).not.toBe(original)
+    } finally {
+        writeFixture('/sw.js', SW_BODY)
+    }
+})

@@ -292,6 +292,18 @@ describe('usePwaUpdate', () => {
         expect(registration.update).toHaveBeenCalledTimes(1)
     })
 
+    it.each([['redundant', false], ['installed', true]])('waits for worker state %s', async (state, expected) => {
+        const worker = Object.assign(new EventTarget(), { state: 'installing' })
+        const registration = { installing: worker, update: vi.fn().mockResolvedValue(undefined) }
+        const { result } = renderHook(() => usePwaUpdate())
+        act(() => capturedOptions.onRegistered?.(registration as unknown as ServiceWorkerRegistration))
+        const check = result.current.checkForUpdates()
+        await Promise.resolve()
+        worker.state = String(state)
+        worker.dispatchEvent(new Event('statechange'))
+        await expect(check).resolves.toBe(expected)
+    })
+
     it('returns false from checkForUpdates when registration.update rejects', async () => {
         const registration = {
             update: vi.fn().mockRejectedValue(new Error('503')),

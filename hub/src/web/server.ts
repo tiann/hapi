@@ -4,7 +4,7 @@ import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, statSync, readdirSync, readFileSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
 import { getConfiguration } from '../configuration'
 import { APP_VERSION, FOLLOW_SESSION_REDIRECTS_HEADER, PROTOCOL_VERSION } from '@hapi/protocol'
@@ -429,15 +429,25 @@ export function createWebApp(options: {
         }
     })
 
-    const webBuildId = computeWebBuildId({
-        embeddedAssetMap: options.embeddedAssetMap,
-        distDir: options.distDir,
-        relayMode: options.relayMode
-    })
+    const buildDir = options.distDir ?? findWebappDistDir().distDir
+    let buildMarker: string | undefined
+    let webBuildId = computeWebBuildId(options)
+    function refreshDiskBuildId() {
+        if (options.embeddedAssetMap || options.relayMode) return
+        const marker = ['index.html', 'sw.js', 'assets'].map(name => {
+            const stat = statSync(join(buildDir, name), { throwIfNoEntry: false, bigint: true })
+            return stat ? `${stat.ino}:${stat.ctimeNs}:${stat.size}` : ''
+        }).join('|')
+        if (marker !== buildMarker) {
+            webBuildId = computeWebBuildId(options)
+            buildMarker = marker
+        }
+    }
 
     // Health check endpoint (no auth required).
     // Capabilities are additive so older clients can ignore unknown fields.
     app.get('/health', (c) => {
+        refreshDiskBuildId()
         c.header('Cache-Control', 'no-store')
         return c.json({
             status: 'ok',

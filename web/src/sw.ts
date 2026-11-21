@@ -2,7 +2,7 @@
 import { precacheAndRoute } from 'workbox-precaching'
 import { registerRoute } from 'workbox-routing'
 import { CacheFirst, NetworkFirst } from 'workbox-strategies'
-import { ExpirationPlugin } from 'workbox-expiration'
+import { CacheExpiration, ExpirationPlugin } from 'workbox-expiration'
 import {
     cleanupExpiredShareTransfers,
     ingestShareRequest,
@@ -14,6 +14,7 @@ import {
     CLEANUP_OUTDATED_CACHES_MESSAGE,
     cleanupOutdatedStaticCaches,
     computeStaticCacheVersion,
+    isScopedGrammarUrl,
     getSyntaxGrammarsCacheName,
 } from './lib/swStaticCache'
 import { focusOrOpenNotificationClient, resolveNotificationTarget } from './lib/notificationClick'
@@ -43,15 +44,41 @@ type PushPayload = {
     }
 }
 
-precacheAndRoute(precacheManifest)
+const grammarUrls = new Set<string>()
+const installationManifest = precacheManifest.filter(entry => {
+    const url = new URL(typeof entry === 'string' ? entry : entry.url, SW_SCOPE).href
+    if (!isScopedGrammarUrl(url, SW_SCOPE)) return true
+    grammarUrls.add(url)
+    return false
+})
+const expirationOptions = { maxEntries: 64, maxAgeSeconds: 60 * 60 * 24 * 30 }
+const cleanupOptions = {
+    scope: SW_SCOPE,
+    async migrateGrammars(name: string, requests: readonly Request[]) {
+        const source = await caches.open(name)
+        const destination = await caches.open(SYNTAX_GRAMMARS_CACHE_NAME)
+        const expiration = new CacheExpiration(SYNTAX_GRAMMARS_CACHE_NAME, expirationOptions)
+        for (const request of requests) {
+            if (!grammarUrls.has(request.url) || await destination.match(request)) continue
+            const response = await source.match(request)
+            if (response) {
+                await destination.put(request, response)
+                await expiration.updateTimestamp(request.url)
+            }
+        }
+        await expiration.expireEntries()
+    },
+    clearExpiration: (name: string) => new CacheExpiration(name, expirationOptions).delete(),
+}
+precacheAndRoute(installationManifest)
 
 registerRoute(
-    ({ url }) => url.origin === self.location.origin && /\/assets\/shiki-[^/]+\.js$/.test(url.pathname),
+    ({ url }) => url.origin === self.location.origin && isScopedGrammarUrl(url.href, SW_SCOPE),
     new CacheFirst({
         cacheName: SYNTAX_GRAMMARS_CACHE_NAME,
         plugins: [
             cacheJavaScriptOnly,
-            new ExpirationPlugin({ maxEntries: 64, maxAgeSeconds: 60 * 60 * 24 * 30 }),
+            new ExpirationPlugin(expirationOptions),
         ],
     }),
 )
@@ -134,9 +161,7 @@ self.addEventListener('message', (event) => {
     }
     if (event.data?.type === CLEANUP_OUTDATED_CACHES_MESSAGE) {
         event.waitUntil(
-            cleanupOutdatedStaticCaches(self.caches, STATIC_CACHE_VERSION, {
-                scope: self.registration?.scope,
-            }).catch((error) => {
+            cleanupOutdatedStaticCaches(self.caches, STATIC_CACHE_VERSION, cleanupOptions).catch((error) => {
                 console.warn('static-cache cleanup failed', error)
             })
         )
@@ -147,9 +172,7 @@ self.addEventListener('activate', (event) => {
     event.waitUntil(
         Promise.all([
             self.clients.claim(),
-            cleanupOutdatedStaticCaches(self.caches, STATIC_CACHE_VERSION, {
-                scope: self.registration?.scope,
-            }).catch((error) => {
+            cleanupOutdatedStaticCaches(self.caches, STATIC_CACHE_VERSION, cleanupOptions).catch((error) => {
                 console.warn('static-cache cleanup failed', error)
             }),
             cleanupExpiredShareTransfers().catch((error) => {

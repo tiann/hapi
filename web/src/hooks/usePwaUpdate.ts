@@ -9,6 +9,29 @@ import {
 export const PWA_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
 export const PWA_UPDATE_RELOAD_FALLBACK_MS = 2000
 
+async function checkWorkerInstallation(registration: ServiceWorkerRegistration): Promise<boolean> {
+    let worker = registration.installing
+    const capture = () => { worker = registration.installing ?? worker }
+    registration.addEventListener?.('updatefound', capture)
+    try {
+        await registration.update()
+        capture()
+        const replacement = worker
+        if (!replacement) return true
+        return await new Promise<boolean>(resolve => {
+            const changed = () => {
+                if (replacement.state === 'installing' || replacement.state === 'parsed') return
+                replacement.removeEventListener('statechange', changed)
+                resolve(replacement.state !== 'redundant')
+            }
+            replacement.addEventListener('statechange', changed)
+            changed()
+        })
+    } finally {
+        registration.removeEventListener?.('updatefound', capture)
+    }
+}
+
 export async function requestPwaUpdateReload(
     updateSW: ((reloadPage?: boolean) => Promise<void>) | null | undefined,
     options: {
@@ -130,9 +153,9 @@ export function usePwaUpdate() {
                 }
 
                 if (resolvers.length > 0) {
-                    void registration.update()
-                        .then(() => {
-                            for (const resolve of resolvers) resolve(true)
+                    void checkWorkerInstallation(registration)
+                        .then((installed) => {
+                            for (const resolve of resolvers) resolve(installed)
                         })
                         .catch(() => {
                             for (const resolve of resolvers) resolve(false)
@@ -174,8 +197,7 @@ export function usePwaUpdate() {
         const registration = registrationRef.current
         if (registration) {
             try {
-                await registration.update()
-                return true
+                return await checkWorkerInstallation(registration)
             } catch {
                 return false
             }
@@ -187,8 +209,7 @@ export function usePwaUpdate() {
                 const resolved = existing ?? registrationRef.current
                 if (resolved) {
                     registrationRef.current = resolved
-                    await resolved.update()
-                    return true
+                    return await checkWorkerInstallation(resolved)
                 }
             } catch {
                 return false
@@ -197,8 +218,7 @@ export function usePwaUpdate() {
 
         if (registrationRef.current) {
             try {
-                await registrationRef.current.update()
-                return true
+                return await checkWorkerInstallation(registrationRef.current)
             } catch {
                 return false
             }

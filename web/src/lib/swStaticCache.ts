@@ -131,20 +131,33 @@ export function isOutdatedStaticCacheName(
     return false
 }
 
+export function isScopedGrammarUrl(url: string, scope: string): boolean {
+    const directory = new URL('assets/', scope).href
+    return url.startsWith(directory) && /^shiki-[^/?#]+\.js$/.test(url.slice(directory.length))
+}
+
+type RetirementHooks = {
+    migrateGrammars?: (name: string, requests: readonly Request[]) => Promise<void>
+    clearExpiration?: (name: string) => Promise<void>
+}
+
 async function cleanupLegacyUnscopedSyntaxCache(
     cacheStorage: CacheStorageLike,
     scope: string,
+    hooks: RetirementHooks,
 ): Promise<boolean> {
     if (typeof cacheStorage.open !== 'function') {
         return false
     }
     const cache = await cacheStorage.open(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME)
     const requests = await cache.keys()
-    const owned = requests.filter((req) => req.url.startsWith(scope))
+    const owned = requests.filter((req) => isScopedGrammarUrl(req.url, scope))
     if (owned.length > 0) {
+        await hooks.migrateGrammars?.(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME, owned)
         await Promise.all(owned.map((req) => cache.delete(req)))
     }
     if (owned.length === requests.length) {
+        await hooks.clearExpiration?.(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME)
         return await cacheStorage.delete(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME)
     }
     return owned.length > 0
@@ -153,7 +166,7 @@ async function cleanupLegacyUnscopedSyntaxCache(
 export async function cleanupOutdatedStaticCaches(
     cacheStorage: CacheStorageLike | undefined,
     currentVersion: string,
-    options?: { matchPrefixOnly?: boolean; scope?: string },
+    options?: { matchPrefixOnly?: boolean; scope?: string } & RetirementHooks,
 ): Promise<string[]> {
     if (!cacheStorage) {
         return []
@@ -164,12 +177,20 @@ export async function cleanupOutdatedStaticCaches(
     const deleted: string[] = []
 
     if (outdated.length > 0) {
-        await Promise.all(outdated.map((key) => cacheStorage.delete(key)))
+        for (const key of outdated) {
+            if (key.startsWith(SYNTAX_GRAMMARS_CACHE_PREFIX)) {
+                if (options?.migrateGrammars && cacheStorage.open) {
+                    await options.migrateGrammars(key, await (await cacheStorage.open(key)).keys())
+                }
+                await options?.clearExpiration?.(key)
+            }
+            await cacheStorage.delete(key)
+        }
         deleted.push(...outdated)
     }
 
     if (options?.scope && keys.includes(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME)) {
-        const cleanedLegacy = await cleanupLegacyUnscopedSyntaxCache(cacheStorage, options.scope)
+        const cleanedLegacy = await cleanupLegacyUnscopedSyntaxCache(cacheStorage, options.scope, options)
         if (cleanedLegacy) {
             deleted.push(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME)
         }
