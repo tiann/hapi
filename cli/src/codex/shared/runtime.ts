@@ -360,7 +360,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         if (tierDiscoveryPending === 'inherited') root.session.updateMetadata(metadata => ({ ...metadata, codexInheritedTierDiscoveryPending: true }));
         if (tierDiscoveryPending) root.session.sendSessionEvent({ type: 'message', message: tierDiscoveryPending === 'ultrafast'
             ? 'The Codex model catalog could not verify Ultrafast. Input is paused. Select a service tier in settings to continue.'
-            : 'Could not read the inherited Codex service tier. Input is paused. Select a service tier in settings to continue.' });
+            : 'Could not verify the inherited Codex service tier. Input is paused. Select a service tier in settings to continue.' });
         let standardConfirmed = false;
         if (tierDiscoveryPending === undefined && resume?.tierConfirmationPending === undefined && (requestedUltrafast || downgraded || retryInheritedDiscovery)) {
             try {
@@ -752,6 +752,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             });
             const metadata = root.session.getMetadata();
             const explicitParams = await withNativeLaunchTier(launch.threadParams, root.bootstrap.workingDirectory);
+            const serviceTierExplicit = explicitParams.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined
+                ? true : metadata?.codexServiceTierExplicit;
             const cwd = root.bootstrap.workingDirectory;
             let candidate: Record<string, unknown> = { ...explicitParams, cwd };
             let tierDiscoveryPending: 'ultrafast' | 'inherited' | undefined;
@@ -767,11 +769,10 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 // override. Settings recovery can then confirm Standard.
                 logger.debug('[Codex shared] cold resume tier discovery unavailable', error);
                 const { serviceTier, ...params } = candidate;
-                tierDiscoveryPending = serviceTier === 'ultrafast' ? 'ultrafast' : 'inherited';
+                tierDiscoveryPending = serviceTier === 'ultrafast' && serviceTierExplicit === true ? 'ultrafast' : 'inherited';
                 resolved = { params, downgraded: false };
             }
             const { downgraded } = resolved;
-            const serviceTierExplicit = explicitParams.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined ? true : undefined;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
             if (tierDiscoveryPending || requiresTierAdmission(root, resolved.params.serviceTier, downgraded, serviceTierExplicit)) pendingAdmission.add(threadId);
             const response = await serializeNativeLifecycle(threadId, async () => {
