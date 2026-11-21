@@ -1222,7 +1222,8 @@ describe('shared plan actions', () => {
         expect(f.native.queue).toHaveLength(1);
     });
 
-    it.each([false, true])('keeps a safe implementation retry after the mode switch and tier recovery (later mode change: %s)', async changedMode => {
+    it.each(['implement', 'continue planning', 'native recovery', 'explicit Default'])(
+        'restores Plan before offering actions after the mode switch fails (%s)', async nextAction => {
         const f = await fixture({ bindTier: 'ultrafast' });
         f.native.settings.serviceTier = 'ultrafast';
         await f.root.activate({}, true);
@@ -1242,17 +1243,26 @@ describe('shared plan actions', () => {
         expect(f.root.needsTierConfirmation).toBe(true);
         expect(f.native.queue).toHaveLength(0);
         expect(f.state().codexPlanProposalId).toBeNull();
-        await f.root.applySettings({ serviceTier: 'standard' });
-        expect(f.state().codexPlanProposalId).toBe(id);
-        if (changedMode) {
-            await f.root.applySettings({ collaborationMode: 'plan' });
-            await f.root.applySettings({ collaborationMode: 'default' });
+        if (nextAction === 'explicit Default') {
+            await f.root.applySettings({ serviceTier: 'standard', collaborationMode: 'default' });
+            expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'default' });
             expect(f.state().codexPlanProposalId).toBeNull();
             await expect(action()).resolves.toMatchObject({ ok: false, code: 'stale_plan' });
-        } else {
+            return;
+        }
+        if (nextAction === 'native recovery') await f.root.applyNativeSettings({ threadId: 'thread', serviceTier: null });
+        else await f.root.applySettings({ serviceTier: 'standard' });
+        expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'plan' });
+        expect(f.state().codexPlanProposalId).toBe(id);
+        if (nextAction === 'continue planning') {
+            // Continue planning focuses the composer. Its next input uses the current native mode.
             request.mockClear();
-            await expect(action()).resolves.toEqual({ ok: true });
+            f.submit('Continue planning from the proposal', 'continued-plan');
+            await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
             expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+            expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'plan' });
+        } else if (nextAction === 'implement') {
+            await expect(action()).resolves.toEqual({ ok: true });
             expect(f.native.queue).toHaveLength(1);
         }
     });

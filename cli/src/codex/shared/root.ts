@@ -87,7 +87,7 @@ export class SharedCodexRoot {
     private latestTurn?: { id: string; status: string; planId?: string };
     private publishedPlanId: string | null | undefined;
     private submittingPlan = false;
-    private retryablePlan?: { id: string; turnRevision: number };
+    private interruptedPlanMode?: { id: string; turnRevision: number };
     private steeringActive: boolean | undefined;
     private turnRevision = 0;
     private settingsRevision = 0;
@@ -553,11 +553,9 @@ export class SharedCodexRoot {
         return settings;
     }
     private availablePlanId(): string | null {
-        if (this.currentTurn || this.latestTurn?.status !== 'completed'
+        if (this.currentTurn || this.latestTurn?.status !== 'completed' || this.settings.collaborationMode !== 'plan'
             || this.stopping || this.closed || this.reconnecting || this.submittingPlan || this.needsTierConfirmation || !this.client.isInitialized()) return null;
         const id = this.latestTurn.planId;
-        const retryable = this.retryablePlan?.id === id && this.retryablePlan?.turnRevision === this.turnRevision;
-        if (this.settings.collaborationMode !== 'plan' && !retryable) return null;
         // An uncertain/accepted submission must never become a fresh Execute button after reconnect.
         return id && !this.queue?.owns(planImplementationMessageId(id)) ? id : null;
     }
@@ -585,7 +583,7 @@ export class SharedCodexRoot {
         const publishTier = 'serviceTier' in value && (effective || value.serviceTier !== 'ultrafast' && value.serviceTier !== 'priority');
         const changesUltrafastModel = !effective && this.settings.serviceTier === 'ultrafast' && value.model !== this.settings.model;
         if (record(value.collaborationMode).mode === 'plan' && this.settings.collaborationMode === 'default') {
-            this.retryablePlan = undefined;
+            this.interruptedPlanMode = undefined;
         }
         if (changesUltrafastModel && !this.host.attached && this.serviceTierExplicit === true) {
             this.tierPublicationProtection ??= 'ultrafast';
@@ -836,6 +834,14 @@ export class SharedCodexRoot {
     private modelCatalogScope(): { modelProvider?: string } {
         return this.client.supportsProviderScopedModels() && this.modelProvider ? { modelProvider: this.modelProvider } : {};
     }
+    private planModeForTierRecovery(explicitTier: boolean): 'plan' | undefined {
+        const interrupted = this.interruptedPlanMode;
+        if (explicitTier && this.tierConfirmationPending && this.settings.collaborationMode === 'default' && interrupted
+            && interrupted.turnRevision === this.turnRevision && !this.currentTurn && this.latestTurn?.planId === interrupted.id) {
+            return 'plan';
+        }
+        return undefined;
+    }
     private settingsWrites: Promise<unknown> = Promise.resolve();
     applySettings(raw: unknown, onMutation?: () => void): Promise<{ applied: RuntimeSettings }> {
         const deadline = Date.now() + 25_000;
@@ -847,6 +853,7 @@ export class SharedCodexRoot {
     private async applySettingsNow(raw: unknown, deadline: number, operationId: number, onMutation?: () => void): Promise<{ applied: RuntimeSettings }> {
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
         const config = SettingsSchema.parse(raw);
+        if (config.collaborationMode !== undefined) this.interruptedPlanMode = undefined;
         if (this.pendingLaunchCollaborationMode && config.collaborationMode === undefined) config.collaborationMode = this.pendingLaunchCollaborationMode;
         const explicitTier = config.serviceTier !== undefined;
         const discoveryDeadline = Math.min(deadline - 15_000, Date.now() + 10_000);
@@ -901,6 +908,7 @@ export class SharedCodexRoot {
         if ((discoversUltrafast || discoversEffort) && Date.now() >= discoveryDeadline) {
             throw new Error('Settings discovery timed out; settings were not changed');
         }
+        const mode = config.collaborationMode ?? this.planModeForTierRecovery(explicitTier);
         const permission = config.permissionMode && resolveCodexPermissionModeConfig(config.permissionMode);
         const params = { threadId: this.threadId,
             ...(config.model ? { model: config.model } : {}),
@@ -909,7 +917,7 @@ export class SharedCodexRoot {
             ...(config.serviceTier !== undefined ? { serviceTier: toCodexServiceTier(config.serviceTier) ?? null } : {}),
             ...(permission ? { approvalPolicy: permission.approvalPolicy, sandboxPolicy: permission.sandboxPolicy,
                 approvalsReviewer: config.permissionMode === 'autoReview' ? 'auto_review' : 'user' } : {}),
-            ...(config.collaborationMode ? { collaborationMode: { mode: config.collaborationMode, settings: {
+            ...(mode ? { collaborationMode: { mode, settings: {
                 model: config.model ?? this.settings.model, reasoning_effort: config.modelReasoningEffort ?? this.settings.modelReasoningEffort,
                 developer_instructions: null
             } } } : {})
@@ -1002,12 +1010,18 @@ export class SharedCodexRoot {
         const deadline = Date.now() + 25_000;
         const operationId = ++this.tierOperationCounter;
         const operation = this.settingsWrites.catch(() => {}).then(async () => {
+            if (params.collaborationMode !== undefined) this.interruptedPlanMode = undefined;
             if (this.pendingLaunchCollaborationMode && params.collaborationMode === undefined) params = { ...params, collaborationMode: {
                 mode: this.pendingLaunchCollaborationMode, settings: { model: string(params.model) ?? this.settings.model,
                     reasoning_effort: params.effort ?? this.settings.modelReasoningEffort, developer_instructions: null }
             } };
             const explicitTier = params.serviceTier !== undefined;
             const resolved = await this.resolveNativeSettings(params, deadline);
+            const recoveryMode = resolved.params.collaborationMode === undefined ? this.planModeForTierRecovery(explicitTier) : undefined;
+            if (recoveryMode) resolved.params.collaborationMode = { mode: recoveryMode, settings: {
+                model: string(resolved.params.model) ?? this.settings.model,
+                reasoning_effort: resolved.params.effort ?? this.settings.modelReasoningEffort, developer_instructions: null
+            } };
             const effectiveModel = string(record(record(resolved.params.collaborationMode).settings).model) ?? string(resolved.params.model);
             const confirmsTier = resolved.params.serviceTier !== undefined || this.hasUltrafastTier;
             const confirmed = await this.writeNativeSettings(resolved.params, {
@@ -1385,24 +1399,21 @@ export class SharedCodexRoot {
             if (this.availablePlanId() !== planId || before.length) return stale();
             const revision = this.turnRevision;
             this.submittingPlan = true; this.publishPlan();
-            if (this.settings.collaborationMode !== 'default') {
-                await this.applySettings({ collaborationMode: 'default' }, () => {
-                    if (modeWriteRevision === undefined && this.needsTierConfirmation) throw new QueueAdmissionPaused('Service tier confirmation is pending');
-                    modeWriteRevision = revision;
-                });
-            }
+            await this.applySettings({ collaborationMode: 'default' }, () => {
+                if (modeWriteRevision === undefined && this.needsTierConfirmation) throw new QueueAdmissionPaused('Service tier confirmation is pending');
+                modeWriteRevision = revision;
+            });
             const queued = await this.queue.list();
             if (this.closed || this.stopping || this.reconnecting || !this.client.isInitialized()) return unavailable();
             if (this.needsTierConfirmation) throw new QueueAdmissionPaused('Service tier confirmation is pending');
             if (this.turnRevision !== revision || this.currentTurn || this.latestTurn?.planId !== planId
                 || this.settings.collaborationMode !== 'default' || queued.length) return stale();
             await this.queue.enqueue(localId, buildUserInputFromMessage('Implement the plan.'));
-            this.retryablePlan = undefined;
             return { ok: true };
         } catch (error) {
             if (this.needsTierConfirmation && modeWriteRevision === this.turnRevision && this.settings.collaborationMode === 'default'
                 && this.latestTurn?.planId === planId && !this.queue.owns(localId)) {
-                this.retryablePlan = { id: planId, turnRevision: modeWriteRevision };
+                this.interruptedPlanMode = { id: planId, turnRevision: modeWriteRevision };
                 return tierPending();
             }
             if (modeWriteRevision === undefined && error instanceof QueueAdmissionPaused) return tierPending();
