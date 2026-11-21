@@ -4540,6 +4540,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         try {
             let promptCount = 0;
             let alive = true;
+            let activeModelId = 'gemini-3.8-flash-low';
             const rpcOrder: string[] = [];
             const notify = (update: Record<string, unknown>) => {
                 internal.handleNotification('session/update', { sessionId: acpSessionId, update });
@@ -4548,10 +4549,16 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
                     rpcOrder.push(method);
                     if (method === 'session/new') {
-                        return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
+                        return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: activeModelId } };
                     }
-                    if (method === 'session/resume') return { sessionId: String(params.sessionId) };
-                    if (method === 'session/set_mode' || method === 'session/set_model') return {};
+                    if (method === 'session/resume') {
+                        return { sessionId: String(params.sessionId), models: { availableModels: [], currentModelId: activeModelId } };
+                    }
+                    if (method === 'session/set_model') {
+                        if (typeof params.modelId === 'string') activeModelId = params.modelId;
+                        return {};
+                    }
+                    if (method === 'session/set_mode') return {};
                     if (method === 'session/list') return { sessions: [] };
                     if (method === 'session/prompt') {
                         promptCount += 1;
@@ -4667,7 +4674,11 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 .find((msg) => msg.type === 'round-summary');
             expect(wakeupSummary?.summary?.model).toBe('gemini-3.8-flash-low');
             expect(rpcOrder.indexOf('session/resume')).toBeGreaterThanOrEqual(0);
-            expect(rpcOrder.indexOf('session/set_model')).toBeGreaterThan(rpcOrder.indexOf('session/resume'));
+            expect(rpcOrder.filter((method) => method === 'session/set_model')).toHaveLength(1);
+            const modelLines = (launcher as unknown as {
+                messageBuffer: { getMessages: () => Array<{ content: string }> };
+            }).messageBuffer.getMessages().filter((entry) => entry.content === '[MODEL:gemini-3.8-flash-high]');
+            expect(modelLines).toHaveLength(1);
 
             queue.close();
             await runPromise;
@@ -4970,5 +4981,162 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
 
         queue.close();
         await runPromise;
+    });
+
+    it('publishes a completed idle wakeup that finishes while turn config RPCs are in flight', async () => {
+        const acpSessionId = 'conv-real-acp-during-config';
+        const backend = new AcpSdkBackend({
+            command: 'agy',
+            args: ['acp'],
+            flavor: 'agy',
+            ignoreIdleUpdates: true,
+            toolCallLifetimeStore: null
+        });
+        const internal = backend as unknown as {
+            transport: unknown;
+            initializeResult: unknown;
+            handleNotification: (method: string, params: unknown) => void;
+        };
+        const ctor = AcpSdkBackend as unknown as Record<string, number>;
+        const savedTimings = {
+            LATE_FLUSH_INTERVAL_MS: ctor.LATE_FLUSH_INTERVAL_MS,
+            LATE_FLUSH_QUIET_PERIOD_MS: ctor.LATE_FLUSH_QUIET_PERIOD_MS,
+            LATE_FLUSH_WINDOW_MS: ctor.LATE_FLUSH_WINDOW_MS
+        };
+        ctor.LATE_FLUSH_INTERVAL_MS = 10;
+        ctor.LATE_FLUSH_QUIET_PERIOD_MS = 20;
+        ctor.LATE_FLUSH_WINDOW_MS = 60;
+
+        try {
+            let promptCount = 0;
+            let injectedDuringConfig = false;
+            let alive = true;
+            const notify = (update: Record<string, unknown>) => {
+                internal.handleNotification('session/update', { sessionId: acpSessionId, update });
+            };
+            internal.transport = {
+                sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
+                    if (method === 'session/new') {
+                        return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
+                    }
+                    if (method === 'session/resume') return { sessionId: String(params.sessionId) };
+                    if (method === 'session/set_mode') return {};
+                    if (method === 'session/set_model') {
+                        if (!injectedDuringConfig && promptCount === 1) {
+                            injectedDuringConfig = true;
+                            notify({
+                                sessionUpdate: 'agent_message_chunk',
+                                content: { type: 'text', text: 'FINISHED:DURING_CONFIG' }
+                            });
+                            const { compactPath } = agyTranscriptPaths(tempBrainDir, acpSessionId)!;
+                            appendFileSync(
+                                compactPath,
+                                [
+                                    JSON.stringify({
+                                        step_index: 4,
+                                        source: 'SYSTEM',
+                                        type: 'SYSTEM_MESSAGE',
+                                        status: 'DONE',
+                                        content: `<SYSTEM_MESSAGE>\nTask id "${acpSessionId}/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDURING_CONFIG\n</SYSTEM_MESSAGE>`
+                                    }),
+                                    JSON.stringify({
+                                        step_index: 5,
+                                        source: 'MODEL',
+                                        type: 'PLANNER_RESPONSE',
+                                        status: 'DONE',
+                                        content: 'FINISHED:DURING_CONFIG',
+                                        input_tokens: 45,
+                                        output_tokens: 6
+                                    })
+                                ].join('\n') + '\n',
+                                'utf8'
+                            );
+                        }
+                        return {};
+                    }
+                    if (method === 'session/list') return { sessions: [] };
+                    if (method === 'session/prompt') {
+                        promptCount += 1;
+                        if (promptCount === 1) {
+                            notify({
+                                sessionUpdate: 'tool_call',
+                                toolCallId: 'call-bg-cfg-1',
+                                name: 'run_command',
+                                title: 'sleep 2 && echo DURING_CONFIG',
+                                status: 'in_progress',
+                                rawInput: { CommandLine: 'sleep 2 && echo DURING_CONFIG' }
+                            });
+                            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'STARTED' } });
+                            writeTranscript(tempBrainDir, acpSessionId, [
+                                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run bg' },
+                                {
+                                    step_index: 1,
+                                    source: 'MODEL',
+                                    type: 'PLANNER_RESPONSE',
+                                    status: 'DONE',
+                                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 2 && echo DURING_CONFIG"' } }]
+                                },
+                                {
+                                    step_index: 2,
+                                    source: 'MODEL',
+                                    type: 'RUN_COMMAND',
+                                    status: 'RUNNING',
+                                    content: `Tool is running as a background task with task id: ${acpSessionId}/task-1`
+                                },
+                                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'STARTED' }
+                            ]);
+                        } else {
+                            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OK' } });
+                        }
+                        return { stopReason: 'end_turn', usage: { inputTokens: 30, outputTokens: 5 } };
+                    }
+                    return {};
+                }),
+                sendNotification: vi.fn(),
+                onNotification: () => {},
+                onStderrError: () => {},
+                registerRequestHandler: () => {},
+                isAlive: () => alive,
+                getProcessPid: () => 4242,
+                close: async () => { alive = false; return true; }
+            };
+            internal.initializeResult = {
+                protocolVersion: 1,
+                agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } }
+            };
+
+            const { session, queue, client } = makeHarness('always-proceed');
+            const launcher = new AgyAcpRemoteLauncher(session, {
+                createBackend: () => backend,
+                brainDir: tempBrainDir,
+                reactivePollMs: 15,
+                reactiveSettleMs: 25
+            });
+            const runPromise = launcher.launch();
+
+            queue.push('run bg', { permissionMode: 'always-proceed' }, 'msg-1');
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+            client.sendSessionEvent.mockClear();
+            client.sendAgentMessage.mockClear();
+
+            // Queue Turn 2 with a model switch; the wakeup completes while session/set_model is in flight.
+            queue.push('Reply with only OK.', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+
+            const texts = client.sendAgentMessage.mock.calls
+                .map(([msg]) => msg as { type?: string; message?: string })
+                .filter((msg) => msg.type === 'message')
+                .map((msg) => msg.message?.trim());
+            expect(texts).toEqual(['FINISHED:DURING_CONFIG', 'OK']);
+            const wakeupSummary = client.sendAgentMessage.mock.calls
+                .map(([msg]) => msg as { type?: string; summary?: { model?: string } })
+                .find((msg) => msg.type === 'round-summary');
+            expect(wakeupSummary?.summary?.model).toBe('gemini-3.8-flash-low');
+
+            queue.close();
+            await runPromise;
+        } finally {
+            Object.assign(ctor, savedTimings);
+        }
     });
 });

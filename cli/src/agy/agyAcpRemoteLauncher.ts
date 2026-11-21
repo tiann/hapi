@@ -799,7 +799,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     private async publishCompletedReactiveWakeup(
         acpSessionId: string,
-        inspection: Extract<ReturnType<typeof inspectAgyReactiveSteps>, { state: 'completed' }>
+        inspection: Extract<ReturnType<typeof inspectAgyReactiveSteps>, { state: 'completed' }>,
+        summaryModelId: string | null = this.currentModelId
     ): Promise<void> {
         this.pausedWakeupStepIndex = null;
         this.lastTurnTranscriptState = null;
@@ -831,7 +832,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE'
             ).length;
             this.session.sendAgentMessage(
-                agyRoundSummary(converted.usage, converted.durationMs, this.currentModelId, null, wakeupNumTurns)
+                agyRoundSummary(converted.usage, converted.durationMs, summaryModelId, null, wakeupNumTurns)
             );
         }
     }
@@ -1025,7 +1026,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /** Apply the batch's mode and model; false when the turn must not run. */
-    private async applyTurnConfig(backend: AcpSdkBackend, acpSessionId: string, mode: AgyMode): Promise<boolean> {
+    private async applyTurnConfig(
+        backend: AcpSdkBackend,
+        acpSessionId: string,
+        mode: AgyMode,
+        opts: { announceModel?: boolean } = {}
+    ): Promise<boolean> {
         // Sent every turn: agy can change its mode on its own (current_mode_update),
         // which HAPI does not track.
         const acpMode = agyAcpModeForPermission(mode.permissionMode);
@@ -1041,7 +1047,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             try {
                 await backend.setModel(acpSessionId, modelId);
                 this.currentModelId = modelId;
-                this.messageBuffer.addMessage(`[MODEL:${modelId}]`, 'system');
+                if (opts.announceModel !== false) {
+                    this.messageBuffer.addMessage(`[MODEL:${modelId}]`, 'system');
+                }
             } catch (error) {
                 this.reportTurnError(`Failed to switch Antigravity model to ${modelId}: ${errorMessage(error)}`);
                 return false;
@@ -1164,6 +1172,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 restoreIfUserTurn();
                 return;
             }
+            const preSwitchModelId = this.currentModelId;
+            if (!await this.applyTurnConfig(backend, acpSessionId, mode) || turn.aborted) {
+                restoreIfUserTurn();
+                return;
+            }
             if (!internalWakeup && !relaunched) {
                 this.advanceCursorFromLastTurnState();
                 const pendingSteps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, this.lastTranscriptStepIndex);
@@ -1175,16 +1188,18 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     { ...this.reactiveTimings, settleMs: 0 }
                 );
                 if (pendingWakeup.state === 'completed') {
-                    await this.publishCompletedReactiveWakeup(acpSessionId, pendingWakeup);
+                    await this.publishCompletedReactiveWakeup(acpSessionId, pendingWakeup, preSwitchModelId);
                     if (turn.aborted) {
                         restoreIfUserTurn();
                         return;
                     }
+                    // `publishCompletedReactiveWakeup` calls `session/resume`; re-apply mode and
+                    // (only if resume reset `currentModelId`) model without duplicating `[MODEL:...]`.
+                    if (!await this.applyTurnConfig(backend, acpSessionId, mode, { announceModel: false }) || turn.aborted) {
+                        restoreIfUserTurn();
+                        return;
+                    }
                 }
-            }
-            if (!await this.applyTurnConfig(backend, acpSessionId, mode) || turn.aborted) {
-                restoreIfUserTurn();
-                return;
             }
             const preSyncStepIndex = this.lastTranscriptStepIndex;
             this.syncTranscriptCursor();
