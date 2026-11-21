@@ -31,6 +31,16 @@ import { planImplementationMessageId, planProposalForItem, planProposalForTurn }
 
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
 type HeldDelivery = { cancellation?: ReturnType<SharedCodexQueue['cancel']> };
+type PreparedNativeTurn = {
+    params: Record<string, unknown>;
+    fallbackNotice?: string;
+    previousTier: unknown;
+    previousModel: unknown;
+    expectedModel?: string;
+    inheritedUltrafast: boolean;
+    preserveUltrafast: boolean;
+    generation: number;
+};
 export type RootHost = {
     directory: string; generation: string; endpoint: string; token?: string;
     attached?: boolean;
@@ -531,7 +541,8 @@ export class SharedCodexRoot {
         if (!this.closed && !this.stopping) this.session.keepAlive(Boolean(this.currentTurn), undefined, this.settingsForHub());
     }
     private settingsForHub(): RuntimeSettings {
-        if (!this.tierPublicationProtection || this.session.getMetadata()?.codexPendingServiceTier === this.tierPublicationProtection) {
+        if (!this.tierPublicationProtection || this.settings.serviceTier === this.tierPublicationProtection
+            || this.session.getMetadata()?.codexPendingServiceTier === this.tierPublicationProtection) {
             return this.settings;
         }
         // Until the Hub saves the retry intent, its tier column may be the
@@ -1004,20 +1015,23 @@ export class SharedCodexRoot {
         this.settingsWrites = operation;
         return operation;
     }
-    async prepareNativeTurn(params: Record<string, unknown>): Promise<{ params: Record<string, unknown>; fallbackNotice?: string; previousTier: unknown; reconcileUltrafastModel?: string; generation: number }> {
+    async prepareNativeTurn(params: Record<string, unknown>): Promise<PreparedNativeTurn> {
         const resolved = await this.resolveNativeSettings(params);
-        const reconcileUltrafastModel = resolved.params.serviceTier === undefined && this.hasUltrafastTier
-            ? string(record(record(resolved.params.collaborationMode).settings).model) ?? string(resolved.params.model) : undefined;
-        return { ...resolved, previousTier: this.settingsNative.serviceTier, reconcileUltrafastModel, generation: ++this.tierOperationCounter };
+        const expectedModel = string(record(record(resolved.params.collaborationMode).settings).model) ?? string(resolved.params.model);
+        const preserveUltrafast = this.serviceTierExplicit === true && (this.hasUltrafastTier || this.tierPublicationProtection === 'ultrafast');
+        if (preserveUltrafast) this.tierPublicationProtection ??= 'ultrafast';
+        return { ...resolved, previousTier: this.settingsNative.serviceTier, previousModel: this.settingsNative.model, expectedModel,
+            inheritedUltrafast: resolved.params.serviceTier === undefined && this.hasUltrafastTier && expectedModel !== undefined,
+            preserveUltrafast, generation: ++this.tierOperationCounter };
     }
-    async recoverLostNativeTurn(params: Record<string, unknown>, explicitTier: boolean, previousTier: unknown, generation: number,
-        fallbackNotice?: string, reconcileUltrafastModel?: string): Promise<void> {
+    async recoverLostNativeTurn(turn: PreparedNativeTurn & { explicitTier: boolean }): Promise<void> {
         this.notice('Native turn delivery is unconfirmed after transport loss. Check the conversation before retrying the message.');
-        if (params.serviceTier === undefined && !reconcileUltrafastModel || this.closed || this.stopping) return;
+        const tier = turn.inheritedUltrafast ? 'ultrafast' : turn.params.serviceTier;
+        if (tier === undefined || this.closed || this.stopping) return;
         const deadline = Date.now() + 10_000;
-        const revision = this.settingsRevision;
         const latestConfirmation = this.confirmedTierOperation;
-        if (generation < latestConfirmation) {
+        if (turn.generation < latestConfirmation) {
+            const revision = this.settingsRevision;
             const latestTier = this.confirmedTierValue;
             try {
                 const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
@@ -1032,15 +1046,15 @@ export class SharedCodexRoot {
             }
             return;
         }
-        if (generation < this.pendingTierOperation) return;
-        const operationId = generation;
-        const preserveUltrafast = reconcileUltrafastModel && this.serviceTierExplicit === true;
-        this.pauseTierConfirmation(operationId, preserveUltrafast
+        if (turn.generation < this.pendingTierOperation) return;
+        const operationId = turn.generation;
+        this.pauseTierConfirmation(operationId, turn.preserveUltrafast
             ? { retainConfirmedTier: true, pendingTier: 'ultrafast' } : undefined);
-        const expected = reconcileUltrafastModel
-            ? { serviceTier: 'ultrafast', model: reconcileUltrafastModel } : { serviceTier: params.serviceTier };
-        // An unchanged value cannot establish that the request was accepted.
-        if (!reconcileUltrafastModel && (previousTier === undefined || settingsMatch({ serviceTier: previousTier }, expected))) return;
+        const modelChanged = turn.expectedModel !== undefined && turn.previousModel !== undefined && turn.expectedModel !== turn.previousModel;
+        // An unchanged explicit request cannot establish that Codex accepted it.
+        if (!turn.inheritedUltrafast && !modelChanged
+            && (turn.previousTier === undefined || settingsMatch({ serviceTier: turn.previousTier }, { serviceTier: tier }))) return;
+        const expected = { serviceTier: tier, ...(turn.expectedModel !== undefined ? { model: turn.expectedModel } : {}) };
         const current = () => !this.closed && !this.stopping && this.isCurrentTierOperation(operationId);
         try {
             for (let attempt = 0; current() && attempt < 3; attempt++) {
@@ -1048,16 +1062,17 @@ export class SharedCodexRoot {
                 const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
                 if (!current()) return;
                 if (this.settingsRevision !== snapshotRevision) continue;
-                if (!settingsMatch(snapshot, expected)) return;
+                const filteredStandard = tier === null && snapshot.serviceTier === null && this.nativeSelectedServiceTier === 'default';
+                if (!settingsMatch(filteredStandard ? { ...snapshot, serviceTier: 'default' } : snapshot, expected)) return;
                 const enabled = expected.serviceTier !== 'ultrafast' || await isUltrafastEnabled(this.client, this.threadId, deadline);
                 if (!current()) return;
                 if (this.settingsRevision !== snapshotRevision) continue;
                 if (!enabled) return;
                 this.acceptSettings(snapshot, true);
-                if (explicitTier) this.serviceTierExplicit = true;
+                if (turn.explicitTier) this.serviceTierExplicit = true;
                 await this.completeTierConfirmation(operationId);
                 this.alive();
-                if (fallbackNotice && current()) this.notice(fallbackNotice);
+                if (turn.fallbackNotice && current()) this.notice(turn.fallbackNotice);
                 return;
             }
         } catch {
@@ -1066,8 +1081,8 @@ export class SharedCodexRoot {
     }
     /** Called only after native turn acceptance; a rejected input leaves intent unchanged. */
     async confirmNativeTurn(params: Record<string, unknown>, explicitTier: boolean, fallbackNotice?: string, operationId = ++this.tierOperationCounter,
-        reconcileUltrafastModel?: string): Promise<void> {
-        const verifyUltrafast = params.serviceTier === 'ultrafast' || params.serviceTier === undefined && (Boolean(reconcileUltrafastModel) || this.hasUltrafastTier);
+        inheritedUltrafast = false): Promise<void> {
+        const verifyUltrafast = params.serviceTier === 'ultrafast' || params.serviceTier === undefined && (inheritedUltrafast || this.hasUltrafastTier);
         const current = () => !this.closed && !this.stopping && this.isCurrentTierOperation(operationId);
         // A settings lookup can confirm the effective value before the native
         // reply arrives. Only the accepted turn establishes explicit intent.

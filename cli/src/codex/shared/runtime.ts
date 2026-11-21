@@ -589,7 +589,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const turn = nativeTurns.get(key(connection, request)); nativeTurns.delete(key(connection, request));
         if (turn && !response.error) {
             // Native acceptance must reach the frontend without waiting for a side-client snapshot.
-            void operation(() => turn.root.confirmNativeTurn(turn.params, turn.explicitTier, turn.fallbackNotice, turn.generation, turn.reconcileUltrafastModel))
+            void operation(() => turn.root.confirmNativeTurn(turn.params, turn.explicitTier, turn.fallbackNotice, turn.generation, turn.inheritedUltrafast))
                 .catch(error => logger.debug('[Codex shared] native tier reconciliation', error));
         }
         const reservation = reservations.get(key(connection, request)); reservations.delete(key(connection, request));
@@ -670,8 +670,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 for (const [key, turn] of nativeTurns) {
                     if (!key.startsWith(`${connection}:`)) continue;
                     nativeTurns.delete(key);
-                    void operation(() => turn.root.recoverLostNativeTurn(
-                        turn.params, turn.explicitTier, turn.previousTier, turn.generation, turn.fallbackNotice, turn.reconcileUltrafastModel))
+                    void operation(() => turn.root.recoverLostNativeTurn(turn))
                         .catch(error => logger.debug('[Codex shared] lost turn tier reconciliation', error));
                 }
                 for (const [key, reservation] of reservations) {

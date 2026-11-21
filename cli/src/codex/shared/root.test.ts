@@ -2153,7 +2153,7 @@ it.each(['priority', 'default'])('reconciles a lost native turn reply from an in
         return original(method, params);
     });
     const prepared = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
-    const recovering = f.root.recoverLostNativeTurn(prepared.params, true, prepared.previousTier, prepared.generation);
+    const recovering = f.root.recoverLostNativeTurn({ ...prepared, explicitTier: true });
     expect(f.metadata().codexTierConfirmationPending).toBe(true);
     await expect(f.root.nativeQueueMutation('thread/queue/start', { threadId: 'thread' })).rejects.toThrow('tier confirmation');
     supplySnapshot({ model: 'mock', serviceTier });
@@ -2172,12 +2172,11 @@ it.each(['next-model', 'other-model'])('reconciles a model-only Ultrafast turn w
     const heartbeat = vi.spyOn(f.session, 'keepAlive');
     const prepared = await f.root.prepareNativeTurn({ model: 'next-model' });
     expect(prepared.params.serviceTier).toBeUndefined();
-    expect(prepared.reconcileUltrafastModel).toBe('next-model');
+    expect(prepared).toMatchObject({ inheritedUltrafast: true, expectedModel: 'next-model' });
     f.root.acceptSettings({ model: 'next-model', serviceTier: 'ultrafast' }, false);
     f.native.settings = { model: effectiveModel, serviceTier: 'ultrafast' };
     const request = vi.spyOn(f.root.client, 'request');
-    await f.root.recoverLostNativeTurn(prepared.params, false, prepared.previousTier, prepared.generation,
-        prepared.fallbackNotice, prepared.reconcileUltrafastModel);
+    await f.root.recoverLostNativeTurn({ ...prepared, explicitTier: false });
     expect(f.root.needsTierConfirmation).toBe(effectiveModel !== 'next-model');
     if (effectiveModel === 'next-model') expect(heartbeat.mock.lastCall?.[2]?.serviceTier).toBe('ultrafast');
     expect(f.metadata().codexServiceTierExplicit).toBe(false);
@@ -2211,14 +2210,55 @@ it.each(['thread/resume', 'experimentalFeature/list'])('preserves explicit Ultra
         }
         return original(method, params);
     });
-    await f.root.recoverLostNativeTurn(prepared.params, false, prepared.previousTier,
-        prepared.generation, prepared.fallbackNotice, prepared.reconcileUltrafastModel);
+    await f.root.recoverLostNativeTurn({ ...prepared, explicitTier: false });
     expect(f.root.needsTierConfirmation).toBe(false);
     expect(f.metadata()).toMatchObject({ codexServiceTierExplicit: true, codexConfirmedServiceTier: 'ultrafast' });
     expect(f.metadata().codexPendingServiceTier).toBeUndefined();
     expect(heartbeat.mock.lastCall?.[2]?.serviceTier).toBe('ultrafast');
     expect(request.mock.calls.filter(([method]) => method === 'thread/resume')).toHaveLength(2);
     expect(request.mock.calls.some(([method]) => method === 'turn/start')).toBe(false);
+});
+
+it('reconciles a lost reply when the native turn changes model and explicitly repeats Ultrafast', async () => {
+    const f = await fixture({ bindTier: 'ultrafast' });
+    await f.root.activate({}, true);
+    vi.spyOn(f.root.client, 'listModels').mockResolvedValue({
+        data: [{ id: 'next-model', serviceTiers: [{ id: 'ultrafast' }] }]
+    } as never);
+    const turn = await f.root.prepareNativeTurn({ model: 'next-model', serviceTier: 'ultrafast' });
+    expect(turn).toMatchObject({ previousTier: 'ultrafast', previousModel: 'mock', expectedModel: 'next-model' });
+    f.native.settings = { model: 'next-model', serviceTier: 'ultrafast' };
+    await f.root.recoverLostNativeTurn({ ...turn, explicitTier: true });
+    expect(f.root.needsTierConfirmation).toBe(false);
+    expect(f.metadata()).toMatchObject({ codexConfirmedServiceTier: 'ultrafast', codexServiceTierExplicit: true });
+    expect(f.events).toHaveBeenCalledWith({ type: 'message', message: expect.stringContaining('delivery is unconfirmed') });
+});
+
+it.each(['ultrafast', 'default', null])('keeps saved Ultrafast until the lost Standard fallback is confirmed (%s)', async effectiveTier => {
+    const f = await fixture({ bindTier: 'ultrafast' });
+    await f.root.activate({}, true);
+    f.session.updateMetadata(metadata => ({ ...metadata, codexConfirmedServiceTier: undefined }));
+    const heartbeat = vi.spyOn(f.session, 'keepAlive');
+    const turn = await f.root.prepareNativeTurn({ model: 'standard-only' });
+    expect(turn.params).toMatchObject({ model: 'standard-only', serviceTier: null });
+    // A selection event alone cannot replace the durable Ultrafast choice.
+    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'standard-only', serviceTier: 'default' } });
+    await f.root.refresh();
+    expect(heartbeat.mock.lastCall?.[2]).not.toHaveProperty('serviceTier');
+    const applied = effectiveTier !== 'ultrafast';
+    f.native.settings = { model: applied ? 'standard-only' : 'mock', serviceTier: effectiveTier };
+    await f.root.recoverLostNativeTurn({ ...turn, explicitTier: false });
+    expect(f.root.needsTierConfirmation).toBe(!applied);
+    if (applied) {
+        expect(f.metadata().codexPendingServiceTier).toBeUndefined();
+        expect(f.metadata().codexConfirmedServiceTier).toBe('standard');
+        expect(heartbeat.mock.lastCall?.[2]?.serviceTier).toBe('standard');
+    } else {
+        const metadata = f.metadata();
+        expect(metadata.codexPendingServiceTier).toBe('ultrafast');
+        await expect(inheritedResumeTier(f.root.client, {}, metadata.codexServiceTierExplicit, '/project',
+            undefined, metadata.codexPendingServiceTier, metadata.codexTierConfirmationPending)).resolves.toEqual({ serviceTier: 'ultrafast' });
+    }
 });
 
 it.each(['ultrafast', 'default'])('preserves accepted native Ultrafast if the wrapper stops before an effective %s read', async effective => {
@@ -2270,7 +2310,7 @@ it.each(['web', 'native'])('keeps a newer lost-turn pause after an older %s Stan
         : f.root.applyNativeSettings({ threadId: 'thread', serviceTier: null });
     await dispatched;
     const later = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
-    await f.root.recoverLostNativeTurn(later.params, true, later.previousTier, later.generation);
+    await f.root.recoverLostNativeTurn({ ...later, explicitTier: true });
     expect(f.root.needsTierConfirmation).toBe(true);
     release();
     await write;
@@ -2351,7 +2391,7 @@ it.each(['default', null, 'priority'])('reconciles delayed lost reply if newer S
     const prepared = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
     await f.root.applySettings({ serviceTier: 'standard' });
     vi.spyOn(f.root.client, 'request').mockResolvedValueOnce({ model: 'mock', serviceTier });
-    await f.root.recoverLostNativeTurn(prepared.params, true, prepared.previousTier, prepared.generation);
+    await f.root.recoverLostNativeTurn({ ...prepared, explicitTier: true });
     expect(f.root.needsTierConfirmation).toBe(serviceTier === 'priority');
     expect(f.root.hasConfirmedStandardTier).toBe(true);
 });
@@ -2375,7 +2415,7 @@ it('keeps a newer native Standard notification confirmed when an older reply is 
     await f.drain();
     release({ model: 'mock', serviceTier: 'priority' });
     await confirming;
-    await f.root.recoverLostNativeTurn(older.params, true, older.previousTier, older.generation);
+    await f.root.recoverLostNativeTurn({ ...older, explicitTier: true });
     expect(f.root.hasConfirmedStandardTier).toBe(true);
     expect(f.root.needsTierConfirmation).toBe(false);
 });
@@ -2385,7 +2425,7 @@ it.each(['snapshot', 'notification'])('releases a lost-turn pause after newer na
     await f.root.activate();
     const older = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
     const newer = await f.root.prepareNativeTurn({ serviceTier: null });
-    await f.root.recoverLostNativeTurn(older.params, true, older.previousTier, older.generation);
+    await f.root.recoverLostNativeTurn({ ...older, explicitTier: true });
     expect(f.root.needsTierConfirmation).toBe(true);
     await expect(f.root.nativeQueueMutation('thread/queue/start', { threadId: 'thread' })).rejects.toThrow('tier confirmation');
     const original = f.root.client.request.bind(f.root.client);
@@ -3121,12 +3161,12 @@ it.each(['legacy', 'single-member batch', 'multi-member batch', 'in-flight steer
     const original = f.root.client.request.bind(f.root.client);
     const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
         if (inFlight && method === 'turn/steer') {
-            await f.root.recoverLostNativeTurn(tier.params, true, undefined, tier.generation);
+            await f.root.recoverLostNativeTurn({ ...tier, previousTier: undefined, explicitTier: true });
             throw new Error('Expected active turn no longer matches');
         }
         const response = await original(method, params);
         if (!inFlight && method === (hasSibling ? 'thread/queue/update' : 'thread/queue/delete')) {
-            await f.root.recoverLostNativeTurn(tier.params, true, undefined, tier.generation);
+            await f.root.recoverLostNativeTurn({ ...tier, previousTier: undefined, explicitTier: true });
         }
         return response;
     });
