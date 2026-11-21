@@ -34,6 +34,7 @@ import {
     advanceAgyTurnTranscriptCursor,
     agyTranscriptPaths,
     convertAgyReactiveSteps,
+    decodeAgyTranscriptArgs,
     defaultAgyBrainDir,
     extractAgyBackgroundTaskIds,
     inspectAgyReactiveSteps,
@@ -739,7 +740,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     session.onThinkingChange(false);
                     return;
                 }
-                this.releaseQuarantine();
+                this.releaseOwnedQuarantine();
 
                 if (inspection.latestStepIndex > watchedStepIndex) {
                     watchedStepIndex = inspection.latestStepIndex;
@@ -1198,12 +1199,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         .find((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')
                     : undefined;
                 if (live) {
-                    // A new wakeup row after the stop owns what was held (not for an aborted prompt); otherwise it was the stopped one's.
-                    const q = this.quarantine;
-                    if (q && !turn.aborted && readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, q.afterStep).some(
-                        (step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE'
-                    )) this.releaseQuarantine();
-                    this.quarantine = null;
                     await this.settleLiveWakeup(!turn.aborted);
                 }
                 if (firstWakeupStep) {
@@ -1363,13 +1358,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
      */
     private async settleLiveWakeup(close: boolean): Promise<void> {
         await this.backend?.flushPendingMessageBuffers();
-        const turn = this.idleTurn;
         const keep = close && !this.idleDiscarded;
+        // Settling ends the quarantine: what the wakeup planned is replayed, the rest was never its own.
+        if (keep) this.releaseOwnedQuarantine();
+        const turn = this.idleTurn;
         this.idleTurn = null;
         this.idleDiscarded = false;
-        if (!keep && this.acpSessionId) {
-            this.quarantine = { afterStep: readLatestAgyTranscriptStepIndex(this.brainDir, this.acpSessionId), held: [] };
-        }
+        this.quarantine = !keep && this.acpSessionId
+            ? { afterStep: readLatestAgyTranscriptStepIndex(this.brainDir, this.acpSessionId), held: [] }
+            : null;
         if (!turn) return;
         if (!keep) {
             for (const id of [...turn.commandCallIds, ...turn.openCommands, ...turn.deferredLiveCommandCalls.keys()]) {
@@ -1405,11 +1402,42 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         return true;
     }
 
-    /** A new wakeup row (structure, not time) shows ownership: replay what was held as normal frames. */
-    private releaseQuarantine(): void {
-        const held = this.quarantine?.held ?? [];
+    /**
+     * Replays the held starts the new wakeup owns: a planner row of that wakeup (after its
+     * SYSTEM_MESSAGE) plans a run_command with the same command line. The others stay held and
+     * are rechecked on the next tick, then dropped at the next handler swap. A start without a
+     * command line cannot be corroborated, so it is never released: losing it is better than
+     * showing a stopped command as running.
+     */
+    private releaseOwnedQuarantine(): void {
+        const q = this.quarantine;
+        if (!q || q.held.length === 0 || !this.acpSessionId) return;
+        const steps = readAgyTranscriptStepsAfter(this.brainDir, this.acpSessionId, q.afterStep);
+        const first = steps.findIndex((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE');
+        if (first < 0) return;
+        const planned = steps.slice(first).flatMap((step) =>
+            step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE'
+                ? (step.tool_calls ?? []).filter((call) => call.name === 'run_command').map((call) => decodeAgyTranscriptArgs(call.args).CommandLine)
+                : []
+        );
+        const owned = new Set<string>();
+        for (const { message } of q.held) {
+            if (message.type !== 'tool_call') continue;
+            const args = message.nativeArgs && typeof message.nativeArgs === 'object'
+                ? (message.nativeArgs as Record<string, unknown>)
+                : undefined;
+            const at = typeof args?.CommandLine === 'string' ? planned.indexOf(args.CommandLine) : -1;
+            if (at >= 0) {
+                planned.splice(at, 1);
+                owned.add(message.id);
+            }
+        }
+        if (owned.size === 0) return;
+        const replay = q.held.filter((item) => owned.has(('id' in item.message ? item.message.id : undefined) ?? ''));
+        q.held = q.held.filter((item) => !replay.includes(item));
         this.quarantine = null;
-        for (const item of held) this.handleTurnUpdate(item.turn, item.message);
+        for (const item of replay) this.handleTurnUpdate(item.turn, item.message);
+        this.quarantine = q.held.length > 0 ? q : null;
     }
 
     private liveIdleWakeups(): boolean {
@@ -1764,6 +1792,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 turn.deferredLiveCommandCalls.delete(message.id);
             }
             if (deferredCall || !this.nativeToolNames.has(message.id)) {
+                // A result that names a task the transcript already settled is that task's duplicate.
+                if (!deferredCall && this.consumeSettledFromTranscript(message)) {
+                    return { message, suppressForward: true, skipTracking: true };
+                }
                 const nativeArgs = deferredCall?.nativeArgs
                     && typeof deferredCall.nativeArgs === 'object'
                     && !Array.isArray(deferredCall.nativeArgs)
@@ -1793,9 +1825,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         resultMessage: message,
                         nativeArgs
                     });
-                    return { message, suppressForward: true, skipTracking: true };
-                }
-                if (!deferredCall && this.consumeSettledFromTranscript(message)) {
                     return { message, suppressForward: true, skipTracking: true };
                 }
                 if (deferredCall) {

@@ -5262,6 +5262,88 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.finish();
         });
 
+        it('releases only the held start that a new wakeup row plans, not the stopped wakeup start', async () => {
+            const acp = 'conv-live-quarantine-owned';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            // Both starts are first seen after the stop: one is the stopped wakeup's, one the new wakeup's.
+            h.notify(bgCall('call-stopped-held', 'sleep 5'));
+            h.notify(bgCall('call-new-owned', 'sleep 9'));
+            await new Promise((r) => setTimeout(r, 40));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-9`));
+            await h.ready();
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.filter((m) => m.callId?.startsWith('call-new-owned#') && m.type === 'tool-call')).toHaveLength(1);
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-new-owned#'))).toBe(true);
+            expect(results.filter((m) => m.callId?.startsWith('call-stopped-held#'))).toHaveLength(0);
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-stopped-held#'))).toBe(false);
+            // The quarantine ended with that wakeup: a later wakeup planning the stopped command line
+            // does not bring the stopped start back.
+            h.client.sendSessionEvent.mockClear();
+            await new Promise((r) => setTimeout(r, 40));
+            h.append(bgRows(10, 'sleep 5', `${acp}/task-10`));
+            await h.ready();
+            const later = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(later.filter((m) => m.callId?.startsWith('call-stopped-held#'))).toHaveLength(0);
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-stopped-held#'))).toBe(false);
+            await h.finish();
+        });
+
+        it('does not retain a late result of a settled task against another open transcript command', async () => {
+            const acp = 'conv-live-settled-first';
+            turnRows(acp);
+            const done = (out: string) => ({ output: `Command exited with code 0.\n\nCommand output:\n${out}`, exit_code: 0 });
+            const finished = (task: string, out: string) => `<SYSTEM_MESSAGE>\nTask id "${acp}/${task}" finished with result:\nCommand exited with code 0.\n\nCommand output:\n${out}\n</SYSTEM_MESSAGE>`;
+            const h = startLive(acp, (_n, notify) => {
+                notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } });
+                h.append([
+                    { step_index: 10, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                    { step_index: 11, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'ok' }
+                ]);
+            }, {}, acp);
+            await vi.waitFor(() => expect(h.requests).toContain('session/resume'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`));
+            await vi.waitFor(() => expect(h.bgEntries().filter((e) => e.synthetic)).toHaveLength(1));
+            await h.ready();
+            h.append(bgRows(6, 'sleep 8', `${acp}/task-8`));
+            await vi.waitFor(() => expect(h.bgEntries().filter((e) => e.synthetic)).toHaveLength(2));
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            await new Promise((r) => setTimeout(r, 40));
+            // Task 7 ends from its transcript row; its late result names it while task 8 is still open.
+            h.append([
+                { step_index: 12, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: finished('task-7', 'DONE') },
+                { step_index: 13, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'one done' }
+            ]);
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'task-7', status: 'completed', rawOutput: done('DONE') });
+            await new Promise((r) => setTimeout(r, 40));
+            h.append([
+                { step_index: 14, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: finished('task-8', 'OTHER') },
+                { step_index: 15, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'two done' }
+            ]);
+            await h.ready();
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string; output?: { stdout?: string } });
+            expect(results.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('task-7#'))).toHaveLength(0);
+            expect(results.filter((m) => m.type === 'tool-call-result' && m.output?.stdout === 'OTHER')).toHaveLength(1);
+            await h.finish();
+        });
+
         it('seals buffered wakeup text when the wakeup times out', async () => {
             const acp = 'conv-live-timeout';
             const h = startLive(acp, () => { turnRows(acp); }, { reactiveMaxIdleMs: 60 });
