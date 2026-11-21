@@ -412,6 +412,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             const resolved = await resolveUltrafastLaunch(control, method, params, cwd, undefined, source, startupCatalogConfig);
             assertRunning();
             const request = root.config({ ...resolved.params, ...(method === 'thread/fork' ? { deferGoalContinuation: true } : {}) });
+            if (method === 'thread/fork') parent?.assertForkTierConfirmed();
             nativeDispatched = true;
             const response = record(await root.client.request(method, request));
             nativeSucceeded = true;
@@ -557,12 +558,15 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                     metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined)
                 : params;
             const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, undefined, savedThread, startupCatalogConfig);
+            if (request.method === 'thread/fork') existing?.assertForkTierConfirmed();
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
                 freshThread: request.method === 'thread/start', executionParams: tier.params,
                 serviceTierExplicit: params.serviceTier !== undefined || request.method === 'thread/resume' && metadata?.codexPendingServiceTier !== undefined
                     ? true : request.method === 'thread/resume' ? undefined : false,
                 requestedUltrafast: tier.params.serviceTier === 'ultrafast', downgraded: tier.downgraded });
-            if (request.method === 'thread/resume' && threadId && (tier.downgraded || tier.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true)) pendingAdmission.add(threadId);
+            if (request.method === 'thread/resume' && threadId && (tier.downgraded || tier.params.serviceTier === 'ultrafast'
+                || tier.params.serviceTier === 'priority' && metadata?.codexPendingServiceTier === 'fast'
+                || metadata?.codexTierConfirmationPending === true)) pendingAdmission.add(threadId);
             return { ...request, params: root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
         } catch (error) {
             const retained = threadId && retryableBindings.get(threadId)?.root === root;

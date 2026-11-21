@@ -424,6 +424,23 @@ it('keeps imported tier intent unset until a tier is chosen', async () => {
     expect(f.metadata().codexServiceTierExplicit).toBe(true);
 });
 
+it.each(['priority', null])('activates a cold deferred Fast choice only when the effective tier confirms it (%s)', async bindTier => {
+    const f = await fixture({ initialPendingFast: true, bindTier, expectedResumeTier: 'priority' });
+    await f.root.activate({}, true);
+    expect(f.root.needsTierConfirmation).toBe(bindTier === null);
+    if (bindTier === null) {
+        expect(f.metadata()).toMatchObject({ codexPendingServiceTier: 'fast', codexTierConfirmationPending: true });
+        expect(f.sessionReady).not.toHaveBeenCalled();
+        expect(f.events).toHaveBeenCalledWith({ type: 'message', message: expect.stringContaining('could not confirm the requested Fast tier') });
+        await f.root.applySettings({ serviceTier: 'standard' });
+        expect(f.metadata().codexConfirmedServiceTier).toBe('standard');
+    } else {
+        expect(f.metadata().codexConfirmedServiceTier).toBe('fast');
+    }
+    expect(f.sessionReady).toHaveBeenCalledTimes(1);
+    expect(f.metadata().codexPendingServiceTier).toBeUndefined();
+});
+
 it.each(['current', 'latest', 'clear'])('passes Plan into activation and returns the recoverable %s child without a second settings write', async kind => {
     const initialSettings = vi.fn(async () => { throw new Error('second settings write would archive or orphan the recoverable child'); });
     const end = vi.fn(async () => {});
@@ -440,13 +457,15 @@ it.each(['current', 'latest', 'clear'])('passes Plan into activation and returns
 });
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
-    initialTierPending?: boolean; holdTierMetadata?: boolean; bindTier?: string; startupCatalogConfig?: unknown; nativeImport?: boolean;
+    initialTierPending?: boolean; initialPendingFast?: boolean; holdTierMetadata?: boolean; bindTier?: string | null; expectedResumeTier?: string;
+    startupCatalogConfig?: unknown; nativeImport?: boolean;
     attached?: boolean; settingsFor?: RootHost['settingsFor']; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
     let state: AgentState = opts?.initialState ?? { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex',
         ...(opts?.nativeImport ? {} : { codexServiceTierExplicit: false }),
-        ...(opts?.initialTierPending ? { codexTierConfirmationPending: true } : {}) };
+        ...(opts?.initialTierPending ? { codexTierConfirmationPending: true } : {}),
+        ...(opts?.initialPendingFast ? { codexPendingServiceTier: 'fast' } : {}) };
     if (opts?.attached) metadata.codexRuntime = { kind: 'attached', bindingId: '11111111-1111-4111-8111-111111111111', state: 'attached' };
     let reconnect: (() => void) | null = null;
     let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;
@@ -486,7 +505,8 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
     await root.prepare();
-    await root.bind('thread', { model: 'mock', ...(opts?.bindTier ? { serviceTier: opts.bindTier } : {}), thread: { turns: [] } }, opts?.attached ?? false);
+    await root.bind('thread', { model: 'mock', ...(opts?.bindTier !== undefined ? { serviceTier: opts.bindTier } : {}), thread: { turns: [] } },
+        opts?.attached ?? false, opts?.expectedResumeTier);
     const native = root.client as unknown as {
         initialized: boolean;
         thread: { id: string; turns: NativeTurn[] };
@@ -1384,6 +1404,31 @@ describe('latest completed list fork', () => {
         f.native.thread.turns = [{ id: 'bad', status: 'unknown', items: [] }];
         await expect(fork({ latestCompleted: true })).rejects.toThrow('prefix');
         await expect(fork({ latestCompleted: true, messageLocalId: 'first' })).rejects.toThrow();
+        expect(create).not.toHaveBeenCalled();
+    });
+
+    it('refuses a live fork when tier recovery starts while reading the history boundary', async () => {
+        const create = vi.fn<RootHost['create']>();
+        const f = await fixture({ create });
+        f.native.thread.turns = [{ id: 'one', status: 'completed', items: [] }];
+        await f.root.refresh(); await f.root.activate();
+        const original = f.root.client.request.bind(f.root.client);
+        let entered!: () => void;
+        let release!: () => void;
+        const reading = new Promise<void>(resolve => { entered = resolve; });
+        const hold = new Promise<void>(resolve => { release = resolve; });
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/read' && params && (params as { includeTurns?: boolean }).includeTurns === true) {
+                entered();
+                await hold;
+            }
+            return original(method, params);
+        });
+        const fork = expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ lastTurnId: 'one' })).rejects.toThrow('Confirm the service tier');
+        await reading;
+        f.root.beginTierConfirmation();
+        release();
+        await fork;
         expect(create).not.toHaveBeenCalled();
     });
 });
@@ -2818,6 +2863,25 @@ it.each(['stalled', 'repeated cursor'])('allows Standard recovery after a %s Def
     expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update'))
         .toEqual([['thread/settings/update', expect.objectContaining({ serviceTier: null })]]);
     expect(f.root.needsTierConfirmation).toBe(false);
+});
+
+it('resolves Default effort from every page of the retained Codex provider', async () => {
+    const f = await fixture(); await f.root.activate();
+    vi.spyOn(f.root.client, 'supportsProviderScopedModels').mockReturnValue(true);
+    f.root.acceptSettings({ model: 'mock', modelProvider: 'retained-provider' }, true);
+    const original = f.root.client.request.bind(f.root.client);
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method !== 'model/list') return original(method, params);
+        const { cursor, modelProvider } = params as { cursor?: string; modelProvider?: string };
+        if (modelProvider !== 'retained-provider') return { data: [{ id: 'mock', defaultReasoningEffort: 'low' }] } as never;
+        return (cursor ? { data: [{ id: 'mock', defaultReasoningEffort: 'high' }] }
+            : { data: [], nextCursor: 'page-2' }) as never;
+    });
+    await expect(f.root.applySettings({ modelReasoningEffort: null })).resolves.toMatchObject({ applied: { modelReasoningEffort: 'high' } });
+    expect(request.mock.calls.filter(([method]) => method === 'model/list')).toEqual([
+        ['model/list', { cursor: undefined, includeHidden: true, modelProvider: 'retained-provider' }],
+        ['model/list', { cursor: 'page-2', includeHidden: true, modelProvider: 'retained-provider' }]
+    ]);
 });
 
 it.each(['item/tool/requestUserInput', 'item/commandExecution/requestApproval'])('bounds confirmation while keeping running-turn %s visible', async method => {

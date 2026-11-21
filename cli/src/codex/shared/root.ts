@@ -13,6 +13,7 @@ import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { ImplementCodexPlanRequestSchema, type ImplementCodexPlanResult } from '@hapi/protocol/apiTypes';
 import { CodexAppServerClient, isIndeterminateError } from '../codexAppServerClient';
+import type { ModelListResponse } from '../appServerTypes';
 import { buildHapiMcpBridge, type HapiMcpBridge } from '../utils/buildHapiMcpBridge';
 import { buildUserInputFromMessage } from '../utils/appServerConfig';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
@@ -101,6 +102,9 @@ export class SharedCodexRoot {
     private tierAdmissionPending = false;
     beginTierConfirmation(): void { this.tierAdmissionPending = true; this.publishSteering(); }
     get needsTierConfirmation(): boolean { return this.tierAdmissionPending || this.tierConfirmationPending; }
+    assertForkTierConfirmed(): void {
+        if (this.needsTierConfirmation) throw new Error('Confirm the service tier in settings before forking this conversation.');
+    }
     get hasConfirmedStandardTier(): boolean { return this.settings.serviceTier === 'standard'; }
     private settingsNotification?: Record<string, unknown>;
     private readonly settingsListeners = new Set<() => void>();
@@ -443,8 +447,13 @@ export class SharedCodexRoot {
         }
         if (expected !== 'priority' && expected !== 'flex') return;
         const tier = fromCodexServiceTier(expected);
-        if (fromCodexServiceTier(response.serviceTier) === tier
-            && this.settings.serviceTier === tier && this.session.getMetadata()?.codexTierConfirmationPending === true) {
+        const metadata = this.session.getMetadata();
+        const deferredFast = expected === 'priority' && metadata?.codexPendingServiceTier === 'fast';
+        const effective = fromCodexServiceTier(response.serviceTier) === tier && this.settings.serviceTier === tier;
+        if (deferredFast && !effective) {
+            this.pauseTierConfirmation(++this.tierOperationCounter, true,
+                'Codex could not confirm the requested Fast tier. Input is paused. Select a service tier in settings to continue.');
+        } else if (effective && (deferredFast || metadata?.codexTierConfirmationPending === true)) {
             this.tierConfirmationResolved = true;
             this.tierConfirmationPending = false;
         }
@@ -777,6 +786,9 @@ export class SharedCodexRoot {
             this.resumeDeferredQueue();
         }
     }
+    private modelCatalogScope(): { modelProvider?: string } {
+        return this.client.supportsProviderScopedModels() && this.modelProvider ? { modelProvider: this.modelProvider } : {};
+    }
     private settingsWrites: Promise<unknown> = Promise.resolve();
     applySettings(raw: unknown, onMutation?: () => void): Promise<{ applied: RuntimeSettings }> {
         const deadline = Date.now() + 25_000;
@@ -822,11 +834,16 @@ export class SharedCodexRoot {
             // Native public null means "leave effort alone", not reset. Resolve
             // the selected model's real default instead of publishing a false reset.
             const seen = new Set<string>();
+            const modelId = config.model ?? this.settingsNative.model;
+            const scope = this.modelCatalogScope();
             let cursor: string | undefined;
             do {
-                const page = await this.settingsRequest<Awaited<ReturnType<CodexAppServerClient['listModels']>>>(
-                    'model/list', { cursor, includeHidden: true }, discoveryDeadline);
-                const model = page.data?.find(model => (model.model ?? model.id) === (config.model ?? this.settingsNative.model));
+                const page = await this.settingsRequest<ModelListResponse>(
+                    'model/list', { cursor, includeHidden: true, ...scope }, discoveryDeadline);
+                if (modelId !== (config.model ?? this.settingsNative.model) || scope.modelProvider !== this.modelCatalogScope().modelProvider) {
+                    throw new Error('The Codex model or provider changed during effort discovery; settings were not changed');
+                }
+                const model = page.data?.find(model => (model.model ?? model.id) === modelId);
                 if (model?.defaultReasoningEffort) { config.modelReasoningEffort = model.defaultReasoningEffort; break; }
                 cursor = page.nextCursor ?? undefined;
                 if (cursor && seen.has(cursor)) throw new Error('Codex model catalog pagination did not advance');
@@ -1073,7 +1090,8 @@ export class SharedCodexRoot {
             this.notice('Codex accepted the turn, but its settings could not be confirmed. Reconnect before changing the service tier.');
         }
     }
-    private pauseTierConfirmation(operationId: number, retainConfirmedTier = false): void {
+    private pauseTierConfirmation(operationId: number, retainConfirmedTier = false,
+        message = 'Codex settings confirmation is pending. Confirm Standard in settings before sending more input.'): void {
         if (!this.isCurrentTierOperation(operationId)) return;
         const newerPause = operationId > this.pendingTierOperation;
         this.tierConfirmationResolved = false;
@@ -1092,7 +1110,7 @@ export class SharedCodexRoot {
                 this.inputGate = new Promise<void>(resolve => { this.inputReady = () => { this.inputGateResolved = true; resolve(); }; });
             }
             this.publishSteering();
-            this.notice('Codex settings confirmation is pending. Confirm Standard in settings before sending more input.');
+            this.notice(message);
         }
     }
     private async settingsRequest<T = unknown>(method: string, params: Record<string, unknown>, deadline: number, uncertain = false, pauseInput: boolean | (() => boolean) = uncertain, operationId = 0): Promise<T> {
@@ -1323,8 +1341,9 @@ export class SharedCodexRoot {
         } };
         rpc.registerHandler(RPC_METHODS.ListCodexModels, async raw => {
             const entries = []; let cursor: string | undefined;
+            const scope = this.modelCatalogScope();
             do {
-                const response = await this.client.listModels({ includeHidden: record(raw).includeHidden === true, cursor, ...(this.client.supportsProviderScopedModels() && this.modelProvider ? { modelProvider: this.modelProvider } : {}) });
+                const response = await this.client.listModels({ includeHidden: record(raw).includeHidden === true, cursor, ...scope });
                 entries.push(...response.data ?? []); cursor = response.nextCursor ?? undefined;
             } while (cursor);
             let canVerifyUltrafast = false;
@@ -1386,6 +1405,7 @@ export class SharedCodexRoot {
                 // An explicit inclusive native cutoff remains fixed even if the source advances.
                 // Shared children hydrate directly from native fork history, never a moving Hub tail.
                 const cutoff = lastTurnId ? this.verifyPinnedTurn(turns, lastTurnId) : latestCompletedForkCutoff(turns);
+                this.assertForkTierConfirmed();
                 const child = await this.host.create('thread/fork', { ...this.freshParams(), threadId: this.threadId,
                     lastTurnId: cutoff }, this, { collaborationMode: this.settings.collaborationMode });
                 try {
@@ -1413,6 +1433,7 @@ export class SharedCodexRoot {
                     throw new Error('Historical fork requires a completed turn and history prefix');
                 }
             }
+            this.assertForkTierConfirmed();
             const child = await this.host.create('thread/fork', { ...this.freshParams(), threadId: this.threadId,
                 ...(beforeTurnId ? { beforeTurnId } : {}) }, this, { collaborationMode: this.settings.collaborationMode });
             return { nativeSessionId: child.threadId, sessionId: child.session.sessionId };
