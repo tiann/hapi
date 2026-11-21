@@ -2499,6 +2499,42 @@ it('clears filtered Fast intent after an accepted turn and rejects a repeated se
     await vi.waitFor(async () => expect((await f.ledger()).entries['filtered-fast-repeat']?.state).toBe('queued'));
 });
 
+it.each(['web', 'native'])('holds recovery when the first %s Fast write is selected but filtered by Codex', async origin => {
+    const f = await fixture({ bindTier: 'default' });
+    await f.root.activate({}, false, true);
+    let entered!: () => void;
+    let release!: () => void;
+    const reading = new Promise<void>(resolve => { entered = resolve; });
+    const heldSnapshot = new Promise<void>(resolve => { release = resolve; });
+    const original = f.root.client.request.bind(f.root.client);
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume' && f.native.settings.serviceTier === 'priority') {
+            entered(); await heldSnapshot;
+            return { ...f.native.settings, serviceTier: null } as never;
+        }
+        return original(method, params);
+    });
+    const keepAlive = vi.spyOn(f.session, 'keepAlive');
+    const change = origin === 'web' ? f.root.applySettings({ serviceTier: 'fast' })
+        : f.root.applyNativeSettings({ threadId: 'thread', serviceTier: 'priority' });
+    const rejected = expect(change).rejects.toThrow('Fast is unavailable');
+    await reading;
+    try {
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'running' } });
+        await f.drain();
+        expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBe('standard');
+        expect(f.metadata().codexConfirmedServiceTier).toBeUndefined();
+    } finally { release(); }
+    await rejected;
+    expect(f.root.needsTierConfirmation).toBe(true);
+    expect(f.metadata().codexTierConfirmationPending).toBe(true);
+    expect(f.metadata().codexConfirmedServiceTier).toBeUndefined();
+    expect(f.sessionReady).not.toHaveBeenCalled();
+    expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update')).toHaveLength(1);
+    await f.root.applySettings({ serviceTier: 'standard' });
+    expect(f.root.needsTierConfirmation).toBe(false);
+});
+
 it('persists a native Standard fallback when Codex reports no override and restores it on cold resume', async () => {
     const f = await fixture({ bindTier: 'priority' });
     await f.root.activate();

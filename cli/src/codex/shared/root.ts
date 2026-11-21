@@ -42,6 +42,8 @@ export type RootHost = {
     create(method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot>;
     end(root: SharedCodexRoot, nativeArchive?: boolean, reason?: 'unavailable' | 'history-changed' | 'archived'): Promise<void>;
 };
+const FAST_UNAVAILABLE = 'Fast is unavailable for the current Codex session.';
+
 const SettingsSchema = z.object({
     permissionMode: z.enum(['default', 'read-only', 'autoReview', 'yolo']).optional(),
     model: z.string().min(1).optional(), modelReasoningEffort: z.string().nullable().optional(),
@@ -90,6 +92,7 @@ export class SharedCodexRoot {
     private settings: RuntimeSettings = {};
     private settingsNative: Record<string, unknown> = {};
     private nativeSelectedServiceTier: unknown;
+    private confirmingFastWrite = false;
     private modelProvider?: string;
     private serviceTierExplicit?: boolean;
     private confirmedNativeStandardReset = false;
@@ -531,11 +534,13 @@ export class SharedCodexRoot {
         }
         this.modelProvider = string(value.modelProvider) ?? this.modelProvider;
         const sandbox = record(value.sandboxPolicy ?? value.sandbox).type;
+        const publishTier = 'serviceTier' in value && (effective
+            || value.serviceTier !== 'ultrafast' && (!this.confirmingFastWrite || value.serviceTier !== 'priority'));
         this.settings = { ...this.settings, model: value.model,
             modelReasoningEffort: string(value.effort ?? value.reasoningEffort) ?? null,
             ...(sandbox ? { permissionMode: sandbox === 'dangerFullAccess' ? 'yolo' : sandbox === 'readOnly' ? 'read-only'
                 : this.settingsNative.approvalsReviewer === 'auto_review' ? 'autoReview' : 'default' } : {}),
-            ...('serviceTier' in value && (effective || value.serviceTier !== 'ultrafast')
+            ...(publishTier
                 ? { serviceTier: value.serviceTier === null && this.confirmedNativeStandardReset ? 'standard' : fromCodexServiceTier(value.serviceTier) }
                 : !effective && this.settings.serviceTier === 'ultrafast' && value.model !== this.settings.model ? { serviceTier: null } : {}),
             ...('collaborationMode' in value ? { collaborationMode: record(value.collaborationMode).mode === 'plan' ? 'plan' as const : 'default' as const } : {})
@@ -1134,7 +1139,7 @@ export class SharedCodexRoot {
                 if (!firstSnapshot || firstSnapshot.serviceTier === undefined) {
                     throw new Error('Could not confirm Fast for the current Codex session. Retry after refreshing.');
                 }
-                if (firstSnapshot.serviceTier === null) throw new Error('Fast is unavailable for the current Codex session.');
+                if (firstSnapshot.serviceTier === null) throw new Error(FAST_UNAVAILABLE);
             }
             if (matches(comparable) || requestedUltrafast && matchesSelectedTier(comparable)) {
                 const confirmedUltrafast = firstSnapshot !== undefined
@@ -1154,20 +1159,40 @@ export class SharedCodexRoot {
             timer = setTimeout(() => { if (changesTier) this.pauseTierConfirmation(operationId); reject(new Error(changesTier ? 'Native settings confirmation is pending; confirm Standard in settings' : 'Native settings confirmation is pending; reconnect before changing settings')); }, Math.min(15_000, Math.max(0, deadline - Date.now())));
         });
         void accepted.catch(() => {});
+        if (requestedFast) this.confirmingFastWrite = true;
         try {
-            // A fallback belongs to its original confirmation, even after
-            // an asynchronous settings read. Only fresh writes get a new ID.
-            if (canWrite) {
-                if (!canWrite()) return;
-            } else operationId = ++this.tierOperationCounter;
-            onMutation?.();
-            await this.settingsRequest('thread/settings/update', params, deadline, true, () => changesTier && operationId >= this.confirmedTierOperation, operationId);
-            // The RPC only acknowledges queueing the settings operation. The
-            // native notification, not our submitted candidate, establishes state.
-            await accepted;
-        } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
+            try {
+                // A fallback belongs to its original confirmation, even after
+                // an asynchronous settings read. Only fresh writes get a new ID.
+                if (canWrite) {
+                    if (!canWrite()) return;
+                } else operationId = ++this.tierOperationCounter;
+                onMutation?.();
+                await this.settingsRequest('thread/settings/update', params, deadline, true, () => changesTier && operationId >= this.confirmedTierOperation, operationId);
+                // The RPC only acknowledges queueing the settings operation. The
+                // native notification, not our submitted candidate, establishes state.
+                await accepted;
+            } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
+            if (requestedFast) await this.confirmEffectiveFast(deadline, operationId);
+        } finally { if (requestedFast) this.confirmingFastWrite = false; }
         if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, { requestedUltrafast, onMutation });
         return operationId;
+    }
+    private async confirmEffectiveFast(deadline: number, operationId: number): Promise<void> {
+        const current = () => this.isCurrentTierOperation(operationId);
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const revision = this.settingsRevision;
+            const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline, true, current, operationId));
+            if (!current()) throw new Error('Codex settings were superseded by a newer tier selection; refresh before retrying');
+            if (this.settingsRevision !== revision || typeof snapshot.model !== 'string' || snapshot.serviceTier === undefined) continue;
+            this.acceptSettings(snapshot, true);
+            if (snapshot.serviceTier === 'priority') return;
+            this.alive();
+            if (snapshot.serviceTier === null) throw new Error(FAST_UNAVAILABLE);
+            throw new Error('Codex settings were superseded by a newer tier selection; refresh before retrying');
+        }
+        this.pauseTierConfirmation(operationId);
+        throw new Error('Codex settings changed during effective tier confirmation; confirm Standard in settings');
     }
     private isCurrentTierOperation(operationId: number): boolean {
         return operationId >= Math.max(this.confirmedTierOperation, this.pendingTierOperation, this.acceptedNativeTierOperation);

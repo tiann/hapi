@@ -108,7 +108,14 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                     .toMatchObject({ thread: { status: { type: 'idle' } } });
             }, { timeout: 10_000 });
             expect(await client.request('thread/resume', { threadId, excludeTurns: true })).toMatchObject({ serviceTier: null });
-            if (serviceTier === 'priority') expect(selections).toContain('priority');
+            if (serviceTier === 'priority') {
+                expect(selections).toContain('priority');
+                await client.request('thread/settings/update', { threadId, serviceTier: null });
+                await vi.waitFor(() => expect(selections.at(-1)).toBe('default'));
+                await client.request('thread/settings/update', { threadId, serviceTier: 'priority' });
+                await vi.waitFor(() => expect(selections.at(-1)).toBe('priority'));
+                expect(await client.request('thread/resume', { threadId, excludeTurns: true })).toMatchObject({ serviceTier: null });
+            }
         } finally {
             await client.disconnect({ gracefulTimeoutMs: 2_000 });
             await new Promise<void>(resolve => http.close(() => resolve()));
