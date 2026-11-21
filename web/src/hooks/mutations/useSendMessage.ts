@@ -199,9 +199,11 @@ export function useSendMessage(
     retryMessage: (localId: string) => boolean
     isSending: boolean
     isResolving: boolean
+    isWaking: boolean
 } {
     const { haptic } = usePlatform()
-    const [isResolving, setIsResolving] = useState(false)
+    const [resolving, setResolving] = useState<{ sessionId: string; waking: boolean } | null>(null)
+    const isResolving = resolving !== null
     const resolveGuardRef = useRef(false)
     const isSessionThinkingRef = useRef(options?.isSessionThinking ?? false)
     isSessionThinkingRef.current = options?.isSessionThinking ?? false
@@ -293,7 +295,7 @@ export function useSendMessage(
         const deferWake = options?.isSessionHibernated && typeof scheduledAt === 'number' && scheduledAt > createdAt
         if (options?.resolveSessionId && !deferWake) {
             resolveGuardRef.current = true
-            setIsResolving(true)
+            setResolving({ sessionId, waking: options.isSessionHibernated === true })
             try {
                 const resolved = await options.resolveSessionId(sessionId)
                 targetSessionId = resolved.sessionId
@@ -337,7 +339,7 @@ export function useSendMessage(
                 return false
             } finally {
                 resolveGuardRef.current = false
-                setIsResolving(false)
+                setResolving(null)
             }
         }
         mutation.mutate({
@@ -399,5 +401,6 @@ export function useSendMessage(
         retryMessage,
         isSending: mutation.isPending || isResolving,
         isResolving,
+        isWaking: resolving !== null && resolving.sessionId === sessionId && resolving.waking,
     }
 }

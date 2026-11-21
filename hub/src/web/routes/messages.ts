@@ -192,7 +192,7 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }
             const pending = engine.pendingSessionWake?.(current.sessionId, namespace)
             if (pending) {
-                requireUploadValidation = true
+                requireUploadValidation ||= engine.hibernationWakes.has(pending)
                 const wake = await pending
                 if (wake.type === 'error') return wakeError(wake)
                 if (wake.type === 'incomplete') return c.json({ error: wake.message, code: 'resume_unavailable' }, 409)

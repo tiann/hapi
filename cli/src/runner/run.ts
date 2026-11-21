@@ -2067,10 +2067,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
         const persisted = persistedResumeProcesses.get(pid);
         if (persisted) {
-          const currentMarker = heartbeatTable ? heartbeatTable.get(pid)?.marker ?? null : undefined;
-          const generation = probeRecoveredProcessGeneration(pid, persisted, currentMarker, !!heartbeatTable);
+          const currentMarker = heartbeatTable ? heartbeatTable.get(pid)?.marker ?? null : getProcessStartMarker(pid);
+          const generation = probeRecoveredProcessGeneration(pid, persisted, currentMarker, true);
           if (generation === 'exited') {
             logger.debug(`[RUNNER RUN] Removing stale session with reused PID ${pid}`);
+            if (!pidToTrackedSession.get(pid)?.childProcess && currentMarker && currentMarker !== persisted.processStartMarker) {
+              rememberVerifiedExit(persisted.requestedSessionId);
+              if (persisted.confirmedSessionId && persisted.confirmedSessionId !== persisted.requestedSessionId) {
+                rememberVerifiedExit(persisted.confirmedSessionId);
+              }
+            }
             discardStaleProcess(pid);
           } else if (generation === 'verified' && pidToRequestedSessionId.get(pid) !== persisted.requestedSessionId) {
             pidToRequestedSessionId.set(pid, persisted.requestedSessionId);

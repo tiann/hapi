@@ -602,13 +602,32 @@ describe('SyncEngine resume of hibernated sessions', () => {
 
     it('accepts preserved uploads on an ordinary shared Codex resume', async () => {
         const { id } = cache().getOrCreateSession('shared-uploads', { path: '/tmp', host: 'localhost',
-            flavor: 'codex', capabilities: { concurrentClients: true } }, null, NAMESPACE)
-        engine.handleSessionAlive({ sid: id, time: Date.now() })
+            flavor: 'codex', machineId: MACHINE, codexSessionId: 'native-shared', capabilities: { concurrentClients: true } }, null, NAMESPACE)
+        const joined = spyOn(engine, 'pendingSessionWake')
+        let finish!: () => void
+        spawnImpl = async sid => {
+            bootCli(sid)
+            await new Promise<void>(resolve => { finish = resolve })
+            return { type: 'success', sessionId: sid }
+        }
+        const wake = engine.resumeSession(id, NAMESPACE)
         gateway().validateSessionUploads = async () => false
         const payload = { text: 'read', localId: 'preserved', attachments: [
             { id: 'a', path: '/staged', filename: 'a', size: 4, mimeType: 'text/plain' }
         ] }
-        await engine.sendMessage(id, payload)
+        for (let i = 0; !finish && i < 30; i++) await Promise.resolve()
+        expect(finish).toBeDefined()
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', NAMESPACE); await next() })
+        app.route('/api', createMessagesRoutes(() => engine))
+        const post = app.request(`/api/sessions/${id}/messages`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        })
+        for (let i = 0; !joined.mock.calls.length && i < 30; i++) await Promise.resolve()
+        expect(joined).toHaveBeenCalledWith(id, NAMESPACE)
+        finish()
+        expect((await wake).type).toBe('success')
+        expect((await post).status).toBe(200)
         expect(store.messages.getFirstMessages(id, 1)[0]?.localId).toBe('preserved')
         await expect(engine.sendMessage(id, { ...payload, localId: 'required' }, true)).rejects.toThrow()
     })

@@ -520,7 +520,8 @@ function SessionPage() {
         restoreSuppressed: boolean
     }
     const [sendErrors, setSendErrors] = useState<Record<string, RawSendError>>({})
-    const [reopeningSessionId, setReopeningSessionId] = useState<string | null>(null)
+    const [reopening, setReopening] = useState<{ id: string; waking: boolean } | null>(null)
+    const reopeningSessionId = reopening?.id
     const sendErrorIdRef = useRef(0)
     const clearSendError = useCallback(() => {
         setSendErrors((prev) => {
@@ -551,7 +552,7 @@ function SessionPage() {
     // restored composer text once Reopen lands.
     const reopenFromErrorAffordance = useCallback((errorSessionId: string) => {
         if (!api) return
-        setReopeningSessionId((prev) => prev ?? errorSessionId)
+        setReopening(prev => prev ?? { id: errorSessionId, waking: session?.id === errorSessionId && isHibernatedLifecycleState(session.metadata?.lifecycleState) })
         void (async () => {
             try {
                 const result = await api.reopenSession(errorSessionId)
@@ -587,10 +588,10 @@ function SessionPage() {
                     url: ''
                 })
             } finally {
-                setReopeningSessionId(null)
+                setReopening(null)
             }
         })()
-    }, [api, queryClient, navigate, addToast, t])
+    }, [api, queryClient, navigate, addToast, t, session])
 
     const cursorReopenGate = resolveCursorReopenGate({
         applicable: cursorChatStoreApplicable,
@@ -726,7 +727,7 @@ function SessionPage() {
         sendMessage,
         retryMessage,
         isSending,
-        isResolving,
+        isWaking,
     } = useSendMessage(api, sessionId, {
         isSessionHibernated: !session?.active && isHibernatedLifecycleState(session?.metadata?.lifecycleState),
         isSessionThinking: session?.thinking ?? false,
@@ -985,10 +986,7 @@ function SessionPage() {
             isCatchingUpFromCache={messagesCatchingUpFromCache}
             isLoadingMoreMessages={messagesLoadingMore}
             isSending={isSending}
-            isWaking={
-                !session.active && isHibernatedLifecycleState(session.metadata?.lifecycleState)
-                && (isResolving || reopeningSessionId === sessionId)
-            }
+            isWaking={isWaking || (reopening?.id === sessionId && reopening.waking)}
             viewMode={messagesViewMode}
             messagesVersion={messagesVersion}
             historyVersion={historyVersion}

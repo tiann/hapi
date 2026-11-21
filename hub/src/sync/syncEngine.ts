@@ -290,6 +290,7 @@ export class SyncEngine {
     /** Coalesce duplicate clear requests so retries cannot spawn two fresh sessions. */
     private readonly opencodeClearTails = new Map<string, Promise<ClearOpencodeSessionResult>>()
     /** Coalesce concurrent resume/reopen requests so parallel callers share in-flight startup. */
+    readonly hibernationWakes = new WeakSet<Promise<ResumeSessionResult | ReopenSessionResult>>()
     private readonly resumeTails = new Map<string, Promise<ResumeSessionResult>>()
     private readonly reopenTails = new Map<string, Promise<ReopenSessionResult>>()
     /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
@@ -5918,6 +5919,7 @@ export class SyncEngine {
             return { type: 'error', message: 'Archived fork is in progress; retry the fork before reopening', code: 'resume_failed' }
         }
         this.historyActionsInFlight.add(sessionId)
+        const wasHibernated = this.getSessionByNamespace(sessionId, namespace)?.metadata?.hibernation?.state === 'hibernated'
         const promise = (async () => {
             try {
                 return await this.resumeSessionUnlocked(sessionId, namespace, opts)
@@ -5927,6 +5929,7 @@ export class SyncEngine {
             }
         })()
         if (!isPty) {
+            if (wasHibernated) this.hibernationWakes.add(promise)
             this.resumeTails.set(sessionId, promise)
         }
         return await promise
@@ -6533,6 +6536,7 @@ export class SyncEngine {
             return { type: 'error', message: 'Archived fork is in progress; retry the fork before reopening', code: 'resume_failed' }
         }
         this.historyActionsInFlight.add(sessionId)
+        const wasHibernated = this.getSessionByNamespace(sessionId, namespace)?.metadata?.hibernation?.state === 'hibernated'
         const promise = (async () => {
             try {
                 return await this.reopenSessionUnlocked(sessionId, namespace)
@@ -6542,6 +6546,7 @@ export class SyncEngine {
             }
         })()
         if (!isPty) {
+            if (wasHibernated) this.hibernationWakes.add(promise)
             this.reopenTails.set(sessionId, promise)
         }
         return await promise

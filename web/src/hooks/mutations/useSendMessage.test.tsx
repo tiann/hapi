@@ -659,12 +659,13 @@ describe('useSendMessage', () => {
 
     it('reports isResolving only while the pre-send resume is pending', async () => {
         const resume = deferred<{ sessionId: string; resumed: boolean }>()
-        const { result } = renderHook(
-            () => useSendMessage(createMockApi(), 'session-hibernated', {
+        const { result, rerender } = renderHook(
+            ({ sleeping }) => useSendMessage(createMockApi(), 'session-hibernated', {
+                isSessionHibernated: sleeping,
                 resolveSessionId: () => resume.promise,
                 onSessionResolved: vi.fn(),
             }),
-            { wrapper: createWrapper() },
+            { wrapper: createWrapper(), initialProps: { sleeping: true } },
         )
         expect(result.current.isResolving).toBe(false)
         let acceptedPromise: Promise<SendMessageAcceptance | false> | undefined
@@ -672,11 +673,14 @@ describe('useSendMessage', () => {
             acceptedPromise = result.current.sendMessage('hello')
         })
         await waitFor(() => expect(result.current.isResolving).toBe(true))
+        rerender({ sleeping: false })
+        expect(result.current.isWaking).toBe(true)
         await act(async () => {
             resume.resolve({ sessionId: 'session-hibernated', resumed: true })
             await acceptedPromise
         })
         await waitFor(() => expect(result.current.isResolving).toBe(false))
+        expect(result.current.isWaking).toBe(false)
     })
 
     it('awaits onSessionResolved before starting the send mutation', async () => {
