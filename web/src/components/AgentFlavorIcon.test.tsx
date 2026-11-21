@@ -4,7 +4,7 @@ import { AGENT_FLAVORS } from '@hapi/protocol'
 import { AgentFlavorIcon } from './AgentFlavorIcon'
 
 // Flavors backed by a @lobehub/icons brand logo.
-const LOGO_FLAVORS = AGENT_FLAVORS.filter((f) => f !== 'pi')
+const LOGO_FLAVORS = AGENT_FLAVORS.filter((f) => f !== 'pi' && f !== 'hermes')
 
 function getWrapper(container: HTMLElement): HTMLElement {
     const wrapper = container.querySelector('span')
@@ -37,6 +37,13 @@ describe('AgentFlavorIcon', () => {
         expect(badge.className).not.toContain('rounded-sm')
         expect(badge.className).toContain('text-[var(--app-fg)]')
         expect(svg?.getAttribute('viewBox')).toBe('0 0 800 800')
+    })
+
+    it('renders the Hermes brand icon image for the hermes flavor', () => {
+        const { container } = render(<AgentFlavorIcon flavor="hermes" />)
+        const img = container.querySelector('img')
+        expect(img).not.toBeNull()
+        expect(img?.getAttribute('src')).toBeTruthy()
     })
 
     it('renders the GitHub mark SVG for the copilot flavor', () => {

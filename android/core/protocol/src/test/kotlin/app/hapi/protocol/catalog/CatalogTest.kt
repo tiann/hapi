@@ -1,5 +1,10 @@
 package app.hapi.protocol.catalog
 
+import app.hapi.protocol.wire.HapiJson
+import java.io.File
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -9,13 +14,25 @@ import kotlin.test.assertTrue
 /**
  * Catalog data pinned against `shared/src/modes.ts`, `shared/src/copilotModes.ts`
  * and `shared/src/flavors.ts`.
- *
- * TODO(K6): once track K lands `shared/fixtures/catalogs/modes.json`
- * (generated from `shared/src/modes.ts`), replace these hardcoded
- * expectations with assertions against that file so catalog drift turns this
- * suite red automatically.
+ * Also checks the generated modes catalog so new flavors cannot silently drift.
  */
 class CatalogTest {
+
+    @Test
+    fun `permission catalogs match generated fixtures exactly`() {
+        val fixturesDir = requireNotNull(System.getProperty("hapi.fixtures.dir"))
+        val catalog = HapiJson.parseToJsonElement(
+            File(fixturesDir, "catalogs/modes.json").readText()
+        ).jsonObject.getValue("permissionModesByFlavor").jsonObject
+        assertEquals(AgentFlavor.KNOWN.map { it.id }.toSet(), catalog.keys)
+        for ((flavor, entries) in catalog) {
+            val expected = entries.jsonArray.map { it.jsonObject }
+            val actual = PermissionModes.forFlavor(flavor)
+            assertEquals(expected.map { it.getValue("mode").jsonPrimitive.content }, actual.map { it.wireId }, flavor)
+            assertEquals(expected.map { it.getValue("label").jsonPrimitive.content }, actual.map { it.label }, flavor)
+            assertEquals(expected.map { it.getValue("tone").jsonPrimitive.content }, actual.map { it.tone.name.lowercase() }, flavor)
+        }
+    }
 
     @Test
     fun `permission mode ids follow PERMISSION_MODES declaration order`() {
@@ -57,7 +74,8 @@ class CatalogTest {
             listOf("default", "read-only", "safe-yolo", "yolo"),
             PermissionModes.forFlavor("gemini").map { it.wireId }
         )
-        // kimi/copilot share the gemini list.
+        // hermes/kimi/copilot share the gemini list.
+        assertEquals(PermissionModes.forFlavor("gemini"), PermissionModes.forFlavor("hermes"))
         assertEquals(PermissionModes.forFlavor("gemini"), PermissionModes.forFlavor("kimi"))
         assertEquals(PermissionModes.forFlavor("gemini"), PermissionModes.forFlavor("copilot"))
         assertEquals(
@@ -93,7 +111,7 @@ class CatalogTest {
     @Test
     fun `agent flavors match AGENT_FLAVORS and CREATABLE excludes gemini`() {
         assertEquals(
-            listOf("agy", "claude", "codex", "dsh", "copilot", "cursor", "gemini", "grok", "kimi", "opencode", "pi"),
+            listOf("agy", "claude", "codex", "dsh", "copilot", "cursor", "gemini", "grok", "hermes", "kimi", "opencode", "pi"),
             AgentFlavor.KNOWN.map { it.id }
         )
         assertFalse(AgentFlavor.CREATABLE.contains(AgentFlavor.Gemini))
@@ -116,6 +134,8 @@ class CatalogTest {
         assertFalse(Flavors.supportsModelChange("dsh"))
         assertFalse(Flavors.supportsModelChange("unknown"))
         assertEquals("Antigravity", Flavors.label("agy"))
+        assertEquals("Hermes", Flavors.label("hermes"))
+        assertTrue(Flavors.isCodexFamily("hermes"))
         assertEquals("Grok Build", Flavors.label("grok"))
         assertEquals("OpenCode", Flavors.label("opencode"))
         assertEquals("DeepSeek Harness", Flavors.label("dsh"))

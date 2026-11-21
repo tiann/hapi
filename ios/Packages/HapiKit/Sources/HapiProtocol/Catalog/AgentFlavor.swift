@@ -16,6 +16,7 @@ public enum AgentFlavor: Equatable, Hashable, Sendable {
     case cursor
     case gemini
     case grok
+    case hermes
     case kimi
     case opencode
     case pi
@@ -23,7 +24,7 @@ public enum AgentFlavor: Equatable, Hashable, Sendable {
 
     /// Order matches `AGENT_FLAVORS`.
     public static let knownFlavors: [AgentFlavor] = [
-        .agy, .claude, .codex, .dsh, .copilot, .cursor, .gemini, .grok, .kimi, .opencode, .pi,
+        .agy, .claude, .codex, .dsh, .copilot, .cursor, .gemini, .grok, .hermes, .kimi, .opencode, .pi,
     ]
 
     /// Flavors offered when creating a new session (`CREATABLE_AGENT_FLAVORS`).
@@ -48,6 +49,7 @@ extension AgentFlavor: RawRepresentable {
         case "cursor": self = .cursor
         case "gemini": self = .gemini
         case "grok": self = .grok
+        case "hermes": self = .hermes
         case "kimi": self = .kimi
         case "opencode": self = .opencode
         case "pi": self = .pi
@@ -65,6 +67,7 @@ extension AgentFlavor: RawRepresentable {
         case .cursor: return "cursor"
         case .gemini: return "gemini"
         case .grok: return "grok"
+        case .hermes: return "hermes"
         case .kimi: return "kimi"
         case .opencode: return "opencode"
         case .pi: return "pi"
@@ -99,6 +102,7 @@ extension AgentFlavor {
         case .cursor: return "Cursor"
         case .gemini: return "Gemini"
         case .grok: return "Grok Build"
+        case .hermes: return "Hermes"
         case .kimi: return "Kimi"
         case .opencode: return "OpenCode"
         case .pi: return "Pi"
@@ -127,7 +131,7 @@ extension AgentFlavor {
     /// protocol variants.
     public var isCodexFamily: Bool {
         switch self {
-        case .codex, .gemini, .grok, .kimi, .copilot, .opencode: return true
+        case .codex, .gemini, .grok, .hermes, .kimi, .copilot, .opencode: return true
         default: return false
         }
     }

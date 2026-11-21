@@ -5,6 +5,7 @@ package app.hapi.companion.feature.newsession
 import app.hapi.data.api.ApiError
 import app.hapi.data.store.MachineListStore
 import app.hapi.protocol.catalog.AgentFlavor
+import app.hapi.protocol.catalog.PermissionMode
 import app.hapi.protocol.wire.AgentAvailabilityEntry
 import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.CodexModelSummary
@@ -265,6 +266,20 @@ class SpawnBodyTest {
         // Cursor has no v1 model picker: even a stashed model id is not sent.
         assertEquals(setOf("directory", "agent", "yolo", "sessionType"), cursor.keys)
         assertEquals(true, cursor["yolo"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `hermes uses native permission modes and omits yolo`() {
+        assertTrue(NewSessionLogic.usesNativePermissionSelect("hermes"))
+        assertEquals(PermissionMode.Yolo, NewSessionViewModel.hapiYoloNativeMode("hermes"))
+        val body = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "hermes", permissionMode = "safe-yolo", yolo = true),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals("safe-yolo", body["permissionMode"]!!.jsonPrimitive.content)
+        assertNull(body["yolo"])
     }
 
     @Test

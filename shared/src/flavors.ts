@@ -13,6 +13,7 @@ const FLAVOR_CAPS: Record<AgentFlavor, ReadonlySet<Capability>> = {
     agy: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     claude: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     gemini: new Set([Capabilities.ModelChange]),
+    hermes: new Set([Capabilities.ModelChange]),
     kimi: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     copilot: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     grok: new Set([Capabilities.ModelChange, Capabilities.Effort]),
@@ -28,6 +29,7 @@ const FLAVOR_LABELS: Record<AgentFlavor, string> = {
     agy: 'Antigravity',
     claude: 'Claude',
     gemini: 'Gemini',
+    hermes: 'Hermes',
     kimi: 'Kimi',
     copilot: 'Copilot',
     grok: 'Grok Build',
@@ -67,6 +69,7 @@ export function isCodexFamilyFlavor(flavor: string | null | undefined): boolean 
         || flavor === 'gemini'
         || flavor === 'grok'
         || flavor === 'kimi'
+        || flavor === 'hermes'
         || flavor === 'copilot'
         || flavor === 'opencode'
 }

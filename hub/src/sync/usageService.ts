@@ -154,6 +154,7 @@ function parseUsageEvent(session: StoredSession, message: StoredMessage): UsageE
         // payloads are conservatively treated as cache-exclusive.
         const legacyInputSemantics = agent === 'codex'
             || agent === 'kimi'
+            || agent === 'hermes'
             || (agent === 'pi' && message.localId?.startsWith('pi:'))
             || Object.prototype.hasOwnProperty.call(data, 'model')
             ? 'includes-cache'

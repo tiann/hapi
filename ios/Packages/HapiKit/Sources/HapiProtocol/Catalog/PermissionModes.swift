@@ -91,7 +91,7 @@ extension AgentFlavor {
         switch self {
         case .codex:
             return [.default, .readOnly, .autoReview, .yolo]
-        case .gemini, .kimi, .copilot:
+        case .gemini, .hermes, .kimi, .copilot:
             return [.default, .readOnly, .safeYolo, .yolo]
         case .grok:
             return [.default, .auto, .plan, .bypassPermissions]

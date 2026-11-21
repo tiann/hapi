@@ -80,6 +80,7 @@ const BUILTIN_DESCRIPTORS: Record<AgentFlavor, AgentConfigFieldDescriptor[]> = {
         PERMISSION
     ),
     kimi: fields({ ...MODEL, optionSource: 'directory' }, PERMISSION),
+    hermes: fields({ ...MODEL, optionSource: 'machine' }, PERMISSION),
     opencode: fields(
         { ...MODEL, optionSource: 'directory' },
         { id: 'effort', section: 'effort', kind: 'select', optionSource: 'model', availability: 'both' },
@@ -111,6 +112,7 @@ export function resolveHapiYoloPermissionMode(flavor: AgentFlavor): PermissionMo
         case 'copilot':
         case 'cursor':
         case 'gemini':
+        case 'hermes':
         case 'kimi':
         case 'opencode':
             return 'yolo'

@@ -78,6 +78,7 @@ const SIMPLE_RESUME_TOKENS = [
     'grokSessionId',
     'cursorSessionId',
     'kimiSessionId',
+    'hermesSessionId',
     'copilotSessionId',
     'piSessionId',
     'dshSessionId'

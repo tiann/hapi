@@ -75,6 +75,17 @@ export const BUILTIN_SLASH_COMMANDS = {
         { name: 'usage', description: 'Show session usage metrics', source: 'builtin' },
     ],
     kimi: [],
+    hermes: [
+        { name: 'help', description: 'List available commands', source: 'builtin' },
+        { name: 'model', description: 'Show current model and provider, or switch models', source: 'builtin' },
+        { name: 'tools', description: 'List available tools with descriptions', source: 'builtin' },
+        { name: 'context', description: 'Show conversation message counts by role', source: 'builtin' },
+        { name: 'reset', description: 'Clear conversation history', source: 'builtin' },
+        { name: 'compact', description: 'Compress conversation context', source: 'builtin' },
+        // Hermes prompts are serialized; live /steer delivery is not supported.
+        { name: 'queue', description: 'Queue a prompt to run after the current turn finishes', source: 'builtin' },
+        { name: 'version', description: 'Show Hermes version', source: 'builtin' },
+    ],
     // Antigravity (`agy acp`) advertises its full command + skill catalog over
     // ACP `available_commands_update`; keep its core built-ins here as the
     // offline fallback before the session's first ACP update arrives.
