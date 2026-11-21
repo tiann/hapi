@@ -4817,6 +4817,26 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.finish();
         });
 
+        it('does not close a cancelled prompt command as a background task in a later text-only wakeup', async () => {
+            const acp = 'conv-live-cancel-text';
+            const h = startLive(acp, (_n, notify) => {
+                notify(bgCall('call-cancelled', 'sleep 30'));
+                turnRows(acp);
+                return 'cancelled';
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            h.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'just text' } });
+            h.append(wakeup(2, 'just text'));
+            await h.ready();
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.filter((m) => m.type === 'tool-call-result')).toHaveLength(0);
+            expect(h.bgEntries().filter((e) => !e.synthetic)).toHaveLength(0);
+            await h.finish();
+        });
+
         it('seals buffered wakeup text when the wakeup times out', async () => {
             const acp = 'conv-live-timeout';
             const h = startLive(acp, () => { turnRows(acp); }, { reactiveMaxIdleMs: 60 });

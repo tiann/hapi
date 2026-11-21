@@ -1730,6 +1730,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             default: {
                 if (this.turn !== turn && this.idleTurn !== turn && this.liveIdleWakeups()) {
                     this.idleTurn = turn;
+                    turn.openCommands.clear(); // a cancelled prompt's command is not this wakeup's
                     turn.commandCallIds.length = 0;
                     turn.commandArrivalOrder.length = 0;
                 }
