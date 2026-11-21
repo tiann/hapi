@@ -381,6 +381,31 @@ it.each(['/new', '/clear'])('defers %s when tier confirmation pauses during the 
     expect(create).toHaveBeenCalledTimes(1);
 });
 
+it.each(['/clear', '/new'])('rechecks source admission before dispatching %s', async command => {
+    const nativeStart = vi.fn(async () => ({ session: { sessionId: 'child' } }) as unknown as SharedCodexRoot);
+    let prepared!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { prepared = resolve; });
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const create: RootHost['create'] = async (_method, _params, _parent, _options, assertAdmission) => {
+        prepared(); await hold;
+        assertAdmission?.();
+        return nativeStart();
+    };
+    const f = await fixture({ create });
+    await f.root.activate();
+    const root = f.root as unknown as { pauseTierConfirmation(id: number): void; tierOperationCounter: number };
+    f.submit(command, 'new-thread');
+    await entered;
+    root.pauseTierConfirmation(++root.tierOperationCounter);
+    release();
+    await vi.waitFor(async () => expect((await f.ledger()).entries['new-thread']).toBeUndefined());
+    expect(nativeStart).not.toHaveBeenCalled();
+    expect(f.uncertain).not.toHaveBeenCalled();
+    await f.root.applySettings({ serviceTier: 'standard' });
+    await vi.waitFor(async () => expect((await f.ledger()).entries['new-thread']?.state).toBe('consumed'));
+    expect(nativeStart).toHaveBeenCalledOnce();
+});
+
 it.each(['resume', 'cancel', 'partial clear'])('handles a tier pause during a Web goal command (%s)', async action => {
     const f = await fixture();
     await f.root.activate();

@@ -1000,13 +1000,13 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await rm(home, { recursive: true, force: true, maxRetries: 3 });
         }
     }, 45_000);
-    it.each(['ultrafast', 'inherited', 'inherited ultrafast'])('keeps a Runner cold resume recoverable when %s tier discovery is unavailable', async intent => {
+    it.each(['ultrafast', 'inherited', 'inherited ultrafast', 'provider configuration changed'])('keeps a Runner cold resume recoverable when %s tier discovery is unavailable', async intent => {
         const home = await mkdtemp(join(tmpdir(), 'hapi-runner-tier-discovery-')); state.home = home;
         const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
-        const configure = (tier?: string) => writeFile(join(ch, 'config.toml'), [
+        const configure = (tier?: string, endpoint = 'http://127.0.0.1:1/v1') => writeFile(join(ch, 'config.toml'), [
             'model = "gpt-6-astra"', 'model_provider = "mock"', ...(tier ? [`service_tier = "${tier}"`] : []),
             '[features]', 'ultrafast_mode = true', 'fast_mode = true', 'goals = true',
-            '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
+            '[model_providers.mock]', 'name = "No model calls"', `base_url = "${endpoint}"`,
             'wire_api = "responses"', 'requires_openai_auth = false', '[analytics]', 'enabled = false',
             '[feedback]', 'enabled = false', ''
         ].join('\n'));
@@ -1026,7 +1026,8 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         let client: CodexAppServerClient | undefined;
         let discovery: { mockRestore(): void } | undefined;
         try {
-            const inherited = intent !== 'ultrafast';
+            const providerChanged = intent === 'provider configuration changed';
+            const inherited = intent === 'inherited' || intent === 'inherited ultrafast';
             const inheritedUltrafast = intent === 'inherited ultrafast';
             const old = await start({ serviceTier: inheritedUltrafast ? 'fast' : 'standard' });
             const sessionId = old.sessionId;
@@ -1053,7 +1054,11 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                     if (!params.includeLayers) return Promise.reject(new Error('Inherited tier lookup unavailable'));
                     return readConfig.call(this, params);
                 })
-                : vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockRejectedValue(new Error('Catalog unavailable'));
+                : vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockImplementation(async () => {
+                    if (!providerChanged) throw new Error('Untrusted native catalog response');
+                    await configure(undefined, 'http://127.0.0.1:2/v1');
+                    return { data: [{ id: 'gpt-6-astra', serviceTiers: [{ id: 'ultrafast' }] }] } as never;
+                });
             const resumed = await start({ startedBy: 'runner', existingSessionId: sessionId, resumeSessionId: threadId,
                 ...(inherited ? {} : { serviceTier: 'ultrafast' }) });
             expect(resumed.sessionId).toBe(sessionId);
@@ -1067,6 +1072,8 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(session.readySignals).toBe(0);
             expect(session.messages).toContainEqual({ type: 'message', message: expect.stringContaining(
                 inherited ? 'verify the inherited Codex service tier' : 'catalog could not verify Ultrafast') });
+            if (providerChanged) expect(session.messages).toContainEqual({ type: 'message', message: expect.stringContaining('Restart the Codex runtime and retry.') });
+            expect(session.messages).not.toContainEqual({ type: 'message', message: expect.stringContaining('Untrusted native catalog response') });
             expect(vi.mocked(notifyRunnerSessionStarted)).toHaveBeenCalledWith(sessionId, expect.objectContaining({ codexTierConfirmationPending: true }));
 
             client = new CodexAppServerClient({ endpoint: resumed.runtime.endpoint, token: resumed.runtime.token });
@@ -1141,6 +1148,13 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             const parentThread = runtime.sessions[sessionId].threadId;
             client = new CodexAppServerClient({ endpoint: runtime.endpoint, token: runtime.token });
             await initializeSharedClient(client);
+            const { SharedCodexRoot } = await import('./root');
+            const activate = SharedCodexRoot.prototype.activate;
+            let childRoot: InstanceType<typeof SharedCodexRoot> | undefined;
+            spies.push(vi.spyOn(SharedCodexRoot.prototype, 'activate').mockImplementation(function(this: InstanceType<typeof SharedCodexRoot>, ...args) {
+                childRoot = this;
+                return activate.apply(this, args);
+            }));
             let catalogRead = false, changed = false;
             const readConfig = CodexAppServerClient.prototype.readConfig;
             spies.push(vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockImplementation(async () => {
@@ -1156,7 +1170,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 return snapshot;
             }));
             const fork = await client.request<{ model: string; thread: { id: string } }>(
-                'thread/fork', { threadId: parentThread, cwd, serviceTier: 'ultrafast' });
+                'thread/fork', { threadId: parentThread, cwd, serviceTier: 'ultrafast', sandbox: 'read-only' });
             expect(changed).toBe(true);
             expect(fork.model).toBe(replacementModel);
             const child = [...state.sessions.values()].find(session => session.metadata.codexSessionId === fork.thread.id)!;
@@ -1175,6 +1189,23 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await client.request('thread/settings/update', { threadId: fork.thread.id, serviceTier: null });
             expect(child.readySignals).toBe(1);
             expect(child.serviceTier).toBe('standard');
+
+            if (!available) {
+                let entered!: () => void, release!: () => void;
+                const preparing = new Promise<void>(resolve => { entered = resolve; });
+                const held = new Promise<void>(resolve => { release = resolve; });
+                state.beforeBootstrap = async () => { entered(); await held; };
+                const request = vi.spyOn(CodexAppServerClient.prototype, 'request');
+                spies.push(request);
+                const clear = child.rpc.get(RPC_METHODS.ClearConversation)!({});
+                try {
+                    await Promise.race([preparing, clear.then(() => { throw new Error('Clear completed before preparation'); })]);
+                    const source = childRoot as unknown as { pauseTierConfirmation(id: number): void; tierOperationCounter: number };
+                    source.pauseTierConfirmation(++source.tierOperationCounter);
+                } finally { release(); state.beforeBootstrap = undefined; }
+                await expect(clear).rejects.toThrow('Confirm the service tier');
+                expect(request.mock.calls.some(([method]) => method === 'thread/start')).toBe(false);
+            }
         } finally {
             for (const spy of spies.reverse()) spy.mockRestore();
             abort.abort(); await running.catch(() => {});

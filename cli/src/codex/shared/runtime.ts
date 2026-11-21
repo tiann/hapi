@@ -1,4 +1,4 @@
-import { catalogConfiguration, nativeTierParams, inheritedResumeTier, resolveUltrafastLaunch, ULTRAFAST_FALLBACK_NOTICE, type UltrafastTarget } from '../utils/serviceTier';
+import { CodexTierDiscoveryError, catalogConfiguration, nativeTierParams, inheritedResumeTier, resolveUltrafastLaunch, ULTRAFAST_FALLBACK_NOTICE, type UltrafastTarget } from '../utils/serviceTier';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdir, mkdtemp, chmod, rm, realpath } from 'node:fs/promises';
@@ -18,6 +18,7 @@ import { SharedCodexRoot, UltrafastTargetChangedError } from './root';
 import { buildForkSessionSummary } from '@hapi/protocol';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
+type TierDiscoveryFailure = { kind: 'ultrafast' | 'inherited'; reason?: string };
 type Reservation = {
     root: SharedCodexRoot;
     executionParams: Record<string, unknown>;
@@ -311,7 +312,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         return root.config(tier.params);
     };
     const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, ultrafastTarget?: UltrafastTarget, downgraded = false, resume?: Reservation,
-        expectedResumeTier = resume?.executionParams.serviceTier, tierDiscoveryPending?: 'ultrafast' | 'inherited') => {
+        expectedResumeTier = resume?.executionParams.serviceTier, tierDiscoveryFailure?: TierDiscoveryFailure) => {
         assertRunning();
         const threadId = string(record(response.thread).id);
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
@@ -326,7 +327,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         };
         const retryInheritedDiscovery = root.session.getMetadata()?.codexInheritedTierDiscoveryPending === true;
         const requestedUltrafast = !downgraded && ultrafastTarget !== undefined;
-        const confirmBeforeInput = tierDiscoveryPending !== undefined || requiresTierAdmission(root, requestedUltrafast ? 'ultrafast' : expectedResumeTier, downgraded, serviceTierExplicit);
+        const confirmBeforeInput = tierDiscoveryFailure !== undefined || requiresTierAdmission(root, requestedUltrafast ? 'ultrafast' : expectedResumeTier, downgraded, serviceTierExplicit);
         const explicitTier = serviceTierExplicit ?? root.session.getMetadata()?.codexServiceTierExplicit === true;
         if (resume || confirmBeforeInput) pendingAdmission.add(threadId);
         if (!reserved) await reserve(root, threadId);
@@ -336,7 +337,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
             assertRunning();
             if (ending.has(root)) throw new Error('Codex thread was archived during binding');
-            if (confirmBeforeInput) root.beginTierConfirmation(explicitTier && (requestedUltrafast || downgraded || tierDiscoveryPending === 'ultrafast'), ultrafastTarget);
+            if (confirmBeforeInput) root.beginTierConfirmation(explicitTier && (requestedUltrafast || downgraded || tierDiscoveryFailure?.kind === 'ultrafast'), ultrafastTarget);
             roots.set(threadId, root);
         } else if (confirmBeforeInput) root.beginTierConfirmation(false, ultrafastTarget);
         if (!resume?.rootBound || subscribe && !root.client.isInitialized()) {
@@ -356,13 +357,17 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             if (resume) resume.controlSubscription = generation;
         }
         if (ending.has(root)) throw new Error('Codex thread was archived during binding');
-        let tierConfirmationPending = tierDiscoveryPending !== undefined || (resume?.tierConfirmationPending ?? false);
-        if (tierDiscoveryPending === 'inherited') root.session.updateMetadata(metadata => ({ ...metadata, codexInheritedTierDiscoveryPending: true }));
-        if (tierDiscoveryPending) root.session.sendSessionEvent({ type: 'message', message: tierDiscoveryPending === 'ultrafast'
-            ? 'The Codex model catalog could not verify Ultrafast. Input is paused. Select a service tier in settings to continue.'
-            : 'Could not verify the inherited Codex service tier. Input is paused. Select a service tier in settings to continue.' });
+        let tierConfirmationPending = tierDiscoveryFailure !== undefined || (resume?.tierConfirmationPending ?? false);
+        if (tierDiscoveryFailure?.kind === 'inherited') root.session.updateMetadata(metadata => ({ ...metadata, codexInheritedTierDiscoveryPending: true }));
+        if (tierDiscoveryFailure) {
+            const summary = tierDiscoveryFailure.kind === 'ultrafast'
+                ? 'The Codex model catalog could not verify Ultrafast.'
+                : 'Could not verify the inherited Codex service tier.';
+            root.session.sendSessionEvent({ type: 'message', message: [summary, tierDiscoveryFailure.reason,
+                'Input is paused. Select a service tier in settings to continue.'].filter(Boolean).join(' ') });
+        }
         let standardConfirmed = false;
-        if (tierDiscoveryPending === undefined && resume?.tierConfirmationPending === undefined && (requestedUltrafast || downgraded || retryInheritedDiscovery)) {
+        if (!tierDiscoveryFailure && resume?.tierConfirmationPending === undefined && (requestedUltrafast || downgraded || retryInheritedDiscovery)) {
             try {
                 if (downgraded) { await root.confirmStandardLaunch(explicitTier); standardConfirmed = true; }
                 else if (requestedUltrafast) await root.confirmUltrafastLaunch(explicitTier);
@@ -428,7 +433,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             retryableBindings.delete(threadId);
         }
     };
-    const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
+    const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions, assertAdmission?: () => void): Promise<SharedCodexRoot> => operation(async () => {
         params = nativeTierParams(params);
         const source = method === 'thread/fork'
             ? record(record(await control.request('thread/read', { threadId: params.threadId, includeTurns: false })).thread) : undefined;
@@ -444,6 +449,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             assertRunning();
             const request = root.config({ ...resolved.params, ...(method === 'thread/fork' ? { deferGoalContinuation: true } : {}) });
             if (method === 'thread/fork') parent?.assertForkTierConfirmed();
+            assertAdmission?.();
             nativeDispatched = true;
             const response = record(await root.client.request(method, request));
             nativeSucceeded = true;
@@ -756,7 +762,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 ? true : metadata?.codexServiceTierExplicit;
             const cwd = root.bootstrap.workingDirectory;
             let candidate: Record<string, unknown> = { ...explicitParams, cwd };
-            let tierDiscoveryPending: 'ultrafast' | 'inherited' | undefined;
+            let tierDiscoveryFailure: TierDiscoveryFailure | undefined;
             let resolved: Awaited<ReturnType<typeof resolveUltrafastLaunch>>;
             try {
                 candidate = await inheritedResumeTier(control, candidate, metadata?.codexServiceTierExplicit, cwd,
@@ -769,12 +775,15 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 // override. Settings recovery can then confirm Standard.
                 logger.debug('[Codex shared] cold resume tier discovery unavailable', error);
                 const { serviceTier, ...params } = candidate;
-                tierDiscoveryPending = serviceTier === 'ultrafast' && serviceTierExplicit === true ? 'ultrafast' : 'inherited';
+                tierDiscoveryFailure = {
+                    kind: serviceTier === 'ultrafast' && serviceTierExplicit === true ? 'ultrafast' : 'inherited',
+                    reason: error instanceof CodexTierDiscoveryError ? error.message : undefined
+                };
                 resolved = { params, downgraded: false };
             }
             const { downgraded } = resolved;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
-            if (tierDiscoveryPending || requiresTierAdmission(root, resolved.params.serviceTier, downgraded, serviceTierExplicit)) pendingAdmission.add(threadId);
+            if (tierDiscoveryFailure || requiresTierAdmission(root, resolved.params.serviceTier, downgraded, serviceTierExplicit)) pendingAdmission.add(threadId);
             const response = await serializeNativeLifecycle(threadId, async () => {
                 assertRunning();
                 if (ownedRoot(threadId) !== root || ending.has(root)) throw new Error('Codex thread was archived during resume');
@@ -791,7 +800,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 }
             });
             await bind(root, response, false, options, false, serviceTierExplicit,
-                resolved.ultrafastTarget, downgraded, undefined, resolved.params.serviceTier, tierDiscoveryPending);
+                resolved.ultrafastTarget, downgraded, undefined, resolved.params.serviceTier, tierDiscoveryFailure);
         } else root = await create('thread/start', { ...launch.threadParams, cwd: launch.cwd }, undefined, options);
         assertRunning();
         onReady?.({ sessionId: root.session.sessionId, runtime });

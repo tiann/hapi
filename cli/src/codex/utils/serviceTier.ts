@@ -10,6 +10,9 @@ export const ULTRAFAST_FALLBACK_NOTICE = 'Ultrafast was not advertised by the cu
 export const ULTRAFAST_DISABLED_NOTICE = 'Ultrafast is disabled in the current Codex configuration; changed to Standard.';
 export type UltrafastTarget = { model?: string; provider?: string };
 
+// These errors contain only HAPI-defined messages suitable for session notices.
+export class CodexTierDiscoveryError extends Error {}
+
 const providerConfigKeys = new Set([
     'model_providers', 'openai_base_url', 'chatgpt_base_url', 'model_catalog_json',
     'forced_login_method', 'forced_chatgpt_workspace_id', 'profile', 'profiles'
@@ -53,21 +56,21 @@ export async function isUltrafastEnabled(client: Pick<CodexAppServerClient, 'req
     let cursor: string | undefined;
     do {
         const remaining = deadline - Date.now();
-        if (remaining <= 0) throw new Error('Codex feature discovery timed out; settings were not changed');
+        if (remaining <= 0) throw new CodexTierDiscoveryError('Codex feature discovery timed out; settings were not changed');
         let timer: ReturnType<typeof setTimeout> | undefined;
         let page: { data: Array<{ name: string; enabled: boolean }>; nextCursor?: string | null };
         try {
             page = await Promise.race([client.request<typeof page>(
                 'experimentalFeature/list', { threadId, limit: 100, ...(cursor ? { cursor } : {}) }),
-                new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Codex feature discovery timed out; settings were not changed')), remaining); })]);
+                new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new CodexTierDiscoveryError('Codex feature discovery timed out; settings were not changed')), remaining); })]);
         } finally { clearTimeout(timer); }
         const feature = page.data.find(entry => entry.name === 'ultrafast_mode');
         if (feature) return feature.enabled === true;
         cursor = page.nextCursor ?? undefined;
-        if (cursor && seen.has(cursor)) throw new Error('Codex feature pagination did not advance; settings were not changed');
+        if (cursor && seen.has(cursor)) throw new CodexTierDiscoveryError('Codex feature pagination did not advance; settings were not changed');
         if (cursor) seen.add(cursor);
     } while (cursor);
-    throw new Error('Codex did not report effective Ultrafast enablement; settings were not changed');
+    throw new CodexTierDiscoveryError('Codex did not report effective Ultrafast enablement; settings were not changed');
 }
 
 /** Match native has_model_resume_override before choosing a catalog context. */
@@ -92,20 +95,20 @@ export async function discoverUltrafastTarget(
     startupCatalogConfig?: unknown,
 ): Promise<{ available: boolean; model: string | undefined; provider: string }> {
     if (client.supportsEffectiveUltrafastLaunch?.() === false) {
-        throw new Error('Ultrafast requires Codex 0.170 or newer to verify execution; settings were not changed');
+        throw new CodexTierDiscoveryError('Ultrafast requires Codex 0.170 or newer to verify execution; settings were not changed');
     }
     const bounded = async <T>(operation: () => Promise<T>): Promise<T> => {
         const remaining = deadline - Date.now();
-        if (remaining <= 0) throw new Error('Codex tier discovery timed out; settings were not changed');
+        if (remaining <= 0) throw new CodexTierDiscoveryError('Codex tier discovery timed out; settings were not changed');
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
             return await Promise.race([operation(), new Promise<never>((_, reject) => {
-                timer = setTimeout(() => reject(new Error('Codex tier discovery timed out; settings were not changed')), remaining);
+                timer = setTimeout(() => reject(new CodexTierDiscoveryError('Codex tier discovery timed out; settings were not changed')), remaining);
             })]);
         } finally { clearTimeout(timer); }
     };
     const scoped = client.supportsProviderScopedModels?.() === true;
-    if (!scoped && !catalogProvider) throw new Error('Cannot verify the Codex catalog provider; settings were not changed');
+    if (!scoped && !catalogProvider) throw new CodexTierDiscoveryError('Cannot verify the Codex catalog provider; settings were not changed');
     const explicitModel = typeof model === 'string' && model.trim() ? model : undefined;
     const verifyConfig = scoped && startupCatalogConfig !== undefined;
     const startup = verifyConfig ? await bounded(() => Promise.resolve(startupCatalogConfig)) : undefined;
@@ -113,7 +116,7 @@ export async function discoverUltrafastTarget(
         ? await bounded(() => client.readConfig({ cwd, includeLayers: verifyConfig })) : undefined;
     const assertCatalogConfiguration = async (response: typeof current) => {
         if (!response || !await bounded(() => catalogConfigurationMatches(startup, response))) {
-            throw new Error('Cannot verify the Codex catalog against the launch provider configuration; settings were not changed. Restart the Codex runtime and retry.');
+            throw new CodexTierDiscoveryError('Cannot verify the Codex catalog against the launch provider configuration; settings were not changed. Restart the Codex runtime and retry.');
         }
     };
     if (verifyConfig) await assertCatalogConfiguration(current);
@@ -122,7 +125,7 @@ export async function discoverUltrafastTarget(
         effectiveModel: explicitModel ?? (typeof configured?.config.model === 'string' && configured.config.model.trim() ? configured.config.model : undefined)
     });
     const { effectiveModel, effectiveProvider } = target(current);
-    if (!scoped && catalogProvider !== effectiveProvider) throw new Error('Cannot verify Ultrafast for a different Codex model provider; settings were not changed');
+    if (!scoped && catalogProvider !== effectiveProvider) throw new CodexTierDiscoveryError('Cannot verify Ultrafast for a different Codex model provider; settings were not changed');
     const models = [];
     const seen = new Set<string>();
     let cursor: string | undefined;
@@ -130,7 +133,7 @@ export async function discoverUltrafastTarget(
         const page = await bounded(() => client.listModels({ includeHidden: true, ...(scoped ? { modelProvider: effectiveProvider } : {}), ...(cursor ? { cursor } : {}) }));
         models.push(...page.data ?? []);
         cursor = page.nextCursor ?? undefined;
-        if (cursor && seen.has(cursor)) throw new Error('Codex model catalog pagination did not advance');
+        if (cursor && seen.has(cursor)) throw new CodexTierDiscoveryError('Codex model catalog pagination did not advance');
         if (cursor) seen.add(cursor);
     } while (cursor);
     if (verifyConfig) {
@@ -138,7 +141,7 @@ export async function discoverUltrafastTarget(
         await assertCatalogConfiguration(finalConfig);
         const finalTarget = target(finalConfig);
         if (finalTarget.effectiveModel !== effectiveModel || finalTarget.effectiveProvider !== effectiveProvider) {
-            throw new Error('The effective Codex model or provider changed during tier discovery; settings were not changed. Retry with the current configuration.');
+            throw new CodexTierDiscoveryError('The effective Codex model or provider changed during tier discovery; settings were not changed. Retry with the current configuration.');
         }
     }
     const selected = effectiveModel
@@ -197,7 +200,7 @@ export async function resolveUltrafastLaunch(
     const saved = savedThread ?? response?.thread ?? {};
     const config = params.config && typeof params.config === 'object' ? params.config as Record<string, unknown> : {};
     if (Object.keys(config).some(providerConfigKey)) {
-        throw new Error('Cannot verify the Codex catalog for request-level provider configuration overrides; settings were not changed');
+        throw new CodexTierDiscoveryError('Cannot verify the Codex catalog for request-level provider configuration overrides; settings were not changed');
     }
     const provider = params.modelProvider ?? config.model_provider;
     const context = method === 'thread/resume'

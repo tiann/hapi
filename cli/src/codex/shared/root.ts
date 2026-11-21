@@ -52,7 +52,7 @@ export type RootHost = {
     beforeSubscribe?(threadId: string): Promise<void>;
     validateHistory?(threadId: string, thread: unknown): Promise<void>;
     settingsFor(threadId: string): Record<string, unknown> | undefined;
-    create(method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot>;
+    create(method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions, assertAdmission?: () => void): Promise<SharedCodexRoot>;
     end(root: SharedCodexRoot, nativeArchive?: boolean, reason?: 'unavailable' | 'history-changed' | 'archived'): Promise<void>;
 };
 const FAST_UNAVAILABLE = 'Fast is unavailable for the current Codex session.';
@@ -1726,14 +1726,19 @@ export class SharedCodexRoot {
             config: { ...record(sandbox.config), model_reasoning_effort: this.settings.modelReasoningEffort ?? undefined } };
     }
     private notice(message: string): void { this.session.sendSessionEvent({ type: 'message', message }); }
-    private async newConversation(): Promise<SharedCodexRoot> {
+    private async newConversation(assertAdmission?: () => void): Promise<SharedCodexRoot> {
         if (this.host.attached) throw new Error('Create new conversations in the owning desktop, then attach them explicitly');
-        return this.host.create('thread/start', this.freshParams(), undefined, { collaborationMode: this.settings.collaborationMode });
+        const confirmAdmission = assertAdmission ?? (() => {
+            if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
+            if (this.needsTierConfirmation) throw new Error('Confirm the service tier in settings before creating a new conversation.');
+        });
+        return this.host.create('thread/start', this.freshParams(), undefined,
+            { collaborationMode: this.settings.collaborationMode }, confirmAdmission);
     }
     private async command(text: string, assertAdmission: () => void): Promise<string | null> {
         const command = text.trim();
         if (command === '/clear' || command === '/new') {
-            const child = await this.newConversation(); this.notice(`New conversation: /sessions/${child.session.sessionId}`); return null;
+            const child = await this.newConversation(assertAdmission); this.notice(`New conversation: /sessions/${child.session.sessionId}`); return null;
         }
         if (command === '/compact') { await this.client.request('thread/compact/start', { threadId: this.threadId }); return null; }
         if (command === '/exit') { this.notice(this.host.attached ? 'Use hapi detach to disconnect HAPI without stopping the external thread.'
