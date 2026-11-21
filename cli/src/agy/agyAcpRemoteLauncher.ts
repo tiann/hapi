@@ -1765,9 +1765,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 const effective = reconciled.message;
                 turn.generation.observe(effective);
                 if (effective.type === 'text' && !effective.live) {
-                    const trimmed = effective.text.trim();
-                    if (trimmed) {
-                        turn.streamedTexts.push(trimmed);
+                    if (effective.text.length > 0) {
+                        turn.streamedTexts.push(effective.text);
                     }
                 }
                 this.trackOpenCommand(turn, effective, !reconciled.suppressForward);

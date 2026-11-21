@@ -565,40 +565,77 @@ type OrderedStreamState = {
 };
 
 function hasRemainingStreamedText(state: OrderedStreamState): boolean {
-    return state.remainder !== null || state.index < state.segments.length;
+    if (state.remainder !== null && state.remainder.trim().length > 0) return true;
+    for (let idx = state.index; idx < state.segments.length; idx += 1) {
+        if (state.segments[idx]!.trim().length > 0) return true;
+    }
+    return false;
 }
 
 /**
  * Matches one transcript `PLANNER_RESPONSE` text against the ordered ACP
- * streamed text segments. Consumes exact head matches, peels whitespace-bounded
- * prefixes from coalesced ACP segments (e.g. `"STARTED\n\nFINISHED:DONE_BG"`),
- * and concatenates multiple ordered ACP fragments that `transcript.jsonl`
- * stored as a single planner step (e.g. `["Starting the job.", "Ready."]`).
+ * streamed text segments. Consecutive ACP fragments within one transcript
+ * response match across arbitrary (including mid-word) boundaries; splitting
+ * a single coalesced ACP segment across two transcript responses requires a
+ * whitespace boundary.
  */
 function consumeOrderedAgyStreamedText(
     stepText: string,
     state: OrderedStreamState
 ): boolean {
-    let rest = stepText;
+    const target = stepText.trim();
+    let rest = target;
     let probeIndex = state.index;
     let probeRemainder = state.remainder;
 
     while (rest.length > 0) {
-        const head = probeRemainder ?? state.segments[probeIndex];
-        if (!head) return false;
+        let head = probeRemainder ?? state.segments[probeIndex];
+        if (head === undefined) return false;
 
-        if (head === rest) {
+        if (rest === target) {
+            head = head.trimStart();
+            if (head.length === 0) {
+                if (probeRemainder !== null) probeRemainder = null;
+                else probeIndex += 1;
+                continue;
+            }
+        }
+
+        const trimmedHead = head.trimEnd();
+        if (trimmedHead === rest) {
             if (probeRemainder !== null) probeRemainder = null;
             else probeIndex += 1;
             rest = '';
             break;
         }
-        if (rest.length > head.length && rest.startsWith(head) && /\s/.test(rest[head.length]!)) {
+        // Multiple consecutive ACP fragments within one transcript response:
+        // match across arbitrary boundaries (including mid-word timer splits).
+        if (rest.length > head.length && rest.startsWith(head)) {
             if (probeRemainder !== null) probeRemainder = null;
             else probeIndex += 1;
-            rest = rest.slice(head.length).trim();
+            rest = rest.slice(head.length);
+            const nextRaw = state.segments[probeIndex];
+            if (nextRaw !== undefined && !/^\s/.test(nextRaw)) {
+                rest = rest.trimStart();
+            }
             continue;
         }
+        if (
+            trimmedHead.length > 0
+            && trimmedHead.length < head.length
+            && rest.length > trimmedHead.length
+            && rest.startsWith(trimmedHead)
+        ) {
+            if (probeRemainder !== null) probeRemainder = null;
+            else probeIndex += 1;
+            rest = rest.slice(trimmedHead.length);
+            const nextRaw = state.segments[probeIndex];
+            if (nextRaw !== undefined && !/^\s/.test(nextRaw)) {
+                rest = rest.trimStart();
+            }
+            continue;
+        }
+        // One ACP segment spanning two transcript responses: require a whitespace boundary.
         if (head.length > rest.length && head.startsWith(rest) && /\s/.test(head[rest.length]!)) {
             const nextRem = head.slice(rest.length).trim();
             if (!nextRem) return false;

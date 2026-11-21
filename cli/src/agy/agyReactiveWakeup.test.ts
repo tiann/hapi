@@ -5139,4 +5139,28 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             Object.assign(ctor, savedTimings);
         }
     });
+
+    it('matches consecutive ACP fragments split mid-word within one transcript response', () => {
+        expect(advanceAgyTurnTranscriptCursor(
+            [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run bg' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'STARTED' },
+                { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>done</SYSTEM_MESSAGE>' },
+                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'FINISHED:DONE_BG' }
+            ],
+            -1,
+            ['STARTED', 'FINISHED:DO', 'NE_BG']
+        )).toBe(3);
+
+        expect(advanceAgyTurnTranscriptCursor(
+            [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Starting the job.' },
+                { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>done</SYSTEM_MESSAGE>' },
+                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'the job.' }
+            ],
+            -1,
+            ['Starting ', 'the job.']
+        )).toBe(1);
+    });
 });
