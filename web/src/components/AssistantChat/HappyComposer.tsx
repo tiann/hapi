@@ -344,8 +344,8 @@ export function HappyComposer(props: {
     onModelEffortChange?: (wireId: string | null) => void
     onModelReasoningEffortChange?: (modelReasoningEffort: string | null) => void
     onEffortChange?: (effort: string | null) => void
-    /** Codex Fast mode (service tier): current value ('fast' or null/standard). */
     serviceTier?: string | null
+    tierConfirmationPending?: boolean
     /** When provided, a Fast-mode toggle renders (Codex GPT-5.5 / GPT-5.4 only). */
     fastAvailable?: boolean
     ultrafastAvailable?: boolean
@@ -462,6 +462,7 @@ export function HappyComposer(props: {
         onModelReasoningEffortChange,
         onEffortChange,
         serviceTier: rawServiceTier,
+        tierConfirmationPending = false,
         onServiceTierChange,
         fastAvailable = true,
         ultrafastAvailable = false,
@@ -493,7 +494,7 @@ export function HappyComposer(props: {
     const modelReasoningEffort = rawModelReasoningEffort ?? null
     const effort = rawEffort ?? null
     const serviceTier = rawServiceTier ?? null
-    const displayedServiceTier = getDisplayedCodexServiceTier(serviceTier)
+    const displayedServiceTier = tierConfirmationPending ? null : getDisplayedCodexServiceTier(serviceTier)
 
     const api = useAui()
     const { composerEnterBehavior } = useComposerEnterBehavior()
@@ -2158,6 +2159,7 @@ export function HappyComposer(props: {
                                                 ? 'cursor-not-allowed opacity-50'
                                                 : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
                                         }`}
+                                        aria-pressed={displayedServiceTier === option.value}
                                         onClick={() => handleServiceTierChange(option.value)}
                                         onMouseDown={(e) => e.preventDefault()}
                                     >

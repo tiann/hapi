@@ -672,6 +672,22 @@ describe('NewSession launch preferences', () => {
         expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBeUndefined()
     })
 
+    it('inherits the account tier for an unmarked legacy Standard preference', async () => {
+        savePreferredAgent('codex')
+        localStorage.setItem('hapi:newSession:launchSettings:v1:machine-1:codex', JSON.stringify({
+            model: 'gpt-5.6-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: 'standard'
+        }))
+        mocks.codexDefaultTiers = []
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'legacy-inherited-tier' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        const create = screen.getByTestId('create')
+        await waitFor(() => expect(create).toBeEnabled())
+        fireEvent.click(create)
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalled())
+        expect(mocks.spawnSession.mock.calls[0][0].serviceTier).toBeUndefined()
+        expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBeUndefined()
+    })
+
     it('preserves saved Fast through a catalog outage and launch', async () => {
         savePreferredAgent('codex')
         savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: 'fast' })

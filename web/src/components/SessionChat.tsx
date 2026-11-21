@@ -2784,6 +2784,7 @@ function SessionChatInner(props: SessionChatProps) {
                                 : handleEffortChange
                         }
                         serviceTier={effectiveCodexServiceTier}
+                        tierConfirmationPending={metadata?.codexTierConfirmationPending}
                         fastAvailable={!codexModelsState.error && codexModelAdvertisesFastTier(props.session.model, codexModelsState.models)}
                         ultrafastAvailable={codexModelsState.catalogSource === 'session' && props.session.metadata?.codexProviderScopedCatalog === true && !codexModelsState.error && codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)}
                         onServiceTierChange={

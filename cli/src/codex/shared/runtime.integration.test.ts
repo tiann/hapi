@@ -812,8 +812,13 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             const result = await Promise.race([accepted, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Accepted turn blocked on snapshot')), 2_000))]);
             expect(result.turn.id).toBeTruthy();
             expect(state.sessions.get(unsupportedSid)!.metadata.codexServiceTierExplicit).toBe(true);
+            await expect(recoveryClient.request('thread/queue/add', {
+                threadId: unsupported.thread.id, clientUserMessageId: randomUUID(),
+                input: [{ type: 'text', text: 'Must wait for tier confirmation', text_elements: [] }]
+            })).rejects.toThrow('tier confirmation is pending');
             await third.client.request('thread/settings/update', { threadId: unsupported.thread.id, model: 'gpt-6-astra' });
             releaseLaunch(); stalledSnapshot.mockRestore();
+            await vi.waitFor(() => expect(state.sessions.get(unsupportedSid)!.metadata.codexTierConfirmationPending).toBe(false));
             expect(state.sessions.get(unsupportedSid)!.metadata.codexServiceTierExplicit).toBe(true);
             await third.client.request('turn/interrupt', { threadId: unsupported.thread.id, turnId: result.turn.id }).catch(() => {});
             third.abort.abort(); await third.done;

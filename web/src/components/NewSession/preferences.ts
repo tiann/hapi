@@ -138,7 +138,7 @@ export function loadPreferredLaunchSettings(
         if (!raw) {
             return null
         }
-        const parsed = JSON.parse(raw) as Partial<PreferredLaunchSettings>
+        const parsed = JSON.parse(raw) as Partial<PreferredLaunchSettings> & { explicitStandardServiceTier?: boolean }
         if (!parsed || typeof parsed !== 'object' || typeof parsed.model !== 'string') {
             return null
         }
@@ -147,6 +147,10 @@ export function loadPreferredLaunchSettings(
                 ? parsed.permissionMode as PermissionMode
                 : 'default'
             : undefined
+        // Older forms saved Standard even when the user left the picker untouched.
+        const tier = parsed.serviceTier
+        const serviceTier = agent === 'codex' && (tier === 'fast' || tier === 'ultrafast'
+            || tier === 'standard' && parsed.explicitStandardServiceTier === true) ? tier : undefined
         return {
             model: parsed.model,
             cursorSelectedBase: typeof parsed.cursorSelectedBase === 'string'
@@ -156,8 +160,7 @@ export function loadPreferredLaunchSettings(
             modelReasoningEffort: typeof parsed.modelReasoningEffort === 'string'
                 ? parsed.modelReasoningEffort
                 : 'default',
-            ...(agent === 'codex' && (parsed.serviceTier === 'fast' || parsed.serviceTier === 'standard' || parsed.serviceTier === 'ultrafast')
-                ? { serviceTier: parsed.serviceTier } : {}),
+            ...(serviceTier ? { serviceTier } : {}),
             ...(permissionMode ? { permissionMode } : {})
         }
     } catch {
@@ -173,7 +176,10 @@ export function savePreferredLaunchSettings(
     try {
         localStorage.setItem(
             launchSettingsStorageKey(machineId, agent),
-            JSON.stringify(settings)
+            JSON.stringify({
+                ...settings,
+                ...(agent === 'codex' && settings.serviceTier === 'standard' ? { explicitStandardServiceTier: true } : {})
+            })
         )
     } catch {
         // Ignore storage errors

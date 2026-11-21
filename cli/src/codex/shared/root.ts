@@ -1128,6 +1128,7 @@ export class SharedCodexRoot {
         const verifiedTierIntent = params.serviceTier !== undefined || ultrafastTarget !== undefined;
         const verifyUltrafast = params.serviceTier === 'ultrafast' || params.serviceTier === undefined
             && (inheritedUltrafast && !this.needsTierConfirmation || this.verifiesInheritedUltrafast(ultrafastTarget));
+        const confirmsTier = verifyUltrafast || params.serviceTier !== undefined;
         const current = () => !this.closed && !this.stopping && this.isCurrentTierOperation(operationId);
         // A settings lookup can confirm the effective value before the native
         // reply arrives. Only the accepted turn establishes explicit intent.
@@ -1143,6 +1144,12 @@ export class SharedCodexRoot {
                 }
                 return;
             }
+        }
+        if (!current()) return;
+        // Start the fence synchronously with acceptance, before yielding to Hub
+        // persistence or the native read. The accepted turn can still return.
+        if (confirmsTier && verifiedTierIntent) this.pauseTierConfirmation(operationId, { retainConfirmedTier: true, message: null });
+        if (explicitTier) {
             this.serviceTierExplicit = true;
             const tier = params.serviceTier === null ? 'standard' : fromCodexServiceTier(params.serviceTier);
             if (tier === 'standard' || tier === 'fast' || tier === 'ultrafast' || tier === 'flex') {
@@ -1155,7 +1162,6 @@ export class SharedCodexRoot {
         }
         if (!current()) return;
         const deadline = Date.now() + 25_000;
-        const confirmsTier = verifyUltrafast || params.serviceTier !== undefined;
         const model = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
         const target = ultrafastTarget ?? { model: model ?? this.settings.model ?? undefined, provider: this.modelProvider };
         try {
@@ -1199,7 +1205,7 @@ export class SharedCodexRoot {
     private pauseTierConfirmation(operationId: number, {
         retainConfirmedTier = false, pendingTier,
         message = 'Codex settings confirmation is pending. Confirm Standard in settings before sending more input.'
-    }: { retainConfirmedTier?: boolean; pendingTier?: 'standard' | 'fast' | 'ultrafast' | 'flex'; message?: string } = {}): void {
+    }: { retainConfirmedTier?: boolean; pendingTier?: 'standard' | 'fast' | 'ultrafast' | 'flex'; message?: string | null } = {}): void {
         if (!this.isCurrentTierOperation(operationId)) return;
         const newerPause = operationId > this.pendingTierOperation;
         this.tierConfirmationResolved = false;
@@ -1221,7 +1227,7 @@ export class SharedCodexRoot {
             }
             this.publishSteering();
             this.publishPlan();
-            this.notice(message);
+            if (message) this.notice(message);
         }
     }
     private async settingsRequest<T = unknown>(method: string, params: Record<string, unknown>, deadline: number, uncertain = false, pauseInput: boolean | (() => boolean) = uncertain, operationId = 0): Promise<T> {

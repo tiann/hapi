@@ -261,6 +261,24 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(onServiceTierChange).toHaveBeenCalledWith('fast')
     })
 
+    it('leaves the recovery tier unselected and allows confirming Standard', () => {
+        const onServiceTierChange = vi.fn()
+        renderComposer('codex', {
+            model: 'gpt-5.6',
+            availableModelOptions: [{ value: 'gpt-5.6', label: 'GPT-5.6' }],
+            serviceTier: null,
+            tierConfirmationPending: true,
+            fastAvailable: false,
+            onServiceTierChange
+        })
+        fireEvent.click(screen.getByRole('button', { name: 'GPT-5.6' }))
+        const standard = screen.getByRole('button', { name: 'Standard' })
+        expect(standard).toHaveAttribute('aria-pressed', 'false')
+        expect(standard).toBeEnabled()
+        fireEvent.click(standard)
+        expect(onServiceTierChange).toHaveBeenCalledWith('standard')
+    })
+
     it('toggles Codex fast mode directly from the composer toolbar', () => {
         const onServiceTierChange = vi.fn()
         renderComposer('codex', { serviceTier: 'standard', onServiceTierChange })
