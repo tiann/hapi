@@ -1103,11 +1103,16 @@ export class SharedCodexRoot {
             const revision = this.settingsRevision;
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
             if (canWrite && !canWrite()) return;
-            if (this.settingsRevision === revision) this.acceptSettings(snapshot, true);
+            const snapshotCurrent = this.settingsRevision === revision;
+            if (snapshotCurrent) this.acceptSettings(snapshot, true);
             else if (canWrite) return;
             if (canWrite && !canWrite()) return;
             if (matches(comparable)) {
-                if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, requestedUltrafast, onMutation);
+                const confirmedUltrafast = snapshotCurrent && typeof snapshot.model === 'string'
+                    && snapshot.serviceTier === 'ultrafast' && this.settings.serviceTier === 'ultrafast';
+                if (verifyUltrafast && !confirmedUltrafast) {
+                    await this.confirmEffectiveUltrafast(deadline, operationId, { requestedUltrafast, onMutation, pauseOnReadFailure: false });
+                }
                 return operationId;
             }
         }
@@ -1132,7 +1137,7 @@ export class SharedCodexRoot {
             // native notification, not our submitted candidate, establishes state.
             await accepted;
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
-        if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, requestedUltrafast, onMutation);
+        if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, { requestedUltrafast, onMutation });
         return operationId;
     }
     private isCurrentTierOperation(operationId: number): boolean {
@@ -1145,13 +1150,17 @@ export class SharedCodexRoot {
         this.notice('Codex did not apply Ultrafast; changed to Standard.');
         return true;
     }
-    private async confirmEffectiveUltrafast(deadline: number, operationId: number, requestedUltrafast = false, onMutation?: () => void): Promise<void> {
+    private async confirmEffectiveUltrafast(deadline: number, operationId: number, {
+        requestedUltrafast = false, onMutation, pauseOnReadFailure = true
+    }: { requestedUltrafast?: boolean; onMutation?: () => void; pauseOnReadFailure?: boolean } = {}): Promise<void> {
         // Settings notifications report selection; a loaded thread can still
         // filter Ultrafast using the feature state captured when it started.
+        let fallbackDispatched = false;
+        const current = () => this.isCurrentTierOperation(operationId);
+        const shouldPause = () => current() && (pauseOnReadFailure || fallbackDispatched);
         for (let attempt = 0; attempt < 3; attempt++) {
             const revision = this.settingsRevision;
-            const current = () => this.isCurrentTierOperation(operationId);
-            const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline, true, current, operationId));
+            const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline, true, shouldPause, operationId));
             if (!current()) throw new Error('Codex settings were superseded by a newer tier selection; refresh before retrying');
             if (this.settingsRevision !== revision) continue;
             this.acceptSettings(snapshot, true);
@@ -1162,7 +1171,10 @@ export class SharedCodexRoot {
                 return;
             }
             try {
-                if (await this.fallbackToStandard(deadline, operationId, onMutation)) return;
+                if (await this.fallbackToStandard(deadline, operationId, () => {
+                    fallbackDispatched = true;
+                    onMutation?.();
+                })) return;
             } catch (error) {
                 if (current()) this.pauseTierConfirmation(operationId);
                 throw error;
@@ -1171,8 +1183,10 @@ export class SharedCodexRoot {
             // A selection notification can invalidate the fallback read, but
             // only the next effective snapshot can satisfy confirmation.
         }
-        this.pauseTierConfirmation(operationId);
-        throw new Error('Codex settings changed during effective tier confirmation; confirm Standard in settings');
+        if (shouldPause()) this.pauseTierConfirmation(operationId);
+        throw new Error(pauseOnReadFailure || fallbackDispatched
+            ? 'Codex settings changed during effective tier confirmation; confirm Standard in settings'
+            : 'Codex settings changed during effective tier confirmation; refresh before retrying');
     }
     private get hasOtherEffectiveTier(): boolean {
         const tier = this.settings.serviceTier;

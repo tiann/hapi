@@ -1766,17 +1766,21 @@ describe('Ultrafast native settings', () => {
         request.mockRestore();
     });
 
-    it.each(['catalog discovery', 'confirmation read'])('allows Retry for a queued Ultrafast command after %s fails before mutation', async phase => {
+    it.each(['catalog discovery', 'confirmation read', 'invalidated confirmation read'])('allows Retry for a queued Ultrafast command after %s fails before mutation', async phase => {
         const f = await fixture(); await f.root.activate();
-        const repeated = phase === 'confirmation read';
+        const repeated = phase !== 'catalog discovery';
+        const invalidated = phase === 'invalidated confirmation read';
         if (repeated) await f.root.applySettings({ serviceTier: 'ultrafast' });
         else vi.spyOn(f.root.client, 'listModels').mockRejectedValueOnce(new Error('catalog disconnected'));
         const original = f.root.client.request.bind(f.root.client);
-        let failRead = repeated;
+        let reads = 0;
         const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
-            if (method === 'thread/resume' && failRead) {
-                failRead = false;
-                throw new Error('confirmation read disconnected');
+            if (method === 'thread/resume' && repeated) {
+                reads++;
+                if (invalidated && reads === 1) {
+                    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+                }
+                if (reads === (invalidated ? 2 : 1)) throw new Error('confirmation read disconnected');
             }
             return original(method, params);
         });
@@ -1784,12 +1788,14 @@ describe('Ultrafast native settings', () => {
         await vi.waitFor(async () => expect((await f.ledger()).entries['retry-tier-command']?.state).toBe('rejected'));
         expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
         expect(f.uncertain).not.toHaveBeenCalled();
+        expect(f.root.needsTierConfirmation).toBe(false);
 
         expect(await f.cancel('retry-tier-command')).toBe(true);
         expect(await f.retry('retry-tier-command', true)).toBe(true);
         f.submit('/ultrafast on', 'retry-tier-command');
         await vi.waitFor(async () => expect((await f.ledger()).entries['retry-tier-command']?.state).toBe('consumed'));
         expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update')).toHaveLength(repeated ? 0 : 1);
+        if (repeated) expect(reads).toBe(invalidated ? 3 : 2);
     });
 
     it('does not follow a confirmed fallback with an Ultrafast-enabled slash reply', async () => {
