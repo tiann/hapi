@@ -3,11 +3,13 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const { constructorOptions, listModelsMock, resolveRunnerCommand, probeRunnerVersion } = vi.hoisted(() => ({
+const { constructorOptions, listModelsMock, resolveRunnerCommand, resolveDiscoveryCommand, probeVersion, discoverySupportsUltrafast } = vi.hoisted(() => ({
     constructorOptions: [] as unknown[],
     listModelsMock: vi.fn(),
     resolveRunnerCommand: vi.fn(),
-    probeRunnerVersion: vi.fn()
+    resolveDiscoveryCommand: vi.fn(),
+    probeVersion: vi.fn(),
+    discoverySupportsUltrafast: vi.fn()
 }));
 
 vi.mock('node:os', async () => {
@@ -17,16 +19,18 @@ vi.mock('node:os', async () => {
 
 vi.mock('@/codex/utils/codexExecutable', () => ({
     resolveCodexCommand: resolveRunnerCommand,
-    probeCodexCliVersion: probeRunnerVersion
+    resolveSelectedCodexCommand: (command: string) => ({ command, args: [] }),
+    probeCodexCliVersion: probeVersion
 }));
 
 vi.mock('@/codex/codexAppServerClient', () => ({
+    resolveCodexAppServerCommand: resolveDiscoveryCommand,
     CodexAppServerClient: class {
         constructor(options: unknown) {
             constructorOptions.push(options);
         }
 
-        supportsEffectiveUltrafastLaunch() { return true; }
+        supportsEffectiveUltrafastLaunch() { return discoverySupportsUltrafast(); }
         async connect(): Promise<void> {}
         async initialize(): Promise<void> {}
         async listModels(): Promise<{ data: unknown[] }> {
@@ -44,7 +48,9 @@ describe('listCodexModels cwd', () => {
         constructorOptions.length = 0;
         listModelsMock.mockReset();
         resolveRunnerCommand.mockReset().mockReturnValue({ command: '/path/codex', args: [] });
-        probeRunnerVersion.mockReset().mockResolvedValue([0, 170, 0]);
+        resolveDiscoveryCommand.mockReset().mockReturnValue('/desktop/codex');
+        probeVersion.mockReset().mockResolvedValue([0, 170, 0]);
+        discoverySupportsUltrafast.mockReset().mockReturnValue(true);
         _resetCodexModelsCacheForTests();
     });
     afterEach(async () => {
@@ -57,7 +63,8 @@ describe('listCodexModels cwd', () => {
 
         await listCodexModels();
 
-        expect(constructorOptions).toEqual([{ cwd: '/neutral-home' }]);
+        expect(probeVersion).toHaveBeenCalledWith({ command: '/desktop/codex', args: [] }, '/neutral-home');
+        expect(constructorOptions).toEqual([{ cwd: '/neutral-home', command: { command: '/desktop/codex', args: [] } }]);
     });
 
     it('caches the model list within the TTL so repeat calls skip the app-server spawn', async () => {
@@ -82,17 +89,37 @@ describe('listCodexModels cwd', () => {
         listModelsMock.mockResolvedValue({ data: [{
             id: 'eligible', serviceTiers: [{ id: 'ultrafast' }, { id: 'priority', name: 'Fast' }]
         }] });
-        probeRunnerVersion.mockResolvedValue([0, 169, 0]);
+        probeVersion.mockImplementation(async ({ command }) => [0, command === '/path/codex' ? 169 : 170, 0]);
         expect((await listCodexModels())[0]?.serviceTiers).toEqual(['priority', 'fast']);
-        expect(probeRunnerVersion).toHaveBeenCalledWith({ command: '/path/codex', args: [] });
+        expect(probeVersion).toHaveBeenCalledWith({ command: '/path/codex', args: [] });
 
-        probeRunnerVersion.mockResolvedValue([0, 170, 0]);
+        probeVersion.mockResolvedValue([0, 170, 0]);
         expect((await listCodexModels())[0]?.serviceTiers).toEqual(['ultrafast', 'priority', 'fast']);
         expect(listModelsMock).toHaveBeenCalledTimes(2);
 
         resolveRunnerCommand.mockReturnValue({ command: '/other/codex', args: [] });
         await listCodexModels();
         expect(listModelsMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('refreshes the catalog after only the discovery executable changes', async () => {
+        listModelsMock.mockResolvedValue({ data: [{
+            id: 'eligible', serviceTiers: [{ id: 'ultrafast' }, { id: 'priority', name: 'Fast' }]
+        }] });
+        let discoveryMinor = 169;
+        probeVersion.mockImplementation(async ({ command }) => [0, command === '/desktop/codex' ? discoveryMinor : 170, 0]);
+        discoverySupportsUltrafast.mockImplementation(() => discoveryMinor >= 170);
+        expect((await listCodexModels())[0]?.serviceTiers).toEqual(['priority', 'fast']);
+
+        discoveryMinor = 170;
+        expect((await listCodexModels())[0]?.serviceTiers).toEqual(['ultrafast', 'priority', 'fast']);
+        await listCodexModels();
+        expect(listModelsMock).toHaveBeenCalledTimes(2);
+
+        resolveDiscoveryCommand.mockReturnValue('/updated-desktop/codex');
+        await listCodexModels();
+        expect(listModelsMock).toHaveBeenCalledTimes(3);
+        expect(constructorOptions.at(-1)).toMatchObject({ command: { command: '/updated-desktop/codex' } });
     });
 
     it('keeps visible and hidden model lists in separate cache slots', async () => {

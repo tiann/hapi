@@ -6,7 +6,7 @@ import { JsonLineParser } from '@/utils/jsonLineParser';
 import { killProcessByChildProcess } from '@/utils/process';
 import { CODEX_WEBSOCKET_MAX_PAYLOAD } from './websocketLimits';
 import { resolveModelCatalogArgs } from './utils/modelCatalog';
-import { resolveSelectedCodexCommand } from './utils/codexExecutable';
+import { MACOS_CODEX_APP_COMMAND, resolveSelectedCodexCommand, type CodexCommand } from './utils/codexExecutable';
 import type {
     AccountRateLimitsReadResponse,
     AccountReadResponse,
@@ -87,6 +87,7 @@ export function isIndeterminateError(error: unknown): boolean {
 
 type CodexAppServerClientOptions = {
     cwd?: string;
+    command?: CodexCommand;
     /** An independently owned shared server. Disconnect only detaches this client. */
     endpoint?: string;
     token?: string;
@@ -146,22 +147,14 @@ export function resolveCodexAppServerCommand(): string {
         return process.env.HAPI_CODEX_APP_SERVER_BIN;
     }
 
-    const candidates: CodexCommandCandidate[] = [{
-        command: 'codex',
-        source: 'path',
-        version: getCodexVersion('codex')
-    }];
-
-    if (process.platform === 'darwin') {
-        const desktopCodex = '/Applications/Codex.app/Contents/Resources/codex';
-        if (existsSync(desktopCodex)) {
-            candidates.push({
-                command: desktopCodex,
-                source: 'desktop',
-                version: getCodexVersion(desktopCodex)
-            });
-        }
+    if (process.platform !== 'darwin' || !existsSync(MACOS_CODEX_APP_COMMAND)) {
+        return 'codex';
     }
+
+    const candidates: CodexCommandCandidate[] = [
+        { command: 'codex', source: 'path', version: getCodexVersion('codex') },
+        { command: MACOS_CODEX_APP_COMMAND, source: 'desktop', version: getCodexVersion(MACOS_CODEX_APP_COMMAND) }
+    ];
 
     // 中文注释：Codex Desktop 与 npm CLI 都可能写 thread-store；恢复时选择版本更新的 app-server，
     // 避免旧 CLI 读取新 rollout 格式失败。版本相同优先 Desktop，和用户看到的 Codex.app 保持一致。
@@ -261,7 +254,7 @@ export class CodexAppServerClient extends JsonLineParser {
             return;
         }
 
-        const codexCommand = resolveSelectedCodexCommand(resolveCodexAppServerCommand());
+        const codexCommand = this.options.command ?? resolveSelectedCodexCommand(resolveCodexAppServerCommand());
         logger.debug(`[CodexAppServer] Starting ${codexCommand.command} app-server`);
         const catalogArgs = resolveModelCatalogArgs();
         const child = spawn(codexCommand.command, [...codexCommand.args, 'app-server', ...catalogArgs], {

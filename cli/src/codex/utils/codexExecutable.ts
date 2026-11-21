@@ -16,10 +16,10 @@ export function parseCodexCliVersion(stdout: string): [number, number, number] |
     return version ? [Number(version[1]), Number(version[2]), Number(version[3])] : null;
 }
 
-export function probeCodexCliVersion(command: CodexCommand): Promise<[number, number, number] | null> {
+export function probeCodexCliVersion(command: CodexCommand, cwd?: string): Promise<[number, number, number] | null> {
     return new Promise(resolve => {
         execFile(command.command, [...command.args, '--version'], {
-            encoding: 'utf8', timeout: 3_000, windowsHide: process.platform === 'win32'
+            cwd, encoding: 'utf8', timeout: 3_000, windowsHide: process.platform === 'win32'
         }, (error, stdout) => resolve(error ? null : parseCodexCliVersion(stdout)));
     });
 }

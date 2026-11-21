@@ -1,12 +1,12 @@
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import type { CodexModelsResponse, CodexModelSummary } from '@hapi/protocol/apiTypes';
-import { CodexAppServerClient } from '@/codex/codexAppServerClient';
+import { CodexAppServerClient, resolveCodexAppServerCommand } from '@/codex/codexAppServerClient';
 import { resolveModelCatalogArgs } from '@/codex/utils/modelCatalog';
 import { resolveCodexHome } from '@/codex/utils/codexHome';
-import { probeCodexCliVersion, resolveCodexCommand } from '@/codex/utils/codexExecutable';
+import { probeCodexCliVersion, resolveCodexCommand, resolveSelectedCodexCommand, type CodexCommand } from '@/codex/utils/codexExecutable';
 import { getErrorMessage } from './rpcResponses';
 
 export interface ListCodexModelsRequest {
@@ -95,8 +95,8 @@ interface CacheEntry {
 }
 
 // A model lookup starts a fresh app-server. Keep successful discovery for a
-// day, but discard it as soon as local auth, config, or the configured model
-// catalog changes. File checks happen only when discovery is requested.
+// day, but discard it when local auth, config, the configured model catalog,
+// or either Codex executable changes. Checks run only on model lookups.
 const CACHE_TTL_MS = 24 * 60 * 60_000;
 const cache = new Map<boolean, CacheEntry>();
 const inflight = new Map<boolean, { fingerprint: string; promise: Promise<CodexModelSummary[]> }>();
@@ -136,8 +136,17 @@ export async function listCodexModels(includeHidden: boolean = false): Promise<C
     // Desktop discovery can use a different binary. The shared Runner's
     // actual executable must also understand effective Ultrafast settings.
     const runnerCommand = resolveCodexCommand();
-    const [catalogKey, runnerVersion] = await Promise.all([catalogFingerprint(), probeCodexCliVersion(runnerCommand)]);
-    const fingerprint = JSON.stringify([catalogKey, runnerCommand, runnerVersion]);
+    const discoveryCommand = resolveSelectedCodexCommand(resolveCodexAppServerCommand());
+    const runnerKey = JSON.stringify(runnerCommand);
+    const discoveryKey = JSON.stringify(discoveryCommand);
+    const runnerVersionProbe = probeCodexCliVersion(runnerCommand);
+    const discoveryVersionProbe = discoveryKey === runnerKey && isAbsolute(discoveryCommand.command)
+        ? runnerVersionProbe
+        : probeCodexCliVersion(discoveryCommand, homedir());
+    const [catalogKey, runnerVersion, discoveryVersion] = await Promise.all([
+        catalogFingerprint(), runnerVersionProbe, discoveryVersionProbe
+    ]);
+    const fingerprint = JSON.stringify([catalogKey, runnerKey, runnerVersion, discoveryKey, discoveryVersion]);
     const cached = cache.get(includeHidden);
     if (cached && cached.fingerprint === fingerprint && cached.expiresAt > Date.now()) {
         return cached.models;
@@ -149,7 +158,7 @@ export async function listCodexModels(includeHidden: boolean = false): Promise<C
     }
 
     const runnerSupportsUltrafast = Boolean(runnerVersion && (runnerVersion[0] > 0 || runnerVersion[1] >= 170));
-    const promise = fetchCodexModelsFromAppServer(includeHidden, runnerSupportsUltrafast)
+    const promise = fetchCodexModelsFromAppServer(includeHidden, runnerSupportsUltrafast, discoveryCommand)
         .then((models) => {
             if (models.length > 0 && inflight.get(includeHidden)?.promise === promise) {
                 cache.set(includeHidden, {
@@ -168,10 +177,14 @@ export async function listCodexModels(includeHidden: boolean = false): Promise<C
     return promise;
 }
 
-async function fetchCodexModelsFromAppServer(includeHidden: boolean, runnerSupportsUltrafast: boolean): Promise<CodexModelSummary[]> {
+async function fetchCodexModelsFromAppServer(
+    includeHidden: boolean,
+    runnerSupportsUltrafast: boolean,
+    command: CodexCommand
+): Promise<CodexModelSummary[]> {
     // Model discovery is account-scoped. Never inherit a session/runner cwd:
     // project config or a deleted worktree must not alter or break the catalog.
-    const client = new CodexAppServerClient({ cwd: homedir() });
+    const client = new CodexAppServerClient({ cwd: homedir(), command });
 
     try {
         await client.connect();
