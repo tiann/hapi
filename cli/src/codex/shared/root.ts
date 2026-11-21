@@ -830,8 +830,15 @@ export class SharedCodexRoot {
                         // A notification may establish only the selected tier. Read again
                         // after a change without applying the older effective snapshot.
                         if (this.settingsRevision !== revision) continue;
-                        if (attempt === 0) this.acceptSettings(this.host.settingsFor(this.threadId) ?? {}, false);
-                        this.acceptSettings(response, true);
+                        const cached = attempt === 0 ? this.host.settingsFor(this.threadId) : undefined;
+                        // The control subscription may have missed a confirmed reset.
+                        // A filtered null on resume must keep the last confirmed tier.
+                        const settings = { ...response };
+                        for (const field of ['collaborationMode', 'personality', 'approvalsReviewer']) {
+                            const fallback = cached?.[field] ?? this.settingsNative[field];
+                            if (!(field in settings) && fallback !== undefined) settings[field] = fallback;
+                        }
+                        this.acceptSettings(settings, true);
                         break;
                     }
                     this.projection.reset(); await this.refresh(); this.queue.replay(); await this.refreshChildren(true);

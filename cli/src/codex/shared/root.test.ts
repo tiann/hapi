@@ -276,6 +276,29 @@ it('does not let a delayed reconnect reply undo a confirmed Standard reset', asy
     expect(f.root.freshParams()).toMatchObject({ serviceTier: 'default' });
 });
 
+it.each(['priority', 'ultrafast'])('preserves confirmed Standard over cached %s and a filtered reconnect tier', async cachedTier => {
+    const f = await fixture({
+        bindTier: 'priority',
+        settingsFor: () => ({ model: 'stale-model', serviceTier: cachedTier, collaborationMode: { mode: 'plan' } })
+    });
+    await f.root.activate();
+    await f.root.applySettings({ serviceTier: 'standard' });
+    const keepAlive = vi.spyOn(f.root.session, 'keepAlive');
+    const request = f.root.client.request.bind(f.root.client);
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume') return { model: 'mock', serviceTier: null } as never;
+        return request(method, params);
+    });
+
+    await (f.root as unknown as { reconnect(): Promise<void> }).reconnect();
+
+    expect(f.root.hasConfirmedStandardTier).toBe(true);
+    expect(f.root.freshParams()).toMatchObject({ model: 'mock', serviceTier: 'default' });
+    expect(keepAlive).toHaveBeenLastCalledWith(false, undefined, expect.objectContaining({
+        model: 'mock', serviceTier: 'standard', collaborationMode: 'plan'
+    }));
+});
+
 it('keeps a fresh resume tier authoritative over cached selected settings', async () => {
     const f = await fixture({ bindTier: 'ultrafast', settingsFor: () => ({ model: 'mock', serviceTier: 'priority', collaborationMode: { mode: 'plan' } }) });
     expect(f.root.hasUltrafastTier).toBe(true);
