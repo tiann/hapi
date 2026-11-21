@@ -75,6 +75,13 @@ export function normalize(rows: Row[], facts: ProcessFacts, launches: unknown[],
             return '<lease-expiry>'
         }
         if (key === 'pid' || key === 'hostPid') { assert.equal(value, facts.pid); return '<pid>' }
+        if (key === 'socketId') {
+            // Socket.IO assigns a fresh per-connection id, so a CLI ack that
+            // reports its socket (deliver-now probe targeting) is volatile in
+            // the same way pids and ports are.
+            assert.equal(typeof value, 'string')
+            return '<socket-id>'
+        }
         if (key === 'hostStartMarker' || key === 'processStartMarker') {
             assert.match(value, /^\w{3}\s+\w{3}\s+\d{1,2}\s+\d\d:\d\d:\d\d\s+\d{4}$/)
             assert.equal(value, facts.marker)

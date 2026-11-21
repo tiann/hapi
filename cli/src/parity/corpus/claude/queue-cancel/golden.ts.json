@@ -869,7 +869,8 @@
             "consumed": false,
             "inFlight": false,
             "indeterminate": false,
-            "removed": true
+            "removed": true,
+            "socketId": "<socket-id>"
           }
         ]
       }
