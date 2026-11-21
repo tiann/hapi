@@ -552,8 +552,8 @@ export class SharedCodexRoot {
         if (!this.closed && !this.stopping) this.session.keepAlive(Boolean(this.currentTurn), undefined, this.settingsForHub());
     }
     private settingsForHub(): RuntimeSettings {
-        const unconfirmedLaunchTier = this.pendingUltrafastLaunchTarget && this.settings.serviceTier === 'ultrafast';
-        if (!unconfirmedLaunchTier && (!this.tierPublicationProtection || this.settings.serviceTier === this.tierPublicationProtection
+        const unconfirmedUltrafast = this.needsTierConfirmation && this.settings.serviceTier === 'ultrafast';
+        if (!unconfirmedUltrafast && (!this.tierPublicationProtection || this.settings.serviceTier === this.tierPublicationProtection
             || this.session.getMetadata()?.codexPendingServiceTier === this.tierPublicationProtection)) {
             return this.settings;
         }
@@ -858,8 +858,8 @@ export class SharedCodexRoot {
         return operation;
     }
     private verifiesInheritedUltrafast(target?: UltrafastTarget): boolean {
-        // A launch recovery cannot trust a tier on a target we have not validated.
-        return this.hasUltrafastTier && (this.pendingUltrafastLaunchTarget === undefined || target !== undefined);
+        // While input is paused, an effective snapshot alone cannot validate the target.
+        return this.hasUltrafastTier && (!this.needsTierConfirmation || target !== undefined);
     }
     private async applySettingsNow(raw: unknown, deadline: number, operationId: number, onMutation?: () => void): Promise<{ applied: RuntimeSettings }> {
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
@@ -934,16 +934,18 @@ export class SharedCodexRoot {
                 developer_instructions: null
             } } } : {})
         };
-        const confirmsTier = config.serviceTier !== undefined || this.verifiesInheritedUltrafast(ultrafastTarget);
+        const validatedTier = config.serviceTier !== undefined || ultrafastTarget !== undefined;
+        const confirmsTier = validatedTier || this.verifiesInheritedUltrafast();
         const confirmed = await this.writeNativeSettings(params, params, deadline, operationId, undefined, onMutation, ultrafastTarget);
         if (config.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
-        await this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, fallbackNotice, onMutation);
+        await this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, validatedTier, fallbackNotice, onMutation);
         this.alive(); return { applied: this.settingsForHub() };
     }
-    private async confirmSettingsWrite(operationId: number | undefined, explicitTier: boolean, confirmsTier: boolean, fallbackNotice?: string, onMutation?: () => void): Promise<void> {
+    private async confirmSettingsWrite(operationId: number | undefined, explicitTier: boolean, confirmsTier: boolean, validatedTier: boolean,
+        fallbackNotice?: string, onMutation?: () => void): Promise<void> {
         if (operationId === undefined || !this.isCurrentTierOperation(operationId)) return;
         if (explicitTier) this.serviceTierExplicit = true;
-        if (confirmsTier) {
+        if (confirmsTier && (validatedTier || !this.needsTierConfirmation)) {
             onMutation?.();
             await this.completeTierConfirmation(operationId);
         }
@@ -1038,14 +1040,15 @@ export class SharedCodexRoot {
                 reasoning_effort: resolved.params.effort ?? this.settings.modelReasoningEffort, developer_instructions: null
             } };
             const effectiveModel = string(record(record(resolved.params.collaborationMode).settings).model) ?? string(resolved.params.model);
-            const confirmsTier = resolved.params.serviceTier !== undefined || this.verifiesInheritedUltrafast(resolved.ultrafastTarget);
+            const validatedTier = resolved.params.serviceTier !== undefined || resolved.ultrafastTarget !== undefined;
+            const confirmsTier = validatedTier || this.verifiesInheritedUltrafast();
             const confirmed = await this.writeNativeSettings(resolved.params, {
                 ...(resolved.params.serviceTier !== undefined ? { serviceTier: resolved.params.serviceTier } : {}),
                 ...(resolved.params.collaborationMode ? { collaborationMode: resolved.params.collaborationMode } : {}),
                 ...(effectiveModel ? { model: effectiveModel } : {})
             }, deadline, operationId, undefined, undefined, resolved.ultrafastTarget);
             if (resolved.params.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
-            await this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, resolved.fallbackNotice);
+            await this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, validatedTier, resolved.fallbackNotice);
             this.alive();
         });
         this.settingsWrites = operation;
@@ -1122,7 +1125,9 @@ export class SharedCodexRoot {
     /** Called only after native turn acceptance; a rejected input leaves intent unchanged. */
     async confirmNativeTurn(params: Record<string, unknown>, explicitTier: boolean, fallbackNotice?: string, operationId = ++this.tierOperationCounter,
         inheritedUltrafast = false, ultrafastTarget?: UltrafastTarget): Promise<void> {
-        const verifyUltrafast = params.serviceTier === 'ultrafast' || params.serviceTier === undefined && (inheritedUltrafast || this.hasUltrafastTier);
+        const verifiedTierIntent = params.serviceTier !== undefined || ultrafastTarget !== undefined;
+        const verifyUltrafast = params.serviceTier === 'ultrafast' || params.serviceTier === undefined
+            && (inheritedUltrafast && !this.needsTierConfirmation || this.verifiesInheritedUltrafast(ultrafastTarget));
         const current = () => !this.closed && !this.stopping && this.isCurrentTierOperation(operationId);
         // A settings lookup can confirm the effective value before the native
         // reply arrives. Only the accepted turn establishes explicit intent.
@@ -1178,7 +1183,7 @@ export class SharedCodexRoot {
                     }
                 } else if (!confirmsTier && model && snapshot.model !== model) throw new Error('Native turn settings are not confirmed');
                 if (!current()) return;
-                if (confirmsTier) await this.completeTierConfirmation(operationId);
+                if (confirmsTier && (verifiedTierIntent || !this.needsTierConfirmation)) await this.completeTierConfirmation(operationId);
                 this.alive();
                 if (fallbackNotice && this.hasConfirmedStandardTier) this.notice(fallbackNotice);
                 return;

@@ -175,6 +175,23 @@ it.each([true, false])('withholds a catalog-derived Fast badge when the effectiv
     expect(await screen.findByRole('button', { name: 'Reset Standard / fast:true / ultra:false' })).toBeEnabled();
     expect(screen.getByTestId('effective-tier')).toHaveTextContent('none');
 });
+it('hides a saved Ultrafast tier in the composer and header until recovery completes', async () => {
+    const catalog = vi.fn(async () => ({ success: true, models: [] }));
+    const session = { id: 'tier-session', active: true, model: 'mock', serviceTier: 'ultrafast', metadata: {
+        flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexTierConfirmationPending: true,
+        capabilities: { concurrentClients: true }
+    } } as unknown as Session;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const setTier = vi.fn();
+    const view = render(shell(session, catalog, setTier, catalog, queryClient));
+    expect(screen.getByTestId('effective-tier')).toHaveTextContent('none');
+    expect(screen.queryByTestId('session-header-fast')).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Reset Standard / fast:false / ultra:false' })).toBeEnabled();
+
+    view.rerender(shell({ ...session, metadata: { ...session.metadata!, codexTierConfirmationPending: false } }, catalog, setTier, catalog, queryClient));
+    expect(screen.getByTestId('effective-tier')).toHaveTextContent('ultrafast');
+    expect(screen.getByTestId('session-header-fast')).toHaveTextContent('ultrafast');
+});
 it('shows inherited Fast until a keep-alive patch reports an empty effective tier', async () => {
     const catalog = vi.fn(async () => ({ success: true, models: [
         { id: 'mock', isDefault: true, serviceTiers: ['priority'], defaultServiceTier: 'priority' }

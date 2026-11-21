@@ -778,8 +778,8 @@ export function HappyThread(props: {
         const createdAtLabel = formatSessionHeaderTimestamp(props.session.createdAt, locale)
         const updatedAtLabel = formatSessionHeaderTimestamp(props.session.updatedAt, locale)
         const worktreeBranch = props.session.metadata?.worktree?.branch?.trim() || null
-        const showFastBadge = agentFlavor === 'codex'
-            && isFastServiceTier(props.serviceTier ?? props.session.serviceTier)
+        const serviceTier = props.serviceTier === undefined ? props.session.serviceTier : props.serviceTier
+        const showFastBadge = agentFlavor === 'codex' && !props.session.metadata?.codexTierConfirmationPending && isFastServiceTier(serviceTier)
 
         return selectShareTurnMetadata(headerMetadata, {
             agent: agentLabel ? { text: agentLabel, flavor: agentFlavor } : undefined,
@@ -794,7 +794,7 @@ export function HappyThread(props: {
                 text: `${headerMetadata.showLabels ? `${t(modelLabel.key)}: ` : ''}${modelLabel.value}`,
             } : undefined,
             reasoning: reasoningLabel ? { text: reasoningLabel } : undefined,
-            fastMode: showFastBadge ? { text: (props.serviceTier ?? props.session.serviceTier) === 'ultrafast' ? 'ultrafast' : 'fast' } : undefined,
+            fastMode: showFastBadge ? { text: serviceTier === 'ultrafast' ? 'ultrafast' : 'fast' } : undefined,
             createdAt: createdAtLabel ? {
                 text: `${headerMetadata.showLabels ? `${t('session.header.createdAt')}: ` : ''}${createdAtLabel}`,
             } : undefined,

@@ -2109,7 +2109,7 @@ it('accepts null as an explicit Standard reset rather than account inheritance',
     expect(f.root.freshParams().serviceTier).toBe('default');
 });
 
-it.each(['model', 'provider'])('does not confirm Ultrafast after a concurrent native %s change', async changed => {
+it.each(['model', 'provider'])('keeps Ultrafast recovery paused after a concurrent native %s change', async changed => {
     const f = await fixture({ bindTier: 'default' });
     await f.root.activate();
     f.root.acceptSettings({ model: 'mock', modelProvider: 'openai', serviceTier: 'default' }, true);
@@ -2131,6 +2131,23 @@ it.each(['model', 'provider'])('does not confirm Ultrafast after a concurrent na
     expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update')).toEqual([
         ['thread/settings/update', expect.objectContaining({ model: 'mock', serviceTier: 'ultrafast' })]
     ]);
+
+    f.root.acceptSettings(f.native.settings, true);
+    const heartbeat = vi.spyOn(f.session, 'keepAlive');
+    f.sessionReady.mockClear();
+    f.submit('held after a live tier mismatch', 'live-tier-mismatch');
+    await f.rpc.get(RPC_METHODS.SetSessionConfig)!({ modelReasoningEffort: 'high' });
+    await f.root.applyNativeSettings({ threadId: 'thread', effort: 'medium' });
+    expect(f.native.settings).toMatchObject({ effort: 'medium', serviceTier: 'ultrafast' });
+    expect(f.root.needsTierConfirmation).toBe(true);
+    expect(f.metadata().codexTierConfirmationPending).toBe(true);
+    expect(heartbeat.mock.lastCall?.[2]?.serviceTier).toBeUndefined();
+    expect(f.sessionReady).not.toHaveBeenCalled();
+    expect(f.native.queue).toHaveLength(0);
+
+    await f.root.applySettings({ serviceTier: 'standard' });
+    expect(f.sessionReady).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
 });
 
 it.each(['priority', 'flex'])('preserves a newer %s selection during Ultrafast confirmation', async tier => {
