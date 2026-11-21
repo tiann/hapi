@@ -293,6 +293,21 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const reserve = async (root: SharedCodexRoot, threadId: string) => withThreadOwnership(home, threadId, id, () => reserveRecord(root, threadId));
     const hasControlSubscription = (reservation: Reservation) =>
         reservation.controlSubscription === controlGeneration && control.isInitialized();
+    const holdSavedGoal = async (root: SharedCodexRoot, threadId: string, params: Record<string, unknown>) => {
+        const goal = await control.getThreadGoal({ threadId }).catch(error => {
+            if (!(error instanceof Error) || !/^(?:goals feature is disabled|method not found|unknown method)/i.test(error.message)) throw error;
+            // The resume may otherwise load different project flags.
+            params.config = { ...record(params.config), 'features.goals': false };
+            return { goal: null };
+        });
+        if (goal.goal?.status !== 'active') return;
+        assertRunning();
+        // An unloaded goal can be paused without starting its engine.
+        const paused = await control.setThreadGoal({ threadId, status: 'paused' });
+        if (paused.goal.status !== 'paused') throw new Error('Could not pause the saved Codex goal before tier recovery.');
+        root.session.sendSessionEvent({ type: 'message',
+            message: 'The saved goal was paused while checking the service tier. Resume the goal when the tier is confirmed.' });
+    };
     const acceptedResumeParams = async (
         reservation: Reservation, params: Record<string, unknown>, savedThread?: Record<string, unknown>, client = control
     ): Promise<Record<string, unknown>> => {
@@ -309,7 +324,12 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             reservation.executionParams = { ...reservation.executionParams, serviceTier: null };
             reservation.downgraded = true;
         }
-        return root.config(tier.params);
+        const configured = root.config(tier.params);
+        if (reservation.resumeId && requiresTierAdmission(root, tier.params.serviceTier, tier.downgraded, reservation.serviceTierExplicit)) {
+            pendingAdmission.add(reservation.resumeId);
+            await holdSavedGoal(root, reservation.resumeId, configured);
+        }
+        return configured;
     };
     const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, ultrafastTarget?: UltrafastTarget, downgraded = false, resume?: Reservation,
         expectedResumeTier = resume?.executionParams.serviceTier, tierDiscoveryFailure?: TierDiscoveryFailure) => {
@@ -603,14 +623,17 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             if (request.method === 'thread/fork') existing?.assertForkTierConfirmed();
             const resumeOverride = params.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined;
             const serviceTierExplicit = resuming ? resumeOverride ? true : undefined : resolved.serviceTier !== undefined;
+            const configured = root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) });
+            if (request.method === 'thread/resume' && threadId && requiresTierAdmission(root, tier.params.serviceTier, tier.downgraded, serviceTierExplicit)) {
+                pendingAdmission.add(threadId);
+                await holdSavedGoal(root, threadId, configured);
+                assertRunning();
+            }
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
                 freshThread: request.method === 'thread/start', executionParams: tier.params,
                 serviceTierExplicit,
                 ultrafastTarget: tier.ultrafastTarget, downgraded: tier.downgraded });
-            if (request.method === 'thread/resume' && threadId && requiresTierAdmission(root, tier.params.serviceTier, tier.downgraded, serviceTierExplicit)) {
-                pendingAdmission.add(threadId);
-            }
-            return { ...request, params: root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
+            return { ...request, params: configured };
         } catch (error) {
             const retained = threadId && retryableBindings.get(threadId)?.root === root;
             if (!retained) await root.close(request.method !== 'thread/resume');
@@ -618,7 +641,10 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             if (binding) binding.active = Boolean(threadId && retryableBindings.has(threadId));
             runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId);
             await persist(); if (!retained) prepared.delete(root);
-            if (request.method === 'thread/resume' && threadId) resumingThreads.delete(threadId);
+            if (request.method === 'thread/resume' && threadId) {
+                resumingThreads.delete(threadId);
+                if (!retained) pendingAdmission.delete(threadId);
+            }
             throw error;
         }
     });
@@ -783,25 +809,14 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
             const { downgraded } = resolved;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
-            if (tierDiscoveryFailure || requiresTierAdmission(root, resolved.params.serviceTier, downgraded, serviceTierExplicit)) pendingAdmission.add(threadId);
+            const needsTierAdmission = tierDiscoveryFailure !== undefined || requiresTierAdmission(root, resolved.params.serviceTier, downgraded, serviceTierExplicit);
+            if (needsTierAdmission) pendingAdmission.add(threadId);
             const response = await serializeNativeLifecycle(threadId, async () => {
                 assertRunning();
                 if (ownedRoot(threadId) !== root || ending.has(root)) throw new Error('Codex thread was archived during resume');
                 const resume = async () => {
-                    if (tierDiscoveryFailure) {
-                        const goal = await control.getThreadGoal({ threadId }).catch(error => {
-                            if (!(error instanceof Error) || error.message !== 'goals feature is disabled') throw error;
-                            // The resume may otherwise load different project flags.
-                            params.config = { ...record(params.config), 'features.goals': false };
-                            return { goal: null };
-                        });
-                        if (goal.goal?.status === 'active') {
-                            // An unloaded goal can be paused without starting its engine.
-                            const paused = await control.setThreadGoal({ threadId, status: 'paused' });
-                            if (paused.goal.status !== 'paused') throw new Error('Could not pause the saved Codex goal before tier recovery.');
-                            root.session.sendSessionEvent({ type: 'message',
-                                message: 'The saved goal was paused. Confirm a service tier in settings, then resume the goal when ready.' });
-                        }
+                    if (needsTierAdmission) {
+                        await holdSavedGoal(root, threadId, params);
                         assertRunning();
                     }
                     return record(await root.client.request('thread/resume', params));
@@ -813,7 +828,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                     // may restore its native archive before either operation.
                     if (!options.existingSessionId || !(error instanceof Error)
                         || !(error.message.startsWith(`session ${threadId} is archived.`)
-                            || tierDiscoveryFailure && error.message === `thread not found: ${threadId}`)) throw error;
+                            || needsTierAdmission && error.message === `thread not found: ${threadId}`)) throw error;
                     await root.client.request('thread/unarchive', { threadId });
                     return resume();
                 }

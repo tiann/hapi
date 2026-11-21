@@ -1000,11 +1000,12 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await rm(home, { recursive: true, force: true, maxRetries: 3 });
         }
     }, 45_000);
-    it.each(['ultrafast', 'inherited', 'inherited ultrafast', 'provider configuration changed', 'ultrafast with an archived goal'])('keeps a Runner cold resume recoverable when %s tier discovery is unavailable', async intent => {
+    it.each(['ultrafast', 'inherited', 'inherited ultrafast', 'provider configuration changed', 'ultrafast with an archived goal', 'unconfirmed saved tier'])('keeps a Runner cold resume recoverable for %s', async intent => {
         const home = await mkdtemp(join(tmpdir(), 'hapi-runner-tier-discovery-')); state.home = home;
         const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
         const archivedGoal = intent === 'ultrafast with an archived goal';
-        const savedGoal = intent === 'ultrafast' || archivedGoal;
+        const confirmationPending = intent === 'unconfirmed saved tier';
+        const savedGoal = intent === 'ultrafast' || archivedGoal || confirmationPending;
         let modelRequests = 0;
         const provider = createServer((request, response) => {
             if (request.url?.endsWith('/responses')) modelRequests++;
@@ -1057,10 +1058,11 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 } finally { await admin.disconnect(); }
             }
             const saved = state.sessions.get(sessionId)!;
-            saved.serviceTier = inheritedUltrafast ? 'fast' : inherited ? null : 'ultrafast';
+            saved.serviceTier = inheritedUltrafast ? 'fast' : inherited || confirmationPending ? null : 'ultrafast';
             saved.metadata.codexServiceTierExplicit = !inherited;
-            saved.metadata.codexConfirmedServiceTier = inherited ? undefined : 'ultrafast';
+            saved.metadata.codexConfirmedServiceTier = inherited || confirmationPending ? undefined : 'ultrafast';
             saved.metadata.codexPendingServiceTier = undefined;
+            if (confirmationPending) saved.metadata.codexTierConfirmationPending = true;
             vi.mocked(bootstrapExistingSession).mockImplementation(async options => {
                 const previous = state.sessions.get(options.sessionId)!;
                 const session = new MockSession(options.workingDirectory, previous.sessionId);
@@ -1072,7 +1074,8 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             });
             if (inheritedUltrafast) await configure('ultrafast');
             const readConfig = CodexAppServerClient.prototype.readConfig;
-            discovery = intent === 'inherited'
+            const pendingCatalog = confirmationPending ? vi.spyOn(CodexAppServerClient.prototype, 'listModels') : undefined;
+            discovery = pendingCatalog ?? (intent === 'inherited'
                 ? vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockImplementation(function(this: CodexAppServerClient, params) {
                     if (!params.includeLayers) return Promise.reject(new Error('Inherited tier lookup unavailable'));
                     return readConfig.call(this, params);
@@ -1081,19 +1084,20 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                     if (!providerChanged) throw new Error('Untrusted native catalog response');
                     await configure(undefined, 'http://127.0.0.1:2/v1');
                     return { data: [{ id: 'gpt-6-astra', serviceTiers: [{ id: 'ultrafast' }] }] } as never;
-                });
+                }));
             const resumed = await start({ startedBy: 'runner', existingSessionId: sessionId, resumeSessionId: threadId,
-                ...(inherited ? {} : { serviceTier: 'ultrafast' }) });
+                ...(inherited || confirmationPending ? {} : { serviceTier: 'ultrafast' }) });
+            if (pendingCatalog) expect(pendingCatalog).not.toHaveBeenCalled();
             expect(resumed.sessionId).toBe(sessionId);
             expect(resumed.runtime.sessions[sessionId].threadId).toBe(threadId);
             const session = state.sessions.get(sessionId)!;
             expect(session.metadata).toMatchObject({
-                codexTierConfirmationPending: true, codexPendingServiceTier: inherited ? undefined : 'ultrafast',
+                codexTierConfirmationPending: true, codexPendingServiceTier: inherited || confirmationPending ? undefined : 'ultrafast',
                 codexServiceTierExplicit: !inherited
             });
             expect(session.metadata.codexInheritedTierDiscoveryPending).toBe(inherited ? true : undefined);
             expect(session.readySignals).toBe(0);
-            expect(session.messages).toContainEqual({ type: 'message', message: expect.stringContaining(
+            if (!confirmationPending) expect(session.messages).toContainEqual({ type: 'message', message: expect.stringContaining(
                 inherited ? 'verify the inherited Codex service tier' : 'catalog could not verify Ultrafast') });
             if (providerChanged) expect(session.messages).toContainEqual({ type: 'message', message: expect.stringContaining('Restart the Codex runtime and retry.') });
             expect(session.messages).not.toContainEqual({ type: 'message', message: expect.stringContaining('Untrusted native catalog response') });
