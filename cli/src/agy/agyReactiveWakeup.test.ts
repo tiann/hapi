@@ -5327,6 +5327,63 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.finish();
         });
 
+        it('counts a held command once when it arrives as several events with the same call id', async () => {
+            const acp = 'conv-live-quarantine-events';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            // One new command, announced twice (start, then an in-progress event) before its row.
+            h.notify(bgCall('call-two-events', 'sleep 9'));
+            h.notify(bgCall('call-two-events', 'sleep 9'));
+            await new Promise((r) => setTimeout(r, 40));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-9`));
+            await h.ready();
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.some((m) => m.type === 'tool-call' && m.callId?.startsWith('call-two-events#'))).toBe(true);
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-two-events#'))).toBe(true);
+            await h.finish();
+        });
+
+        it('keeps holding unowned starts after the last held command was released', async () => {
+            const acp = 'conv-live-quarantine-gap';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.notify(bgCall('call-gap-owned', 'sleep 9'));
+            await new Promise((r) => setTimeout(r, 40));
+            // The new wakeup plans its command; its row is still open, so the wakeup has not settled.
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-9`, false));
+            const sent = () => h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            await vi.waitFor(() => expect(sent().some((m) => m.type === 'tool-call' && m.callId?.startsWith('call-gap-owned#'))).toBe(true));
+            // A first-seen start the wakeup does not plan arrives in the gap before settlement.
+            h.notify(bgCall('call-gap-stopped', 'sleep 5'));
+            await new Promise((r) => setTimeout(r, 60));
+            h.append([{ step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'done' }]);
+            await h.ready();
+            expect(sent().filter((m) => m.callId?.startsWith('call-gap-stopped#'))).toHaveLength(0);
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-gap-stopped#'))).toBe(false);
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-gap-owned#'))).toBe(true);
+            await h.finish();
+        });
+
         it('does not retain a late result of a settled task against another open transcript command', async () => {
             const acp = 'conv-live-settled-first';
             turnRows(acp);

@@ -315,7 +315,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly settledFromTranscript: string[] = [];
     // After a Stop, starts of commands first seen once the stopped activity is over are held:
     // released when a new wakeup row proves ownership, discarded at the next handler swap.
-    private quarantine: { afterStep: number; held: Array<{ turn: AgyTurn; message: AgentMessage }>; consumed: Set<string> } | null = null;
+    private quarantine: { afterStep: number; held: Array<{ turn: AgyTurn; message: AgentMessage }>; consumed: Set<string>; released: Set<string> } | null = null;
     private backendLost = false;
     private startBackendPromise: Promise<void> | null = null;
     private hasReceivedAvailableCommands = false;
@@ -1365,7 +1365,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.idleTurn = null;
         this.idleDiscarded = false;
         this.quarantine = !keep && this.acpSessionId
-            ? { afterStep: readLatestAgyTranscriptStepIndex(this.brainDir, this.acpSessionId), held: [], consumed: new Set<string>() }
+            ? { afterStep: readLatestAgyTranscriptStepIndex(this.brainDir, this.acpSessionId), held: [], consumed: new Set<string>(), released: new Set<string>() }
             : null;
         if (!turn) return;
         if (!keep) {
@@ -1433,7 +1433,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 ? (message.nativeArgs as Record<string, unknown>)
                 : undefined;
             const line = args?.CommandLine;
-            if (typeof line === 'string') startsByLine.set(line, [...(startsByLine.get(line) ?? []), message]);
+            // One command may arrive as several events with the same call id: it counts once.
+            if (typeof line === 'string' && !(startsByLine.get(line) ?? []).some((start) => start.id === message.id)) {
+                startsByLine.set(line, [...(startsByLine.get(line) ?? []), message]);
+            }
         }
         // More held starts than planned entries for a command line: nothing tells them apart, so none is released.
         const owned = new Set<string>();
@@ -1448,9 +1451,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (owned.size === 0) return;
         const replay = q.held.filter((item) => owned.has(('id' in item.message ? item.message.id : undefined) ?? ''));
         q.held = q.held.filter((item) => !replay.includes(item));
-        this.quarantine = null;
+        // The hold stays until settlement or the handler swap; released ids pass through from now on.
+        for (const id of owned) q.released.add(id);
         for (const item of replay) this.handleTurnUpdate(item.turn, item.message);
-        this.quarantine = q.held.length > 0 ? q : null;
     }
 
     private liveIdleWakeups(): boolean {
@@ -1870,7 +1873,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     if (isStart && (this.idleDiscarded || this.stoppedCommandIds.has(parseToolCallLifetimeId(message.id) ?? message.id))) return;
                     const held = this.quarantine?.held;
                     const messageId = 'id' in message ? message.id : undefined;
-                    if (held && (isStart || held.some((item) => 'id' in item.message && item.message.id === messageId))) {
+                    if (held && !(messageId && this.quarantine!.released.has(messageId))
+                        && (isStart || held.some((item) => 'id' in item.message && item.message.id === messageId))) {
                         held.push({ turn, message });
                         if (held.length > 64) held.shift(); // the newest starts are the likeliest new wakeup's
                         return;
