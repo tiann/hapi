@@ -40,7 +40,6 @@ import {
     readAgyTranscriptStepsAfter,
     readLatestAgyTranscriptStepIndex,
     resolveAgyBackgroundTaskIds,
-    settleAgyCompletedBackgroundTasks,
     type AgyOpenBackgroundCommand,
     type AgyReactiveTimingConfig
 } from './agyReactiveWakeup';
@@ -722,27 +721,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (inspection.state === 'none') {
                     session.onThinkingChange(false);
                     return;
-                }
-
-                if (inspection.state !== 'completed' && this.backgroundCommands.length > 0) {
-                    const wakeupFirstStepIndex = steps.find(
-                        (step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE'
-                    )?.step_index;
-                    resolveAgyBackgroundTaskIds(
-                        this.brainDir,
-                        acpSessionId,
-                        this.backgroundCommands,
-                        wakeupFirstStepIndex !== undefined ? wakeupFirstStepIndex - 1 : undefined
-                    );
-                    const settled = settleAgyCompletedBackgroundTasks(
-                        acpSessionId,
-                        steps,
-                        this.backgroundCommands
-                    );
-                    for (const msg of settled) {
-                        this.forwardAgentMessage(msg);
-                    }
-                    this.retireSettledBackgroundTasks();
                 }
 
                 if (inspection.latestStepIndex > watchedStepIndex) {

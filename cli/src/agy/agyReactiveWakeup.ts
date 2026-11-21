@@ -1113,40 +1113,6 @@ function buildGenericToolOutput(
 }
 
 /**
- * Settles any open background command whose `SYSTEM_MESSAGE` completion row
- * appears in `steps` (matching by recorded `taskId`), splicing matched entries
- * from `openBackgroundCommands` so later replay cannot emit duplicates.
- */
-export function settleAgyCompletedBackgroundTasks(
-    sessionId: string,
-    steps: AgyTranscriptStep[],
-    openBackgroundCommands: AgyOpenBackgroundCommand[]
-): AgentMessage[] {
-    const messages: AgentMessage[] = [];
-    for (const step of steps) {
-        if (step.source !== 'SYSTEM' || step.type !== 'SYSTEM_MESSAGE') continue;
-        const completedBg = parseCompletedBackgroundTask(step.content, sessionId);
-        if (!completedBg || openBackgroundCommands.length === 0) continue;
-        const matchIdx = openBackgroundCommands.findIndex(
-            (entry) => entry.taskId !== undefined && entry.taskId === completedBg.taskId
-        );
-        if (matchIdx < 0) continue;
-        const matched = openBackgroundCommands.splice(matchIdx, 1)[0]!;
-        const failed = completedBg.exitCode !== undefined && completedBg.exitCode !== 0;
-        messages.push({
-            type: 'tool_result',
-            id: matched.callId,
-            status: failed ? 'failed' : 'completed',
-            output: {
-                output: completedBg.body,
-                ...(completedBg.exitCode !== undefined ? { exit_code: completedBg.exitCode } : {})
-            }
-        });
-    }
-    return messages;
-}
-
-/**
  * Converts a completed reactive wakeup transcript slice into canonical
  * `AgentMessage` events and aggregated token usage.
  */
@@ -1177,7 +1143,25 @@ export function convertAgyReactiveSteps(
     for (let i = 0; i < steps.length; i += 1) {
         const step = steps[i]!;
         if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
-            messages.push(...settleAgyCompletedBackgroundTasks(sessionId, [step], openBackgroundCommands));
+            const completedBg = parseCompletedBackgroundTask(step.content, sessionId);
+            if (completedBg && openBackgroundCommands.length > 0) {
+                const matchIdx = openBackgroundCommands.findIndex(
+                    (entry) => entry.taskId !== undefined && entry.taskId === completedBg.taskId
+                );
+                if (matchIdx >= 0) {
+                    const matched = openBackgroundCommands.splice(matchIdx, 1)[0]!;
+                    const failed = completedBg.exitCode !== undefined && completedBg.exitCode !== 0;
+                    messages.push({
+                        type: 'tool_result',
+                        id: matched.callId,
+                        status: failed ? 'failed' : 'completed',
+                        output: {
+                            output: completedBg.body,
+                            ...(completedBg.exitCode !== undefined ? { exit_code: completedBg.exitCode } : {})
+                        }
+                    });
+                }
+            }
             continue;
         }
 
