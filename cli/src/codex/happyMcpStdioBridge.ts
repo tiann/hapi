@@ -41,7 +41,8 @@ import {
 
 const DEFAULT_TOOL_NAMES = [
   'change_title',
-  // `link_pr` is opt-in; internal launchers add it via --tools after probing the hub.
+  // `link_pr`/`link_issue` are opt-in; internal launchers add them via --tools
+  // after probing the hub.
   'display_image',
   'display_video',
   'display_media',
@@ -215,6 +216,35 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       void ensureHttpClient()
         .then((client) => syncLinkPrVisibilityFromHttp(client))
         .catch(() => undefined);
+    }
+
+    const linkIssueInputSchema: z.ZodTypeAny = z.object({
+      url: z.string().describe('GitHub issue URL (https://github.com/<owner>/<repo>/issues/<n>) or the [host:]<owner>/<repo>#<n> shorthand'),
+    });
+
+    if (toolNames.has('link_issue')) {
+      server.registerTool<any, any>(
+        'link_issue',
+        {
+          description: 'Attach a GitHub issue reference to the current HAPI session (self-session only). Shows as a chip on the session row/detail. Re-linking the same issue refreshes it rather than duplicating.',
+          title: 'Link GitHub Issue',
+          inputSchema: linkIssueInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: 'link_issue', arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to link issue: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
     }
 
     const displayImageInputSchema: z.ZodTypeAny = z.object({

@@ -7,6 +7,7 @@ import {
     DecryptedMessageSchema,
     ExternalRefSchema,
     ExternalRefsSchema,
+    GithubRepoSlugSchema,
     MachineSchema,
     PermissionModeSchema,
     SessionSchema,
@@ -24,6 +25,7 @@ import type {
     Session
 } from './schemas'
 import type { SessionSummary } from './sessionSummary'
+import type { IssueFormAnswer, IssueTemplate } from './issueTemplates'
 
 export const CreateOrLoadMachineRequestSchema = z.object({
     id: z.string().min(1),
@@ -1512,6 +1514,250 @@ export type UsageSummaryBucket = {
     totalTokens: number
     uncachedTokens: number
     requests: number
+}
+
+export type BoardSummary = {
+    id: string
+    label: string
+}
+
+export type BoardsResponse = {
+    boards: BoardSummary[]
+}
+
+export type BoardItemActor = {
+    login: string
+    avatarUrl: string
+}
+
+export type BoardItemLabel = {
+    name: string
+    color: string
+}
+
+export type BoardItemMilestone = {
+    title: string
+    dueOn: string | null
+}
+
+/**
+ * One of the project's custom fields (anything besides the dedicated Status
+ * field, which gets its own `status`/`statusOrder` treatment) — generic
+ * single-select/text/number/date values, normalized to a display string.
+ * Write support is Status-only for now; these render read-only.
+ */
+export type BoardItemCustomField = {
+    name: string
+    value: string
+}
+
+export type BoardItem = {
+    id: string
+    title: string
+    url: string | null
+    number: number | null
+    repo: string | null
+    state: 'OPEN' | 'CLOSED' | 'MERGED' | null
+    status: string | null
+    updatedAt: string | null
+    body: string | null
+    /** Draft issues (no linked Issue/PR) have neither a url nor write-action support — close/reopen/comment/status-change all require one. */
+    isPullRequest: boolean
+    createdAt: string | null
+    closedAt: string | null
+    author: BoardItemActor | null
+    assignees: BoardItemActor[]
+    labels: BoardItemLabel[]
+    milestone: BoardItemMilestone | null
+    customFields: BoardItemCustomField[]
+}
+
+export type BoardItemsResponse = {
+    board: BoardSummary
+    statusOrder: string[]
+    doneValues: string[]
+    items: BoardItem[]
+}
+
+export const AddBoardRequestSchema = z.object({
+    url: z.string().min(1)
+})
+
+export type AddBoardRequest = z.infer<typeof AddBoardRequestSchema>
+
+// Write actions all identify the target item by its GitHub issue/PR URL
+// (not a HAPI-side id) — the hub validates it belongs to the board being
+// acted on (same host, well-formed issue/pull path) before shelling out to
+// `gh`, closing the same SSRF-class exposure the board-add host allowlist
+// closed for reads. `isPullRequest` is deliberately NOT part of this wire
+// contract — the hub derives it itself from the validated URL path rather
+// than trusting a client-supplied flag, so a client can't send `isPullRequest:
+// true` for an issue URL (or vice versa) and run the wrong `gh` verb.
+export const BoardItemCloseRequestSchema = z.object({
+    url: z.string().min(1),
+    comment: z.string().optional()
+})
+export type BoardItemCloseRequest = z.infer<typeof BoardItemCloseRequestSchema>
+
+export const BoardItemReopenRequestSchema = z.object({
+    url: z.string().min(1),
+    comment: z.string().optional()
+})
+export type BoardItemReopenRequest = z.infer<typeof BoardItemReopenRequestSchema>
+
+export const BoardItemCommentRequestSchema = z.object({
+    url: z.string().min(1),
+    body: z.string().min(1)
+})
+export type BoardItemCommentRequest = z.infer<typeof BoardItemCommentRequestSchema>
+
+// At least one of title/body must be present — enforced by the hub route,
+// not the schema, same "both absent" no-op discipline
+// BoardItemAssigneesRequestSchema's own comment documents below. `body` has
+// no `.min(1)`: an empty string is a deliberate "clear the description",
+// distinct from omitting the field entirely to leave it untouched.
+export const BoardItemEditRequestSchema = z.object({
+    url: z.string().min(1),
+    title: z.string().min(1).optional(),
+    body: z.string().optional()
+})
+export type BoardItemEditRequest = z.infer<typeof BoardItemEditRequestSchema>
+
+// `status: null` clears the field (`gh project item-edit --clear`) — a
+// project can legitimately move a card back to the unassigned/no-status
+// bucket, and the picker previously had no way to express that once an item
+// already had a status (Codex review, hapi#238).
+export const BoardItemStatusRequestSchema = z.object({
+    url: z.string().min(1),
+    status: z.string().min(1).nullable()
+})
+export type BoardItemStatusRequest = z.infer<typeof BoardItemStatusRequestSchema>
+
+// At least one of addLogins/removeLogins must be non-empty — enforced by the
+// hub route, not the schema, since "both empty" is a no-op worth a clear
+// error rather than a confusing 200 that changed nothing.
+export const BoardItemAssigneesRequestSchema = z.object({
+    url: z.string().min(1),
+    addLogins: z.array(z.string().min(1)).optional(),
+    removeLogins: z.array(z.string().min(1)).optional()
+})
+export type BoardItemAssigneesRequest = z.infer<typeof BoardItemAssigneesRequestSchema>
+
+/** `name` is extra context for the assignee picker (not shown in the existing read-only assignee display, which only ever renders avatar + login). */
+export type BoardAssignableUser = BoardItemActor & { name: string | null }
+
+export type AssignableUsersResponse = {
+    users: BoardAssignableUser[]
+}
+
+export type BoardItemComment = {
+    id: string
+    author: BoardItemActor | null
+    authorAssociation: string
+    body: string
+    createdAt: string
+    url: string
+    isMinimized: boolean
+    minimizedReason: string | null
+}
+
+export type BoardItemCommentsResponse = {
+    comments: BoardItemComment[]
+}
+
+export const LinkIssueRequestSchema = z.object({
+    url: z.string().min(1)
+})
+
+export type LinkIssueRequest = z.infer<typeof LinkIssueRequestSchema>
+
+/**
+ * `templates` reflects an actual, live `.github/ISSUE_TEMPLATE/` fetch —
+ * never persisted, never cached beyond the lifetime of one hub response
+ * (operator decision, hapi#238: a silently-stale form is worse than one
+ * extra `gh api` round-trip per "New card" open).
+ */
+export type GetIssueTemplatesResponse = {
+    templates: IssueTemplate[]
+    blankAllowed: boolean
+    /** GitHub's own issue-chooser for this repo — the escape hatch offered when `blankAllowed` is false and no usable template covers what the user needs. */
+    githubNewIssueUrl: string
+}
+
+export const IssueFormAnswerSchema: z.ZodType<IssueFormAnswer> = z.union([
+    z.object({ kind: z.literal('input'), id: z.string().min(1), value: z.string() }),
+    z.object({ kind: z.literal('textarea'), id: z.string().min(1), value: z.string() }),
+    z.object({ kind: z.literal('dropdown'), id: z.string().min(1), selected: z.array(z.string()) }),
+    z.object({ kind: z.literal('checkboxes'), id: z.string().min(1), checked: z.array(z.string()) })
+])
+
+/**
+ * `body` carries the blank-issue and legacy-template cases, which have no
+ * structured fields to validate against — the hub uses it as-is.
+ *
+ * `answers` is present for a structured-form submission (`templateId`
+ * resolves to a `kind: 'form'` template): the hub validates these against
+ * the CURRENT template's own field rules (required, `min_length`, required
+ * options) and derives the actual body itself via `formatIssueBody`
+ * (`shared/src/issueTemplates.ts`) — the same formatter the picker's own
+ * preview already uses — rather than trusting whatever markdown the client
+ * rendered. Without this, a client that skips its own validation (bug, or a
+ * non-browser caller) could file something a real GitHub form would reject
+ * even with a current `templateId`/`templateRevision` (review finding,
+ * tiann/hapi#2147, rounds 9–10).
+ */
+export const CreateBoardItemRequestSchema = z.object({
+    repo: GithubRepoSlugSchema,
+    title: z.string().min(1),
+    body: z.string(),
+    answers: z.array(IssueFormAnswerSchema).optional(),
+    labels: z.array(z.string().min(1)).default([]),
+    assignees: z.array(z.string().min(1)).default([]),
+    // `null` = the user explicitly chose "blank issue" in the picker, a
+    // template's own `id` otherwise — required (not optional) so the hub can
+    // re-verify the CURRENT template policy right before creating, rather
+    // than trusting a choice made against a possibly-stale fetch from when
+    // the picker opened (review finding, hapi#238: a maintainer disabling
+    // blank issues, or removing a template, between picker-open and submit
+    // left a window where this route filed an issue the repo's current
+    // policy no longer allows).
+    templateId: z.string().nullable(),
+    // Echoes the template's content-hash revision from the picker fetch
+    // (review finding, hapi#238, follow-up) — templateId alone only proves
+    // the template still *exists*, not that its shape hasn't changed: a
+    // maintainer adding a required field or changing labels between
+    // picker-open and submit produces the same id with different content,
+    // which the hub must reject rather than silently file against the old
+    // shape. `null` when templateId is null (blank issue, no revision to
+    // check).
+    templateRevision: z.string().nullable(),
+    // Set on a retry after a prior submission's issue was created but
+    // project-attachment and/or assignee-application failed (review
+    // finding, hapi#238; tightened tiann/hapi#2147, follow-up). A hub-signed
+    // token, not a bare URL+assignees pair the client supplies: an
+    // owner-namespace request could otherwise point this at an arbitrary
+    // issue in the right repo and have the hub edit its assignees or attach
+    // it to the board, despite Boards never having created it. The token
+    // (`signBoardItemRecoveryToken`/`verifyBoardItemRecoveryToken`, hub-side)
+    // binds the board, repo, issue url, and the assignees the hub itself
+    // originally resolved for that submission — the hub trusts only what's
+    // embedded in a token it signed, never anything the client echoes back.
+    recoveryToken: z.string().optional()
+})
+export type CreateBoardItemRequest = z.infer<typeof CreateBoardItemRequestSchema>
+
+export type CreateBoardItemResponse = {
+    ok: true
+    url: string
+    /**
+     * Set only when a retry-attach's best-effort assignee re-application
+     * failed but the issue still reached the board (review finding,
+     * tiann/hapi#2147, follow-up) — that failure is deliberately
+     * non-fatal (see todoBoard.ts's createIssue route), so without this
+     * field a retry-only flow that never saw the first attempt's explicit
+     * 502 would have no way to learn the assignees are still outstanding.
+     */
+    warning?: string
 }
 
 export type UsageSummaryResponse = {

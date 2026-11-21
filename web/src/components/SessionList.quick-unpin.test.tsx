@@ -109,6 +109,19 @@ describe('session row hover unpin', () => {
         expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull()
     })
 
+    it('reserves the two-button action-group width on a pinned active row showing both Unpin and Archive', () => {
+        renderList(
+            [makeSession({ id: 'pinned-active', active: true, pinned: true })],
+            {}
+        )
+
+        expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Archive' })).toBeInTheDocument()
+        const row = screen.getByRole('button', { name: 'Unpin' }).closest('[data-quick-action-count]')
+        expect(row).toHaveAttribute('data-quick-action-count', '2')
+        expect(row).toHaveStyle({ paddingRight: 'var(--session-row-action-span)' })
+    })
+
     it('shows no Unpin button for unpinned rows', () => {
         renderList(
             [
@@ -408,11 +421,21 @@ describe('session row hover unpin', () => {
         await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
         expect(screen.getByTitle('/work/quiet')).toHaveAttribute('aria-expanded', 'false')
 
-        // A collapsed group keeps its unread row mounted in its own open
-        // panel; there is no separate peek list to look in.
+        // An unread row keeps its own CollapsiblePanel open even while its
+        // group collapses (upstream fix, #2434: rows render once each, no
+        // longer duplicated into a separate "peek" list) — the row's own
+        // row-level focus effect (SessionItem, via CollapsiblePanelOpenContext)
+        // re-focuses it directly, so there's no separate preview element or
+        // closing-panel dance to account for here anymore. The row's
+        // scroll-anchor attribute lives on a non-focusable wrapper <div>, not
+        // a native <button> (hapi#238: a focusable PR/issue chip can't be a
+        // descendant of a real button per ARIA) — the actually focusable
+        // element is its role="button" descendant, not a selector qualified
+        // by the `button` tag (upstream's own row IS a button, so its
+        // equivalent assertion uses that selector; it would never match here).
         const unreadRow = document.querySelector<HTMLElement>('[data-session-row-id="unread-project-pin"]')
         expect(unreadRow).not.toBeNull()
-        const unreadPreviewButton = unreadRow!.querySelector<HTMLButtonElement>('button[data-session-scroll-anchor]')
+        const unreadPreviewButton = unreadRow!.querySelector<HTMLElement>('[role="button"], button')
         expect(unreadPreviewButton).not.toBeNull()
         // No ancestor panel of the row is folding closed, so it stays visible.
         expect(unreadRow!.closest('.collapsible-panel:not([data-open])')).toBeNull()

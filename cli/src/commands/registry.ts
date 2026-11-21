@@ -44,6 +44,7 @@ const commandMap = new Map<string, () => Promise<CommandDefinition>>([
     ['link-pr', async () => (await import('./linkPr')).linkPrCommand],
     ['ping-peer', async () => (await import('./pingPeer')).pingPeerCommand],
     ['inspect-peer', async () => (await import('./inspectPeer')).inspectPeerCommand],
+    ['link-issue', async () => (await import('./linkIssue')).linkIssueCommand],
     ['spawn-peer', async () => (await import('./spawnPeer')).spawnPeerCommand],
     ['set-mode', async () => (await import('./setMode')).setModeCommand],
     ['job', async () => (await import('./job')).jobCommand],

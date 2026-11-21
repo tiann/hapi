@@ -73,6 +73,20 @@ describe('SessionList pending request navigation', () => {
         fireEvent.keyDown(screen.getByRole('button', { name: /Pending question/ }), { key: 'Enter' })
         expect(onSelect).toHaveBeenCalledExactlyOnceWith('session-1', undefined, undefined, 'request-1')
     })
+
+    // Regression: the row is a <div role="button">, not a native <button>,
+    // so it gets no browser-synthesized click on Enter/Space — the
+    // useLongPress hook's own onKeyDown is what makes keyboard activation
+    // work at all for the ordinary (not-yet-selected, no-pending-request)
+    // case. An onKeyDown wired in later that replaces rather than composes
+    // with the hook's handler silently breaks this.
+    it('activates an unselected row with Enter, same as a click', () => {
+        const onSelect = vi.fn<SelectHandler>()
+        renderList(onSelect)
+        fireEvent.keyDown(screen.getByRole('button', { name: /Pending question/ }), { key: 'Enter' })
+        expect(onSelect).toHaveBeenCalledOnce()
+        expect(onSelect.mock.calls[0]?.[3]).toBeUndefined()
+    })
     it('keeps ordinary row activation as a plain session open', () => {
         const onSelect = vi.fn<SelectHandler>()
         renderList(onSelect)

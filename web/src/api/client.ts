@@ -35,6 +35,13 @@ import type {
     SlashCommandsResponse,
     SkillsResponse,
     SpawnResponse,
+    AssignableUsersResponse,
+    BoardItemCommentsResponse,
+    BoardItemsResponse,
+    BoardsResponse,
+    CreateBoardItemRequest,
+    CreateBoardItemResponse,
+    GetIssueTemplatesResponse,
     VisibilityPayload,
     HapiSessionExportResponse,
     HubHealthResponse,
@@ -1177,6 +1184,99 @@ export class ApiClient {
         return await this.request<MachinesResponse>('/api/machines')
     }
 
+    async getBoards(): Promise<BoardsResponse> {
+        return await this.request<BoardsResponse>('/api/todo-boards')
+    }
+
+    async getBoardItems(boardId: string): Promise<BoardItemsResponse> {
+        return await this.request<BoardItemsResponse>(`/api/todo-boards/${encodeURIComponent(boardId)}/items`)
+    }
+
+    async addBoard(url: string): Promise<BoardsResponse> {
+        return await this.request<BoardsResponse>('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url })
+        })
+    }
+
+    async removeBoard(boardId: string): Promise<BoardsResponse> {
+        return await this.request<BoardsResponse>(`/api/todo-boards/${encodeURIComponent(boardId)}`, {
+            method: 'DELETE'
+        })
+    }
+
+    async closeBoardItem(boardId: string, url: string, comment?: string): Promise<void> {
+        await this.request(`/api/todo-boards/${encodeURIComponent(boardId)}/items/close`, {
+            method: 'POST',
+            body: JSON.stringify({ url, comment })
+        })
+    }
+
+    async reopenBoardItem(boardId: string, url: string, comment?: string): Promise<void> {
+        await this.request(`/api/todo-boards/${encodeURIComponent(boardId)}/items/reopen`, {
+            method: 'POST',
+            body: JSON.stringify({ url, comment })
+        })
+    }
+
+    async commentOnBoardItem(boardId: string, url: string, body: string): Promise<void> {
+        await this.request(`/api/todo-boards/${encodeURIComponent(boardId)}/items/comment`, {
+            method: 'POST',
+            body: JSON.stringify({ url, body })
+        })
+    }
+
+    async setBoardItemStatus(boardId: string, url: string, status: string | null): Promise<void> {
+        await this.request(`/api/todo-boards/${encodeURIComponent(boardId)}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url, status })
+        })
+    }
+
+    async editBoardItem(boardId: string, url: string, fields: { title?: string; body?: string }): Promise<void> {
+        await this.request(`/api/todo-boards/${encodeURIComponent(boardId)}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url, ...fields })
+        })
+    }
+
+    async getBoardItemAssignableUsers(boardId: string, url: string, search?: string): Promise<AssignableUsersResponse> {
+        const query = new URLSearchParams({ url })
+        if (search) query.set('search', search)
+        return await this.request<AssignableUsersResponse>(
+            `/api/todo-boards/${encodeURIComponent(boardId)}/items/assignable-users?${query.toString()}`
+        )
+    }
+
+    async getBoardItemComments(boardId: string, url: string): Promise<BoardItemCommentsResponse> {
+        const query = new URLSearchParams({ url })
+        return await this.request<BoardItemCommentsResponse>(
+            `/api/todo-boards/${encodeURIComponent(boardId)}/items/comments?${query.toString()}`
+        )
+    }
+
+    async setBoardItemAssignees(boardId: string, url: string, addLogins: string[], removeLogins: string[]): Promise<void> {
+        await this.request(`/api/todo-boards/${encodeURIComponent(boardId)}/items/assignees`, {
+            method: 'POST',
+            body: JSON.stringify({ url, addLogins, removeLogins })
+        })
+    }
+
+    /** Always a live fetch — never cached hub-side beyond this one response (hapi#238). */
+    async getIssueTemplates(boardId: string, repo: string): Promise<GetIssueTemplatesResponse> {
+        const query = new URLSearchParams({ repo })
+        return await this.request<GetIssueTemplatesResponse>(
+            `/api/todo-boards/${encodeURIComponent(boardId)}/issue-templates?${query.toString()}`
+        )
+    }
+
+    async createBoardItem(boardId: string, payload: CreateBoardItemRequest): Promise<CreateBoardItemResponse> {
+        return await this.request<CreateBoardItemResponse>(`/api/todo-boards/${encodeURIComponent(boardId)}/items`, {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
+
     /** Pass an empty string to clear the custom name and fall back to the hostname. */
     async renameMachine(machineId: string, displayName: string): Promise<void> {
         await this.request(`/api/machines/${encodeURIComponent(machineId)}`, {
@@ -1524,6 +1624,13 @@ export class ApiClient {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/summary`, {
             method: 'PATCH',
             body: JSON.stringify({ text, titleLocked })
+        })
+    }
+
+    async linkIssue(sessionId: string, url: string): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/link-issue`, {
+            method: 'PATCH',
+            body: JSON.stringify({ url })
         })
     }
 

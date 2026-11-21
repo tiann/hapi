@@ -204,6 +204,24 @@ describe('resolveToolAutoApprovalDecision link_pr', () => {
     })
 })
 
+describe('resolveToolAutoApprovalDecision link_issue', () => {
+    it.each([
+        'link_issue',
+        'link issue',
+        // Actual advertised MCP registerTool() title (startHappyServer.ts,
+        // happyMcpStdioBridge.ts) — ACP permission-name derivation prefers
+        // this title over the raw tool name.
+        'link github issue',
+        'happy__link_issue',
+        'hapi_link_issue',
+        'hapi__link_issue',
+        'mcp__hapi__link_issue',
+        'mcp__happy__link_issue'
+    ])('keeps link_issue tool %s pending in read-only mode', (toolName) => {
+        expect(resolveToolAutoApprovalDecision('read-only', toolName, 'call-1')).toBeNull()
+    })
+})
+
 describe('resolveToolAutoApprovalDecision session_job', () => {
     it.each([
         'session_job',

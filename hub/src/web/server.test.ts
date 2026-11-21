@@ -7,7 +7,9 @@ import zlib from 'node:zlib'
 import { createConfiguration } from '../configuration'
 import { Store } from '../store'
 import type { EmbeddedWebAsset } from './embeddedAssets'
-import { createWebApp } from './server'
+import { SignJWT } from 'jose'
+import { signBoardItemRecoveryToken, signPasskeySession, signWebJwt } from './authTokens'
+import { createWebApp, isValidWebSessionJwt } from './server'
 
 const JWT_SECRET = new Uint8Array(randomBytes(32))
 
@@ -197,5 +199,49 @@ describe.each(['embeddedAssetMap', 'distDir'] as const)('web static asset servin
             expect(spaRoute.headers.get('Content-Type')).toContain('text/html')
             expect(spaRoute.headers.get('Cache-Control')).toBe('no-cache')
         }
+    })
+})
+
+// Regression (bot review, tiann/hapi#2147, follow-up): the voice WebSocket
+// gate checked only signature + expiry, so any token signed with the same
+// secret and HS256 passed it regardless of what it actually authorizes —
+// including a board-item recovery token, returned directly in a web API
+// JSON response body on every partial create-card failure, far more
+// casually exposed than a real session credential.
+describe('isValidWebSessionJwt (voice WebSocket gate)', () => {
+    it('accepts a genuine web session JWT', async () => {
+        const token = await signWebJwt(JWT_SECRET, 1, 'default')
+        expect(await isValidWebSessionJwt(token, JWT_SECRET)).toBe(true)
+    })
+
+    it('rejects a passkey-session token signed with the same secret', async () => {
+        const token = await signPasskeySession(JWT_SECRET, 'credential-1', 'default')
+        expect(await isValidWebSessionJwt(token, JWT_SECRET)).toBe(false)
+    })
+
+    it('rejects a board-item recovery token signed with the same secret', async () => {
+        const token = await signBoardItemRecoveryToken(JWT_SECRET, {
+            boardId: 'github.com::heavygee::6', repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: []
+        })
+        expect(await isValidWebSessionJwt(token, JWT_SECRET)).toBe(false)
+    })
+
+    it('rejects a token with no uid/ns claims at all, even if signed with the right secret', async () => {
+        const token = await new SignJWT({ anything: 'else' })
+            .setProtectedHeader({ alg: 'HS256' })
+            .setIssuedAt()
+            .setExpirationTime('1h')
+            .sign(JWT_SECRET)
+        expect(await isValidWebSessionJwt(token, JWT_SECRET)).toBe(false)
+    })
+
+    it('rejects a token signed with a different secret', async () => {
+        const token = await signWebJwt(JWT_SECRET, 1, 'default')
+        const otherSecret = new Uint8Array(randomBytes(32))
+        expect(await isValidWebSessionJwt(token, otherSecret)).toBe(false)
+    })
+
+    it('rejects garbage input', async () => {
+        expect(await isValidWebSessionJwt('not-a-real-token', JWT_SECRET)).toBe(false)
     })
 })

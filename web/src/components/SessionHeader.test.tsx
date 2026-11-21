@@ -95,6 +95,33 @@ describe('resolveSessionHeaderMachineLabel', () => {
 })
 
 describe('SessionHeader', () => {
+    it('renders an issue chip linking to the latest-linked GitHub issue, keeping the title truncatable', () => {
+        renderHeader(baseSession({
+            metadata: {
+                flavor: 'codex',
+                path: '/repo',
+                host: 'machine',
+                name: 'A very long session title that should still truncate with an issue chip present',
+                externalRefs: [
+                    { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235, linkedAt: 1 },
+                ],
+            }
+        }))
+
+        const chip = screen.getByTestId('issue-ref-chip')
+        expect(chip).toHaveTextContent('#235')
+        expect(chip).toHaveAttribute('href', 'https://github.com/heavygee/hapi/issues/235')
+
+        const title = screen.getByText('A very long session title that should still truncate with an issue chip present')
+        expect(title.className).toContain('min-w-0')
+        expect(title.className).toContain('truncate')
+    })
+
+    it('renders no issue chip when the session has no linked issue', () => {
+        renderHeader(baseSession())
+        expect(screen.queryByTestId('issue-ref-chip')).not.toBeInTheDocument()
+    })
+
     it('does not offer manual Codex sync while the HAPI session is active', () => {
         const api = {
             getMachines: vi.fn().mockResolvedValue({ machines: [] }),

@@ -1,5 +1,6 @@
 import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
+import { MAX_EXTERNAL_REFS, reconcileExternalRefs, toValidExternalRefs, trimExternalRefsToCap, upsertExternalRef } from '@hapi/protocol/schemas'
 import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
 import type { SessionTurnEndReason, SessionTurnTrigger, Store } from '../store'
@@ -7,10 +8,10 @@ import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
-import { InvalidExternalRefsError } from './externalRefErrors'
+import { ExternalRefsMergeCapExceededError, InvalidExternalRefsError } from './externalRefErrors'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
 
-export { InvalidExternalRefsError } from './externalRefErrors'
+export { ExternalRefsMergeCapExceededError, InvalidExternalRefsError } from './externalRefErrors'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
 // A turn the hub closed when it restarted is picked up again if the agent
@@ -26,12 +27,28 @@ type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'e
 /**
  * Metadata merge used when consolidating an old session row into a replacement
  * (resume/reopen). Carry forward display/contribution fields the new row omitted.
- * Explicit keys on `newMetadata` always win — including empty `externalRefs: []`.
+ * Explicit keys on `newMetadata` always win, except `externalRefs`: oldMetadata's
+ * row is deleted right after this merge, so its own links are unioned in by
+ * identity even when newMetadata's array is an explicit `[]` (review finding,
+ * hapi#238, follow-up) — that only clears the surviving row's own prior entry,
+ * not the about-to-be-deleted row's independent ones.
  * tiann/hapi#1160 / PR #1161.
  */
 export function mergeSessionMetadataForSessionMerge(
     oldMetadata: unknown | null,
-    newMetadata: unknown | null
+    newMetadata: unknown | null,
+    // 'trim' only from the already-committed late pass in mergeSessions
+    // (review finding, tiann/hapi#2147, follow-up) — the default 'throw'
+    // stays for every other caller, since aborting before anything else
+    // has happened loses nothing at all, which trimming never beats.
+    // 'skip' is for mergeSessionMetadataForTransfer's mergeSessionHistory
+    // variant (review finding, tiann/hapi#2147, follow-up): the old row
+    // survives there, so its own refs are never actually lost either way —
+    // but the old throw-based abort also discarded every OTHER field this
+    // function would have merged (summary, worktree, ...), not just
+    // externalRefs. 'skip' leaves externalRefs untouched and lets
+    // everything else merge normally.
+    options: { onExternalRefsCapExceeded?: 'throw' | 'trim' | 'skip' } = {}
 ): unknown | null {
     if (!oldMetadata || typeof oldMetadata !== 'object') {
         return newMetadata
@@ -97,10 +114,119 @@ export function mergeSessionMetadataForSessionMerge(
         changed = true
     }
 
-    // Preserve structured PR links when the replacement row never set them.
-    if (Array.isArray(oldObj.externalRefs) && !Object.prototype.hasOwnProperty.call(newObj, 'externalRefs')) {
-        merged.externalRefs = oldObj.externalRefs
-        changed = true
+    // Preserve structured PR/issue links when the replacement row never set
+    // them. toValidExternalRefs, not an unchecked `Array.isArray(...) ?
+    // (value as ExternalRef[]) : []` cast (Codex review, hapi#238): either
+    // row's externalRefs can contain a malformed element (legacy row,
+    // out-of-band writer) that an unchecked cast would wave through to a
+    // caller expecting valid, kind-tagged refs.
+    if (!Object.prototype.hasOwnProperty.call(newObj, 'externalRefs')) {
+        const oldRefs = toValidExternalRefs(oldObj.externalRefs)
+        if (oldRefs.length > 0) {
+            merged.externalRefs = oldRefs
+            changed = true
+        }
+    } else {
+        // The old row is deleted after this merge (`mergeSessions`) — a
+        // link that exists only on old would otherwise be lost for good.
+        // Union by identity (reconcileExternalRefs), not "new wins
+        // outright": unlike a routine metadata write, consolidating two
+        // live sessions means both sides' own independent links are real
+        // and neither should silently vanish just because the other side
+        // also happens to carry one (hapi#238). The one invariant a union
+        // must not violate: ExternalRefsSchema allows at most one primary
+        // github_pr, so if combining would produce two, the new row's own
+        // primary wins the role and the other is demoted to secondary
+        // (round 13: demoted, not dropped — a losing primary is still a
+        // real, independent link, not something to discard just because
+        // it lost a role tiebreak) rather than left to fail downstream
+        // schema validation.
+        //
+        // This runs even when newObj.externalRefs is an explicit `[]`
+        // (review finding, hapi#238, follow-up): that only records the
+        // surviving row unlinking *its own* prior ref, not "neither side
+        // has anything worth keeping" — old's own independent links are
+        // still real and about to be deleted for good. reconcileExternalRefs
+        // naturally degenerates to "just old's refs" when newRefs is empty,
+        // so no separate branch is needed for this case.
+        const oldRefs = toValidExternalRefs(oldObj.externalRefs)
+        const newRefs = toValidExternalRefs(newObj.externalRefs)
+        if (oldRefs.length > 0) {
+            // newRefs as the `prior` argument, oldRefs as `next` (Codex
+            // review, hapi#238): reconcileExternalRefs defaults to keeping
+            // its `prior` argument's entry on a freshness tie, and here the
+            // surviving row's own current state (newRefs) should win a tie
+            // over the about-to-be-discarded old row's, not the other way
+            // around — only a *strictly fresher* old entry should override.
+            let combined = reconcileExternalRefs(newRefs, oldRefs)
+            const primaries = combined.filter(ref => ref.kind === 'github_pr' && ref.role === 'primary')
+            if (primaries.length > 1) {
+                // Demote the losing primary/primaries to secondary rather
+                // than dropping them (review finding, tiann/hapi#2147,
+                // round 13): reconcileExternalRefs already deduped by
+                // identity above, so a ref that loses this role tiebreak
+                // is a real, distinct link — often one the surviving
+                // session already held as a valid secondary before this
+                // merge, or one that just won a freshness tie as the
+                // source's primary. Only the one-true-primary invariant
+                // needs resolving here, not the ref's existence.
+                const newPrimary = newRefs.find(ref => ref.kind === 'github_pr' && ref.role === 'primary')
+                combined = combined.map(ref =>
+                    ref.kind === 'github_pr' && ref.role === 'primary' && ref !== newPrimary
+                        ? { ...ref, role: 'secondary' as const }
+                        : ref
+                )
+            }
+            // Two valid sessions can each independently sit near
+            // MAX_EXTERNAL_REFS; their union has no upper bound of its own
+            // and ExternalRefsSchema does (review finding). Persisting an
+            // over-limit array doesn't just reject the extra refs — it fails
+            // MetadataSchema validation on the *next* read, nulling out the
+            // survivor's entire metadata (name, path, flavor, resume ids,
+            // every ref).
+            //
+            // Throwing rather than silently falling back to newRefs (Codex
+            // review, hapi#2147): this function is also reached from
+            // mergeSessions, which deletes the old row right after this
+            // merge succeeds. Falling back here used to look safe — only
+            // the old row's extra links are dropped, not the whole metadata
+            // object — but once that row is deleted those dropped links are
+            // gone for good, silently, with the caller believing the merge
+            // fully succeeded. mergeSessionMetadataForTransfer decides what
+            // this means for its own merge variant: mergeSessions (delete)
+            // lets it abort the whole merge so both sessions and all their
+            // links survive; mergeSessionHistory (old row stays alive)
+            // catches it and proceeds, since nothing is actually lost there.
+            if (combined.length > MAX_EXTERNAL_REFS) {
+                if (options.onExternalRefsCapExceeded === 'trim') {
+                    // The caller has already committed to this write
+                    // (review finding, tiann/hapi#2147, follow-up): a
+                    // link acknowledged on the old row during the merge's
+                    // own scratchlist I/O window is, almost by
+                    // definition, the single freshest entry in the
+                    // combined set. Keeping the freshest MAX_EXTERNAL_REFS
+                    // entries means that one survives; the stalest entry
+                    // among everything else is what gets dropped instead.
+                    combined = trimExternalRefsToCap(combined, MAX_EXTERNAL_REFS)
+                } else if (options.onExternalRefsCapExceeded === 'skip') {
+                    // The old row survives this merge variant (mergeSessionHistory),
+                    // so its refs are never actually lost either way — but
+                    // throwing here used to abandon every OTHER field this
+                    // function would have merged too (summary, worktree,
+                    // ...), not just externalRefs (review finding,
+                    // tiann/hapi#2147, follow-up). Leaving combined as
+                    // newRefs is a no-op for this one field below, while
+                    // everything else still merges normally.
+                    combined = newRefs
+                } else {
+                    throw new ExternalRefsMergeCapExceededError()
+                }
+            }
+            if (combined.length !== newRefs.length || combined.some((ref, i) => ref !== newRefs[i])) {
+                merged.externalRefs = combined
+                changed = true
+            }
+        }
     }
 
     const claudeHistory = mergeClaudeSessionIdHistory(oldObj, newObj)
@@ -122,12 +248,12 @@ export function mergeSessionMetadataForSessionMerge(
     }
     const oldError = oldObj.lastModelError as ModelErrorState | undefined
     const newError = newObj.lastModelError as ModelErrorState | undefined
-    const oldId = typeof oldError?.eventId === 'string' ? oldError.eventId : null
-    const newId = typeof newError?.eventId === 'string' ? newError.eventId : null
-    if (oldError && oldId && !newError) {
+    const oldErrorId = typeof oldError?.eventId === 'string' ? oldError.eventId : null
+    const newErrorId = typeof newError?.eventId === 'string' ? newError.eventId : null
+    if (oldError && oldErrorId && !newError) {
         merged.lastModelError = oldError
         changed = true
-    } else if (oldError && newError && oldId && newId && oldId === newId) {
+    } else if (oldError && newError && oldErrorId && newErrorId && oldErrorId === newErrorId) {
         merged.lastModelError = {
             ...oldError,
             ...newError,
@@ -1459,9 +1585,7 @@ export class SessionCache {
                 throw new Error('Cannot update external refs while session metadata is invalid')
             }
             const currentMetadata = storedMetadata as Record<string, unknown>
-            const currentRefs = Array.isArray(currentMetadata.externalRefs)
-                ? currentMetadata.externalRefs as ExternalRef[]
-                : []
+            const currentRefs = toValidExternalRefs(currentMetadata.externalRefs)
             const parsedRefs = ExternalRefsSchema.safeParse(mutate(currentRefs))
             if (!parsedRefs.success) {
                 throw new InvalidExternalRefsError(
@@ -1476,9 +1600,15 @@ export class SessionCache {
                 newMetadata,
                 stored.metadataVersion,
                 session.namespace,
+                // This call already computed the full intended externalRefs
+                // from a freshly-read current state — authoritative, not a
+                // sparse snapshot. Without this, the generic union-on-write
+                // merge could resurrect a ref this exact mutation just
+                // removed (review finding, hapi#238).
+                //
                 // Hub-authored PR attach must not release the machine-spawn stub
-                // tag; adoptPreallocatedSession still needs it after the write.
-                { touchUpdatedAt: false, preservePreallocation: true }
+                // tag either; adoptPreallocatedSession still needs it after the write.
+                { touchUpdatedAt: false, replaceExternalRefs: true, preservePreallocation: true }
             )
 
             if (result.result === 'error') {
@@ -1494,6 +1624,17 @@ export class SessionCache {
         }
 
         throw new Error('Session was modified concurrently. Please try again.')
+    }
+
+    /**
+     * Attach a structured github_issue reference to a session (hapi#235/#238)
+     * — the `hapi link-issue` CLI/MCP write path, parallel to `link_pr`'s
+     * upsert via mutateSessionExternalRefs. Upserts by identity (host+repo+
+     * number) — re-linking the same issue refreshes `linkedAt` in place
+     * rather than appending a duplicate chip.
+     */
+    async linkIssue(sessionId: string, ref: ExternalRef): Promise<ExternalRef[]> {
+        return this.mutateSessionExternalRefs(sessionId, current => upsertExternalRef(current, ref))
     }
 
     async updateSessionSummary(sessionId: string, text: string, titleLocked?: boolean): Promise<void> {
@@ -2082,24 +2223,14 @@ export class SessionCache {
             throw new Error('Session not found for merge')
         }
 
-        // A resume/dedup may replace the row. Transfer title ownership before
-        // moving data, preserving fresh source/destination metadata on retries.
-        let metadataTransferred = false
-        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
-            const source = this.store.sessions.getSessionByNamespace(oldSessionId, namespace)
-            const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
-            if (!source || !latest) break
-            const result = this.store.sessions.updateSessionMetadata(
-                newSessionId,
-                this.mergeSessionMetadata(source.metadata, latest.metadata),
-                latest.metadataVersion,
-                namespace,
-                { touchUpdatedAt: false, inheritTitleLockFrom: options.deleteOldSession ? oldSessionId : undefined }
-            )
-            if (result.result === 'success') { metadataTransferred = true; break }
-            if (result.result === 'error') break
-        }
-        if (!metadataTransferred) throw new Error('Failed to preserve session metadata during merge')
+        await this.mergeSessionMetadataForTransfer(oldStored.metadata, newSessionId, namespace, {
+            deleteOldSession: options.deleteOldSession,
+            // Transfer title-lock ownership to the surviving row on a
+            // resume/dedup replace (tiann/hapi#2072) — only when the old row
+            // is actually going away, mirroring mergeSessionHistory's own
+            // "old row stays alive" carve-out just above.
+            inheritTitleLockFrom: options.deleteOldSession ? oldSessionId : undefined
+        })
 
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
         this.syncReadState(newSessionId)
@@ -2207,17 +2338,66 @@ export class SessionCache {
         // source contributes name/summary/path/etc. Recomputing per attempt also
         // picks up a newer lastModelError that landed on newSessionId between the
         // initial read and this write (version-mismatch retry).
+        //
+        // Also re-read the SOURCE session fresh, not the `oldStored` snapshot
+        // taken at the very top of this function (review finding, hapi#238):
+        // oldSessionId's own row is still live here — the scratchlist
+        // transfer above can await real file I/O, and a link_issue/link_pr
+        // write landing on oldSessionId during that wait would otherwise be
+        // silently discarded the moment mergeSessions deletes that row right
+        // after this loop, since nothing would have re-read it since the
+        // pre-I/O snapshot.
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
             if (!latest) break
-            const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, latest.metadata)
+            const freshOld = this.store.sessions.getSessionByNamespace(oldSessionId, namespace)
+            let mergedMetadata: unknown | null
+            try {
+                // 'trim' only when the old row is about to be deleted
+                // (review finding, hapi#238 / hapi#2147, follow-up):
+                // messages, scratchlist rows, and job redirects have
+                // already moved to newSessionId by this point, so a thrown
+                // "merge failed" here would leave the caller believing the
+                // merge failed while the surviving rows already have split
+                // history — strictly worse than trimming the stalest ref
+                // to stay under the cap. mergeSessionHistory (old row
+                // stays alive) keeps the default 'throw': its own refs are
+                // still safely on its own un-deleted row, so there is
+                // nothing to trim for — skipping this round's
+                // consolidation on the caught error below loses nothing.
+                mergedMetadata = this.mergeSessionMetadata(
+                    freshOld?.metadata ?? oldStored.metadata,
+                    latest.metadata,
+                    options.deleteOldSession ? { onExternalRefsCapExceeded: 'trim' } : undefined
+                )
+            } catch (error) {
+                if (!(error instanceof ExternalRefsMergeCapExceededError)) throw error
+                break
+            }
             if (mergedMetadata === null || mergedMetadata === latest.metadata) break
             const result = this.store.sessions.updateSessionMetadata(
                 newSessionId,
                 mergedMetadata,
                 latest.metadataVersion,
                 namespace,
-                { touchUpdatedAt: false }
+                {
+                    touchUpdatedAt: false,
+                    // mergedMetadata.externalRefs is already the complete,
+                    // authoritative union of freshOld + latest (same reason
+                    // mutateSessionExternalRefs's dedicated mutations use
+                    // this flag) — without it, updateSessionMetadata's own
+                    // sparse-write preservation re-unions it against
+                    // latest's still-persisted refs a second time. That
+                    // second union is normally a no-op (every identity in
+                    // latest's refs is already present in mergedMetadata),
+                    // but the trim above can drop one of latest's own
+                    // entries to make room for the freshly-arrived one —
+                    // breaking that invariant and re-exceeding the cap,
+                    // which fell back to discarding the write entirely and
+                    // silently kept latest's untrimmed refs instead (review
+                    // finding, tiann/hapi#2147, follow-up).
+                    replaceExternalRefs: true
+                }
             )
             if (result.result === 'success') {
                 break
@@ -2770,8 +2950,85 @@ export class SessionCache {
         return allocated
     }
 
-    private mergeSessionMetadata(oldMetadata: unknown | null, newMetadata: unknown | null): unknown | null {
-        return mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata)
+    private mergeSessionMetadata(
+        oldMetadata: unknown | null,
+        newMetadata: unknown | null,
+        options?: { onExternalRefsCapExceeded?: 'throw' | 'trim' | 'skip' }
+    ): unknown | null {
+        return mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata, options)
+    }
+
+    private async mergeSessionMetadataForTransfer(
+        oldMetadata: unknown | null,
+        newSessionId: string,
+        namespace: string,
+        options: { deleteOldSession: boolean; inheritTitleLockFrom?: string }
+    ): Promise<void> {
+        // A title-lock transfer (tiann/hapi#2072) is itself a write
+        // `preserveSessionTitle` performs as a side effect of
+        // `updateSessionMetadata` — it must still run even when there is no
+        // other metadata to carry forward (e.g. a resume where the source
+        // never had `path`/`host`/`externalRefs` worth merging, just a
+        // locked title). Skipping the write entirely in that case silently
+        // dropped the lock transfer.
+        let metadataMerged = oldMetadata === null && !options.inheritTitleLockFrom
+        if (!metadataMerged) {
+            for (let attempt = 0; !metadataMerged && attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+                const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+                if (!latest) {
+                    throw new Error('Merge target disappeared during metadata merge')
+                }
+                let merged: unknown | null
+                try {
+                    // 'skip' for mergeSessionHistory (deleteOldSession:
+                    // false) — review finding, tiann/hapi#2147, follow-up:
+                    // the old row survives there, so its own refs are never
+                    // actually lost either way, but the previous throw-based
+                    // abort also discarded every OTHER field this merge
+                    // would have carried forward (summary, worktree, ...),
+                    // not just externalRefs. mergeSessions (deleteOldSession:
+                    // true) keeps the default 'throw' below — this is the
+                    // EARLY pass, before any of mergeSessionData's other
+                    // side effects, so aborting the whole merge here is
+                    // still free and loses nothing.
+                    merged = this.mergeSessionMetadata(
+                        oldMetadata,
+                        latest.metadata,
+                        options.deleteOldSession ? undefined : { onExternalRefsCapExceeded: 'skip' }
+                    )
+                } catch (error) {
+                    if (!(error instanceof ExternalRefsMergeCapExceededError)) throw error
+                    // 'skip' above means mergeSessionHistory's own call
+                    // never reaches here — deleteOldSession: true is the
+                    // only case left. The old row is about to be deleted,
+                    // so dropping its unique links to stay under the cap
+                    // would be unrecoverable. Abort the whole merge
+                    // instead: both sessions and all their links stay
+                    // intact (recoverable; the caller can retry or leave
+                    // the duplicate).
+                    throw error
+                }
+                if ((merged === null || merged === latest.metadata) && !options.inheritTitleLockFrom) {
+                    metadataMerged = true
+                    break
+                }
+                const result = this.store.sessions.updateSessionMetadata(
+                    newSessionId,
+                    merged ?? latest.metadata,
+                    latest.metadataVersion,
+                    namespace,
+                    { touchUpdatedAt: false, inheritTitleLockFrom: options.inheritTitleLockFrom }
+                )
+                if (result.result === 'success') {
+                    metadataMerged = true
+                } else if (result.result === 'error') {
+                    throw new Error('Failed to merge session metadata')
+                }
+            }
+            if (!metadataMerged) {
+                throw new Error('Session metadata changed concurrently during merge')
+            }
+        }
     }
 
     private persistPreferredPermissionMode(session: Session, permissionMode: PermissionMode): void {

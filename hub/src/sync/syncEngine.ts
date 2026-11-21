@@ -12,14 +12,13 @@ import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
-import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
+import type { AbortChunkedUploadResponse, CopilotReasoningEffortResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, ImplementCodexPlanResult, InitChunkedUploadRequest, InitChunkedUploadResponse, KimiReasoningEffortResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
 import { FORK_PREVIEW_TAIL_ROWS, type ForkBoundary, type ForkBoundaryErrorCode, type ForkPreviewRequest, type ForkPreviewResponse, type ForkPreviewRow } from '@hapi/protocol/forkBoundary'
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
-import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
-import type { CopilotReasoningEffortResponse, ImplementCodexPlanResult, KimiReasoningEffortResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, ExternalRef, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import { createHash, randomUUID } from 'node:crypto'
@@ -4200,6 +4199,10 @@ export class SyncEngine {
 
     async updateSessionSummary(sessionId: string, text: string, titleLocked?: boolean): Promise<void> {
         await this.sessionCache.updateSessionSummary(sessionId, text, titleLocked)
+    }
+
+    async linkIssue(sessionId: string, ref: ExternalRef): Promise<void> {
+        await this.sessionCache.linkIssue(sessionId, ref)
     }
 
     async acknowledgeModelError(sessionId: string, eventId: string): Promise<void> {

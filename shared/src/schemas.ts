@@ -3,7 +3,7 @@ import { SessionReadStateSchema } from './sessionReadState'
 import { COPILOT_AGENT_MODES, type CopilotAgentMode } from './copilotModes'
 import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
 import { AgentConfigDescriptorSchema } from './agentConfig'
-import { githubPrIdentityKey, isValidGitHubHost } from './projectRegistry'
+import { getGitHubIssueUrlForRepo, githubIssueIdentityKey, githubPrIdentityKey, isValidGitHubHost } from './projectRegistry'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
@@ -150,13 +150,77 @@ export const GithubPrExternalRefSchema = z.object({
 
 export type GithubPrExternalRef = z.infer<typeof GithubPrExternalRefSchema>
 
-/** Expand with more kinds via discriminatedUnion when needed. */
-export const ExternalRefSchema = GithubPrExternalRefSchema
+/**
+ * A plain GitHub issue link (hapi#235/#238) — a session attached to an issue
+ * it's working, not a pull request. Distinct kind (not a looser github_pr)
+ * so chip rendering and identity never confuse the two even when they share
+ * owner/repo#N against the same host.
+ */
+export const GithubIssueExternalRefSchema = z.object({
+    kind: z.literal('github_issue'),
+    repo: GithubRepoSlugSchema,
+    number: z.number().int().positive(),
+    url: z.string().url(),
+    // Required (unlike github_pr's optional linkedAt): every live writer
+    // (sessionCache.linkIssue, applyLinkIssue) always sets it, and
+    // getLinkedGithubIssue (web/src/lib/externalRefs.ts) relies on it being
+    // present to pick the most-recently-linked issue after a merge appends
+    // refs out of link order.
+    linkedAt: z.number().int().positive()
+}).superRefine((ref, ctx) => {
+    let parsed: URL
+    try {
+        parsed = new URL(ref.url)
+    } catch {
+        ctx.addIssue({
+            code: 'custom',
+            path: ['url'],
+            message: 'expected GitHub issue URL matching repo and number'
+        })
+        return
+    }
+    const pathOk = parsed.pathname === `/${ref.repo}/issues/${ref.number}`
+        || parsed.pathname === `/${ref.repo}/issues/${ref.number}/`
+    // Userinfo (`https://github.com@evil.example/...`) parses fine via `new
+    // URL()` — `evil.example` is the real host, `github.com` is just a
+    // discarded username component — but renders in IssueRefChip as a
+    // trustworthy-looking link to a host it doesn't actually point at. No
+    // host allowlist backstops this for issues (see below), so check this
+    // explicitly rather than relying on an allowlist rejecting the real host.
+    if (parsed.username || parsed.password) {
+        ctx.addIssue({
+            code: 'custom',
+            path: ['url'],
+            message: 'expected GitHub issue URL matching repo and number'
+        })
+        return
+    }
+    // No isValidGitHubHost allowlist check here, unlike GithubPrExternalRefSchema
+    // (operator decision, hapi#238): a GHE board's host is already validated by
+    // the board-add host allowlist (getAllowedBoardHosts) before any item from
+    // it reaches this path, and the result is only ever stored as display data,
+    // never used to shell out `gh` against the host — no SSRF-class exposure to
+    // gate here the way the PR link-by-URL flow needs to.
+    if (parsed.protocol !== 'https:' || !pathOk) {
+        ctx.addIssue({
+            code: 'custom',
+            path: ['url'],
+            message: 'expected GitHub issue URL matching repo and number'
+        })
+    }
+})
+
+export type GithubIssueExternalRef = z.infer<typeof GithubIssueExternalRefSchema>
+
+export const ExternalRefSchema = z.discriminatedUnion('kind', [
+    GithubIssueExternalRefSchema,
+    GithubPrExternalRefSchema
+])
 export type ExternalRef = z.infer<typeof ExternalRefSchema>
 
 export const MAX_EXTERNAL_REFS = 32
 
-/** Array boundary: at most one github_pr with role primary; bounded count. */
+/** Array boundary: at most one github_pr with role primary; bounded count; no duplicate identity (PR or issue). */
 export const ExternalRefsSchema = z.array(ExternalRefSchema)
     .max(MAX_EXTERNAL_REFS, `at most ${MAX_EXTERNAL_REFS} external refs are allowed`)
     .superRefine((refs, ctx) => {
@@ -168,7 +232,9 @@ export const ExternalRefsSchema = z.array(ExternalRefSchema)
     }
     const identities = new Set<string>()
     refs.forEach((ref, index) => {
-        const key = githubPrIdentityKey(ref.repo, ref.number, ref.url)
+        const key = ref.kind === 'github_pr'
+            ? githubPrIdentityKey(ref.repo, ref.number, ref.url)
+            : githubIssueIdentityKey(ref.repo, ref.number, ref.url)
         if (identities.has(key)) {
             ctx.addIssue({
                 code: 'custom',
@@ -180,6 +246,228 @@ export const ExternalRefsSchema = z.array(ExternalRefSchema)
     })
 })
 export type ExternalRefs = z.infer<typeof ExternalRefsSchema>
+
+/**
+ * Parses an `unknown` value (raw, possibly attacker- or bug-controlled
+ * metadata) into a validated `ExternalRef[]`, silently dropping any element
+ * that doesn't parse — never throwing, never returning a malformed element
+ * (Codex review, hapi#238). Every call site that reads `metadata.externalRefs`
+ * off a stored or incoming session row before passing it to identity-
+ * comparing helpers (which assume every element is a valid, kind-tagged ref)
+ * must go through this rather than an unchecked
+ * `Array.isArray(...) ? (value as ExternalRef[]) : []` cast — a cast confirms
+ * the value is *an* array, never that its elements are valid refs, and a
+ * single malformed one (legacy row, out-of-band writer, generic
+ * `update-metadata` socket path with `z.unknown()` metadata) can crash a
+ * caller that assumes `.kind`/`.repo`/`.number` are present. This only
+ * enforces per-element shape — the array-level constraints above (max count,
+ * one primary PR, no duplicate identity) still apply to the cleaned result
+ * via `ExternalRefsSchema` at the normal parse call sites.
+ */
+export function toValidExternalRefs(value: unknown): ExternalRef[] {
+    if (!Array.isArray(value)) return []
+    return value.flatMap(item => {
+        const result = ExternalRefSchema.safeParse(item)
+        return result.success ? [result.data] : []
+    })
+}
+
+/**
+ * Accepts the full GitHub issue URL (any configured host — GHE boards are a
+ * real board-feature use case, e.g. a view-scoped `lhs.ghe.com` board) and
+ * the `owner/repo#N` shorthand, with an optional `host:` prefix for a non-
+ * github.com issue (`owner/repo#N` alone still defaults to github.com) —
+ * `hapi link-issue <url|[host:]owner/repo#N>`, hapi#235/#238. Before the
+ * `host:` prefix existed, shorthand had no way to express a GHE issue at
+ * all and always resolved to github.com regardless, risking a confidently-
+ * wrong link for anyone guessing at syntax for a GHE item (design-consult
+ * review). No `isValidGitHubHost` allowlist check, unlike
+ * `GithubPrExternalRefSchema` (operator decision, hapi#238): the result is
+ * only ever stored as display data in `metadata.externalRefs`, never used
+ * to shell out `gh` against the host, so there's no SSRF-class exposure to
+ * gate the way the PR link-by-URL flow needs to — and a board's own host is
+ * already validated by the board-add host allowlist before any item from it
+ * reaches this path.
+ *
+ * Lives in `shared/` (not hub-only) so both the hub REST route and the MCP
+ * tool's socket-based write path (which never touches that route) validate
+ * identically instead of maintaining two copies of the same regex.
+ */
+function finishIssueMatch(host: string, repo: string, numberRaw: string): { url: string; repo: string; number: number } | null {
+    const number = Number(numberRaw)
+    if (!Number.isFinite(number) || number <= 0) return null
+    return { url: getGitHubIssueUrlForRepo(repo, number, host), repo, number }
+}
+
+// GitHub owner/org and repo names are only ever letters, digits, hyphens,
+// underscores, and periods — never URL delimiters. A loose `[^/\s#]+` class
+// would let an input like `owner/repo?tab=x#12` capture "repo?tab=x" as the
+// repo component, producing a malformed URL a browser mis-resolves (Codex
+// review).
+const ISSUE_GH_NAME_SEGMENT = '[A-Za-z0-9_.-]+'
+// Hostname characters plus an optional `:port` — not a loose "anything but a
+// path/fragment delimiter" class, which would also accept `?`/`=`/`@` and
+// open a delimiter-injection / host-confusion gap (Codex review). The
+// captured text is still re-checked against isValidGitHubHost above; this
+// regex only bounds what *can* be captured as a host.
+const ISSUE_URL_HOST_SEGMENT = '[A-Za-z0-9.-]+(?::\\d+)?'
+const ISSUE_URL_RE = new RegExp(`^(?:https?:\\/\\/)?(${ISSUE_URL_HOST_SEGMENT})\\/(${ISSUE_GH_NAME_SEGMENT}\\/${ISSUE_GH_NAME_SEGMENT})\\/issues\\/(\\d+)\\/?(?:[/?#].*)?$`, 'i')
+// Optional `host:` prefix (design-consult review, hapi#238): the shorthand
+// originally had no way to express a GHE host at all, always resolving to
+// github.com regardless — a session guessing at syntax for a GHE item could
+// end up with a confidently-wrong link.
+const ISSUE_SHORTHAND_RE = new RegExp(`^(?:(${ISSUE_URL_HOST_SEGMENT}):)?(${ISSUE_GH_NAME_SEGMENT}\\/${ISSUE_GH_NAME_SEGMENT})#(\\d+)$`)
+
+export function parseIssueUrl(input: string): { url: string; repo: string; number: number } | null {
+    const trimmed = input.trim()
+
+    const urlMatch = ISSUE_URL_RE.exec(trimmed)
+    if (urlMatch) {
+        const [, host, repo, numberRaw] = urlMatch
+        return finishIssueMatch(host!.toLowerCase(), repo!, numberRaw!)
+    }
+
+    const shorthandMatch = ISSUE_SHORTHAND_RE.exec(trimmed)
+    if (shorthandMatch) {
+        const [, host, repo, numberRaw] = shorthandMatch
+        return finishIssueMatch((host ?? 'github.com').toLowerCase(), repo!, numberRaw!)
+    }
+
+    return null
+}
+
+/**
+ * Generic kind-aware identity/merge helpers for mixed issue+PR ref arrays —
+ * distinct from GithubPrExternalRefSchema-only identity (githubPrIdentityKey)
+ * since a session can carry both an issue and a PR ref, and a per-field
+ * reconcile (reconcileExternalRefs below) needs to compare arbitrary
+ * ExternalRef elements regardless of kind.
+ */
+function externalRefIdentityKey(ref: ExternalRef): string {
+    return ref.kind === 'github_pr'
+        ? githubPrIdentityKey(ref.repo, ref.number, ref.url)
+        : githubIssueIdentityKey(ref.repo, ref.number, ref.url)
+}
+
+function sameExternalRefIdentity(a: ExternalRef, b: ExternalRef): boolean {
+    return externalRefIdentityKey(a) === externalRefIdentityKey(b)
+}
+
+/**
+ * Upserts by kind+host+case-insensitive-repo+number. Shared by the hub's
+ * direct write path (`sessionCache.linkIssue`) and the CLI/MCP socket write
+ * path (`applyLinkIssue`) so both agree on what counts as a duplicate.
+ */
+export function upsertExternalRef(existing: ExternalRef[], ref: ExternalRef): ExternalRef[] {
+    const withoutMatch = existing.filter(candidate => !sameExternalRefIdentity(candidate, ref))
+    return [...withoutMatch, ref]
+}
+
+/**
+ * Unions two ref arrays by the same identity, preferring `base`'s entry on a
+ * collision — used when merging a resumed session's metadata into its
+ * replacement (hapi#238 Codex review: mergeSessionMetadata carried over
+ * name/summary/worktree/path/host but not externalRefs, silently dropping
+ * issue/PR links whenever the source session was deleted post-merge).
+ * `base` is the surviving/new session's refs; anything `incoming`-only (the
+ * about-to-be-deleted old session's) is appended.
+ */
+export function mergeExternalRefs(base: ExternalRef[], incoming: ExternalRef[]): ExternalRef[] {
+    let result = base
+    for (const ref of incoming) {
+        if (!result.some(existing => sameExternalRefIdentity(existing, ref))) {
+            result = [...result, ref]
+        }
+    }
+    return result
+}
+
+// Ordered, not combined into one number: `linkedAt` is the primary clock (an
+// actual re-link always bumps it and must win regardless of any other
+// field), `statusCheckedAt` is a secondary tiebreaker (github_pr only) for
+// the common case where neither side's `linkedAt` changed at all.
+function refFreshnessKey(ref: ExternalRef): readonly [number, number] {
+    const record = ref as unknown as Record<string, unknown>
+    const linkedAt = typeof record.linkedAt === 'number' ? record.linkedAt : -Infinity
+    const statusCheckedAt = typeof record.statusCheckedAt === 'number' ? record.statusCheckedAt : -Infinity
+    return [linkedAt, statusCheckedAt]
+}
+
+function isFresherRef(candidate: readonly [number, number], current: readonly [number, number]): boolean {
+    if (candidate[0] !== current[0]) return candidate[0] > current[0]
+    return candidate[1] > current[1]
+}
+
+/**
+ * Field-level reconciliation for a ref identity present on both sides —
+ * distinct from `mergeExternalRefs`' identity-only union, where "prefer
+ * base unconditionally" is intentional. Built for `hub/src/store/sessions.ts`'s
+ * sparse-write carry-forward, where `next` can be built from a stale local
+ * cache that doesn't know about a field-level update (e.g. a `github_pr`
+ * chip's `status`/`statusCheckedAt`) already applied directly to `prior` by
+ * out-of-band tooling. Reconciles per-identity by `refFreshnessKey`
+ * (`linkedAt` then `statusCheckedAt`) — the side with the fresher key wins;
+ * a genuine tie keeps `prior`'s entry, the already-persisted state.
+ */
+export function reconcileExternalRefs(prior: ExternalRef[], next: ExternalRef[]): ExternalRef[] {
+    const result = [...prior]
+    for (const nextRef of next) {
+        const idx = result.findIndex(existing => sameExternalRefIdentity(existing, nextRef))
+        if (idx === -1) {
+            result.push(nextRef)
+            continue
+        }
+        if (isFresherRef(refFreshnessKey(nextRef), refFreshnessKey(result[idx]!))) {
+            result[idx] = nextRef
+        }
+    }
+    return result
+}
+
+/**
+ * Keeps only the `cap` freshest entries (same linkedAt/statusCheckedAt key
+ * `reconcileExternalRefs` uses for per-identity ties) — for a caller that
+ * has already committed to completing a write when a union exceeds the cap
+ * (hub/src/sync/sessionCache.ts: a deleting session merge whose other side
+ * effects already moved, so rejecting the write outright is no longer safe
+ * — review finding, tiann/hapi#2147, follow-up). Rejecting the whole union
+ * at that point would silently lose whichever entry just landed, almost
+ * always the freshest one in the set; trimming the stalest entries instead
+ * keeps exactly the one most recently acknowledged.
+ */
+export function trimExternalRefsToCap(refs: ExternalRef[], cap: number): ExternalRef[] {
+    if (refs.length <= cap) return refs
+    return [...refs]
+        .sort((a, b) => {
+            const aKey = refFreshnessKey(a)
+            const bKey = refFreshnessKey(b)
+            if (aKey[0] !== bKey[0]) return bKey[0] - aKey[0]
+            return bKey[1] - aKey[1]
+        })
+        .slice(0, cap)
+}
+
+/**
+ * Field-level merge for a generic metadata write (`hub/src/store/sessions.ts`'s
+ * mergeContributionFields) — distinct from `reconcileExternalRefs`' union,
+ * where prior-only identities survive. Here `next` is the base: an explicit
+ * write that legitimately replaces its own ref set must win outright for any
+ * identity it omits (same "explicit keys always win" invariant every other
+ * carry-forward tier in that file honors), not have an unrelated prior ref
+ * silently resurrected alongside it. Only for an identity `next` actually
+ * mentions does `prior`'s freshness get a say — guarding against a stale
+ * write (built from a cache snapshot that predates an out-of-band Meta
+ * status-script update) rolling back that fresher field-level change.
+ */
+export function mergeContributionRefs(prior: ExternalRef[], next: ExternalRef[]): ExternalRef[] {
+    return next.map(nextRef => {
+        const priorMatch = prior.find(existing => sameExternalRefIdentity(existing, nextRef))
+        if (priorMatch && isFresherRef(refFreshnessKey(priorMatch), refFreshnessKey(nextRef))) {
+            return priorMatch
+        }
+        return nextRef
+    })
+}
 
 export const MetadataSchema = z.object({
     path: z.string(),
@@ -409,8 +697,18 @@ export const MetadataSchema = z.object({
     // the provider so web can resolve the exact model when two providers
     // share a modelId.
     piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
-    // Structured session↔contribution links (e.g. GitHub PRs). tiann/hapi#1160.
-    externalRefs: ExternalRefsSchema.optional(),
+    // Structured session↔contribution links (e.g. GitHub PRs/issues). tiann/hapi#1160.
+    //
+    // Preprocessed through toValidExternalRefs rather than validated as a
+    // plain ExternalRefsSchema.optional() (Codex review, hapi#238): a bare
+    // array schema fails the entire MetadataSchema.safeParse over a single
+    // malformed element, nulling out `session.metadata` wholesale (title,
+    // flavor, path, host, resume tokens) at every downstream parse call
+    // site — not just dropping the one bad ref.
+    externalRefs: z.preprocess(
+        value => (value === undefined ? undefined : toValidExternalRefs(value)),
+        ExternalRefsSchema.optional()
+    ),
     lastModelError: z.object({
         /** Stable identity for this error event (not wall-clock order). */
         eventId: z.string().min(1),

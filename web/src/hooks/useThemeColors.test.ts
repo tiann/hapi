@@ -78,6 +78,53 @@ describe('useThemeColors', () => {
         expect(localStorage.getItem('hapi-theme-colors')).toBeNull()
     })
 
+    it('derives --app-link-muted from a custom accent instead of leaving it static', () => {
+        setScheme('oled')
+        const { result } = renderHook(() => useThemeColors())
+
+        // oled's static CSS default (rgba(255,255,255,0.22)) doesn't even
+        // match oled's own default accent (#4ea1ff) — this is the gap the
+        // derive closes: a chosen accent must tint its own muted wash.
+        act(() => result.current.setColor('accent', '#ff0000'))
+
+        expect(document.documentElement.style.getPropertyValue('--app-link').trim()).toBe('#ff0000')
+        expect(document.documentElement.style.getPropertyValue('--app-link-muted').trim()).toBe('rgba(255, 0, 0, 0.22)')
+    })
+
+    it('clears the derived --app-link-muted override when the accent is reset', () => {
+        setScheme('light')
+        const { result } = renderHook(() => useThemeColors())
+
+        act(() => result.current.setColor('accent', '#00ff00'))
+        expect(document.documentElement.style.getPropertyValue('--app-link-muted').trim()).toBe('rgba(0, 255, 0, 0.18)')
+
+        act(() => result.current.resetColor('accent'))
+        expect(document.documentElement.style.getPropertyValue('--app-link-muted')).toBe('')
+    })
+
+    it('derives --app-link-muted for a non-default color-theme preset, not just the custom-accent override path', () => {
+        localStorage.setItem('hapi-color-theme', 'one')
+        setScheme('light')
+
+        applyThemeColors()
+
+        // Preset "one"'s own accent (#526fff), not the static index.css neutral.
+        expect(document.documentElement.style.getPropertyValue('--app-link-muted').trim()).toBe('rgba(82, 111, 255, 0.18)')
+    })
+
+    it('falls back to the active preset\'s own accent, not a stale custom value, when the override is reset', () => {
+        localStorage.setItem('hapi-color-theme', 'one')
+        setScheme('light')
+        const { result } = renderHook(() => useThemeColors())
+
+        act(() => result.current.setColor('accent', '#ff0000'))
+        expect(document.documentElement.style.getPropertyValue('--app-link-muted').trim()).toBe('rgba(255, 0, 0, 0.18)')
+
+        act(() => result.current.resetColor('accent'))
+        expect(document.documentElement.style.getPropertyValue('--app-link').trim()).toBe('#526fff')
+        expect(document.documentElement.style.getPropertyValue('--app-link-muted').trim()).toBe('rgba(82, 111, 255, 0.18)')
+    })
+
 
 
     it('preserves color theme preset variables when no custom colors are stored', () => {
