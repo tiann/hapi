@@ -5028,6 +5028,31 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.finish();
         });
 
+        it('does not register a stopped wakeup command when Stop lands while the next prompt configuration is pending', async () => {
+            const acp = 'conv-live-config-stop';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.notify(bgCall('call-cfg', 'sleep 9'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`, false));
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            await h.ready();
+            h.queue.push('again', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-3');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await h.ready();
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('call-cfg#'))).toHaveLength(0);
+            expect(h.bgEntries().filter((e) => e.callId.startsWith('call-cfg#'))).toHaveLength(0);
+            await h.finish();
+        });
+
         it('completes a transcript-rendered command from its transcript row when no live update arrives', async () => {
             const acp = 'conv-live-synthetic-row';
             turnRows(acp);

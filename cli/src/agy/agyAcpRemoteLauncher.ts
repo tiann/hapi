@@ -1977,6 +1977,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             turn.aborted = true;
             this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
         }
+        this.idleTurn?.openCommands.clear(); // Stop cancels the commands a wakeup left open
         const backend = this.backend;
         const acpSessionId = this.acpSessionId;
         if (backend && acpSessionId && backend.isTransportAlive()) {
