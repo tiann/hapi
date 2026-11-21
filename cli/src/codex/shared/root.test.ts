@@ -1227,7 +1227,8 @@ describe('shared plan actions', () => {
         expect(f.native.queue).toHaveLength(1);
     });
 
-    it.each(['implement', 'continue planning', 'native recovery', 'explicit Default', 'late Default before recovery', 'late Default during recovery'])(
+    it.each(['implement', 'continue planning', 'native recovery', 'explicit Default', 'late Default before recovery',
+        'late Default during recovery', 'rejected Web mode', 'rejected native mode'])(
         'restores Plan before offering actions after the mode switch fails (%s)', async nextAction => {
         const f = await fixture({ bindTier: 'ultrafast' });
         f.native.settings.serviceTier = 'ultrafast';
@@ -1245,7 +1246,16 @@ describe('shared plan actions', () => {
             pendingDefault = undefined;
         };
         let failEffectiveRead = !delayedMode;
+        let rejectPlanWrite = false;
+        const rejectedMode = nextAction.startsWith('rejected');
         const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (rejectPlanWrite && method === 'thread/settings/update') {
+                rejectPlanWrite = false;
+                throw new Error('Codex rejected the replacement mode');
+            }
+            if (rejectedMode && method === 'thread/queue/add') {
+                expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'plan' });
+            }
             if (delayedMode && method === 'thread/settings/update') {
                 const settings = params as Record<string, unknown> & { collaborationMode?: { mode: string } };
                 if (settings.collaborationMode?.mode === 'default') {
@@ -1277,6 +1287,17 @@ describe('shared plan actions', () => {
         expect(f.root.needsTierConfirmation).toBe(true);
         expect(f.native.queue).toHaveLength(0);
         expect(f.state().codexPlanProposalId).toBeNull();
+        if (rejectedMode) {
+            f.submit('Continue planning after a rejected mode change', 'held-plan-input');
+            rejectPlanWrite = true;
+            const replacement = nextAction === 'rejected Web mode' ? f.root.applySettings({ collaborationMode: 'plan' })
+                : f.root.applyNativeSettings({ threadId: 'thread', collaborationMode: { mode: 'plan', settings: {
+                    model: 'mock', reasoning_effort: null, developer_instructions: null
+                } } });
+            await expect(replacement).rejects.toThrow('Codex rejected the replacement mode');
+            expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'default' });
+            expect(f.native.queue).toHaveLength(0);
+        }
         if (nextAction === 'explicit Default') {
             await f.root.applySettings({ serviceTier: 'standard', collaborationMode: 'default' });
             expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'default' });
@@ -1288,7 +1309,9 @@ describe('shared plan actions', () => {
         else await f.root.applySettings({ serviceTier: 'standard' });
         expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'plan' });
         expect(f.state().codexPlanProposalId).toBe(id);
-        if (nextAction === 'continue planning' || delayedMode) {
+        if (rejectedMode) {
+            await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        } else if (nextAction === 'continue planning' || delayedMode) {
             // Continue planning focuses the composer. Its next input uses the current native mode.
             request.mockClear();
             f.submit('Continue planning from the proposal', 'continued-plan');

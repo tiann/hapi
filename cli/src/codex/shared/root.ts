@@ -584,9 +584,6 @@ export class SharedCodexRoot {
         const sandbox = record(value.sandboxPolicy ?? value.sandbox).type;
         const publishTier = 'serviceTier' in value && (effective || value.serviceTier !== 'ultrafast' && value.serviceTier !== 'priority');
         const changesUltrafastModel = !effective && this.settings.serviceTier === 'ultrafast' && value.model !== this.settings.model;
-        if (record(value.collaborationMode).mode === 'plan' && this.settings.collaborationMode === 'default') {
-            this.interruptedPlanMode = undefined;
-        }
         if (changesUltrafastModel && !this.host.attached && this.serviceTierExplicit === true) {
             this.tierPublicationProtection ??= 'ultrafast';
         }
@@ -855,7 +852,6 @@ export class SharedCodexRoot {
     private async applySettingsNow(raw: unknown, deadline: number, operationId: number, onMutation?: () => void): Promise<{ applied: RuntimeSettings }> {
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
         const config = SettingsSchema.parse(raw);
-        if (config.collaborationMode !== undefined) this.interruptedPlanMode = undefined;
         if (this.pendingLaunchCollaborationMode && config.collaborationMode === undefined) config.collaborationMode = this.pendingLaunchCollaborationMode;
         const explicitTier = config.serviceTier !== undefined;
         const discoveryDeadline = Math.min(deadline - 15_000, Date.now() + 10_000);
@@ -1012,7 +1008,6 @@ export class SharedCodexRoot {
         const deadline = Date.now() + 25_000;
         const operationId = ++this.tierOperationCounter;
         const operation = this.settingsWrites.catch(() => {}).then(async () => {
-            if (params.collaborationMode !== undefined) this.interruptedPlanMode = undefined;
             if (this.pendingLaunchCollaborationMode && params.collaborationMode === undefined) params = { ...params, collaborationMode: {
                 mode: this.pendingLaunchCollaborationMode, settings: { model: string(params.model) ?? this.settings.model,
                     reasoning_effort: params.effort ?? this.settings.modelReasoningEffort, developer_instructions: null }
@@ -1230,6 +1225,11 @@ export class SharedCodexRoot {
         const requestedFast = expected.serviceTier === 'priority';
         const verifyUltrafast = requestedUltrafast || expected.serviceTier === undefined && this.hasUltrafastTier;
         const changesTier = expected.serviceTier !== undefined || verifyUltrafast;
+        const confirmCollaborationMode = () => {
+            if (expected.collaborationMode !== undefined && record(expected.collaborationMode).mode === this.settings.collaborationMode) {
+                this.interruptedPlanMode = undefined;
+            }
+        };
         // A disabled Fast feature can hide a known Standard selection in the
         // effective snapshot. A bare native null must still require a reset.
         const matches = (settings: Record<string, unknown>) => settingsMatch(
@@ -1258,6 +1258,7 @@ export class SharedCodexRoot {
                 if (firstSnapshot.serviceTier === null) throw new Error(FAST_UNAVAILABLE);
             }
             if (matches(comparable) || requestedUltrafast && matchesSelectedTier(comparable)) {
+                confirmCollaborationMode();
                 const confirmedUltrafast = firstSnapshot !== undefined
                     && snapshot.serviceTier === 'ultrafast' && this.settings.serviceTier === 'ultrafast';
                 if (verifyUltrafast && !confirmedUltrafast) {
@@ -1286,6 +1287,7 @@ export class SharedCodexRoot {
             // The RPC only acknowledges queueing the settings operation. The
             // native notification, not our submitted candidate, establishes state.
             await accepted;
+            confirmCollaborationMode();
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
         if (requestedFast) await this.confirmEffectiveFast(deadline, operationId);
         if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, { requestedUltrafast, onMutation });
