@@ -967,20 +967,28 @@ export class MessageService {
                 return { status: 'unavailable', localId: lookup.localId }
             }
             // Ordering guard: a queued OpenCode /clear must reach the worker
-            // before anything queued after it. Force-delivering a later row
-            // would let it jump the pending /clear, so refuse unless the
-            // target IS the earliest queued /clear itself.
+            // before anything queued AFTER it. Force-delivering a later row
+            // would let it jump the pending /clear, so refuse those; rows
+            // queued before the clear are safe to deliver. The matcher
+            // mirrors the runner's resolveOpencodeSlashCommand: case-
+            // insensitive, leading whitespace, and trailing arguments all
+            // still resolve to a clear (a user extension overriding /clear
+            // cannot be known hub-side and stays out of scope).
             {
                 const flavor = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.flavor
                 if (flavor === 'opencode') {
                     const queuedRows = this.store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
-                    const firstClear = queuedRows.find((row) => {
+                    const isClearRow = (row: { content: unknown }) => {
                         const content = row.content as { role?: unknown; content?: { type?: unknown; text?: unknown } } | null
                         return content?.role === 'user' && content.content?.type === 'text'
-                            && String(content.content.text ?? '').trim() === '/clear'
-                    })
-                    if (firstClear && firstClear.id !== lookup.resolvedId) {
-                        return { status: 'unavailable', localId: lookup.localId }
+                            && /^\s*\/clear(?:\s|$)/i.test(String(content.content.text ?? ''))
+                    }
+                    const firstClearIndex = queuedRows.findIndex(isClearRow)
+                    if (firstClearIndex >= 0) {
+                        const targetIndex = queuedRows.findIndex((row) => row.id === lookup.resolvedId)
+                        if (targetIndex > firstClearIndex) {
+                            return { status: 'unavailable', localId: lookup.localId }
+                        }
                     }
                 }
             }
@@ -1025,13 +1033,25 @@ export class MessageService {
                     }
                 }
             }
-            // Send the forced retry only to the CLI that answered the probe
-            // (when it reported its socketId): room membership can change
-            // between the probe and this emit, and a socket the probe never
-            // cleared must not receive a forced copy.
-            const room = probe.responderId !== null
-                ? this.io.of('/cli').to(probe.responderId)
-                : this.io.of('/cli').to(roomName)
+            // Bind the forced retry to a server-verified socket. The probe's
+            // responderId is client-reported, so verify it against the room's
+            // live membership before trusting it; a legacy ack without a
+            // socketId is only acceptable while the room still holds exactly
+            // the one socket that was counted before the probe. If neither
+            // holds — the answering CLI left, a second socket joined, or the
+            // report cannot be verified — no socket is proven to have been
+            // probed, so nothing is emitted.
+            const roomSockets = this.io.of('/cli').adapter.rooms.get(roomName)
+            let verifiedSocketId: string | null = null
+            if (probe.responderId !== null && roomSockets?.has(probe.responderId)) {
+                verifiedSocketId = probe.responderId
+            } else if (probe.responderId === null && roomSockets?.size === 1) {
+                verifiedSocketId = [...roomSockets][0]!
+            }
+            if (verifiedSocketId === null) {
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            const room = this.io.of('/cli').to(verifiedSocketId)
             const accepted = await new Promise<boolean>((resolve) => {
                 room.timeout(500).emit(
                     'update',

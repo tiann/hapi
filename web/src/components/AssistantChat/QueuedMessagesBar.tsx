@@ -424,7 +424,10 @@ export function QueuedMessagesBar({
                                 && !deliveryActive
                                 && !sharedNative
                                 && msg.deliveryState !== 'indeterminate'
-                                && msg.scheduledAt == null
+                                // Future-scheduled rows mature through the
+                                // scheduler tick; once matured the hub accepts
+                                // deliver-now for them, so keep ↑ available.
+                                && (msg.scheduledAt == null || msg.scheduledAt <= Date.now())
                                 && canCancel
                         )
                         const deliverNowPending = deliverNowMutation.isPending

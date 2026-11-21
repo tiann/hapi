@@ -213,6 +213,10 @@ export class ApiSessionClient extends EventEmitter {
     private cancelQueuedMessageCallback: ((localId: string) => QueueCancelResult | Promise<QueueCancelResult>) | null = null
     private retryQueuedMessageCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
     private beforeReuseLocalIdCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
+    /** localIds whose forced-retry reuse gate is currently awaiting flavor preparation. */
+    private readonly inFlightForcedRetries = new Set<string>()
+    /** localIds cancelled while their forced-retry gate was in flight; the retry must not dispatch. */
+    private readonly invalidatedForcedRetries = new Set<string>()
     private readonly incomingFilter = new IncomingMessageFilter()
     private reconciledRewindOperationId: string | undefined
     // truncateFromLocalId of the Claude rewind intent last seen in metadata.
@@ -459,8 +463,18 @@ if (isReconnect) {
                             // settles, and a re-admission racing that cleanup
                             // loses its markers — a later cancel could then no
                             // longer find the copy and the cancelled prompt
-                            // would still execute.
-                            accepted = await this.beforeReuseLocalIdCallback(data.body.localId) === true
+                            // would still execute. While the gate awaits, a
+                            // cancel-queued-message for the same localId must
+                            // still win: record the in-flight gate so the cancel
+                            // handler can invalidate it instead of racing it.
+                            this.inFlightForcedRetries.add(data.body.localId)
+                            try {
+                                const gateAllowed = await this.beforeReuseLocalIdCallback(data.body.localId) === true
+                                accepted = gateAllowed && !this.invalidatedForcedRetries.has(data.body.localId)
+                            } finally {
+                                this.inFlightForcedRetries.delete(data.body.localId)
+                                this.invalidatedForcedRetries.delete(data.body.localId)
+                            }
                         }
                     }
                     if (accepted) {
@@ -474,6 +488,12 @@ if (isReconnect) {
                     const cancellation = data.body.localId
                         ? this.cancelQueuedMessage(data.body.localId)
                         : false
+                    if (data.body.localId && this.inFlightForcedRetries.has(data.body.localId)) {
+                        // A forced retry is waiting on its preparation gate for
+                        // this localId; cancelling the row must also stop that
+                        // retry from dispatching once the gate resolves.
+                        this.invalidatedForcedRetries.add(data.body.localId)
+                    }
                     const result = cancellation instanceof Promise ? await cancellation : cancellation
                     // 'in-flight' = the row is inside an async steer: not
                     // removed, but also NOT consumed — the hub must neither

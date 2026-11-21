@@ -290,6 +290,33 @@ describe('ApiSessionClient input buffered during initialization', () => {
         client.close()
     })
 
+    it('a cancel landing while the reuse gate is in flight invalidates the forced retry', async () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const update = socket.listeners.get('update')![0]!
+        let releaseGate!: () => void
+        const gate = vi.fn(() => new Promise<boolean>((resolve) => {
+            releaseGate = () => resolve(true)
+        }))
+        client.onBeforeReuseLocalId(gate)
+        const retryAck = vi.fn()
+        const retryDone = update({ body: { t: 'retry-queued-message', localId: 'local-1', message: message('replacement', 'local-1', 1) } }, retryAck)
+        // The gate is pending; the user cancels the row in that window.
+        const cancelAck = vi.fn()
+        await update({ body: { t: 'cancel-queued-message', localId: 'local-1' } }, cancelAck)
+        expect(cancelAck).toHaveBeenCalled()
+        releaseGate()
+        await retryDone
+        // The gate allowed the reuse, but the cancel invalidated it: nothing
+        // dispatches and the hub keeps the row queued.
+        expect(retryAck).toHaveBeenCalledWith({ removed: false, accepted: false })
+        const onMessage = vi.fn()
+        client.onUserMessage(onMessage)
+        expect(onMessage).not.toHaveBeenCalled()
+        client.close()
+    })
+
     it.each(['in-flight', 'consumed', 'indeterminate'] as const)('keeps %s cancellation semantics after input leaves the buffer', async (result) => {
         socketHarness.sockets.length = 0
         const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))

@@ -992,6 +992,11 @@ describe('QueuedMessagesBar send-now affordance', () => {
         expect(screen.queryByRole('button', { name: 'queuedMessages.deliverNow' })).toBeNull()
     })
 
+    it('shows ↑ for a scheduled row once it has matured', () => {
+        renderQueuedMessage(Date.now() - 1_000, null, 0, false, null)
+        expect(screen.getByRole('button', { name: 'queuedMessages.deliverNow' })).toBeTruthy()
+    })
+
     it('hides ↑ for shared-native sessions — the hub refuses deliver-now for them', () => {
         renderQueuedMessage(null, null, 0, false, null, {}, false, true)
         expect(screen.queryByRole('button', { name: 'queuedMessages.deliverNow' })).toBeNull()

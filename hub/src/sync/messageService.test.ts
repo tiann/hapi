@@ -2456,7 +2456,7 @@ describe('MessageService deliverQueuedMessageNow', () => {
         store.close()
     })
 
-    it('falls back to the room emit when the probe responder did not report its socketId', async () => {
+    it('delivers to the room\'s single socket when the probe responder did not report its socketId', async () => {
         const store = makeStore()
         const session = makeSession(store, 'deliver-legacy-ack')
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'legacy' } }, 'legacy-q')
@@ -2485,7 +2485,76 @@ describe('MessageService deliverQueuedMessageNow', () => {
         const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
         expect(await service.deliverQueuedMessageNow(session.id, 'legacy-q'))
             .toEqual({ status: 'delivered', localId: 'legacy-q' })
-        expect(targets).toEqual([`session:${session.id}`, `session:${session.id}`])
+        // The probe addresses the room; the forced retry is bound to the
+        // room's single live member (the socket that must have answered).
+        expect(targets).toEqual([`session:${session.id}`, 'socket-0'])
+        store.close()
+    })
+
+    it('refuses the forced retry when the reported responder is no longer in the room', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-stale-responder')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'stale' } }, 'stale-q')
+        const targets: string[] = []
+        let calls = 0
+        const broadcastRoom = {
+            timeout: (_ms: number) => ({
+                emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                    calls += 1
+                    callback(null, calls === 1
+                        ? [{ removed: false, socketId: 'socket-gone' }]
+                        : [{ removed: false, accepted: true }])
+                }
+            }),
+            emit: () => {}
+        }
+        const io = {
+            of: (_ns: string) => ({
+                to: (target: string) => {
+                    targets.push(target)
+                    return broadcastRoom
+                },
+                adapter: { rooms: { get: () => new Set(['socket-0']) } }
+            })
+        } as unknown as Server
+        const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'stale-q'))
+            .toEqual({ status: 'unavailable', localId: 'stale-q' })
+        // Only the probe left the hub; the unverified responder got nothing.
+        expect(calls).toBe(1)
+        expect(targets).toEqual([`session:${session.id}`])
+        store.close()
+    })
+
+    it('refuses the forced retry when a second socket joined before a legacy ack could be verified', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-legacy-joined')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'joined' } }, 'joined-q')
+        let calls = 0
+        const broadcastRoom = {
+            timeout: (_ms: number) => ({
+                emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                    calls += 1
+                    callback(null, calls === 1
+                        ? [{ removed: false }]
+                        : [{ removed: false, accepted: true }])
+                }
+            }),
+            emit: () => {}
+        }
+        // One socket at entry (the cliCount gate); a second joins before the
+        // forced retry would be emitted, so the legacy ack can no longer be
+        // bound to a verified socket.
+        const io = {
+            of: (_ns: string) => ({
+                to: (target: string) => broadcastRoom,
+                adapter: { rooms: { get: () => new Set(Array.from({ length: calls === 0 ? 1 : 2 }, (_, i) => `socket-${i}`)) } }
+            })
+        } as unknown as Server
+        const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'joined-q'))
+            .toEqual({ status: 'unavailable', localId: 'joined-q' })
+        expect(calls).toBe(1)
         store.close()
     })
 
@@ -2508,6 +2577,29 @@ describe('MessageService deliverQueuedMessageNow', () => {
         // The /clear row itself stays deliverable in delivery order.
         expect(await service.deliverQueuedMessageNow(session.id, 'clear-q'))
             .toEqual({ status: 'delivered', localId: 'clear-q' })
+        expect(calls).toBe(2)
+        store.close()
+    })
+
+    it('still delivers rows queued before an OpenCode /clear', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-clear-before', { path: '/tmp/deliver-clear-before', flavor: 'opencode' }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'before the clear' } }, 'before-q')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/CLEAR now' } }, 'clear-q')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'after the clear' } }, 'after-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, calls === 1 ? [{ removed: false }] : [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        // Rows ahead of the clear do not jump it — safe to deliver.
+        expect(await service.deliverQueuedMessageNow(session.id, 'before-q'))
+            .toEqual({ status: 'delivered', localId: 'before-q' })
+        expect(calls).toBe(2)
+        // The runner resolves /CLEAR (case-insensitive, with arguments) to a
+        // clear, so the follow-up behind it is still refused.
+        expect(await service.deliverQueuedMessageNow(session.id, 'after-q'))
+            .toEqual({ status: 'unavailable', localId: 'after-q' })
         expect(calls).toBe(2)
         store.close()
     })
