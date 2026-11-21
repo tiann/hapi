@@ -2767,9 +2767,18 @@ it('preserves inherited intent when only a model change requires Standard fallba
     expect(f.metadata().codexServiceTierExplicit).toBe(false);
     expect(f.root.freshParams().serviceTier).toBeUndefined();
 });
-it.each(['web', 'native'])('keeps a newer model when a %s Ultrafast fallback reads existing Standard', async source => {
+it.each([
+    ['web', 'default'], ['native', 'default'], ['web', 'ultrafast'], ['native', 'ultrafast']
+])('keeps a newer model when a %s Ultrafast request reads an existing %s tier', async (source, currentTier) => {
     const f = await fixture();
-    Object.assign(f.native.settings, { model: 'standard-only', modelProvider: 'openai', serviceTier: 'default' });
+    const initialModel = currentTier === 'ultrafast' ? 'mock' : 'standard-only';
+    const newerModel = 'new-eligible';
+    vi.spyOn(f.root.client, 'listModels').mockResolvedValue({ data: [
+        { id: 'mock', serviceTiers: [{ id: 'ultrafast' }] },
+        { id: 'new-eligible', serviceTiers: [{ id: 'ultrafast' }] },
+        { id: 'standard-only' }
+    ] } as never);
+    Object.assign(f.native.settings, { model: initialModel, modelProvider: 'openai', serviceTier: currentTier });
     await f.root.bind('thread', f.native.settings, false);
     await f.root.activate();
     const original = f.root.client.request.bind(f.root.client);
@@ -2783,14 +2792,45 @@ it.each(['web', 'native'])('keeps a newer model when a %s Ultrafast fallback rea
         : f.root.applyNativeSettings({ threadId: 'thread', serviceTier: 'ultrafast' });
     const failed = expect(setting).rejects.toThrow(UltrafastTargetChangedError);
     await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/resume', { threadId: 'thread', excludeTurns: true }));
-    f.native.settings = { ...f.native.settings, model: 'mock' };
+    f.native.settings = { ...f.native.settings, model: newerModel };
     f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
     release();
     await failed;
     expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
-    expect(f.native.settings.model).toBe('mock');
+    expect(f.native.settings.model).toBe(newerModel);
     expect(f.events).not.toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('changed to Standard') }));
     expect(f.root.needsTierConfirmation).toBe(false);
+});
+
+it.each([false, true])('defers an Ultrafast slash command when tier confirmation starts during discovery (canceled=%s)', async cancel => {
+    const f = await fixture();
+    await f.root.activate();
+    const root = f.root as unknown as { pauseTierConfirmation(id: number): void; tierOperationCounter: number };
+    let release!: (value: Awaited<ReturnType<CodexAppServerClient['listModels']>>) => void;
+    const catalog = vi.spyOn(f.root.client, 'listModels').mockImplementationOnce(async () => new Promise(resolve => { release = resolve; }));
+    const request = vi.spyOn(f.root.client, 'request');
+    const ultrafastWrites = () => request.mock.calls.filter(([method, params]) => method === 'thread/settings/update'
+        && (params as { serviceTier?: string }).serviceTier === 'ultrafast');
+    f.submit('/ultrafast on', 'tier-command');
+    await vi.waitFor(() => expect(catalog).toHaveBeenCalledOnce());
+    root.pauseTierConfirmation(++root.tierOperationCounter);
+    const cancellation = cancel ? f.cancel('tier-command') : undefined;
+    release({ data: [{ id: 'mock', serviceTiers: [{ id: 'ultrafast' }] }] } as never);
+
+    if (cancellation) await expect(cancellation).resolves.toBe(true);
+    else await vi.waitFor(async () => expect((await f.ledger()).entries['tier-command']).toBeUndefined());
+    expect(ultrafastWrites()).toHaveLength(0);
+    expect(f.root.needsTierConfirmation).toBe(true);
+    expect(f.uncertain).not.toHaveBeenCalled();
+
+    await f.root.applySettings({ serviceTier: 'standard' });
+    if (cancel) {
+        expect((await f.ledger()).entries['tier-command']?.state).toBe('canceled');
+        expect(ultrafastWrites()).toHaveLength(0);
+    } else {
+        await vi.waitFor(async () => expect((await f.ledger()).entries['tier-command']?.state).toBe('consumed'));
+        expect(ultrafastWrites()).toHaveLength(1);
+    }
 });
 
 it('rechecks a tier-only model after asynchronous feature discovery', async () => {
