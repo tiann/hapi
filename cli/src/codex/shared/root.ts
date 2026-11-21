@@ -836,7 +836,7 @@ export class SharedCodexRoot {
     }
     private planModeForTierRecovery(explicitTier: boolean): 'plan' | undefined {
         const interrupted = this.interruptedPlanMode;
-        if (explicitTier && this.tierConfirmationPending && this.settings.collaborationMode === 'default' && interrupted
+        if (explicitTier && this.tierConfirmationPending && interrupted
             && interrupted.turnRevision === this.turnRevision && !this.currentTurn && this.latestTurn?.planId === interrupted.id) {
             return 'plan';
         }
@@ -1411,8 +1411,9 @@ export class SharedCodexRoot {
             await this.queue.enqueue(localId, buildUserInputFromMessage('Implement the plan.'));
             return { ok: true };
         } catch (error) {
-            if (this.needsTierConfirmation && modeWriteRevision === this.turnRevision && this.settings.collaborationMode === 'default'
+            if (this.needsTierConfirmation && modeWriteRevision === this.turnRevision
                 && this.latestTurn?.planId === planId && !this.queue.owns(localId)) {
+                // The Default write may still reach Codex after our confirmation deadline.
                 this.interruptedPlanMode = { id: planId, turnRevision: modeWriteRevision };
                 return tierPending();
             }

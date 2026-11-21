@@ -1222,7 +1222,7 @@ describe('shared plan actions', () => {
         expect(f.native.queue).toHaveLength(1);
     });
 
-    it.each(['implement', 'continue planning', 'native recovery', 'explicit Default'])(
+    it.each(['implement', 'continue planning', 'native recovery', 'explicit Default', 'late Default before recovery', 'late Default during recovery'])(
         'restores Plan before offering actions after the mode switch fails (%s)', async nextAction => {
         const f = await fixture({ bindTier: 'ultrafast' });
         f.native.settings.serviceTier = 'ultrafast';
@@ -1230,8 +1230,26 @@ describe('shared plan actions', () => {
         const id = await completePlan(f);
         const action = () => f.rpc.get(RPC_METHODS.ImplementCodexPlan)!({ planId: id });
         const original = f.root.client.request.bind(f.root.client);
-        let failEffectiveRead = true;
+        const delayedMode = nextAction.startsWith('late Default');
+        let enterDefault!: () => void;
+        const defaultDispatched = new Promise<void>(resolve => { enterDefault = resolve; });
+        let pendingDefault: Record<string, unknown> | undefined;
+        const deliverDefault = () => {
+            f.native.settings = { ...f.native.settings, ...pendingDefault };
+            f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+            pendingDefault = undefined;
+        };
+        let failEffectiveRead = !delayedMode;
         const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (delayedMode && method === 'thread/settings/update') {
+                const settings = params as Record<string, unknown> & { collaborationMode?: { mode: string } };
+                if (settings.collaborationMode?.mode === 'default') {
+                    pendingDefault = settings;
+                    enterDefault();
+                    return {} as never;
+                }
+                if (pendingDefault && settings.serviceTier === null) deliverDefault();
+            }
             if (method === 'thread/resume' && failEffectiveRead) {
                 failEffectiveRead = false;
                 expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'default' });
@@ -1239,7 +1257,18 @@ describe('shared plan actions', () => {
             }
             return original(method, params);
         });
-        await expect(action()).resolves.toMatchObject({ ok: false, code: 'unavailable' });
+        if (delayedMode) vi.useFakeTimers();
+        const implementation = expect(action()).resolves.toMatchObject({ ok: false, code: 'unavailable' });
+        if (delayedMode) {
+            await defaultDispatched;
+            await vi.advanceTimersByTimeAsync(15_000);
+        }
+        await implementation;
+        if (delayedMode) {
+            vi.useRealTimers();
+            expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'plan' });
+            if (nextAction === 'late Default before recovery') deliverDefault();
+        }
         expect(f.root.needsTierConfirmation).toBe(true);
         expect(f.native.queue).toHaveLength(0);
         expect(f.state().codexPlanProposalId).toBeNull();
@@ -1254,7 +1283,7 @@ describe('shared plan actions', () => {
         else await f.root.applySettings({ serviceTier: 'standard' });
         expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'plan' });
         expect(f.state().codexPlanProposalId).toBe(id);
-        if (nextAction === 'continue planning') {
+        if (nextAction === 'continue planning' || delayedMode) {
             // Continue planning focuses the composer. Its next input uses the current native mode.
             request.mockClear();
             f.submit('Continue planning from the proposal', 'continued-plan');
