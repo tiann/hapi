@@ -568,13 +568,17 @@ export class SharedCodexRoot {
         this.modelProvider = string(value.modelProvider) ?? this.modelProvider;
         const sandbox = record(value.sandboxPolicy ?? value.sandbox).type;
         const publishTier = 'serviceTier' in value && (effective || value.serviceTier !== 'ultrafast' && value.serviceTier !== 'priority');
+        const changesUltrafastModel = !effective && this.settings.serviceTier === 'ultrafast' && value.model !== this.settings.model;
+        if (changesUltrafastModel && !this.host.attached && this.serviceTierExplicit === true) {
+            this.tierPublicationProtection ??= 'ultrafast';
+        }
         this.settings = { ...this.settings, model: value.model,
             modelReasoningEffort: string(value.effort ?? value.reasoningEffort) ?? null,
             ...(sandbox ? { permissionMode: sandbox === 'dangerFullAccess' ? 'yolo' : sandbox === 'readOnly' ? 'read-only'
                 : this.settingsNative.approvalsReviewer === 'auto_review' ? 'autoReview' : 'default' } : {}),
             ...(publishTier
                 ? { serviceTier: value.serviceTier === null && this.confirmedNativeStandardReset ? 'standard' : fromCodexServiceTier(value.serviceTier) }
-                : !effective && this.settings.serviceTier === 'ultrafast' && value.model !== this.settings.model ? { serviceTier: null } : {}),
+                : changesUltrafastModel ? { serviceTier: null } : {}),
             ...('collaborationMode' in value ? { collaborationMode: record(value.collaborationMode).mode === 'plan' ? 'plan' as const : 'default' as const } : {})
         };
         for (const listener of this.settingsListeners) listener();
@@ -1030,23 +1034,32 @@ export class SharedCodexRoot {
         }
         if (generation < this.pendingTierOperation) return;
         const operationId = generation;
-        this.pauseTierConfirmation(operationId);
+        const preserveUltrafast = reconcileUltrafastModel && this.serviceTierExplicit === true;
+        this.pauseTierConfirmation(operationId, preserveUltrafast
+            ? { retainConfirmedTier: true, pendingTier: 'ultrafast' } : undefined);
         const expected = reconcileUltrafastModel
             ? { serviceTier: 'ultrafast', model: reconcileUltrafastModel } : { serviceTier: params.serviceTier };
         // An unchanged value cannot establish that the request was accepted.
         if (!reconcileUltrafastModel && (previousTier === undefined || settingsMatch({ serviceTier: previousTier }, expected))) return;
-        const current = () => !this.closed && !this.stopping && this.settingsRevision === revision
-            && this.isCurrentTierOperation(operationId);
+        const current = () => !this.closed && !this.stopping && this.isCurrentTierOperation(operationId);
         try {
-            const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
-            if (!current() || !settingsMatch(snapshot, expected)) return;
-            if (expected.serviceTier === 'ultrafast' && !await isUltrafastEnabled(this.client, this.threadId, deadline)) return;
-            if (!current()) return;
-            this.acceptSettings(snapshot, true);
-            if (explicitTier) this.serviceTierExplicit = true;
-            await this.completeTierConfirmation(operationId);
-            this.alive();
-            if (fallbackNotice) this.notice(fallbackNotice);
+            for (let attempt = 0; current() && attempt < 3; attempt++) {
+                const snapshotRevision = this.settingsRevision;
+                const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
+                if (!current()) return;
+                if (this.settingsRevision !== snapshotRevision) continue;
+                if (!settingsMatch(snapshot, expected)) return;
+                const enabled = expected.serviceTier !== 'ultrafast' || await isUltrafastEnabled(this.client, this.threadId, deadline);
+                if (!current()) return;
+                if (this.settingsRevision !== snapshotRevision) continue;
+                if (!enabled) return;
+                this.acceptSettings(snapshot, true);
+                if (explicitTier) this.serviceTierExplicit = true;
+                await this.completeTierConfirmation(operationId);
+                this.alive();
+                if (fallbackNotice && current()) this.notice(fallbackNotice);
+                return;
+            }
         } catch {
             // Preserve the pending state for a deliberate tier selection.
         }
@@ -1124,7 +1137,7 @@ export class SharedCodexRoot {
     private pauseTierConfirmation(operationId: number, {
         retainConfirmedTier = false, pendingTier,
         message = 'Codex settings confirmation is pending. Confirm Standard in settings before sending more input.'
-    }: { retainConfirmedTier?: boolean; pendingTier?: 'fast'; message?: string } = {}): void {
+    }: { retainConfirmedTier?: boolean; pendingTier?: 'fast' | 'ultrafast'; message?: string } = {}): void {
         if (!this.isCurrentTierOperation(operationId)) return;
         const newerPause = operationId > this.pendingTierOperation;
         this.tierConfirmationResolved = false;

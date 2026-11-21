@@ -2186,6 +2186,41 @@ it.each(['next-model', 'other-model'])('reconciles a model-only Ultrafast turn w
         ? ['thread/resume', 'experimentalFeature/list'] : ['thread/resume']);
 });
 
+it.each(['thread/resume', 'experimentalFeature/list'])('preserves explicit Ultrafast and retries lost-reply recovery after a notification during %s', async interruptedRead => {
+    const f = await fixture({ bindTier: 'ultrafast' });
+    await f.root.activate({}, true);
+    f.session.updateMetadata(metadata => ({ ...metadata, codexConfirmedServiceTier: undefined }));
+    vi.spyOn(f.root.client, 'listModels').mockResolvedValue({
+        data: [{ id: 'next-model', serviceTiers: [{ id: 'ultrafast' }] }]
+    } as never);
+    const heartbeat = vi.spyOn(f.session, 'keepAlive');
+    const prepared = await f.root.prepareNativeTurn({ model: 'next-model' });
+    f.native.settings = { model: 'next-model', serviceTier: 'ultrafast' };
+    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+    await f.root.refresh();
+    expect(heartbeat.mock.lastCall?.[2]).not.toHaveProperty('serviceTier');
+    expect(f.metadata().codexPendingServiceTier).toBeUndefined();
+
+    const original = f.root.client.request.bind(f.root.client);
+    let invalidated = false;
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (!invalidated && method === interruptedRead) {
+            invalidated = true;
+            expect(f.metadata().codexPendingServiceTier).toBe('ultrafast');
+            f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+        }
+        return original(method, params);
+    });
+    await f.root.recoverLostNativeTurn(prepared.params, false, prepared.previousTier,
+        prepared.generation, prepared.fallbackNotice, prepared.reconcileUltrafastModel);
+    expect(f.root.needsTierConfirmation).toBe(false);
+    expect(f.metadata()).toMatchObject({ codexServiceTierExplicit: true, codexConfirmedServiceTier: 'ultrafast' });
+    expect(f.metadata().codexPendingServiceTier).toBeUndefined();
+    expect(heartbeat.mock.lastCall?.[2]?.serviceTier).toBe('ultrafast');
+    expect(request.mock.calls.filter(([method]) => method === 'thread/resume')).toHaveLength(2);
+    expect(request.mock.calls.some(([method]) => method === 'turn/start')).toBe(false);
+});
+
 it.each(['ultrafast', 'default'])('preserves accepted native Ultrafast if the wrapper stops before an effective %s read', async effective => {
     const f = await fixture({ bindTier: 'default' });
     await f.root.activate();
