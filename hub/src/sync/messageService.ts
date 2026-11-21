@@ -236,6 +236,8 @@ export class MessageService {
     private readonly activeCancels = new Set<string>()
     /** Ack budget for the forced retry emit: must cover the CLI's preparation reuse gate. */
     private static readonly FORCED_RETRY_ACK_TIMEOUT_MS = 5000
+    /** Cancels deferred by the deliver-now mutex, replayed once delivery settles. */
+    private readonly deferredCancels = new Map<string, { sessionId: string; messageId: string }>()
 
     constructor(
         private readonly store: Store,
@@ -624,6 +626,10 @@ export class MessageService {
         if (coordinationLocalId && coordinationCancellable) {
             const key = `${sessionId}:${coordinationLocalId}`
             if (this.activeDeliverNow.has(key)) {
+                // Deferred, not dropped: once the delivery settles, the
+                // intent replays automatically (a no-op if the row was
+                // delivered and consumed meanwhile).
+                this.deferredCancels.set(key, { sessionId, messageId })
                 return { status: 'busy', localId: coordinationLocalId }
             }
             this.activeCancels.add(key)
@@ -992,49 +998,41 @@ export class MessageService {
             return { status: 'busy', localId: lookup.localId }
         }
         this.activeDeliverNow.add(deliverKey)
+        let deliveryAdmitted = false
         try {
             const roomName = `session:${sessionId}`
             const cliCount = this.io.of('/cli').adapter.rooms.get(roomName)?.size ?? 0
             if (this.store.isOpenCodeClearDeliveryGated(sessionId) || cliCount !== 1) {
                 return { status: 'unavailable', localId: lookup.localId }
             }
-            // Ordering guard: an OpenCode /clear is a queue transition, and
-            // the runner's release path owns it — Send-now never force-
-            // delivers a clear row itself. For prompt rows, a queued clear
-            // must reach the worker before anything queued AFTER it, so
-            // those follow-ups are refused; rows queued before the clear are
-            // safe to deliver. The matcher mirrors the runner's
+            // Ordering guard: an OpenCode /clear or /compact is a queue
+            // transition the runner's release path owns — Send-now never
+            // force-delivers one, and while a clear is queued EVERY row is
+            // refused (a prompt queued before it would be re-enqueued behind
+            // the runner's isolated clear batch, silently crossing the
+            // boundary). The matchers mirror the runner's
             // resolveOpencodeSlashCommand (case-insensitive, leading
-            // whitespace, trailing arguments); a user extension overriding
-            // /clear cannot be known hub-side and stays out of scope.
-            // Future-scheduled rows are excluded from the boundary: they
-            // mature through the scheduler and their FIFO position only
-            // applies from maturity.
-            {
+            // whitespace, trailing arguments); future-scheduled rows leave
+            // the boundary until they mature. Re-checked after the probe: a
+            // clear can arrive while it is in flight.
+            const openCodeBoundaryRefuses = (): boolean => {
                 const flavor = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.flavor
-                if (flavor === 'opencode') {
-                    const isClearRow = (row: { content: unknown }) => {
-                        const content = row.content as { role?: unknown; content?: { type?: unknown; text?: unknown } } | null
-                        return content?.role === 'user' && content.content?.type === 'text'
-                            && /^\s*\/clear(?:\s|$)/i.test(String(content.content.text ?? ''))
-                    }
-                    const queuedRows = this.store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
-                    const targetRow = queuedRows.find((row) => row.id === lookup.resolvedId)
-                    if (targetRow !== undefined && isClearRow(targetRow)) {
-                        return { status: 'unavailable', localId: lookup.localId }
-                    }
-                    const boundaryRows = queuedRows.filter((row) => row.scheduledAt == null || row.scheduledAt <= Date.now())
-                    const firstClearIndex = boundaryRows.findIndex(isClearRow)
-                    if (firstClearIndex >= 0) {
-                        // Refuse every row while a clear is queued, not only
-                        // follow-ups: a prompt queued BEFORE the clear would be
-                        // re-enqueued behind the runner's isolated clear batch,
-                        // silently moving it across the boundary. The clear
-                        // transitions through the normal release path, after
-                        // which Send-now works again.
-                        return { status: 'unavailable', localId: lookup.localId }
-                    }
+                if (flavor !== 'opencode') return false
+                const isSpecialRow = (row: { content: unknown }, pattern: RegExp) => {
+                    const content = row.content as { role?: unknown; content?: { type?: unknown; text?: unknown } } | null
+                    return content?.role === 'user' && content.content?.type === 'text'
+                        && pattern.test(String(content.content.text ?? ''))
                 }
+                const queuedRows = this.store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
+                const targetRow = queuedRows.find((row) => row.id === lookup.resolvedId)
+                if (targetRow !== undefined && (isSpecialRow(targetRow, /^\s*\/clear(?:\s|$)/i) || isSpecialRow(targetRow, /^\s*\/compact(?:\s|$)/i))) {
+                    return true
+                }
+                const boundaryRows = queuedRows.filter((row) => row.scheduledAt == null || row.scheduledAt <= Date.now())
+                return boundaryRows.some((row) => isSpecialRow(row, /^\s*\/clear(?:\s|$)/i))
+            }
+            if (openCodeBoundaryRefuses()) {
+                return { status: 'unavailable', localId: lookup.localId }
             }
 
             const probe = await this.requestCliCancelAck(sessionId, lookup.localId, messageId, 500)
@@ -1054,6 +1052,11 @@ export class MessageService {
             }
             if (refreshed.status === 'absent') return { status: 'not-found' }
             if (refreshed.status !== 'queued') {
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            if (openCodeBoundaryRefuses()) {
+                // A clear (or compact) matured or arrived while the probe was
+                // in flight; the pre-probe snapshot is stale.
                 return { status: 'unavailable', localId: lookup.localId }
             }
             const message = this.store.messages.getMessageById(sessionId, lookup.resolvedId)
@@ -1082,8 +1085,11 @@ export class MessageService {
             // sole member: membership can change between the two emits, and a
             // second runner joining means multi-client semantics the probe
             // never validated. Either way, nothing is emitted.
-            const roomSockets = this.io.of('/cli').adapter.rooms.get(roomName)
-            if (probe.responderId === null || roomSockets?.size !== 1 || !roomSockets.has(probe.responderId)) {
+            const soleMemberIs = (socketId: string): boolean => {
+                const members = this.io.of('/cli').adapter.rooms.get(roomName)
+                return members?.size === 1 && members.has(socketId)
+            }
+            if (probe.responderId === null || !soleMemberIs(probe.responderId)) {
                 return { status: 'unavailable', localId: lookup.localId }
             }
             const room = this.io.of('/cli').to(probe.responderId)
@@ -1106,9 +1112,33 @@ export class MessageService {
                 // rather than degrading it to indeterminate.
                 return { status: 'unavailable', localId: lookup.localId }
             }
+            if (probe.responderId === null || !soleMemberIs(probe.responderId)) {
+                // The sole-member invariant broke between the emit and the
+                // admission. Best-effort rollback of the copy the probe-cleared
+                // socket just admitted (the cancel fan-out also reaches any
+                // copy a joining runner replayed), so the row cannot execute
+                // twice; the caller sees the row as still queued.
+                void this.requestCliCancelAck(sessionId, lookup.localId, messageId, 500)
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            deliveryAdmitted = true
             return { status: 'delivered', localId: message.localId }
         } finally {
             this.activeDeliverNow.delete(deliverKey)
+            const deferred = this.deferredCancels.get(deliverKey)
+            if (deferred && !deliveryAdmitted) {
+                this.deferredCancels.delete(deliverKey)
+                // Replay only when delivery did NOT admit the copy: the row is
+                // still queued and the user's cancel lands. After a successful
+                // admission the prompt is in flight — cancelling then would
+                // kill the delivery the user just requested; invocation is
+                // still governed by the normal messages-consumed ack.
+                queueMicrotask(() => {
+                    void this.cancelQueuedMessage(deferred.sessionId, deferred.messageId)
+                })
+            } else if (deferred) {
+                this.deferredCancels.delete(deliverKey)
+            }
         }
     }
 

@@ -2648,4 +2648,136 @@ describe('MessageService deliverQueuedMessageNow', () => {
         expect(calls).toBe(2)
         store.close()
     })
+    it('refuses when an OpenCode /clear arrives while the probe is in flight', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-clear-during-probe', { path: '/tmp/x', flavor: 'opencode' }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'prompt' } }, 'during-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                // The clear lands while the probe is awaiting its ack.
+                store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/clear' } }, 'late-clear-q')
+                ack(null, [{ removed: false }])
+                return
+            }
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'during-q'))
+            .toEqual({ status: 'unavailable', localId: 'during-q' })
+        expect(calls).toBe(1)
+        store.close()
+    })
+
+    it('refuses deliver-now for a queued OpenCode /compact row', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-compact', { path: '/tmp/x', flavor: 'opencode' }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/compact' } }, 'compact-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'compact-q'))
+            .toEqual({ status: 'unavailable', localId: 'compact-q' })
+        expect(calls).toBe(0)
+        store.close()
+    })
+
+    it('rolls back an admitted copy when the sole-member invariant breaks during the retry emit', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-rollback')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'rollback' } }, 'rb-q')
+        let calls = 0
+        const broadcastRoom = {
+            timeout: (_ms: number) => ({
+                emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                    calls += 1
+                    // 1 = probe, 2 = retry (accepted), 3/4 = rollback cancel
+                    // fan-out to both sockets now in the room.
+                    callback(null, calls === 1
+                        ? [{ removed: false }]
+                        : [{ removed: false, accepted: true }])
+                }
+            }),
+            emit: () => {}
+        }
+        // socket-0 alone at entry and probe; socket-1 joins before the retry
+        // emit resolves, breaking the sole-member invariant at admission.
+        const io = {
+            of: (_ns: string) => ({
+                to: () => broadcastRoom,
+                adapter: { rooms: { get: () => new Set(calls <= 1 ? ['socket-0'] : ['socket-0', 'socket-1']) } }
+            })
+        } as unknown as Server
+        const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'rb-q'))
+            .toEqual({ status: 'unavailable', localId: 'rb-q' })
+        // Probe + retry + rollback cancel fan-out all left the hub; the row
+        // reads as still queued to the caller.
+        expect(calls).toBe(4)
+        expect(store.messages.lookupQueuedMessage(session.id, 'rb-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('replays a deferred cancel once a delivery fails, and not after it succeeds', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-deferred-cancel')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'defer' } }, 'dc-q')
+        let release: () => void = () => {}
+        const gate = new Promise<void>(resolve => { release = resolve })
+        let calls = 0
+        let acceptRetry = false
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                void gate.then(() => ack(null, [{ removed: false }]))
+                return
+            }
+            ack(null, [{ removed: false, accepted: acceptRetry }])
+        }), makePublisher() as unknown as EventPublisher)
+        const delivering = service.deliverQueuedMessageNow(session.id, 'dc-q')
+        // Cancel defers (busy) and records the intent.
+        expect(await service.cancelQueuedMessage(session.id, 'dc-q'))
+            .toEqual({ status: 'busy', localId: 'dc-q' })
+        // Failure path: retry refused -> deferred cancel replays -> row cancels.
+        acceptRetry = false
+        release()
+        expect(await delivering).toEqual({ status: 'unavailable', localId: 'dc-q' })
+        await new Promise(resolve => setTimeout(resolve, 20))
+        // The replayed cancel could not prove CLI removal (no flavor queue in
+        // this harness), so the row moved to the explicit-resolution state
+        // instead of being deleted outright.
+        expect(store.messages.lookupQueuedMessage(session.id, 'dc-q').status).toBe('indeterminate')
+        store.close()
+    })
+
+    it('does not replay a deferred cancel after a successful delivery', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-deferred-keep')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'keep' } }, 'dk-q')
+        let release: () => void = () => {}
+        const gate = new Promise<void>(resolve => { release = resolve })
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                void gate.then(() => ack(null, [{ removed: false }]))
+                return
+            }
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        const delivering = service.deliverQueuedMessageNow(session.id, 'dk-q')
+        expect(await service.cancelQueuedMessage(session.id, 'dk-q'))
+            .toEqual({ status: 'busy', localId: 'dk-q' })
+        release()
+        expect(await delivering).toEqual({ status: 'delivered', localId: 'dk-q' })
+        await new Promise(resolve => setTimeout(resolve, 20))
+        // The admitted copy stays in flight; invocation is still owned by the
+        // normal consumption ack. No extra cancel probe went out.
+        expect(calls).toBe(2)
+        expect(store.messages.lookupQueuedMessage(session.id, 'dk-q').status).toBe('queued')
+        store.close()
+    })
+
 })

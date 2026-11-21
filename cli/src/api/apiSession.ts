@@ -213,6 +213,13 @@ export class ApiSessionClient extends EventEmitter {
     private cancelQueuedMessageCallback: ((localId: string) => QueueCancelResult | Promise<QueueCancelResult>) | null = null
     private retryQueuedMessageCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
     private beforeReuseLocalIdCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
+    /**
+     * Upper bound for the preparation reuse gate during a forced retry — kept
+     * just under the hub's forced-retry ack budget so the hub never times out
+     * while the CLI still admits the copy afterwards (which would leave the
+     * row queued and invite a duplicate delivery).
+     */
+    private static readonly REUSE_GATE_DEADLINE_MS = 4500
     /** localIds whose forced-retry reuse gate is currently awaiting flavor preparation, with overlap counts. */
     private readonly inFlightForcedRetries = new Map<string, number>()
     /** localIds cancelled while their forced-retry gate was in flight; the retry must not dispatch. */
@@ -474,8 +481,20 @@ if (isReconnect) {
                             const pending = this.inFlightForcedRetries.get(data.body.localId) ?? 0
                             this.inFlightForcedRetries.set(data.body.localId, pending + 1)
                             try {
-                                const gateAllowed = await this.beforeReuseLocalIdCallback(data.body.localId) === true
-                                accepted = gateAllowed && !this.invalidatedForcedRetries.has(data.body.localId)
+                                const gate = Promise.resolve(this.beforeReuseLocalIdCallback(data.body.localId))
+                                const settled = gate.then(() => true as const)
+                                const deadline = new Promise<false>((resolve) => {
+                                    const timer = setTimeout(() => resolve(false), ApiSessionClient.REUSE_GATE_DEADLINE_MS)
+                                    timer.unref?.()
+                                })
+                                const withinBudget = await Promise.race([settled, deadline])
+                                // Past the ack budget the hub has (or is about
+                                // to) treat the emit as refused; admitting the
+                                // copy afterwards would desynchronize the two
+                                // sides, so the retry is dropped instead.
+                                accepted = withinBudget
+                                    && await gate === true
+                                    && !this.invalidatedForcedRetries.has(data.body.localId)
                             } finally {
                                 const remaining = (this.inFlightForcedRetries.get(data.body.localId) ?? 1) - 1
                                 if (remaining <= 0) {
