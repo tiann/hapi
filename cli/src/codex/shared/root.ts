@@ -102,6 +102,10 @@ export class SharedCodexRoot {
     private tierAdmissionPending = false;
     beginTierConfirmation(): void { this.tierAdmissionPending = true; this.publishSteering(); }
     get needsTierConfirmation(): boolean { return this.tierAdmissionPending || this.tierConfirmationPending; }
+    requiresEffectiveFastConfirmation(tier: unknown, explicit?: boolean): boolean {
+        const metadata = this.session.getMetadata();
+        return tier === 'priority' && (explicit === true || metadata?.codexServiceTierExplicit === true || metadata?.codexPendingServiceTier === 'fast');
+    }
     assertForkTierConfirmed(): void {
         if (this.needsTierConfirmation) throw new Error('Confirm the service tier in settings before forking this conversation.');
     }
@@ -414,7 +418,7 @@ export class SharedCodexRoot {
         }));
     }
     get isActivated(): boolean { return this.activated; }
-    async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean, expectedResumeTier?: unknown): Promise<void> {
+    async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean, expectedResumeTier?: unknown, explicitTier?: boolean): Promise<void> {
         if (this.threadId && this.threadId !== threadId) throw new Error('Cannot retarget a shared HAPI session');
         this.threadId = threadId;
         // Keep the queue and projection when retrying a failed native read.
@@ -427,7 +431,7 @@ export class SharedCodexRoot {
         }
         this.modelProvider = string(response.modelProvider) ?? string(record(response.thread).modelProvider);
         this.acceptSettings(this.host.settingsFor(threadId) ?? {}, false); this.acceptSettings(response, true);
-        this.confirmResumeTier(response, expectedResumeTier);
+        this.confirmResumeTier(response, expectedResumeTier, explicitTier);
         if (expectedResumeTier !== 'priority' && expectedResumeTier !== 'flex' && this.hasConfirmedStandardTier) {
             this.tierConfirmationPending = false;
             this.tierConfirmationResolved = true;
@@ -436,7 +440,7 @@ export class SharedCodexRoot {
         if (!this.host.attached) await this.projectHistory(this.projection, response.thread);
         await this.refresh(); await this.refreshChildren(true);
     }
-    confirmResumeTier(response: Record<string, unknown>, expected: unknown): void {
+    confirmResumeTier(response: Record<string, unknown>, expected: unknown, explicitTier?: boolean): void {
         if ((expected === null || expected === 'default') && typeof response.model === 'string'
             && response.serviceTier === null && this.settingsNative.serviceTier === null) {
             this.confirmedNativeStandardReset = true;
@@ -448,12 +452,14 @@ export class SharedCodexRoot {
         if (expected !== 'priority' && expected !== 'flex') return;
         const tier = fromCodexServiceTier(expected);
         const metadata = this.session.getMetadata();
-        const deferredFast = expected === 'priority' && metadata?.codexPendingServiceTier === 'fast';
+        const verifyFast = this.requiresEffectiveFastConfirmation(expected, explicitTier);
         const effective = fromCodexServiceTier(response.serviceTier) === tier && this.settings.serviceTier === tier;
-        if (deferredFast && !effective) {
-            this.pauseTierConfirmation(++this.tierOperationCounter, true,
-                'Codex could not confirm the requested Fast tier. Input is paused. Select a service tier in settings to continue.');
-        } else if (effective && (deferredFast || metadata?.codexTierConfirmationPending === true)) {
+        if (verifyFast && !effective) {
+            this.pauseTierConfirmation(++this.tierOperationCounter, {
+                retainConfirmedTier: true, pendingTier: 'fast',
+                message: 'Codex could not confirm the requested Fast tier. Input is paused. Select a service tier in settings to continue.'
+            });
+        } else if (effective && (verifyFast || metadata?.codexTierConfirmationPending === true)) {
             this.tierConfirmationResolved = true;
             this.tierConfirmationPending = false;
         }
@@ -898,7 +904,7 @@ export class SharedCodexRoot {
                 : metadata);
         }
         if (this.activated && !await this.session.flushMetadata()) {
-            this.pauseTierConfirmation(operationId, true);
+            this.pauseTierConfirmation(operationId, { retainConfirmedTier: true });
             throw new Error('Codex applied the tier, but HAPI could not confirm saving it. Reconnect before changing the service tier.');
         }
         if (!this.isCurrentTierOperation(operationId) || this.closed || this.stopping) return;
@@ -1086,20 +1092,24 @@ export class SharedCodexRoot {
         } catch {
             if (!current()) return;
             // Input has already been accepted. Never return a send error inviting a duplicate.
-            if (confirmsTier) this.pauseTierConfirmation(operationId, this.confirmedTierOperation === operationId);
+            if (confirmsTier) this.pauseTierConfirmation(operationId, { retainConfirmedTier: this.confirmedTierOperation === operationId });
             this.notice('Codex accepted the turn, but its settings could not be confirmed. Reconnect before changing the service tier.');
         }
     }
-    private pauseTierConfirmation(operationId: number, retainConfirmedTier = false,
-        message = 'Codex settings confirmation is pending. Confirm Standard in settings before sending more input.'): void {
+    private pauseTierConfirmation(operationId: number, {
+        retainConfirmedTier = false, pendingTier,
+        message = 'Codex settings confirmation is pending. Confirm Standard in settings before sending more input.'
+    }: { retainConfirmedTier?: boolean; pendingTier?: 'fast'; message?: string } = {}): void {
         if (!this.isCurrentTierOperation(operationId)) return;
         const newerPause = operationId > this.pendingTierOperation;
         this.tierConfirmationResolved = false;
         this.pendingTierOperation = Math.max(this.pendingTierOperation, operationId);
         const metadata = this.session.getMetadata();
-        if (newerPause || metadata?.codexTierConfirmationPending !== true || !retainConfirmedTier && metadata.codexConfirmedServiceTier !== undefined) {
+        if (newerPause || metadata?.codexTierConfirmationPending !== true || !retainConfirmedTier && metadata.codexConfirmedServiceTier !== undefined
+            || pendingTier !== undefined && metadata?.codexPendingServiceTier !== pendingTier) {
             this.session.updateMetadata(metadata => this.isCurrentTierOperation(operationId)
                 ? { ...metadata, codexTierConfirmationPending: true,
+                    ...(pendingTier ? { codexPendingServiceTier: pendingTier } : {}),
                     codexConfirmedServiceTier: retainConfirmedTier ? metadata.codexConfirmedServiceTier : undefined }
                 : metadata);
         }

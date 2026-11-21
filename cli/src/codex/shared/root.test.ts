@@ -425,7 +425,7 @@ it('keeps imported tier intent unset until a tier is chosen', async () => {
 });
 
 it.each(['priority', null])('activates a cold deferred Fast choice only when the effective tier confirms it (%s)', async bindTier => {
-    const f = await fixture({ initialPendingFast: true, bindTier, expectedResumeTier: 'priority' });
+    const f = await fixture({ initialFast: 'deferred', bindTier, expectedResumeTier: 'priority' });
     await f.root.activate({}, true);
     expect(f.root.needsTierConfirmation).toBe(bindTier === null);
     if (bindTier === null) {
@@ -439,6 +439,16 @@ it.each(['priority', null])('activates a cold deferred Fast choice only when the
     }
     expect(f.sessionReady).toHaveBeenCalledTimes(1);
     expect(f.metadata().codexPendingServiceTier).toBeUndefined();
+});
+
+it('keeps a confirmed Fast choice pending if Codex filters it on cold resume', async () => {
+    const f = await fixture({ initialFast: 'confirmed', bindTier: null, expectedResumeTier: 'priority' });
+    await f.root.activate();
+    expect(f.root.needsTierConfirmation).toBe(true);
+    expect(f.metadata()).toMatchObject({
+        codexConfirmedServiceTier: 'fast', codexPendingServiceTier: 'fast', codexTierConfirmationPending: true
+    });
+    expect(f.sessionReady).not.toHaveBeenCalled();
 });
 
 it.each(['current', 'latest', 'clear'])('passes Plan into activation and returns the recoverable %s child without a second settings write', async kind => {
@@ -457,7 +467,7 @@ it.each(['current', 'latest', 'clear'])('passes Plan into activation and returns
 });
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
-    initialTierPending?: boolean; initialPendingFast?: boolean; holdTierMetadata?: boolean; bindTier?: string | null; expectedResumeTier?: string;
+    initialTierPending?: boolean; initialFast?: 'deferred' | 'confirmed'; holdTierMetadata?: boolean; bindTier?: string | null; expectedResumeTier?: string;
     startupCatalogConfig?: unknown; nativeImport?: boolean;
     attached?: boolean; settingsFor?: RootHost['settingsFor']; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
@@ -465,7 +475,8 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex',
         ...(opts?.nativeImport ? {} : { codexServiceTierExplicit: false }),
         ...(opts?.initialTierPending ? { codexTierConfirmationPending: true } : {}),
-        ...(opts?.initialPendingFast ? { codexPendingServiceTier: 'fast' } : {}) };
+        ...(opts?.initialFast === 'deferred' ? { codexPendingServiceTier: 'fast' } : {}),
+        ...(opts?.initialFast === 'confirmed' ? { codexServiceTierExplicit: true, codexConfirmedServiceTier: 'fast' } : {}) };
     if (opts?.attached) metadata.codexRuntime = { kind: 'attached', bindingId: '11111111-1111-4111-8111-111111111111', state: 'attached' };
     let reconnect: (() => void) | null = null;
     let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;

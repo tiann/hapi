@@ -855,9 +855,11 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
 
             // The Runner opens the native thread before its HAPI root is bound.
             await configure('default', false);
-            const deferredFast = state.sessions.get(childSid)!;
-            deferredFast.metadata.codexPendingServiceTier = 'fast';
-            deferredFast.metadata.codexTierConfirmationPending = false;
+            const savedFast = state.sessions.get(childSid)!;
+            savedFast.metadata.codexServiceTierExplicit = true;
+            savedFast.metadata.codexConfirmedServiceTier = 'fast';
+            savedFast.metadata.codexPendingServiceTier = undefined;
+            savedFast.metadata.codexTierConfirmationPending = false;
             let enterFastBind!: () => void;
             const fastBindEntered = new Promise<void>(resolve => { enterFastBind = resolve; });
             const fastBindGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
@@ -872,7 +874,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             let reportFastReady!: () => void;
             const fastReady = new Promise<void>(resolve => { reportFastReady = resolve; });
             const fastDone = runSharedRuntime({ startedBy: 'runner', workingDirectory: validatedCwd, resumeSessionId: child.thread.id,
-                existingSessionId: childSid, serviceTier: 'fast' }, reportFastReady, fastAbort.signal);
+                existingSessionId: childSid }, reportFastReady, fastAbort.signal);
             running.push({ abort: fastAbort, done: fastDone });
             const stoppedEarly = fastDone.then(() => { throw new Error('Cold Fast runtime exited before activation'); });
             await Promise.race([fastBindEntered, stoppedEarly]);
@@ -886,7 +888,9 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             } finally { releaseLaunch(); }
             await Promise.race([fastReady, stoppedEarly]);
             const paused = state.sessions.get(childSid)!;
-            expect(paused.metadata).toMatchObject({ codexPendingServiceTier: 'fast', codexTierConfirmationPending: true });
+            expect(paused.metadata).toMatchObject({
+                codexConfirmedServiceTier: 'fast', codexPendingServiceTier: 'fast', codexTierConfirmationPending: true
+            });
             expect(paused.readySignals).toBe(0);
             expect(paused.messages).toContainEqual({ type: 'message', message: expect.stringContaining('could not confirm the requested Fast tier') });
             await expect(fastClient.request('turn/start', turnInput)).rejects.toThrow('tier confirmation is pending');

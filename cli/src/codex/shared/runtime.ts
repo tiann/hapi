@@ -50,10 +50,9 @@ function rejoinThreadParams(params: Record<string, unknown>): Record<string, unk
     // subscribers have disconnected. Rejoin the already accepted settings.
     return { threadId: params.threadId, excludeTurns: params.excludeTurns, initialTurnsPage: params.initialTurnsPage };
 }
-function requiresTierAdmission(root: SharedCodexRoot, tier: unknown, downgraded: boolean): boolean {
-    const metadata = root.session.getMetadata();
-    return downgraded || tier === 'ultrafast' || metadata?.codexTierConfirmationPending === true
-        || tier === 'priority' && metadata?.codexPendingServiceTier === 'fast';
+function requiresTierAdmission(root: SharedCodexRoot, tier: unknown, downgraded: boolean, explicitTier?: boolean): boolean {
+    return downgraded || tier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true
+        || root.requiresEffectiveFastConfirmation(tier, explicitTier);
 }
 async function freePort(): Promise<number> {
     const server = createServer();
@@ -312,7 +311,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 throw new Error('Codex thread was archived during binding');
             }
         };
-        const confirmBeforeInput = requiresTierAdmission(root, requestedUltrafast ? 'ultrafast' : expectedResumeTier, downgraded);
+        const confirmBeforeInput = requiresTierAdmission(root, requestedUltrafast ? 'ultrafast' : expectedResumeTier, downgraded, serviceTierExplicit);
         if (resume || confirmBeforeInput) pendingAdmission.add(threadId);
         if (!reserved) await reserve(root, threadId);
         if (ending.has(root)) throw new Error('Codex thread was archived during binding');
@@ -325,14 +324,14 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             roots.set(threadId, root);
         }
         if (!resume?.rootBound || subscribe && !root.client.isInitialized()) {
-            await root.bind(threadId, response, subscribe, expectedResumeTier);
+            await root.bind(threadId, response, subscribe, expectedResumeTier, serviceTierExplicit);
             // A new thread starts with zero cumulative usage. Seed once before
             // activation, including when the first bind had to be retried.
             if (freshThread && !resume?.rootBound) root.seedFreshUsage();
             if (resume) resume.rootBound = true;
         } else {
             root.acceptSettings(response, true);
-            root.confirmResumeTier(response, expectedResumeTier);
+            root.confirmResumeTier(response, expectedResumeTier, serviceTierExplicit);
         }
         assertRunning();
         if (resume?.controlSubscription !== controlGeneration) {
@@ -565,12 +564,13 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 : params;
             const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, undefined, savedThread, startupCatalogConfig);
             if (request.method === 'thread/fork') existing?.assertForkTierConfirmed();
+            const serviceTierExplicit = params.serviceTier !== undefined || request.method === 'thread/resume' && metadata?.codexPendingServiceTier !== undefined
+                ? true : request.method === 'thread/resume' ? undefined : false;
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
                 freshThread: request.method === 'thread/start', executionParams: tier.params,
-                serviceTierExplicit: params.serviceTier !== undefined || request.method === 'thread/resume' && metadata?.codexPendingServiceTier !== undefined
-                    ? true : request.method === 'thread/resume' ? undefined : false,
+                serviceTierExplicit,
                 requestedUltrafast: tier.params.serviceTier === 'ultrafast', downgraded: tier.downgraded });
-            if (request.method === 'thread/resume' && threadId && requiresTierAdmission(root, tier.params.serviceTier, tier.downgraded)) {
+            if (request.method === 'thread/resume' && threadId && requiresTierAdmission(root, tier.params.serviceTier, tier.downgraded, serviceTierExplicit)) {
                 pendingAdmission.add(threadId);
             }
             return { ...request, params: root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
@@ -734,8 +734,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined);
             const resolved = await resolveUltrafastLaunch(control, 'thread/resume', { ...resumeParams, cwd: root.bootstrap.workingDirectory }, root.bootstrap.workingDirectory, undefined, thread, startupCatalogConfig);
             const downgraded = resolved.downgraded;
+            const serviceTierExplicit = explicitParams.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined ? true : undefined;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
-            if (requiresTierAdmission(root, resolved.params.serviceTier, downgraded)) pendingAdmission.add(threadId);
+            if (requiresTierAdmission(root, resolved.params.serviceTier, downgraded, serviceTierExplicit)) pendingAdmission.add(threadId);
             const response = await serializeNativeLifecycle(threadId, async () => {
                 assertRunning();
                 if (ownedRoot(threadId) !== root || ending.has(root)) throw new Error('Codex thread was archived during resume');
@@ -751,7 +752,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                     return record(await root.client.request('thread/resume', params));
                 }
             });
-            await bind(root, response, false, options, false, explicitParams.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined ? true : undefined,
+            await bind(root, response, false, options, false, serviceTierExplicit,
                 resolved.params.serviceTier === 'ultrafast', downgraded, undefined, resolved.params.serviceTier);
         } else root = await create('thread/start', { ...await launchThreadParams(launch.cwd), cwd: launch.cwd }, undefined, options);
         assertRunning();
