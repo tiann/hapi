@@ -126,6 +126,7 @@ describe('bootstrapExistingSession', () => {
         const session = createSession();
         session.metadata = { ...session.metadata!, codexServiceTierExplicit: explicit, codexTierConfirmationPending: explicit,
             codexConfirmedServiceTier: 'fast', codexPendingServiceTier: 'standard',
+            codexInheritedTierDiscoveryPending: explicit === false ? true : undefined,
             ...(explicit === undefined ? { codexPreserveNativeTier: true } : {}) };
         const sessionClient = { updateMetadata: vi.fn() };
         getSessionMock.mockResolvedValue(session);
@@ -135,16 +136,19 @@ describe('bootstrapExistingSession', () => {
         const result = await bootstrapExistingSession({ sessionId: session.id, flavor: 'codex', workingDirectory: '/tmp/project' });
         expect(result.metadata.codexServiceTierExplicit).toBe(explicit);
         expect(result.metadata.codexTierConfirmationPending).toBe(explicit);
+        expect(result.metadata.codexInheritedTierDiscoveryPending).toBe(explicit === false ? true : undefined);
         expect(result.metadata.codexPendingServiceTier).toBe('standard');
         expect(result.metadata.codexConfirmedServiceTier).toBe('fast');
         expect(result.metadata.codexPreserveNativeTier).toBe(explicit === undefined ? true : undefined);
         const rebuild = sessionClient.updateMetadata.mock.calls[0][0];
         expect(rebuild(session.metadata).codexServiceTierExplicit).toBe(explicit);
         expect(rebuild(session.metadata).codexTierConfirmationPending).toBe(explicit);
+        expect(rebuild(session.metadata).codexInheritedTierDiscoveryPending).toBe(explicit === false ? true : undefined);
         expect(rebuild(session.metadata).codexPreserveNativeTier).toBe(explicit === undefined ? true : undefined);
         expect(rebuild({ ...session.metadata, codexPendingServiceTier: 'ultrafast' }).codexPendingServiceTier).toBe('ultrafast');
         expect(rebuild({ ...session.metadata, codexConfirmedServiceTier: undefined }).codexConfirmedServiceTier).toBeUndefined();
         expect(rebuild({ ...session.metadata, codexServiceTierExplicit: !explicit }).codexServiceTierExplicit).toBe(!explicit);
+        expect(rebuild({ ...session.metadata, codexInheritedTierDiscoveryPending: undefined }).codexInheritedTierDiscoveryPending).toBeUndefined();
     });
     it('refuses local Codex resume of a CLI-archived source with a pending fork before creating a socket or changing metadata', async () => {
         const session = createSession()

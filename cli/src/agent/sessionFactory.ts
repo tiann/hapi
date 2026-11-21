@@ -167,6 +167,7 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.codexPreserveNativeTier) preserved.codexPreserveNativeTier = true
     if (metadata.codexPendingServiceTier !== undefined) preserved.codexPendingServiceTier = metadata.codexPendingServiceTier
     if (metadata.codexTierConfirmationPending !== undefined) preserved.codexTierConfirmationPending = metadata.codexTierConfirmationPending
+    if (metadata.codexInheritedTierDiscoveryPending !== undefined) preserved.codexInheritedTierDiscoveryPending = metadata.codexInheritedTierDiscoveryPending
     if (metadata.codexRuntime !== undefined) preserved.codexRuntime = metadata.codexRuntime
     if (metadata.codexSourceSessionId !== undefined) preserved.codexSourceSessionId = metadata.codexSourceSessionId
     if (metadata.geminiSessionId !== undefined) preserved.geminiSessionId = metadata.geminiSessionId
