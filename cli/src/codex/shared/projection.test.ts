@@ -3,12 +3,46 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiSessionClient } from '@/api/apiSession';
+import type { Metadata } from '@/api/types';
 import { SharedCodexProjection, inputText } from './projection';
 import { codexPlanProposalId } from './plan';
 import { extractNotifySummary } from '@hapi/protocol/messages';
 import { asyncQuestionsForItem } from './asyncQuestions';
 
 describe('shared history projection', () => {
+    it('folds backlog and repeated reconnects into one metadata write while preserving fork points', async () => {
+        let metadata: Metadata = { path: '/tmp', host: 'fixture' };
+        const updates: Array<(current: Metadata) => Metadata> = [];
+        const sendUserMessage = vi.fn();
+        const projection = new SharedCodexProjection({
+            getMetadata: () => metadata,
+            updateMetadata: (update: (current: Metadata) => Metadata) => updates.push(update),
+            sendUserMessage
+        } as unknown as ApiSessionClient, 'thread', async () => {});
+        const turns = Array.from({ length: 1_000 }, (_, index) => ({
+            id: `turn-${index}`, status: 'completed', items: [{
+                id: `item-${index}`, clientId: `prompt-${index}`, type: 'userMessage',
+                content: [{ type: 'text', text: `Prompt ${index}` }]
+            }]
+        }));
+        await projection.history({ id: 'thread', turns });
+        projection.resetAfterHubReconnect();
+        await projection.history({ id: 'thread', turns });
+        expect(updates).toHaveLength(1);
+
+        metadata = updates[0]!({ ...metadata, conversationHistoryTurns: { imported: 'other-thread' } });
+        expect(Object.keys(metadata.conversationHistoryTurns ?? {})).toHaveLength(1_001);
+        expect(metadata.conversationHistoryTurns?.['prompt-999']).toBe('turn-999');
+        expect(metadata.conversationHistoryTurns?.imported).toBe('other-thread');
+        expect(Object.keys(metadata.conversationHistoryPoints ?? {})).toHaveLength(1_000);
+        expect(updates[0]!(metadata)).toBe(metadata);
+
+        projection.resetAfterHubReconnect();
+        await projection.history({ id: 'thread', turns });
+        expect(updates).toHaveLength(1);
+        expect(sendUserMessage).toHaveBeenCalledWith('Prompt 999', undefined, 'prompt-999');
+    });
+
     it('projects accepted batch members under their original IDs and one native turn', async () => {
         let metadata: Record<string, unknown> = {};
         const user = vi.fn();

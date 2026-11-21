@@ -2,6 +2,7 @@ import { CodexRoundDuration } from '../utils/roundDuration';
 import { CodexGenerationLedger } from '../utils/codexGenerationLedger';
 import { createHash } from 'node:crypto';
 import type { ApiSessionClient } from '@/api/apiSession';
+import type { Metadata } from '@/api/types';
 import { normalizeSessionDisplayTitle } from '@/agent/sessionDisplayRename';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
 import { AppServerEventConverter } from '../utils/appServerEventConverter';
@@ -51,19 +52,31 @@ export class SharedCodexProjection {
     private readonly generation = new CodexGenerationLedger();
     private readonly emitted = new Set<string>();
     private readonly turns = new Map<string, string>();
+    private readonly firstUserByTurn = new Map<string, string>();
+    private readonly historyPoints = new Set<string>();
+    private historyUpdateQueued = false;
     private readonly turnModels = new Map<string, string>();
     // Unlike transcript emission, title side effects survive reset/replay.
     private readonly pendingTitles = new Map<string, string>();
     private readonly completedTitles = new Set<string>();
     private titleRevision = 0;
     private readonly compactionSummaries: CodexCompactionSummaryLookup;
-    private summaryThread: unknown;
+    private summaryThread?: { id: string | undefined; path: string | undefined };
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
         private readonly committed: (id: string, content?: unknown) => Promise<void | Array<{ id: string; input: unknown }>>,
         private readonly parentThreadId?: string, private readonly readSummaryThread?: () => Promise<unknown>,
         private readonly observeItem?: (threadId: string, item: unknown) => void) {
         this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
-        if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
+        if (!parentThreadId) {
+            const metadata = session.getMetadata();
+            for (const [id, turn] of Object.entries(metadata?.conversationHistoryTurns ?? {})) {
+                this.turns.set(id, turn);
+                if (!this.firstUserByTurn.has(turn)) this.firstUserByTurn.set(turn, id);
+            }
+            for (const [id, enabled] of Object.entries(metadata?.conversationHistoryPoints ?? {})) {
+                if (enabled) this.historyPoints.add(id);
+            }
+        }
     }
 
     turnFor(id: string): string | undefined { return this.turns.get(id); }
@@ -77,6 +90,45 @@ export class SharedCodexProjection {
      * resumed turn re-announces itself and re-measures from its own start.
      */
     resetAfterHubReconnect(): void { this.converter = new AppServerEventConverter(); this.emitted.clear(); }
+
+    private hasUnpublishedHistory(metadata: Metadata | null): boolean {
+        for (const [id, turn] of this.turns) {
+            if (metadata?.conversationHistoryTurns?.[id] !== turn) return true;
+        }
+        for (const id of this.historyPoints) {
+            if (metadata?.conversationHistoryPoints?.[id] !== true) return true;
+        }
+        return false;
+    }
+
+    private publishHistoryMetadata(): void {
+        if (this.historyUpdateQueued || !this.hasUnpublishedHistory(this.session.getMetadata())) return;
+
+        // Fold new mappings into one updater while it is waiting for the metadata lock.
+        this.historyUpdateQueued = true;
+        let started = false;
+        this.session.updateMetadata(current => {
+            if (!started) {
+                this.historyUpdateQueued = false;
+                started = true;
+            }
+            if (!this.hasUnpublishedHistory(current)) return current;
+            return {
+                ...current,
+                conversationHistoryTurns: { ...current.conversationHistoryTurns, ...Object.fromEntries(this.turns) },
+                conversationHistoryPoints: {
+                    ...current.conversationHistoryPoints,
+                    ...Object.fromEntries([...this.historyPoints].map(id => [id, true as const]))
+                }
+            };
+        }, { skipUnchanged: true });
+    }
+
+    private setSummaryThread(thread: unknown): void {
+        const { id, path } = record(thread);
+        this.summaryThread = { id: string(id), path: string(path) };
+    }
+
     private send(body: Record<string, unknown>, key: string): void {
         if (this.emitted.has(key)) return;
         this.emitted.add(key);
@@ -165,18 +217,17 @@ export class SharedCodexProjection {
             if (id) {
                 const aliases = await this.committed(id, item.content);
                 for (const member of aliases ?? [{ id, input: item.content }]) {
-                    const firstInTurn = turnId ? [...this.turns].find(([, value]) => value === turnId)?.[0] : undefined;
-                    if (turnId) this.turns.set(member.id, turnId);
+                    if (turnId) {
+                        if (!this.firstUserByTurn.has(turnId)) this.firstUserByTurn.set(turnId, member.id);
+                        if (this.firstUserByTurn.get(turnId) === member.id) this.historyPoints.add(member.id);
+                        this.turns.set(member.id, turnId);
+                    }
                     const text = inputText(member.input);
                     const replies = asyncQuestionReplies(text);
                     const displayText = replies.length ? replies.map(reply => [reply.question, reply.answer].filter(Boolean).join('\n')).join('\n\n') : text;
                     if (displayText) this.session.sendUserMessage(displayText, undefined, member.id);
-                    this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
-                        ...(turnId && (!firstInTurn || firstInTurn === member.id) ? {
-                            conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [member.id]: true }
-                        } : {})
-                    }));
                 }
+                if (!fromHistory) this.publishHistoryMetadata();
             }
         }
         if (this.parentThreadId && (method === 'turn/started' || method === 'turn/completed')) {
@@ -231,7 +282,7 @@ export class SharedCodexProjection {
                 }
             } else if (event.type === 'context_compacted') {
                 if (!fromHistory && this.readSummaryThread) {
-                    try { this.summaryThread = await this.readSummaryThread(); } catch { this.summaryThread = undefined; }
+                    try { this.setSummaryThread(await this.readSummaryThread()); } catch { this.summaryThread = undefined; }
                 }
                 const compact = turnId && itemId ? await this.compactionSummaries.find(this.summaryThread, turnId, itemId, fromHistory ? { attempts: 1 } : undefined) : null;
                 if (compact) {
@@ -332,7 +383,12 @@ export class SharedCodexProjection {
     }
 
     async history(thread: unknown): Promise<void> {
-        if (record(thread).id === this.threadId) this.summaryThread = thread;
+        try { await this.projectHistory(thread); }
+        finally { this.publishHistoryMetadata(); }
+    }
+
+    private async projectHistory(thread: unknown): Promise<void> {
+        if (record(thread).id === this.threadId) this.setSummaryThread(thread);
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
         const titleRevision = this.titleRevision;
