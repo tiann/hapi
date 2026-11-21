@@ -721,6 +721,12 @@ export function HappyThread(props: {
     isSyncingTail: boolean
     /** Cached re-entry: rendering the persisted window while the authoritative latest-page fetch is in flight. */
     isCatchingUpFromCache?: boolean
+    /**
+     * Cached re-entry of a hydrated tail window (viewMode 'tail', no
+     * requiresLatestReset): the rendered rows are the best available tail and
+     * the initial bottom scroll must not wait for the authoritative fetch.
+     */
+    cachedTailFirstFrame?: boolean
     messagesWarning: string | null
     hasMoreMessages: boolean
     /** A context window still has messages between it and the session head. */
@@ -1848,11 +1854,20 @@ export function HappyThread(props: {
     ])
 
     useLayoutEffect(() => {
+        // Cached re-entry fast path: a hydrated tail window (usable cursor
+        // kept; not a retained history window — those carry
+        // requiresLatestReset and keep the settle-first gate) already renders
+        // the best available tail rows. Land the initial bottom scroll on the
+        // first frame instead of waiting for the authoritative latest-page
+        // fetch to settle (a 350-450ms network leg), which painted the top of
+        // the window first and then jumped to the bottom. Search-target opens
+        // and history/cold windows keep the original gate below.
+        const cachedTailReady = props.cachedTailFirstFrame === true
         if (
             props.initialTargetMessageId?.trim()
             || searchTargetHistoryLockRef.current
             || initialScrollSessionRef.current === props.sessionId
-            || props.isSyncingTail
+            || (props.isSyncingTail && !cachedTailReady)
             || props.rawMessagesCount === 0
             || appliedMessagesVersion !== props.messagesVersion
             || hasBlockingScrollRestore()
@@ -1888,6 +1903,7 @@ export function HappyThread(props: {
         props.sessionId,
         props.initialTargetMessageId,
         props.isSyncingTail,
+        props.cachedTailFirstFrame,
         props.rawMessagesCount,
         props.messagesVersion,
         appliedMessagesVersion,
