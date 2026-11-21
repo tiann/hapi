@@ -109,6 +109,7 @@ export function flattenConfigOptionChoices(rawOptions: unknown[]): Array<{ value
 
 type AcpInitializeResult = {
     protocolVersion: number;
+    agentVersion?: string;
     authMethods?: Array<{ id: string; name?: string }>;
     agentCapabilities?: {
         loadSession?: boolean;
@@ -359,6 +360,7 @@ export class AcpSdkBackend implements AgentBackend {
 
         this.initializeResult = {
             protocolVersion: response.protocolVersion,
+            agentVersion: isObject(response.agentInfo) ? asString(response.agentInfo.version) ?? undefined : undefined,
             authMethods: Array.isArray(response.authMethods)
                 ? response.authMethods
                     .filter((entry): entry is Record<string, unknown> => isObject(entry))
@@ -401,6 +403,15 @@ export class AcpSdkBackend implements AgentBackend {
             // Cursor advertises cursor_login but may not implement _client/authenticate yet.
             logger.debug(`[ACP] authenticate skipped (${methodId})`, error);
         }
+    }
+
+    /** False until the first prompt: live updates before that have no handler and are dropped. */
+    hasMessageHandler(): boolean {
+        return this.messageHandler !== null;
+    }
+
+    getAgentVersion(): string | null {
+        return this.initializeResult?.agentVersion ?? null;
     }
 
     supportsLoadSession(): boolean {
@@ -1262,6 +1273,12 @@ export class AcpSdkBackend implements AgentBackend {
 
     getLastSessionUpdateAt(): number {
         return this.lastSessionUpdateAt;
+    }
+
+    /** Emit and seal text still buffered on the current handler, e.g. an idle wakeup reply. */
+    async flushPendingMessageBuffers(): Promise<void> {
+        await this.sessionUpdateQueue;
+        this.messageHandler?.drainBuffers();
     }
 
     /**

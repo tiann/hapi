@@ -2941,3 +2941,96 @@ describe('AcpSdkBackend num_turns extraction (google-antigravity/antigravity-cli
         expect(backend.extractNumTurns({ usage: { num_turns: 2.9 } })).toBe(3);
     });
 });
+
+describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () => {
+    it('captures agentInfo.version from initialize and flushes pending message buffers on demand', async () => {
+        const backend = new AcpSdkBackend({
+            command: 'agy',
+            args: ['acp'],
+            flavor: 'agy',
+            textChunkMode: 'delta',
+            toolCallLifetimeStore: null
+        });
+        let deliver: (method: string, params: unknown) => void = () => {};
+        const ctor = AcpSdkBackend as unknown as Record<string, number>;
+        const savedTimings = {
+            UPDATE_QUIET_PERIOD_MS: ctor.UPDATE_QUIET_PERIOD_MS,
+            UPDATE_DRAIN_TIMEOUT_MS: ctor.UPDATE_DRAIN_TIMEOUT_MS,
+            PRE_PROMPT_UPDATE_QUIET_PERIOD_MS: ctor.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
+            PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS: ctor.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS,
+            LATE_FLUSH_INTERVAL_MS: ctor.LATE_FLUSH_INTERVAL_MS,
+            LATE_FLUSH_QUIET_PERIOD_MS: ctor.LATE_FLUSH_QUIET_PERIOD_MS,
+            LATE_FLUSH_WINDOW_MS: ctor.LATE_FLUSH_WINDOW_MS
+        };
+        ctor.UPDATE_QUIET_PERIOD_MS = 10;
+        ctor.UPDATE_DRAIN_TIMEOUT_MS = 40;
+        ctor.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 10;
+        ctor.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 40;
+        ctor.LATE_FLUSH_INTERVAL_MS = 10;
+        ctor.LATE_FLUSH_QUIET_PERIOD_MS = 20;
+        ctor.LATE_FLUSH_WINDOW_MS = 60;
+
+        const createSpy = vi.spyOn(AcpStdioTransport, 'create').mockImplementation(async () => ({
+            sendRequest: vi.fn(async (method: string) => {
+                if (method === 'initialize') {
+                    return {
+                        protocolVersion: 1,
+                        agentInfo: { name: 'Antigravity ACP Server', version: '1.5.13' },
+                        agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } }
+                    };
+                }
+                if (method === 'session/prompt') {
+                    deliver('session/update', {
+                        sessionId: 's1',
+                        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'STARTED' } }
+                    });
+                    return { stopReason: 'end_turn' };
+                }
+                return {};
+            }),
+            sendNotification: vi.fn(),
+            onNotification: (cb: (method: string, params: unknown) => void) => {
+                deliver = cb;
+            },
+            onStderrError: () => {},
+            registerRequestHandler: () => {},
+            isAlive: () => true,
+            getProcessPid: () => 1234,
+            close: async () => true
+        } as unknown as AcpStdioTransport));
+
+        try {
+            await backend.initialize();
+            expect(backend.getAgentVersion()).toBe('1.5.13');
+            expect(backend.hasMessageHandler()).toBe(false);
+
+            const turn1Updates: AgentMessage[] = [];
+            await backend.prompt('s1', [{ type: 'text', text: 'start' }], (msg) => turn1Updates.push(msg));
+            expect(backend.hasMessageHandler()).toBe(true);
+            expect(turn1Updates.filter((m) => m.type === 'text')).toEqual([{ type: 'text', text: 'STARTED' }]);
+
+            // Stream idle wakeup chunks without waiting for the 1000ms idle timer, then flush on demand.
+            deliver('session/update', {
+                sessionId: 's1',
+                update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'FINISHED:' } }
+            });
+            deliver('session/update', {
+                sessionId: 's1',
+                update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'DONE_BG' } }
+            });
+            await backend.flushPendingMessageBuffers();
+
+            const finalized = turn1Updates.filter((m): m is Extract<AgentMessage, { type: 'text' }> => m.type === 'text' && !m.live);
+            expect(finalized.map((m) => m.text)).toEqual(['STARTED', 'FINISHED:DONE_BG']);
+
+            // Turn 2's pre-swap drain has nothing left to leak.
+            const countBeforeTurn2 = turn1Updates.length;
+            const turn2Updates: AgentMessage[] = [];
+            await backend.prompt('s1', [{ type: 'text', text: 'next' }], (msg) => turn2Updates.push(msg));
+            expect(turn1Updates).toHaveLength(countBeforeTurn2);
+        } finally {
+            createSpy.mockRestore();
+            Object.assign(ctor, savedTimings);
+        }
+    });
+});

@@ -49,6 +49,10 @@ class FakeAgyBackend {
     isTransportAlive(): boolean {
         return this.alive;
     }
+    getAgentVersion(): string | null {
+        return null;
+    }
+    async flushPendingMessageBuffers(): Promise<void> {}
     supportsSessionResume(): boolean {
         return true;
     }
