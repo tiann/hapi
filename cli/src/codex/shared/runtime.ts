@@ -117,6 +117,14 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const persist = () => { writes = writes.catch(() => {}).then(() => saveRuntime(runtime)); return writes; };
     let startupCatalogConfig: unknown = null;
     const control = new CodexAppServerClient({ endpoint: upstream, token: upstreamToken, cwd: launch.cwd });
+    const withNativeLaunchTier = async (params: Record<string, unknown>, cwd: string): Promise<Record<string, unknown>> => {
+        if (params.serviceTier !== undefined || !launch.hasServiceTierOverride) return params;
+        // Let Codex parse its own CLI overrides and apply their precedence.
+        const configured = (await control.readConfig({ cwd, includeLayers: false })).config.service_tier;
+        if (typeof configured !== 'string') return params;
+        const serviceTier = configured === 'default' ? null : configured === 'fast' ? 'priority' : configured;
+        return { ...params, serviceTier };
+    };
     control.setServerRequestHandler(() => {});
     // An independent observer preserves settings when a root's side-client
     // reconnects: native resume responses omit collaboration mode.
@@ -405,7 +413,6 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     };
     const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
         params = nativeTierParams(params);
-        const serviceTierExplicit = params.serviceTier !== undefined;
         const source = method === 'thread/fork'
             ? record(record(await control.request('thread/read', { threadId: params.threadId, includeTurns: false })).thread) : undefined;
         const cwd = string(params.cwd) ?? string(source?.cwd) ?? launch.cwd;
@@ -414,6 +421,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         let nativeSucceeded = false;
         try {
             runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
+            params = await withNativeLaunchTier(params, cwd);
+            const serviceTierExplicit = params.serviceTier !== undefined;
             const resolved = await resolveUltrafastLaunch(control, method, params, cwd, undefined, source, startupCatalogConfig);
             assertRunning();
             const request = root.config({ ...resolved.params, ...(method === 'thread/fork' ? { deferGoalContinuation: true } : {}) });
@@ -558,14 +567,15 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
             }
             const metadata = root.session.getMetadata();
-            const resolved = request.method === 'thread/resume'
+            const resuming = request.method === 'thread/resume';
+            const resolved = resuming
                 ? await inheritedResumeTier(control, params, metadata?.codexServiceTierExplicit, cwd, metadata?.codexConfirmedServiceTier ?? root.bootstrap.sessionInfo.serviceTier,
                     metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined)
-                : params;
+                : await withNativeLaunchTier(params, cwd);
             const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, undefined, savedThread, startupCatalogConfig);
             if (request.method === 'thread/fork') existing?.assertForkTierConfirmed();
-            const serviceTierExplicit = params.serviceTier !== undefined || request.method === 'thread/resume' && metadata?.codexPendingServiceTier !== undefined
-                ? true : request.method === 'thread/resume' ? undefined : false;
+            const resumeOverride = params.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined;
+            const serviceTierExplicit = resuming ? resumeOverride ? true : undefined : resolved.serviceTier !== undefined;
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
                 freshThread: request.method === 'thread/start', executionParams: tier.params,
                 serviceTierExplicit,
@@ -698,15 +708,6 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }) } });
         if (stopping) { await gateway.close(); assertRunning(); }
         runtime.endpoint = gateway.endpoint; if (process.platform === 'win32') runtime.token = token; await persist();
-        const launchThreadParams = async (cwd: string): Promise<Record<string, unknown>> => {
-            const params = launch.threadParams;
-            if (params.serviceTier !== undefined || !launch.hasServiceTierOverride) return params;
-            // Let Codex parse its own CLI overrides and apply their precedence.
-            const configured = (await control.readConfig({ cwd, includeLayers: false })).config.service_tier;
-            if (typeof configured !== 'string') return params;
-            const serviceTier = configured === 'default' ? null : configured === 'fast' ? 'priority' : configured;
-            return { ...params, serviceTier };
-        };
         let root: SharedCodexRoot;
         if (options.resumeLast) {
             const response = record(await control.request('thread/list', { limit: 1, sortKey: 'updated_at', sortDirection: 'desc',
@@ -728,7 +729,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await reserveRecord(root, threadId); return root;
             });
             const metadata = root.session.getMetadata();
-            const explicitParams = await launchThreadParams(root.bootstrap.workingDirectory);
+            const explicitParams = await withNativeLaunchTier(launch.threadParams, root.bootstrap.workingDirectory);
             const resumeParams = await inheritedResumeTier(control, explicitParams, metadata?.codexServiceTierExplicit, root.bootstrap.workingDirectory,
                 metadata?.codexConfirmedServiceTier ?? root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier,
                 metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined);
@@ -754,7 +755,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             });
             await bind(root, response, false, options, false, serviceTierExplicit,
                 resolved.params.serviceTier === 'ultrafast', downgraded, undefined, resolved.params.serviceTier);
-        } else root = await create('thread/start', { ...await launchThreadParams(launch.cwd), cwd: launch.cwd }, undefined, options);
+        } else root = await create('thread/start', { ...launch.threadParams, cwd: launch.cwd }, undefined, options);
         assertRunning();
         onReady?.({ sessionId: root.session.sessionId, runtime });
     })();

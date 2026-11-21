@@ -265,6 +265,18 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 expect(state.sessions.get(nativeOverride.sessionId)?.messages).toContainEqual({
                     type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.'
                 });
+                const nativeNew = await nativeOverride.client.request<{ thread: { id: string }; serviceTier: string }>(
+                    'thread/start', { cwd, model: 'gpt-6-astra' });
+                expect(nativeNew.serviceTier).toBe('default');
+                const nativeSession = [...state.sessions.values()].find(session => session.metadata.codexSessionId === nativeNew.thread.id);
+                expect(nativeSession?.metadata.codexServiceTierExplicit).toBe(true);
+                expect(nativeSession?.messages).toContainEqual({
+                    type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.'
+                });
+                expect(nativeTierCatalog).toHaveBeenCalledTimes(2);
+                await expect(nativeOverride.client.request('thread/start', { cwd, model: 'gpt-6-astra', serviceTier: null }))
+                    .resolves.toMatchObject({ serviceTier: 'default' });
+                expect(nativeTierCatalog).toHaveBeenCalledTimes(2);
                 nativeOverride.abort.abort(); await nativeOverride.done;
             } finally { nativeTierCatalog.mockRestore(); }
             const original = await start(); const threadId = original.runtime.sessions[original.sessionId].threadId;

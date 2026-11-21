@@ -138,6 +138,10 @@ export class SharedCodexQueue {
     owns(id: string): boolean { return id in this.entries; }
     state(id: string): Entry['state'] | undefined { return this.entries[id]?.state; }
     isHeldCancellation(id: string): boolean { return this.entries[id]?.canceledBeforeAdmission === true; }
+    private isRejectedCommand(entry: Entry | undefined): boolean {
+        // A command rejection stores an empty input with no native submission.
+        return entry?.state === 'rejected' && entry.input.length === 0 && !entry.nativeId && !entry.batchId;
+    }
 
     cancelHeld(id: string): Promise<boolean> {
         return this.serial(async () => {
@@ -227,6 +231,8 @@ export class SharedCodexQueue {
         return this.serial(async () => {
             const existing = this.entries[id];
             if (existing?.state === 'consumed') { this.consumed([id]); return null; }
+            if (existing?.canceledBeforeAdmission) return null;
+            if (this.isRejectedCommand(existing)) { this.uncertain([id]); return null; }
             if (existing && !['rejected', 'canceled'].includes(existing.state)) {
                 this.uncertain([id]); throw new Error('Previous command outcome is unknown; not replaying');
             }
@@ -252,6 +258,7 @@ export class SharedCodexQueue {
                     if (this.entries[id]?.state !== 'consumed') {
                         this.entries[id] = { input: [], state: 'rejected' };
                         await this.save();
+                        this.uncertain([id]);
                     }
                 } else this.uncertain([id]);
                 throw error;
@@ -548,6 +555,7 @@ export class SharedCodexQueue {
     replay(): void {
         for (const [id, entry] of Object.entries(this.entries)) {
             if (entry.state === 'queued' || entry.state === 'released') this.mirror?.(id, entry.input);
+            if (this.isRejectedCommand(entry)) this.uncertain([id]);
             // A pre-admission cancel can be the Hub's Retry preflight.
             // Leave that row intact for the Hub to claim or delete.
             if (entry.state === 'canceled' && !entry.canceledBeforeAdmission) this.mirror?.(id, null);
@@ -757,6 +765,12 @@ export class SharedCodexQueue {
             if (!entry) return 'indeterminate';
             if (entry.state === 'consumed') return 'consumed';
             if (entry.canceledBeforeAdmission) return true;
+            if (this.isRejectedCommand(entry)) {
+                this.entries[id] = { ...entry, state: 'canceled', canceledBeforeAdmission: true };
+                try { await this.save(); }
+                catch (error) { this.entries[id] = entry; throw error; }
+                return true;
+            }
             if (entry.state === 'canceled' || entry.state === 'rejected' || entry.state === 'released') {
                 entry.state = 'canceled'; await this.save(); return true;
             }

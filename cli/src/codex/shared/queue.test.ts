@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { QueueAdmissionPaused, SharedCodexQueue } from './queue';
+import { QueueAdmissionPaused, QueueCommandRejected, SharedCodexQueue } from './queue';
 
 vi.mock(import('node:fs/promises'), async importOriginal => {
     const fs = await importOriginal();
@@ -22,6 +22,28 @@ async function fixture(assertInputAdmission?: () => void) {
     return { queue, rpc, consumed, uncertain, client, dir };
 }
 describe('shared native queue', () => {
+    it('reports a rejected command again after restart and waits for explicit Retry', async () => {
+        const { queue, client, dir, consumed, uncertain } = await fixture();
+        const rejected = new QueueCommandRejected('catalog disconnected');
+        await expect(queue.command('tier-command', async () => { throw rejected; })).rejects.toBe(rejected);
+        expect(uncertain).toHaveBeenCalledWith(['tier-command']);
+
+        uncertain.mockClear();
+        const restarted = new SharedCodexQueue(client, 'thread', join(dir, 'ledger.json'), consumed, uncertain);
+        await restarted.load(); restarted.replay();
+        expect(uncertain).toHaveBeenCalledWith(['tier-command']);
+        const execute = vi.fn(async () => null);
+        await restarted.command('tier-command', execute);
+        expect(execute).not.toHaveBeenCalled();
+        expect(await restarted.cancel('tier-command')).toBe(true);
+        await restarted.command('tier-command', execute);
+        expect(execute).not.toHaveBeenCalled();
+
+        await restarted.retryHeldCancellation('tier-command');
+        await restarted.command('tier-command', execute);
+        expect(execute).toHaveBeenCalledOnce();
+        expect(consumed).toHaveBeenCalledWith(['tier-command']);
+    });
     it.skipIf(process.platform !== 'win32')('retries an atomic replacement without deleting the published Windows ledger', async () => {
         const { queue, dir } = await fixture();
         const file = join(dir, 'ledger.json');

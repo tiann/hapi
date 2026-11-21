@@ -922,6 +922,22 @@ describe('QueuedMessagesBar steer action', () => {
 
 
 describe('unconfirmed delivery actions', () => {
+    it('offers Retry after the Hub reports a rejected Ultrafast command', async () => {
+        const retryIndeterminateMessage = vi.fn().mockResolvedValue({ status: 'retried', localId: 'local-server-message-id' })
+        const api = { retryIndeterminateMessage } as unknown as ApiClient
+        const content = { role: 'user', content: { type: 'text', text: '/ultrafast on' } } as DecryptedMessage['content']
+        const view = renderQueuedMessage(null, null, 0, false, api, { content })
+        expect(screen.getByText('/ultrafast on')).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'queuedMessages.retryOutcome' })).toBeNull()
+        mocks.messageWindowState = { messages: [
+            makeQueuedMessage(null, 'server-message-id', { content, deliveryState: 'indeterminate' })
+        ] }
+        view.rerender(null)
+        fireEvent.click(screen.getByRole('button', { name: 'queuedMessages.retryOutcome' }))
+        await waitFor(() => expect(retryIndeterminateMessage).toHaveBeenCalledWith('session-1', 'server-message-id'))
+        expect(mocks.addToast).not.toHaveBeenCalled()
+    })
+
     it('shows confirmation pending without Steer or Retry while the turn owns the delivery', () => {
         renderQueuedMessage(null, null, 0, true, null, { deliveryState: 'indeterminate', deliveryPending: true })
         expect(screen.getByText('queuedMessages.deliveryPending')).toBeInTheDocument()

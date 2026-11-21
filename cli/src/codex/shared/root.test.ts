@@ -2003,9 +2003,11 @@ describe('Ultrafast native settings', () => {
             return original(method, params);
         });
         f.submit('/ultrafast on', 'retry-tier-command');
-        await vi.waitFor(async () => expect((await f.ledger()).entries['retry-tier-command']?.state).toBe('rejected'));
+        await vi.waitFor(async () => {
+            expect((await f.ledger()).entries['retry-tier-command']?.state).toBe('rejected');
+            expect(f.uncertain).toHaveBeenCalledWith(['retry-tier-command']);
+        });
         expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
-        expect(f.uncertain).not.toHaveBeenCalled();
         expect(f.root.needsTierConfirmation).toBe(false);
 
         expect(await f.cancel('retry-tier-command')).toBe(true);
