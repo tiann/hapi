@@ -787,16 +787,35 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             const response = await serializeNativeLifecycle(threadId, async () => {
                 assertRunning();
                 if (ownedRoot(threadId) !== root || ending.has(root)) throw new Error('Codex thread was archived during resume');
+                const resume = async () => {
+                    if (tierDiscoveryFailure) {
+                        const goal = await control.getThreadGoal({ threadId }).catch(error => {
+                            if (!(error instanceof Error) || error.message !== 'goals feature is disabled') throw error;
+                            // The resume may otherwise load different project flags.
+                            params.config = { ...record(params.config), 'features.goals': false };
+                            return { goal: null };
+                        });
+                        if (goal.goal?.status === 'active') {
+                            // An unloaded goal can be paused without starting its engine.
+                            const paused = await control.setThreadGoal({ threadId, status: 'paused' });
+                            if (paused.goal.status !== 'paused') throw new Error('Could not pause the saved Codex goal before tier recovery.');
+                            root.session.sendSessionEvent({ type: 'message',
+                                message: 'The saved goal was paused. Confirm a service tier in settings, then resume the goal when ready.' });
+                        }
+                        assertRunning();
+                    }
+                    return record(await root.client.request('thread/resume', params));
+                };
                 try {
-                    return record(await root.client.request('thread/resume', params));
+                    return await resume();
                 } catch (error) {
-                    // Reopening a HAPI binding also restores its native archive.
-                    // Only retry an explicit archived rejection, never a transport
-                    // failure whose resume outcome may be unknown.
+                    // The goal API only finds unarchived rollouts. The binding
+                    // may restore its native archive before either operation.
                     if (!options.existingSessionId || !(error instanceof Error)
-                        || !error.message.startsWith(`session ${threadId} is archived.`)) throw error;
+                        || !(error.message.startsWith(`session ${threadId} is archived.`)
+                            || tierDiscoveryFailure && error.message === `thread not found: ${threadId}`)) throw error;
                     await root.client.request('thread/unarchive', { threadId });
-                    return record(await root.client.request('thread/resume', params));
+                    return resume();
                 }
             });
             await bind(root, response, false, options, false, serviceTierExplicit,

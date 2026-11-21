@@ -1000,13 +1000,25 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await rm(home, { recursive: true, force: true, maxRetries: 3 });
         }
     }, 45_000);
-    it.each(['ultrafast', 'inherited', 'inherited ultrafast', 'provider configuration changed'])('keeps a Runner cold resume recoverable when %s tier discovery is unavailable', async intent => {
+    it.each(['ultrafast', 'inherited', 'inherited ultrafast', 'provider configuration changed', 'ultrafast with an archived goal'])('keeps a Runner cold resume recoverable when %s tier discovery is unavailable', async intent => {
         const home = await mkdtemp(join(tmpdir(), 'hapi-runner-tier-discovery-')); state.home = home;
         const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
-        const configure = (tier?: string, endpoint = 'http://127.0.0.1:1/v1') => writeFile(join(ch, 'config.toml'), [
+        const archivedGoal = intent === 'ultrafast with an archived goal';
+        const savedGoal = intent === 'ultrafast' || archivedGoal;
+        let modelRequests = 0;
+        const provider = createServer((request, response) => {
+            if (request.url?.endsWith('/responses')) modelRequests++;
+            response.writeHead(400).end();
+        });
+        let endpoint = 'http://127.0.0.1:1/v1';
+        if (savedGoal) {
+            await new Promise<void>(resolve => { provider.listen(0, '127.0.0.1', resolve); });
+            endpoint = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1`;
+        }
+        const configure = (tier?: string, modelEndpoint = endpoint) => writeFile(join(ch, 'config.toml'), [
             'model = "gpt-6-astra"', 'model_provider = "mock"', ...(tier ? [`service_tier = "${tier}"`] : []),
             '[features]', 'ultrafast_mode = true', 'fast_mode = true', 'goals = true',
-            '[model_providers.mock]', 'name = "No model calls"', `base_url = "${endpoint}"`,
+            '[model_providers.mock]', 'name = "No model calls"', `base_url = "${modelEndpoint}"`,
             'wire_api = "responses"', 'requires_openai_auth = false', '[analytics]', 'enabled = false',
             '[feedback]', 'enabled = false', ''
         ].join('\n'));
@@ -1033,6 +1045,17 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             const sessionId = old.sessionId;
             const threadId = old.runtime.sessions[sessionId].threadId;
             old.abort.abort(); await old.done;
+            if (savedGoal) {
+                const admin = new CodexAppServerClient({ cwd });
+                try {
+                    await initializeSharedClient(admin);
+                    await expect(admin.request('thread/read', { threadId, includeTurns: false }))
+                        .resolves.toMatchObject({ thread: { status: { type: 'notLoaded' } } });
+                    await expect(admin.setThreadGoal({ threadId, status: 'active', objective: 'Retain this goal', tokenBudget: 500 }))
+                        .resolves.toMatchObject({ goal: { status: 'active', objective: 'Retain this goal', tokenBudget: 500 } });
+                    if (archivedGoal) await admin.request('thread/archive', { threadId });
+                } finally { await admin.disconnect(); }
+            }
             const saved = state.sessions.get(sessionId)!;
             saved.serviceTier = inheritedUltrafast ? 'fast' : inherited ? null : 'ultrafast';
             saved.metadata.codexServiceTierExplicit = !inherited;
@@ -1078,6 +1101,13 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
 
             client = new CodexAppServerClient({ endpoint: resumed.runtime.endpoint, token: resumed.runtime.token });
             await initializeSharedClient(client);
+            if (savedGoal) {
+                await expect(client.getThreadGoal({ threadId })).resolves.toMatchObject({
+                    goal: { status: 'paused', objective: 'Retain this goal', tokenBudget: 500 }
+                });
+                expect(modelRequests).toBe(0);
+                expect(session.messages).toContainEqual({ type: 'message', message: expect.stringContaining('saved goal was paused') });
+            }
             const work: Array<[string, Record<string, unknown>]> = [
                 ['turn/start', { input: [{ type: 'text', text: 'Must wait' }] }],
                 ['review/start', { target: { type: 'uncommittedChanges' }, delivery: 'inline' }],
@@ -1119,6 +1149,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             for (const item of running) item.abort.abort();
             await Promise.allSettled(running.map(item => item.done));
             await client?.disconnect();
+            if (provider.listening) await new Promise<void>((resolve, reject) => provider.close(error => error ? reject(error) : resolve()));
             vi.mocked(bootstrapExistingSession).mockReset();
             await rm(home, { recursive: true, force: true, maxRetries: 3 });
         }
