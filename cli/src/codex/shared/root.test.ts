@@ -245,6 +245,37 @@ it('keeps a reconnect snapshot authoritative over the stale control tier', async
     expect(f.root.hasUltrafastTier).toBe(true);
 });
 
+it('does not let a delayed reconnect reply undo a confirmed Standard reset', async () => {
+    const f = await fixture({ bindTier: 'ultrafast' });
+    await f.root.activate();
+    f.native.settings.serviceTier = 'ultrafast';
+    let entered!: () => void, release!: () => void;
+    const requestEntered = new Promise<void>(resolve => { entered = resolve; });
+    const reply = new Promise<void>(resolve => { release = resolve; });
+    const request = f.root.client.request.bind(f.root.client);
+    let resumeReads = 0;
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume' && ++resumeReads === 1) {
+            entered();
+            await reply;
+            return { model: 'mock', serviceTier: 'ultrafast' } as never;
+        }
+        return request(method, params);
+    });
+    const reconnected = (f.root as unknown as { reconnect(): Promise<void> }).reconnect();
+    try {
+        await requestEntered;
+        await f.root.applySettings({ serviceTier: 'standard' });
+        expect(f.root.hasConfirmedStandardTier).toBe(true);
+        expect(f.native.settings.serviceTier).toBe('default');
+    } finally { release(); }
+    await reconnected;
+    expect(resumeReads).toBeGreaterThanOrEqual(2);
+    expect(f.root.hasConfirmedStandardTier).toBe(true);
+    expect(f.root.hasUltrafastTier).toBe(false);
+    expect(f.root.freshParams()).toMatchObject({ serviceTier: 'default' });
+});
+
 it('keeps a fresh resume tier authoritative over cached selected settings', async () => {
     const f = await fixture({ bindTier: 'ultrafast', settingsFor: () => ({ model: 'mock', serviceTier: 'priority', collaborationMode: { mode: 'plan' } }) });
     expect(f.root.hasUltrafastTier).toBe(true);

@@ -823,11 +823,17 @@ export class SharedCodexRoot {
                     if (this.stopping) return;
                     this.permissions = new SharedCodexPermissions(this.session, this.client, `${this.host.generation}:${randomUUID()}`, reply => this.asyncQuestions.answer(reply), this.userWaitFor);
                     this.client.setServerRequestHandler(request => { void this.receiveRequest(request); });
-                    const settingsRevision = this.settingsRevision;
-                    const response = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
-                    const observedSettings = this.settingsRevision !== settingsRevision;
-                    if (!observedSettings) this.acceptSettings(this.host.settingsFor(this.threadId) ?? {}, false);
-                    this.acceptSettings(response, true);
+                    for (let attempt = 0; attempt < 3 && !this.closed && !this.stopping; attempt++) {
+                        const revision = this.settingsRevision;
+                        const response = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
+                        if (this.closed || this.stopping) return;
+                        // A notification may establish only the selected tier. Read again
+                        // after a change without applying the older effective snapshot.
+                        if (this.settingsRevision !== revision) continue;
+                        if (attempt === 0) this.acceptSettings(this.host.settingsFor(this.threadId) ?? {}, false);
+                        this.acceptSettings(response, true);
+                        break;
+                    }
                     this.projection.reset(); await this.refresh(); this.queue.replay(); await this.refreshChildren(true);
                     return;
                 } catch (error) {

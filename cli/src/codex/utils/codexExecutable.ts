@@ -64,76 +64,68 @@ export async function probeCodexCliVersion(command: CodexCommand, cwd?: string):
     return version;
 }
 
+function parseWhereResults(stdout: string): string[] {
+    return stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+}
+
 function findWhereResults(command: string): string[] {
     try {
         const result = execFileSync('where.exe', [command], {
             encoding: 'utf8',
             stdio: ['pipe', 'pipe', 'pipe'],
-            cwd: homedir(),
+            cwd: homedir(), timeout: 3_000,
             windowsHide: process.platform === 'win32'
         });
 
-        return result
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter(Boolean);
+        return parseWhereResults(result);
     } catch {
         return [];
     }
 }
 
-function resolveShimScript(shimPath: string): string | null {
-    const shimDirectory = windowsPath.dirname(shimPath);
-    const script = windowsPath.join(shimDirectory, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
-
-    if (existsSync(script)) {
-        return script;
-    }
-
-    return null;
+function locateWindowsCandidates(command: string): Promise<string[]> {
+    return new Promise(resolve => {
+        execFile('where.exe', [command], {
+            cwd: homedir(), encoding: 'utf8', timeout: 3_000, windowsHide: true
+        }, (error, stdout) => resolve(error ? [] : parseWhereResults(stdout)));
+    });
 }
 
-function resolveWindowsCandidate(candidate: string): CodexCommand | null {
-    if (!existsSync(candidate)) {
-        return null;
-    }
+function windowsLaunchCommand(candidate: string): CodexCommand {
+    if (windowsPath.extname(candidate).toLowerCase() === '.exe') return { command: candidate, args: [] };
+    const script = windowsPath.join(windowsPath.dirname(candidate), 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+    return { command: 'node', args: [script] };
+}
 
-    if (windowsPath.extname(candidate).toLowerCase() === '.exe') {
-        return { command: candidate, args: [] };
-    }
-
-    const script = resolveShimScript(candidate);
-    if (script) {
-        return { command: 'node', args: [script] };
-    }
-
-    return null;
+async function windowsCandidateExists(file: string): Promise<boolean> {
+    return (await stat(file).catch(() => null))?.isFile() === true;
 }
 
 function resolveWindowsCodexCommand(): CodexCommand {
     for (const candidate of findWhereResults('codex')) {
-        const resolved = resolveWindowsCandidate(candidate);
-        if (resolved) {
-            return resolved;
-        }
+        const launch = windowsLaunchCommand(candidate);
+        if (existsSync(candidate) && launch.args.every(file => existsSync(file))) return launch;
     }
 
     return { command: 'codex', args: [] };
 }
 
 /** Resolve a selected app-server executable without passing JSON overrides through cmd.exe. */
-export function resolveSelectedCodexCommand(command: string, platform: NodeJS.Platform = process.platform): CodexCommand {
+export async function resolveSelectedCodexCommand(command: string, platform: NodeJS.Platform = process.platform): Promise<CodexCommand> {
     if (platform !== 'win32') return { command, args: [] };
-    if (command === 'codex') return resolveWindowsCodexCommand();
-    const candidates = windowsPath.basename(command) === command ? findWhereResults(command) : [];
-    for (const candidate of [...candidates, command]) {
-        const resolved = resolveWindowsCandidate(candidate);
-        if (resolved) return resolved;
+    const candidates = windowsPath.basename(command) === command ? await locateWindowsCandidates(command) : [];
+    for (const candidate of command === 'codex' ? candidates : [...candidates, command]) {
+        const launch = windowsLaunchCommand(candidate);
+        if ((await Promise.all([candidate, ...launch.args].map(windowsCandidateExists))).every(Boolean)) return launch;
     }
     if (/\.(cmd|bat)$/i.test(command)) {
         throw new Error('Use a Codex executable or an npm Codex shim with its launcher script on Windows.');
     }
     return { command, args: [] };
+}
+
+export async function resolveCatalogRunnerCommand(): Promise<CodexCommand> {
+    return process.platform === 'win32' ? resolveSelectedCodexCommand('codex') : resolveCodexCommand();
 }
 
 export const MACOS_CODEX_APP_COMMAND = '/Applications/Codex.app/Contents/Resources/codex';

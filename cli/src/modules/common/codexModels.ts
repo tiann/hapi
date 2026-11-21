@@ -6,7 +6,7 @@ import type { CodexModelsResponse, CodexModelSummary } from '@hapi/protocol/apiT
 import { CodexAppServerClient, resolveCodexAppServerCommand } from '@/codex/codexAppServerClient';
 import { resolveModelCatalogArgs } from '@/codex/utils/modelCatalog';
 import { resolveCodexHome } from '@/codex/utils/codexHome';
-import { probeCodexCliVersion, resolveCodexCommand, type CodexCommand } from '@/codex/utils/codexExecutable';
+import { probeCodexCliVersion, resolveCatalogRunnerCommand, type CodexCommand } from '@/codex/utils/codexExecutable';
 import { getErrorMessage } from './rpcResponses';
 
 export interface ListCodexModelsRequest {
@@ -135,9 +135,10 @@ async function catalogFingerprint(): Promise<string> {
 export async function listCodexModels(includeHidden: boolean = false): Promise<CodexModelSummary[]> {
     // Desktop discovery can use a different binary. The shared Runner's
     // actual executable must also understand effective Ultrafast settings.
-    const runnerCommand = resolveCodexCommand();
-    const [catalogKey, runnerVersion, discovery] = await Promise.all([
-        catalogFingerprint(), probeCodexCliVersion(runnerCommand), resolveCodexAppServerCommand(homedir())
+    const [catalogKey, runnerCommand] = await Promise.all([catalogFingerprint(), resolveCatalogRunnerCommand()]);
+    const [runnerVersion, discovery] = await Promise.all([
+        probeCodexCliVersion(runnerCommand),
+        resolveCodexAppServerCommand(homedir(), process.platform === 'win32' ? runnerCommand : undefined)
     ]);
     const discoveryCommand = discovery.command;
     const runnerKey = JSON.stringify(runnerCommand);

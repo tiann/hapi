@@ -18,7 +18,7 @@ vi.mock('node:os', async () => {
 });
 
 vi.mock('@/codex/utils/codexExecutable', () => ({
-    resolveCodexCommand: resolveRunnerCommand,
+    resolveCatalogRunnerCommand: resolveRunnerCommand,
     probeCodexCliVersion: probeVersion
 }));
 
@@ -46,7 +46,7 @@ describe('listCodexModels cwd', () => {
     beforeEach(() => {
         constructorOptions.length = 0;
         listModelsMock.mockReset();
-        resolveRunnerCommand.mockReset().mockReturnValue({ command: '/path/codex', args: [] });
+        resolveRunnerCommand.mockReset().mockResolvedValue({ command: '/path/codex', args: [] });
         resolveDiscoveryCommand.mockReset().mockResolvedValue({ command: { command: '/desktop/codex', args: [] } });
         probeVersion.mockReset().mockResolvedValue([0, 170, 0]);
         discoverySupportsUltrafast.mockReset().mockReturnValue(true);
@@ -96,7 +96,7 @@ describe('listCodexModels cwd', () => {
         expect((await listCodexModels())[0]?.serviceTiers).toEqual(['ultrafast', 'priority', 'fast']);
         expect(listModelsMock).toHaveBeenCalledTimes(2);
 
-        resolveRunnerCommand.mockReturnValue({ command: '/other/codex', args: [] });
+        resolveRunnerCommand.mockResolvedValue({ command: '/other/codex', args: [] });
         await listCodexModels();
         expect(listModelsMock).toHaveBeenCalledTimes(3);
     });

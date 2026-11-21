@@ -77,7 +77,9 @@ function deferred<T>() {
 
 describe('CodexAppServerClient process cwd', () => {
     beforeEach(() => {
+        execFileMock.mockReset().mockImplementation((_command, _args, _options, done) => done(new Error('not found'), ''));
         execFileSyncMock.mockClear();
+        statMock.mockReset().mockResolvedValue(null);
         spawnMock.mockReset();
         vi.mocked(killProcessByChildProcess).mockClear();
     });
@@ -119,6 +121,16 @@ describe('CodexAppServerClient process cwd', () => {
             vi.unstubAllEnvs();
             Object.defineProperty(process, 'platform', platform);
         }
+    });
+
+    it('reuses the resolved Windows Runner command for default catalog discovery', async () => {
+        vi.stubEnv('HAPI_CODEX_APP_SERVER_BIN', '');
+        const command = { command: 'codex.exe', args: [] };
+        try {
+            await expect(resolveCodexAppServerCommand('/neutral-home', command)).resolves.toEqual({ command });
+            expect(execFileMock).not.toHaveBeenCalled();
+            expect(execFileSyncMock).not.toHaveBeenCalled();
+        } finally { vi.unstubAllEnvs(); }
     });
 
     it('cleans up a local app-server disconnected while executable selection is pending', async () => {

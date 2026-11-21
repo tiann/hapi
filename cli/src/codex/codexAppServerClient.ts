@@ -128,12 +128,12 @@ function compareVersion(a: CodexCliVersion | null, b: CodexCliVersion | null): n
     return 0;
 }
 
-export async function resolveCodexAppServerCommand(cwd = process.cwd()): Promise<CodexAppServerSelection> {
-    if (process.env.HAPI_CODEX_APP_SERVER_BIN) {
-        return { command: resolveSelectedCodexCommand(process.env.HAPI_CODEX_APP_SERVER_BIN) };
-    }
+export async function resolveCodexAppServerCommand(cwd = process.cwd(), windowsRunnerCommand?: CodexCommand): Promise<CodexAppServerSelection> {
+    const override = process.env.HAPI_CODEX_APP_SERVER_BIN;
+    if (windowsRunnerCommand && (!override || override === 'codex')) return { command: windowsRunnerCommand };
+    if (override) return { command: await resolveSelectedCodexCommand(override) };
 
-    const pathCommand = resolveSelectedCodexCommand('codex');
+    const pathCommand = await resolveSelectedCodexCommand('codex');
     if (process.platform !== 'darwin' || !(await stat(MACOS_CODEX_APP_COMMAND).catch(() => null))?.isFile()) {
         return { command: pathCommand };
     }
