@@ -6,6 +6,7 @@ import type { CodexModelsResponse, CodexModelSummary } from '@hapi/protocol/apiT
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
 import { resolveModelCatalogArgs } from '@/codex/utils/modelCatalog';
 import { resolveCodexHome } from '@/codex/utils/codexHome';
+import { probeCodexCliVersion, resolveCodexCommand } from '@/codex/utils/codexExecutable';
 import { getErrorMessage } from './rpcResponses';
 
 export interface ListCodexModelsRequest {
@@ -132,7 +133,11 @@ async function catalogFingerprint(): Promise<string> {
 }
 
 export async function listCodexModels(includeHidden: boolean = false): Promise<CodexModelSummary[]> {
-    const fingerprint = await catalogFingerprint();
+    // Desktop discovery can use a different binary. The shared Runner's
+    // actual executable must also understand effective Ultrafast settings.
+    const runnerCommand = resolveCodexCommand();
+    const [catalogKey, runnerVersion] = await Promise.all([catalogFingerprint(), probeCodexCliVersion(runnerCommand)]);
+    const fingerprint = JSON.stringify([catalogKey, runnerCommand, runnerVersion]);
     const cached = cache.get(includeHidden);
     if (cached && cached.fingerprint === fingerprint && cached.expiresAt > Date.now()) {
         return cached.models;
@@ -143,7 +148,8 @@ export async function listCodexModels(includeHidden: boolean = false): Promise<C
         return existing.promise;
     }
 
-    const promise = fetchCodexModelsFromAppServer(includeHidden)
+    const runnerSupportsUltrafast = Boolean(runnerVersion && (runnerVersion[0] > 0 || runnerVersion[1] >= 170));
+    const promise = fetchCodexModelsFromAppServer(includeHidden, runnerSupportsUltrafast)
         .then((models) => {
             if (models.length > 0 && inflight.get(includeHidden)?.promise === promise) {
                 cache.set(includeHidden, {
@@ -162,7 +168,7 @@ export async function listCodexModels(includeHidden: boolean = false): Promise<C
     return promise;
 }
 
-async function fetchCodexModelsFromAppServer(includeHidden: boolean): Promise<CodexModelSummary[]> {
+async function fetchCodexModelsFromAppServer(includeHidden: boolean, runnerSupportsUltrafast: boolean): Promise<CodexModelSummary[]> {
     // Model discovery is account-scoped. Never inherit a session/runner cwd:
     // project config or a deleted worktree must not alter or break the catalog.
     const client = new CodexAppServerClient({ cwd: homedir() });
@@ -180,8 +186,9 @@ async function fetchCodexModelsFromAppServer(includeHidden: boolean): Promise<Co
         });
 
         const response = await client.listModels({ includeHidden });
+        const canVerifyUltrafast = runnerSupportsUltrafast && client.supportsEffectiveUltrafastLaunch();
         return Array.isArray(response.data)
-            ? response.data.map(entry => normalizeCodexModel(entry, client.supportsEffectiveUltrafastLaunch())).filter((model): model is CodexModelSummary => model !== null)
+            ? response.data.map(entry => normalizeCodexModel(entry, canVerifyUltrafast)).filter((model): model is CodexModelSummary => model !== null)
             : [];
     } catch (error) {
         throw new Error(getErrorMessage(error, 'Failed to list Codex models'));

@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -9,6 +9,19 @@ const windowsPath = path.win32;
 export interface CodexCommand {
     command: string;
     args: string[];
+}
+
+export function parseCodexCliVersion(stdout: string): [number, number, number] | null {
+    const version = stdout.match(/codex-cli (\d+)\.(\d+)\.(\d+)/);
+    return version ? [Number(version[1]), Number(version[2]), Number(version[3])] : null;
+}
+
+export function probeCodexCliVersion(command: CodexCommand): Promise<[number, number, number] | null> {
+    return new Promise(resolve => {
+        execFile(command.command, [...command.args, '--version'], {
+            encoding: 'utf8', timeout: 3_000, windowsHide: process.platform === 'win32'
+        }, (error, stdout) => resolve(error ? null : parseCodexCliVersion(stdout)));
+    });
 }
 
 function findWhereResults(command: string): string[] {

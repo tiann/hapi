@@ -2,7 +2,7 @@ import { toCodexServiceTier } from '@hapi/protocol';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { z } from 'zod';
-import { resolveCodexCommand, type CodexCommand } from '../utils/codexExecutable';
+import { parseCodexCliVersion, resolveCodexCommand, type CodexCommand } from '../utils/codexExecutable';
 import { parseCodexCliOverrides, stripCodexCliOverrides } from '../utils/codexCliOverrides';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
 import { resolveModelCatalogArgs } from '../utils/modelCatalog';
@@ -35,10 +35,10 @@ export function takeReservedSessionId(options: SharedLaunchOptions): string | un
 /** Resolve once: a desktop server and a different PATH TUI are never mixed. */
 export function resolveSharedCodex(): CodexCommand {
     const command = resolveCodexCommand();
-    const version = execFileSync(command.command, [...command.args, '--version'], {
+    const version = parseCodexCliVersion(execFileSync(command.command, [...command.args, '--version'], {
         encoding: 'utf8', timeout: 10_000, windowsHide: true
-    }).match(/codex-cli (\d+)\.(\d+)\.(\d+)/);
-    if (!version || Number(version[1]) === 0 && Number(version[2]) < 154) {
+    }));
+    if (!version || version[0] === 0 && version[1] < 154) {
         throw new Error('Shared sessions require Codex >= 0.154.0. Upgrade the Codex executable on PATH.');
     }
     return command;
