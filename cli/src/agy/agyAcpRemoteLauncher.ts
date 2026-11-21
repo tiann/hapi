@@ -1173,7 +1173,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     ? readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, baseAfterStep)
                         .find((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')
                     : undefined;
-                if (live) await this.settleLiveWakeup((firstWakeupStep?.step_index ?? turnStartStepIndex + 1) - 1);
+                if (live) await this.settleLiveWakeup(turn.aborted ? null : (firstWakeupStep?.step_index ?? turnStartStepIndex + 1) - 1);
                 if (firstWakeupStep && !(live && !internalWakeup)) {
                     commandWindowAfterStepIndex = Math.max(baseAfterStep, firstWakeupStep.step_index - 1);
                 }

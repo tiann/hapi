@@ -3033,4 +3033,84 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             Object.assign(ctor, savedTimings);
         }
     });
+
+    describe('prompt beforeHandlerSwap', () => {
+        async function setup() {
+            const backend = new AcpSdkBackend({ command: 'agy', args: ['acp'], flavor: 'agy', textChunkMode: 'delta', toolCallLifetimeStore: null });
+            let deliver: (method: string, params: unknown) => void = () => {};
+            const chunk = (text: string) => deliver('session/update', {
+                sessionId: 's1',
+                update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }
+            });
+            const prompts: string[] = [];
+            const ctor = AcpSdkBackend as unknown as Record<string, number>;
+            const saved = { ...ctor };
+            Object.assign(ctor, {
+                UPDATE_QUIET_PERIOD_MS: 10, UPDATE_DRAIN_TIMEOUT_MS: 40,
+                PRE_PROMPT_UPDATE_QUIET_PERIOD_MS: 10, PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS: 40,
+                LATE_FLUSH_INTERVAL_MS: 10, LATE_FLUSH_QUIET_PERIOD_MS: 20, LATE_FLUSH_WINDOW_MS: 60
+            });
+            const createSpy = vi.spyOn(AcpStdioTransport, 'create').mockImplementation(async () => ({
+                sendRequest: vi.fn(async (method: string) => {
+                    if (method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+                    if (method === 'session/prompt') {
+                        prompts.push('prompt');
+                        chunk(`reply-${prompts.length}`);
+                        return { stopReason: 'end_turn' };
+                    }
+                    return {};
+                }),
+                sendNotification: vi.fn(),
+                onNotification: (cb: (method: string, params: unknown) => void) => { deliver = cb; },
+                onStderrError: () => {}, registerRequestHandler: () => {},
+                isAlive: () => true, getProcessPid: () => 1234, close: async () => true
+            } as unknown as AcpStdioTransport));
+            await backend.initialize();
+            const turn1: AgentMessage[] = [];
+            await backend.prompt('s1', [{ type: 'text', text: 'one' }], (m) => turn1.push(m));
+            const texts = (updates: AgentMessage[]) => updates.filter((m) => m.type === 'text' && !m.live).map((m) => (m as { text: string }).text);
+            return { backend, chunk, prompts, turn1, texts, restore: () => { createSpy.mockRestore(); Object.assign(ctor, saved); } };
+        }
+
+        it('runs after the pre-prompt drain and before the new handler and the prompt request', async () => {
+            const t = await setup();
+            try {
+                t.chunk('late');
+                const seen: { drained: string[]; prompts: number } = { drained: [], prompts: -1 };
+                const turn2: AgentMessage[] = [];
+                await t.backend.prompt('s1', [{ type: 'text', text: 'two' }], (m) => turn2.push(m), {
+                    beforeHandlerSwap: async () => { seen.drained = t.texts(t.turn1); seen.prompts = t.prompts.length; }
+                });
+                expect(seen.drained).toEqual(['reply-1', 'late']);
+                expect(seen.prompts).toBe(1);
+                expect(t.texts(turn2)).toEqual(['reply-2']);
+            } finally { t.restore(); }
+        });
+
+        it('leaves the old handler and prompt bookkeeping intact when the hook throws', async () => {
+            const t = await setup();
+            try {
+                await expect(t.backend.prompt('s1', [{ type: 'text', text: 'two' }], () => {}, {
+                    beforeHandlerSwap: async () => { throw new Error('hook failed'); }
+                })).rejects.toThrow('hook failed');
+                expect(t.prompts).toHaveLength(1);
+                t.chunk('still old');
+                await t.backend.flushPendingMessageBuffers();
+                expect(t.texts(t.turn1)).toEqual(['reply-1', 'still old']);
+                const turn3: AgentMessage[] = [];
+                await t.backend.prompt('s1', [{ type: 'text', text: 'three' }], (m) => turn3.push(m));
+                expect(t.texts(turn3)).toEqual(['reply-2']);
+            } finally { t.restore(); }
+        });
+
+        it('behaves as before when the hook is omitted', async () => {
+            const t = await setup();
+            try {
+                const turn2: AgentMessage[] = [];
+                await t.backend.prompt('s1', [{ type: 'text', text: 'two' }], (m) => turn2.push(m));
+                expect(t.texts(turn2)).toEqual(['reply-2']);
+                expect(t.prompts).toHaveLength(2);
+            } finally { t.restore(); }
+        });
+    });
 });

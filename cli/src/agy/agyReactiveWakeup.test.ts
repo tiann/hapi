@@ -4897,6 +4897,29 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.finish();
         });
 
+        it('does not promote a wakeup command to a background task when Stop lands in the pre-prompt quiet wait', async () => {
+            const acp = 'conv-live-quiet-stop';
+            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => {
+                if (method !== 'session/set_model') return;
+                h.notify({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '' } });
+                setTimeout(() => {
+                    h.notify(bgCall('call-q', 'sleep 9'));
+                    h.append(bgRows(2, 'sleep 9', `${acp}/task-7`, false));
+                }, 3);
+                setTimeout(() => { void h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!(); }, 6);
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await h.ready();
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('call-q#'))).toHaveLength(0);
+            expect(h.bgEntries().filter((e) => e.callId.startsWith('call-q#'))).toHaveLength(0);
+            await h.finish();
+        });
+
         it('seals buffered wakeup text when the wakeup times out', async () => {
             const acp = 'conv-live-timeout';
             const h = startLive(acp, () => { turnRows(acp); }, { reactiveMaxIdleMs: 60 });
