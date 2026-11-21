@@ -303,6 +303,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private turn: AgyTurn | null = null;
     // The turn whose handler still receives live wakeup updates between prompts.
     private idleTurn: AgyTurn | null = null;
+    // Stop discards the activity that owns the handler: its later command starts are dropped
+    // until that activity ends (the aborted turn or wakeup settles before it reports ready).
+    private idleDiscarded = false;
     private backendLost = false;
     private startBackendPromise: Promise<void> | null = null;
     private hasReceivedAvailableCommands = false;
@@ -817,6 +820,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (this.reactiveWakeupAbort === abortController) {
                 this.reactiveWakeupAbort = null;
             }
+            // A Stop that landed while the wakeup was already settling ends with it.
+            if (abortController.signal.aborted) this.idleDiscarded = false;
         }
     }
 
@@ -1232,7 +1237,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             this.closeBackgroundCommands(turn, commandWindowAfterStepIndex, false, internalWakeup);
         } finally {
-            if (turn.aborted) this.syncTranscriptCursor();
+            if (turn.aborted) {
+                // The stopped activity ends here: discard its late starts before ready.
+                if (this.idleDiscarded) await this.settleLiveWakeup(false);
+                this.syncTranscriptCursor();
+            }
             this.questionLabels.clear();
             // After a Stop or a lost agy process, agy may have dropped a steer
             // it had not echoed yet.
@@ -1324,14 +1333,21 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     /**
      * A live wakeup ends: seal its text and close the commands it left running,
-     * which belong to the turn that still owns the handler. Stop drops them.
+     * which belong to the turn that still owns the handler. A call whose start
+     * was deferred is emitted as new first; Stop drops them all.
      */
     private async settleLiveWakeup(close: boolean): Promise<void> {
         await this.backend?.flushPendingMessageBuffers();
         const turn = this.idleTurn;
+        const keep = close && !this.idleDiscarded;
         this.idleTurn = null;
+        this.idleDiscarded = false;
         if (!turn) return;
-        if (close) this.closeBackgroundCommands(turn, 0, true);
+        if (keep) {
+            this.flushDeferredLiveCommandCalls(turn);
+            this.closeBackgroundCommands(turn, 0, true);
+        }
+        turn.deferredLiveCommandCalls.clear();
         turn.openCommands.clear();
     }
 
@@ -1739,9 +1755,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
                 return;
             default: {
-                if (this.turn !== turn && this.idleTurn !== turn && this.liveIdleWakeups()) {
-                    this.idleTurn = turn;
-                    turn.openCommands.clear(); // a cancelled prompt's command is not this wakeup's
+                if (this.turn !== turn && this.liveIdleWakeups()) {
+                    if (this.idleTurn !== turn) {
+                        this.idleTurn = turn;
+                        turn.openCommands.clear(); // a cancelled prompt's command is not this wakeup's
+                    }
+                    if (this.idleDiscarded && message.type === 'tool_call' && message.nativeName === 'run_command') return;
                 }
                 turn.sawActivity = true;
                 turn.acknowledge();
@@ -1977,7 +1996,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             turn.aborted = true;
             this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
         }
-        this.idleTurn?.openCommands.clear(); // Stop cancels the commands a wakeup left open
+        if ((turn || wakeupAbort) && this.liveIdleWakeups()) this.idleDiscarded = true;
         const backend = this.backend;
         const acpSessionId = this.acpSessionId;
         if (backend && acpSessionId && backend.isTransportAlive()) {
