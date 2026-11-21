@@ -732,7 +732,7 @@ function normalizeAgyCommandBody(text: string): { stdout: string; exitCode?: num
     };
 }
 
-export function parseLiveCommandCompletionResult(
+function parseLiveCommandCompletionResult(
     resultOutput: unknown
 ): { stdout?: string; exitCode?: number } | null {
     if (typeof resultOutput === 'string') {

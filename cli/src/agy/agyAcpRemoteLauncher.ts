@@ -37,7 +37,6 @@ import {
     defaultAgyBrainDir,
     extractAgyBackgroundTaskIds,
     inspectAgyReactiveSteps,
-    parseLiveCommandCompletionResult,
     inspectSyntheticBackgroundCommandMatch,
     readAgyTranscriptStepsAfter,
     readLatestAgyTranscriptStepIndex,
@@ -310,9 +309,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private idleDiscarded = false;
     // Agent ids of the commands of stopped wakeups: a late start of one is dropped, also after ready.
     private readonly stoppedCommandIds = new Set<string>();
-    // Completions the transcript already showed, so a late ACP result of the same command is
-    // dropped instead of becoming a second card. Bounded.
-    private readonly settledFromTranscript: Array<{ taskId?: string; stdout?: string; exitCode?: number }> = [];
+    // Task ids of commands whose card the transcript already ended, so a late ACP result that
+    // names the same task is dropped instead of becoming a second card. Bounded; identity only.
+    private readonly settledFromTranscript: string[] = [];
+    // After a Stop, starts of commands first seen once the stopped activity is over are held:
+    // released when a new wakeup row proves ownership, discarded at the next handler swap.
+    private quarantine: { afterStep: number; held: Array<{ turn: AgyTurn; message: AgentMessage }> } | null = null;
     private backendLost = false;
     private startBackendPromise: Promise<void> | null = null;
     private hasReceivedAvailableCommands = false;
@@ -737,6 +739,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     session.onThinkingChange(false);
                     return;
                 }
+                this.releaseQuarantine();
 
                 if (inspection.latestStepIndex > watchedStepIndex) {
                     watchedStepIndex = inspection.latestStepIndex;
@@ -776,7 +779,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     for (const msg of converted.messages) {
                         // Live mode forwards only the end of a card the transcript rendered.
                         if (!live || (msg.type === 'tool_result' && renderedFromTranscript.has(msg.id))) {
-                            if (live && msg.type === 'tool_result') this.noteSettledFromTranscript(renderedFromTranscript.get(msg.id), msg.output);
+                            if (live && msg.type === 'tool_result') this.noteSettledFromTranscript(renderedFromTranscript.get(msg.id));
                             this.forwardAgentMessage(this.showQuestionCard(msg));
                         }
                     }
@@ -943,6 +946,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.syntheticCallAliases.clear();
                 this.settledFromTranscript.length = 0;
                 this.stoppedCommandIds.clear();
+                this.quarantine = null;
             }
             if (this.acpSessionId !== acpSessionId) {
                 this.lastTranscriptStepIndex = -1;
@@ -1002,6 +1006,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const previous = this.backend;
         this.backend = null;
         this.idleTurn = null;
+        this.quarantine = null;
         if (previous) await this.retireBackend(previous);
         await this.startBackend(this.acpSessionId);
     }
@@ -1192,7 +1197,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     ? readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, baseAfterStep)
                         .find((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')
                     : undefined;
-                if (live) await this.settleLiveWakeup(!turn.aborted);
+                if (live) {
+                    // A new wakeup row after the stop owns what was held (not for an aborted prompt); otherwise it was the stopped one's.
+                    const q = this.quarantine;
+                    if (q && !turn.aborted && readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, q.afterStep).some(
+                        (step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE'
+                    )) this.releaseQuarantine();
+                    this.quarantine = null;
+                    await this.settleLiveWakeup(!turn.aborted);
+                }
                 if (firstWakeupStep) {
                     commandWindowAfterStepIndex = Math.max(baseAfterStep, firstWakeupStep.step_index - 1);
                 }
@@ -1354,6 +1367,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const keep = close && !this.idleDiscarded;
         this.idleTurn = null;
         this.idleDiscarded = false;
+        if (!keep && this.acpSessionId) {
+            this.quarantine = { afterStep: readLatestAgyTranscriptStepIndex(this.brainDir, this.acpSessionId), held: [] };
+        }
         if (!turn) return;
         if (!keep) {
             for (const id of [...turn.commandCallIds, ...turn.openCommands, ...turn.deferredLiveCommandCalls.keys()]) {
@@ -1372,24 +1388,28 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         turn.openCommands.clear();
     }
 
-    private noteSettledFromTranscript(taskId: string | undefined, output: unknown): void {
-        const parsed = parseLiveCommandCompletionResult(output);
-        this.settledFromTranscript.push({ taskId, ...parsed });
+    private noteSettledFromTranscript(taskId: string | undefined): void {
+        if (!taskId) return;
+        this.settledFromTranscript.push(taskId);
         if (this.settledFromTranscript.length > 8) this.settledFromTranscript.shift();
     }
 
-    /** A result-only ACP update of a command whose card the transcript already ended. */
+    /** A result-only ACP update that names a command whose card the transcript already ended. */
     private consumeSettledFromTranscript(message: Extract<AgentMessage, { type: 'tool_result' }>): boolean {
-        const live = parseLiveCommandCompletionResult(message.output);
         const agentId = parseToolCallLifetimeId(message.id) ?? message.id;
-        const idx = this.settledFromTranscript.findIndex((entry) =>
-            (entry.taskId !== undefined && (agentId === entry.taskId || agentId === entry.taskId.slice(entry.taskId.lastIndexOf('/') + 1)))
-            || (live?.stdout !== undefined && live.stdout === entry.stdout
-                && (live.exitCode === undefined || entry.exitCode === undefined || live.exitCode === entry.exitCode))
+        const idx = this.settledFromTranscript.findIndex(
+            (taskId) => agentId === taskId || agentId === taskId.slice(taskId.lastIndexOf('/') + 1)
         );
         if (idx < 0) return false;
         this.settledFromTranscript.splice(idx, 1);
         return true;
+    }
+
+    /** A new wakeup row (structure, not time) shows ownership: replay what was held as normal frames. */
+    private releaseQuarantine(): void {
+        const held = this.quarantine?.held ?? [];
+        this.quarantine = null;
+        for (const item of held) this.handleTurnUpdate(item.turn, item.message);
     }
 
     private liveIdleWakeups(): boolean {
@@ -1804,10 +1824,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         this.idleTurn = turn;
                         turn.openCommands.clear(); // a cancelled prompt's command is not this wakeup's
                     }
-                    if (
-                        message.type === 'tool_call' && message.nativeName === 'run_command'
-                        && (this.idleDiscarded || this.stoppedCommandIds.has(parseToolCallLifetimeId(message.id) ?? message.id))
-                    ) return;
+                    const isStart = message.type === 'tool_call' && message.nativeName === 'run_command';
+                    if (isStart && (this.idleDiscarded || this.stoppedCommandIds.has(parseToolCallLifetimeId(message.id) ?? message.id))) return;
+                    const held = this.quarantine?.held;
+                    const messageId = 'id' in message ? message.id : undefined;
+                    if (held && (isStart || held.some((item) => 'id' in item.message && item.message.id === messageId))) {
+                        held.push({ turn, message });
+                        if (held.length > 64) held.shift(); // the newest starts are the likeliest new wakeup's
+                        return;
+                    }
                 }
                 turn.sawActivity = true;
                 turn.acknowledge();
