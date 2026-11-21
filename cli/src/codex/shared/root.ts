@@ -1033,13 +1033,16 @@ export class SharedCodexRoot {
         if (turn.generation < latestConfirmation) {
             const revision = this.settingsRevision;
             const latestTier = this.confirmedTierValue;
+            const savedTier = fromCodexServiceTier(latestTier);
+            const pendingTier = this.serviceTierExplicit === true
+                && (savedTier === 'standard' || savedTier === 'fast' || savedTier === 'ultrafast' || savedTier === 'flex') ? savedTier : undefined;
             try {
                 const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
                 const matchesConfirmedTier = snapshot.serviceTier === latestTier
                     || latestTier === 'default' && snapshot.serviceTier === null && this.confirmedNativeStandardReset;
                 if (!this.closed && !this.stopping && this.confirmedTierOperation === latestConfirmation && this.settingsRevision === revision
                     && snapshot.serviceTier !== undefined && !matchesConfirmedTier) {
-                    this.pauseTierConfirmation(latestConfirmation);
+                    this.pauseTierConfirmation(latestConfirmation, { retainConfirmedTier: true, pendingTier });
                 }
             } catch {
                 // An older unknown reply cannot invalidate a newer confirmation by itself.
@@ -1152,7 +1155,7 @@ export class SharedCodexRoot {
     private pauseTierConfirmation(operationId: number, {
         retainConfirmedTier = false, pendingTier,
         message = 'Codex settings confirmation is pending. Confirm Standard in settings before sending more input.'
-    }: { retainConfirmedTier?: boolean; pendingTier?: 'fast' | 'ultrafast'; message?: string } = {}): void {
+    }: { retainConfirmedTier?: boolean; pendingTier?: 'standard' | 'fast' | 'ultrafast' | 'flex'; message?: string } = {}): void {
         if (!this.isCurrentTierOperation(operationId)) return;
         const newerPause = operationId > this.pendingTierOperation;
         this.tierConfirmationResolved = false;

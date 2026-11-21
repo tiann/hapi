@@ -2390,10 +2390,18 @@ it.each(['default', null, 'priority'])('reconciles delayed lost reply if newer S
     await f.root.activate();
     const prepared = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
     await f.root.applySettings({ serviceTier: 'standard' });
+    // Like the Hub, retire the duplicate metadata once Standard is in the tier column.
+    f.session.updateMetadata(metadata => ({ ...metadata, codexConfirmedServiceTier: undefined }));
     vi.spyOn(f.root.client, 'request').mockResolvedValueOnce({ model: 'mock', serviceTier });
     await f.root.recoverLostNativeTurn({ ...prepared, explicitTier: true });
     expect(f.root.needsTierConfirmation).toBe(serviceTier === 'priority');
     expect(f.root.hasConfirmedStandardTier).toBe(true);
+    if (serviceTier === 'priority') {
+        const metadata = f.metadata();
+        expect(metadata.codexPendingServiceTier).toBe('standard');
+        await expect(inheritedResumeTier(f.root.client, {}, metadata.codexServiceTierExplicit, '/project',
+            'standard', metadata.codexPendingServiceTier, metadata.codexTierConfirmationPending)).resolves.toEqual({ serviceTier: null });
+    }
 });
 
 it('keeps a newer native Standard notification confirmed when an older reply is lost', async () => {
