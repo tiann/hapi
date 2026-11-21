@@ -233,6 +233,7 @@ export const MetadataSchema = z.object({
     codexPreserveNativeTier: z.literal(true).optional(),
     codexPendingServiceTier: z.enum(['standard', 'fast', 'ultrafast', 'flex']).optional(),
     codexTierConfirmationPending: z.boolean().optional(),
+    codexInheritedTierDiscoveryPending: z.boolean().optional(),
     codexProviderScopedCatalog: z.boolean().optional(),
     // A bridge to an externally owned app-server, never an owned cold-resume target.
     codexRuntime: z.object({

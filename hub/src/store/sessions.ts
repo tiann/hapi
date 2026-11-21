@@ -892,7 +892,8 @@ export function setSessionServiceTier(
                     WHEN @clear_override = 1 THEN json_remove(
                         json_set(metadata, '$.codexPreserveNativeTier', json('true')),
                         '$.codexServiceTierExplicit', '$.codexPendingServiceTier',
-                        '$.codexConfirmedServiceTier', '$.codexTierConfirmationPending')
+                        '$.codexConfirmedServiceTier', '$.codexTierConfirmationPending',
+                        '$.codexInheritedTierDiscoveryPending')
                     WHEN @pending_tier = 1 THEN json_set(metadata, '$.codexPendingServiceTier', @service_tier)
                     ELSE metadata
                 END,

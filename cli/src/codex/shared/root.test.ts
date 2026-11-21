@@ -2079,7 +2079,8 @@ describe('Ultrafast native settings', () => {
         const catalog = vi.spyOn(f.root.client, 'listModels').mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
         const pending = f.root.applySettings({ serviceTier: 'ultrafast' });
         await vi.waitFor(() => expect(catalog).toHaveBeenCalledOnce());
-        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'standard-only', serviceTier: 'default' } });
+        Object.assign(f.native.settings, { model: 'standard-only', serviceTier: 'default' });
+        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
         release({ data: [{ id: 'mock', serviceTiers: [{ id: 'ultrafast' }] }] });
         expect((await pending).applied).toMatchObject({ model: 'standard-only', serviceTier: 'standard' });
         expect(catalog).toHaveBeenCalledTimes(2);
@@ -2722,6 +2723,32 @@ it('preserves inherited intent when only a model change requires Standard fallba
     expect(f.metadata().codexServiceTierExplicit).toBe(false);
     expect(f.root.freshParams().serviceTier).toBeUndefined();
 });
+it.each(['web', 'native'])('keeps a newer model when a %s Ultrafast fallback reads existing Standard', async source => {
+    const f = await fixture();
+    Object.assign(f.native.settings, { model: 'standard-only', modelProvider: 'openai', serviceTier: 'default' });
+    await f.root.bind('thread', f.native.settings, false);
+    await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    let release!: () => void;
+    const snapshot = new Promise<void>(resolve => { release = resolve; });
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume') await snapshot;
+        return original(method, params);
+    });
+    const setting = source === 'web' ? f.root.applySettings({ serviceTier: 'ultrafast' })
+        : f.root.applyNativeSettings({ threadId: 'thread', serviceTier: 'ultrafast' });
+    const failed = expect(setting).rejects.toThrow(UltrafastTargetChangedError);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/resume', { threadId: 'thread', excludeTurns: true }));
+    f.native.settings = { ...f.native.settings, model: 'mock' };
+    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+    release();
+    await failed;
+    expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+    expect(f.native.settings.model).toBe('mock');
+    expect(f.events).not.toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('changed to Standard') }));
+    expect(f.root.needsTierConfirmation).toBe(false);
+});
+
 it('rechecks a tier-only model after asynchronous feature discovery', async () => {
     const f = await fixture();
     const original = f.root.client.request.bind(f.root.client);
@@ -2732,7 +2759,8 @@ it('rechecks a tier-only model after asynchronous feature discovery', async () =
     });
     const pending = f.root.applySettings({ serviceTier: 'ultrafast' });
     await vi.waitFor(() => expect(release).toBeTypeOf('function'));
-    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'standard-only', serviceTier: 'default' } });
+    Object.assign(f.native.settings, { model: 'standard-only', serviceTier: 'default' });
+    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
     release({ data: [{ name: 'ultrafast_mode', enabled: true }] });
     expect((await pending).applied).toMatchObject({ model: 'standard-only', serviceTier: 'standard' });
 });

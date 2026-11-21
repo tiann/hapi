@@ -1003,12 +1003,14 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
     it.each(['ultrafast', 'inherited'])('keeps a Runner cold resume recoverable when %s tier discovery is unavailable', async intent => {
         const home = await mkdtemp(join(tmpdir(), 'hapi-runner-tier-discovery-')); state.home = home;
         const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
-        await writeFile(join(ch, 'config.toml'), [
-            'model = "gpt-6-astra"', 'model_provider = "mock"', '[features]', 'ultrafast_mode = true', 'fast_mode = true',
+        const configure = (tier?: string) => writeFile(join(ch, 'config.toml'), [
+            'model = "gpt-6-astra"', 'model_provider = "mock"', ...(tier ? [`service_tier = "${tier}"`] : []),
+            '[features]', 'ultrafast_mode = true', 'fast_mode = true',
             '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
             'wire_api = "responses"', 'requires_openai_auth = false', '[analytics]', 'enabled = false',
             '[feedback]', 'enabled = false', ''
         ].join('\n'));
+        await configure();
         vi.stubEnv('CODEX_HOME', ch);
         const { runSharedRuntime } = await import('./runtime');
         const running: Array<{ abort: AbortController; done: Promise<void> }> = [];
@@ -1035,9 +1037,10 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             saved.metadata.codexConfirmedServiceTier = inherited ? undefined : 'ultrafast';
             saved.metadata.codexPendingServiceTier = undefined;
             vi.mocked(bootstrapExistingSession).mockImplementation(async options => {
-                const session = new MockSession(options.workingDirectory, saved.sessionId);
-                session.metadata = { ...saved.metadata };
-                session.serviceTier = saved.serviceTier;
+                const previous = state.sessions.get(options.sessionId)!;
+                const session = new MockSession(options.workingDirectory, previous.sessionId);
+                session.metadata = { ...previous.metadata };
+                session.serviceTier = previous.serviceTier;
                 state.sessions.set(session.sessionId, session);
                 return { session, sessionInfo: { id: session.sessionId, namespace: 'test', serviceTier: session.serviceTier }, metadata: session.metadata,
                     workingDirectory: options.workingDirectory, machineId: 'test', startedBy: options.startedBy, api: {} } as never;
@@ -1058,6 +1061,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 codexTierConfirmationPending: true, codexPendingServiceTier: inherited ? undefined : 'ultrafast',
                 codexServiceTierExplicit: !inherited
             });
+            expect(session.metadata.codexInheritedTierDiscoveryPending).toBe(inherited ? true : undefined);
             expect(session.readySignals).toBe(0);
             expect(session.messages).toContainEqual({ type: 'message', message: expect.stringContaining(
                 inherited ? 'read the inherited Codex service tier' : 'catalog could not verify Ultrafast') });
@@ -1066,10 +1070,23 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             client = new CodexAppServerClient({ endpoint: resumed.runtime.endpoint, token: resumed.runtime.token });
             await initializeSharedClient(client);
             await expect(client.request('turn/start', { threadId, input: [{ type: 'text', text: 'Must wait' }] })).rejects.toThrow('tier confirmation');
-            await session.rpc.get(RPC_METHODS.SetSessionConfig)!({ serviceTier: 'standard' });
-            expect(session.readySignals).toBe(1);
-            expect(session.serviceTier).toBe('standard');
-            expect(session.metadata.codexTierConfirmationPending).toBe(false);
+            if (inherited) {
+                resumed.abort.abort(); await resumed.done;
+                discovery.mockRestore(); discovery = undefined;
+                await configure('priority');
+                const retried = await start({ startedBy: 'runner', existingSessionId: sessionId, resumeSessionId: threadId });
+                expect(retried.runtime.sessions[sessionId].threadId).toBe(threadId);
+                const active = state.sessions.get(sessionId)!;
+                expect(active.readySignals).toBe(1);
+                expect(active.serviceTier).toBe('fast');
+                expect(active.metadata).toMatchObject({ codexServiceTierExplicit: false, codexTierConfirmationPending: false });
+                expect(active.metadata.codexInheritedTierDiscoveryPending).toBeUndefined();
+            } else {
+                await session.rpc.get(RPC_METHODS.SetSessionConfig)!({ serviceTier: 'standard' });
+                expect(session.readySignals).toBe(1);
+                expect(session.serviceTier).toBe('standard');
+                expect(session.metadata.codexTierConfirmationPending).toBe(false);
+            }
         } finally {
             discovery?.mockRestore();
             for (const item of running) item.abort.abort();

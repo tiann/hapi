@@ -51,8 +51,9 @@ function rejoinThreadParams(params: Record<string, unknown>): Record<string, unk
     return { threadId: params.threadId, excludeTurns: params.excludeTurns, initialTurnsPage: params.initialTurnsPage };
 }
 function requiresTierAdmission(root: SharedCodexRoot, tier: unknown, downgraded: boolean, explicitTier?: boolean): boolean {
-    return downgraded || tier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true
-        || root.requiresEffectiveFastConfirmation(tier, explicitTier);
+    const metadata = root.session.getMetadata();
+    return downgraded || tier === 'ultrafast' || metadata?.codexTierConfirmationPending === true
+        || metadata?.codexInheritedTierDiscoveryPending === true || root.requiresEffectiveFastConfirmation(tier, explicitTier);
 }
 async function freePort(): Promise<number> {
     const server = createServer();
@@ -319,6 +320,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 throw new Error('Codex thread was archived during binding');
             }
         };
+        const retryInheritedDiscovery = root.session.getMetadata()?.codexInheritedTierDiscoveryPending === true;
         const requestedUltrafast = !downgraded && ultrafastTarget !== undefined;
         const confirmBeforeInput = tierDiscoveryPending !== undefined || requiresTierAdmission(root, requestedUltrafast ? 'ultrafast' : expectedResumeTier, downgraded, serviceTierExplicit);
         const explicitTier = serviceTierExplicit ?? root.session.getMetadata()?.codexServiceTierExplicit === true;
@@ -351,20 +353,24 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         }
         if (ending.has(root)) throw new Error('Codex thread was archived during binding');
         let tierConfirmationPending = tierDiscoveryPending !== undefined || (resume?.tierConfirmationPending ?? false);
+        if (tierDiscoveryPending === 'inherited') root.session.updateMetadata(metadata => ({ ...metadata, codexInheritedTierDiscoveryPending: true }));
         if (tierDiscoveryPending) root.session.sendSessionEvent({ type: 'message', message: tierDiscoveryPending === 'ultrafast'
             ? 'The Codex model catalog could not verify Ultrafast. Input is paused. Select a service tier in settings to continue.'
             : 'Could not read the inherited Codex service tier. Input is paused. Select a service tier in settings to continue.' });
         let standardConfirmed = false;
-        if (resume?.tierConfirmationPending === undefined && (requestedUltrafast || downgraded)) {
+        if (tierDiscoveryPending === undefined && resume?.tierConfirmationPending === undefined && (requestedUltrafast || downgraded || retryInheritedDiscovery)) {
             try {
                 if (downgraded) { await root.confirmStandardLaunch(explicitTier); standardConfirmed = true; }
-                else await root.confirmUltrafastLaunch(explicitTier);
+                else if (requestedUltrafast) await root.confirmUltrafastLaunch(explicitTier);
+                else await root.confirmInheritedTierLaunch(expectedResumeTier);
             }
             catch (error) {
                 const targetChanged = error instanceof UltrafastTargetChangedError;
-                tierConfirmationPending = targetChanged || downgraded || !root.hasConfirmedStandardTier;
+                tierConfirmationPending = retryInheritedDiscovery || targetChanged || downgraded || !root.hasConfirmedStandardTier;
                 root.session.sendSessionEvent({ type: 'message', message: targetChanged
                     ? 'The Codex model or provider changed after Ultrafast validation. Input is paused. Select a service tier in settings to continue.'
+                    : retryInheritedDiscovery
+                        ? 'Could not confirm the inherited Codex service tier. Input is paused. Select a service tier in settings to continue.'
                     : tierConfirmationPending
                         ? 'Ultrafast was not applied and Standard could not be confirmed. Input is paused. Select a service tier in settings to retry on this conversation.'
                         : 'Ultrafast was not applied; Standard is active.' });
@@ -577,7 +583,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             const resuming = request.method === 'thread/resume';
             const resolved = resuming
                 ? await inheritedResumeTier(control, params, metadata?.codexServiceTierExplicit, cwd, metadata?.codexConfirmedServiceTier ?? root.bootstrap.sessionInfo.serviceTier,
-                    metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined)
+                    metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined && !metadata.codexInheritedTierDiscoveryPending)
                 : await withNativeLaunchTier(params, cwd);
             const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, undefined, savedThread, startupCatalogConfig);
             if (request.method === 'thread/fork') existing?.assertForkTierConfirmed();
@@ -745,7 +751,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             try {
                 candidate = await inheritedResumeTier(control, candidate, metadata?.codexServiceTierExplicit, cwd,
                     metadata?.codexConfirmedServiceTier ?? root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier,
-                    metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined);
+                    metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined && !metadata.codexInheritedTierDiscoveryPending);
                 resolved = await resolveUltrafastLaunch(control, 'thread/resume', candidate, cwd, undefined, thread, startupCatalogConfig);
             } catch (error) {
                 if (options.startedBy !== 'runner' || !options.existingSessionId) throw error;

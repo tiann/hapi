@@ -5618,7 +5618,7 @@ it('clears a saved and pending tier when an inactive Codex import requests nativ
             path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
             codexSessionId: 'native-tier', codexSourceSessionId: 'source-tier', codexImportedAt: null,
             codexServiceTierExplicit: true, codexConfirmedServiceTier: 'fast',
-            codexPendingServiceTier: 'ultrafast', codexTierConfirmationPending: true
+            codexPendingServiceTier: 'ultrafast', codexTierConfirmationPending: true, codexInheritedTierDiscoveryPending: true
         }, null, 'default')
         engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.36.5' }, null, 'default')
         engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
@@ -5631,6 +5631,7 @@ it('clears a saved and pending tier when an inactive Codex import requests nativ
         expect(stored?.metadata).not.toHaveProperty('codexPendingServiceTier')
         expect(stored?.metadata).not.toHaveProperty('codexConfirmedServiceTier')
         expect(stored?.metadata).not.toHaveProperty('codexTierConfirmationPending')
+        expect(stored?.metadata).not.toHaveProperty('codexInheritedTierDiscoveryPending')
 
         const tiers: Array<string | undefined> = []
         ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {

@@ -875,6 +875,7 @@ export class SharedCodexRoot {
         if (config.serviceTier === null) config.serviceTier = 'standard';
         let fallbackNotice: string | undefined;
         let ultrafastTarget: UltrafastTarget | undefined;
+        let fallbackSource: UltrafastTarget | undefined;
         const discoversUltrafast = config.serviceTier === 'ultrafast' || Boolean(config.model && this.hasUltrafastTier && config.serviceTier === undefined);
         const discoversEffort = config.modelReasoningEffort === null;
         if (discoversUltrafast) {
@@ -890,11 +891,13 @@ export class SharedCodexRoot {
                 const enabled = target.available && await isUltrafastEnabled(this.client, this.threadId, discoveryDeadline);
                 if ((!config.model && model !== this.settings.model) || provider !== this.modelProvider) continue;
                 if (config.serviceTier === undefined && !this.hasUltrafastTier) break;
+                if (!enabled) {
+                    fallbackSource = { model: config.model ? undefined : model ?? undefined, provider: provider ?? target.provider };
+                    config.serviceTier = 'standard';
+                    fallbackNotice = target.available ? ULTRAFAST_DISABLED_NOTICE : ULTRAFAST_FALLBACK_NOTICE;
+                } else ultrafastTarget = target;
                 // Pin only after every asynchronous discovery step has settled.
                 if (target.model !== undefined) config.model = target.model;
-                if (!target.available) { config.serviceTier = 'standard'; fallbackNotice = ULTRAFAST_FALLBACK_NOTICE; }
-                else if (!enabled) { config.serviceTier = 'standard'; fallbackNotice = ULTRAFAST_DISABLED_NOTICE; }
-                else ultrafastTarget = target;
                 break;
             }
         }
@@ -940,7 +943,7 @@ export class SharedCodexRoot {
         };
         const validatedTier = config.serviceTier !== undefined || ultrafastTarget !== undefined;
         const confirmsTier = validatedTier || this.verifiesInheritedUltrafast();
-        const confirmed = await this.writeNativeSettings(params, params, deadline, operationId, undefined, onMutation, ultrafastTarget);
+        const confirmed = await this.writeNativeSettings(params, params, deadline, operationId, undefined, onMutation, ultrafastTarget, fallbackSource);
         if (config.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
         await this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, validatedTier, fallbackNotice, onMutation);
         this.alive(); return { applied: this.settingsForHub() };
@@ -961,13 +964,15 @@ export class SharedCodexRoot {
         this.confirmedTierValue = this.hasConfirmedStandardTier ? 'default' : this.settingsNative.serviceTier;
         const paused = this.tierConfirmationPending;
         const metadata = this.session.getMetadata();
+        if (!this.activated) this.serviceTierExplicit ??= metadata?.codexServiceTierExplicit;
         const confirmedTier = this.serviceTierExplicit ? this.settings.serviceTier ?? undefined : undefined;
         const keepRecoveryVisible = this.activated && (paused || metadata?.codexTierConfirmationPending === true);
-        if (paused || metadata?.codexTierConfirmationPending === true || metadata?.codexPendingServiceTier !== undefined
+        if (paused || metadata?.codexTierConfirmationPending === true || metadata?.codexInheritedTierDiscoveryPending === true || metadata?.codexPendingServiceTier !== undefined
             || metadata?.codexConfirmedServiceTier !== confirmedTier || metadata?.codexServiceTierExplicit !== this.serviceTierExplicit) {
             this.session.updateMetadata(metadata => this.isCurrentTierOperation(operationId)
                 ? { ...metadata, codexTierConfirmationPending: keepRecoveryVisible,
-                    codexServiceTierExplicit: this.serviceTierExplicit, codexConfirmedServiceTier: confirmedTier, codexPendingServiceTier: undefined }
+                    codexServiceTierExplicit: this.serviceTierExplicit, codexConfirmedServiceTier: confirmedTier, codexPendingServiceTier: undefined,
+                    codexInheritedTierDiscoveryPending: undefined }
                 : metadata);
         }
         if (this.activated && !await this.session.flushMetadata()) {
@@ -999,13 +1004,14 @@ export class SharedCodexRoot {
     }
     /** Resolve native intent without committing settings before input is accepted. */
     private async resolveNativeSettings(params: Record<string, unknown>, operationDeadline = Date.now() + 25_000): Promise<{
-        params: Record<string, unknown>; fallbackNotice?: string; ultrafastTarget?: UltrafastTarget;
+        params: Record<string, unknown>; fallbackNotice?: string; ultrafastTarget?: UltrafastTarget; fallbackSource?: UltrafastTarget;
     }> {
         params = { ...params };
         if (params.serviceTier === 'fast') params.serviceTier = 'priority';
         const requestedModel = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
         let fallbackNotice: string | undefined;
         let ultrafastTarget: UltrafastTarget | undefined;
+        let fallbackSource: UltrafastTarget | undefined;
         if (params.serviceTier === 'ultrafast' || requestedModel && params.serviceTier === undefined && this.hasUltrafastTier) {
             if (this.host.attached) throw new Error('Cannot verify Ultrafast for an externally attached thread. Choose Standard in HAPI or set the tier in the owning Codex client.');
             const deadline = Math.min(operationDeadline - 15_000, Date.now() + 10_000);
@@ -1018,14 +1024,15 @@ export class SharedCodexRoot {
                 // A model-only request must not reset a newer tier chosen during discovery.
                 if (params.serviceTier === undefined && !this.hasUltrafastTier) break;
                 params = { ...params, ...(target.model !== undefined ? { model: target.model } : {}) };
-                if (!target.available || !enabled) {
+                if (!enabled) {
+                    fallbackSource = { model: requestedModel ? undefined : model ?? undefined, provider: provider ?? target.provider };
                     params.serviceTier = null;
                     fallbackNotice = !target.available ? ULTRAFAST_FALLBACK_NOTICE : ULTRAFAST_DISABLED_NOTICE;
                 } else ultrafastTarget = target;
                 break;
             }
         }
-        return { params, fallbackNotice, ultrafastTarget };
+        return { params, fallbackNotice, ultrafastTarget, fallbackSource };
     }
     /** Native frontends share the same confirmation and explicit-intent rules. */
     applyNativeSettings(params: Record<string, unknown>): Promise<void> {
@@ -1050,7 +1057,7 @@ export class SharedCodexRoot {
                 ...(resolved.params.serviceTier !== undefined ? { serviceTier: resolved.params.serviceTier } : {}),
                 ...(resolved.params.collaborationMode ? { collaborationMode: resolved.params.collaborationMode } : {}),
                 ...(effectiveModel ? { model: effectiveModel } : {})
-            }, deadline, operationId, undefined, undefined, resolved.ultrafastTarget);
+            }, deadline, operationId, undefined, undefined, resolved.ultrafastTarget, resolved.fallbackSource);
             if (resolved.params.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
             await this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, validatedTier, resolved.fallbackNotice);
             this.alive();
@@ -1256,10 +1263,14 @@ export class SharedCodexRoot {
             && (target.provider === undefined || provider === undefined || provider === target.provider);
     }
     private async writeNativeSettings(params: Record<string, unknown>, expected = params, deadline = Date.now() + 25_000,
-        operationId = ++this.tierOperationCounter, canWrite?: () => boolean, onMutation?: () => void, ultrafastTarget?: UltrafastTarget): Promise<number | undefined> {
+        operationId = ++this.tierOperationCounter, canWrite?: () => boolean, onMutation?: () => void, ultrafastTarget?: UltrafastTarget, fallbackSource?: UltrafastTarget): Promise<number | undefined> {
         if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
         if (canWrite && !canWrite()) return;
+        const assertFallbackSource = (snapshot: Record<string, unknown> = { model: this.settings.model, modelProvider: this.modelProvider }) => {
+            if (fallbackSource && !this.matchesUltrafastTarget(snapshot, fallbackSource)) throw new UltrafastTargetChangedError();
+        };
+        assertFallbackSource();
         const requestedUltrafast = expected.serviceTier === 'ultrafast';
         const requestedFast = expected.serviceTier === 'priority';
         const verifyUltrafast = requestedUltrafast || expected.serviceTier === undefined && this.verifiesInheritedUltrafast(ultrafastTarget);
@@ -1288,6 +1299,8 @@ export class SharedCodexRoot {
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
             if (canWrite && !canWrite()) return;
             const snapshotCurrent = this.settingsRevision === revision;
+            if (snapshotCurrent) assertFallbackSource(snapshot);
+            else assertFallbackSource();
             if (snapshotCurrent && verifyUltrafast && !this.matchesUltrafastTarget(snapshot, target)) throw new UltrafastTargetChangedError();
             if (snapshotCurrent) this.acceptSettings(snapshot, true);
             else if (canWrite) return;
@@ -1309,6 +1322,7 @@ export class SharedCodexRoot {
                 return operationId;
             }
         }
+        assertFallbackSource();
         const revision = this.settingsRevision;
         let changed!: () => void;
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1436,6 +1450,13 @@ export class SharedCodexRoot {
             this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: false }));
         }
         this.notice('Codex did not apply Ultrafast; changed to Standard.');
+    }
+    async confirmInheritedTierLaunch(expected: unknown): Promise<void> {
+        const confirmed = expected === undefined ? this.settings.serviceTier !== undefined
+            : expected === null || expected === 'default' ? this.hasConfirmedStandardTier
+            : this.settings.serviceTier === fromCodexServiceTier(expected);
+        if (!confirmed) throw new Error('Could not confirm the effective inherited Codex service tier');
+        await this.completeTierConfirmation();
     }
     async confirmStandardLaunch(explicitTier = true): Promise<void> {
         this.assertUltrafastLaunchTarget();
