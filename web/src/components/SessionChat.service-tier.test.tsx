@@ -7,6 +7,8 @@ import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
 import { ApiError, type ApiClient } from '@/api/client'
 import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
+import { applySessionDetailPatch } from '@/lib/sessionPatch'
+import { SessionPatchSchema } from '@hapi/protocol/schemas'
 import type { Session } from '@/types/api'
 
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
@@ -165,12 +167,28 @@ it.each([true, false])('withholds a catalog-derived Fast badge when the effectiv
     const catalog = vi.fn(async () => ({ success: true, models: [
         { id: 'mock', isDefault: true, serviceTiers: ['priority'], defaultServiceTier: 'priority' }
     ] }));
-    const session = { id: 'tier-session', active: true, model: 'mock', serviceTier: null, metadata: {
+    const session = { id: 'tier-session', active: true, model: 'mock', serviceTier: null, serviceTierReported: true, metadata: {
         flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexTierConfirmationPending: confirmationPending,
         capabilities: { concurrentClients: true }
     } } as unknown as Session;
     render(shell(session, catalog, vi.fn()));
     expect(await screen.findByRole('button', { name: 'Reset Standard / fast:true / ultra:false' })).toBeEnabled();
+    expect(screen.getByTestId('effective-tier')).toHaveTextContent('none');
+});
+it('shows inherited Fast until a keep-alive patch reports an empty effective tier', async () => {
+    const catalog = vi.fn(async () => ({ success: true, models: [
+        { id: 'mock', isDefault: true, serviceTiers: ['priority'], defaultServiceTier: 'priority' }
+    ] }));
+    const session = { id: 'tier-session', active: true, model: 'mock', serviceTier: null, serviceTierReported: false, metadata: {
+        flavor: 'codex', machineId: 'machine', startingMode: 'remote', capabilities: { concurrentClients: true }
+    } } as unknown as Session;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const setTier = vi.fn();
+    const view = render(shell(session, catalog, setTier, catalog, queryClient));
+    await waitFor(() => expect(screen.getByTestId('effective-tier')).toHaveTextContent('priority'));
+
+    const patch = SessionPatchSchema.parse({ serviceTier: null, serviceTierReported: true });
+    view.rerender(shell(applySessionDetailPatch(session, patch)!, catalog, setTier, catalog, queryClient));
     expect(screen.getByTestId('effective-tier')).toHaveTextContent('none');
 });
 it('does not offer a tier control solely from an unverified owned Ultrafast catalog', async () => {

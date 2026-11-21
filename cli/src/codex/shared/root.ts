@@ -857,6 +857,10 @@ export class SharedCodexRoot {
         this.settingsWrites = operation;
         return operation;
     }
+    private verifiesInheritedUltrafast(target?: UltrafastTarget): boolean {
+        // A launch recovery cannot trust a tier on a target we have not validated.
+        return this.hasUltrafastTier && (this.pendingUltrafastLaunchTarget === undefined || target !== undefined);
+    }
     private async applySettingsNow(raw: unknown, deadline: number, operationId: number, onMutation?: () => void): Promise<{ applied: RuntimeSettings }> {
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
         const config = SettingsSchema.parse(raw);
@@ -930,7 +934,7 @@ export class SharedCodexRoot {
                 developer_instructions: null
             } } } : {})
         };
-        const confirmsTier = config.serviceTier !== undefined || this.hasUltrafastTier;
+        const confirmsTier = config.serviceTier !== undefined || this.verifiesInheritedUltrafast(ultrafastTarget);
         const confirmed = await this.writeNativeSettings(params, params, deadline, operationId, undefined, onMutation, ultrafastTarget);
         if (config.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
         await this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, fallbackNotice, onMutation);
@@ -1034,7 +1038,7 @@ export class SharedCodexRoot {
                 reasoning_effort: resolved.params.effort ?? this.settings.modelReasoningEffort, developer_instructions: null
             } };
             const effectiveModel = string(record(record(resolved.params.collaborationMode).settings).model) ?? string(resolved.params.model);
-            const confirmsTier = resolved.params.serviceTier !== undefined || this.hasUltrafastTier;
+            const confirmsTier = resolved.params.serviceTier !== undefined || this.verifiesInheritedUltrafast(resolved.ultrafastTarget);
             const confirmed = await this.writeNativeSettings(resolved.params, {
                 ...(resolved.params.serviceTier !== undefined ? { serviceTier: resolved.params.serviceTier } : {}),
                 ...(resolved.params.collaborationMode ? { collaborationMode: resolved.params.collaborationMode } : {}),
@@ -1245,7 +1249,7 @@ export class SharedCodexRoot {
         if (canWrite && !canWrite()) return;
         const requestedUltrafast = expected.serviceTier === 'ultrafast';
         const requestedFast = expected.serviceTier === 'priority';
-        const verifyUltrafast = requestedUltrafast || expected.serviceTier === undefined && this.hasUltrafastTier;
+        const verifyUltrafast = requestedUltrafast || expected.serviceTier === undefined && this.verifiesInheritedUltrafast(ultrafastTarget);
         const target = ultrafastTarget ?? { model: string(expected.model) ?? this.settings.model ?? undefined, provider: this.modelProvider };
         if (verifyUltrafast && target.provider && this.modelProvider && target.provider !== this.modelProvider) throw new UltrafastTargetChangedError();
         const changesTier = expected.serviceTier !== undefined || verifyUltrafast;

@@ -656,6 +656,8 @@ export const SessionSchema = z.object({
     modelReasoningEffort: z.string().nullable().optional().default(null),
     effort: z.string().nullable().optional().default(null),
     serviceTier: z.string().nullable().optional().default(null),
+    // Records an effective value even when the reported tier is null.
+    serviceTierReported: z.boolean().optional(),
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
     copilotAgentMode: CopilotAgentModeSchema.optional()
@@ -793,6 +795,7 @@ export const SessionPatchSchema = z.object({
     modelReasoningEffort: z.string().nullable().optional(),
     effort: z.string().nullable().optional(),
     serviceTier: z.string().nullable().optional(),
+    serviceTierReported: z.boolean().optional(),
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
     copilotAgentMode: CopilotAgentModeSchema.optional(),

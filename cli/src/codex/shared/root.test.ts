@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState, Metadata } from '@/api/types';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
-import { SharedCodexRoot, latestCompletedForkCutoff, type RootHost } from './root';
+import { SharedCodexRoot, UltrafastTargetChangedError, latestCompletedForkCutoff, type RootHost } from './root';
 import { codexPlanProposalId } from './plan';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { asyncQuestionsForItem } from './asyncQuestions';
@@ -2754,6 +2754,28 @@ it.each([false, true])('recovers a known thread through settings while input is 
     await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
     f.reconnect();
     await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(2));
+});
+it.each(['web', 'native'])('keeps input paused after a launch target mismatch during a %s effort change', async source => {
+    const f = await fixture();
+    f.root.beginTierConfirmation(true, { model: 'validated-model', provider: 'openai' });
+    Object.assign(f.native.settings, { model: 'mock', modelProvider: 'openai', serviceTier: 'ultrafast' });
+    await f.root.bind('thread', f.native.settings, false);
+    await expect(f.root.confirmUltrafastLaunch()).rejects.toThrow(UltrafastTargetChangedError);
+    await f.root.activate({}, true, true);
+    f.submit('held while Ultrafast is unverified', 'launch-mismatch-input');
+
+    if (source === 'web') await f.rpc.get(RPC_METHODS.SetSessionConfig)!({ modelReasoningEffort: 'high' });
+    else await f.root.applyNativeSettings({ threadId: 'thread', effort: 'high' });
+
+    expect(f.native.settings).toMatchObject({ effort: 'high', serviceTier: 'ultrafast' });
+    expect(f.metadata()).toMatchObject({ codexTierConfirmationPending: true, codexPendingServiceTier: 'ultrafast' });
+    expect(f.root.needsTierConfirmation).toBe(true);
+    expect(f.sessionReady).not.toHaveBeenCalled();
+    expect(f.native.queue).toHaveLength(0);
+
+    await f.root.applySettings({ serviceTier: 'standard' });
+    expect(f.sessionReady).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
 });
 it('reconciles a persisted pending confirmation from an authoritative cold-resume Standard snapshot', async () => {
     const f = await fixture();

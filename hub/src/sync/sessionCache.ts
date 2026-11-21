@@ -461,6 +461,7 @@ export class SessionCache {
             modelReasoningEffort: stored.modelReasoningEffort,
             effort: stored.effort,
             serviceTier: stored.serviceTier,
+            serviceTierReported: stored.serviceTierReported,
             permissionMode: existing?.permissionMode ?? metadata?.preferredPermissionMode,
             collaborationMode: existing?.collaborationMode,
             copilotAgentMode: existing?.copilotAgentMode ?? metadata?.preferredCopilotAgentMode
@@ -586,6 +587,7 @@ export class SessionCache {
         if (Object.prototype.hasOwnProperty.call(patch, 'serviceTier')) {
             session.serviceTier = patch.serviceTier ?? null
         }
+        if (patch.serviceTierReported !== undefined) session.serviceTierReported = patch.serviceTierReported
         if (patch.permissionMode !== undefined) session.permissionMode = patch.permissionMode
         if (patch.collaborationMode !== undefined) session.collaborationMode = patch.collaborationMode
         if (patch.backgroundTaskCount !== undefined) session.backgroundTaskCount = patch.backgroundTaskCount
@@ -641,6 +643,7 @@ export class SessionCache {
         const previousModelReasoningEffort = session.modelReasoningEffort
         const previousEffort = session.effort
         const previousServiceTier = session.serviceTier
+        const previousServiceTierReported = session.serviceTierReported
         const previousCollaborationMode = session.collaborationMode
         const previousCopilotAgentMode = session.copilotAgentMode
         const pendingThinkingUntil = this.pendingThinkingUntilBySessionId.get(session.id) ?? 0
@@ -694,12 +697,13 @@ export class SessionCache {
             session.effort = payload.effort
         }
         if (payload.serviceTier !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'serviceTier', t)) {
-            if (payload.serviceTier !== session.serviceTier) {
+            if (payload.serviceTier !== session.serviceTier || !session.serviceTierReported) {
                 this.store.sessions.setSessionServiceTier(payload.sid, payload.serviceTier, session.namespace, {
                     touchUpdatedAt: false
                 })
             }
             session.serviceTier = payload.serviceTier
+            session.serviceTierReported = true
         }
         if (payload.collaborationMode !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'collaborationMode', t)) {
             session.collaborationMode = payload.collaborationMode
@@ -716,6 +720,7 @@ export class SessionCache {
             || previousModelReasoningEffort !== session.modelReasoningEffort
             || previousEffort !== session.effort
             || previousServiceTier !== session.serviceTier
+            || previousServiceTierReported !== session.serviceTierReported
             || previousCollaborationMode !== session.collaborationMode
             || previousCopilotAgentMode !== session.copilotAgentMode
         const turnBoundaryChanged = previousActiveTurnStartedAt !== session.activeTurnStartedAt
@@ -739,7 +744,7 @@ export class SessionCache {
                     model: session.model,
                     modelReasoningEffort: session.modelReasoningEffort,
                     effort: session.effort,
-                    serviceTier: session.serviceTier,
+                    ...(session.serviceTierReported ? { serviceTier: session.serviceTier, serviceTierReported: true } : {}),
                     collaborationMode: session.collaborationMode,
                     copilotAgentMode: session.copilotAgentMode
                 } satisfies SessionPatch
@@ -1299,7 +1304,7 @@ export class SessionCache {
         }
         if (config.serviceTier !== undefined) {
             const pendingCodexTier = options?.deferCodexTier === true && session.metadata?.flavor === 'codex'
-            if (config.serviceTier !== session.serviceTier || pendingCodexTier) {
+            if (config.serviceTier !== session.serviceTier || !session.serviceTierReported || pendingCodexTier) {
                 const updated = this.store.sessions.setSessionServiceTier(sessionId, config.serviceTier, session.namespace, {
                     touchUpdatedAt: false, pendingCodexTier
                 })
@@ -1316,6 +1321,7 @@ export class SessionCache {
             }
             if (!pendingCodexTier) {
                 session.serviceTier = config.serviceTier
+                session.serviceTierReported = true
                 this.markRuntimeConfigUpdated(sessionId, 'serviceTier', appliedAt)
             }
         }
@@ -2285,7 +2291,7 @@ export class SessionCache {
             }
         }
 
-        if (newStored.serviceTier === null && oldStored.serviceTier !== null) {
+        if (!newStored.serviceTierReported && oldStored.serviceTierReported) {
             const updated = this.store.sessions.setSessionServiceTier(newSessionId, oldStored.serviceTier, namespace, {
                 touchUpdatedAt: false
             })

@@ -1,5 +1,6 @@
 import { describe, expect, it, spyOn } from 'bun:test'
 import { toSessionSummary } from '@hapi/protocol'
+import { SessionPatchSchema, SessionSchema } from '@hapi/protocol/schemas'
 import type { SyncEvent } from '@hapi/protocol/types'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
@@ -5541,6 +5542,28 @@ it.each([
         expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
         expect(tier as string | undefined).toBe(expected)
     } finally { engine.stop() }
+})
+
+it('distinguishes an unreported tier from a reported null in full sessions and keep-alive patches', () => {
+    const store = new Store(':memory:')
+    try {
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const session = cache.getOrCreateSession('tier-report', { path: '/tmp/project', host: 'localhost', flavor: 'codex' }, null, 'default')
+        const time = Date.now()
+        cache.handleSessionAlive({ sid: session.id, time })
+        const payload = () => SessionSchema.parse(JSON.parse(JSON.stringify(cache.refreshSession(session.id))))
+        expect(payload()).toMatchObject({ serviceTier: null, serviceTierReported: false })
+
+        cache.handleSessionAlive({ sid: session.id, time: time + 1, serviceTier: null })
+        const event = events.at(-1)
+        if (event?.type !== 'session-updated') throw new Error('Expected a session update for the first explicit tier report')
+        expect(SessionPatchSchema.parse(JSON.parse(JSON.stringify(event.data))))
+            .toMatchObject({ serviceTier: null, serviceTierReported: true })
+        expect(payload()).toMatchObject({ serviceTier: null, serviceTierReported: true })
+        expect(new SessionCache(store, createPublisher([])).refreshSession(session.id))
+            .toMatchObject({ serviceTier: null, serviceTierReported: true })
+    } finally { store.close() }
 })
 
 it('clears the confirmed Codex recovery tier after the effective heartbeat is durable', () => {

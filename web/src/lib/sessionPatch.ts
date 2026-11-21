@@ -83,6 +83,7 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
     if (Object.prototype.hasOwnProperty.call(patch, 'serviceTier')) {
         assign('serviceTier', patch.serviceTier ?? null)
     }
+    if (patch.serviceTierReported !== undefined) assign('serviceTierReported', patch.serviceTierReported)
     if (patch.permissionMode !== undefined) assign('permissionMode', patch.permissionMode)
     if (patch.collaborationMode !== undefined) assign('collaborationMode', patch.collaborationMode)
     if (patch.copilotAgentMode !== undefined) assign('copilotAgentMode', patch.copilotAgentMode)

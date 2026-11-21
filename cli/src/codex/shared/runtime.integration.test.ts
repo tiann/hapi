@@ -1041,6 +1041,11 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(child.readySignals).toBe(0);
             expect(child.serviceTier).not.toBe('ultrafast');
             expect(child.messages).toContainEqual({ type: 'message', message: expect.stringContaining('changed after Ultrafast validation') });
+            await child.rpc.get(RPC_METHODS.SetSessionConfig)!({ modelReasoningEffort: 'high' });
+            await client.request('thread/settings/update', { threadId: fork.thread.id, effort: 'medium' });
+            expect(child.metadata.codexTierConfirmationPending).toBe(true);
+            expect(child.readySignals).toBe(0);
+            expect(child.serviceTier).not.toBe('ultrafast');
             await expect(client.request('turn/start', { threadId: fork.thread.id, input: [{ type: 'text', text: 'Must not run' }] }))
                 .rejects.toThrow('tier confirmation is pending');
             await client.request('thread/settings/update', { threadId: fork.thread.id, serviceTier: null });

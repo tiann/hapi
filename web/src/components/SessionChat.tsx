@@ -1219,7 +1219,7 @@ function SessionChatInner(props: SessionChatProps) {
     })
     const effectiveCodexServiceTier = agentFlavor === 'codex'
         ? getEffectiveCodexServiceTier(
-            props.session.serviceTier,
+            props.session.serviceTierReported || props.session.serviceTier !== null ? props.session.serviceTier : undefined,
             props.session.model,
             codexModelsState.models,
             metadata?.codexTierConfirmationPending
