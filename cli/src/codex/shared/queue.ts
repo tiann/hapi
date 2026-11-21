@@ -841,13 +841,8 @@ export class SharedCodexQueue {
                 catch { this.uncertain([id]); return { steered: false, indeterminate: true }; }
                 if (this.state(id) === 'consumed') return { steered: false, error: 'Message already consumed' };
                 if (!entry.nativeId || entry.state !== 'queued') return { steered: false, indeterminate: true };
-                entry.state = 'unknown'; await this.save();
-                try {
-                    const response = z.object({ deleted: z.boolean() }).parse(await this.client.request('thread/queue/delete', {
-                        threadId: this.threadId, queuedSubmissionId: entry.nativeId
-                    }));
-                    if (!response.deleted) { this.uncertain([id]); return { steered: false, indeterminate: true }; }
-                } catch { this.uncertain([id]); return { steered: false, indeterminate: true }; }
+                const failure = await this.deleteForSteer(id, entry, entry.nativeId);
+                if (failure) return failure;
             } else if (freshInput) {
                 entry = { input: freshInput, state: 'unknown' }; this.entries[id] = entry; await this.save();
             } else return { steered: false, error: 'Message not queued' };
@@ -865,6 +860,32 @@ export class SharedCodexQueue {
             }
         });
     }
+
+    private async deleteForSteer(id: string, entry: Entry, nativeId: string, batch?: Batch): Promise<{
+        steered: false; indeterminate?: boolean; error?: string
+    } | undefined> {
+        entry.state = 'unknown';
+        if (batch) batch.state = 'unknown';
+        await this.save();
+        try { this.assertInputAdmission(); }
+        catch (error) { return this.restoreUnchangedSteer(entry, error, batch); }
+        try {
+            const result = z.object({ deleted: z.boolean() }).parse(await this.client.request('thread/queue/delete', {
+                threadId: this.threadId, queuedSubmissionId: nativeId
+            }));
+            if (result.deleted) return;
+        } catch { /* The delete outcome must be proven before steering. */ }
+        this.uncertain([id]);
+        return { steered: false, indeterminate: true };
+    }
+
+    private async restoreUnchangedSteer(entry: Entry, error: unknown, batch?: Batch): Promise<{ steered: false; error: string }> {
+        if (entry.state === 'unknown') entry.state = 'queued';
+        if (batch?.state === 'unknown') batch.state = 'queued';
+        await this.save();
+        return { steered: false, error: error instanceof Error ? error.message : String(error) };
+    }
+
     private async steerBatchMember(entry: Entry, id: string, expectedTurnId: string, freshInput?: QueueInput): Promise<{ steered: boolean; indeterminate?: boolean; error?: string }> {
         const batch = this.batches[entry.batchId!];
         if (!batch) return { steered: false, error: 'Message not queued' };
@@ -881,13 +902,8 @@ export class SharedCodexQueue {
         let proposal: Version | undefined;
         const previousCurrent = batch.current;
         if (survivors.length === 0) {
-            entry.state = 'unknown'; batch.state = 'unknown'; await this.save();
-            try {
-                const result = z.object({ deleted: z.boolean() }).parse(await this.client.request('thread/queue/delete', {
-                    threadId: this.threadId, queuedSubmissionId: batch.nativeId
-                }));
-                if (!result.deleted) { this.uncertain([id]); return { steered: false, indeterminate: true }; }
-            } catch { this.uncertain([id]); return { steered: false, indeterminate: true }; }
+            const failure = await this.deleteForSteer(id, entry, batch.nativeId, batch);
+            if (failure) return failure;
         } else {
             proposal = this.version(this.memberInput(survivors), survivors,
                 [...(version.removed ?? []), { id, input, intent: 'steer' }]);
@@ -895,6 +911,7 @@ export class SharedCodexQueue {
             // Write ahead: the batch outcome is unknown until a confirmed response.
             entry.state = 'unknown'; batch.state = 'unknown'; await this.save();
             try {
+                this.assertInputAdmission();
                 const response = await this.client.request('thread/queue/update', { threadId: this.threadId, queuedSubmissionId: batch.nativeId, input: proposal.input });
                 this.validateUpdate(response, batch, proposal.input);
                 this.supersedeOlder(batch, proposal);
@@ -906,8 +923,7 @@ export class SharedCodexQueue {
                     batch.state = 'unknown'; this.uncertain([id]); await this.save(); return { steered: false, indeterminate: true };
                 }
                 proposal.status = 'superseded'; batch.current = previousCurrent;
-                entry.state = 'queued'; batch.state = 'queued'; await this.save();
-                return { steered: false, error: error instanceof Error ? error.message : String(error) };
+                return this.restoreUnchangedSteer(entry, error, batch);
             }
         }
         // The confirmed shrink/delete separates this request from its siblings.

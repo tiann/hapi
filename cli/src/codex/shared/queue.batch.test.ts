@@ -1,8 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SharedCodexQueue, type QueueInput } from './queue';
+import { QueueAdmissionPaused, SharedCodexQueue, type QueueInput } from './queue';
 import { INDETERMINATE_SYMBOL } from '../codexAppServerClient';
 
 const directories: string[] = [];
@@ -89,15 +90,42 @@ function nativeServer() {
     return { client, native, calls, overrides };
 }
 
-async function fixture() {
+async function fixture(assertInputAdmission?: () => void) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-native-batch-'));
     directories.push(directory);
     const server = nativeServer();
     const consumed = vi.fn(); const uncertain = vi.fn(); const mirror = vi.fn();
-    const queue = new SharedCodexQueue(server.client, 'thread', join(directory, 'ledger.json'), consumed, uncertain, mirror);
+    const queue = new SharedCodexQueue(server.client, 'thread', join(directory, 'ledger.json'), consumed, uncertain, mirror, undefined, assertInputAdmission);
     await queue.load();
     return { queue, consumed, uncertain, mirror, directory, ...server };
 }
+
+it.each(['legacy', 'single-member batch', 'multi-member batch'])('keeps the %s in native FIFO order when admission pauses after journaling a steer', async kind => {
+    let ledgerFile: string | undefined;
+    const { queue, directory, calls, native, uncertain } = await fixture(() => {
+        if (!ledgerFile) return;
+        const ledger = JSON.parse(readFileSync(ledgerFile, 'utf8'));
+        if (ledger.entries['original-A']?.state === 'unknown') throw new QueueAdmissionPaused('tier confirmation pending');
+    });
+    await queue.enqueue('original-A', text('A'), false, kind === 'legacy' ? undefined : 'same-mode');
+    await queue.enqueue('original-B', text('B'), false, kind === 'multi-member batch' ? 'same-mode' : 'other-mode');
+    const original = structuredClone(native);
+    const nextCall = calls.length;
+    ledgerFile = join(directory, 'ledger.json');
+
+    expect(await queue.steer('original-A', 'active-turn')).toEqual({ steered: false, error: 'tier confirmation pending' });
+    expect(calls.slice(nextCall).map(call => call.method)).toEqual(['thread/queue/list']);
+    expect(native).toEqual(original);
+    expect(uncertain).not.toHaveBeenCalled();
+    const ledger = JSON.parse(await readFile(ledgerFile, 'utf8'));
+    expect(ledger.entries['original-A'].state).toBe('queued');
+    expect(ledger.entries['original-B'].state).toBe('queued');
+    if (kind !== 'legacy') {
+        const batch = ledger.batches[original[0].clientUserMessageId];
+        expect(batch.state).toBe('queued');
+        expect(batch.versions[batch.current].input).toEqual(original[0].input);
+    }
+});
 
 it('returns [] and flags the pending members for unproven batch content without a synthetic row', async () => {
     const { queue, consumed, uncertain, native } = await fixture();
