@@ -111,6 +111,7 @@ function renderQueuedMessage(
     deliveryActive = canSteer,
 ) {
     const onEdit = vi.fn()
+    const onExternalComposerEdit = vi.fn()
     let currentPendingScheduleRevision = pendingScheduleRevision
     mocks.messageWindowState = { messages: [makeQueuedMessage(scheduledAt, 'server-message-id', delivery)] }
     // The real useSteerQueuedMessage hook runs inside the bar, so every render
@@ -126,6 +127,7 @@ function renderQueuedMessage(
                 pendingSchedule={pendingSchedule}
                 pendingScheduleRevision={currentPendingScheduleRevision}
                 onEdit={onEdit}
+                onExternalComposerEdit={onExternalComposerEdit}
                 canSteer={canSteer}
                 deliveryActive={deliveryActive}
             />
@@ -133,6 +135,7 @@ function renderQueuedMessage(
     )
     return {
         onEdit,
+        onExternalComposerEdit,
         unmount: view.unmount,
         rerender: (nextPendingSchedule: PendingSchedule | null, nextPendingScheduleRevision = currentPendingScheduleRevision) => {
             currentPendingScheduleRevision = nextPendingScheduleRevision
@@ -144,6 +147,7 @@ function renderQueuedMessage(
                         pendingSchedule={nextPendingSchedule}
                         pendingScheduleRevision={currentPendingScheduleRevision}
                         onEdit={onEdit}
+                        onExternalComposerEdit={onExternalComposerEdit}
                         canSteer={canSteer}
                         deliveryActive={deliveryActive}
                     />
@@ -323,12 +327,13 @@ describe('QueuedMessagesBar edit restore', () => {
 
     it('restores both text and schedule when the composer is unchanged', async () => {
         const scheduledAt = Date.now() + 60_000
-        const { onEdit } = renderQueuedMessage(scheduledAt)
+        const { onEdit, onExternalComposerEdit } = renderQueuedMessage(scheduledAt)
 
         fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }))
         await resolveCancel({ status: 'cancelled' })
 
         expect(mocks.composerSetText).toHaveBeenCalledWith('Queued request')
+        expect(onExternalComposerEdit).toHaveBeenCalledOnce()
         expect(onEdit).toHaveBeenCalledWith({
             text: 'Queued request',
             pendingSchedule: { type: 'absolute', ms: scheduledAt },

@@ -144,6 +144,7 @@ import { ForkPreviewDialog } from '@/components/AssistantChat/ForkPreviewDialog'
 import { useForkFlow } from '@/hooks/useForkFlow'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
+import { buildComposerMessageHistory } from '@/lib/composerMessageHistory'
 
 type SessionModelSelection = { provider: string; modelId: string } | string | null
 
@@ -498,11 +499,14 @@ export function ScratchlistDrawerHost(props: {
         deliveryMode?: MessageDeliveryMode,
     ) => Promise<boolean | SendMessageAcceptance>
     onExitScratchlistMode: () => void
+    /** Invalidates composer history before restoring scratchlist text externally. */
+    onExternalComposerEdit?: () => void
     disabled?: boolean
 }) {
     const assistantApi = useAui()
     const handlePromoteToComposer = useCallback(async (entry: ScratchlistEntry) => {
         if (props.disabled) return
+        props.onExternalComposerEdit?.()
         assistantApi.composer().setText(entry.text)
         // Exit scratchlist mode before rehydrating attachments so addAttachment
         // uses the normal chat upload adapter (not the scratchlist hub adapter).
@@ -517,7 +521,7 @@ export function ScratchlistDrawerHost(props: {
                 assistantApi.composer()
             )
         }
-    }, [assistantApi, props.api, props.disabled, props.onExitScratchlistMode, props.sessionId])
+    }, [assistantApi, props.api, props.disabled, props.onExternalComposerEdit, props.onExitScratchlistMode, props.sessionId])
     const handlePromoteToQueue = useCallback(async (entry: ScratchlistEntry) => {
         if (props.disabled) return false
         let attachments: AttachmentMetadata[] | undefined
@@ -815,6 +819,10 @@ function SessionChatInner(props: SessionChatProps) {
         props.session.metadata?.startingMode === 'pty' && props.session.active
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const focusComposerRef = useRef<(() => void) | null>(null)
+    const historyNavigationInvalidationRef = useRef<(() => void) | null>(null)
+    const invalidateComposerHistory = useCallback(() => {
+        historyNavigationInvalidationRef.current?.()
+    }, [])
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const visibleGroupsRef = useRef<ToolGroupBlock[]>([])
     const visibleGroupsModeRef = useRef(toolGroupingMode)
@@ -1783,6 +1791,11 @@ function SessionChatInner(props: SessionChatProps) {
         return normalized
     }, [visibleMessages])
 
+    const messageHistory = useMemo(
+        () => buildComposerMessageHistory(normalizedMessages),
+        [normalizedMessages]
+    )
+
     const goalStateSourceMessages = useMemo(
         () => buildGoalStateMessages(props.messages),
         [props.messages]
@@ -2559,6 +2572,7 @@ function SessionChatInner(props: SessionChatProps) {
                                     onDelete={scratchlist.remove}
                                     onSend={props.onSend}
                                     onExitScratchlistMode={() => setScratchlistMode(false)}
+                                    onExternalComposerEdit={invalidateComposerHistory}
                                     disabled={props.isSending || isScratchlistParking}
                                 />
                             ) : null}
@@ -2570,6 +2584,7 @@ function SessionChatInner(props: SessionChatProps) {
                                 api={props.api}
                                 pendingSchedule={pendingSchedule}
                                 pendingScheduleRevision={pendingScheduleRevision}
+                                onExternalComposerEdit={invalidateComposerHistory}
                                 onEdit={({ pendingSchedule: restored }) => {
                                     // Restore the schedule so the clock button re-activates
                                     updatePendingSchedule(restored)
@@ -2583,6 +2598,7 @@ function SessionChatInner(props: SessionChatProps) {
 
                         <HappyComposer
                         focusInputRef={focusComposerRef}
+                        historyNavigationInvalidationRef={historyNavigationInvalidationRef}
                         key={`composer-${props.session.id}`}
                         sessionId={props.session.id}
                         canRestoreAttachments={props.session.active}
@@ -2784,6 +2800,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onTerminal={props.session.active && terminalSupported ? handleViewTerminal : undefined}
                         terminalUnsupported={props.session.active && !terminalSupported}
                         autocompleteSuggestions={props.autocompleteSuggestions}
+                        messageHistory={messageHistory}
                         voiceStatus={voice?.status}
                         voiceMicMuted={voice?.micMuted}
                         onVoiceToggle={voice && voiceBackendReady ? handleVoiceToggle : undefined}
