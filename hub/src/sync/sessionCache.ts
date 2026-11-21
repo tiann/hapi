@@ -1314,9 +1314,11 @@ export class SessionCache {
                 if (pendingCodexTier) {
                     const stored = this.store.sessions.getSession(sessionId)
                     const parsed = MetadataSchema.safeParse(stored?.metadata)
-                    if (!stored || !parsed.success) throw new Error('Failed to load pending Codex tier')
+                    if (!stored || !parsed.success) throw new Error('Failed to load saved Codex tier state')
                     session.metadata = parsed.data
                     session.metadataVersion = stored.metadataVersion
+                    session.serviceTier = stored.serviceTier
+                    session.serviceTierReported = stored.serviceTierReported
                 }
             }
             if (!pendingCodexTier) {

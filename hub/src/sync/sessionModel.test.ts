@@ -5610,6 +5610,42 @@ it.each(['ultrafast', 'standard'])('retains explicit %s on re-import of an inher
     } finally { engine.stop() }
 })
 
+it('clears a saved and pending tier when an inactive Codex import requests native inheritance', async () => {
+    const store = new Store(':memory:')
+    const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+    try {
+        const session = engine.getOrCreateSession('clear-import-tier', {
+            path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
+            codexSessionId: 'native-tier', codexSourceSessionId: 'source-tier', codexImportedAt: null,
+            codexServiceTierExplicit: true, codexConfirmedServiceTier: 'fast',
+            codexPendingServiceTier: 'ultrafast', codexTierConfirmationPending: true
+        }, null, 'default')
+        engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.36.5' }, null, 'default')
+        engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: 'ultrafast' })
+        engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+        await engine.applySessionConfig(session.id, { serviceTier: null })
+        const stored = store.sessions.getSession(session.id)
+        expect(stored).toMatchObject({ serviceTier: null, serviceTierReported: false, metadata: { codexPreserveNativeTier: true } })
+        expect(stored?.metadata).not.toHaveProperty('codexServiceTierExplicit')
+        expect(stored?.metadata).not.toHaveProperty('codexPendingServiceTier')
+        expect(stored?.metadata).not.toHaveProperty('codexConfirmedServiceTier')
+        expect(stored?.metadata).not.toHaveProperty('codexTierConfirmationPending')
+
+        const tiers: Array<string | undefined> = []
+        ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+            tiers.push(args[11])
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: 'fast' })
+            engine.handleSessionReady({ sid: session.id, time: Date.now() })
+            return { type: 'success', sessionId: session.id }
+        }
+        expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
+        engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+        expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
+        expect(tiers).toEqual([undefined, undefined])
+    } finally { engine.stop() }
+})
+
 it.each([undefined, 'standard', 'fast'])('resumes an inactive Codex import with saved tier intent %s', async savedTier => {
     const store = new Store(':memory:')
     const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)

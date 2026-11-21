@@ -881,24 +881,34 @@ export function setSessionServiceTier(
 ): boolean {
     const now = Date.now()
     const touchUpdatedAt = options?.touchUpdatedAt === true
+    const deferTier = options?.pendingCodexTier === true
+    const clearOverride = deferTier && serviceTier === null
 
     try {
         const result = prepareCached(db, `
             UPDATE sessions
             SET service_tier = CASE WHEN @pending_tier = 1 THEN service_tier ELSE @reported_service_tier END,
-                metadata = CASE WHEN @pending_tier = 1 THEN json_set(metadata, '$.codexPendingServiceTier', COALESCE(@service_tier, 'standard')) ELSE metadata END,
-                metadata_version = metadata_version + @pending_tier,
+                metadata = CASE
+                    WHEN @clear_override = 1 THEN json_remove(
+                        json_set(metadata, '$.codexPreserveNativeTier', json('true')),
+                        '$.codexServiceTierExplicit', '$.codexPendingServiceTier',
+                        '$.codexConfirmedServiceTier', '$.codexTierConfirmationPending')
+                    WHEN @pending_tier = 1 THEN json_set(metadata, '$.codexPendingServiceTier', @service_tier)
+                    ELSE metadata
+                END,
+                metadata_version = metadata_version + @pending_tier + @clear_override,
                 updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
-              AND (service_tier IS NOT @reported_service_tier OR @pending_tier = 1)
+              AND (service_tier IS NOT @reported_service_tier OR @pending_tier = 1 OR @clear_override = 1)
         `).run({
             id,
             namespace,
             service_tier: serviceTier,
-            reported_service_tier: serviceTier ?? REPORTED_EMPTY_SERVICE_TIER,
-            pending_tier: options?.pendingCodexTier === true ? 1 : 0,
+            reported_service_tier: clearOverride ? null : serviceTier ?? REPORTED_EMPTY_SERVICE_TIER,
+            pending_tier: deferTier && !clearOverride ? 1 : 0,
+            clear_override: clearOverride ? 1 : 0,
             updated_at: now,
             touch_updated_at: touchUpdatedAt ? 1 : 0
         })
