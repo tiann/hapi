@@ -57,4 +57,20 @@ describe('createSessionComparator', () => {
             'live-new-prompt', 'stopped-2h-ago', 'stopped-1h-ago', 'archived-just-now', 'live-old-prompt'
         ])
     })
+
+    it('groupStoppedByRecency: false keeps the chosen sort even for stopped sessions (#1717 cold-review follow-up)', () => {
+        // Pinned and Blocked sections pull sessions out of the regular
+        // active/stopped flow for an operator-attention reason — a session
+        // disconnecting there (which bumps `updatedAt`, the signal the
+        // recency grouping reads) must not jump it ahead of one the
+        // operator engaged with more recently. Same fixture as the first
+        // test; only the option differs, and 'archived-just-now' must stay
+        // ordered by its last-message time among the stopped rows, not by
+        // when it stopped.
+        const comparator = createSessionComparator({ sort: 'last-message', activeFirst: true }, { groupStoppedByRecency: false })
+        expect([...sessions].sort(comparator).map((s) => s.id)).toEqual([
+            'live-new-prompt', 'live-old-prompt',
+            'stopped-2h-ago', 'stopped-1h-ago', 'archived-just-now'
+        ])
+    })
 })

@@ -368,6 +368,52 @@ describe('position pagination and structural epochs', () => {
     })
 })
 
+describe('copyMessageToSession: imported tri-state (cold-review round 26)', () => {
+    it('preserves an explicit imported=false, not collapsed onto the same NULL "unknown" uses', () => {
+        // `message.imported ? 1 : null` stored a known-LIVE row's `false`
+        // identically to a never-stamped pre-round-23 row's "nobody ever
+        // recorded this" null. A later merge's NULL fallback then re-ran the
+        // timestamp heuristic on a row that already had an explicit answer.
+        const store = makeStore()
+        const session = makeSession(store, 'copy-imported-tristate-false')
+        const copied = store.messages.copyMessageToSession(session.id, {
+            content: { role: 'agent', content: { type: 'text', text: 'live footer' } },
+            createdAt: 1_000,
+            localId: null,
+            invokedAt: 1_000,
+            scheduledAt: null,
+            receivedAt: 1_000,
+            imported: false
+        })
+
+        expect(copied.imported).toBe(false)
+    })
+
+    it('still stores true as true and unknown as null', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'copy-imported-tristate-other')
+
+        const importedCopy = store.messages.copyMessageToSession(session.id, {
+            content: { role: 'agent', content: { type: 'text', text: 'imported footer' } },
+            createdAt: 2_000,
+            localId: null,
+            invokedAt: 2_000,
+            scheduledAt: null,
+            imported: true
+        })
+        expect(importedCopy.imported).toBe(true)
+
+        const unknownCopy = store.messages.copyMessageToSession(session.id, {
+            content: { role: 'agent', content: { type: 'text', text: 'pre-column footer' } },
+            createdAt: 3_000,
+            localId: null,
+            invokedAt: 3_000,
+            scheduledAt: null
+        })
+        expect(unknownCopy.imported).toBeNull()
+    })
+})
+
 describe('addMessage: scheduledAt invariants', () => {
     it('rejects scheduledAt without a localId — would silently invoke immediately', () => {
         const store = makeStore()

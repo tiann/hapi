@@ -6,6 +6,8 @@ import {
     computePendingRequestKinds,
     computePendingRequests,
     computePendingRequestsCount,
+    computePendingRequestRefs,
+    computePendingRequestsNewestAt,
     computeTodoProgress,
     isObject,
     toSessionSummary,
@@ -133,6 +135,10 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         && current.readState?.version === next.readState?.version
         && current.active === next.active
         && current.thinking === next.thinking
+        // `thinking` can stay `true` across the whole queue-to-delivery grace
+        // window while only this field moves (#1717 cold-review round 22) —
+        // skipping the render here would leave the blocked chip stale.
+        && current.thinkingConfirmed === next.thinkingConfirmed
         && current.updatedAt === next.updatedAt
         && current.lastUserMessageAt === next.lastUserMessageAt
         && current.backgroundTaskCount === next.backgroundTaskCount
@@ -488,8 +494,71 @@ export function useSSE(options: {
 
                 const existingIndex = previous.sessions.findIndex((item) => item.id === session.id)
                 const existing = existingIndex >= 0 ? previous.sessions[existingIndex] : undefined
+                // Notify/ack ride full-session snapshots on BOTH the global and
+                // session-scoped streams with no delivery ordering between
+                // them, so an older snapshot arriving after a newer clear would
+                // revive the blocker. Keep whichever side has the higher
+                // watermark, exactly as attachedJob does below.
+                const incomingNotifyAt = session.notifyUpdatedAt ?? 0
+                const existingNotifyAt = existing?.notifyUpdatedAt ?? 0
+                const keepExistingNotify = existing !== undefined
+                    && existingNotifyAt > incomingNotifyAt
+                // See useSessions: pending requests follow agentStateVersion.
+                const keepExistingPending = existing !== undefined
+                    && (existing.agentStateVersion ?? 0) > (session.agentStateVersion ?? 0)
+                // `pendingRequestRefs` ALSO depends on the dismissal set, not
+                // only on `agentStateVersion` (#1717 cold-review round 26 —
+                // same gap as `reconcileDelayedListSession`, round 25's
+                // Minor, in this OTHER path that populates the list: a
+                // full-session snapshot can arrive on either SSE stream with
+                // no ordering between them). A snapshot captured before a
+                // dismissal can omit an overflow request the other stream's
+                // dismissal already surfaced, even though the requests
+                // themselves (and so `agentStateVersion`) never changed.
+                const keepExistingRefs = existing !== undefined && (keepExistingPending || keepExistingNotify)
+                // Same gap as `reconcileDelayedListSession`'s Major (#1717
+                // cold-review round 26): a full-session snapshot captured
+                // while the agent was still thinking can arrive on one
+                // stream after an idle patch already landed on the other,
+                // restoring a stale `thinking: true` that hides a genuinely
+                // unanswered footer from the attention classifier. Ordered
+                // by `thinkingRevision` (monotonic, hub-issued), not
+                // `thinkingAt` (#1717 cold-review round 27) — `thinkingAt`
+                // is the CLI's own clamped alive-report time, and two
+                // transitions landing in the same clamped-to-"now"
+                // millisecond can carry an identical value.
+                const existingThinkingRevision = existing?.thinkingRevision ?? 0
+                const keepExistingThinking = existing !== undefined
+                    && existingThinkingRevision > (session.thinkingRevision ?? 0)
                 const summary = {
                     ...toSessionSummary(session),
+                    ...(keepExistingThinking && existing !== undefined
+                        ? {
+                            thinking: existing.thinking,
+                            thinkingConfirmed: existing.thinkingConfirmed,
+                            thinkingAt: existing.thinkingAt,
+                            thinkingRevision: existingThinkingRevision
+                        }
+                        : {}),
+                    ...(keepExistingNotify && existing !== undefined
+                        ? {
+                            lastNotify: existing.lastNotify ?? null,
+                            blockedAck: existing.blockedAck ?? null,
+                            notifyUpdatedAt: existingNotifyAt
+                        }
+                        : {}),
+                    ...(keepExistingPending && existing !== undefined
+                        ? {
+                            pendingRequestsCount: existing.pendingRequestsCount,
+                            pendingRequestKinds: existing.pendingRequestKinds,
+                            pendingRequests: existing.pendingRequests,
+                            pendingRequestsNewestAt: existing.pendingRequestsNewestAt,
+                            agentStateVersion: existing.agentStateVersion
+                        }
+                        : {}),
+                    ...(keepExistingRefs && existing !== undefined
+                        ? { pendingRequestRefs: existing.pendingRequestRefs }
+                        : {}),
                     attachedJob: existing?.attachedJob ?? null,
                     attachedJobUpdatedAt: existing?.attachedJobUpdatedAt ?? 0,
                     contentRevision: Math.max(existing?.contentRevision ?? 0, session.contentRevision ?? 0),
@@ -529,12 +598,32 @@ export function useSSE(options: {
                     return previous
                 }
 
+                // An incremental patch rides the same two unordered SSE
+                // streams a full snapshot does (#1717 cold-review round 27),
+                // so a stale `thinking` patch can arrive after a fresher one
+                // already landed via the other stream. Ordered by
+                // `thinkingRevision` (monotonic, hub-issued), not
+                // `thinkingAt` (CLI-reported, clamped — two transitions can
+                // land in the same clamped-to-"now" millisecond and carry
+                // an identical value). Unlike the other versioned fields
+                // below, an absent `thinkingRevision` (older hub) takes the
+                // patch unconditionally — today's behaviour, preserved for
+                // backward compatibility.
+                const keepCurrentThinking = patch.thinkingRevision !== undefined
+                    && patch.thinkingRevision < (current.thinkingRevision ?? 0)
                 const nextSummary: SessionSummary = {
                     ...current,
                     contentRevision: Math.max(current.contentRevision ?? 0, patch.contentRevision ?? 0),
                     readState: mergeReadState(current.readState, patch.readState),
                     active: patch.active ?? current.active,
-                    thinking: patch.thinking ?? current.thinking,
+                    thinking: keepCurrentThinking ? current.thinking : (patch.thinking ?? current.thinking),
+                    thinkingConfirmed: keepCurrentThinking
+                        ? current.thinkingConfirmed
+                        : (patch.thinkingConfirmed ?? current.thinkingConfirmed),
+                    thinkingAt: keepCurrentThinking ? current.thinkingAt : (patch.thinkingAt ?? current.thinkingAt),
+                    thinkingRevision: keepCurrentThinking
+                        ? current.thinkingRevision
+                        : (patch.thinkingRevision ?? current.thinkingRevision),
                     activeAt: patch.activeAt ?? current.activeAt,
                     // Monotonic: stale versioned-patch replays can carry an
                     // older updatedAt; never move the list clock backward.
@@ -571,6 +660,29 @@ export function useSSE(options: {
                     nextSummary.pendingRequestsCount = computePendingRequestsCount(patch.agentState.value)
                     nextSummary.pendingRequestKinds = computePendingRequestKinds(patch.agentState.value)
                     nextSummary.pendingRequests = computePendingRequests(patch.agentState.value, nextSummary.updatedAt)
+                    // Recomputed with the rest: `pendingRequests` is capped, so a
+                    // stale watermark would keep a prompt that arrived after an
+                    // acknowledgement suppressed until the next full refresh.
+                    nextSummary.pendingRequestsNewestAt = computePendingRequestsNewestAt(
+                        patch.agentState.value,
+                        nextSummary.updatedAt
+                    )
+                    // Recomputed with the rest. Leaving the id list at its
+                    // previous value meant a sixth prompt arriving by patch had
+                    // no identity, so the classifier saw nothing unacknowledged
+                    // beyond the already-dismissed five.
+                    // Pass the cached dismissal keys so an overflow request
+                    // beyond the 200-ref cap stays visible after it is
+                    // dismissed while still pending, matching the REST
+                    // projection (#1717 cold-review round 24) — otherwise
+                    // this patch path alone reverts to plain oldest-first
+                    // truncation and can drop a genuinely unanswered request
+                    // off the capped list until the next full refresh.
+                    nextSummary.pendingRequestRefs = computePendingRequestRefs(
+                        patch.agentState.value,
+                        nextSummary.updatedAt,
+                        nextSummary.blockedAck?.keys ? new Set(nextSummary.blockedAck.keys) : undefined
+                    )
                     nextSummary.agentStateVersion = patch.agentState.version
                 }
                 if (patch.metadata !== undefined && patch.metadata.version >= current.metadataVersion) {

@@ -2,8 +2,9 @@ import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import { AGENT_MESSAGE_PAYLOAD_TYPE, notifyBlockerKey } from '@hapi/protocol'
 import type { Store, StoredMessage } from '../../store'
+import { extractSessionNotifySignal, isDeliveredOperatorReply, isOperatorReplyMessage, operatorReplyDeliveredAt } from '../../sync/workGraphNotifyIngest'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { SyncEngine } from '../../sync/syncEngine'
 import { collectImportCandidates, type ImportCandidate } from './localSessions/matchContentPrefix'
@@ -793,6 +794,7 @@ export function emitImportedMessageEvents(
                 localId: message.localId ?? null,
                 content: message.content,
                 createdAt: message.createdAt,
+                receivedAt: message.receivedAt,
                 invokedAt: message.invokedAt
             }
         })
@@ -835,7 +837,135 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         throw new Error(`No duplicate Hapi session found for Codex thread: ${options.group.codexSessionId}`)
     }
 
-    const knownKeys = new Set(canonical.comparableKeys)
+    // Occurrence COUNTS, not a set of keys (#1717).
+    //
+    // Deduping by text alone dropped a second identical prompt that was the
+    // delivery answering a blocker. Keying on text plus delivery time then
+    // collided under a single import timestamp. Keying on the native
+    // transcript id instead over-split the other way: the live Codex
+    // projection and the Desktop importer mirror the same prompt under two
+    // different ids, so it was appended twice and the duplicate's later
+    // timestamp let reconciliation read an initiating prompt as an answer.
+    //
+    // None of those is a key problem — it is that "is this message already
+    // here?" is a MULTISET question. The canonical session having one
+    // "Continue" says nothing about whether a second one belongs. So: align
+    // occurrences positionally. The Nth message with a given key in the source
+    // matches the Nth in the canonical session, and only the surplus is
+    // copied. Mirrored copies align and are not duplicated; genuinely
+    // distinct same-text prompts are surplus and survive.
+    //
+    // The key keeps a DELIVERED prompt's delivery time, which is what tells a
+    // mirrored copy (one event, two ids, one delivery time) apart from a
+    // genuinely later delivery of the same text. Counting is what the native
+    // transcript id was wrongly standing in for.
+    // A delivery stamp is only usable for alignment when BOTH sides have a
+    // real one — `message.imported` is the answer, an explicit fact recorded
+    // at insert time by `addImportedMessage` (#1717 cold-review round 23).
+    // Two clock-coincidence heuristics stood in for it before this, and each
+    // collided with a real case: `invoked_at === created_at` is true for
+    // EVERY live footer too (no ack path — `addMessage` stamps it
+    // immediately), and `received_at === created_at` can coincide for a
+    // genuine live Codex message that never carried its own `created_at` at
+    // all. Neither clock was ever the fact being asked about; provenance is
+    // a fact about how the row was WRITTEN, not about what time it carries.
+    //
+    // `imported` is a plain additive column with no backfill: a row written
+    // by `addImportedMessage` before this hub had the column reads
+    // `imported: null` — identical to a genuinely live row, since neither
+    // ever had the fact recorded. Defaulting unknown to "live" resurfaces
+    // the round-21 bug for exactly that historical data: a live duplicate of
+    // an old import would stop being recognized as the same occurrence and
+    // get appended instead of upgrading the survivor in place. Falling back
+    // to the pre-round-23 clock heuristic for the unknown case reproduces
+    // this hub's own already-shipped behaviour for it, rather than silently
+    // regressing it — there is no durable per-message record to backfill
+    // provenance from instead (`events.source_kind` is a work-graph-ledger
+    // column, unrelated to `messages`).
+    const isImported = (message: StoredMessage): boolean => {
+        if (message.imported !== null && message.imported !== undefined) return message.imported
+        if (isOperatorReplyMessage(message.content)) {
+            return message.invokedAt !== null && message.invokedAt === message.createdAt
+        }
+        // A footer's `invokedAt` is NEVER a usable signal — it always mirrors
+        // its own `createdAt`, live or imported — so `receivedAt` is the only
+        // fallback signal available. But `received_at` is ALSO a plain
+        // additive column with no backfill, so a row old enough to predate
+        // IT is `imported: null` AND `receivedAt: null` together, with no
+        // signal at all (#1717 cold-review round 24). Defaulting that to
+        // "imported" is the safe direction: a genuinely live footer this
+        // ancient getting matched against a duplicate and inheriting a real
+        // `receivedAt` from it is harmless (even useful — it backfills a
+        // value this row never had), while defaulting to "live" reproduces
+        // the exact bug this round found — a canonical footer never becomes
+        // upgrade-eligible, so its paired reply's independently-recovered
+        // timing strands it with a stale synthetic stamp.
+        if (message.receivedAt === null) return true
+        return message.receivedAt === message.createdAt
+    }
+    // `!isImported(message)` alone excluded a row a PRIOR merge already
+    // reconciled: it is genuinely `imported: true`, but its own
+    // `reconciledInvokedAt` from that earlier merge is just as much real
+    // delivery evidence as a live row's raw `invokedAt` — gating on
+    // provenance instead of on whether evidence exists discarded it, so a
+    // second merge whose new survivor already held a matching occurrence
+    // (the UPGRADE path, not the copy path round 24 fixed) reverted
+    // reconciliation to the stale synthetic stamp (#1717 cold-review
+    // round 25). `reconciledInvokedAt` only ever gets set on a REPLY (see
+    // `upgradeMessageDeliveryStamp` below), so that check alone still missed
+    // a FOOTER's own recovered evidence: a first merge can upgrade a
+    // footer's `receivedAt` from its original synthetic stamp to a real one
+    // while leaving `imported: true` untouched (provenance is a fact about
+    // the original event, never rewritten), and a second merge then saw
+    // `imported: true` with no `reconciledInvokedAt` and discarded that
+    // already-recovered time too (#1717 cold-review round 26). Every
+    // imported row's `receivedAt` starts out identical to its own
+    // `createdAt` (`addImportedMessage` stamps both from the same transcript
+    // time); a mismatch between them is exactly the signal that an earlier
+    // upgrade already recovered a real one, for a footer exactly as it is
+    // for a reply.
+    const hasDeliveryEvidence = (message: StoredMessage): boolean =>
+        !isImported(message)
+        || message.reconciledInvokedAt != null
+        || (message.receivedAt != null && message.receivedAt !== message.createdAt)
+    const contentKeyOf = (message: StoredMessage): string =>
+        getComparableStoredMessageKey(message)
+    const timedKeyOf = (message: StoredMessage): string =>
+        `${contentKeyOf(message)}\u0000delivered:${operatorReplyDeliveredAt(message)}`
+
+    // Two tallies: by content alone, and by content plus delivery time. Which
+    // one a source row is measured against depends on whether either side's
+    // stamp is synthetic — if so, only content can align them.
+    const canonicalContentCounts = new Map<string, number>()
+    const canonicalTimedCounts = new Map<string, number>()
+    const syntheticContents = new Set<string>()
+    // Canonical row ids per content key, in occurrence order — the matched
+    // row a content-only alignment can upgrade in place rather than append
+    // beside (#1717 cold-review round 21, see `upgradeMessageDeliveryStamp`).
+    const canonicalContentOccurrences = new Map<string, string[]>()
+    const canonicalMessagesById = new Map(canonical.storedMessages.map((message) => [message.id, message]))
+    // A footer's dismissal key is `notify:<its own createdAt>` (#1717
+    // cold-review round 25): an untimestamped Codex footer can carry a
+    // DIFFERENT `createdAt` in two projections of the same thread, so when
+    // one gets deduplicated against the other, its dismissal key no longer
+    // matches the row that actually survives. Recorded here, where the
+    // match decision is made, and applied to `transferBlockedAck` below —
+    // that call has no visibility into which message matched which.
+    const notifyKeyRemap = new Map<string, string>()
+    for (const message of canonical.storedMessages) {
+        const content = contentKeyOf(message)
+        canonicalContentCounts.set(content, (canonicalContentCounts.get(content) ?? 0) + 1)
+        const occurrences = canonicalContentOccurrences.get(content)
+        if (occurrences) occurrences.push(message.id)
+        else canonicalContentOccurrences.set(content, [message.id])
+        // Tracked for ANY role (#1717 cold-review round 22): a footer paired
+        // with a reply must be upgradeable the same way the reply is, or
+        // upgrading only the reply's stamp and leaving the footer's
+        // untouched synthetic one breaks the order between them.
+        if (isImported(message)) syntheticContents.add(content)
+        if (!isDeliveredOperatorReply(message)) continue
+        canonicalTimedCounts.set(timedKeyOf(message), (canonicalTimedCounts.get(timedKeyOf(message)) ?? 0) + 1)
+    }
     const removedSessionIds: string[] = []
     const appendedMessages: StoredMessage[] = []
     let latestActivity = canonical.updatedAt
@@ -851,11 +981,91 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         )
     }
 
-    for (const source of sessionStates.slice(1)) {
+    // Sources carrying a REAL delivery stamp go first (#1717). Two duplicates
+    // can each hold a copy of the same prompt — one from the live projection
+    // with a genuine acknowledgement, one from the Desktop import with a
+    // synthesized stamp — and whichever is processed first is the copy that
+    // survives alignment. With an unstable order the synthetic copy sometimes
+    // won, and its stamp can fall AFTER the survivor's footer, so
+    // reconciliation read it as an answer and hid an unanswered blocker. The
+    // real stamp is the truthful one, so it wins deterministically.
+    const sourcesByStampFidelity = sessionStates.slice(1).slice().sort((a, b) => {
+        const real = (candidate: typeof a): number => candidate.storedMessages.some(
+            (message) => isDeliveredOperatorReply(message) && !isImported(message)
+        ) ? 0 : 1
+        return real(a) - real(b)
+    })
+    for (const source of sourcesByStampFidelity) {
         latestActivity = Math.max(latestActivity, source.updatedAt)
+        const sourceSeen = new Map<string, number>()
         for (const message of source.storedMessages) {
-            const comparableKey = getComparableStoredMessageKey(message)
-            if (knownKeys.has(comparableKey)) {
+            const content = contentKeyOf(message)
+            // Fall back to content-only alignment when a delivery stamp on
+            // either side is synthesized, since the two cannot be compared.
+            const alignOnContent = !isDeliveredOperatorReply(message)
+                || isImported(message)
+                || syntheticContents.has(content)
+            const comparableKey = alignOnContent ? content : timedKeyOf(message)
+            const have = alignOnContent
+                ? (canonicalContentCounts.get(comparableKey) ?? 0)
+                : (canonicalTimedCounts.get(comparableKey) ?? 0)
+            const ordinal = (sourceSeen.get(comparableKey) ?? 0) + 1
+            sourceSeen.set(comparableKey, ordinal)
+            // Already represented by a matching occurrence on the survivor.
+            // The tallies grow as rows are copied, so a later duplicate sees
+            // what earlier ones contributed.
+            if (ordinal <= have) {
+                // This source row only aligned on content — not content+time
+                // — because the SURVIVING canonical occurrence has a
+                // synthetic (imported) stamp. If the dropped source row
+                // carries the genuine arrival time for that same event,
+                // upgrade the row that actually survives to use it: dropping
+                // the duplicate correctly keeps the transcript from showing
+                // the prompt twice, but leaving the synthetic stamp in place
+                // let reconciliation misread an imported initiating prompt as
+                // a reply delivered after the footer it caused, hiding an
+                // unanswered blocker (#1717 cold-review round 21). This fires
+                // for ANY role, not just operator replies (round 22): a
+                // footer and the reply that answers it must upgrade together
+                // — upgrading only the reply left the footer at its original
+                // synthetic stamp and could invert their order.
+                if (alignOnContent && syntheticContents.has(content) && hasDeliveryEvidence(message)) {
+                    const canonicalId = canonicalContentOccurrences.get(content)?.[ordinal - 1]
+                    if (canonicalId) {
+                        options.store.messages.upgradeMessageDeliveryStamp(canonicalId, {
+                            // Only an operator reply's invocation carries real
+                            // delivery-time information for reconciliation —
+                            // a footer has no ack path, so there is nothing to
+                            // recover for it here. Writes a SEPARATE column,
+                            // never `invoked_at` itself, so recovering the
+                            // real time cannot move the row's conversation
+                            // position (#1717 cold-review round 23); `null`
+                            // COALESCEs to the canonical row's existing value.
+                            // Prefers the dropped row's OWN `reconciledInvokedAt`
+                            // when it already has one — a previously-reconciled
+                            // imported row's recovered time is the real
+                            // evidence here, not its raw (still-synthetic)
+                            // `invokedAt` (#1717 cold-review round 25).
+                            reconciledInvokedAt: isDeliveredOperatorReply(message)
+                                ? (message.reconciledInvokedAt ?? message.invokedAt)
+                                : null,
+                            receivedAt: message.receivedAt,
+                            agentDelivered: message.agentDelivered
+                        })
+                    }
+                }
+                // A dismissed notify footer being dropped here must have its
+                // key remapped to whatever `createdAt` the SURVIVING
+                // occurrence actually carries, independent of whether this
+                // drop also triggered a timing upgrade above (#1717
+                // cold-review round 25).
+                if (alignOnContent && extractSessionNotifySignal(message.content, message.createdAt)) {
+                    const canonicalId = canonicalContentOccurrences.get(content)?.[ordinal - 1]
+                    const survivor = canonicalId ? canonicalMessagesById.get(canonicalId) : undefined
+                    if (survivor && survivor.id !== message.id) {
+                        notifyKeyRemap.set(notifyBlockerKey(message.createdAt), notifyBlockerKey(survivor.createdAt))
+                    }
+                }
                 continue
             }
 
@@ -864,11 +1074,63 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 createdAt: message.createdAt,
                 localId: message.localId,
                 invokedAt: message.invokedAt,
-                scheduledAt: message.scheduledAt
+                scheduledAt: message.scheduledAt,
+                // Arrival and delivery disposition belong to the original
+                // event, so the combined transcript can still be ordered
+                // after the copy (#1717).
+                receivedAt: message.receivedAt,
+                agentDelivered: message.agentDelivered,
+                // Provenance is a fact about the original event, not the copy
+                // (#1717 cold-review round 23).
+                imported: message.imported,
+                // A row already reconciled by an earlier merge must carry
+                // that recovery through a SECOND one, or a later survivor
+                // strands it right back at its raw, possibly-synthetic
+                // `invokedAt` (#1717 cold-review round 24).
+                reconciledInvokedAt: message.reconciledInvokedAt
             })
-            knownKeys.add(comparableKey)
+            // Update BOTH tallies for every copied row, and record a
+            // synthetic stamp if this one had it. Bumping only the tally this
+            // row happened to be measured against left the other stale, so a
+            // second duplicate measured on the OTHER tally saw a count that
+            // did not include the row just copied and copied the prompt again
+            // — and its synthetic stamp could fall after the footer, letting
+            // reconciliation read it as an answer (#1717).
+            canonicalContentCounts.set(content, (canonicalContentCounts.get(content) ?? 0) + 1)
+            // Register the copy in the SAME occurrence lookup the initial
+            // canonical tally feeds (#1717 cold-review round 26), not just
+            // the count: a later duplicate supplying a dismissal for this
+            // exact content lands in the `ordinal <= have` branch once the
+            // count above makes room for it, and that branch resolves its
+            // notify-key remap target via `canonicalContentOccurrences` —
+            // which, without this, has no entry for a row that was COPIED
+            // rather than present in the original canonical transcript. The
+            // remap silently found no survivor and the later duplicate's
+            // dismissal stayed keyed to its own (dropped) row.
+            const copiedOccurrences = canonicalContentOccurrences.get(content)
+            if (copiedOccurrences) copiedOccurrences.push(copied.id)
+            else canonicalContentOccurrences.set(content, [copied.id])
+            canonicalMessagesById.set(copied.id, copied)
+            // Tracked for ANY role, same as the initial canonical tally
+            // (round 22) — a copied footer can still be the surviving
+            // synthetic occurrence a later duplicate's upgrade targets.
+            if (isImported(message)) syntheticContents.add(content)
+            if (isDeliveredOperatorReply(message)) {
+                const timed = timedKeyOf(message)
+                canonicalTimedCounts.set(timed, (canonicalTimedCounts.get(timed) ?? 0) + 1)
+            }
             appendedMessages.push(copied)
             latestActivity = Math.max(latestActivity, copied.invokedAt ?? copied.createdAt)
+        }
+
+        // Carry the duplicate's dismissal onto the canonical session before it
+        // is deleted (#1717). The loop above copies the duplicate's messages
+        // across, so a footer the operator had already dismissed can become
+        // the canonical session's latest signal — and without its
+        // acknowledgement it shows up in Blocked again, undoing a decision
+        // they made, through a merge they never asked for.
+        if (engine) {
+            engine.transferBlockedAck(source.sessionId, canonical.sessionId, options.namespace, notifyKeyRemap)
         }
 
         // Transfer outliving jobs before CASCADE delete (store refuses running jobs).
@@ -888,6 +1150,15 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
 
     if (appendedMessages.length > 0) {
         emitImportedMessageEvents(engine, canonical.sessionId, appendedMessages)
+    }
+    if (removedSessionIds.length > 0) {
+        // Whenever a merge happened, not only when rows were appended (#1717).
+        // Live ingestion installs each copied footer as it replays, and a
+        // copied reply never passes through the delivery callback — so the
+        // canonical row entered Blocked on a footer its own combined transcript
+        // answers. Gating this on "did we append?" also meant a merge that
+        // only changed delivery state reconciled nothing at all.
+        engine?.reconcileNotifySignalAfterImport(canonical.sessionId)
     }
 
     if (engine) {

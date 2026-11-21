@@ -273,6 +273,74 @@ describe('session row hover unpin', () => {
         expect(document.activeElement).toBe(movedRowButton)
     })
 
+    it('expands a collapsed Blocked section and preserves focus when keyboard-unpinning a globally pinned blocker (cold-review round 25)', async () => {
+        let finishUnpin: () => void = () => {}
+        const setSessionPinMode = vi.fn(() => new Promise<void>((resolve) => {
+            finishUnpin = resolve
+        }))
+        const now = Date.now()
+        markSessionSeen('global-pin-blocked', now)
+        markSessionSeen('already-blocked', now - 100)
+        const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+        const { rerenderSessions } = renderList(
+            [
+                makeSession({
+                    id: 'global-pin-blocked',
+                    active: false,
+                    globalPinned: true,
+                    updatedAt: now,
+                    lastNotify: { status: 'blocked', at: now, note: 'needs a decision' },
+                }),
+                makeSession({
+                    id: 'already-blocked',
+                    active: false,
+                    updatedAt: now - 100,
+                    lastNotify: { status: 'blocked', at: now - 100, note: 'stuck' },
+                }),
+            ],
+            { setSessionPinMode },
+            { client }
+        )
+
+        // Collapse Blocked before the unpin, matching the finding's own
+        // framing ("When Blocked is collapsed..."). `.collapsible-panel`
+        // only unmounts its children once a CSS transition settles (not
+        // simulated in jsdom), so `data-open` is the collapsed signal here —
+        // same convention as the directory-group collapse tests.
+        const blockedHeader = screen.getByTitle('Blocked')
+        fireEvent.click(blockedHeader)
+        const blockedPanel = blockedHeader.nextElementSibling as HTMLElement
+        expect(blockedPanel.getAttribute('data-open')).toBeNull()
+
+        const unpinButton = screen.getByRole('button', { name: 'Unpin' })
+        unpinButton.focus()
+        fireEvent.click(unpinButton)
+        await waitFor(() => expect(setSessionPinMode).toHaveBeenCalledWith('global-pin-blocked', 'none'))
+
+        await act(async () => finishUnpin())
+        rerenderSessions([
+            makeSession({
+                id: 'global-pin-blocked',
+                active: false,
+                globalPinned: false,
+                updatedAt: now,
+                lastNotify: { status: 'blocked', at: now, note: 'needs a decision' },
+            }),
+            makeSession({
+                id: 'already-blocked',
+                active: false,
+                updatedAt: now - 100,
+                lastNotify: { status: 'blocked', at: now - 100, note: 'stuck' },
+            }),
+        ])
+
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
+        expect(blockedPanel.getAttribute('data-open')).toBe('true')
+        const movedRowButton = screen.getByRole('button', { name: /Title global-pin-blocked/ })
+        expect(document.activeElement).toBe(movedRowButton)
+        expect(screen.getByRole('button', { name: /Title already-blocked/ })).toBeTruthy()
+    })
+
     it('reveals a destination row past the preview limit and preserves focus on keyboard unpin', async () => {
         let finishUnpin: () => void = () => {}
         const setSessionPinMode = vi.fn(() => new Promise<void>((resolve) => {

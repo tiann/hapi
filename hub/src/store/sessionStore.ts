@@ -4,6 +4,7 @@ import { updateSessionReadState } from './sessionReadState'
 
 import type { StoredSession, VersionedUpdateResult } from './types'
 import {
+    clearSessionLastNotify,
     deleteSession,
     getOrCreateSession,
     adoptPreallocatedSession,
@@ -19,12 +20,15 @@ import {
     setSessionPinned,
     setSessionPinMode,
     type SessionPinMode,
+    setSessionBlockedAck,
+    setSessionLastNotify,
     setSessionTeamState,
     setSessionTodos,
     replaceSessionTodos,
     touchSessionUpdatedAt,
     updateSessionAgentState,
-    updateSessionMetadata
+    updateSessionMetadata,
+    replaceSessionNotifyAfterTruncate
 } from './sessions'
 
 export class SessionStore {
@@ -102,6 +106,40 @@ export class SessionStore {
         namespace: string
     ): boolean {
         return replaceSessionTodos(this.db, id, todos, namespace)
+    }
+
+    setSessionLastNotify(
+        id: string,
+        signal: { status: string; at: number; note: string | null; receivedAt?: number | null },
+        namespace: string
+    ): boolean {
+        return setSessionLastNotify(this.db, id, signal, namespace)
+    }
+
+    setSessionBlockedAck(
+        id: string,
+        ack: { at: number; reason: string; keys?: string[] | null; livePendingKeys?: ReadonlySet<string> },
+        namespace: string
+    ): boolean {
+        return setSessionBlockedAck(this.db, id, ack, namespace)
+    }
+
+    clearSessionLastNotify(
+        id: string,
+        namespace: string,
+        clearedAt: number = Date.now()
+    ): boolean {
+        return clearSessionLastNotify(this.db, id, namespace, clearedAt)
+    }
+
+    replaceNotifyAfterTruncate(
+        id: string,
+        namespace: string,
+        signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null,
+        clearedAt: number = Date.now(),
+        clearedAuthorAt: number | null = null
+    ): boolean {
+        return replaceSessionNotifyAfterTruncate(this.db, id, namespace, signal, clearedAt, clearedAuthorAt)
     }
 
     setSessionTeamState(id: string, teamState: unknown, updatedAt: number, namespace: string): boolean {

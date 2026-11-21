@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'bun:test'
-import { WORK_GRAPH_MAX_STRING, WORK_GRAPH_MAX_SUMMARY } from '@hapi/protocol'
+import { WORK_GRAPH_MAX_STRING, WORK_GRAPH_MAX_SUMMARY, WorkGraphEventCreateSchema } from '@hapi/protocol'
 import type { SyncEvent } from '@hapi/protocol/types'
 import { Store } from '../store'
 import type { EventPublisher } from './eventPublisher'
 import { SessionCache } from './sessionCache'
 import {
     WORK_AD_DEFAULT_TTL_MS,
+    buildOperatorUnblockEvent,
     buildWorkAdFromNotify,
+    extractSessionNotifySignal,
     ingestNotifySummaryFromMessage,
+    isDeliveredOperatorReply,
+    isOperatorReplyMessage,
     mapNotifyStatusToWorkAdStatus
 } from './workGraphNotifyIngest'
 
@@ -1201,5 +1205,303 @@ describe('notify cause consumption watermark', () => {
         const next = ingestNotify(store, session.id, 'default', nextAssistant.content, nextAssistant.id)
         expect(next?.event.payloadJson).toMatchObject({ causeMessageId: nextUser.id, causeText: 'new prompt' })
         expect((next?.event.payloadJson as { causeSeq?: number })?.causeSeq).toBe(nextUser.seq)
+    })
+})
+
+describe('extractSessionNotifySignal (#1717 blocked session-list chrome)', () => {
+    it('ignores a subagent (sidechain) footer', () => {
+        // A subagent's footer describes the subagent, not the session. Without
+        // this a background subagent's `done` erases the main agent's
+        // unanswered blocker, and its `blocked` flags a finished parent.
+        const text = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'done', summary: 'subtask finished' })
+        const sidechain = {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    isSidechain: true,
+                    message: { content: [{ type: 'text', text }] }
+                }
+            }
+        }
+        expect(extractSessionNotifySignal(sidechain, 1_000)).toBeNull()
+    })
+
+    it('ignores a subagent footer carrying parentToolUseId instead', () => {
+        const text = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'subtask stuck' })
+        const sidechain = {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    parentToolUseId: 'toolu_abc123',
+                    message: { content: [{ type: 'text', text }] }
+                }
+            }
+        }
+        expect(extractSessionNotifySignal(sidechain, 1_000)).toBeNull()
+    })
+
+    it('still reads a main-agent footer', () => {
+        const text = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+        expect(extractSessionNotifySignal(assistantOutput(text), 1_000)?.status).toBe('blocked')
+    })
+
+    const ts = 1_700_000_000_000
+
+    it('lowercases the status and carries the action as the operator note', () => {
+        const signal = extractSessionNotifySignal(
+            assistantOutput('Stuck.\nAGENT_NOTIFY_SUMMARY {"version":1,"status":"BLOCKED","action":"need prod creds","summary":"cannot deploy"}'),
+            ts
+        )
+        expect(signal).toEqual({ status: 'blocked', at: ts, note: 'need prod creds' })
+    })
+
+    it('falls back to summary when the footer carries no action', () => {
+        const signal = extractSessionNotifySignal(
+            assistantOutput('AGENT_NOTIFY_SUMMARY {"version":1,"status":"stalled","summary":"waiting on review"}'),
+            ts
+        )
+        expect(signal).toEqual({ status: 'stalled', at: ts, note: 'waiting on review' })
+    })
+
+    it('keeps non-blocking statuses but stores no note for them', () => {
+        // `done` must still be recorded: it is what clears a stale `blocked`.
+        const signal = extractSessionNotifySignal(
+            assistantOutput('AGENT_NOTIFY_SUMMARY {"version":1,"status":"done","action":"nothing","summary":"shipped"}'),
+            ts
+        )
+        expect(signal).toEqual({ status: 'done', at: ts, note: null })
+    })
+
+    it('ignores user messages and footerless agent prose', () => {
+        expect(extractSessionNotifySignal(
+            userInbound('AGENT_NOTIFY_SUMMARY {"version":1,"status":"blocked"}'),
+            ts
+        )).toBeNull()
+        expect(extractSessionNotifySignal(assistantOutput('just some prose'), ts)).toBeNull()
+    })
+
+    it('ignores a footer with no status', () => {
+        expect(extractSessionNotifySignal(
+            assistantOutput('AGENT_NOTIFY_SUMMARY {"version":1,"summary":"no status here"}'),
+            ts
+        )).toBeNull()
+    })
+})
+
+describe('isOperatorReplyMessage (#1717 backfill boundary)', () => {
+    it('recognises a real operator prompt', () => {
+        expect(isOperatorReplyMessage(userInbound('unblocked: use the staging key'))).toBe(true)
+    })
+
+    it('ignores the Claude transcript echo of that same prompt', () => {
+        // The echo replays the prompt as a second role=user row; treating it as
+        // a fresh reply would move the backfill boundary past a real footer.
+        expect(isOperatorReplyMessage(
+            userInbound('unblocked: use the staging key', 'cli', { isTranscriptEcho: true })
+        )).toBe(false)
+    })
+
+    it('ignores agent output', () => {
+        expect(isOperatorReplyMessage(assistantOutput('working on it'))).toBe(false)
+    })
+})
+
+describe('extractSessionNotifySignal ignores live stream snapshots (#1717)', () => {
+    const footer = 'Working.\n\nAGENT_NOTIFY_SUMMARY '
+        + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+
+    function codexMessage(extra: Record<string, unknown>) {
+        return {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', message: footer, ...extra } }
+        }
+    }
+
+    it('reads a footer from settled output', () => {
+        // Positive control: without it the null assertions below would pass on
+        // any content shape this function simply cannot read.
+        expect(extractSessionNotifySignal(assistantOutput(footer), 1_000)?.status).toBe('blocked')
+    })
+
+    it('reads a footer from a settled codex message', () => {
+        // The shape the snapshot case is built from, proving it parses when it
+        // is not marked live — so the next test isolates `live`, nothing else.
+        expect(extractSessionNotifySignal(codexMessage({}), 1_000)?.status).toBe('blocked')
+    })
+
+    it('ignores a live snapshot of a message still being written', () => {
+        // A snapshot is a transient cumulative render that the hub sweeps once
+        // the message settles. It can end on a valid footer while the settled
+        // message goes on to add prose after it and carry no valid footer —
+        // and the list kept the status derived from the snapshot, showing the
+        // session blocked once thinking ended. The work-graph ingest has
+        // skipped these all along; list status now agrees.
+        expect(extractSessionNotifySignal(
+            codexMessage({ streamSnapshot: true, live: true }), 1_000
+        )).toBeNull()
+    })
+
+    it('still reads a snapshot-shaped message once it is no longer live', () => {
+        // `live` is what marks it transient; a settled row that kept the
+        // snapshot shape is the agent's real output and must still count.
+        expect(extractSessionNotifySignal(
+            codexMessage({ streamSnapshot: true }), 1_000
+        )?.status).toBe('blocked')
+    })
+})
+
+describe('isDeliveredOperatorReply (#1717 what counts as an answer)', () => {
+    function reply(overrides: {
+        invokedAt?: number | null
+        sweptAt?: number | null
+        agentDelivered?: number | null
+    }) {
+        // `in`, not `??`: an explicit null is the case under test here, and
+        // `??` would quietly substitute the default for it.
+        return {
+            content: userInbound('here is the key'),
+            scheduledAt: null,
+            invokedAt: 'invokedAt' in overrides ? overrides.invokedAt! : 1_000,
+            sweptAt: 'sweptAt' in overrides ? overrides.sweptAt! : null,
+            agentDelivered: 'agentDelivered' in overrides ? overrides.agentDelivered! : null
+        }
+    }
+
+    it('counts a prompt the agent was actually handed', () => {
+        expect(isDeliveredOperatorReply(reply({}))).toBe(true)
+    })
+
+    it('does not count a prompt still sitting in the queue', () => {
+        // A null `invokedAt` means the agent never saw it, so treating it as an
+        // answer buries a footer nobody replied to.
+        expect(isDeliveredOperatorReply(reply({ invokedAt: null }))).toBe(false)
+    })
+
+    it('does not count the session-end sweep', () => {
+        // The sweep stamps `invokedAt` to unpin the floating bar on rows the
+        // runtime never received. Treating that as a delivered reply let a
+        // session simply ending answer a blocker nobody replied to.
+        expect(isDeliveredOperatorReply(reply({ sweptAt: 1_000 }))).toBe(false)
+    })
+
+    it('does not count a row the CLI handled locally', () => {
+        // Independent of the sweep check: a slash command the CLI handled
+        // itself has `invoked_at` stamped and no sweep marker at all.
+        expect(isDeliveredOperatorReply(reply({ agentDelivered: 0 }))).toBe(false)
+    })
+
+    it('rejects a swept row on the disposition alone, without the sweep marker', () => {
+        // Defence in depth for the case above: the sweep now records
+        // `agentDelivered: false` as well, so losing the `sweptAt` comparison
+        // would not silently turn session-end into an answer.
+        expect(isDeliveredOperatorReply(reply({ sweptAt: null, agentDelivered: 0 }))).toBe(false)
+    })
+
+    it('treats a row written before the disposition existed as delivered', () => {
+        // NULL is "not recorded", and history already on disk must not be
+        // retroactively un-answered by an upgrade.
+        expect(isDeliveredOperatorReply(reply({ agentDelivered: null }))).toBe(true)
+    })
+})
+
+describe('buildOperatorUnblockEvent (#1717 posterity record)', () => {
+    it('positions the event at the decision time, with the blocker time as detail', () => {
+        // The session event log sorts by event time. Stamping a days-old
+        // blocker's timestamp filed today's rationale among last week's
+        // activity — or outside a recent-events window entirely — so the
+        // operator could not find the reason they had just written.
+        const decidedAt = 1_700_000_000_000
+        const blockedAt = decidedAt - 3 * 86_400_000
+        const event = buildOperatorUnblockEvent({
+            sessionId: 's1',
+            ownerUserId: 7,
+            reason: 'handled out of band',
+            acknowledgedAt: decidedAt,
+            observedAt: blockedAt,
+            observedKey: `notify:${blockedAt}`,
+            priorNotify: { status: 'blocked', at: blockedAt, note: 'needs a key' }
+        })
+
+        expect(event.payload_json).toMatchObject({
+            acknowledged_at: decidedAt,
+            observed_at: blockedAt,
+            blocker_key: `notify:${blockedAt}`,
+            prior_at: blockedAt
+        })
+        // Both are kept: the decision is findable in time order, and what was
+        // dismissed is still identifiable.
+        const payload = event.payload_json as { acknowledged_at: number; observed_at: number }
+        expect(payload.acknowledged_at).not.toBe(payload.observed_at)
+    })
+
+    it('records the operator rationale against the session, as a human principal', () => {
+        const event = buildOperatorUnblockEvent({
+            sessionId: 'sess-1',
+            ownerUserId: 42,
+            reason: 'handled outside HAPI',
+            acknowledgedAt: 1700,
+            priorNotify: { status: 'blocked', at: 1000, note: 'needs prod creds' }
+        })
+
+        expect(event.event_type).toBe('operator_unblock')
+        expect(event.related_session_id).toBe('sess-1')
+        expect(event.summary).toBe('handled outside HAPI')
+        expect(event.principal).toEqual({ kind: 'human', id: '42' })
+        expect(event.payload_json).toEqual({
+            reason: 'handled outside HAPI',
+            acknowledged_at: 1700,
+            // Null here because this call names no observed blocker; the
+            // identity is recorded whenever the dialog supplies one.
+            blocker_key: null,
+            // Likewise null without an observed blocker. When present it is
+            // the dismissed blocker's own timestamp, kept as detail so
+            // `acknowledged_at` can stay the decision time.
+            observed_at: null,
+            // The agent's claim travels with the dismissal so a reader can tell
+            // "operator disagreed" from "resolved elsewhere".
+            prior_status: 'blocked',
+            prior_note: 'needs prod creds',
+            prior_at: 1000
+        })
+    })
+
+    it('is valid against the work-graph create schema', () => {
+        const event = buildOperatorUnblockEvent({
+            sessionId: 'sess-1',
+            ownerUserId: 'owner-abc',
+            reason: 'not actually blocked',
+            acknowledgedAt: 1700,
+            priorNotify: null
+        })
+        expect(WorkGraphEventCreateSchema.safeParse(event).success).toBe(true)
+    })
+
+    it('survives an oversized rationale without breaking ledger bounds', () => {
+        const event = buildOperatorUnblockEvent({
+            sessionId: 'sess-1',
+            ownerUserId: 1,
+            reason: 'x'.repeat(WORK_GRAPH_MAX_SUMMARY * 2),
+            acknowledgedAt: 1,
+            priorNotify: null
+        })
+        expect(WorkGraphEventCreateSchema.safeParse(event).success).toBe(true)
+    })
+
+    it('nulls the prior claim when no footer was stored', () => {
+        const event = buildOperatorUnblockEvent({
+            sessionId: 'sess-1',
+            ownerUserId: 1,
+            reason: 'abandoning this work',
+            acknowledgedAt: 5,
+            priorNotify: null
+        })
+        expect(event.payload_json).toMatchObject({ prior_status: null, prior_note: null, prior_at: null })
     })
 })

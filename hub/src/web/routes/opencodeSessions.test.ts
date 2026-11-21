@@ -67,6 +67,7 @@ describe('OpenCode session import', () => {
         stores.push(store)
         const events: unknown[] = []
         const engine = {
+            reconcileNotifySignalAfterImport: () => {},
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             },
@@ -143,6 +144,7 @@ describe('OpenCode session import', () => {
                 expect(sessionIds).toEqual(['native-create'])
                 return { success: true, sessions: transcripts }
             },
+            reconcileNotifySignalAfterImport: () => {},
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             },
@@ -319,6 +321,7 @@ describe('OpenCode session import', () => {
             applySessionConfig: async (sessionId: string, config: Record<string, unknown>) => {
                 applied.push({ sessionId, config })
             },
+            reconcileNotifySignalAfterImport: () => {},
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             },
@@ -364,6 +367,7 @@ describe('OpenCode session import', () => {
                     await firstRelease
                 }
             },
+            reconcileNotifySignalAfterImport: () => {},
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             },
@@ -402,6 +406,7 @@ describe('OpenCode session import', () => {
             applySessionConfig: async () => {
                 throw new Error('rpc timeout')
             },
+            reconcileNotifySignalAfterImport: () => {},
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             },
@@ -434,6 +439,7 @@ describe('OpenCode session import', () => {
             applySessionConfig: async (sessionId: string, config: Record<string, unknown>) => {
                 applied.push({ sessionId, config })
             },
+            reconcileNotifySignalAfterImport: () => {},
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             },
@@ -497,6 +503,7 @@ describe('OpenCode session import', () => {
                 sessions: [transcript('native-omit', [userMessage('native-omit', 'msg-1', 'one', 1_000)])]
             }),
             applySessionConfig: async () => { applyCalls += 1 },
+            reconcileNotifySignalAfterImport: () => {},
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             },

@@ -36,6 +36,7 @@ import {
     UpdateSessionSummaryRequestSchema,
     supportsModelChange,
     supportsEffort,
+    SetSessionBlockedAckRequestSchema,
     toSessionSummary,
     UPLOAD_CHUNK_MAX_BYTES,
     UploadFileRequestSchema
@@ -1749,6 +1750,33 @@ export function createSessionsRoutes(
 
         engine.setSessionPinMode(sessionResult.sessionId, parsed.data.mode)
         return c.json({ ok: true })
+    })
+
+    // #1717: manual unblock. Reason is required by the schema — a dismissal
+    // with no rationale is exactly what this endpoint exists to prevent.
+    app.put('/sessions/:id/blocked-ack', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) return sessionResult
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = SetSessionBlockedAckRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body: reason is required' }, 400)
+        }
+
+        const ack = engine.acknowledgeSessionBlocked(
+            sessionResult.sessionId,
+            parsed.data.reason,
+            parsed.data.observedAt,
+            parsed.data.observedKey
+        )
+        if (!ack) {
+            return c.json({ error: 'Failed to acknowledge' }, 500)
+        }
+        return c.json({ ok: true, blockedAck: ack })
     })
 
     app.delete('/sessions/:id', async (c) => {

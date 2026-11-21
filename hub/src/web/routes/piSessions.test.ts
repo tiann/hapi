@@ -92,6 +92,7 @@ describe('Pi session import', () => {
         stores.push(store)
         const events: unknown[] = []
         const engine = {
+            reconcileNotifySignalAfterImport: () => {},
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             },
@@ -152,6 +153,7 @@ describe('Pi session import', () => {
                 requestedIds = sessionIds
                 return { success: true, sessions: transcripts }
             },
+            reconcileNotifySignalAfterImport: () => {},
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             },

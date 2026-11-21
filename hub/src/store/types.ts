@@ -24,6 +24,16 @@ export type StoredSession = {
     todosUpdatedAt: number | null
     teamState: unknown | null
     teamStateUpdatedAt: number | null
+    lastNotifyStatus: string | null
+    lastNotifyAt: number | null
+    lastNotifyNote: string | null
+    blockedAckAt: number | null
+    blockedAckReason: string | null
+    blockedAckKeys: string[] | null
+    lastNotifyClearedAt: number | null
+    lastNotifyReceivedAt: number | null
+    lastNotifyClearedAuthorAt: number | null
+    lastNotifyUpdatedAt: number | null
     active: boolean
     activeAt: number | null
     seq: number
@@ -55,6 +65,30 @@ export type StoredMessage = {
     seq: number
     localId: string | null
     invokedAt: number | null
+    /** Recovered delivery time for BLOCKER RECONCILIATION only — never for
+     *  display position, which stays `COALESCE(invokedAt, createdAt)` off
+     *  `invokedAt` alone. Set when a session merge recovers a duplicate's
+     *  genuine delivery time onto the row that survives, so the recovery
+     *  cannot move the row's place in the transcript (#1717 cold-review
+     *  round 23). */
+    reconciledInvokedAt?: number | null
+    /** Whether this row was created by `addImportedMessage`, set once at
+     *  insert time. The explicit provenance fact — never infer it from a
+     *  clock coincidence; `invokedAt === createdAt` is true for every live
+     *  footer too, and `receivedAt === createdAt` can coincide for a
+     *  genuine live message (#1717 cold-review round 23). `null` means
+     *  UNKNOWN, not "live": a row written before this column existed never
+     *  had the fact recorded at all, live or imported — callers that care
+     *  fall back to the clock heuristic for exactly that case, matching the
+     *  behaviour this hub already shipped for historical data. */
+    imported?: boolean | null
+    /** Set when the session-end sweep stamped `invokedAt` without a runtime
+     *  ACK, so a reply can be told apart from one the agent actually got. */
+    sweptAt?: number | null
+    /** When the HUB received this message, vs `createdAt`'s runner clock (#1717). */
+    receivedAt?: number | null
+    /** 1 if the delivery reached the agent, 0 if handled locally, NULL if unknown (#1717). */
+    agentDelivered?: number | null
     scheduledAt: number | null
     /** Omitted for ordinary queued/delivered rows; set when steer outcome is unknown. */
     deliveryState?: MessageDeliveryState

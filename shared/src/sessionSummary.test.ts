@@ -3,7 +3,10 @@ import type { Session } from './schemas'
 import {
     PENDING_REQUEST_SUMMARY_CAP,
     computePendingRequestKinds,
+    computePendingRequestRefs,
+    computePendingRequests,
     computePendingRequestsCount,
+    computePendingRequestsNewestAt,
     computeTodoProgress,
     getPendingRequestKinds,
     getPendingRequests,
@@ -364,6 +367,26 @@ describe('summary derivation helpers', () => {
         expect(computePendingRequestsCount(undefined)).toBe(0)
     })
 
+    it('computePendingRequestsNewestAt ignores the summary cap (#1717)', () => {
+        // `pendingRequests` keeps the five OLDEST, so the carried slice cannot
+        // answer "did anything arrive after the operator dismissed this?".
+        // This watermark is computed over every request for exactly that.
+        const requests: Record<string, { tool: string; arguments: object; createdAt: number }> = {}
+        for (let i = 0; i < 7; i += 1) {
+            requests[`req${i}`] = { tool: 'Bash', arguments: {}, createdAt: 1_000 + i }
+        }
+        expect(computePendingRequestsNewestAt({ requests } as never, 0)).toBe(1_006)
+        expect(computePendingRequests({ requests } as never, 0)).toHaveLength(5)
+    })
+
+    it('computePendingRequestsNewestAt falls back and handles empty state', () => {
+        expect(computePendingRequestsNewestAt(null, 42)).toBe(0)
+        expect(computePendingRequestsNewestAt(
+            { requests: { a: { tool: 'Bash', arguments: {} } } } as never,
+            777
+        )).toBe(777)
+    })
+
     it('includes attachedJob when provided via extras', () => {
         const job = {
             key: 'beets',
@@ -432,5 +455,92 @@ describe('summary derivation helpers', () => {
             capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true } }
         })
         expect(summary?.conversationHistory).toEqual({ forkCurrent: true, forkAtMessage: true })
+    })
+})
+
+describe('computePendingRequestRefs', () => {
+    it('prefers an undismissed overflow request over an older dismissed one (cold-review round 23)', () => {
+        // 201 pending requests: the oldest 200 (req-000..req-199) are all
+        // dismissed, and the 201st (req-200, newest) is not. Plain
+        // oldest-first truncation to 200 keeps req-000..req-199 and drops
+        // req-200 — the one genuinely unanswered request — off the list
+        // entirely, so `getSessionBlockedState` (which only ever sees this
+        // capped list) reads the session as clear even though
+        // `pendingRequestsCount` says 201.
+        const requests: Record<string, { tool: string; arguments: unknown; createdAt: number }> = {}
+        for (let i = 0; i < 201; i += 1) {
+            requests[`req-${i.toString().padStart(3, '0')}`] = { tool: 'Bash', arguments: {}, createdAt: i }
+        }
+        const session = makeSession({ agentState: { requests } })
+        const dismissedKeys = new Set(
+            Array.from({ length: 200 }, (_, i) => `request:req-${i.toString().padStart(3, '0')}`)
+        )
+
+        const refs = computePendingRequestRefs(session.agentState, session.updatedAt, dismissedKeys)
+        expect(refs).toHaveLength(200)
+        expect(refs.map(r => r.id)).toContain('req-200')
+        // Still oldest-first in the RETURNED order, just not oldest-first in
+        // which ones survived truncation.
+        expect(refs[refs.length - 1]!.id).toBe('req-200')
+    })
+
+    it('falls back to plain oldest-first truncation when nothing is dismissed', () => {
+        const requests: Record<string, { tool: string; arguments: unknown; createdAt: number }> = {}
+        for (let i = 0; i < 201; i += 1) {
+            requests[`req-${i.toString().padStart(3, '0')}`] = { tool: 'Bash', arguments: {}, createdAt: i }
+        }
+        const session = makeSession({ agentState: { requests } })
+
+        const refs = computePendingRequestRefs(session.agentState, session.updatedAt)
+        expect(refs).toHaveLength(200)
+        expect(refs.map(r => r.id)).not.toContain('req-200')
+    })
+
+    it('keeps the newest undismissed question over 200 older undismissed permissions (cold-review round 27)', () => {
+        // Truncation with no dismissedKeys fell back to plain oldest-first,
+        // with no kind awareness at all — so a genuinely higher-priority
+        // question that happened to be newest was indistinguishable from
+        // any other overflow request and got dropped just the same.
+        const requests: Record<string, { tool: string; arguments: unknown; createdAt: number }> = {}
+        for (let i = 0; i < 200; i += 1) {
+            requests[`perm-${i.toString().padStart(3, '0')}`] = { tool: 'Bash', arguments: {}, createdAt: i }
+        }
+        requests['question-1'] = { tool: 'AskUserQuestion', arguments: {}, createdAt: 300 }
+        const session = makeSession({ agentState: { requests } })
+
+        const refs = computePendingRequestRefs(session.agentState, session.updatedAt)
+        expect(refs).toHaveLength(200)
+        expect(refs.map(r => r.id)).toContain('question-1')
+        expect(refs.find(r => r.id === 'question-1')?.kind).toBe('input')
+    })
+
+    it('ranks an undismissed question ahead of an undismissed permission, both ahead of anything dismissed', () => {
+        const requests: Record<string, { tool: string; arguments: unknown; createdAt: number }> = {}
+        for (let i = 0; i < 199; i += 1) {
+            requests[`perm-dismissed-${i.toString().padStart(3, '0')}`] = { tool: 'Bash', arguments: {}, createdAt: i }
+        }
+        requests['perm-undismissed'] = { tool: 'Bash', arguments: {}, createdAt: 200 }
+        requests['question-undismissed'] = { tool: 'AskUserQuestion', arguments: {}, createdAt: 300 }
+        const session = makeSession({ agentState: { requests } })
+        const dismissedKeys = new Set(
+            Array.from({ length: 199 }, (_, i) => `request:perm-dismissed-${i.toString().padStart(3, '0')}`)
+        )
+
+        const refs = computePendingRequestRefs(session.agentState, session.updatedAt, dismissedKeys)
+        expect(refs).toHaveLength(200)
+        expect(refs.map(r => r.id)).toContain('question-undismissed')
+        expect(refs.map(r => r.id)).toContain('perm-undismissed')
+    })
+
+    it('returns everything unordered-by-dismissal when the full set already fits the cap', () => {
+        const session = makeSession({
+            agentState: { requests: {
+                'req-a': { tool: 'Bash', arguments: {}, createdAt: 100 },
+                'req-b': { tool: 'Edit', arguments: {}, createdAt: 200 }
+            } }
+        })
+        const dismissedKeys = new Set(['request:req-a'])
+        const refs = computePendingRequestRefs(session.agentState, session.updatedAt, dismissedKeys)
+        expect(refs.map(r => r.id)).toEqual(['req-a', 'req-b'])
     })
 })
