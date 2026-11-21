@@ -233,7 +233,7 @@ describe('HermesRemoteLauncher', () => {
             releasePrompt = resolve
         })
 
-        const { session, handlers } = createSessionWithBatches([['hello', { permissionMode: 'default' }]])
+        const { session, handlers } = createSessionWithBatches([['hello', { permissionMode: 'default' }]], { keepQueueOpen: true })
         const launcher = new HermesRemoteLauncher(session as never)
         const launchPromise = launcher.launch()
 
@@ -241,17 +241,62 @@ describe('HermesRemoteLauncher', () => {
         const backend = harness.backend!
         const abortHandler = handlers.get('abort')
         expect(abortHandler).toBeDefined()
+        session.queue.push('follow-up', { permissionMode: 'default' })
         await abortHandler!()
         releasePrompt()
         session.queue.close()
         await launchPromise
 
+        expect(harness.prompts.at(-1)).toEqual([{ type: 'text', text: 'follow-up' }])
         expect(backend.cancelPrompt).toHaveBeenCalledWith('hermes-session-1')
+    })
+
+    it('keeps a failed permission downgrade queued and cancellable without dispatch', async () => {
+        const { session, handlers } = createSessionWithBatches([['first', { permissionMode: 'yolo' }]], { keepQueueOpen: true })
+        const launcher = new HermesRemoteLauncher(session as never)
+        const running = launcher.launch()
+        try {
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            harness.backend!.setMode.mockRejectedValueOnce(new Error('mode rejected'))
+            session.queue.push('restricted', { permissionMode: 'read-only' }, 'pending')
+            await vi.waitFor(() => expect(session.sendSessionEvent).toHaveBeenCalledWith({
+                type: 'message', message: expect.stringContaining('permission change failed')
+            }))
+            expect(session.queue.cancelByLocalId('pending')).toBe(true)
+            expect(harness.prompts).toHaveLength(1)
+        } finally {
+            session.queue.close()
+            await handlers.get('abort')!()
+            await running
+        }
+    })
+
+    it('defers acknowledgement and retries a batch stopped during model selection', async () => {
+        const { session, handlers } = createSessionWithBatches([], { keepQueueOpen: true })
+        const commit = vi.spyOn(session.queue, 'commitBatch')
+        const running = new HermesRemoteLauncher(session as never).launch()
+        let release!: () => void
+        try {
+            await vi.waitFor(() => expect(handlers.has('abort')).toBe(true))
+            harness.backend!.setModel.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve }))
+            session.queue.push('queued', { model: 'new-model', permissionMode: 'default' })
+            await vi.waitFor(() => expect(release).toBeDefined())
+            await handlers.get('abort')!()
+            expect(commit).not.toHaveBeenCalled()
+            expect(harness.prompts).toHaveLength(0)
+            release()
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            expect(commit).toHaveBeenCalledTimes(1)
+        } finally {
+            release?.()
+            session.queue.close()
+            await running
+        }
     })
 
     it('keeps an idle session connected after abort and accepts the next prompt', async () => {
         const { session, handlers } = createSessionWithBatches([], { keepQueueOpen: true })
-        const wait = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString')
+        const wait = vi.spyOn(session.queue, 'waitForDeferredBatch')
         const launcher = new HermesRemoteLauncher(session as never)
         const launchPromise = launcher.launch()
 

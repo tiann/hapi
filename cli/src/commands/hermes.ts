@@ -15,6 +15,7 @@ export const hermesCommand: CommandDefinition = {
                 startingMode?: 'remote'
                 permissionMode?: HermesPermissionMode
                 model?: string
+                workingDirectory?: string
                 resumeSessionId?: string
                 existingSessionId?: string
                 reservedSessionId?: string
@@ -73,7 +74,25 @@ export const hermesCommand: CommandDefinition = {
 
             await maybeAutoStartServer()
             await initializeToken()
-            await authAndSetupMachineIfNeeded()
+            const { machineId } = await authAndSetupMachineIfNeeded()
+            if (options.resumeSessionId && !options.existingSessionId && !options.reservedSessionId && options.startedBy !== 'runner') {
+                const { ApiClient } = await import('@/api/api')
+                const { prepareLocalResume } = await import('./resume')
+                const api = await ApiClient.create()
+                const sessions = await api.listResumableSessions(machineId)
+                const owner = sessions.find(row => row.flavor === 'hermes' && row.agentSessionId === options.resumeSessionId)
+                if (owner) {
+                    const target = await api.getLocalResumeTarget(owner.sessionId)
+                    if (target.flavor !== 'hermes' || target.machineId !== machineId || target.agentSessionId !== options.resumeSessionId) {
+                        throw new Error('Hermes resume target changed; retry the command')
+                    }
+                    await prepareLocalResume(api, target, machineId)
+                    options.existingSessionId = target.sessionId
+                    options.workingDirectory = target.directory
+                    options.permissionMode ??= target.permissionMode as HermesPermissionMode | undefined
+                    options.model ??= target.model ?? undefined
+                }
+            }
             const { runHermes } = await import('@/hermes/runHermes')
             await runHermes(options)
         } catch (error) {

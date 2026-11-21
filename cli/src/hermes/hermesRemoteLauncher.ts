@@ -1,4 +1,5 @@
 import React from 'react'
+import { setTimeout as delay } from 'node:timers/promises'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { HermesPermissionMode } from '@hapi/protocol/modes'
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle'
@@ -178,12 +179,6 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         }
         markReady(acpSessionId)
 
-        await this.syncAcpPermissionMode(
-            backend,
-            acpSessionId,
-            this.session.getPermissionMode() as HermesPermissionMode | undefined
-        )
-
         this.permissionHandler = new AcpPermissionHandler(
             this.session.client,
             backend,
@@ -192,17 +187,35 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         this.setupAbortHandlers(this.session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleExitFromUi()
-        })
+        }, () => this.abortController.abort(), () => { this.abortController = new AbortController() })
 
+        let retryDelay = 1000
         while (!this.shouldExit) {
+            await this.waitForAbortBarrier()
+            if (this.shouldExit) break
             const signal = this.abortController.signal
-            const batch = await this.session.queue.waitForMessagesAndGetAsString(signal)
+            const batch = await this.session.queue.waitForDeferredBatch(signal)
             if (!batch) {
                 if (signal.aborted && !this.shouldExit) continue
                 break
             }
 
-            await this.syncAcpPermissionMode(backend, acpSessionId, batch.mode.permissionMode)
+            try {
+                await this.syncAcpPermissionMode(backend, acpSessionId, batch.mode.permissionMode)
+                retryDelay = 1000
+            } catch (error) {
+                if (this.shouldExit || this.session.queue.isClosed()) {
+                    this.session.queue.releaseBatch(batch)
+                    break
+                }
+                this.session.queue.unshiftBatch(batch)
+                if (retryDelay === 1000) this.session.sendSessionEvent({
+                    type: 'message', message: `Hermes permission change failed. Prompt remains queued for retry or cancellation: ${error}`
+                })
+                await delay(retryDelay, undefined, { signal }).catch(() => {})
+                retryDelay = Math.min(retryDelay * 2, 10000)
+                continue
+            }
 
             const requestedModel = batch.mode.model
             if (requestedModel === null) {
@@ -227,6 +240,15 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 }
             }
 
+            if (this.shouldExit) {
+                this.session.queue.releaseBatch(batch)
+                break
+            }
+            if (signal.aborted) {
+                this.session.queue.unshiftBatch(batch)
+                continue
+            }
+            this.session.queue.commitBatch(batch)
             this.session.onThinkingChange(true)
             this.messageBuffer.addMessage(batch.message, 'user')
             const prompt: PromptContent[] = [{ type: 'text', text: batch.message }]
@@ -268,7 +290,8 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             await backend.setMode(acpSessionId, targetAcpMode)
             this.currentBackendAcpMode = targetAcpMode
         } catch (err) {
-            logger.debug('[hermes-acp] setMode failed', err)
+            this.currentBackendAcpMode = null
+            throw err
         }
     }
 
@@ -304,19 +327,19 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    private async handleAbort(): Promise<void> {
+    private async handleAbort(terminal = false): Promise<void> {
         if (this.backend && this.session.sessionId) {
             await this.backend.cancelPrompt(this.session.sessionId)
         }
         await this.permissionHandler?.cancelAll('User aborted')
         this.session.sendSessionEvent({ type: 'message', message: 'Session aborted' })
-        this.session.queue.reset()
+        if (terminal) this.session.queue.reset()
         this.session.onThinkingChange(false)
         this.abortController.abort()
         this.abortController = new AbortController()
     }
 
     private handleExitFromUi(): void {
-        void this.requestExit('exit', () => this.handleAbort())
+        void this.requestExit('exit', () => this.handleAbort(true))
     }
 }
