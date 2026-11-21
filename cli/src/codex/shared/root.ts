@@ -790,12 +790,14 @@ export class SharedCodexRoot {
         const config = SettingsSchema.parse(raw);
         if (this.pendingLaunchCollaborationMode && config.collaborationMode === undefined) config.collaborationMode = this.pendingLaunchCollaborationMode;
         const explicitTier = config.serviceTier !== undefined;
+        const discoveryDeadline = Math.min(deadline - 15_000, Date.now() + 10_000);
         // The existing live-settings API accepts null as a Standard reset.
         if (config.serviceTier === null) config.serviceTier = 'standard';
         let fallbackNotice: string | undefined;
-        if (config.serviceTier === 'ultrafast' || config.model && this.hasUltrafastTier && config.serviceTier === undefined) {
+        const discoversUltrafast = config.serviceTier === 'ultrafast' || Boolean(config.model && this.hasUltrafastTier && config.serviceTier === undefined);
+        const discoversEffort = config.modelReasoningEffort === null;
+        if (discoversUltrafast) {
             if (this.host.attached) throw new Error('Cannot verify Ultrafast for an externally attached thread. Choose Standard in HAPI or set the tier in the owning Codex client.');
-            const discoveryDeadline = Math.min(deadline - 15_000, Date.now() + 10_000);
             for (;;) {
                 const model = config.model ?? this.settings.model;
                 const provider = this.modelProvider;
@@ -816,19 +818,25 @@ export class SharedCodexRoot {
         }
         if (Object.keys(config).length === 0) return { applied: this.settings };
         if (typeof config.modelReasoningEffort === 'string') config.modelReasoningEffort = parseReasoningEffortValue(config.modelReasoningEffort);
-        if (config.modelReasoningEffort === null) {
+        if (discoversEffort) {
             // Native public null means "leave effort alone", not reset. Resolve
             // the selected model's real default instead of publishing a false reset.
+            const seen = new Set<string>();
             let cursor: string | undefined;
             do {
-                const page = await this.client.listModels({ cursor, includeHidden: true });
+                const page = await this.settingsRequest<Awaited<ReturnType<CodexAppServerClient['listModels']>>>(
+                    'model/list', { cursor, includeHidden: true }, discoveryDeadline);
                 const model = page.data?.find(model => (model.model ?? model.id) === (config.model ?? this.settingsNative.model));
                 if (model?.defaultReasoningEffort) { config.modelReasoningEffort = model.defaultReasoningEffort; break; }
                 cursor = page.nextCursor ?? undefined;
+                if (cursor && seen.has(cursor)) throw new Error('Codex model catalog pagination did not advance');
+                if (cursor) seen.add(cursor);
             } while (cursor);
             if (config.modelReasoningEffort === null) throw new Error('Codex did not report a default reasoning effort; choose an explicit effort');
         }
-        if (Date.now() >= deadline - 15_000) throw new Error('Settings discovery timed out; settings were not changed');
+        if ((discoversUltrafast || discoversEffort) && Date.now() >= discoveryDeadline) {
+            throw new Error('Settings discovery timed out; settings were not changed');
+        }
         const permission = config.permissionMode && resolveCodexPermissionModeConfig(config.permissionMode);
         const params = { threadId: this.threadId,
             ...(config.model ? { model: config.model } : {}),
@@ -1087,7 +1095,7 @@ export class SharedCodexRoot {
             this.notice('Codex settings confirmation is pending. Confirm Standard in settings before sending more input.');
         }
     }
-    private async settingsRequest(method: string, params: Record<string, unknown>, deadline: number, uncertain = false, pauseInput: boolean | (() => boolean) = uncertain, operationId = 0): Promise<unknown> {
+    private async settingsRequest<T = unknown>(method: string, params: Record<string, unknown>, deadline: number, uncertain = false, pauseInput: boolean | (() => boolean) = uncertain, operationId = 0): Promise<T> {
         const remaining = deadline - Date.now();
         const shouldPause = () => typeof pauseInput === 'function' ? pauseInput() : pauseInput;
         const timedOut = () => {
@@ -1097,7 +1105,7 @@ export class SharedCodexRoot {
         if (remaining <= 0) throw timedOut();
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-            return await Promise.race([this.client.request(method, params), new Promise<never>((_, reject) => {
+            return await Promise.race([this.client.request<T>(method, params), new Promise<never>((_, reject) => {
                 timer = setTimeout(() => reject(timedOut()), remaining);
             })]);
         } catch (error) {
@@ -1241,7 +1249,7 @@ export class SharedCodexRoot {
             : 'Codex settings changed during effective tier confirmation; refresh before retrying');
     }
     private get hasOtherNativeTier(): boolean {
-        const tier = fromCodexServiceTier(this.settingsNative.serviceTier);
+        const tier = fromCodexServiceTier(this.nativeSelectedServiceTier);
         return tier != null && tier !== 'standard' && tier !== 'ultrafast';
     }
     async confirmUltrafastLaunch(explicitTier = true): Promise<void> {

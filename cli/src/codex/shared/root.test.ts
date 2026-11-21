@@ -1910,6 +1910,26 @@ it.each(['priority', 'flex'])('preserves a newer %s selection during Ultrafast c
     expect(writes).toEqual([['thread/settings/update', expect.objectContaining({ serviceTier: 'ultrafast' })]]);
 });
 
+it('does not reset a newer Fast selection that the effective snapshot filters before the native turn reply', async () => {
+    const f = await fixture(); await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    let reads = 0;
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method !== 'thread/resume') return original(method, params);
+        if (++reads === 1) {
+            f.native.settings.serviceTier = 'priority';
+            f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { ...f.native.settings } });
+            await f.drain();
+        }
+        return { ...f.native.settings, serviceTier: null } as never;
+    });
+    await expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('superseded by a newer tier selection');
+    expect(reads).toBe(2);
+    expect(f.native.settings.serviceTier).toBe('priority');
+    expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update'))
+        .toEqual([['thread/settings/update', expect.objectContaining({ serviceTier: 'ultrafast' })]]);
+});
+
 it('does not reset a native Flex turn accepted while an older Ultrafast read is pending', async () => {
     const f = await fixture(); await f.root.activate();
     const original = f.root.client.request.bind(f.root.client);
@@ -2775,6 +2795,29 @@ it.each(['ultrafast', 'priority'])('rechecks a selected notification during nati
     release({ model: 'mock', serviceTier: null }); await pending;
     expect(f.root.freshParams().serviceTier).toBe(selected === 'ultrafast' ? 'default' : 'priority');
     if (selected === 'ultrafast') expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
+});
+
+it.each(['stalled', 'repeated cursor'])('allows Standard recovery after a %s Default effort lookup', async failure => {
+    const f = await fixture({ initialTierPending: true });
+    await f.root.activate({}, false, true);
+    expect(f.root.needsTierConfirmation).toBe(true);
+    const original = f.root.client.request.bind(f.root.client);
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method !== 'model/list') return original(method, params);
+        if (failure === 'stalled') return await new Promise<never>(() => {});
+        return { data: [], nextCursor: 'same-page' } as never;
+    });
+    vi.useFakeTimers();
+    const effort = expect(f.root.applySettings({ modelReasoningEffort: null })).rejects.toThrow(
+        failure === 'stalled' ? 'Settings update timed out; settings were not changed' : 'pagination did not advance');
+    const standard = expect(f.root.applySettings({ serviceTier: 'standard' })).resolves.toMatchObject({ applied: { serviceTier: 'standard' } });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await effort;
+    await standard;
+    expect(request.mock.calls.filter(([method]) => method === 'model/list')).toHaveLength(failure === 'stalled' ? 1 : 2);
+    expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update'))
+        .toEqual([['thread/settings/update', expect.objectContaining({ serviceTier: null })]]);
+    expect(f.root.needsTierConfirmation).toBe(false);
 });
 
 it.each(['item/tool/requestUserInput', 'item/commandExecution/requestApproval'])('bounds confirmation while keeping running-turn %s visible', async method => {
