@@ -579,7 +579,7 @@ export async function claudeRemote(opts: {
     let correlatesResults: boolean | null = null;
     let promptResultsHaveUuid = false;
     let waitingForClearFollowUp = false;
-    let clearFollowUp: { uuid: string; sessionId: string | null; command?: string } | undefined;
+    let clearFollowUp: { uuid: string; sessionId: string | null; command?: string; earlyResult?: SDKMessage } | undefined;
     const clearedSessionIds = new Set<string>();
     const compactCompletionAbort = new AbortController();
     let compactCompletion: Promise<CompactCompletion> | null = null;
@@ -847,8 +847,19 @@ export async function claudeRemote(opts: {
                         logger.debug(`${debugPrefix} steered message picked up uuid=${uuid}`);
                         resolveSteer(true);
                     }
-                    continue;
+                    if (clearFollowUp?.uuid !== uuid || !clearFollowUp.earlyResult) continue;
+                    message = clearFollowUp.earlyResult;
                 }
+            }
+
+            const expectedCommand = clearFollowUp?.command;
+            const matchesFollowUpCommand = expectedCommand !== undefined
+                && message.type === 'result' && message.local_command === expectedCommand;
+            if (clearFollowUp && matchesFollowUpCommand && message.user_message_uuid == null
+                && clearFollowUp.sessionId !== null && message.session_id === clearFollowUp.sessionId
+                && pushedUuids.has(clearFollowUp.uuid)) {
+                clearFollowUp.earlyResult ??= message;
+                continue;
             }
 
             const clear = clearState.active;
@@ -865,6 +876,12 @@ export async function claudeRemote(opts: {
             if (timedOutCommand && !isClearResult
                 && isCommandResult(message, timedOutCommand.uuid, timedOutCommand.command, false)) {
                 continue;
+            }
+            const initialClearSessionId = !clear && message.type === 'result' && resultSeq === 0
+                ? opts.getClearHookSessionId?.() : undefined;
+            if (initialClearSessionId && initialClearSessionId !== currentSessionId) {
+                bindClearSession(initialClearSessionId);
+                waitingForClearFollowUp = !inputEnded;
             }
             const compactMetadata =
                 message.type === 'system' && message.subtype === 'compact_boundary'
@@ -999,11 +1016,10 @@ export async function claudeRemote(opts: {
                 }
                 if (clearFollowUp) {
                     const matchesUuid = message.user_message_uuid === clearFollowUp.uuid;
-                    const matchesCommand = clearFollowUp.command !== undefined && message.local_command === clearFollowUp.command;
                     const canAcceptWithoutUuid = !pushedUuids.has(clearFollowUp.uuid)
                         && message.user_message_uuid == null && clearFollowUp.sessionId !== null
                         && message.session_id === clearFollowUp.sessionId
-                        && (matchesCommand || (!promptResultsHaveUuid && message.local_command == null));
+                        && (matchesFollowUpCommand || (!promptResultsHaveUuid && message.local_command == null));
                     if (!matchesUuid && !canAcceptWithoutUuid) continue;
                     pushedUuids.delete(clearFollowUp.uuid);
                     clearFollowUp = undefined;

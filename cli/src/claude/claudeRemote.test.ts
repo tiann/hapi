@@ -479,7 +479,7 @@ describe('claudeRemote in-process /clear', () => {
         'follow-up-result', 'legacy-follow-up-result', 'follow-up-after-compact',
         'later-follow-up-result', 'idle-background-output', 'native-slash-follow-up', 'native-slash-follow-up-without-hook',
         'native-slash-follow-up-init', 'native-slash-follow-up-init-eof', 'native-slash-follow-up-receipt-first',
-        'native-slash-follow-up-untagged-hook'
+        'native-slash-follow-up-untagged-hook', 'native-command-receipt-before-replay'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -496,11 +496,13 @@ describe('claudeRemote in-process /clear', () => {
         const aliasInit = outcome === 'native-slash-follow-up-init' || outcome === 'native-slash-follow-up-init-eof';
         const aliasReceiptFirst = outcome === 'native-slash-follow-up-receipt-first';
         const aliasUntaggedHook = outcome === 'native-slash-follow-up-untagged-hook';
+        const earlyCommandReceipt = outcome === 'native-command-receipt-before-replay';
         const nativeSlashFollowUp = outcome === 'native-slash-follow-up' || outcome === 'native-slash-follow-up-without-hook'
             || aliasInit || aliasReceiptFirst || aliasUntaggedHook;
         const hasFollowUpResult = outcome === 'follow-up-result' || legacyFollowUp || interveningCompact || hasLaterFollowUp;
         const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook'
-            || outcome === 'result-eof' || exitsAfterFollowUp || hasFollowUpResult || idleBackgroundOutput || nativeSlashFollowUp;
+            || outcome === 'result-eof' || exitsAfterFollowUp || hasFollowUpResult || idleBackgroundOutput || nativeSlashFollowUp
+            || earlyCommandReceipt;
         const resultId = success || lateRotation ? 'fresh-native-session' : priorId;
         const timeoutNotice = 'Claude did not identify the /clear result. Waiting for Claude to exit so background tasks can finish.';
         const completion = success ? 'Context was reset'
@@ -524,6 +526,7 @@ describe('claudeRemote in-process /clear', () => {
         let laterFollowUpResult: SDKMessage | undefined;
         let compactResult: SDKMessage | undefined;
         let nativeSlashResult: SDKMessage | undefined;
+        let nativeCommandResult: SDKMessage | undefined;
 
         queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string; message: { content: string } }> }) => ({
             async *[Symbol.asyncIterator]() {
@@ -603,6 +606,15 @@ describe('claudeRemote in-process /clear', () => {
                     yield { type: 'system', subtype: 'init', session_id: resultId };
                     expect(order.filter((item) => item === `session:${resultId}`)).toHaveLength(1);
                 }
+                if (earlyCommandReceipt) {
+                    const command = await input.next();
+                    expect(command.value?.message.content).toBe('/help');
+                    nativeCommandResult = { ...autonomousResult, session_id: resultId, local_command: 'help' };
+                    yield nativeCommandResult;
+                    expect(order).not.toContain('follow-up');
+                    yield { type: 'user', isReplay: true, uuid: command.value?.uuid };
+                    expect(order).toContain('follow-up');
+                }
                 if (interveningCompact) {
                     const compact = await input.next();
                     expect(compact.value?.message.content).toBe('/compact');
@@ -658,6 +670,7 @@ describe('claudeRemote in-process /clear', () => {
 
         const inputs = ['first', '/clear', ...(interveningCompact ? ['/compact'] : []),
             ...(nativeSlashFollowUp ? ['/reset'] : []),
+            ...(earlyCommandReceipt ? ['/help'] : []),
             ...(idleBackgroundOutput ? [] : ['follow-up']),
             ...(hasLaterFollowUp ? ['later follow-up'] : [])];
         if (timesOut) vi.useFakeTimers();
@@ -737,6 +750,7 @@ describe('claudeRemote in-process /clear', () => {
                     ? [`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset',
                         ...(interveningCompact ? ['/compact', 'accepted', '📦 Compacted'] : []),
                         ...(nativeSlashFollowUp ? ['/reset', 'accepted', 'reset', 'session:native-alias-session', 'ready'] : []),
+                        ...(earlyCommandReceipt ? ['/help', 'ready'] : []),
                         'follow-up', ...(hasFollowUpResult ? ['ready'] : []),
                         ...(hasLaterFollowUp ? ['later follow-up', 'ready'] : [])]
                     : [`session:${priorId}`, 'ready', '/clear', 'accepted', completion, 'follow-up']);
@@ -751,6 +765,7 @@ describe('claudeRemote in-process /clear', () => {
             if (timesOut && outcome !== 'silent-timeout') expectedResults.push(unmatchedResult);
             if (compactResult) expectedResults.push({ ...compactResult, hapi_compact_turn: true });
             if (nativeSlashResult) expectedResults.push(nativeSlashResult);
+            if (nativeCommandResult) expectedResults.push(nativeCommandResult);
             if (followUpResult) expectedResults.push(...(legacyFollowUp ? [] : foreignResults), followUpResult);
             if (laterFollowUpResult) expectedResults.push(laterFollowUpResult);
             expect(forwardedResults).toEqual(expectedResults);
@@ -1504,14 +1519,14 @@ describe('claudeRemote compact summary promotion', () => {
         }
     });
 
-    it('looks up live compact summaries in the transcript rotated by a clear alias', async () => {
+    it.each([false, true])('uses the rotated transcript for live compact with first-input alias %s', async (initialAlias) => {
         const { claudeRemote } = await import('./claudeRemote');
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         transcriptDir = await mkdtemp(join(tmpdir(), 'claude-compact-after-alias-'));
         const projectDir = getProjectPath(transcriptDir);
         const rotatedId = 'rotated-by-alias';
         const rotatedTranscript = join(projectDir, `${rotatedId}.jsonl`);
-        const inputs = ['ordinary prompt', '/reset', '/compact'];
+        const inputs = initialAlias ? ['/reset', 'ordinary prompt', '/compact'] : ['ordinary prompt', '/reset', '/compact'];
         let clearHookId: string | undefined;
         await mkdir(projectDir, { recursive: true });
         await writeFile(join(projectDir, 's-9.jsonl'), 'old transcript');
@@ -1521,10 +1536,16 @@ describe('claudeRemote compact summary promotion', () => {
                 const input = prompt[Symbol.asyncIterator]();
                 const first = await input.next();
                 yield initMessage;
-                yield { ...resultMessage, user_message_uuid: first.value.uuid };
-                expect((await input.next()).value.message.content).toBe('/reset');
+                if (!initialAlias) yield { ...resultMessage, user_message_uuid: first.value.uuid };
+                const alias = initialAlias ? first : await input.next();
+                expect(alias.value.message.content).toBe('/reset');
                 clearHookId = rotatedId;
                 yield { ...resultMessage, session_id: rotatedId };
+                if (initialAlias) {
+                    const ordinary = await input.next();
+                    expect(ordinary.value.message.content).toBe('ordinary prompt');
+                    yield { ...resultMessage, session_id: rotatedId, user_message_uuid: ordinary.value.uuid };
+                }
                 const compact = await input.next();
                 expect(compact.value.message.content).toBe('/compact');
                 yield { type: 'system', subtype: 'compact_boundary', session_id: rotatedId, compact_metadata: { trigger: 'manual' } };
