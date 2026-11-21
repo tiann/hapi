@@ -4673,7 +4673,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             onPrompt: (n: number, notify: (update: Record<string, unknown>) => void) => string | void,
             launcherOpts: Record<string, number> = {},
             resumeSessionId: string | null = null,
-            onMethod: (method: string) => void = () => {}
+            onMethod: (method: string) => void | Promise<void> = () => {}
         ) {
             const backend = new AcpSdkBackend({ command: 'agy', args: ['acp'], flavor: 'agy', textChunkMode: 'delta', toolCallLifetimeStore: null });
             const internal = backend as unknown as { transport: unknown; initializeResult: unknown; handleNotification: (m: string, p: unknown) => void };
@@ -4690,7 +4690,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             internal.transport = {
                 sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
                     requests.push(method);
-                    onMethod(method);
+                    await onMethod(method);
                     if (method === 'session/new') return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
                     if (method === 'session/resume') return { sessionId: String(params.sessionId) };
                     if (method === 'session/list') return { sessions: [] };
@@ -4989,6 +4989,74 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(0));
             const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
             expect(results.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('call-c5#'))).toHaveLength(1);
+            await h.finish();
+        });
+
+        it('forwards the result of a transcript-rendered command that completes after a prompt installed the handler (resumed session)', async () => {
+            const acp = 'conv-live-synthetic';
+            turnRows(acp);
+            const h = startLive(acp, (_n, notify) => {
+                notify(bgCall('call-x', 'echo hi'));
+                notify({ sessionUpdate: 'tool_call_update', toolCallId: 'call-x', status: 'completed', rawOutput: { output: 'Command output:\nhi', exit_code: 0 } });
+                h.append([
+                    { step_index: 6, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                    { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"echo hi"' } }] },
+                    { step_index: 8, source: 'MODEL', type: 'RUN_COMMAND', status: 'DONE', content: 'hi' }
+                ]);
+            }, {}, acp);
+            await vi.waitFor(() => expect(h.requests).toContain('session/resume'));
+            // Handler-less wakeup: rendered from the transcript as a synthetic card.
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`));
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.synthetic)).toBe(true));
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            // The synthetic command completes: result-only ACP update first, transcript row later.
+            h.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'acp-syn', status: 'completed', rawOutput: { output: 'Command exited with code 0.\n\nCommand output:\nDONE', exit_code: 0 } });
+            await new Promise((r) => setTimeout(r, 40));
+            h.append([
+                { step_index: 9, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-7" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDONE\n</SYSTEM_MESSAGE>` },
+                { step_index: 10, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'FINISHED:DONE' }
+            ]);
+            await h.ready();
+            const out = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string; output?: { stdout?: string } });
+            const results = out.filter((m) => m.type === 'tool-call-result');
+            expect(results.some((m) => m.callId?.startsWith('agy-wakeup-') && m.output?.stdout === 'DONE')).toBe(true);
+            await h.finish();
+        });
+
+        it('completes a transcript-rendered command from its transcript row when no live update arrives', async () => {
+            const acp = 'conv-live-synthetic-row';
+            turnRows(acp);
+            const h = startLive(acp, (_n, notify) => {
+                notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } });
+                h.append([
+                    { step_index: 6, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                    { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'ok' }
+                ]);
+            }, {}, acp);
+            await vi.waitFor(() => expect(h.requests).toContain('session/resume'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`));
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.synthetic)).toBe(true));
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            await new Promise((r) => setTimeout(r, 40));
+            h.append([
+                { step_index: 8, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-7" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDONE\n</SYSTEM_MESSAGE>` },
+                { step_index: 9, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'FINISHED:DONE' }
+            ]);
+            const sent = () => h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string; output?: { stdout?: string } });
+            await vi.waitFor(() => expect(sent().filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('agy-wakeup-') && m.output?.stdout === 'DONE')).toHaveLength(1));
+            await h.ready();
+            const out = sent();
+            expect(out.filter((m) => m.type === 'tool-call')).toHaveLength(0);
+            expect(h.bgEntries()).toHaveLength(0);
             await h.finish();
         });
 

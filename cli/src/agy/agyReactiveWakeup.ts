@@ -861,7 +861,8 @@ export function inspectSyntheticBackgroundCommandMatch(
         (entry) => entry.taskId === undefined || !completedTasks.has(entry.taskId)
     );
 
-    const turnPlannedCompatibleCommand = recentSteps.some((step) => {
+    // A result-only update names no command, so any planned call would "match" it.
+    const turnPlannedCompatibleCommand = (liveCommandLine !== undefined || liveArgs !== undefined) && recentSteps.some((step) => {
         if (step.step_index <= turnStartStepIndex) return false;
         if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') return false;
         return (step.tool_calls ?? []).some((call) => {

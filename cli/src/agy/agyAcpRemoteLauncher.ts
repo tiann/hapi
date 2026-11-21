@@ -753,15 +753,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     this.reconcileRetainedAmbiguousCompletions(null);
                     // Live agy completes commands by call id: the conversion may settle
                     // tracked ones but must not mirror the wakeup's own as synthetic.
+                    const renderedFromTranscript = new Set(this.backgroundCommands.filter((e) => e.synthetic).map((e) => e.callId));
                     const tracked = live ? [...this.backgroundCommands] : this.backgroundCommands;
                     const converted = convertAgyReactiveSteps(acpSessionId, inspection.steps, tracked);
                     if (live) this.backgroundCommands.splice(0, Infinity, ...this.backgroundCommands.filter((entry) => tracked.includes(entry)));
                     if (!this.backgroundCommands.some((entry) => entry.synthetic)) {
                         this.retainedAmbiguousCompletions.length = 0;
                     }
-                    if (!live) {
-                        await this.advanceBackendCursor();
-                        for (const msg of converted.messages) {
+                    if (!live) await this.advanceBackendCursor();
+                    for (const msg of converted.messages) {
+                        // Live mode forwards only the end of a card the transcript rendered.
+                        if (!live || (msg.type === 'tool_result' && renderedFromTranscript.has(msg.id))) {
                             this.forwardAgentMessage(this.showQuestionCard(msg));
                         }
                     }
