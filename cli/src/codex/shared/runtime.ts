@@ -5,6 +5,8 @@ import { mkdir, mkdtemp, chmod, rm, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import type { ThreadGoal } from '../appServerTypes';
 import { configuration } from '@/configuration';
 import { bootstrapSession, bootstrapExistingSession } from '@/agent/sessionFactory';
 import { notifyRunnerSessionStarted } from '@/runner/controlClient';
@@ -31,6 +33,7 @@ type Reservation = {
     rootBound?: boolean;
     controlSubscription?: number;
     tierConfirmationPending?: boolean;
+    heldGoal?: ThreadGoal;
 };
 
 function gitInfo(cwd: string): { sha: string | null; branch: string | null; originUrl: string | null } {
@@ -293,7 +296,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const reserve = async (root: SharedCodexRoot, threadId: string) => withThreadOwnership(home, threadId, id, () => reserveRecord(root, threadId));
     const hasControlSubscription = (reservation: Reservation) =>
         reservation.controlSubscription === controlGeneration && control.isInitialized();
-    const holdSavedGoal = async (root: SharedCodexRoot, threadId: string, params: Record<string, unknown>) => {
+    const holdSavedGoal = async (root: SharedCodexRoot, threadId: string, params: Record<string, unknown>): Promise<ThreadGoal | undefined> => {
+        if (params.sandbox != null && params.permissions != null) throw new Error('`permissions` cannot be combined with `sandbox`');
         const goal = await control.getThreadGoal({ threadId }).catch(error => {
             if (!(error instanceof Error) || !/^(?:goals feature is disabled|method not found|unknown method)/i.test(error.message)) throw error;
             // The resume may otherwise load different project flags.
@@ -307,6 +311,21 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         if (paused.goal.status !== 'paused') throw new Error('Could not pause the saved Codex goal before tier recovery.');
         root.session.sendSessionEvent({ type: 'message',
             message: 'The saved goal was paused while checking the service tier. Resume the goal when the tier is confirmed.' });
+        return paused.goal;
+    };
+    const restoreRejectedResumeGoal = async (root: SharedCodexRoot, threadId: string, heldGoal: ThreadGoal) => {
+        try {
+            const signal = AbortSignal.timeout(5_000);
+            const { thread } = await control.readThread({ threadId, includeTurns: false }, { signal });
+            if (record(record(thread).status).type !== 'notLoaded') return;
+            const current = await control.getThreadGoal({ threadId }, { signal });
+            if (!isDeepStrictEqual(current.goal, heldGoal) || stopping || ending.has(root) || ownedRoot(threadId) !== root) return;
+            const restored = await control.setThreadGoal({ threadId, status: 'active' }, { signal });
+            if (restored.goal.status === 'active') root.session.sendSessionEvent({ type: 'message',
+                message: 'Codex rejected the resume. The saved goal remains active for the next resume.' });
+        } catch (error) {
+            logger.debug('[Codex shared] Could not restore the saved goal after resume rejection', error);
+        }
     };
     const acceptedResumeParams = async (
         reservation: Reservation, params: Record<string, unknown>, savedThread?: Record<string, unknown>, client = control
@@ -624,15 +643,16 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             const resumeOverride = params.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined;
             const serviceTierExplicit = resuming ? resumeOverride ? true : undefined : resolved.serviceTier !== undefined;
             const configured = root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) });
+            let heldGoal: ThreadGoal | undefined;
             if (request.method === 'thread/resume' && threadId && requiresTierAdmission(root, tier.params.serviceTier, tier.downgraded, serviceTierExplicit)) {
                 pendingAdmission.add(threadId);
-                await holdSavedGoal(root, threadId, configured);
+                heldGoal = await holdSavedGoal(root, threadId, configured);
                 assertRunning();
             }
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
                 freshThread: request.method === 'thread/start', executionParams: tier.params,
                 serviceTierExplicit,
-                ultrafastTarget: tier.ultrafastTarget, downgraded: tier.downgraded });
+                ultrafastTarget: tier.ultrafastTarget, downgraded: tier.downgraded, heldGoal });
             return { ...request, params: configured };
         } catch (error) {
             const retained = threadId && retryableBindings.get(threadId)?.root === root;
@@ -659,8 +679,15 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const reservation = reservations.get(key(connection, request)); reservations.delete(key(connection, request));
         if (reservation) {
             if (response.error) {
-                const retained = reservation.resumeId && retryableBindings.get(reservation.resumeId)?.root === reservation.root;
-                if (!retained) await reservation.root.close(!reservation.resumeId);
+                const { root, resumeId, heldGoal } = reservation;
+                const retained = resumeId && retryableBindings.get(resumeId)?.root === root;
+                const code = record(response.error).code;
+                // Native invalid-request/invalid-params replies are definitive.
+                // An internal or transport failure may already have loaded the thread.
+                if (!retained && resumeId && heldGoal && (code === -32600 || code === -32602)) {
+                    await serializeNativeLifecycle(resumeId, () => restoreRejectedResumeGoal(root, resumeId, heldGoal));
+                }
+                if (!retained) await root.close(!resumeId);
                 if (reservation.resumeId && !retryableBindings.has(reservation.resumeId)) pendingAdmission.delete(reservation.resumeId);
                 const binding = runtime.sessions[reservation.root.session.sessionId]; if (binding) binding.active = Boolean(reservation.resumeId && retryableBindings.has(reservation.resumeId));
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== reservation.root.session.sessionId);

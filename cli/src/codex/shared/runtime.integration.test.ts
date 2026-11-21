@@ -1085,6 +1085,26 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                     await configure(undefined, 'http://127.0.0.1:2/v1');
                     return { data: [{ id: 'gpt-6-astra', serviceTiers: [{ id: 'ultrafast' }] }] } as never;
                 }));
+            if (confirmationPending) {
+                const gateway = await start({ serviceTier: 'standard' });
+                const frontend = new CodexAppServerClient({ endpoint: gateway.runtime.endpoint, token: gateway.runtime.token });
+                try {
+                    await initializeSharedClient(frontend);
+                    const resume = { threadId, excludeTurns: true, serviceTier: 'priority' };
+                    await expect(frontend.request('thread/resume', { ...resume, sandbox: 'read-only', permissions: 'read-only' }))
+                        .rejects.toThrow('cannot be combined');
+                    await expect(frontend.getThreadGoal({ threadId })).resolves.toMatchObject({ goal: { status: 'active' } });
+                    await expect(frontend.request('thread/resume', { ...resume, sandbox: 'hapi-invalid-sandbox' }))
+                        .rejects.toThrow(/invalid params|unknown variant|hapi-invalid-sandbox/i);
+                    await expect(frontend.getThreadGoal({ threadId })).resolves.toMatchObject({
+                        goal: { status: 'active', objective: 'Retain this goal', tokenBudget: 500 }
+                    });
+                    expect(state.sessions.get(sessionId)?.messages).toContainEqual({
+                        type: 'message', message: expect.stringContaining('saved goal remains active')
+                    });
+                    expect(modelRequests).toBe(0);
+                } finally { await frontend.disconnect(); gateway.abort.abort(); await gateway.done; }
+            }
             const resumed = await start({ startedBy: 'runner', existingSessionId: sessionId, resumeSessionId: threadId,
                 ...(inherited || confirmationPending ? {} : { serviceTier: 'ultrafast' }) });
             if (pendingCatalog) expect(pendingCatalog).not.toHaveBeenCalled();
