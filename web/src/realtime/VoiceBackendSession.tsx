@@ -3,7 +3,12 @@ import type { RealtimeVoiceSessionProps } from './RealtimeVoiceSession'
 import { getVoiceSession } from './RealtimeSession'
 import { fetchVoiceBackend } from '@/api/voice'
 import { resolveSelectedVoiceBackend } from '@/lib/voicePickerPreferences'
-import { VOICE_BACKEND_MOUNT_REQUEST_EVENT, VOICE_BACKEND_READY_EVENT } from './voiceBackendEvents'
+import {
+    VOICE_BACKEND_MOUNT_REQUEST_EVENT,
+    VOICE_BACKEND_READY_EVENT,
+    bumpVoiceBackendReadyEpoch,
+    markVoiceBackendStale
+} from './voiceBackendEvents'
 import type { ApiClient } from '@/api/client'
 import type { VoiceBackendType } from '@hapi/protocol/voice'
 
@@ -50,7 +55,12 @@ export function VoiceBackendSession(props: VoiceBackendSessionProps) {
     }, [])
 
     useEffect(() => {
-        const onRefresh = () => setResolveEpoch((n) => n + 1)
+        const onRefresh = () => {
+            // Any already-registered session may belong to the previous
+            // provider until the re-resolved backend re-registers.
+            markVoiceBackendStale()
+            setResolveEpoch((n) => n + 1)
+        }
         window.addEventListener('hapi-voice-backends-refresh', onRefresh)
         return () => window.removeEventListener('hapi-voice-backends-refresh', onRefresh)
     }, [])
@@ -84,9 +94,33 @@ export function VoiceBackendSession(props: VoiceBackendSessionProps) {
 
     const handleRegistered = useCallback(() => {
         props.onReadyChange?.(true)
-        // Wake the startVoice caller that requested this mount.
+        // Wake the startVoice caller that requested this mount, and stamp
+        // the registration epoch so ensureVoiceBackendMounted can trust it.
+        bumpVoiceBackendReadyEpoch()
         window.dispatchEvent(new Event(VOICE_BACKEND_READY_EVENT))
     }, [props.onReadyChange])
+
+    useEffect(() => {
+        // Warm the backend chunk once a provider is resolved: list first
+        // paint stays lazy (this fires on idle, after paint), and the
+        // session is registered before the first mic tap so startVoice's
+        // ensure is synchronous — the user-gesture activation chain for
+        // audio playback is never broken by a chunk download.
+        if (!backend) return
+        let cancelled = false
+        const warm = () => {
+            if (!cancelled) setMountRequested(true)
+        }
+        const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback
+        if (typeof idle === 'function') {
+            idle(warm, { timeout: 3_000 })
+        } else {
+            window.setTimeout(warm, 1_500)
+        }
+        return () => {
+            cancelled = true
+        }
+    }, [backend])
 
     if (!backend || !mountRequested) return null
 
