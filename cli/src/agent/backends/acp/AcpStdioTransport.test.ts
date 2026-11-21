@@ -98,6 +98,7 @@ vi.mock('node:child_process', () => ({
 
 import { AcpStdioTransport, isAcpIndeterminateError } from './AcpStdioTransport';
 import { killProcessByChildProcess } from '@/utils/process';
+import { logger } from '@/ui/logger';
 
 function emitStdout(chunk: string): void {
     for (const handler of spawnState.stdoutDataHandlers) {
@@ -669,5 +670,118 @@ describe('AcpStdioTransport closed stdin writes', () => {
         const transport = await AcpStdioTransport.create({ command: 'gemini' });
         await expect(transport.sendRequest('initialize')).rejects.toThrow('WritableIterable is closed');
         await expect(transport.sendRequest('session/new')).rejects.toThrow('WritableIterable is closed');
+    });
+});
+
+describe('AcpStdioTransport inbound request lifetime', () => {
+    afterEach(() => {
+        spawnState.stdinWrite.mockClear();
+        spawnState.exitCode = null;
+    });
+
+    const frame = (message: object) => emitStdout(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
+
+    test('acknowledges withdrawal of only the matching inbound request once', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode' });
+        const signals = new Map<unknown, AbortSignal>();
+        transport.registerRequestHandler('elicitation/create', async (_params, id, signal) => {
+            if (!signal) return;
+            signals.set(id, signal);
+            await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+            return { action: 'cancel' };
+        }, { cancellable: true });
+        frame({ method: 'elicitation/create', id: 0 });
+        frame({ method: 'elicitation/create', id: '0' });
+
+        frame({ method: '$/cancel_request', params: { requestId: 0 } });
+        frame({ method: '$/cancel_request', params: { requestId: 0 } });
+
+        expect(signals.get(0)?.reason).toBe('agent-cancelled');
+        expect(signals.get('0')?.aborted).toBe(false);
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(spawnState.stdinWrite.mock.calls.map(([line]) => JSON.parse(line))).toEqual([
+            { jsonrpc: '2.0', id: 0, error: { code: -32800, message: 'Request cancelled' } }
+        ]);
+        spawnState.closeHandlers[0]!(0, null);
+    });
+
+    test('closes all pending inbound requests when the serving connection closes', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode' });
+        const signals: AbortSignal[] = [];
+        transport.registerRequestHandler('elicitation/create', async (_params, _id, signal) => {
+            if (!signal) return;
+            signals.push(signal);
+            await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+        }, { cancellable: true });
+        frame({ method: 'elicitation/create', id: 1 });
+        frame({ method: 'elicitation/create', id: 2 });
+
+        spawnState.closeHandlers[0]!(0, null);
+        frame({ method: '$/cancel_request', params: { requestId: 1 } });
+
+        expect(signals.map(signal => signal.reason)).toEqual(['connection-closed', 'connection-closed']);
+        await Promise.resolve();
+        expect(spawnState.stdinWrite).not.toHaveBeenCalled();
+    });
+
+    test('leaves a non-cancellable inbound request unaffected by withdrawal', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode' });
+        let complete!: () => void;
+        const handler = vi.fn(async () => {
+            await new Promise<void>(resolve => { complete = resolve; });
+            return { action: 'accept' };
+        });
+        transport.registerRequestHandler('elicitation/create', handler);
+        frame({ method: 'elicitation/create', id: 0 });
+        frame({ method: '$/cancel_request', params: { requestId: 0 } });
+        expect(handler).toHaveBeenCalledWith(null, 0, undefined);
+        complete();
+        await vi.waitFor(() => expect(spawnState.stdinWrite).toHaveBeenCalledTimes(1));
+        expect(JSON.parse(spawnState.stdinWrite.mock.calls[0]![0])).toEqual({
+            jsonrpc: '2.0', id: 0, result: { action: 'accept' }
+        });
+        spawnState.closeHandlers[0]!(0, null);
+    });
+
+    test('logs requests discarded on duplicate id or after connection close', async () => {
+        const debug = vi.spyOn(logger, 'debug');
+        const transport = await AcpStdioTransport.create({ command: 'opencode' });
+        const handler = vi.fn(async (_params, _id, signal?: AbortSignal) => {
+            await new Promise<void>(resolve => signal?.addEventListener('abort', () => resolve(), { once: true }));
+        });
+        transport.registerRequestHandler('elicitation/create', handler, { cancellable: true });
+        try {
+            frame({ method: 'elicitation/create', id: 0 });
+            frame({ method: 'elicitation/create', id: 0 });
+            spawnState.closeHandlers[0]!(0, null);
+            frame({ method: 'elicitation/create', id: 1 });
+
+            expect(handler).toHaveBeenCalledOnce();
+            expect(debug).toHaveBeenCalledWith(expect.stringContaining('duplicate inbound request'), { id: 0 });
+            expect(debug).toHaveBeenCalledWith(expect.stringContaining('closed connection'), { id: 1 });
+        } finally {
+            debug.mockRestore();
+        }
+    });
+
+    test('ignores late withdrawal after HAPI replied with cancel', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode' });
+        const signals: AbortSignal[] = [];
+        transport.registerRequestHandler('elicitation/create', async (_params, _id, signal) => {
+            if (signal) signals.push(signal);
+            return { action: 'cancel' };
+        }, { cancellable: true });
+        frame({ method: 'elicitation/create', id: 0 });
+        await vi.waitFor(() => expect(spawnState.stdinWrite).toHaveBeenCalledTimes(1));
+        frame({ method: '$/cancel_request', params: { requestId: 0 } });
+        frame({ method: 'elicitation/create', id: 0 });
+        await vi.waitFor(() => expect(spawnState.stdinWrite).toHaveBeenCalledTimes(2));
+
+        expect(signals.map(signal => signal.aborted)).toEqual([false, false]);
+        expect(spawnState.stdinWrite.mock.calls.map(([line]) => JSON.parse(line))).toEqual([
+            { jsonrpc: '2.0', id: 0, result: { action: 'cancel' } },
+            { jsonrpc: '2.0', id: 0, result: { action: 'cancel' } }
+        ]);
+        spawnState.closeHandlers[0]!(0, null);
     });
 });

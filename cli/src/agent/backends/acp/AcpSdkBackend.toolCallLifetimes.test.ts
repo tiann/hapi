@@ -23,7 +23,7 @@ type BackendInternal = {
     } | null;
     handleNotification: (method: string, params: unknown) => void;
     handlePermissionRequest: (params: unknown, requestId: string | number | null) => Promise<unknown>;
-    handleElicitationRequest: (params: unknown) => Promise<FormElicitationResponse>;
+    handleElicitationRequest: (params: unknown, signal?: AbortSignal) => Promise<FormElicitationResponse>;
 };
 
 type BackendStatics = Record<
@@ -198,6 +198,28 @@ function makeAgentStateSession(): { session: ApiSessionClient; state: () => Agen
 }
 
 describe('AcpSdkBackend tool call lifetimes', () => {
+    it('retires a locally cancelled form before prompt cleanup without retiring a form from another session', async () => {
+        const { backend, internal } = makeBackend({ flavor: 'opencode', elicitationForm: true });
+        const { session, state, answer } = makeAgentStateSession();
+        const permissions = new OpencodePermissionHandler(session, backend, () => 'default');
+        const wire = new AbortController();
+        const form = internal.handleElicitationRequest(questionForm('local-cancel'), wire.signal);
+        const [id] = Object.keys(state().requests ?? {});
+        const other = internal.handleElicitationRequest({ ...questionForm('other'), sessionId: 'other-session' });
+        const otherId = Object.keys(state().requests ?? {}).find(key => key !== id)!;
+
+        await backend.cancelPrompt(SESSION);
+        await expect(form).resolves.toEqual({ action: 'cancel' });
+        expect(wire.signal.aborted).toBe(false);
+        await permissions.cancelAll('Prompt finished', { preserveQuestions: true });
+        await answer({ id, approved: true, answers: { '0': ['a'] } });
+
+        expect(state().requests).toEqual({ [otherId]: expect.anything() });
+        expect(state().completedRequests?.[id]).toMatchObject({ status: 'canceled', reason: 'User aborted' });
+        await permissions.cancelAll('Session ended');
+        await expect(other).resolves.toEqual({ action: 'cancel' });
+    });
+
     it('makes a reused question:0 answerable after an aborted one, keeping the old answer record', async () => {
         const { backend, internal, notify, scriptPrompts } = makeBackend({ flavor: 'opencode', elicitationForm: true });
         const { session, state, answer } = makeAgentStateSession();
@@ -218,8 +240,6 @@ describe('AcpSdkBackend tool call lifetimes', () => {
                 return 'cancelled';
             },
             async () => {
-                // The launcher reopens questions for every prompt.
-                permissions.beginTurn();
                 notify(toolCall('question:0', { kind: 'other', title: 'question' }));
                 reusedForm = internal.handleElicitationRequest(questionForm('question:0'));
                 await sleep(5);

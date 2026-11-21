@@ -69,7 +69,8 @@ const harness = vi.hoisted(() => ({
     metadataUpdates: [] as Array<Record<string, unknown>>,
     disconnectImpl: null as null | (() => Promise<void>),
     permissionCancelError: null as Error | null,
-    permissionCancelReasons: [] as string[],
+    permissionCancelCalls: [] as Array<[string, { preserveQuestions?: boolean }?]>,
+    pendingQuestions: false,
     serverStopError: null as Error | null,
     eventStreamOptions: [] as Array<{
         baseUrl: string;
@@ -263,8 +264,8 @@ vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
 
 vi.mock('./utils/permissionHandler', () => ({
     OpencodePermissionHandler: class {
-        beginTurn(): void {}
-        async cancelAll(reason?: string): Promise<void> { harness.permissionCancelReasons.push(String(reason)); harness.cleanupEvents.push('cleanup:permission'); if (harness.permissionCancelError) throw harness.permissionCancelError; }
+        hasPendingQuestions(): boolean { return harness.pendingQuestions; }
+        async cancelAll(reason: string, options?: { preserveQuestions?: boolean }): Promise<void> { harness.permissionCancelCalls.push([reason, options]); harness.cleanupEvents.push('cleanup:permission'); if (harness.permissionCancelError) throw harness.permissionCancelError; }
     }
 }));
 
@@ -762,7 +763,8 @@ afterEach(async () => {
     harness.metadataUpdates.length = 0;
     harness.disconnectImpl = null;
     harness.permissionCancelError = null;
-    harness.permissionCancelReasons = [];
+    harness.permissionCancelCalls = [];
+    harness.pendingQuestions = false;
     harness.serverStopError = null;
     harness.eventStreamOptions = [];
     harness.eventStreamCloseCount = 0;
@@ -4796,13 +4798,13 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         await launcherPromise;
     });
 
-    describe('pending question forms are cancelled', () => {
-        it('when the turn ends', async () => {
+    describe('permission cleanup', () => {
+        it('runs when the turn ends', async () => {
             const { session } = createSessionStub([{ message: 'first', mode: createMode() }]);
 
             await opencodeRemoteLauncher(session as never);
 
-            expect(harness.permissionCancelReasons).toContain('Prompt finished');
+            expect(harness.permissionCancelCalls).toContainEqual(['Prompt finished', { preserveQuestions: true }]);
         });
 
         it('when the user aborts the turn', async () => {
@@ -4813,7 +4815,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
 
             await (rpcHandlers.get('abort') as () => Promise<void>)();
 
-            expect(harness.permissionCancelReasons).toContain('User aborted');
+            expect(harness.permissionCancelCalls.map(([reason]) => reason)).toContain('User aborted');
             harness.resolvePrompt!();
             session.queue.close();
             await launcherPromise;
@@ -4824,7 +4826,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
 
             await opencodeRemoteLauncher(session as never);
 
-            expect(harness.permissionCancelReasons).toContain('Session ended');
+            expect(harness.permissionCancelCalls.map(([reason]) => reason)).toContain('Session ended');
         });
 
         it('when the process is asked to shut down (archive, SIGTERM)', async () => {
@@ -4836,7 +4838,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
 
             await killHandlers[0]!();
 
-            expect(harness.permissionCancelReasons).toContain('Session terminated');
+            expect(harness.permissionCancelCalls.map(([reason]) => reason)).toContain('Session terminated');
             harness.resolvePrompt!();
             session.queue.close();
             await launcherPromise;
@@ -5081,6 +5083,28 @@ describe('selectAbortStatusMessage', () => {
         expect(harness.cancelPrompt).not.toHaveBeenCalled();
         expect(addMessage).not.toHaveBeenCalledWith('Turn aborted', 'status');
         addMessage.mockRestore();
+    });
+
+    it('routes Stop to pending autonomous questions during post-prompt settlement', async () => {
+        roundSummaryHarness.summaryImpl = () => new Promise<unknown>(() => {});
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'foreground prompt', mode: createMode() }
+        ], { keepOpen: true });
+        const launchPromise = opencodeRemoteLauncher(session as never);
+
+        try {
+            await vi.waitFor(() => expect(roundSummaryHarness.summaryCalls).toHaveLength(1));
+            expect(harness.events).toContain('prompt:end');
+            harness.pendingQuestions = true;
+
+            await (rpcHandlers.get(RPC_METHODS.Abort) as () => Promise<void>)();
+
+            expect(harness.cancelPrompt).toHaveBeenCalledOnce();
+            expect(harness.permissionCancelCalls).toContainEqual(['User aborted', undefined]);
+        } finally {
+            session.queue.close();
+            await launchPromise;
+        }
     });
 
     it('plain Stop during post-prompt summary settlement does not leave the dequeue loop spinning on an aborted signal', async () => {
