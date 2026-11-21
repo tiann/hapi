@@ -431,7 +431,7 @@ if (isReconnect) {
             this.agentTerminalActive = false
         }))
 
-        this.socket.on('update', async (data: Update, ack?: (response: { removed: boolean; inFlight?: boolean; indeterminate?: boolean; accepted?: boolean; consumed?: boolean; socketId?: string }) => void) => {
+        this.socket.on('update', async (data: Update, ack?: (response: { removed: boolean; inFlight?: boolean; indeterminate?: boolean; accepted?: boolean; consumed?: boolean }) => void) => {
             try {
                 if (!data.body) return
 
@@ -507,16 +507,14 @@ if (isReconnect) {
                     const result = cancellation instanceof Promise ? await cancellation : cancellation
                     // 'in-flight' = the row is inside an async steer: not
                     // removed, but also NOT consumed — the hub must neither
-                    // delete it nor stamp invoked_at. The socketId lets the
-                    // hub address the forced retry to the CLI that actually
-                    // answered this probe instead of re-broadcasting to the
-                    // room (membership can shift between the two emits).
+                    // delete it nor stamp invoked_at. Targeting is entirely
+                    // hub-side: the probe is emitted per socket, so the hub
+                    // knows who answered without any client-reported id.
                     ack?.({
                         removed: result === true,
                         inFlight: result === 'in-flight',
                         indeterminate: result === 'indeterminate',
-                        consumed: result === 'consumed',
-                        socketId: this.socket?.id ?? undefined
+                        consumed: result === 'consumed'
                     })
                     return
                 }

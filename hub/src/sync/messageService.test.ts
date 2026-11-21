@@ -2349,6 +2349,8 @@ describe('MessageService deliverQueuedMessageNow', () => {
         // instead of racing the probe, and can be retried afterwards.
         expect(await service.cancelQueuedMessage(session.id, 'cr-q'))
             .toEqual({ status: 'busy', localId: 'cr-q' })
+        // The deferral never touches the row: still queued, untouched state.
+        expect(store.messages.lookupQueuedMessage(session.id, 'cr-q').status).toBe('queued')
         release()
         expect(await delivering).toEqual({ status: 'delivered', localId: 'cr-q' })
         store.close()
@@ -2552,11 +2554,10 @@ describe('MessageService deliverQueuedMessageNow', () => {
         store.close()
     })
 
-    it('still targets the probed socket when another socket joins before the retry', async () => {
+    it('refuses the forced retry when another socket joins before it', async () => {
         const store = makeStore()
         const session = makeSession(store, 'deliver-legacy-joined')
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'joined' } }, 'joined-q')
-        const targets: string[] = []
         let calls = 0
         const broadcastRoom = {
             timeout: (_ms: number) => ({
@@ -2570,21 +2571,19 @@ describe('MessageService deliverQueuedMessageNow', () => {
             emit: () => {}
         }
         // One socket at entry (the cliCount gate); a second joins after the
-        // probe. The retry still binds to the probed socket, so the joiner —
-        // which the probe never cleared — cannot receive a forced copy.
+        // probe. The probed runner is no longer the sole room member, so the
+        // multi-client semantics the probe never validated must not receive a
+        // forced copy.
         const io = {
             of: (_ns: string) => ({
-                to: (target: string) => {
-                    targets.push(target)
-                    return broadcastRoom
-                },
+                to: (target: string) => broadcastRoom,
                 adapter: { rooms: { get: () => new Set(calls === 0 ? ['socket-0'] : ['socket-0', 'socket-1']) } }
             })
         } as unknown as Server
         const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
         expect(await service.deliverQueuedMessageNow(session.id, 'joined-q'))
-            .toEqual({ status: 'delivered', localId: 'joined-q' })
-        expect(targets).toEqual(['socket-0', 'socket-0'])
+            .toEqual({ status: 'unavailable', localId: 'joined-q' })
+        expect(calls).toBe(1)
         store.close()
     })
 
@@ -2612,7 +2611,7 @@ describe('MessageService deliverQueuedMessageNow', () => {
         store.close()
     })
 
-    it('still delivers rows queued before an OpenCode /clear', async () => {
+    it('refuses rows queued before an OpenCode /clear too — forced delivery would cross the boundary', async () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession('deliver-clear-before', { path: '/tmp/deliver-clear-before', flavor: 'opencode' }, null, 'default')
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'before the clear' } }, 'before-q')
@@ -2621,17 +2620,16 @@ describe('MessageService deliverQueuedMessageNow', () => {
         let calls = 0
         const service = new MessageService(store, makeIo(ack => {
             calls += 1
-            ack(null, calls === 1 ? [{ removed: false }] : [{ removed: false, accepted: true }])
+            ack(null, [{ removed: false, accepted: true }])
         }), makePublisher() as unknown as EventPublisher)
-        // Rows ahead of the clear do not jump it — safe to deliver.
+        // A prompt before the clear would be re-enqueued behind the runner's
+        // isolated clear batch — silently crossing the boundary — so every
+        // row is refused until the clear transitions through the normal path.
         expect(await service.deliverQueuedMessageNow(session.id, 'before-q'))
-            .toEqual({ status: 'delivered', localId: 'before-q' })
-        expect(calls).toBe(2)
-        // The runner resolves /CLEAR (case-insensitive, with arguments) to a
-        // clear, so the follow-up behind it is still refused.
+            .toEqual({ status: 'unavailable', localId: 'before-q' })
         expect(await service.deliverQueuedMessageNow(session.id, 'after-q'))
             .toEqual({ status: 'unavailable', localId: 'after-q' })
-        expect(calls).toBe(2)
+        expect(calls).toBe(0)
         store.close()
     })
 

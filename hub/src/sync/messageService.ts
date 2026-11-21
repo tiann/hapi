@@ -234,6 +234,8 @@ export class MessageService {
     private readonly activeDeliverNow = new Set<string>()
     /** (session:localId) keys with a cancel probe in flight; deliver-now defers on them. */
     private readonly activeCancels = new Set<string>()
+    /** Ack budget for the forced retry emit: must cover the CLI's preparation reuse gate. */
+    private static readonly FORCED_RETRY_ACK_TIMEOUT_MS = 5000
 
     constructor(
         private readonly store: Store,
@@ -618,7 +620,8 @@ export class MessageService {
     ): Promise<CancelQueuedMessageResult> {
         const coordinationLookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
         const coordinationLocalId = 'localId' in coordinationLookup ? (coordinationLookup.localId ?? null) : null
-        if (coordinationLocalId) {
+        const coordinationCancellable = ['queued', 'dispatching', 'indeterminate'].includes(coordinationLookup.status)
+        if (coordinationLocalId && coordinationCancellable) {
             const key = `${sessionId}:${coordinationLocalId}`
             if (this.activeDeliverNow.has(key)) {
                 return { status: 'busy', localId: coordinationLocalId }
@@ -1023,10 +1026,13 @@ export class MessageService {
                     const boundaryRows = queuedRows.filter((row) => row.scheduledAt == null || row.scheduledAt <= Date.now())
                     const firstClearIndex = boundaryRows.findIndex(isClearRow)
                     if (firstClearIndex >= 0) {
-                        const targetIndex = boundaryRows.findIndex((row) => row.id === lookup.resolvedId)
-                        if (targetIndex > firstClearIndex) {
-                            return { status: 'unavailable', localId: lookup.localId }
-                        }
+                        // Refuse every row while a clear is queued, not only
+                        // follow-ups: a prompt queued BEFORE the clear would be
+                        // re-enqueued behind the runner's isolated clear batch,
+                        // silently moving it across the boundary. The clear
+                        // transitions through the normal release path, after
+                        // which Send-now works again.
+                        return { status: 'unavailable', localId: lookup.localId }
                     }
                 }
             }
@@ -1072,16 +1078,22 @@ export class MessageService {
                 }
             }
             // Bind the forced retry to the same server-selected socket the
-            // per-socket probe cleared. Membership can change between the two
-            // emits — if the answering socket left the room, no socket is
-            // proven to have been probed and nothing is emitted.
+            // per-socket probe cleared, and require it to STILL be the room's
+            // sole member: membership can change between the two emits, and a
+            // second runner joining means multi-client semantics the probe
+            // never validated. Either way, nothing is emitted.
             const roomSockets = this.io.of('/cli').adapter.rooms.get(roomName)
-            if (probe.responderId === null || !roomSockets?.has(probe.responderId)) {
+            if (probe.responderId === null || roomSockets?.size !== 1 || !roomSockets.has(probe.responderId)) {
                 return { status: 'unavailable', localId: lookup.localId }
             }
             const room = this.io.of('/cli').to(probe.responderId)
             const accepted = await new Promise<boolean>((resolve) => {
-                room.timeout(500).emit(
+                // The CLI's reuse gate can wait out asynchronous preparation
+                // (image reads, command discovery) that easily outlasts the
+                // probe round-trip; timing out here while the runner still
+                // dispatches afterwards would misreport the row as
+                // unavailable and invite a duplicate delivery.
+                room.timeout(MessageService.FORCED_RETRY_ACK_TIMEOUT_MS).emit(
                     'update',
                     update,
                     (_err: Error | null, responses: Array<{ accepted?: boolean }>) => {
