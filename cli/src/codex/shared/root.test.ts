@@ -139,6 +139,31 @@ it('allows cancellation while tier confirmation keeps queued input paused', asyn
     await expect(f.root.nativeQueueMutation('thread/queue/start', { threadId: 'thread' })).rejects.toThrow('tier confirmation');
 });
 
+it('rejects a native reorder that waited behind another queue operation before tier recovery', async () => {
+    const f = await fixture(); await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    let entered!: () => void;
+    let release!: () => void;
+    const stalledDelete = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/queue/delete') { entered(); await gate; }
+        return original(method, params);
+    });
+    const queue = (f.root as unknown as { queue: { nativeMutation(method: string, params: unknown): Promise<unknown> } }).queue;
+    const admitted = vi.spyOn(queue, 'nativeMutation');
+    const deletion = f.root.nativeQueueMutation('thread/queue/delete', { threadId: 'thread', queuedSubmissionId: 'absent' });
+    await stalledDelete;
+    const reorder = f.root.nativeQueueMutation('thread/queue/reorder', { threadId: 'thread', queuedSubmissionIds: ['a', 'b'] });
+    const rejected = expect(reorder).rejects.toThrow('tier confirmation');
+    await vi.waitFor(() => expect(admitted).toHaveBeenCalledWith('thread/queue/reorder', expect.anything()));
+    f.root.beginTierConfirmation();
+    release();
+    await deletion;
+    await rejected;
+    expect(request.mock.calls.some(([method]) => method === 'thread/queue/reorder')).toBe(false);
+});
+
 it('delivers the original held message when its cancellation cannot be saved', async () => {
     const f = await fixture(); await f.root.activate({}, false, true);
     const queue = (f.root as unknown as { queue: { save(): Promise<void> } }).queue;
@@ -2579,7 +2604,11 @@ it.each(['turn', 'web', 'native'])('holds Web and native input if Standard is re
     const original = f.root.client.request.bind(f.root.client);
     let rejectReset = true;
     const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
-        if (method === 'thread/settings/update' && (params as { serviceTier?: unknown }).serviceTier === null && rejectReset) {
+        const requestedTier = (params as { serviceTier?: unknown } | undefined)?.serviceTier;
+        if (method === 'thread/settings/update' && requestedTier === 'ultrafast' && f.native.settings.serviceTier === 'ultrafast') {
+            return {} as never;
+        }
+        if (method === 'thread/settings/update' && requestedTier === null && rejectReset) {
             rejectReset = false;
             throw new Error('Native settings reset rejected');
         }
@@ -2602,7 +2631,16 @@ it.each(['turn', 'web', 'native'])('holds Web and native input if Standard is re
     await expect(f.root.nativeQueueMutation('thread/queue/add', { threadId: 'thread', input: [] })).rejects.toThrow('tier confirmation');
     expect(request.mock.calls.some(([method]) => method === 'thread/queue/add')).toBe(false);
 
-    await f.root.applySettings({ serviceTier: 'standard' });
+    if (origin === 'turn') await f.root.applySettings({ serviceTier: 'standard' });
+    else {
+        // Native keeps Ultrafast selected and suppresses an identical write,
+        // although its effective snapshot still reports no override.
+        if (origin === 'web') await f.root.applySettings({ serviceTier: 'ultrafast' });
+        else await f.root.applyNativeSettings({ threadId: 'thread', serviceTier: 'ultrafast' });
+        expect(request.mock.calls.filter(([method, params]) => method === 'thread/settings/update'
+            && (params as { serviceTier?: unknown }).serviceTier === 'ultrafast')).toHaveLength(1);
+    }
+    expect(f.root.hasConfirmedStandardTier).toBe(true);
     expect(f.root.needsTierConfirmation).toBe(false);
     await vi.waitFor(async () => expect((await f.ledger()).entries['paused-web-input']?.state).toBe('queued'));
     expect(request.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(1);

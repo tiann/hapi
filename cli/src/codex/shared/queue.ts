@@ -487,7 +487,7 @@ export class SharedCodexQueue {
                 }
                 await this.save();
             }
-            if (method === 'thread/queue/add' || method === 'thread/queue/start') this.assertInputAdmission();
+            if (method === 'thread/queue/add' || method === 'thread/queue/start' || method === 'thread/queue/reorder') this.assertInputAdmission();
             const response = await this.client.request(method, values);
             if (method === 'thread/queue/delete' && nativeId && record(response).deleted === true) await this.deletedLocked(nativeId);
             return response;

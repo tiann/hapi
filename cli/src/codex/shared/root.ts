@@ -89,6 +89,7 @@ export class SharedCodexRoot {
     private reconnecting = false;
     private settings: RuntimeSettings = {};
     private settingsNative: Record<string, unknown> = {};
+    private nativeSelectedServiceTier: unknown;
     private modelProvider?: string;
     private serviceTierExplicit?: boolean;
     private confirmedNativeStandardReset = false;
@@ -520,6 +521,11 @@ export class SharedCodexRoot {
         this.settingsRevision++;
         if ('collaborationMode' in value && 'sandboxPolicy' in value) this.settingsNotification = value;
         this.settingsNative = { ...this.settingsNative, ...value };
+        // A read may filter the selected tier to null. Keep the selection for
+        // duplicate-write detection, separate from the effective tier.
+        if ('serviceTier' in value && (!effective || value.serviceTier !== null)) {
+            this.nativeSelectedServiceTier = value.serviceTier;
+        }
         if ('serviceTier' in value && value.serviceTier !== null) {
             this.confirmedNativeStandardReset = value.serviceTier === 'default';
         }
@@ -1108,10 +1114,13 @@ export class SharedCodexRoot {
             this.confirmedNativeStandardReset && this.settingsNative.serviceTier === null
                 ? { ...this.settingsNative, serviceTier: 'default' } : this.settingsNative,
             settings);
+        const matchesSelectedUltrafast = (settings: Record<string, unknown>) => requestedUltrafast
+            && this.nativeSelectedServiceTier === 'ultrafast'
+            && settingsMatch({ ...this.settingsNative, serviceTier: 'ultrafast' }, settings);
         // Native suppresses identical notifications. Verify a current loaded
         // snapshot rather than waiting for an event that will never be emitted.
         const comparable = Object.fromEntries(Object.entries(params).filter(([key, value]) => value !== null || key === 'serviceTier'));
-        if (matches(comparable)) {
+        if (matches(comparable) || matchesSelectedUltrafast(comparable)) {
             const revision = this.settingsRevision;
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
             if (canWrite && !canWrite()) return;
@@ -1119,11 +1128,12 @@ export class SharedCodexRoot {
             if (snapshotCurrent) this.acceptSettings(snapshot, true);
             else if (canWrite) return;
             if (canWrite && !canWrite()) return;
-            if (matches(comparable)) {
-                const confirmedUltrafast = snapshotCurrent && typeof snapshot.model === 'string'
+            if (matches(comparable) || matchesSelectedUltrafast(comparable)) {
+                const firstSnapshot = snapshotCurrent && typeof snapshot.model === 'string' ? snapshot : undefined;
+                const confirmedUltrafast = firstSnapshot !== undefined
                     && snapshot.serviceTier === 'ultrafast' && this.settings.serviceTier === 'ultrafast';
                 if (verifyUltrafast && !confirmedUltrafast) {
-                    await this.confirmEffectiveUltrafast(deadline, operationId, { requestedUltrafast, onMutation, pauseOnReadFailure: false });
+                    await this.confirmEffectiveUltrafast(deadline, operationId, { requestedUltrafast, onMutation, pauseOnReadFailure: false, firstSnapshot });
                 }
                 return operationId;
             }
@@ -1163,8 +1173,8 @@ export class SharedCodexRoot {
         return true;
     }
     private async confirmEffectiveUltrafast(deadline: number, operationId: number, {
-        requestedUltrafast = false, onMutation, pauseOnReadFailure = true
-    }: { requestedUltrafast?: boolean; onMutation?: () => void; pauseOnReadFailure?: boolean } = {}): Promise<void> {
+        requestedUltrafast = false, onMutation, pauseOnReadFailure = true, firstSnapshot
+    }: { requestedUltrafast?: boolean; onMutation?: () => void; pauseOnReadFailure?: boolean; firstSnapshot?: Record<string, unknown> } = {}): Promise<void> {
         // Settings notifications report selection; a loaded thread can still
         // filter Ultrafast using the feature state captured when it started.
         let fallbackDispatched = false;
@@ -1172,10 +1182,11 @@ export class SharedCodexRoot {
         const shouldPause = () => current() && (pauseOnReadFailure || fallbackDispatched);
         for (let attempt = 0; attempt < 3; attempt++) {
             const revision = this.settingsRevision;
-            const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline, true, shouldPause, operationId));
+            const observed = attempt === 0 ? firstSnapshot : undefined;
+            const snapshot = observed ?? record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline, true, shouldPause, operationId));
             if (!current()) throw new Error('Codex settings were superseded by a newer tier selection; refresh before retrying');
             if (this.settingsRevision !== revision) continue;
-            this.acceptSettings(snapshot, true);
+            if (!observed) this.acceptSettings(snapshot, true);
             if (snapshot.serviceTier === 'ultrafast' && this.settings.serviceTier === 'ultrafast') return;
             // A concurrent native client may have selected a different tier.
             if (this.hasOtherEffectiveTier) {
