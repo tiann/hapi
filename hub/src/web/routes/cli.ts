@@ -11,7 +11,7 @@ import {
     UpsertExternalRefRequestSchema,
     upsertGithubPrIntoExternalRefs
 } from '@hapi/protocol'
-import { getConfiguration } from '../../configuration'
+import { getConfiguration, type ConfigSource } from '../../configuration'
 import { readAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
 import { readSessionSummaryContractEnabled } from '../../config/sessionSummaryContract'
 import { stripExternalRefsWhenAwarenessDisabled, externalRefsInMetadataValid } from '../../sync/externalRefsPolicy'
@@ -74,7 +74,17 @@ function clearErrorStatus(code: string): 403 | 404 | 409 | 500 {
                 : 500
 }
 
-export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<CliEnv> {
+type CliRouteConfiguration = {
+    cliApiToken: string
+    dataDir: string
+    githubPrAwareness: boolean
+    sources: { githubPrAwareness: ConfigSource }
+}
+
+export function createCliRoutes(
+    getSyncEngine: () => SyncEngine | null,
+    readConfiguration: () => CliRouteConfiguration = getConfiguration
+): Hono<CliEnv> {
     const app = new Hono<CliEnv>()
 
     app.use('*', async (c, next) => {
@@ -91,7 +101,7 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         }
 
         const token = parsed.data.replace(/^Bearer\s+/i, '')
-        const configuration = getConfiguration()
+        const configuration = readConfiguration()
         const parsedToken = parseAccessToken(token)
         if (!parsedToken || !constantTimeEquals(parsedToken.baseToken, configuration.cliApiToken)) {
             return c.json({ error: 'Invalid token' }, 401)
@@ -145,7 +155,7 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         try {
             const metadata = stripExternalRefsWhenAwarenessDisabled(
                 parsed.data.metadata,
-                getConfiguration().githubPrAwareness
+                readConfiguration().githubPrAwareness
             )
             if (!externalRefsInMetadataValid(metadata)) {
                 return c.json({ error: 'Invalid metadata.externalRefs' }, 400)
@@ -171,7 +181,7 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
                     parsed.data.modelReasoningEffort,
                     parsed.data.id
                 )
-            const dataDir = getConfiguration().dataDir
+            const dataDir = readConfiguration().dataDir
             const sessionSummaryContract = await readSessionSummaryContractEnabled(dataDir)
             // Owner-only hub setting — never enable auto-bridge for tenant namespaces.
             const autoBridgeTransientModelErrors = namespace === 'default'
@@ -376,7 +386,7 @@ app.post('/sessions/:id/prepare-local-resume', async (c) => {
         if (!resolved.ok) {
             return c.json({ error: resolved.error }, resolved.status)
         }
-        const dataDir = getConfiguration().dataDir
+        const dataDir = readConfiguration().dataDir
         const sessionSummaryContract = await readSessionSummaryContractEnabled(dataDir)
         const autoBridgeTransientModelErrors = namespace === 'default'
             ? await readAutoBridgeTransientModelErrorsEnabled(dataDir)
@@ -419,7 +429,7 @@ app.post('/sessions/:id/prepare-local-resume', async (c) => {
     })
 
     app.get('/features', (c) => {
-        const configuration = getConfiguration()
+        const configuration = readConfiguration()
         return c.json({
             githubPrAwareness: {
                 enabled: configuration.githubPrAwareness,
@@ -429,7 +439,7 @@ app.post('/sessions/:id/prepare-local-resume', async (c) => {
     })
 
     app.get('/sessions/:id/external-refs', async (c) => {
-        const configuration = getConfiguration()
+        const configuration = readConfiguration()
         if (!configuration.githubPrAwareness) {
             return c.json({
                 error: 'GitHub PR awareness is disabled',
@@ -454,7 +464,7 @@ app.post('/sessions/:id/prepare-local-resume', async (c) => {
     })
 
     app.put('/sessions/:id/external-refs', async (c) => {
-        const configuration = getConfiguration()
+        const configuration = readConfiguration()
         if (!configuration.githubPrAwareness) {
             return c.json({
                 error: 'GitHub PR awareness is disabled',
@@ -493,7 +503,7 @@ app.post('/sessions/:id/prepare-local-resume', async (c) => {
     })
 
     app.post('/sessions/:id/external-refs/upsert', async (c) => {
-        const configuration = getConfiguration()
+        const configuration = readConfiguration()
         if (!configuration.githubPrAwareness) {
             return c.json({
                 error: 'GitHub PR awareness is disabled',
@@ -532,7 +542,7 @@ app.post('/sessions/:id/prepare-local-resume', async (c) => {
     })
 
     app.post('/sessions/:id/external-refs/remove-primary', async (c) => {
-        const configuration = getConfiguration()
+        const configuration = readConfiguration()
         if (!configuration.githubPrAwareness) {
             return c.json({
                 error: 'GitHub PR awareness is disabled',
