@@ -483,8 +483,8 @@ describe('getDeliverableMessagesAfter: CLI backfill excludes future-scheduled ro
     })
 })
 
-describe('countFutureScheduledLocalMessages', () => {
-    it('counts only future scheduled uninvoked local messages', () => {
+describe('future scheduled messages', () => {
+    it('counts and finds the earliest future scheduled uninvoked local messages', () => {
         const store = makeStore()
         const session = makeSession(store, 'sched-count')
         const now = Date.now()
@@ -507,7 +507,16 @@ describe('countFutureScheduledLocalMessages', () => {
             now - 1
         )
 
-        expect(store.messages.countFutureScheduledLocalMessages(session.id, now)).toBe(1)
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'later scheduled' } },
+            'local-later',
+            now + 120_000
+        )
+        expect(store.messages.getFutureSessionSchedule(session.id, now)).toEqual({
+            futureScheduledMessageCount: 2,
+            nextScheduledAt: now + 60_000
+        })
     })
 
     it('batch query returns counts keyed by session id', () => {

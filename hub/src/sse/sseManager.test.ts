@@ -55,6 +55,21 @@ describe('SSEManager namespace filtering', () => {
         expect(receivedBeta).toHaveLength(0)
     })
 
+    it('routes a schedule-only update to the matching namespace list stream', () => {
+        const manager = new SSEManager(0, new VisibilityTracker())
+        const deliveries: string[] = []
+        for (const scope of [
+            { id: 'list', namespace: 'alpha', all: true },
+            { id: 'chat', namespace: 'alpha', sessionId: 's1' },
+            { id: 'other', namespace: 'beta', all: true }
+        ]) {
+            manager.subscribe({ ...scope, send: () => { deliveries.push(scope.id) }, sendHeartbeat: () => {} })
+        }
+
+        manager.broadcast({ type: 'session-schedule-updated', sessionId: 's1', namespace: 'alpha' })
+        expect(deliveries).toEqual(['list'])
+    })
+
     it('broadcasts connection-changed to all namespaces', () => {
         const manager = new SSEManager(0, new VisibilityTracker())
         const received: Array<{ id: string; event: SyncEvent }> = []

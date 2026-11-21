@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs'
 import { dirname } from 'node:path'
+import type { Metadata } from '@hapi/protocol/types'
 
 import { MachineStore } from './machineStore'
 import { MessageStore } from './messageStore'
@@ -292,7 +293,7 @@ export class Store {
     abortOpenCodeClearOperation(
         sessionId: string,
         replacementSessionId: string,
-        metadata: unknown,
+        metadata: Metadata,
         expectedVersion: number,
         namespace: string,
         expected?: { replacementSessionId: string; state: string; requireInactive?: boolean }
@@ -308,9 +309,39 @@ export class Store {
                 || operation.state !== expected.state)) {
                 return { result: 'version-mismatch' as const }
             }
-            const result = this.sessions.updateSessionMetadata(sessionId, metadata, expectedVersion, namespace, { touchUpdatedAt: false })
-            if (result.result === 'success') this.messages.moveUninvokedMessages(replacementSessionId, sessionId)
+            if (!current || !metadata.opencodeClearOperation) return { result: 'error' as const }
+            if (current.metadataVersion !== expectedVersion) {
+                return { result: 'version-mismatch' as const, version: current.metadataVersion, value: current.metadata }
+            }
+
+            const movedMessages = this.messages.moveUninvokedMessages(replacementSessionId, sessionId)
+            const result = this.sessions.updateSessionMetadata(sessionId, {
+                ...metadata,
+                opencodeClearOperation: {
+                    ...metadata.opencodeClearOperation,
+                    abortInvalidationPending: movedMessages > 0 ? true : undefined
+                }
+            }, expectedVersion, namespace, { touchUpdatedAt: false })
+            if (result.result !== 'success') throw new Error('Could not persist the OpenCode clear abort')
             return result
+        })()
+    }
+
+    takeOpenCodeClearAbortInvalidation(sessionId: string, replacementSessionId: string, namespace: string): boolean {
+        return this.db.transaction(() => {
+            const current = this.sessions.getSessionByNamespace(sessionId, namespace)
+            const metadata = current?.metadata as Metadata | null | undefined
+            const operation = metadata?.opencodeClearOperation
+            if (!current || operation?.state !== 'aborted'
+                || operation.replacementSessionId !== replacementSessionId
+                || !operation.abortInvalidationPending) return false
+
+            const result = this.sessions.updateSessionMetadata(sessionId, {
+                ...metadata,
+                opencodeClearOperation: { ...operation, abortInvalidationPending: undefined }
+            }, current.metadataVersion, namespace, { touchUpdatedAt: false })
+            if (result.result !== 'success') throw new Error('Could not claim the OpenCode clear abort invalidation')
+            return true
         })()
     }
 

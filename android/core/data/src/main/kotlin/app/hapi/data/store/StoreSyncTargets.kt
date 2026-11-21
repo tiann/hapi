@@ -10,17 +10,15 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
 /**
- * Wires `SyncEventRouter` to the stores, mirroring the scope rules of
- * `web/src/hooks/useSSE.ts`:
+ * Wires `SyncEventRouter` to the native stores:
  *
  * - session lifecycle events → [SessionListStore.applySessionEvent]; a
  *   `session-removed` additionally clears that session's message window;
  * - `machine-updated` → [MachineListStore.applyMachineEvent];
- * - global-scope message-stream events refresh the session list where the web
- *   invalidates it (`messages-invalidated`, `messages-consumed`,
+ * - global-scope message-stream events refresh the native session list for
+ *   hub-computed fields (`messages-invalidated`, `messages-consumed`,
  *   `message-cancelled`, `scheduled-matured`, and a `message-received`
- *   carrying `scheduledAt` — they all move the hub-computed scheduled/queued
- *   fields the client cannot derive);
+ *   carrying `scheduledAt`);
  * - message-stream events also reach an **open** [MessageWindowStore]
  *   ([messageWindows], the M2c half): the session pipe ingests everything;
  *   the global pipe performs only queued/optimistic bookkeeping

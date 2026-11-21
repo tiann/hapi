@@ -7,6 +7,7 @@ import { z } from 'zod'
 
 import { hasUnreadMessageContent, getLiveReasoningStreamId, getReasoningStreamId, getTextLiveStreamId, getTextStreamId, getToolCallId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import type { SessionSchedule } from '@hapi/protocol/schemas'
 
 import type { StoredMessage } from './types'
 import { decodeMessageContent, encodeMessageContent, truncateOversizedMessageContent } from './contentCodec'
@@ -1335,14 +1336,14 @@ export function countMessages(db: Database, sessionId: string): number {
     return row?.count ?? 0
 }
 
-/** Count uninvoked local messages scheduled for a future time (session list indicator). */
-export function countFutureScheduledLocalMessages(
+/** Summarize future queued local messages for one session. */
+export function getFutureSessionSchedule(
     db: Database,
     sessionId: string,
     now: number
-): number {
-    const row = prepareCached(db, `
-        SELECT COUNT(*) AS count
+): SessionSchedule {
+    return prepareCached(db, `
+        SELECT COUNT(*) AS futureScheduledMessageCount, MIN(scheduled_at) AS nextScheduledAt
         FROM messages
         WHERE session_id = ?
           AND invoked_at IS NULL
@@ -1350,8 +1351,7 @@ export function countFutureScheduledLocalMessages(
           AND scheduled_at IS NOT NULL
           AND scheduled_at > ?
           AND delivery_state = 'queued'
-    `).get(sessionId, now) as { count: number } | undefined
-    return row?.count ?? 0
+    `).get(sessionId, now) as SessionSchedule
 }
 
 /** Batch variant for GET /sessions — one query for all session IDs in a namespace. */

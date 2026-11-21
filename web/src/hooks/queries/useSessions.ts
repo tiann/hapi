@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { compareSessionSummaries, mergeReadState } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
-import type { SessionsResponse, SessionSummary } from '@/types/api'
+import type { SessionSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { beginInitialSessionSchedules, isNewerSessionListEvent, reconcileSessionSchedule, type CachedSessionsResponse } from '@/lib/sessionSchedule'
 import { reconcileAttachedJobsFromCache } from './reconcileAttachedJobs'
 
 export type UseSessionsOptions = {
@@ -22,23 +23,45 @@ export function useSessions(api: ApiClient | null, options: UseSessionsOptions =
             if (!api) {
                 throw new Error('API unavailable')
             }
-            const response = await api.getSessions()
-            // SSE may have delivered newer input while this GET was in flight.
-            // Retain its monotonic ordering clock, not deleted rows or stale data.
-            const current = queryClient.getQueryData<SessionsResponse>(queryKeys.sessions)
+            const initialSchedules = queryClient.getQueryData(queryKeys.sessions) === undefined
+                ? beginInitialSessionSchedules(queryClient)
+                : undefined
+            const response = await api.getSessions().finally(initialSchedules?.close)
+            const current = queryClient.getQueryData<CachedSessionsResponse>(queryKeys.sessions)
             const cached = new Map(current?.sessions.map(s => [s.id, s]))
-            const withClocks: SessionsResponse = {
-                ...response,
-                sessions: response.sessions.map(session => {
-                    const prior = cached.get(session.id)
-                    return { ...session,
-                        lastUserMessageAt: Math.max(prior?.lastUserMessageAt ?? 0, session.lastUserMessageAt ?? 0) || undefined,
-                        contentRevision: Math.max(prior?.contentRevision ?? 0, session.contentRevision ?? 0),
-                        readState: mergeReadState(prior?.readState, session.readState)
-                    }
-                }).sort(compareSessionSummaries)
+            const sessions: CachedSessionsResponse['sessions'] = response.sessions.map(session => {
+                const prior = cached.get(session.id)
+                cached.delete(session.id)
+                const reconciled = reconcileSessionSchedule(session, response.sessionScheduleCursor, prior)
+                return {
+                    ...reconcileSessionSchedule(
+                        reconciled,
+                        reconciled.sessionScheduleEventId ?? response.sessionScheduleCursor,
+                        initialSchedules?.take(session.id, response.sessionScheduleCursor)
+                    ),
+                    lastUserMessageAt: Math.max(prior?.lastUserMessageAt ?? 0, session.lastUserMessageAt ?? 0) || undefined,
+                    contentRevision: Math.max(prior?.contentRevision ?? 0, session.contentRevision ?? 0),
+                    readState: mergeReadState(prior?.readState, session.readState)
+                }
+            })
+            // Only rows inserted after this snapshot can legitimately be missing from it.
+            for (const session of cached.values()) {
+                if (isNewerSessionListEvent(session.sessionListInsertionEventId, response.sessionScheduleCursor)) {
+                    sessions.push(session)
+                }
             }
-            return reconcileAttachedJobsFromCache(withClocks, current)
+            sessions.sort(compareSessionSummaries)
+            if (initialSchedules?.needsRecovery()) {
+                const initialQuery = queryClient.getQueryCache().find({ queryKey: queryKeys.sessions, exact: true })
+                // Wait for TanStack to commit this response before recovering, or it joins the initial GET.
+                setTimeout(() => {
+                    const query = queryClient.getQueryCache().find({ queryKey: queryKeys.sessions, exact: true })
+                    if (query === initialQuery && query?.state.status === 'success' && query.state.fetchStatus === 'idle') {
+                        void queryClient.invalidateQueries({ queryKey: queryKeys.sessions, exact: true })
+                    }
+                }, 0)
+            }
+            return reconcileAttachedJobsFromCache({ ...response, sessions }, current)
         },
         enabled: Boolean(api) && (options.enabled ?? true),
     })

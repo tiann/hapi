@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { Hono } from 'hono'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { Store } from '../../store'
-import { SyncEngine, type Machine } from '../../sync/syncEngine'
+import { SyncEngine, type Machine, type SyncEvent } from '../../sync/syncEngine'
 import { RpcRegistry } from '../../socket/rpcRegistry'
 import type { WebAppEnv } from '../middleware/auth'
 import { createCodexDesktopRoutes, getDarwinCodexOpenArgs, importSelectedCodexSessions, type CodexImportedMessageContent } from './codexDesktop'
@@ -1047,16 +1047,20 @@ describe('Codex Desktop import routes', () => {
         const engineSession = store.sessions.getOrCreateSession('engine-session', { codexSessionId: 'codex-thread-1' }, {}, 'default')
         store.messages.addMessage(storedSession.id, { type: 'text', text: 'first stored message' }, 'stored-1')
         store.messages.addMessage(storedSession.id, { type: 'text', text: 'second stored message' }, 'stored-2')
-        store.messages.addMessage(engineSession.id, { type: 'text', text: 'engine-only message' }, 'engine-1')
+        const scheduledAt = Date.now() + 60_000
+        store.messages.addMessage(engineSession.id, { type: 'text', text: 'engine-only message' }, 'engine-1', scheduledAt)
+        const eventsBeforeDelete: SyncEvent[] = []
+        const events: SyncEvent[] = []
         const engine = {
             getSessionsByNamespace: () => [engineSession],
             transferAttachedJobs: (fromSessionId: string, toSessionId: string) => {
                 store.sessionJobs.transfer(fromSessionId, toSessionId)
             },
             deleteSession: async (sessionId: string) => {
+                eventsBeforeDelete.push(...events)
                 store.sessions.deleteSession(sessionId, 'default')
             },
-            handleRealtimeEvent: () => {},
+            handleRealtimeEvent: (event: SyncEvent) => { events.push(event) },
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             }
@@ -1081,6 +1085,10 @@ describe('Codex Desktop import routes', () => {
             const sessions = store.sessions.getSessionsByNamespace('default')
             expect(sessions.map((session) => session.id)).toEqual([storedSession.id])
             expect(store.messages.getAllMessages(storedSession.id)).toHaveLength(3)
+            expect(eventsBeforeDelete).toContainEqual({
+                type: 'session-schedule-updated',
+                sessionId: storedSession.id
+            })
         } finally {
             store.close()
         }

@@ -1,10 +1,11 @@
 import { createElement, type ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, renderHook } from '@testing-library/react'
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
 import type { SessionsResponse, SessionSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { useSSE } from '../useSSE'
 import { useSessions } from './useSessions'
 
 afterEach(cleanup)
@@ -40,3 +41,180 @@ it('does not let a delayed REST snapshot undo newer user input from SSE', async 
     expect(data.sessions.map(s => s.id)).toEqual(['a', 'b'])
     expect(data.sessions[0]!.lastUserMessageAt).toBe(300)
 })
+
+it.each([
+    ['matching scope', 'epoch:2:ns', 'epoch:3:ns', 0],
+    ['different epoch', 'epoch:2:ns', 'older-epoch:3:ns', 1],
+    ['different namespace', 'epoch:2:ns', 'epoch:3:other-ns', 1]
+])('reconciles a delayed scheduled-message snapshot with %s', async (_case, snapshotCursor, eventId, expectedCount) => {
+    const client = new QueryClient()
+    const session = row('scheduled', 100)
+    client.setQueryData(queryKeys.sessions, { sessions: [session], sessionScheduleCursor: snapshotCursor })
+    let resolve!: (response: SessionsResponse) => void
+    const api = { getSessions: () => new Promise<SessionsResponse>(done => { resolve = done }) } as unknown as ApiClient
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const { result } = renderHook(() => useSessions(api, { enabled: false }), { wrapper })
+    await act(async () => {
+        const pending = result.current.refetch()
+        // A cancellation restored the prior visible values after the hub took this snapshot.
+        client.setQueryData(queryKeys.sessions, {
+            sessions: [{ ...session, sessionScheduleEventId: eventId }],
+            sessionScheduleCursor: snapshotCursor
+        })
+        resolve({
+            sessions: [{ ...session, futureScheduledMessageCount: 1, nextScheduledAt: 200 }],
+            sessionScheduleCursor: snapshotCursor
+        })
+        await pending
+    })
+    expect(client.getQueryData<SessionsResponse>(queryKeys.sessions)?.sessions[0]).toMatchObject({
+        futureScheduledMessageCount: expectedCount,
+        nextScheduledAt: expectedCount ? 200 : null
+    })
+})
+
+it.each([false, true])('retains an SSE-inserted row across an older list snapshot (scheduled: %s)', async (scheduled) => {
+    let receive: (event: object, eventId: string) => void = () => { throw new Error('No event stream') }
+    vi.stubGlobal('EventSource', class {
+        onmessage: ((event: MessageEvent<string>) => void) | null = null
+        constructor() {
+            receive = (event, eventId) => this.onmessage?.(new MessageEvent('message', {
+                data: JSON.stringify(event), lastEventId: eventId
+            }))
+        }
+        close() {}
+    })
+    const client = new QueryClient()
+    const initial = row('existing', 100)
+    client.setQueryData(queryKeys.sessions, {
+        sessions: [initial, row('removed', 50)],
+        sessionScheduleCursor: 'epoch:1:ns'
+    })
+    let resolve!: (response: SessionsResponse) => void
+    const api = { getSessions: () => new Promise<SessionsResponse>(done => { resolve = done }) } as unknown as ApiClient
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const { result, unmount } = renderHook(() => {
+        useSSE({ enabled: true, token: 'test', baseUrl: 'http://hub.test', scope: 'global', subscription: { all: true }, onEvent: () => {} })
+        return useSessions(api, { enabled: false })
+    }, { wrapper })
+    const read = () => client.getQueryData<SessionsResponse>(queryKeys.sessions)!.sessions
+    const future = { futureScheduledMessageCount: 1, nextScheduledAt: 1_000 }
+    const added = {
+        ...row('new', 200), namespace: 'default', seq: 0, thinkingAt: 0, agentState: null
+    }
+    try {
+        await act(async () => {
+            const pending = result.current.refetch()
+            receive({ type: 'session-added', sessionId: added.id, data: added }, 'epoch:3:ns')
+            if (scheduled) {
+                receive({
+                    type: 'message-received', sessionId: added.id,
+                    message: { id: 'prompt', seq: 1, localId: 'local-prompt', content: {}, createdAt: 200, invokedAt: null, scheduledAt: 1_000 },
+                    sessionSchedule: future
+                }, 'epoch:4:ns')
+            }
+            expect(read()[0]).toMatchObject({
+                id: added.id, ...(scheduled ? future : { futureScheduledMessageCount: 0, nextScheduledAt: null })
+            })
+            resolve({ sessions: [initial], sessionScheduleCursor: 'epoch:2:ns' })
+            await pending
+        })
+        expect(read().map(session => session.id)).toEqual([added.id, initial.id])
+        expect(read()[0]).toMatchObject(scheduled ? future : { futureScheduledMessageCount: 0, nextScheduledAt: null })
+
+        await act(async () => {
+            const pending = result.current.refetch()
+            resolve({ sessions: [initial], sessionScheduleCursor: 'epoch:5:ns' })
+            await pending
+        })
+        expect(read().map(session => session.id)).toEqual([initial.id])
+    } finally {
+        unmount()
+        vi.unstubAllGlobals()
+    }
+})
+
+it.each(['matched', 'incomparable', 'absent', 'both', 'missing patch', 'mixed invalidations'] as const)(
+    'reconciles schedule events from the initial list request (%s)',
+    async (scenario) => {
+        let receive: (event: object, eventId: string) => void = () => { throw new Error('No event stream') }
+        vi.stubGlobal('EventSource', class {
+            onmessage: ((event: MessageEvent<string>) => void) | null = null
+            constructor() {
+                receive = (event, eventId) => this.onmessage?.(new MessageEvent('message', {
+                    data: JSON.stringify(event), lastEventId: eventId
+                }))
+            }
+            close() {}
+        })
+        const client = new QueryClient()
+        let resolve!: (response: SessionsResponse) => void
+        const getSessions = vi.fn(() => new Promise<SessionsResponse>(done => { resolve = done }))
+        const api = { getSessions } as unknown as ApiClient
+        const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+        const { unmount } = renderHook(() => {
+            useSSE({ enabled: true, token: 'test', baseUrl: 'http://hub.test', scope: 'global', subscription: { all: true }, onEvent: () => {} })
+            return useSessions(api)
+        }, { wrapper })
+        try {
+            const pending = client.getQueryCache().find({ queryKey: queryKeys.sessions })!.promise!
+            await act(async () => {
+                const events = [['due', 'epoch:3:ns'], ['stale', 'epoch:1:ns']]
+                if (scenario === 'incomparable' || scenario === 'both') events.push(['due', 'epoch:4:other'])
+                if (scenario === 'absent' || scenario === 'both') events.push(['missing', 'epoch:5:ns'])
+                for (const [id, cursor] of events) {
+                    receive({
+                        type: 'session-schedule-updated', sessionId: id,
+                        sessionSchedule: { futureScheduledMessageCount: 0, nextScheduledAt: null }
+                    }, cursor)
+                }
+                if (scenario === 'missing patch' || scenario === 'mixed invalidations') {
+                    receive({ type: 'session-schedule-updated', sessionId: 'stale' }, 'epoch:6:ns')
+                }
+                if (scenario === 'mixed invalidations') {
+                    receive({ type: 'messages-invalidated', sessionId: 'stale' }, 'epoch:7:ns')
+                    receive({ type: 'session-updated', sessionId: 'stale', data: { active: true } }, 'epoch:8:ns')
+                    receive({ type: 'session-updated', sessionId: 'stale' }, 'epoch:9:ns')
+                    receive({
+                        type: 'session-schedule-updated', sessionId: 'missing',
+                        sessionSchedule: { futureScheduledMessageCount: 0, nextScheduledAt: null }
+                    }, 'epoch:10:ns')
+                }
+                // Give a queued invalidation time to join the still-pending initial request.
+                await new Promise(done => setTimeout(done, 25))
+                resolve({
+                    sessionScheduleCursor: 'epoch:2:ns',
+                    sessions: ['due', 'stale', 'foreign'].map(id => ({
+                        ...row(id, 100), futureScheduledMessageCount: 1, nextScheduledAt: 1_000
+                    }))
+                })
+                await pending
+            })
+            const sessions = client.getQueryData<SessionsResponse>(queryKeys.sessions)!.sessions
+            expect(sessions.find(session => session.id === 'due'))
+                .toMatchObject({ futureScheduledMessageCount: 0, nextScheduledAt: null })
+            expect(sessions.filter(session => session.id !== 'due').map(session => session.futureScheduledMessageCount))
+                .toEqual([1, 1])
+            if (scenario !== 'matched') {
+                await waitFor(() => expect(getSessions).toHaveBeenCalledTimes(2))
+                const recovery = client.getQueryCache().find({ queryKey: queryKeys.sessions })!.promise!
+                await act(async () => {
+                    resolve({
+                        sessions: sessions.map(session => session.id === 'stale'
+                            ? { ...session, futureScheduledMessageCount: 0, nextScheduledAt: null }
+                            : session),
+                        sessionScheduleCursor: 'epoch:11:ns'
+                    })
+                    await recovery
+                })
+                expect(client.getQueryData<SessionsResponse>(queryKeys.sessions)?.sessions.find(session => session.id === 'stale'))
+                    .toMatchObject({ futureScheduledMessageCount: 0, nextScheduledAt: null })
+            }
+            await act(async () => { await new Promise(done => setTimeout(done, 25)) })
+            expect(getSessions).toHaveBeenCalledTimes(scenario === 'matched' ? 1 : 2)
+        } finally {
+            unmount()
+            vi.unstubAllGlobals()
+        }
+    }
+)

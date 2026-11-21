@@ -853,22 +853,31 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
 
     for (const source of sessionStates.slice(1)) {
         latestActivity = Math.max(latestActivity, source.updatedAt)
-        for (const message of source.storedMessages) {
-            const comparableKey = getComparableStoredMessageKey(message)
-            if (knownKeys.has(comparableKey)) {
-                continue
-            }
+        let scheduleChanged = false
+        try {
+            for (const message of source.storedMessages) {
+                const comparableKey = getComparableStoredMessageKey(message)
+                if (knownKeys.has(comparableKey)) {
+                    continue
+                }
 
-            const copied = options.store.messages.copyMessageToSession(canonical.sessionId, {
-                content: message.content,
-                createdAt: message.createdAt,
-                localId: message.localId,
-                invokedAt: message.invokedAt,
-                scheduledAt: message.scheduledAt
-            })
-            knownKeys.add(comparableKey)
-            appendedMessages.push(copied)
-            latestActivity = Math.max(latestActivity, copied.invokedAt ?? copied.createdAt)
+                const copied = options.store.messages.copyMessageToSession(canonical.sessionId, {
+                    content: message.content,
+                    createdAt: message.createdAt,
+                    localId: message.localId,
+                    invokedAt: message.invokedAt,
+                    scheduledAt: message.scheduledAt
+                })
+                knownKeys.add(comparableKey)
+                appendedMessages.push(copied)
+                scheduleChanged ||= copied.scheduledAt != null && copied.invokedAt === null
+                latestActivity = Math.max(latestActivity, copied.invokedAt ?? copied.createdAt)
+            }
+        } finally {
+            // Copies are durable even if copying a later row or deleting the source fails.
+            if (scheduleChanged) {
+                engine?.handleRealtimeEvent({ type: 'session-schedule-updated', sessionId: canonical.sessionId })
+            }
         }
 
         // Transfer outliving jobs before CASCADE delete (store refuses running jobs).

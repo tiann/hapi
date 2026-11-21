@@ -2793,6 +2793,45 @@ describe('sessions routes', () => {
         expect(body.sessions.map((s) => s.id)).toEqual(['mid-active'])
     })
 
+    it('returns the schedule cursor captured before reading schedule aggregates', async () => {
+        const session = createSession({ id: 'scheduled-session' })
+        const calls: string[] = []
+        const engine = {
+            getSessionsByNamespace: () => [session],
+            getFutureScheduledMessageCounts: () => {
+                calls.push('count')
+                return new Map([[session.id, 2]])
+            },
+            getNextScheduledAtBySessionIds: () => {
+                calls.push('min')
+                return new Map([[session.id, 100]])
+            },
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => 1
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine, {
+            getSessionScheduleCursor: (namespace) => {
+                expect(namespace).toBe('default')
+                calls.push('cursor')
+                queueMicrotask(() => calls.push('yield'))
+                return 'epoch:42:namespace'
+            }
+        }))
+
+        const response = await app.request('/api/sessions')
+        expect(response.status).toBe(200)
+        expect(await response.json()).toMatchObject({
+            sessionScheduleCursor: 'epoch:42:namespace',
+            sessions: [{ id: session.id, futureScheduledMessageCount: 2, nextScheduledAt: 100 }]
+        })
+        expect(calls).toEqual(['cursor', 'count', 'min', 'yield'])
+    })
+
     it('allocates attachedJob watermark before reading jobs (SSE race)', async () => {
         const session = createSession({ id: 'session-watermark' })
         const callOrder: string[] = []

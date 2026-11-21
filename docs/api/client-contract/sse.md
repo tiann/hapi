@@ -124,6 +124,7 @@ Hub-side delivery (`SSEManager.shouldSend`):
 | `connection-changed` | the connection itself |
 | `heartbeat` | every connection |
 | `toast` | every **visible** connection in the namespace, regardless of filter (no `id`, never replayed) |
+| `session-schedule-updated` | `all=true` connections |
 | `message-received`, `scheduled-matured` | `all=true` connections + matching `sessionId` connections |
 | `session-added` / `session-updated` / `session-removed` / `session-ended` / `messages-invalidated` / `messages-consumed` / `messages-indeterminate` / `messages-requeued` / `message-cancelled` | `all=true` connections + matching `sessionId` connections |
 | `machine-updated`, `machine-agy-models-updated` | `all=true` connections + matching `machineId` connections |
@@ -143,21 +144,28 @@ Schema: `SyncEventSchema` in `shared/src/schemas.ts` (discriminated on `type`). 
 | `session-added` | `sessionId`, `data?: unknown` | Handle exactly like `session-updated` (the reference client shares the branch): a full `Session` upserts; anything else falls back to refetching the session list. |
 | `session-updated` | `sessionId`, `data?: Session \| SessionPatch` | See [Versioned patch algorithm](#versioned-patch-algorithm). |
 | `session-removed` | `sessionId` | Drop the session from the list, drop its detail cache, clear its message window. |
-| `message-received` | `sessionId`, `message: DecryptedMessage` | Ingest into the message window; advance the tail cursor (see [pagination](./pagination.md)). Also fired for the caller's own send (the localId echo). |
+| `message-received` | `sessionId`, `message: DecryptedMessage`, `sessionSchedule?` | Ingest into the message window; advance the tail cursor (see [pagination](./pagination.md)). Also fired for the caller's own send (the localId echo). |
 | `messages-invalidated` | `sessionId`; rewind may also include `reason: 'rewind'` and `truncateFromLocalId` | Message history changed **structurally** (rewind, fork, import, clear). For a rewind, retain only the known prefix through the client boundary before tail-syncing; for every other invalidation, discard the whole window and run a fresh tail sync. Global scope: refetch the session list. |
-| `scheduled-matured` | `sessionId` | A scheduled message became due and was handed to the agent. Refetch list/queue indicators. |
+| `session-schedule-updated` | `sessionId`, `sessionSchedule?` | Update the web list indicator independently of delivery, for example when a held prompt becomes due or a merge copies it into another session. |
+| `scheduled-matured` | `sessionId`, `sessionSchedule?` | A scheduled message became due and was handed to the agent. The web updates its list indicator from the optional schedule fields (see below). |
 | `session-ended` | `sessionId`, `reason?: 'completed'\|'terminated'\|'error'\|'handoff'\|'cleared'` | Session lifecycle signal (the `session-updated` flow still carries the state change). |
 | `machine-updated` | `machineId`, `data?: Machine \| MachinePatch \| null` | Full `Machine`: upsert (remove when `active:false`). `null`: machine removed. Patch `{active?, activeAt?, updatedAt?}`: `active:false` ⇒ remove, otherwise refetch machines. `data` absent ⇒ refetch. |
 | `machine-agy-models-updated` | `machineId` | The machine's `agy models` listing changed on a background re-check. Refetch `GET /api/machines/:id/agy-models` for that machine (answered from the machine's cache; it starts no `agy` run and produces no further event). Emitted when the re-check changes what that route would answer — a different listing, or a sign-in warning that appeared or cleared — never for the machine's first listing. |
 | `toast` | `data: {title, body, sessionId, url}` | Show as in-app toast/banner. Only delivered to visible connections (see [Visibility](#visibility)). |
-| `messages-consumed` | `sessionId`, `localIds: string[]`, `invokedAt: number` | The agent consumed queued user messages: stamp `invokedAt`, flip status to `sent`, remove from the queued bar. |
-| `messages-indeterminate` | `sessionId`, `localIds: string[]` | A native dispatch/queue mutation has an unknown outcome. Keep the row uninvoked, show an explicit Retry/Cancel resolution, and do not auto-replay it. Shared-engine Retry/Cancel can remain unavailable until reconciliation proves the outcome. |
-| `messages-requeued` | `sessionId`, `localIds: string[]` | An explicit Retry restored delivery to the normal queue. Clear the indeterminate marker. |
-| `message-cancelled` | `sessionId`, `messageId`, `localId?` | A queued message was cancelled: remove the row (match by `messageId` **or** `localId`). |
+| `messages-consumed` | `sessionId`, `localIds: string[]`, `invokedAt: number`, `sessionSchedule?` | The agent consumed queued user messages: stamp `invokedAt`, flip status to `sent`, remove from the queued bar. |
+| `messages-indeterminate` | `sessionId`, `localIds: string[]`, `sessionSchedule?` | A native dispatch/queue mutation has an unknown outcome. Keep the row uninvoked, show an explicit Retry/Cancel resolution, and do not auto-replay it. Shared-engine Retry/Cancel can remain unavailable until reconciliation proves the outcome. |
+| `messages-requeued` | `sessionId`, `localIds: string[]`, `sessionSchedule?` | An explicit Retry restored delivery to the normal queue. Clear the indeterminate marker. |
+| `message-cancelled` | `sessionId`, `messageId`, `localId?`, `sessionSchedule?` | A queued message was cancelled: remove the row (match by `messageId` **or** `localId`). |
 | `heartbeat` | `data?: {timestamp}` | Feed the staleness watchdog. No other action. **Carries no `id`.** |
 | `connection-changed` | `data?: {status, subscriptionId?, resume?: 'ok'\|'gap'}` | Handshake; see [Handshake and resume](#handshake-and-resume). Store `subscriptionId` for visibility reporting. **Carries no `id`.** |
 
 ---
+
+## Scheduled-message list updates
+
+The optional `sessionSchedule` object contains `futureScheduledMessageCount: number` and `nextScheduledAt: number | null` for the affected session. A `message-received` event can carry it when the message has `scheduledAt`.
+
+The web compares the event ID with the list response's `sessionScheduleCursor` and any later schedule event already applied to the row. Compare sequence numbers only within the same hub epoch and namespace. A newer event updates the row. An older or duplicate event in the same scope is ignored. A delayed REST snapshot preserves a newer cached schedule from the same scope. While the first list request is pending, the web buffers schedule events and applies only matching events newer than that first snapshot. The web requests one fresh list after the first request settles if a buffered event has an incomparable cursor or no row in the response, or if an SSE event requested a list invalidation during the initial fetch. It also preserves any still-cached row inserted by a full session event newer than that snapshot, using the insertion event ID. If the epoch or namespace differs, the REST snapshot wins and an incomparable incoming event triggers a list refetch. A missing or invalid schedule patch, missing cursor, or missing row also falls back to a list refetch.
 
 ## Versioned patch algorithm
 
