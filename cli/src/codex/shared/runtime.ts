@@ -50,6 +50,10 @@ function rejoinThreadParams(params: Record<string, unknown>): Record<string, unk
     // subscribers have disconnected. Rejoin the already accepted settings.
     return { threadId: params.threadId, excludeTurns: params.excludeTurns, initialTurnsPage: params.initialTurnsPage };
 }
+const NATIVE_INPUT_METHODS = new Set([
+    'turn/start', 'turn/steer', 'review/start', 'thread/compact/start',
+    'thread/realtime/start', 'thread/realtime/appendAudio', 'thread/realtime/appendText', 'thread/realtime/appendSpeech'
+]);
 function requiresTierAdmission(root: SharedCodexRoot, tier: unknown, downgraded: boolean, explicitTier?: boolean): boolean {
     const metadata = root.session.getMetadata();
     return downgraded || tier === 'ultrafast' || metadata?.codexTierConfirmationPending === true
@@ -495,7 +499,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const initializing = pendingAdmission.has(string(params.threadId) ?? '');
         const tierPending = initializing || queueRoot?.needsTierConfirmation;
         const canCancelQueue = request.method === 'thread/queue/delete' && queueRoot && !initializing;
-        if (tierPending && (request.method === 'turn/start' || request.method === 'turn/steer' || queueMutation && !canCancelQueue)) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
+        // Opening or editing an active goal can immediately start a native turn.
+        const goalCanRun = request.method === 'thread/goal/set' && params.status !== 'paused' && params.status !== 'complete';
+        if (tierPending && (NATIVE_INPUT_METHODS.has(request.method ?? '') || goalCanRun || queueMutation && !canCancelQueue)) {
+            throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
+        }
         if (tierPending && request.method === 'thread/fork') throw new Error('Confirm the service tier in settings before forking this conversation.');
         if (initializing && request.method === 'thread/settings/update') throw new Error('Codex thread initialization is pending. Retry settings when the thread is ready.');
         if (queueRoot && request.method === 'turn/start') {

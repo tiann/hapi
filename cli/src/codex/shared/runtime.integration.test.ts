@@ -1005,7 +1005,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
         const configure = (tier?: string) => writeFile(join(ch, 'config.toml'), [
             'model = "gpt-6-astra"', 'model_provider = "mock"', ...(tier ? [`service_tier = "${tier}"`] : []),
-            '[features]', 'ultrafast_mode = true', 'fast_mode = true',
+            '[features]', 'ultrafast_mode = true', 'fast_mode = true', 'goals = true',
             '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
             'wire_api = "responses"', 'requires_openai_auth = false', '[analytics]', 'enabled = false',
             '[feedback]', 'enabled = false', ''
@@ -1069,7 +1069,22 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
 
             client = new CodexAppServerClient({ endpoint: resumed.runtime.endpoint, token: resumed.runtime.token });
             await initializeSharedClient(client);
-            await expect(client.request('turn/start', { threadId, input: [{ type: 'text', text: 'Must wait' }] })).rejects.toThrow('tier confirmation');
+            const work: Array<[string, Record<string, unknown>]> = [
+                ['turn/start', { input: [{ type: 'text', text: 'Must wait' }] }],
+                ['review/start', { target: { type: 'uncommittedChanges' }, delivery: 'inline' }],
+                ['thread/goal/set', { objective: 'Must not start a goal' }],
+                ['thread/goal/set', { status: 'active' }],
+                ['thread/compact/start', {}],
+                ['thread/realtime/start', {}],
+                ['thread/realtime/appendText', { text: 'Must wait' }],
+            ];
+            for (const [method, params] of work) {
+                await expect(client.request(method, { threadId, ...params })).rejects.toThrow('tier confirmation');
+            }
+            await expect(client.request('thread/goal/set', { threadId, status: 'paused', objective: 'Paused test goal' }))
+                .resolves.toMatchObject({ goal: { status: 'paused' } });
+            await client.request('thread/goal/clear', { threadId });
+            await expect(client.request('thread/goal/get', { threadId })).resolves.toMatchObject({ goal: null });
             if (inherited) {
                 resumed.abort.abort(); await resumed.done;
                 discovery.mockRestore(); discovery = undefined;
