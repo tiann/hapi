@@ -39,7 +39,8 @@ import { VoiceErrorBanner } from '@/components/VoiceErrorBanner'
 import { RunnerVersionSkewBanner } from '@/components/RunnerVersionSkewBanner'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
-import { PwaUpdateProvider } from '@/lib/pwa-update-context'
+import { PwaUpdateProvider, usePwaUpdateContext } from '@/lib/pwa-update-context'
+import { getSafeLocalStorage, recordHubWebBuildId, shouldCheckSwUpdateForHubHealth } from '@/lib/swStaticCache'
 import { ToastProvider, useAddToast } from '@/lib/toast-context'
 import { getNotificationClickHref, NOTIFICATION_CLICK_ACK_TYPE } from '@/lib/notificationClick'
 import type { SyncEvent } from '@/types/api'
@@ -80,26 +81,54 @@ function AppInner() {
     const matchRoute = useMatchRoute()
     const router = useRouter()
     const addToast = useAddToast()
+    const { checkForUpdates } = usePwaUpdateContext()
+    const healthRequestSeqRef = useRef(0)
 
-    useEffect(() => {
-        let cancelled = false
-        setTitleSuggestionAvailable(false)
-        if (!api) return () => { cancelled = true }
+    const refreshHubHealth = useCallback((options?: { resetOnError?: boolean }) => {
+        const requestSeq = ++healthRequestSeqRef.current
+        if (!api) {
+            setTitleSuggestionAvailable(false)
+            return
+        }
+        if (options?.resetOnError) {
+            setTitleSuggestionAvailable(false)
+        }
 
         void api.getHealth()
             .then((health) => {
-                if (!cancelled) {
-                    setTitleSuggestionAvailable(health.capabilities?.titleSuggestion === true)
+                if (healthRequestSeqRef.current !== requestSeq) {
+                    return
+                }
+                setTitleSuggestionAvailable(health.capabilities?.titleSuggestion === true)
+                const appVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
+                const storage = getSafeLocalStorage()
+                if (shouldCheckSwUpdateForHubHealth({
+                    baseUrl,
+                    windowOrigin: window.location.origin,
+                    appVersion,
+                    health,
+                    storage,
+                })) {
+                    void checkForUpdates().then((succeeded) => {
+                        if (succeeded) {
+                            recordHubWebBuildId(storage, health.webBuildId)
+                        }
+                    })
                 }
             })
             .catch(() => {
-                if (!cancelled) setTitleSuggestionAvailable(false)
+                if (options?.resetOnError && healthRequestSeqRef.current === requestSeq) {
+                    setTitleSuggestionAvailable(false)
+                }
             })
+    }, [api, baseUrl, checkForUpdates])
 
+    useEffect(() => {
+        refreshHubHealth({ resetOnError: true })
         return () => {
-            cancelled = true
+            healthRequestSeqRef.current += 1
         }
-    }, [api])
+    }, [refreshHubHealth])
 
     useEffect(() => {
         const tg = getTelegramWebApp()
@@ -272,6 +301,9 @@ function AppInner() {
 
         const isFirstConnect = isFirstConnectRef.current
         const invalidationKeys = getAppSseResyncQueryKeys(info, isFirstConnect)
+        if (!isFirstConnect) {
+            refreshHubHealth()
+        }
 
         // The hub replayed every event missed during the gap, so the caches
         // are already consistent - the full refetch below would only re-download

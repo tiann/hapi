@@ -231,7 +231,8 @@ export default defineConfig({
                 // installations instead of surviving worker updates forever.
                 dontCacheBustURLsMatching: /^assets\/(?!fonts\/)/,
                 // Optional syntax grammars are cached after use, not during PWA installation.
-                globIgnores: ['**/shiki-*.js'],
+                // The worker reads grammar URLs from the manifest for migration.
+                // It filters them out before registering the installation precache.
                 // The SPA entry contains the complete multi-agent control surface.
                 // Keep it available offline after adding Pi history import instead
                 // of silently dropping the entry chunk from the PWA precache.

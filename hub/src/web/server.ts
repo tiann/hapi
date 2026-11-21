@@ -3,10 +3,11 @@ import { compress } from 'hono/compress'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, statSync, readdirSync, readFileSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
 import { getConfiguration } from '../configuration'
-import { FOLLOW_SESSION_REDIRECTS_HEADER, PROTOCOL_VERSION } from '@hapi/protocol'
+import { APP_VERSION, FOLLOW_SESSION_REDIRECTS_HEADER, PROTOCOL_VERSION } from '@hapi/protocol'
 import { buildGeminiLiveSetupMessage, QWEN_REALTIME_MODEL } from '@hapi/protocol/voice'
 import { getProviderEnvironment } from '../config/providerCredentials'
 import { readTitleProviderConfig } from '../sync/titleSuggestion'
@@ -308,6 +309,68 @@ function serveEmbeddedAsset(
     })
 }
 
+function hashFileBestEffort(hash: ReturnType<typeof createHash>, filePath: string): void {
+    try {
+        hash.update(readFileSync(filePath))
+    } catch {
+        // Ignore missing/unreadable files when computing best-effort build IDs.
+    }
+}
+
+function computeWebBuildId(options: {
+    embeddedAssetMap: Map<string, EmbeddedWebAsset> | null
+    distDir?: string
+    relayMode?: boolean
+}): string | null {
+    if (options.relayMode) {
+        return null
+    }
+
+    if (options.embeddedAssetMap) {
+        const indexHtml = options.embeddedAssetMap.get('/index.html')
+        if (!indexHtml) {
+            return null
+        }
+        const hash = createHash('sha256')
+        hash.update(APP_VERSION)
+        for (const path of [...options.embeddedAssetMap.keys()].sort()) {
+            hash.update('\0')
+            hash.update(path)
+        }
+        hashFileBestEffort(hash, indexHtml.sourcePath)
+        const swAsset = options.embeddedAssetMap.get('/sw.js')
+        if (swAsset) {
+            hashFileBestEffort(hash, swAsset.sourcePath)
+        }
+        return hash.digest('hex').slice(0, 12)
+    }
+
+    const { distDir, indexHtmlPath } = options.distDir
+        ? { distDir: options.distDir, indexHtmlPath: join(options.distDir, 'index.html') }
+        : findWebappDistDir()
+
+    if (!existsSync(indexHtmlPath)) {
+        return null
+    }
+
+    const hash = createHash('sha256')
+    hash.update(APP_VERSION)
+    hashFileBestEffort(hash, indexHtmlPath)
+    hashFileBestEffort(hash, join(distDir, 'sw.js'))
+    try {
+        const assetsDir = join(distDir, 'assets')
+        if (existsSync(assetsDir)) {
+            for (const entry of readdirSync(assetsDir).sort()) {
+                hash.update('\0')
+                hash.update(entry)
+            }
+        }
+    } catch {
+        // Best-effort asset directory fingerprint.
+    }
+    return hash.digest('hex').slice(0, 12)
+}
+
 export function createWebApp(options: {
     getSyncEngine: () => SyncEngine | null
     getSseManager: () => SSEManager | null
@@ -366,16 +429,37 @@ export function createWebApp(options: {
         }
     })
 
+    const buildDir = options.distDir ?? findWebappDistDir().distDir
+    let buildMarker: string | undefined
+    let webBuildId = computeWebBuildId(options)
+    function refreshDiskBuildId() {
+        if (options.embeddedAssetMap || options.relayMode) return
+        const marker = ['index.html', 'sw.js', 'assets'].map(name => {
+            const stat = statSync(join(buildDir, name), { throwIfNoEntry: false, bigint: true })
+            return stat ? `${stat.ino}:${stat.ctimeNs}:${stat.size}` : ''
+        }).join('|')
+        if (marker !== buildMarker) {
+            webBuildId = computeWebBuildId(options)
+            buildMarker = marker
+        }
+    }
+
     // Health check endpoint (no auth required).
     // Capabilities are additive so older clients can ignore unknown fields.
-    app.get('/health', (c) => c.json({
-        status: 'ok',
-        protocolVersion: PROTOCOL_VERSION,
-        capabilities: {
-            workGraph: true,
-            titleSuggestion: readTitleProviderConfig() !== null
-        }
-    }))
+    app.get('/health', (c) => {
+        refreshDiskBuildId()
+        c.header('Cache-Control', 'no-store')
+        return c.json({
+            status: 'ok',
+            version: APP_VERSION,
+            ...(webBuildId ? { webBuildId } : {}),
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: {
+                workGraph: true,
+                titleSuggestion: readTitleProviderConfig() !== null
+            }
+        })
+    })
 
     app.route('/cli', createCliRoutes(options.getSyncEngine))
 
@@ -479,6 +563,7 @@ from GitHub Pages instead of through the relay tunnel.
             }
 
             if (isAssetsPath(c.req.path)) {
+                c.header('Cache-Control', 'no-store')
                 return c.notFound()
             }
 
@@ -492,6 +577,7 @@ from GitHub Pages instead of through the relay tunnel.
             }
 
             if (isAssetsPath(c.req.path)) {
+                c.header('Cache-Control', 'no-store')
                 return c.notFound()
             }
 
@@ -546,6 +632,7 @@ from GitHub Pages instead of through the relay tunnel.
 
         const response = await serveDistStatic(c, next)
         if (!response && !c.finalized && isAssetsPath(c.req.path)) {
+            c.header('Cache-Control', 'no-store')
             return c.notFound()
         }
         return response
@@ -558,6 +645,7 @@ from GitHub Pages instead of through the relay tunnel.
         }
 
         if (isAssetsPath(c.req.path)) {
+            c.header('Cache-Control', 'no-store')
             return c.notFound()
         }
 

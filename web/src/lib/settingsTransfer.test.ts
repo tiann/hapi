@@ -16,6 +16,9 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi.push.disabled',
     'hapi.push.vapidKey',
     'hapi-sidebar-width',
+    'hapi-static-',
+    'hapi:static-cache-version',
+    'hapi:hub-web-build',
     // Trust grant: an imported file must not be able to allow link schemes
     'hapi-allowed-schemes',
     // Data, drafts, history, last-used values
