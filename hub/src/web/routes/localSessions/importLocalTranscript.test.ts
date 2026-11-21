@@ -248,6 +248,7 @@ describe('generic local import', () => {
             flavor: 'codex',
             codexSessionId: 'thread-1',
             codexSourceSessionId: 'thread-1',
+            codexPreserveNativeTier: true,
             lifecycleState: 'imported'
         })
         expect(metadata.archivedBy).toBeUndefined()

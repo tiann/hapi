@@ -387,6 +387,9 @@ export function runLocalImportSync(options: {
                             ? { importState: buildImportState(source, transcript, machine.id, 'importing', startedAt) }
                             : {})
                     })
+                    if (source.flavor === 'codex' && request.launch?.serviceTier === undefined) {
+                        metadata.codexPreserveNativeTier = true
+                    }
                     stored = store.sessions.getOrCreateSession(
                         source.match.strategy === 'contentPrefix'
                             ? randomUUID()

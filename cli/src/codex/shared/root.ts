@@ -834,7 +834,7 @@ export class SharedCodexRoot {
     private async completeTierConfirmation(operationId = ++this.tierOperationCounter): Promise<void> {
         if (!this.isCurrentTierOperation(operationId)) return;
         this.confirmedTierOperation = operationId;
-        this.confirmedTierValue = this.settingsNative.serviceTier;
+        this.confirmedTierValue = this.hasConfirmedStandardTier ? 'default' : this.settingsNative.serviceTier;
         const paused = this.tierConfirmationPending;
         const metadata = this.session.getMetadata();
         const confirmedTier = this.serviceTierExplicit ? this.settings.serviceTier ?? undefined : undefined;
@@ -937,8 +937,10 @@ export class SharedCodexRoot {
             const latestTier = this.confirmedTierValue;
             try {
                 const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
+                const matchesConfirmedTier = snapshot.serviceTier === latestTier
+                    || latestTier === 'default' && snapshot.serviceTier === null && this.confirmedNativeStandardReset;
                 if (!this.closed && !this.stopping && this.confirmedTierOperation === latestConfirmation && this.settingsRevision === revision
-                    && snapshot.serviceTier !== undefined && snapshot.serviceTier !== latestTier) {
+                    && snapshot.serviceTier !== undefined && !matchesConfirmedTier) {
                     this.pauseTierConfirmation(latestConfirmation);
                 }
             } catch {

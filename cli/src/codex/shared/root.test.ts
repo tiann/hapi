@@ -2127,14 +2127,14 @@ it('keeps Web Standard recovery visible if the tier metadata is acknowledged aft
     expect(f.sessionReady).toHaveBeenCalledTimes(1);
 });
 
-it.each(['default', 'priority'])('keeps newer Standard unless a delayed lost reply snapshot reports %s', async serviceTier => {
+it.each(['default', null, 'priority'])('reconciles delayed lost reply if newer Standard is reported as %s', async serviceTier => {
     const f = await fixture({ bindTier: 'default' });
     await f.root.activate();
     const prepared = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
     await f.root.applySettings({ serviceTier: 'standard' });
     vi.spyOn(f.root.client, 'request').mockResolvedValueOnce({ model: 'mock', serviceTier });
     await f.root.recoverLostNativeTurn(prepared.params, true, prepared.previousTier, prepared.generation);
-    expect(f.root.needsTierConfirmation).toBe(serviceTier !== 'default');
+    expect(f.root.needsTierConfirmation).toBe(serviceTier === 'priority');
     expect(f.root.hasConfirmedStandardTier).toBe(true);
 });
 

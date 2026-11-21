@@ -5587,13 +5587,14 @@ it.each(['ultrafast', 'standard'])('retains explicit %s on re-import of an inher
     } finally { engine.stop() }
 })
 
-it('omits tier overrides across repeated Web resumes of a native import', async () => {
+it.each([undefined, 'standard', 'fast'])('resumes an inactive Codex import with saved tier intent %s', async savedTier => {
     const store = new Store(':memory:')
     const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
     try {
         const session = engine.getOrCreateSession('native-import-tier', {
             path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
             codexSessionId: 'native-tier', codexSourceSessionId: 'source-tier', codexImportedAt: null,
+            ...(savedTier === undefined ? { codexPreserveNativeTier: true } : {}),
         }, null, 'default')
         engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.36.5' }, null, 'default')
         engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
@@ -5603,6 +5604,15 @@ it('omits tier overrides across repeated Web resumes of a native import', async 
             engine.handleSessionAlive({ sid: session.id, time: Date.now() })
             engine.handleSessionReady({ sid: session.id, time: Date.now() })
             return { type: 'success', sessionId: session.id }
+        }
+        if (savedTier !== undefined) {
+            // Older imports persisted the explicit choice in the session
+            // column before the runner had ever published a heartbeat.
+            expect(store.sessions.setSessionServiceTier(session.id, savedTier, 'default')).toBe(true)
+            ;(engine as any).sessionCache.refreshSession(session.id)
+            expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
+            expect(tiers).toEqual([savedTier])
+            return
         }
         for (const serviceTier of ['fast', 'standard']) {
             engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier })

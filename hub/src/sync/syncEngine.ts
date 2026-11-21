@@ -2557,7 +2557,7 @@ export class SyncEngine {
             const updated = this.store.sessions.updateSessionMetadata(childId,
                 { ...child.metadata!, codexSessionId: attempt.nativeSessionId,
                     codexServiceTierExplicit: attempt.nativeServiceTier ? true : source.metadata?.codexServiceTierExplicit,
-                    codexPreserveNativeTier: this.codexUsesNativeTier(source.metadata) ? true : undefined
+                    codexPreserveNativeTier: this.codexUsesNativeTier(source) ? true : undefined
                 }, child.metadataVersion, namespace, { touchUpdatedAt: false })
             if (updated.result !== 'success') throw new Error('Failed to bind native fork to its child')
             if (attempt.nativeServiceTier) {
@@ -4296,16 +4296,18 @@ export class SyncEngine {
         this.releaseSessionEnumerations(sessionId)
     }
 
-    private codexUsesNativeTier(metadata: Session['metadata']): boolean {
+    private codexUsesNativeTier(session: Pick<Session, 'metadata' | 'serviceTier'>): boolean {
+        const { metadata, serviceTier } = session
         return metadata?.codexServiceTierExplicit === undefined
-            && (metadata?.codexPreserveNativeTier === true || Boolean(metadata?.codexSourceSessionId))
+            && (metadata?.codexPreserveNativeTier === true
+                || Boolean(metadata?.codexSourceSessionId) && serviceTier == null && metadata?.codexConfirmedServiceTier === undefined)
     }
 
     private codexResumeTier(session: Pick<Session, 'metadata' | 'serviceTier'>): string | undefined {
         const metadata = session.metadata
         const pending = metadata?.codexPendingServiceTier
         if (pending === undefined && (metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined
-            || metadata?.codexServiceTierExplicit === false || this.codexUsesNativeTier(metadata))) return undefined
+            || metadata?.codexServiceTierExplicit === false || this.codexUsesNativeTier(session))) return undefined
         // Native-only effective tiers are restored by Codex, outside the
         // HAPI runner's selectable service-tier overrides.
         const tier = SessionServiceTierRequestSchema.shape.serviceTier.safeParse(pending ?? metadata?.codexConfirmedServiceTier ?? session.serviceTier)
