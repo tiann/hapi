@@ -4570,8 +4570,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             }).backgroundCommands;
             expect(bgEntries).toEqual([
                 expect.objectContaining({
-                    callId: expect.stringMatching(/^call-wakeup-bg-1#/),
-                    taskId: `${acpSessionId}/task-7`
+                    callId: expect.stringMatching(/^call-wakeup-bg-1#/)
                 })
             ]);
             expect(client.sendClaudeSessionMessage.mock.calls.map(([msg]) => msg)).toContainEqual(
@@ -4748,7 +4747,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             h.notify(bgCall('call-w-1', 'sleep 9'));
             h.append(bgRows(2, 'sleep 9', `${acp}/task-7`));
             await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(1));
-            expect(h.bgEntries()[0]).toMatchObject({ callId: expect.stringMatching(/^call-w-1#/), taskId: `${acp}/task-7` });
+            expect(h.bgEntries()).toEqual([{ callId: expect.stringMatching(/^call-w-1#/) }]);
             await h.finish();
         });
 
@@ -4774,7 +4773,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.finish();
         });
 
-        it('keeps a preempted wakeup command and the next turn command on their own task ids', async () => {
+        it('keeps a preempted wakeup command out of the next turn task id binding', async () => {
             const acp = 'conv-live-preempt-both';
             const h = startLive(acp, (n, notify) => {
                 if (n === 1) { turnRows(acp); return; }
@@ -4796,7 +4795,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.ready();
             await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(2));
             const byCall = (prefix: string) => h.bgEntries().find((e) => e.callId.startsWith(prefix));
-            expect(byCall('call-w-4#')?.taskId).toBe(`${acp}/task-7`);
+            expect(byCall('call-w-4#')?.taskId).toBeUndefined();
             expect(byCall('call-t2#')?.taskId).toBe(`${acp}/task-8`);
             await h.finish();
         });
@@ -4839,7 +4838,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.finish();
         });
 
-        it('binds a preempted wakeup command to its own task id after late rows of the previous prompt', async () => {
+        it('never gives a preempted wakeup command a task id from late rows of the previous prompt', async () => {
             const acp = 'conv-live-late-rows';
             const h = startLive(acp, (n, notify) => {
                 if (n === 1) { turnRows(acp); return; }
@@ -4861,7 +4860,8 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             h.queue.push('next', { permissionMode: 'always-proceed' }, 'msg-2');
             await h.ready();
             await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(1));
-            expect(h.bgEntries()[0]).toMatchObject({ callId: expect.stringMatching(/^call-w-5#/), taskId: `${acp}/task-7` });
+            expect(h.bgEntries()).toEqual([expect.objectContaining({ callId: expect.stringMatching(/^call-w-5#/) })]);
+            expect(h.bgEntries()[0]!.taskId).toBeUndefined();
             await h.finish();
         });
 
@@ -4892,7 +4892,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.ready();
             await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(2));
             const byCall = (prefix: string) => h.bgEntries().find((e) => e.callId.startsWith(prefix));
-            expect(byCall('call-a#')?.taskId).toBe(`${acp}/task-7`);
+            expect(byCall('call-a#')?.taskId).toBeUndefined();
             expect(byCall('call-b#')?.taskId).toBe(`${acp}/task-8`);
             await h.finish();
         });
@@ -4920,6 +4920,78 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.finish();
         });
 
+        it('never gives a prompt command the task id of a wakeup whose rows flush after the handler swap', async () => {
+            const acp = 'conv-live-rows-after';
+            const h = startLive(acp, (n, notify) => {
+                if (n === 1) { turnRows(acp); return; }
+                notify(bgCall('call-b3', 'sleep 8'));
+                h.append([
+                    ...bgRows(2, 'sleep 9', `${acp}/task-7`, false),
+                    { step_index: 5, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'next' },
+                    { step_index: 6, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 8"' } }] },
+                    { step_index: 7, source: 'MODEL', type: 'RUN_COMMAND', status: 'RUNNING', content: `Tool is running as a background task with task id: ${acp}/task-8` },
+                    { step_index: 8, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'OK' }
+                ]);
+            }, {}, null, (method) => {
+                if (method !== 'session/set_model') return;
+                h.notify({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '' } });
+                setTimeout(() => h.notify(bgCall('call-a3', 'sleep 9')), 3);
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(2));
+            const byCall = (prefix: string) => h.bgEntries().find((e) => e.callId.startsWith(prefix));
+            expect(byCall('call-a3#')?.taskId).toBeUndefined();
+            expect(byCall('call-b3#')?.taskId).toBe(`${acp}/task-8`);
+            await h.finish();
+        });
+
+        it('keeps a parked wakeup command and the command approved after reattach apart', async () => {
+            const acp = 'conv-live-parked';
+            const h = startLive(acp, (n, notify) => {
+                if (n === 1) { turnRows(acp); return; }
+                notify(bgCall('call-b4', 'sleep 8'));
+                h.append([
+                    { step_index: 6, source: 'MODEL', type: 'RUN_COMMAND', status: 'RUNNING', content: `Tool is running as a background task with task id: ${acp}/task-8` },
+                    { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'done' }
+                ]);
+            }, { reactiveToolParkMs: 40 });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.notify(bgCall('call-a4', 'sleep 9'));
+            h.append([
+                ...bgRows(2, 'sleep 9', `${acp}/task-7`, false),
+                { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 8"' } }] }
+            ]);
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(2));
+            const byCall = (prefix: string) => h.bgEntries().find((e) => e.callId.startsWith(prefix));
+            expect(byCall('call-a4#')?.taskId).toBeUndefined();
+            expect(byCall('call-b4#')?.taskId).toBeUndefined();
+            await h.finish();
+        });
+
+        it('settles a registered wakeup command from its live completion by call id', async () => {
+            const acp = 'conv-live-complete';
+            const h = startLive(acp, () => { turnRows(acp); });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.notify(bgCall('call-c5', 'sleep 9'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`));
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(1));
+            h.client.sendAgentMessage.mockClear();
+            h.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'call-c5', status: 'completed', rawOutput: { output: 'Command output:\nDONE', exit_code: 0 } });
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(0));
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('call-c5#'))).toHaveLength(1);
+            await h.finish();
+        });
+
         it('seals buffered wakeup text when the wakeup times out', async () => {
             const acp = 'conv-live-timeout';
             const h = startLive(acp, () => { turnRows(acp); }, { reactiveMaxIdleMs: 60 });
@@ -4933,7 +5005,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.finish();
         });
 
-        it('seals wakeup text and restarts command ordinals when the user stops a live wakeup', async () => {
+        it('seals wakeup text when the user stops a live wakeup and still registers the next wakeup command', async () => {
             const acp = 'conv-live-stop';
             const h = startLive(acp, () => { turnRows(acp); });
             h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
@@ -4949,7 +5021,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             h.notify(bgCall('call-w-3', 'sleep 9'));
             h.append(bgRows(10, 'sleep 9', `${acp}/task-9`));
             await vi.waitFor(() => expect(h.bgEntries().some((e) => e.callId.startsWith('call-w-3#'))).toBe(true));
-            expect(h.bgEntries().find((e) => e.callId.startsWith('call-w-3#'))?.taskId).toBe(`${acp}/task-9`);
+            expect(h.bgEntries().find((e) => e.callId.startsWith('call-w-3#'))?.taskId).toBeUndefined();
             await h.finish();
         });
     });

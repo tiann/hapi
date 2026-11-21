@@ -700,7 +700,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
                 if (abortController.signal.aborted) {
                     // Stop: nothing the wakeup left open may become a background task.
-                    if (this.liveIdleWakeups()) await this.settleLiveWakeup(null);
+                    if (this.liveIdleWakeups()) await this.settleLiveWakeup(false);
                     this.syncTranscriptCursor();
                     if (!this.liveIdleWakeups()) await this.advanceBackendCursor();
                     session.onThinkingChange(false);
@@ -743,7 +743,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     const live = this.liveIdleWakeups();
                     // The live stream already rendered this wakeup: settle it before the
                     // transcript conversion would mirror its commands as synthetic ones.
-                    if (live) await this.settleLiveWakeup((wakeupFirstStepIndex ?? 0) - 1);
+                    if (live) await this.settleLiveWakeup(true);
                     resolveAgyBackgroundTaskIds(
                         this.brainDir,
                         acpSessionId,
@@ -751,11 +751,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         wakeupFirstStepIndex !== undefined ? wakeupFirstStepIndex - 1 : undefined
                     );
                     this.reconcileRetainedAmbiguousCompletions(null);
-                    const converted = convertAgyReactiveSteps(
-                        acpSessionId,
-                        inspection.steps,
-                        this.backgroundCommands
-                    );
+                    // Live agy completes commands by call id: the conversion may settle
+                    // tracked ones but must not mirror the wakeup's own as synthetic.
+                    const tracked = live ? [...this.backgroundCommands] : this.backgroundCommands;
+                    const converted = convertAgyReactiveSteps(acpSessionId, inspection.steps, tracked);
+                    if (live) this.backgroundCommands.splice(0, Infinity, ...this.backgroundCommands.filter((entry) => tracked.includes(entry)));
                     if (!this.backgroundCommands.some((entry) => entry.synthetic)) {
                         this.retainedAmbiguousCompletions.length = 0;
                     }
@@ -1167,14 +1167,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     turnStartStepIndex
                 );
                 // Only rows from a pending autonomous `SYSTEM_MESSAGE` wakeup onward
-                // can belong to it; earlier rows are late-flushed steps from the
-                // already-completed previous turn.
-                const firstWakeupStep = !relaunched && baseAfterStep < turnStartStepIndex
+                // can be replayed into this prompt; earlier rows are late-flushed steps
+                // from the already-completed previous turn. Live prompts get no replay.
+                const firstWakeupStep = !relaunched && (!live || internalWakeup) && baseAfterStep < turnStartStepIndex
                     ? readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, baseAfterStep)
                         .find((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')
                     : undefined;
-                if (live) await this.settleLiveWakeup(turn.aborted ? null : (firstWakeupStep?.step_index ?? turnStartStepIndex + 1) - 1);
-                if (firstWakeupStep && !(live && !internalWakeup)) {
+                if (live) await this.settleLiveWakeup(!turn.aborted);
+                if (firstWakeupStep) {
                     commandWindowAfterStepIndex = Math.max(baseAfterStep, firstWakeupStep.step_index - 1);
                 }
                 turn.turnStartStepIndex = commandWindowAfterStepIndex;
@@ -1228,7 +1228,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (!turn.aborted && !this.backendLost) {
                 this.syncTurnTranscriptCursor(turn, turnStartStepIndex, internalWakeup ? commandWindowAfterStepIndex : undefined);
             }
-            this.closeBackgroundCommands(turn, commandWindowAfterStepIndex);
+            this.closeBackgroundCommands(turn, commandWindowAfterStepIndex, false, internalWakeup);
         } finally {
             if (turn.aborted) this.syncTranscriptCursor();
             this.questionLabels.clear();
@@ -1269,16 +1269,26 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
      * would spin, so it shows the command as running in the background; the
      * real result replaces this one when it comes.
      */
-    private closeBackgroundCommands(turn: AgyTurn, turnStartStepIndex: number, idle = false): void {
+    private closeBackgroundCommands(turn: AgyTurn, turnStartStepIndex: number, idle = false, internal = false): void {
         if (this.backendLost || (!idle && (turn.aborted || turn.stopReason !== 'end_turn'))) return;
         const openIds = [...turn.openCommands].sort((a, b) => {
             const ordA = turn.commandCallIds.indexOf(a);
             const ordB = turn.commandCallIds.indexOf(b);
             return (ordA >= 0 ? ordA : Number.MAX_SAFE_INTEGER) - (ordB >= 0 ? ordB : Number.MAX_SAFE_INTEGER);
         });
-        const turnSteps = openIds.length > 0 && this.acpSessionId
+        // Live agy completes a wakeup's commands by call id, so only a prompt turn's
+        // own commands are matched to task ids, and only to rows after its USER_INPUT
+        // (not yet flushed: left unmatched). The transcript window is never a timing guess.
+        const live = this.liveIdleWakeups();
+        let bindFrom: number | null = idle || (live && internal) ? null : turnStartStepIndex;
+        let turnSteps = bindFrom !== null && openIds.length > 0 && this.acpSessionId
             ? readAgyTranscriptStepsAfter(this.brainDir, this.acpSessionId, turnStartStepIndex)
             : [];
+        if (live && bindFrom !== null) {
+            const own = turnSteps.findIndex((step) => step.source === 'USER_EXPLICIT' && step.type === 'USER_INPUT');
+            turnSteps = own >= 0 ? turnSteps.slice(own) : [];
+            bindFrom = own >= 0 ? turnSteps[0]!.step_index : null;
+        }
         const taskIds = extractAgyBackgroundTaskIds(turnSteps);
         for (let idx = 0; idx < openIds.length; idx += 1) {
             const id = openIds[idx]!;
@@ -1287,12 +1297,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             const taskId = taskIds[ordinalInTurn];
             const existing = this.backgroundCommands.find((entry) => entry.callId === id);
             if (!existing) {
-                this.backgroundCommands.push({
-                    callId: id,
-                    afterStepIndex: turnStartStepIndex,
-                    ordinalInTurn,
-                    ...(taskId ? { taskId } : {})
-                });
+                this.backgroundCommands.push(bindFrom === null
+                    ? { callId: id }
+                    : { callId: id, afterStepIndex: bindFrom, ordinalInTurn, ...(taskId ? { taskId } : {}) });
             } else if (taskId && !existing.taskId) {
                 existing.taskId = taskId;
             }
@@ -1315,17 +1322,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     /**
      * A live wakeup ends: seal its text and close the commands it left running,
-     * which belong to the turn that still owns the handler. Null drops them (Stop).
+     * which belong to the turn that still owns the handler. Stop drops them.
      */
-    private async settleLiveWakeup(afterStepIndex: number | null): Promise<void> {
+    private async settleLiveWakeup(close: boolean): Promise<void> {
         await this.backend?.flushPendingMessageBuffers();
         const turn = this.idleTurn;
         this.idleTurn = null;
         if (!turn) return;
-        if (afterStepIndex !== null) this.closeBackgroundCommands(turn, afterStepIndex, true);
+        if (close) this.closeBackgroundCommands(turn, 0, true);
         turn.openCommands.clear();
-        turn.commandCallIds.length = 0;
-        turn.commandArrivalOrder.length = 0;
     }
 
     private liveIdleWakeups(): boolean {
@@ -1735,8 +1740,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (this.turn !== turn && this.idleTurn !== turn && this.liveIdleWakeups()) {
                     this.idleTurn = turn;
                     turn.openCommands.clear(); // a cancelled prompt's command is not this wakeup's
-                    turn.commandCallIds.length = 0;
-                    turn.commandArrivalOrder.length = 0;
                 }
                 turn.sawActivity = true;
                 turn.acknowledge();
