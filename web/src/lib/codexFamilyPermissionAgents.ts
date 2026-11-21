@@ -1,6 +1,8 @@
-import { CODEX_FAMILY_FLAVORS, type AgentFlavor, type CodexFamilyFlavor } from '@hapi/protocol'
+import { AGENT_FLAVORS, isCodexFamilyFlavor, type AgentFlavor } from '@hapi/protocol'
 
-export type CodexFamilyPermissionAgent = Exclude<CodexFamilyFlavor, 'grok'>
+const permissionAgents = AGENT_FLAVORS
+    .filter(isCodexFamilyFlavor)
+    .filter(flavor => flavor !== 'grok')
 
 /**
  * Codex-family flavors that use the shared create-form permission state.
@@ -8,10 +10,9 @@ export type CodexFamilyPermissionAgent = Exclude<CodexFamilyFlavor, 'grok'>
  * the family for tool-permission UI and uses separate create-form state for
  * its own mode catalog (default / auto / plan / bypassPermissions).
  */
-export const CODEX_FAMILY_PERMISSION_AGENTS: readonly CodexFamilyPermissionAgent[] =
-    CODEX_FAMILY_FLAVORS.filter(
-        (flavor): flavor is CodexFamilyPermissionAgent => flavor !== 'grok'
-    )
+export const CODEX_FAMILY_PERMISSION_AGENTS: Readonly<typeof permissionAgents> = permissionAgents
+
+export type CodexFamilyPermissionAgent = typeof CODEX_FAMILY_PERMISSION_AGENTS[number]
 
 export function usesCodexFamilyPermissionModes(
     flavor: string | null | undefined
