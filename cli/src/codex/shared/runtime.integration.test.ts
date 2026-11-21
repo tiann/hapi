@@ -639,9 +639,16 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 }
                 return originalRequest.call(this, method, params) as Promise<T>;
             });
-            extraSpies.push(abandonedMetadata);
+            const preparingAbandoned = vi.spyOn(SharedCodexRoot.prototype, 'prepare');
+            extraSpies.push(abandonedMetadata, preparingAbandoned);
             await expect(third.client.request('thread/resume', { threadId: abandoned.thread.id, excludeTurns: true })).rejects.toThrow('before archive');
             expect(third.runtime.sessions[abandonedSid].active).toBe(true);
+            const abandonedRoot = preparingAbandoned.mock.contexts.find((root): root is InstanceType<typeof SharedCodexRoot> =>
+                root instanceof SharedCodexRoot && root.session.sessionId === abandonedSid);
+            expect(abandonedRoot?.client.isInitialized()).toBe(true);
+            await abandonedRoot!.client.disconnect();
+            expect(abandonedRoot?.client.isInitialized()).toBe(false);
+            preparingAbandoned.mockRestore();
             await expect(runtimeControl(third.runtime, 'hapi/stopSession', abandonedSid)).resolves.toEqual({ stopped: true });
             abandonedMetadata.mockRestore();
             await vi.waitFor(() => expect(state.sessions.get(abandonedSid)?.dead).toBe(true));

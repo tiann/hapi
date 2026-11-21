@@ -190,7 +190,15 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const endOwnedThread = async (root: SharedCodexRoot, threadId: string, nativeArchive: boolean): Promise<void> => {
         if (ownedRoot(threadId) !== root || ending.has(root)) return;
         ending.add(root);
-        try { if (nativeArchive) await root.client.request('thread/archive', { threadId }); } catch (error) { ending.delete(root); throw error; }
+        try {
+            if (nativeArchive) {
+                // A retained binding may have lost its side connection before
+                // activation. Archive the same thread through the live control.
+                const client = root.client.isInitialized() ? root.client : control;
+                if (!client.isInitialized()) throw new Error('Codex is disconnected; retry archive after reconnect');
+                await client.request('thread/archive', { threadId });
+            }
+        } catch (error) { ending.delete(root); throw error; }
         roots.delete(threadId);
         retryableBindings.delete(threadId);
         resumingThreads.delete(threadId);
@@ -637,7 +645,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 const { threadId } = binding;
                 const root = ownedRoot(threadId);
                 if (!root || root.session.sessionId !== sid) throw new Error('Shared session not found');
-                if (method === 'hapi/stopSession') { await endOwnedThread(root, threadId, true); return { stopped: true }; }
+                if (method === 'hapi/stopSession') {
+                    await endOwnedThread(root, threadId, true);
+                    if (binding.active) throw new Error('Shared session archive is still in progress');
+                    return { stopped: true };
+                }
                 if (method === 'hapi/attach') {
                     if (roots.get(threadId) === root || retryableBindings.get(threadId)?.root === root) return { threadId };
                     throw new Error('Shared session not found');
