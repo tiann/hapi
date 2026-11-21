@@ -564,6 +564,39 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(state.sessions.get(pausedSid)?.messages).not.toContainEqual({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
             await second.client.request('thread/settings/update', { threadId: pausedFallback.thread.id, serviceTier: null });
             expect(state.sessions.get(pausedSid)?.metadata.codexTierConfirmationPending).toBe(false);
+            let archivedDuringTier: InstanceType<typeof SharedCodexRoot> | undefined;
+            let enterTier!: (root: InstanceType<typeof SharedCodexRoot>) => void;
+            let releaseTier!: () => void;
+            let releaseArchiveCleanup!: () => void;
+            const tierEntered = new Promise<InstanceType<typeof SharedCodexRoot>>(resolve => { enterTier = resolve; });
+            const heldTier = new Promise<void>(resolve => { releaseTier = resolve; });
+            const heldArchiveCleanup = new Promise<void>(resolve => { releaseArchiveCleanup = resolve; });
+            const confirmWhileArchiving = vi.spyOn(SharedCodexRoot.prototype, 'confirmStandardLaunch').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>) {
+                archivedDuringTier = this;
+                enterTier(this);
+                await heldTier;
+            });
+            const archiveCleanup = vi.spyOn(SharedCodexRoot.prototype, 'close').mockImplementation(async function(this: InstanceType<typeof SharedCodexRoot>, archived) {
+                if (this === archivedDuringTier) await heldArchiveCleanup;
+                return originalClose.call(this, archived);
+            });
+            extraSpies.push(confirmWhileArchiving, archiveCleanup);
+            const archivedLaunch = second.client.request('thread/start', { cwd, model: 'gpt-6.1-sol', serviceTier: 'ultrafast' });
+            const rejectedArchiveLaunch = expect(archivedLaunch).rejects.toThrow('archived during binding');
+            const archivedRoot = await tierEntered;
+            const archivedSid = archivedRoot.session.sessionId;
+            try {
+                await expect(runtimeControl(second.runtime, 'hapi/stopSession', archivedSid)).resolves.toEqual({ stopped: true });
+                releaseTier();
+                await rejectedArchiveLaunch;
+                expect(archivedRoot.isActivated).toBe(false);
+                expect(state.sessions.get(archivedSid)?.readySignals).toBe(0);
+                expect(second.runtime.sessions[archivedSid].active).toBe(false);
+            } finally { releaseTier(); releaseArchiveCleanup(); }
+            await vi.waitFor(() => expect(state.sessions.get(archivedSid)?.dead).toBe(true));
+            await vi.waitFor(() => expect(vi.mocked(notifyRunnerSessionStarted).mock.calls.filter(([sid]) => sid === archivedSid))
+                .toEqual([[archivedSid, expect.objectContaining({ lifecycleState: 'archived' })]]));
+            confirmWhileArchiving.mockRestore(); archiveCleanup.mockRestore();
             for (const path of ['gateway', 'web-fork']) {
                 const tierParams = { cwd, model: 'gpt-6-astra', serviceTier: 'ultrafast', config: { thread_unload_delay_secs: 0 } };
                 let tierThread = '';

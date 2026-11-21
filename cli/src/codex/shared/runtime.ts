@@ -199,6 +199,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await client.request('thread/archive', { threadId });
             }
         } catch (error) { ending.delete(root); throw error; }
+        root.stopAccepting();
         roots.delete(threadId);
         retryableBindings.delete(threadId);
         resumingThreads.delete(threadId);
@@ -289,6 +290,13 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
         const reserved = runtime.sessions[root.session.sessionId];
         if (reserved && reserved.threadId !== threadId) throw new Error('Codex retargeted a reserved thread');
+        const assertBindingActive = () => {
+            assertRunning();
+            const binding = runtime.sessions[root.session.sessionId];
+            if (!binding?.active || binding.threadId !== threadId || ownedRoot(threadId) !== root) {
+                throw new Error('Codex thread was archived during binding');
+            }
+        };
         if (resume || requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
         if (!reserved) await reserve(root, threadId);
         if (ending.has(root)) throw new Error('Codex thread was archived during binding');
@@ -333,6 +341,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 logger.debug('[Codex shared] tier confirmation pending', error);
             }
         }
+        assertBindingActive();
         if (resume) {
             resume.tierConfirmationPending = tierConfirmationPending;
             if (!tierConfirmationPending && (requestedUltrafast || downgraded) && root.hasConfirmedStandardTier) {
@@ -341,14 +350,17 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         }
         if (downgraded && standardConfirmed) root.session.sendSessionEvent({ type: 'message', message: ULTRAFAST_FALLBACK_NOTICE });
         await root.activate(initialOptions, serviceTierExplicit, tierConfirmationPending);
+        assertBindingActive();
         pendingAdmission.delete(threadId);
         await root.session.flush();
         await persist();
+        assertBindingActive();
         // The hub's view of the metadata is what the hub kept of it: a hub
         // without the field strips hostStartMarker, and the runner ignores an
         // untracked runner-started webhook that cannot prove its process
         // generation. The marker therefore comes from the local bootstrap.
         await notifyRunnerSessionStarted(root.session.sessionId, { ...(root.session.getMetadata() ?? root.bootstrap.metadata), hostStartMarker: root.bootstrap.metadata.hostStartMarker });
+        assertBindingActive();
     };
     const bindAccepted = async (reservation: Reservation, result: Record<string, unknown>): Promise<void> => {
         const nativeThreadId = string(record(result.thread).id);

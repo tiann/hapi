@@ -436,6 +436,7 @@ export class SharedCodexRoot {
         }
     }
     async activate(options: SharedLaunchOptions = {}, serviceTierExplicit?: boolean, deferInput = false): Promise<void> {
+        if (this.stopping) throw new Error('Codex execution is stopping');
         this.tierAdmissionPending = false;
         this.tierConfirmationPending = deferInput || this.tierConfirmationPending
             || !this.tierConfirmationResolved && this.session.getMetadata()?.codexTierConfirmationPending === true;
@@ -488,7 +489,7 @@ export class SharedCodexRoot {
     private alive(): void {
         this.publishSteering();
         this.publishPlan();
-        if (!this.closed) this.session.keepAlive(Boolean(this.currentTurn), undefined, this.settings);
+        if (!this.closed && !this.stopping) this.session.keepAlive(Boolean(this.currentTurn), undefined, this.settings);
     }
     private availablePlanId(): string | null {
         if (this.currentTurn || this.latestTurn?.status !== 'completed' || this.settings.collaborationMode !== 'plan'
@@ -1504,6 +1505,7 @@ export class SharedCodexRoot {
     }
     stopAccepting(): void {
         this.stopping = true; this.ready(); this.inputReady();
+        clearInterval(this.heartbeat);
         this.publishSteering();
         this.publishPlan();
         this.session.onReconnect(null); this.client.setTransportAbandonedHandler(null);
@@ -1517,7 +1519,7 @@ export class SharedCodexRoot {
     }
     close(archived: boolean): Promise<void> {
         return this.closing ??= (async () => {
-            this.stopAccepting(); this.closed = true; clearInterval(this.heartbeat);
+            this.stopAccepting(); this.closed = true;
             this.permissions?.close(); this.asyncQuestions?.close();
             await this.client.disconnect();
             if (this.host.attached) { await this.work.catch(() => {}); await Promise.allSettled([...this.controls]); }
