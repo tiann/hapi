@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CommitStrategy, RealtimeEvents, Scribe, type RealtimeConnection } from '@elevenlabs/client'
+import type { RealtimeConnection } from '@elevenlabs/client'
 import {
     ELEVENLABS_REALTIME_TRANSCRIPTION_MODEL,
     type TranscriptionMode,
@@ -192,6 +192,10 @@ export function useRealtimeDictation(config: {
         try {
             if (provider === 'elevenlabs') {
                 const { token } = await config.api.fetchRealtimeTranscriptionToken('elevenlabs', language, controller.signal)
+                if (operationRef.current !== operation) return
+                // The Scribe SDK only downloads when ElevenLabs dictation is
+                // actually started; other providers never pay for it.
+                const { CommitStrategy, RealtimeEvents, Scribe } = await import('@elevenlabs/client')
                 if (operationRef.current !== operation) return
                 elevenLabsActiveRef.current = true
                 elevenLabsFinalizedRef.current = false

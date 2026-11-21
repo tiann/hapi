@@ -368,7 +368,8 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('checkbox', { name: 'Show status summaries in chat' })).toBeInTheDocument()
         fireEvent.click(screen.getByRole('radio', { name: '简体中文' }))
         expect(localStorage.getItem('hapi-lang')).toBe('zh-CN')
-        expect(screen.getByText('选择是否让受支持的智能体输出状态摘要，以及是否在聊天中显示。')).toBeInTheDocument()
+        // The zh-CN dictionary is a lazy chunk now; wait for it to land.
+        expect(await screen.findByText('选择是否让受支持的智能体输出状态摘要，以及是否在聊天中显示。')).toBeInTheDocument()
     })
 
     it('explains and keeps summary generation separate from chat display', async () => {
