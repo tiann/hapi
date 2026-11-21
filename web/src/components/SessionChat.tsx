@@ -2791,7 +2791,7 @@ function SessionChatInner(props: SessionChatProps) {
                             agentFlavor === 'codex'
                                 && props.session.active
                                 && !controlledByUser
-                                && (props.session.metadata?.codexTierConfirmationPending === true || props.session.serviceTier === 'ultrafast' || props.session.serviceTier === 'fast'
+                                && (props.session.metadata?.codexTierConfirmationPending === true || props.session.serviceTier === 'ultrafast' || props.session.serviceTier === 'fast' || props.session.serviceTier === 'flex'
                                     || !codexModelsState.error && (codexModelAdvertisesFastTier(props.session.model, codexModelsState.models) || codexModelsState.catalogSource === 'session' && props.session.metadata?.codexProviderScopedCatalog === true && codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)))
                                 ? handleServiceTierChange
                                 : undefined

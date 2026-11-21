@@ -87,10 +87,14 @@ describe('getEffectiveCodexServiceTier', () => {
 })
 
 describe('getDisplayedCodexServiceTier', () => {
-    it('displays untouched and explicit non-fast tiers as standard', () => {
+    it('displays untouched and explicit Standard tiers as standard', () => {
         expect(getDisplayedCodexServiceTier(null)).toBe('standard')
         expect(getDisplayedCodexServiceTier(undefined)).toBe('standard')
         expect(getDisplayedCodexServiceTier('standard')).toBe('standard')
+    })
+
+    it('leaves native-only tiers unselected', () => {
+        expect(getDisplayedCodexServiceTier('flex')).toBeNull()
     })
 
     it('preserves the fast selection', () => {

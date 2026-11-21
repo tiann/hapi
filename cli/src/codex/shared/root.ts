@@ -35,6 +35,7 @@ type PreparedNativeTurn = {
     params: Record<string, unknown>;
     fallbackNotice?: string;
     previousTier: unknown;
+    previousTierSelectionRevision: number;
     previousModel: unknown;
     expectedModel?: string;
     ultrafastTarget?: UltrafastTarget;
@@ -109,6 +110,7 @@ export class SharedCodexRoot {
     private settings: RuntimeSettings = {};
     private settingsNative: Record<string, unknown> = {};
     private nativeSelectedServiceTier: unknown;
+    private nativeTierSelectionRevision = 0;
     private tierPublicationProtection?: 'fast' | 'ultrafast';
     private pendingUltrafastLaunchTarget?: UltrafastTarget;
     private modelProvider?: string;
@@ -584,6 +586,7 @@ export class SharedCodexRoot {
         // duplicate-write detection, separate from the effective tier.
         if ('serviceTier' in value && (!effective || value.serviceTier !== null)) {
             this.nativeSelectedServiceTier = value.serviceTier;
+            this.nativeTierSelectionRevision = this.settingsRevision;
         }
         if ('serviceTier' in value && value.serviceTier !== null) {
             this.confirmedNativeStandardReset = value.serviceTier === 'default';
@@ -1059,7 +1062,7 @@ export class SharedCodexRoot {
         const expectedModel = string(record(record(resolved.params.collaborationMode).settings).model) ?? string(resolved.params.model);
         const preserveUltrafast = this.serviceTierExplicit === true && (this.hasUltrafastTier || this.tierPublicationProtection === 'ultrafast');
         if (preserveUltrafast) this.tierPublicationProtection ??= 'ultrafast';
-        return { ...resolved, previousTier: this.settingsNative.serviceTier, previousModel: this.settingsNative.model, expectedModel,
+        return { ...resolved, previousTier: this.settingsNative.serviceTier, previousTierSelectionRevision: this.nativeTierSelectionRevision, previousModel: this.settingsNative.model, expectedModel,
             inheritedUltrafast: resolved.params.serviceTier === undefined && this.hasUltrafastTier && expectedModel !== undefined,
             preserveUltrafast, generation: ++this.tierOperationCounter };
     }
@@ -1124,7 +1127,7 @@ export class SharedCodexRoot {
     }
     /** Called only after native turn acceptance; a rejected input leaves intent unchanged. */
     async confirmNativeTurn(params: Record<string, unknown>, explicitTier: boolean, fallbackNotice?: string, operationId = ++this.tierOperationCounter,
-        inheritedUltrafast = false, ultrafastTarget?: UltrafastTarget): Promise<void> {
+        inheritedUltrafast = false, ultrafastTarget?: UltrafastTarget, previousTierSelectionRevision = this.nativeTierSelectionRevision): Promise<void> {
         const verifiedTierIntent = params.serviceTier !== undefined || ultrafastTarget !== undefined;
         const verifyUltrafast = params.serviceTier === 'ultrafast' || params.serviceTier === undefined
             && (inheritedUltrafast && !this.needsTierConfirmation || this.verifiesInheritedUltrafast(ultrafastTarget));
@@ -1183,10 +1186,8 @@ export class SharedCodexRoot {
                     if (!this.confirmedNativeStandardReset && !verifyUltrafast) this.serviceTierExplicit = false;
                 }
                 this.acceptSettings(snapshot, true);
-                if (verifyUltrafast && !this.hasUltrafastTier && !this.hasOtherNativeTier) {
-                    if (!await this.fallbackToStandard(deadline, operationId, target) && current()) {
-                        await this.confirmEffectiveUltrafast(deadline, operationId, { target });
-                    }
+                if (verifyUltrafast && !this.hasUltrafastTier) {
+                    await this.confirmEffectiveUltrafast(deadline, operationId, { target, firstSnapshot: snapshot, previousTierSelectionRevision });
                 } else if (!confirmsTier && model && snapshot.model !== model) throw new Error('Native turn settings are not confirmed');
                 if (!current()) return;
                 if (confirmsTier && (verifiedTierIntent || !this.needsTierConfirmation)) await this.completeTierConfirmation(operationId);
@@ -1352,8 +1353,8 @@ export class SharedCodexRoot {
     private isCurrentTierOperation(operationId: number): boolean {
         return operationId >= Math.max(this.confirmedTierOperation, this.pendingTierOperation, this.acceptedNativeTierOperation);
     }
-    private async fallbackToStandard(deadline: number, operationId: number, target: UltrafastTarget, onMutation?: () => void): Promise<boolean> {
-        const canWrite = () => this.isCurrentTierOperation(operationId) && !this.hasUltrafastTier && !this.hasOtherNativeTier
+    private async fallbackToStandard(deadline: number, operationId: number, target: UltrafastTarget, previousTierSelectionRevision: number, onMutation?: () => void): Promise<boolean> {
+        const canWrite = () => this.isCurrentTierOperation(operationId) && !this.hasUltrafastTier && !this.hasOtherNativeTierSince(previousTierSelectionRevision)
             && (target.model === undefined || this.settings.model === target.model)
             && (target.provider === undefined || this.modelProvider === undefined || this.modelProvider === target.provider);
         const confirmed = await this.writeNativeSettings({ threadId: this.threadId, serviceTier: null }, { serviceTier: null }, deadline, operationId, canWrite, onMutation);
@@ -1362,8 +1363,9 @@ export class SharedCodexRoot {
         return true;
     }
     private async confirmEffectiveUltrafast(deadline: number, operationId: number, {
-        requestedUltrafast = false, onMutation, pauseOnReadFailure = true, firstSnapshot, target
-    }: { requestedUltrafast?: boolean; onMutation?: () => void; pauseOnReadFailure?: boolean; firstSnapshot?: Record<string, unknown>; target: UltrafastTarget }): Promise<void> {
+        requestedUltrafast = false, onMutation, pauseOnReadFailure = true, firstSnapshot, target, previousTierSelectionRevision = 0
+    }: { requestedUltrafast?: boolean; onMutation?: () => void; pauseOnReadFailure?: boolean; firstSnapshot?: Record<string, unknown>;
+        target: UltrafastTarget; previousTierSelectionRevision?: number }): Promise<void> {
         // Settings notifications report selection; a loaded thread can still
         // filter Ultrafast using the feature state captured when it started.
         let fallbackDispatched = false;
@@ -1374,7 +1376,8 @@ export class SharedCodexRoot {
             const observed = attempt === 0 ? firstSnapshot : undefined;
             const snapshot = observed ?? record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline, true, shouldPause, operationId));
             if (!current()) throw new Error('Codex settings were superseded by a newer tier selection; refresh before retrying');
-            if (this.settingsRevision !== revision) continue;
+            if (this.settingsRevision !== revision || typeof snapshot.model !== 'string'
+                || snapshot.serviceTier !== null && typeof snapshot.serviceTier !== 'string') continue;
             if (!this.matchesUltrafastTarget(snapshot, target)) {
                 if (shouldPause()) this.pauseTierConfirmation(operationId, { retainConfirmedTier: true });
                 throw new UltrafastTargetChangedError();
@@ -1382,12 +1385,16 @@ export class SharedCodexRoot {
             if (!observed) this.acceptSettings(snapshot, true);
             if (snapshot.serviceTier === 'ultrafast' && this.settings.serviceTier === 'ultrafast') return;
             // A concurrent native client may have selected a different tier.
-            if (this.hasOtherNativeTier) {
+            if (this.hasOtherNativeTierSince(previousTierSelectionRevision)) {
+                if (snapshot.serviceTier === null) {
+                    if (shouldPause()) this.pauseTierConfirmation(operationId, { retainConfirmedTier: true });
+                    throw new Error('Codex reported a different tier selection without an effective tier. Select a service tier in settings to continue.');
+                }
                 if (requestedUltrafast) throw new Error('Codex settings were superseded by a newer tier selection; refresh before retrying');
                 return;
             }
             try {
-                if (await this.fallbackToStandard(deadline, operationId, target, () => {
+                if (await this.fallbackToStandard(deadline, operationId, target, previousTierSelectionRevision, () => {
                     fallbackDispatched = true;
                     onMutation?.();
                 })) return;
@@ -1404,9 +1411,9 @@ export class SharedCodexRoot {
             ? 'Codex settings changed during effective tier confirmation; confirm Standard in settings'
             : 'Codex settings changed during effective tier confirmation; refresh before retrying');
     }
-    private get hasOtherNativeTier(): boolean {
+    private hasOtherNativeTierSince(revision: number): boolean {
         const tier = fromCodexServiceTier(this.nativeSelectedServiceTier);
-        return tier != null && tier !== 'standard' && tier !== 'ultrafast';
+        return this.nativeTierSelectionRevision > revision && tier != null && tier !== 'standard' && tier !== 'ultrafast';
     }
     async confirmUltrafastLaunch(explicitTier = true): Promise<void> {
         if (this.pendingUltrafastLaunchTarget && !this.matchesUltrafastTarget(this.settingsNative, this.pendingUltrafastLaunchTarget)) {

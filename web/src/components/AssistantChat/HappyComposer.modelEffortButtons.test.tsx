@@ -261,20 +261,25 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(onServiceTierChange).toHaveBeenCalledWith('fast')
     })
 
-    it('leaves the recovery tier unselected and allows confirming Standard', () => {
+    it.each([
+        { serviceTier: null, tierConfirmationPending: true },
+        { serviceTier: 'flex', tierConfirmationPending: false }
+    ])('leaves $serviceTier unselected and allows confirming Standard', ({ serviceTier, tierConfirmationPending }) => {
         const onServiceTierChange = vi.fn()
         renderComposer('codex', {
             model: 'gpt-5.6',
             availableModelOptions: [{ value: 'gpt-5.6', label: 'GPT-5.6' }],
-            serviceTier: null,
-            tierConfirmationPending: true,
+            serviceTier,
+            tierConfirmationPending,
             fastAvailable: false,
+            ultrafastAvailable: true,
             onServiceTierChange
         })
         fireEvent.click(screen.getByRole('button', { name: 'GPT-5.6' }))
         const standard = screen.getByRole('button', { name: 'Standard' })
         expect(standard).toHaveAttribute('aria-pressed', 'false')
         expect(standard).toBeEnabled()
+        expect(screen.getByRole('button', { name: 'Ultrafast' })).toHaveAttribute('aria-pressed', 'false')
         fireEvent.click(standard)
         expect(onServiceTierChange).toHaveBeenCalledWith('standard')
     })

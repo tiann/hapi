@@ -76,11 +76,12 @@ export function getEffectiveCodexServiceTier(
 }
 
 /**
- * The persisted null tier means the user has not chosen an override. The
- * current two-option control still needs a visible selection, so display that
- * untouched state as Standard without changing the value sent to the backend.
+ * Show the untouched tier as Standard. A native-only tier has no matching
+ * option, but the user can still choose Standard to reset it.
  */
-export function getDisplayedCodexServiceTier(serviceTier?: string | null): 'standard' | 'fast' | 'ultrafast' {
-    if (serviceTier?.trim().toLowerCase() === 'ultrafast') return 'ultrafast'
-    return isFastServiceTier(serviceTier) ? 'fast' : 'standard'
+export function getDisplayedCodexServiceTier(serviceTier?: string | null): 'standard' | 'fast' | 'ultrafast' | null {
+    const tier = serviceTier?.trim().toLowerCase()
+    if (!tier || tier === 'standard' || tier === 'default') return 'standard'
+    if (tier === 'ultrafast') return 'ultrafast'
+    return isFastTierId(tier) ? 'fast' : null
 }

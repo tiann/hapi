@@ -2178,8 +2178,9 @@ it('does not reset a newer Fast selection that the effective snapshot filters be
         }
         return { ...f.native.settings, serviceTier: null } as never;
     });
-    await expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('superseded by a newer tier selection');
+    await expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('without an effective tier');
     expect(reads).toBe(2);
+    expect(f.root.needsTierConfirmation).toBe(true);
     expect(f.native.settings.serviceTier).toBe('priority');
     expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update'))
         .toEqual([['thread/settings/update', expect.objectContaining({ serviceTier: 'ultrafast' })]]);
@@ -3157,6 +3158,38 @@ it.each(['web', 'native', 'turn', 'web-model', 'native-model', 'turn-model'])('c
     expect(f.root.freshParams().serviceTier).toBe(modelOnly ? undefined : 'default');
     expect(f.metadata().codexServiceTierExplicit).toBe(!modelOnly);
     expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
+});
+
+it.each([false, true])('distinguishes cached Fast from a fresh competing selection when Ultrafast is filtered (fresh=%s)', async fresh => {
+    const f = await fixture({ bindTier: 'priority' });
+    await f.root.activate();
+    const turn = await f.root.prepareNativeTurn({ serviceTier: 'ultrafast' });
+    const original = f.root.client.request.bind(f.root.client);
+    f.native.settings = { ...f.native.settings, serviceTier: 'ultrafast' };
+    if (fresh) {
+        f.native.settings.serviceTier = 'priority';
+        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+        await f.drain();
+    }
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume' && f.native.settings.serviceTier !== 'default') {
+            return { model: 'mock', serviceTier: null, thread: structuredClone(f.native.thread) } as never;
+        }
+        return original(method, params);
+    });
+    await f.root.confirmNativeTurn(turn.params, true, turn.fallbackNotice, turn.generation, turn.inheritedUltrafast,
+        turn.ultrafastTarget, turn.previousTierSelectionRevision);
+
+    const standardWritten = request.mock.calls.some(([method, params]) => method === 'thread/settings/update'
+        && (params as { serviceTier?: unknown }).serviceTier === null);
+    expect(standardWritten).toBe(!fresh);
+    expect(f.root.needsTierConfirmation).toBe(fresh);
+    if (fresh) expect(f.metadata().codexPendingServiceTier).toBe('ultrafast');
+    else {
+        expect(f.root.hasConfirmedStandardTier).toBe(true);
+        expect(f.root.freshParams().serviceTier).toBe('default');
+        expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
+    }
 });
 
 it.each(['ultrafast', 'priority'])('rechecks a selected notification during native confirmation without replacing newer %s', async selected => {

@@ -208,6 +208,18 @@ it('shows inherited Fast until a keep-alive patch reports an empty effective tie
     view.rerender(shell(applySessionDetailPatch(session, patch)!, catalog, setTier, catalog, queryClient));
     expect(screen.getByTestId('effective-tier')).toHaveTextContent('none');
 });
+it('keeps Standard available on a Flex session without a tier catalog', async () => {
+    const catalog = vi.fn(async () => ({ success: true, models: [] }));
+    const session = { id: 'tier-session', active: true, model: 'mock', serviceTier: 'flex', metadata: {
+        flavor: 'codex', machineId: 'machine', startingMode: 'remote', capabilities: { concurrentClients: true }
+    } } as unknown as Session;
+    const setTier = vi.fn(async () => ({}));
+    render(shell(session, catalog, setTier));
+    const standard = await screen.findByRole('button', { name: 'Reset Standard / fast:false / ultra:false' });
+    expect(standard).toBeEnabled();
+    fireEvent.click(standard);
+    await waitFor(() => expect(setTier).toHaveBeenCalledWith('tier-session', 'standard'));
+});
 it('does not offer a tier control solely from an unverified owned Ultrafast catalog', async () => {
     const catalog = vi.fn(async () => ({ success: true, models: [{ id: 'gpt-6.2-sol', model: 'gpt-6.2-sol', serviceTiers: ['ultrafast'] }] }));
     const session = { id: 'tier-session', active: true, model: 'gpt-6.2-sol', serviceTier: 'standard', metadata: {
