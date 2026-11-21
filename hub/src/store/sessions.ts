@@ -44,6 +44,10 @@ function runInTransaction<T>(db: Database, operation: () => T): T {
 //     write-once-keep semantics. Mirror of pickExistingSessionMetadata
 //     in cli/src/agent/sessionFactory.ts.
 //
+//   - CONTRIBUTION_FIELDS: structured session↔PR links (externalRefs).
+//     Sparse resume/bootstrap writes must not wipe a prior primary PR
+//     association. tiann/hapi#1160 / PR #1161.
+//
 //   - ALERT_STATE_FIELDS: durable operator-facing alert state that must
 //     survive sparse metadata writes (e.g. archive). Without this,
 //     lastModelError (banner / amber dot / ack) vanishes when a write
@@ -87,9 +91,12 @@ const HUB_OWNED_METADATA_FIELDS = [
     'codexResumePending',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
-    'promptTitle'
+    'promptTitle',
+    'forkedFrom',
+    'conversationBranch'
 ] as const
 
+const CONTRIBUTION_FIELDS = ['externalRefs'] as const
 const ALERT_STATE_FIELDS = ['lastModelError'] as const
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -152,12 +159,13 @@ function preserveForkSummary(
     next: Record<string, unknown>,
     merged: Record<string, unknown> | null
 ): Record<string, unknown> | null {
-    // A fork's provisional title is Hub-generated. CLI bootstrap writes are
-    // sparse and historically drop it, leaving the child titled by its path.
-    // Explicit `summary: null` or a replacement summary still wins.
+    // A fork or branch's provisional title is Hub-generated. CLI bootstrap
+    // writes are sparse and historically drop it, leaving the child titled by
+    // its path. Explicit `summary: null` or a replacement summary still wins.
     if (next.summary !== undefined) return merged
     const summary = prior.summary
-    if (!isPlainObject(summary) || typeof summary.text !== 'string' || !summary.text.startsWith('Fork: ')) {
+    if (!isPlainObject(summary) || typeof summary.text !== 'string'
+        || !(summary.text.startsWith('Fork: ') || summary.text.startsWith('Branch: '))) {
         return merged
     }
     const result = merged ?? { ...next }
@@ -234,9 +242,17 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, PARSE_IDENTITY_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, ROUTING_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
+    merged = carryForwardIfMissing(prior, next, merged, CONTRIBUTION_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, ALERT_STATE_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, HUB_OWNED_METADATA_FIELDS)
     merged = preserveForkSummary(prior, next, merged)
+    // A stale CLI cache may still contain the pre-launch branch state. Once
+    // delivery succeeded, sparse/full CLI updates must not regress its outcome.
+    if (isPlainObject(prior.conversationBranch) && isPlainObject(next.conversationBranch)
+        && prior.conversationBranch.requestFingerprint === next.conversationBranch.requestFingerprint
+        && prior.conversationBranch.state === 'started') {
+        merged = { ...(merged ?? next), conversationBranch: prior.conversationBranch }
+    }
     merged = preserveCursorProtocolPair(prior, next, merged)
     merged = preserveModelErrorHubFields(prior, next, merged)
     return merged ?? next
@@ -529,7 +545,15 @@ export function updateSessionMetadata(
     metadata: unknown,
     expectedVersion: number,
     namespace: string,
-    options?: { touchUpdatedAt?: boolean; allowUnarchive?: boolean; allowTitleUpdate?: boolean; titleLocked?: boolean; inheritTitleLockFrom?: string }
+    options?: {
+        touchUpdatedAt?: boolean
+        allowUnarchive?: boolean
+        allowTitleUpdate?: boolean
+        /** Keep machine-spawn stub tag so adoptPreallocatedSession can still bind. */
+        preservePreallocation?: boolean
+        titleLocked?: boolean
+        inheritTitleLockFrom?: string
+    }
 ): VersionedUpdateResult<unknown | null> {
     const now = Date.now()
     const touchUpdatedAt = options?.touchUpdatedAt !== false
@@ -595,6 +619,7 @@ export function updateSessionMetadata(
             if (
                 result.result === 'success'
                 && !options?.allowTitleUpdate
+                && !options?.preservePreallocation
                 && isMachineSpawnPreallocatedStub(existing)
                 && !isHubArchivedSessionMetadata(merged)
             ) {

@@ -1,3 +1,7 @@
+---
+description: "Share one Codex app-server between the official Codex terminal UI and HAPI web and native clients, including usage limits and attaching to desktop runtimes."
+---
+
 # Codex shared sessions
 
 Codex **0.154.0 or newer**: the official terminal UI and HAPI Web / native
@@ -18,6 +22,83 @@ service. Reattaching uses the **same executable** as the running app-server, eve
 has since changed. A compatible runner is required when one is already running.
 Update CLI, Runner and Hub together: the Hub must preserve shared pending input
 on execution exit rather than applying the legacy session-end queue sweep.
+
+## Experimental external desktop bridge (macOS)
+
+An **owned** execution (`hapi codex`) and an **attached** worker can coexist.
+They are independent: the attached worker connects to an explicitly selected,
+externally owned app-server and never starts or stops that server. This path is
+off by default; starting HAPI or its Runner does not discover or adopt desktop
+threads.
+
+```bash
+# The desktop/owner must already expose a compatible WebSocket-over-Unix socket.
+hapi attach --socket /absolute/private/engine.sock --list
+hapi attach <native-thread-id> --socket /absolute/private/engine.sock
+# In another shell; this is the HAPI ID printed by attach, not the native ID:
+hapi detach <hapi-session-id>
+```
+
+`attach` is a **foreground worker**, not a launcher for the official App. The
+socket must belong to the current user, have owner-only permissions, and be in
+a same-user directory not writable by others. Official daemon-style symlinks
+are supported. TCP/remote endpoints and configuration/permission injection
+flags are rejected. The worker reads the server's actual `CODEX_HOME`; it does
+not use a different local engine as a fallback. Update CLI, Hub and Runner
+together; startup refuses a Hub that drops the attached identity marker.
+
+Only persistent user-root threads **already loaded in that external engine**
+are eligible. There is a loaded-thread preflight immediately before subscription;
+current native protocols do not offer an atomic "subscribe only if still loaded"
+operation, so an external unload racing that check is not fully fenced. HAPI
+does not intentionally cold-resume an unloaded desktop thread. A thread with an
+owned HAPI binding cannot be implicitly migrated into an attached binding; fork
+it in the external owner and attach the new thread instead.
+
+- Messages, native queue, explicit settings changes, approvals and questions
+  use the external engine. HAPI does **not** inject its system instructions,
+  MCP server, environment variables or default permission settings at attach.
+- Ctrl-C, `hapi detach`, and **End session** disconnect the HAPI worker only.
+  They do not interrupt the native turn, delete native queued input, archive the
+  native thread, or kill the App/server. **Stop** remains an explicit turn
+  interrupt. A native archive ends the bridge and archives its HAPI view.
+- Native transport loss ends the worker; it never launches a replacement
+  engine. Run `hapi attach` again after the owner has restored the thread.
+  Reattachment in the same HAPI home, Hub and auth namespace reuses the HAPI
+  session and projection identity. An inactive attached view cannot use
+  ordinary `hapi resume`, Runner resume-on-send, or an archived-history fork.
+- Terminal attachment and HAPI create/fork/rewind actions are unavailable for
+  these views. Create/fork/revert in the owning desktop, then attach explicitly.
+- A native revert notification or a changed history checkpoint freezes
+  the old HAPI view. Checkpoints fence observed turn IDs and seal completed
+  content, including changes missed while detached. Use
+  `hapi attach <native-id> --socket <path> --new-view` to explicitly
+  create a fresh HAPI projection; old transcripts/queues are not merged into it.
+  Unverifiable history/checkpoints fail closed rather than silently resetting.
+
+Private local state uses the existing runtime registry and native-store
+ownership directory, plus `$HAPI_HOME/codex-runtimes/attached-history` for history
+checkpoints. Only HAPI's local detach control endpoint is registered; the
+external PID is never recorded as owned. Native endpoints/tokens are not
+published in session metadata or SSE.
+
+**Acceptance boundary:** isolated native-protocol and CLI → Hub integration
+tests use blank homes and a local mock model; those automated tests alone are
+not GUI acceptance. On 2026-11-16, a separate manual desktop smoke test with
+ChatGPT App **26.1111.21308** (build 27194) and its bundled Codex
+**0.169.0-alpha.11.1** verified WebSocket initialization, desktop-origin messages
+mirrored into HAPI, HAPI-origin messages processed by the same engine, desktop
+messages after HAPI detached, and reattachment to the same HAPI session with
+detached-period history backfilled. The upgraded binary also passed all 12
+external-engine protocol and CLI → Hub integration tests. The GUI smoke test
+used an isolated App profile and a local Responses mock, without copying account
+credentials; production login, real-model requests and long-running desktop
+use remain unverified. The earlier App 26.908.31748 frontend startup failure
+did not recur in this upgraded test.
+
+This phase does **not** configure `launchctl`, login items, a production App
+launcher or automatic Runner attachment, and does not change your original App
+configuration. It requires a separately configured, compatible external endpoint.
 
 ## Lifecycle
 

@@ -3,6 +3,7 @@ import type {
     CopilotAgentMode,
     DecryptedMessage as ProtocolDecryptedMessage,
     Machine,
+    Metadata,
     RunnerState,
     Session,
     SessionSummary,
@@ -70,6 +71,7 @@ export type {
     SessionContentMatch,
     SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
+    ScratchlistSessionIdsResponse,
     SessionsResponse,
     SessionContentSearchResponse,
     SpawnResponse,
@@ -83,6 +85,11 @@ export type {
     AttachmentMetadata,
     BackgroundTask,
     CodexCollaborationMode,
+    ExternalRef,
+    GithubPrChecks,
+    GithubPrExternalRef,
+    GithubPrMerge,
+    GithubPrOpenState,
     CopilotAgentMode,
     Metadata,
     PermissionMode,
@@ -111,6 +118,8 @@ export type {
     HapiSessionExportWarning
 } from '@hapi/protocol/sessionExport'
 
+export type { ForkBoundary, ForkPreviewResponse } from '@hapi/protocol/forkBoundary'
+
 export type SessionMetadataSummary = {
     path: string
     host: string
@@ -130,10 +139,12 @@ export type SessionMetadataSummary = {
             rewindToMessage?: boolean
         }
     }
+    conversationBranch?: NonNullable<Session['metadata']>['conversationBranch']
     conversationHistoryPoints?: Record<string, true>
     conversationHistoryIndexes?: Record<string, number>
     conversationHistoryTurns?: Record<string, string>
     conversationHistoryEntryIds?: Record<string, string>
+    claudeRewind?: Metadata['claudeRewind']
     conversationHistoryDiverged?: boolean
     worktree?: WorktreeMetadata
 }
@@ -305,6 +316,43 @@ export type PiImportResult = {
 export type PiImportSessionsResponse = {
     success: boolean
     results: PiImportResult[]
+    machineId?: string
+    error?: string
+}
+
+export type ClaudeLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    messageCount?: number
+    hapiSessionId?: string
+}
+
+export type ClaudeLocalSessionsResponse = {
+    success: true
+    sessions: ClaudeLocalSessionSummary[]
+    machineId: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+export type ClaudeImportResult = {
+    claudeSessionId: string
+    hapiSessionId?: string
+    action?: 'created' | 'updated' | 'unchanged'
+    appended?: number
+    error?: { code: string; message: string }
+}
+
+export type ClaudeImportSessionsResponse = {
+    success: boolean
+    results: ClaudeImportResult[]
     machineId?: string
     error?: string
 }

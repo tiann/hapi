@@ -42,6 +42,10 @@ fragment = "1.8.5"
 # Per-app locales (B-M5a): AppCompatDelegate.setApplicationLocales back to
 # API 26 (appcompat 1.7.1, 2025-06, on Google Maven).
 appcompat = "1.7.1"
+# Passkeys (native RP ID hapi.run): Credential Manager 1.6.0 (stable,
+# Google Maven; kotlin-stdlib 2.1.20 metadata, readable by this Kotlin 2.1
+# build). play-services-auth backs passkeys on API < 34.
+credentials = "1.6.0"
 # Visual specimens (JVM screenshots, see README "Visual specimens"):
 # Robolectric 4.17 renders SDK 36 with native graphics; Roborazzi captures.
 robolectric = "4.17"
@@ -59,6 +63,8 @@ androidx-datastore-preferences = { group = "androidx.datastore", name = "datasto
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
 androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }
 androidx-lifecycle-process = { group = "androidx.lifecycle", name = "lifecycle-process", version.ref = "lifecycle" }
+androidx-credentials = { group = "androidx.credentials", name = "credentials", version.ref = "credentials" }
+androidx-credentials-play-services-auth = { group = "androidx.credentials", name = "credentials-play-services-auth", version.ref = "credentials" }
 
 # Compose (versions come from the BOM)
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }

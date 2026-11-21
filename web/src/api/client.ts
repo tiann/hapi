@@ -1,3 +1,4 @@
+import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
 import type {
     AttachmentMetadata,
     AbortChunkedUploadResponse,
@@ -13,12 +14,16 @@ import type {
     CodexDesktopStatusResponse,
     CodexArchiveSessionResponse,
     DecryptedMessage,
+    ForkBoundary,
+    ForkPreviewResponse,
     CodexCollaborationMode,
     CopilotAgentMode,
     FileSearchResponse,
     MachinesResponse,
     MessageContextResponse,
     MessagesResponse,
+    ClaudeImportSessionsResponse,
+    ClaudeLocalSessionsResponse,
     OpencodeImportSessionsResponse,
     OpencodeLocalSessionsResponse,
     PermissionMode,
@@ -36,6 +41,7 @@ import type {
     SessionResponse,
     SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
+    ScratchlistSessionIdsResponse,
     SessionsResponse,
     SessionContentSearchResponse
 } from '@/types/api'
@@ -79,6 +85,8 @@ import type {
 import { fetchThroughAuthProxy } from '@/api/authProxy'
 import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
 import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
+import type { PasskeyListResponse, PasskeyBrowserStartRequest, PasskeyBrowserStartResponse, PasskeyBrowserExchangeResponse } from '@hapi/protocol'
+
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
 
@@ -213,6 +221,27 @@ function parseErrorCode(bodyText: string): string | undefined {
     }
 }
 
+function parseErrorDisplay(bodyText: string): string | undefined {
+    try {
+        const parsed = JSON.parse(bodyText) as ErrorPayload
+        if (typeof parsed.error === 'string' && parsed.error.trim().length > 0) return parsed.error
+        return undefined
+    } catch {
+        return undefined
+    }
+}
+
+/**
+ * User-facing message for a failed API call: unwrap the hub's human error
+ * string instead of leaking the raw `HTTP <status>: <body>` envelope.
+ */
+export function apiErrorMessage(error: unknown, fallback: string): string {
+    if (!(error instanceof ApiError)) {
+        return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback
+    }
+    return parseErrorDisplay(error.body ?? '') ?? error.code?.trim() ?? fallback
+}
+
 export class ApiError extends Error {
     status: number
     code?: string
@@ -301,7 +330,9 @@ export class ApiClient {
         return await res.json() as T
     }
 
-    async authenticate(auth: { initData: string } | { accessToken: string }): Promise<AuthResponse> {
+    async authenticate(
+        auth: { initData: string } | { accessToken: string } | { passkeySession: string }
+    ): Promise<AuthResponse> {
         const res = await fetchThroughAuthProxy(this.buildUrl('/api/auth'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -316,6 +347,41 @@ export class ApiClient {
         }
 
         return await res.json() as AuthResponse
+    }
+
+    /** Unauthenticated JSON POST used by the passkey login ceremony. */
+    private async postPublic<T>(path: string, body: unknown, label: string): Promise<T> {
+        const res = await fetchThroughAuthProxy(this.buildUrl(path), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body)
+        })
+        if (!res.ok) {
+            const text = await res.text().catch(() => '')
+            const code = parseErrorCode(text)
+            const detail = text ? `: ${text}` : ''
+            throw new ApiError(`${label}: HTTP ${res.status} ${res.statusText}${detail}`, res.status, code, text || undefined)
+        }
+        return await res.json() as T
+    }
+
+    async startPasskeyBrowser(operation: 'login' | 'register', body: PasskeyBrowserStartRequest): Promise<PasskeyBrowserStartResponse> {
+        const path = `/api/passkey/browser/${operation}/start`
+        return operation === 'register'
+            ? await this.request(path, { method: 'POST', body: JSON.stringify(body) })
+            : await this.postPublic(path, body, 'Passkey sign-in failed')
+    }
+
+    async exchangePasskeyCode(code: string, verifier: string): Promise<PasskeyBrowserExchangeResponse> {
+        return await this.postPublic('/api/passkey/browser/exchange', { code, verifier }, 'Passkey sign-in failed')
+    }
+
+    async listPasskeys(): Promise<PasskeyListResponse> {
+        return await this.request<PasskeyListResponse>('/api/passkeys')
+    }
+
+    async deletePasskey(id: string): Promise<void> {
+        await this.request(`/api/passkeys/${encodeURIComponent(id)}`, { method: 'DELETE' })
     }
 
     async bind(auth: { initData: string; accessToken: string }): Promise<AuthResponse> {
@@ -352,6 +418,11 @@ export class ApiClient {
 
     async getSessions(): Promise<SessionsResponse> {
         return await this.request<SessionsResponse>('/api/sessions')
+    }
+
+    async getScratchlistSessionIds(): Promise<string[]> {
+        const response = await this.request<ScratchlistSessionIdsResponse>('/api/sessions/scratchlist-status')
+        return response.sessionIds
     }
 
     async getHealth(): Promise<HubHealthResponse> {
@@ -469,6 +540,21 @@ export class ApiClient {
 
     async importOpencodeSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; modelReasoningEffort?: string | null; permissionMode?: PermissionMode }): Promise<OpencodeImportSessionsResponse> {
         return await this.request<OpencodeImportSessionsResponse>('/api/opencode/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
+
+    async getClaudeSessions(cwd?: string | null, machineId?: string | null): Promise<ClaudeLocalSessionsResponse> {
+        const params = new URLSearchParams()
+        if (cwd?.trim()) params.set('cwd', cwd.trim())
+        if (machineId?.trim()) params.set('machineId', machineId.trim())
+        const query = params.size ? `?${params.toString()}` : ''
+        return await this.request<ClaudeLocalSessionsResponse>(`/api/claude/sessions${query}`)
+    }
+
+    async importClaudeSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; effort?: string | null; permissionMode?: PermissionMode }): Promise<ClaudeImportSessionsResponse> {
+        return await this.request<ClaudeImportSessionsResponse>('/api/claude/import-sessions', {
             method: 'POST',
             body: JSON.stringify(payload)
         })
@@ -821,22 +907,42 @@ export class ApiClient {
         })
     }
 
-    async forkConversation(sessionId: string, messageLocalId?: string, latestCompleted = false): Promise<{ sessionId: string }> {
+    async branchConversation(sessionId: string, options: BranchConversationRequest): Promise<BranchConversationResponse> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/branch`, {
+            method: 'POST', body: JSON.stringify(options)
+        })
+    }
+
+    async forkConversation(sessionId: string, messageLocalId?: string, latestCompleted = false, boundary?: ForkBoundary): Promise<{ sessionId: string }> {
         return await this.request<{ sessionId: string }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
             {
                 method: 'POST',
-                body: JSON.stringify(latestCompleted ? { latestCompleted: true } : messageLocalId ? { messageLocalId } : {})
+                body: JSON.stringify({
+                    ...(latestCompleted ? { latestCompleted: true } : {}),
+                    ...(messageLocalId ? { messageLocalId } : {}),
+                    ...(boundary ? { boundary } : {})
+                })
             }
         )
     }
 
-    async rewindConversation(sessionId: string, messageLocalId: string): Promise<{ success: true }> {
+    async forkPreview(sessionId: string, intent: 'current' | 'message' | 'rewind', messageLocalId?: string): Promise<ForkPreviewResponse> {
+        return await this.request<ForkPreviewResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/fork-preview`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ intent, ...(messageLocalId ? { messageLocalId } : {}) })
+            }
+        )
+    }
+
+    async rewindConversation(sessionId: string, messageLocalId: string, boundary?: ForkBoundary): Promise<{ success: true }> {
         return await this.request<{ success: true }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/rewind`,
             {
                 method: 'POST',
-                body: JSON.stringify({ messageLocalId })
+                body: JSON.stringify({ messageLocalId, ...(boundary ? { boundary } : {}) })
             }
         )
     }
@@ -1372,6 +1478,51 @@ export class ApiClient {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
             method: 'PATCH',
             body: JSON.stringify({ name, titleLocked })
+        })
+    }
+
+    async getFeatures(): Promise<{
+        githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
+        prChipDisplay: import('@hapi/protocol').PrChipDisplayProfile
+    }> {
+        return await this.request('/api/features')
+    }
+
+    async patchFeatures(patch: { githubPrAwareness?: boolean }): Promise<{
+        githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
+        prChipDisplay: import('@hapi/protocol').PrChipDisplayProfile
+    }> {
+        return await this.request('/api/features', {
+            method: 'PATCH',
+            body: JSON.stringify(patch)
+        })
+    }
+
+    async setSessionExternalRefs(
+        sessionId: string,
+        externalRefs: import('@/types/api').ExternalRef[]
+    ): Promise<{ ok: true; externalRefs: import('@/types/api').ExternalRef[] }> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/external-refs`, {
+            method: 'PUT',
+            body: JSON.stringify({ externalRefs })
+        })
+    }
+
+    async upsertSessionExternalRef(
+        sessionId: string,
+        ref: import('@/types/api').ExternalRef
+    ): Promise<{ ok: true; externalRefs: import('@/types/api').ExternalRef[] }> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/external-refs/upsert`, {
+            method: 'POST',
+            body: JSON.stringify({ ref })
+        })
+    }
+
+    async removePrimarySessionExternalRef(
+        sessionId: string
+    ): Promise<{ ok: true; externalRefs: import('@/types/api').ExternalRef[] }> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/external-refs/remove-primary`, {
+            method: 'POST'
         })
     }
 

@@ -18,6 +18,7 @@ import {
     shouldShowReasoningStatusLabel
 } from '@/lib/codexStatusLabels'
 import { isFastServiceTier } from './codexFastMode'
+import { AgentQuotaStatus } from './AgentQuotaStatus'
 import { useTranslation } from '@/lib/use-translation'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import {
@@ -204,6 +205,8 @@ export function shouldShowCodexFastBadge(
 
 export function StatusBar(props: {
     active: boolean
+    /** Session machine; enables the plan-quota readout next to the context meter. */
+    machineId?: string | null
     thinking: boolean
     agentState: AgentState | null | undefined
     backgroundTaskCount?: number
@@ -470,6 +473,9 @@ export function StatusBar(props: {
                             </Popover.Content>
                         </Popover.Portal>
                     </Popover.Root>
+                ) : null}
+                {props.machineId ? (
+                    <AgentQuotaStatus machineId={props.machineId} agentFlavor={props.agentFlavor} />
                 ) : null}
             </div>
 

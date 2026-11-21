@@ -1,3 +1,7 @@
+---
+description: "Error semantics, status codes and response shapes for HAPI hub /api endpoints."
+---
+
 # Errors
 
 Error semantics for all `/api/*` endpoints. Grounded in `hub/src/web/routes/guards.ts` and the individual route files under `hub/src/web/routes/`; reference consumer `web/src/api/client.ts` (`ApiError`, `parseErrorCode`).

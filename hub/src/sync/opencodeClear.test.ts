@@ -698,6 +698,8 @@ describe('SyncEngine.clearOpenCodeSession', () => {
                 undefined,
                 // forkSession / reservedSessionId — clear uses reopen existingSessionId
                 undefined,
+                undefined,
+                // resumeSessionAt — Claude-only history flag (drops guard not emitted)
                 undefined
             )
             expect(engine.getSessionByNamespace(replacementSessionId, 'default')?.metadata).toMatchObject({

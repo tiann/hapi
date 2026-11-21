@@ -48,6 +48,7 @@ public enum AppLanguage: String, CaseIterable, Sendable {
     case english = "en"
     case simplifiedChinese = "zh-Hans"
     case russian = "ru"
+    case japanese = "ja"
 
     /// Unknown/corrupt/absent stored values degrade to ``system``.
     public init(storageKey: String?) {
@@ -65,6 +66,7 @@ public enum AppLanguage: String, CaseIterable, Sendable {
         case .english: return "English"
         case .simplifiedChinese: return "简体中文"
         case .russian: return "Русский"
+        case .japanese: return "日本語"
         }
     }
 }

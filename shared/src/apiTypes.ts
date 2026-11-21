@@ -1,9 +1,12 @@
 import { z } from 'zod'
+import { ForkBoundarySchema } from './forkBoundary'
 import {
     AttachmentMetadataSchema,
     CodexCollaborationModeSchema,
     CopilotAgentModeSchema,
     DecryptedMessageSchema,
+    ExternalRefSchema,
+    ExternalRefsSchema,
     MachineSchema,
     PermissionModeSchema,
     SessionSchema,
@@ -138,6 +141,7 @@ export type AuthResponse = {
 }
 
 export type SessionsResponse = { sessions: SessionSummary[] }
+export type ScratchlistSessionIdsResponse = { sessionIds: string[] }
 export type SessionContentMatch = {
     messageId: string
     role: 'user' | 'assistant'
@@ -357,12 +361,54 @@ export const OpencodeLocalSessionSummarySchema = z.object({
     lastUserMessage: z.string().nullable().optional(),
     cwd: z.string().nullable().optional(),
     file: z.string().min(1),
-    modifiedAt: z.number()
+    modifiedAt: z.number(),
+    /** v2 launch hint (D8): the model the session ran with. */
+    model: z.string().nullable().optional()
 })
 
 export const OpencodeLocalSessionWithMessagesSchema = OpencodeLocalSessionSummarySchema.extend({
     messages: z.array(OpencodeImportedMessageSchema)
 })
+
+/**
+ * One importable Claude transcript entry: the native uuid (stable across
+ * session-id rotation), the entry timestamp and the HAPI message content the
+ * live replay path would have sent (user text, or the raw entry as the
+ * 'output' agent payload).
+ */
+export const ClaudeImportedMessageSchema = z.object({
+    uuid: z.string().min(1),
+    createdAt: z.number().optional(),
+    content: z.union([
+        z.object({
+            role: z.literal('user'),
+            content: z.object({ type: z.literal('text'), text: z.string() }),
+            meta: z.object({ sentFrom: z.literal('cli') })
+        }),
+        z.object({
+            role: z.literal('agent'),
+            content: z.object({ type: z.literal('output'), data: z.unknown() }),
+            meta: z.object({ sentFrom: z.literal('cli') })
+        })
+    ])
+})
+
+export const ClaudeLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    file: z.string().min(1),
+    modifiedAt: z.number(),
+    messageCount: z.number().optional()
+})
+
+export const ClaudeLocalSessionWithMessagesSchema = ClaudeLocalSessionSummarySchema.extend({
+    messages: z.array(ClaudeImportedMessageSchema)
+})
+
+export type ClaudeLocalSessionSummary = z.infer<typeof ClaudeLocalSessionSummarySchema>
+export type ClaudeLocalSessionWithMessages = z.infer<typeof ClaudeLocalSessionWithMessagesSchema>
 
 export const MAX_OPENCODE_SESSION_IMPORTS = 200
 
@@ -554,6 +600,27 @@ export const ScratchlistEntryUpdateRequestSchema = z.object({
 
 export type ScratchlistEntryUpdateRequest = z.infer<typeof ScratchlistEntryUpdateRequestSchema>
 
+export const SetExternalRefsRequestSchema = z.object({
+    externalRefs: ExternalRefsSchema
+})
+
+export type SetExternalRefsRequest = z.infer<typeof SetExternalRefsRequestSchema>
+
+/** Atomic primary/secondary attach — hub merges against the latest metadata version. */
+export const UpsertExternalRefRequestSchema = z.object({
+    ref: ExternalRefSchema
+})
+
+export type UpsertExternalRefRequest = z.infer<typeof UpsertExternalRefRequestSchema>
+
+export const FeaturesPatchRequestSchema = z.object({
+    githubPrAwareness: z.boolean().optional()
+}).refine((value) => value.githubPrAwareness !== undefined, {
+    message: 'at least one feature flag is required'
+})
+
+export type FeaturesPatchRequest = z.infer<typeof FeaturesPatchRequestSchema>
+
 /** Dismiss the model-error banner for a specific displayed error (by eventId). */
 export const AcknowledgeModelErrorRequestSchema = z.object({
     eventId: z.string().min(1)
@@ -718,9 +785,29 @@ export const SendMessageRequestSchema = z.object({
 
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
+/** Portable visible-history branch; native fork remains a separate operation. */
+export const BranchConversationRequestSchema = z.object({
+    requestId: z.uuid(),
+    messageLocalId: z.string().min(1).optional(),
+    messageId: z.string().min(1).optional(),
+    boundary: z.enum(['before', 'after']).default('before'),
+    agent: z.enum(['claude', 'codex']),
+    model: z.string().trim().min(1).max(256).optional(),
+    workspace: z.enum(['current', 'worktree']).default('current'),
+    worktreeName: z.string().trim().min(1).max(100).optional(),
+    instruction: z.string().trim().min(1).max(16_000)
+}).strict().refine(data => !(data.messageLocalId && data.messageId), {
+    message: 'Specify only one branch boundary identifier', path: ['messageId']
+})
+
+export type BranchConversationRequest = z.infer<typeof BranchConversationRequestSchema>
+export type BranchConversationResponse = { sessionId: string; warning?: string }
+
 export const ForkConversationRequestSchema = z.object({
     messageLocalId: z.string().min(1).optional(),
-    latestCompleted: z.boolean().optional()
+    latestCompleted: z.boolean().optional(),
+    /** Echo of the fork-preview boundary; absent keeps the legacy behavior. */
+    boundary: ForkBoundarySchema.optional()
 }).refine(value => !(value.messageLocalId && value.latestCompleted), { message: 'Choose one fork boundary mode' })
 
 export type ForkConversationRequest = z.infer<typeof ForkConversationRequestSchema>
@@ -742,7 +829,9 @@ export type ImplementCodexPlanResult = { ok: true } | {
 }
 
 export const RewindConversationRequestSchema = z.object({
-    messageLocalId: z.string().min(1)
+    messageLocalId: z.string().min(1),
+    /** Echo of the fork-preview boundary; absent keeps the legacy behavior. */
+    boundary: ForkBoundarySchema.optional()
 })
 
 export type RewindConversationRequest = z.infer<typeof RewindConversationRequestSchema>
@@ -760,12 +849,29 @@ export type ForkConversationRpcResult = {
     sessionId?: string
     /** When true, hub must spawn with --fork-session (Claude). */
     forkSession?: boolean
+    /** Claude fork at a message: resume the child truncated to this entry uuid. */
+    resumeSessionAt?: string
 }
 
 /** Raw RPC response, including generic serialized handler failures. */
 export type ForkConversationRpcResponse = ForkConversationRpcResult | {
     /** Serialized CLI handler failure returned through the generic RPC layer. */
     error: string
+}
+
+/** hub → CLI ask: where would this fork cut the native history right now? */
+export type PreviewForkBoundaryRequest = {
+    mode: 'current' | 'message' | 'latestCompleted'
+    messageLocalId?: string
+}
+
+/** CLI answer for a shared-runtime fork preview; the hub cuts its kept tail
+ *  at `cutBeforeLocalId` and confirm pins `nativeTurnId` as lastTurnId. */
+export type PreviewForkBoundaryResult = {
+    /** Inclusive native cutoff turn the fork would use. */
+    nativeTurnId?: string
+    /** First hub localId on the excluded side of the cut, when any. */
+    cutBeforeLocalId?: string
 }
 
 /** Machine-scoped native history operation; never sends a source prompt. */
@@ -782,6 +888,7 @@ export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: s
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
     | 'ambiguous_native_boundary_fork_safe'
+    | 'boundary_moved'
 
 export const OpenCodeRewindReportSchema = z.object({
     operation: OpenCodeRewindSchema,
@@ -937,10 +1044,74 @@ export type UsageQuotasResponse = z.infer<typeof UsageQuotasResponseSchema>
 
 export const AuthRequestSchema = z.union([
     z.object({ initData: z.string() }),
-    z.object({ accessToken: z.string() })
+    z.object({ accessToken: z.string() }),
+    // Refresh credential returned by POST /api/passkey/login/verify.
+    z.object({ passkeySession: z.string() })
 ])
 
 export type AuthRequest = z.infer<typeof AuthRequestSchema>
+
+/**
+ * WebAuthn `PublicKeyCredential` serialized with base64url fields
+ * (`RegistrationResponseJSON` / `AuthenticationResponseJSON`). Only the
+ * envelope is validated here; the hub verifies the payload cryptographically.
+ */
+export const PasskeyCredentialResponseSchema = z.object({
+    id: z.string().min(1).max(1024),
+    rawId: z.string().min(1).max(1024),
+    type: z.literal('public-key'),
+    response: z.looseObject({
+        clientDataJSON: z.string().min(1)
+    }),
+    clientExtensionResults: z.record(z.string(), z.unknown()).default({}),
+    // WebAuthn serializes an unknown attachment as null (e.g. Credential Manager).
+    authenticatorAttachment: z.string().nullish()
+})
+
+/** Direct options/verify ceremonies are native-only. Browsers use the bridge. */
+export const PasskeyOptionsRequestSchema = z.object({ client: z.literal('native') })
+export type PasskeyOptionsRequest = z.infer<typeof PasskeyOptionsRequestSchema>
+
+export const PasskeyBrowserStartRequestSchema = z.object({
+    codeChallenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    state: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    callbackOrigin: z.string().url().max(2048),
+    name: z.string().trim().max(64).optional()
+}).strict()
+export type PasskeyBrowserStartRequest = z.infer<typeof PasskeyBrowserStartRequestSchema>
+export type PasskeyBrowserStartResponse = { url: string }
+export const PasskeyBrowserExchangeRequestSchema = z.object({
+    code: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    verifier: z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+}).strict()
+export type PasskeyBrowserExchangeResponse =
+    | { operation: 'register' }
+    | { operation: 'login'; token: string; passkeySession: string }
+
+export const PasskeyRegisterVerifyRequestSchema = z.object({
+    response: PasskeyCredentialResponseSchema,
+    name: z.string().trim().max(64).optional()
+})
+export type PasskeyRegisterVerifyRequest = z.infer<typeof PasskeyRegisterVerifyRequestSchema>
+
+export const PasskeyLoginVerifyRequestSchema = z.object({
+    response: PasskeyCredentialResponseSchema
+})
+export type PasskeyLoginVerifyRequest = z.infer<typeof PasskeyLoginVerifyRequestSchema>
+
+export type PasskeySummary = {
+    id: string
+    name: string | null
+    rpId: string
+    createdAt: number
+    lastUsedAt: number | null
+    /** False once `CLI_API_TOKEN` has been rotated since registration. */
+    valid: boolean
+}
+
+export type PasskeyListResponse = {
+    passkeys: PasskeySummary[]
+}
 
 export type CommandResponse = {
     success: boolean
