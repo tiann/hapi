@@ -298,7 +298,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const tier = await resolveUltrafastLaunch(client, 'thread/resume', { ...reservation.executionParams, ...view },
             root.bootstrap.workingDirectory, undefined, savedThread, startupCatalogConfig);
         reservation.tierConfirmationPending = undefined;
-        reservation.ultrafastTarget = tier.ultrafastTarget;
+        if (tier.ultrafastTarget) reservation.ultrafastTarget = tier.ultrafastTarget;
         if (tier.downgraded) {
             reservation.executionParams = { ...reservation.executionParams, serviceTier: null };
             reservation.downgraded = true;
@@ -319,7 +319,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 throw new Error('Codex thread was archived during binding');
             }
         };
-        const requestedUltrafast = ultrafastTarget !== undefined;
+        const requestedUltrafast = !downgraded && ultrafastTarget !== undefined;
         const confirmBeforeInput = tierDiscoveryPending !== undefined || requiresTierAdmission(root, requestedUltrafast ? 'ultrafast' : expectedResumeTier, downgraded, serviceTierExplicit);
         const explicitTier = serviceTierExplicit ?? root.session.getMetadata()?.codexServiceTierExplicit === true;
         if (resume || confirmBeforeInput) pendingAdmission.add(threadId);

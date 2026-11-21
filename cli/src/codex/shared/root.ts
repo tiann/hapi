@@ -1419,10 +1419,13 @@ export class SharedCodexRoot {
         const tier = fromCodexServiceTier(value);
         return tier != null && tier !== 'standard' && tier !== 'ultrafast';
     }
-    async confirmUltrafastLaunch(explicitTier = true): Promise<void> {
+    private assertUltrafastLaunchTarget(): void {
         if (this.pendingUltrafastLaunchTarget && !this.matchesUltrafastTarget(this.settingsNative, this.pendingUltrafastLaunchTarget)) {
             throw new UltrafastTargetChangedError();
         }
+    }
+    async confirmUltrafastLaunch(explicitTier = true): Promise<void> {
+        this.assertUltrafastLaunchTarget();
         // Native launch configuration filters a disabled feature before its
         // response. Unlike live updates, it does not require another discovery
         // RPC after creation that could strand a known, unactivated child.
@@ -1435,6 +1438,7 @@ export class SharedCodexRoot {
         this.notice('Codex did not apply Ultrafast; changed to Standard.');
     }
     async confirmStandardLaunch(explicitTier = true): Promise<void> {
+        this.assertUltrafastLaunchTarget();
         await this.applySettings({ serviceTier: 'standard' });
         if (!explicitTier) {
             this.serviceTierExplicit = false;

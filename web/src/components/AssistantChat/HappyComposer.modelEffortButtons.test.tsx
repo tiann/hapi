@@ -253,9 +253,11 @@ describe('HappyComposer generic model/effort value buttons', () => {
 
     it('offers Codex fast mode in the model picker', () => {
         const onServiceTierChange = vi.fn()
+        const onTierSettingsOpen = vi.fn()
         renderComposer('codex', { model: 'gpt-5.6', availableModelOptions: [{ value: 'gpt-5.6', label: 'GPT-5.6' }],
-            serviceTier: 'standard', onServiceTierChange })
+            serviceTier: 'standard', onServiceTierChange, onTierSettingsOpen })
         fireEvent.click(screen.getByRole('button', { name: 'GPT-5.6' }))
+        expect(onTierSettingsOpen).toHaveBeenCalledOnce()
         expect(screen.getByText('Fast Mode')).toBeInTheDocument()
         fireEvent.click(screen.getByRole('button', { name: 'Fast' }))
         expect(onServiceTierChange).toHaveBeenCalledWith('fast')

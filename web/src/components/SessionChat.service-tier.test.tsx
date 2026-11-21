@@ -31,8 +31,8 @@ if (typeof Element.prototype.scrollTo !== 'function') {
 
 vi.mock('@/components/AssistantChat/HappyComposer', () => ({ HappyComposer: (props: {
     onModelChange?: (model: string) => Promise<void>; onServiceTierChange?: (tier: string) => Promise<void>; fastAvailable?: boolean; ultrafastAvailable?: boolean
-    serviceTier?: string | null
-}) => <><button onClick={() => void props.onModelChange?.('changed-model')}>Change model</button><button disabled={!props.onServiceTierChange} onClick={() => void props.onServiceTierChange?.('standard')}>
+    serviceTier?: string | null; onTierSettingsOpen?: () => void
+}) => <><button onClick={props.onTierSettingsOpen}>Open tier settings</button><button onClick={() => void props.onServiceTierChange?.('ultrafast')}>Select Ultrafast</button><button onClick={() => void props.onModelChange?.('changed-model')}>Change model</button><button disabled={!props.onServiceTierChange} onClick={() => void props.onServiceTierChange?.('standard')}>
     Reset Standard / fast:{String(props.fastAvailable)} / ultra:{String(props.ultrafastAvailable)}
 </button><span data-testid="effective-tier">{props.serviceTier ?? 'none'}</span></> }))
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
@@ -207,6 +207,29 @@ it('shows inherited Fast until a keep-alive patch reports an empty effective tie
     const patch = SessionPatchSchema.parse({ serviceTier: null, serviceTierReported: true });
     view.rerender(shell(applySessionDetailPatch(session, patch)!, catalog, setTier, catalog, queryClient));
     expect(screen.getByTestId('effective-tier')).toHaveTextContent('none');
+});
+it.each(['open the picker', 'reject Ultrafast'])('refreshes the shared tier catalog when users %s', async action => {
+    const model = { id: 'gpt-6.2-sol', isDefault: true, serviceTiers: ['ultrafast'] };
+    let finish!: (value: { success: boolean; models: Array<typeof model> }) => void;
+    const sessionCatalog = vi.fn().mockResolvedValueOnce({ success: true, models: [model] })
+        .mockImplementationOnce(() => new Promise(resolve => { finish = resolve }));
+    const machineCatalog = vi.fn();
+    const setTier = vi.fn().mockRejectedValue(new Error('Catalog eligibility changed'));
+    const session = { id: 'tier-session', active: true, model: model.id, serviceTier: 'standard', metadata: {
+        flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexProviderScopedCatalog: true,
+        capabilities: { concurrentClients: true }
+    } } as unknown as Session;
+    render(shell(session, machineCatalog, setTier, sessionCatalog));
+    const tierControl = (ultra: boolean, fast: boolean = false) =>
+        screen.findByRole('button', { name: `Reset Standard / fast:${fast} / ultra:${ultra}` });
+    expect(await tierControl(true)).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: action === 'open the picker' ? 'Open tier settings' : 'Select Ultrafast' }));
+    await waitFor(() => expect(sessionCatalog).toHaveBeenCalledTimes(2));
+    expect(await tierControl(false)).toBeEnabled();
+    finish({ success: true, models: [{ ...model, serviceTiers: ['priority'] }] });
+    expect(await tierControl(false, true)).toBeEnabled();
+    expect(machineCatalog).not.toHaveBeenCalled();
 });
 it('keeps Standard available on a Flex session without a tier catalog', async () => {
     const catalog = vi.fn(async () => ({ success: true, models: [] }));

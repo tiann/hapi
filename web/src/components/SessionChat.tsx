@@ -1205,18 +1205,26 @@ function SessionChatInner(props: SessionChatProps) {
     const controlledByUser = props.session.agentState?.controlledByUser === true && !props.session.metadata?.capabilities?.concurrentClients
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
     const metadata = props.session.metadata
+    // Cold resume keeps the session ID but refreshes the process metadata.
+    const catalogRuntimeGeneration = JSON.stringify([
+        metadata?.machineId, metadata?.hostPid, metadata?.hostStartMarker,
+        metadata?.lifecycleStateSince, metadata?.codexRuntime?.bindingId
+    ])
+    const refreshCodexSessionCatalog = useCallback(() => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.sessionCodexModels(sessionId, catalogRuntimeGeneration), exact: true }, { cancelRefetch: false })
+    }, [queryClient, sessionId, catalogRuntimeGeneration])
     const codexModelsState = useCodexModels({
         api: props.api,
         sessionId: props.session.id,
         machineId: metadata?.machineId ?? null,
-        // Cold resume keeps the session ID but refreshes the process metadata.
-        sessionRuntimeGeneration: JSON.stringify([
-            metadata?.machineId, metadata?.hostPid, metadata?.hostStartMarker,
-            metadata?.lifecycleStateSince, metadata?.codexRuntime?.bindingId
-        ]),
+        sessionRuntimeGeneration: catalogRuntimeGeneration,
         preferSession: metadata?.capabilities?.concurrentClients === true,
         enabled: agentFlavor === 'codex' && props.session.active && !controlledByUser
     })
+    const catalogSupportsFast = !codexModelsState.error
+        && codexModelAdvertisesFastTier(props.session.model, codexModelsState.models)
+    const catalogSupportsUltrafast = !codexModelsState.error && codexModelsState.catalogSource === 'session'
+        && metadata?.codexProviderScopedCatalog === true && codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)
     const effectiveCodexServiceTier = agentFlavor === 'codex'
         ? getEffectiveCodexServiceTier(
             props.session.serviceTierReported || props.session.serviceTier !== null ? props.session.serviceTier : undefined,
@@ -2095,9 +2103,10 @@ function SessionChatInner(props: SessionChatProps) {
         } catch (e) {
             haptic.notification('error')
             console.error('Failed to set service tier:', e)
+            refreshCodexSessionCatalog()
             setCodexSettingsError(e instanceof Error ? e.message : 'Could not verify model availability. Try again.')
         }
-    }, [setServiceTier, props.onRefresh, haptic])
+    }, [setServiceTier, props.onRefresh, haptic, refreshCodexSessionCatalog])
 
     // Abort handler
     const handleAbort = useCallback(async () => {
@@ -2785,14 +2794,15 @@ function SessionChatInner(props: SessionChatProps) {
                         }
                         serviceTier={effectiveCodexServiceTier}
                         tierConfirmationPending={metadata?.codexTierConfirmationPending}
-                        fastAvailable={!codexModelsState.error && codexModelAdvertisesFastTier(props.session.model, codexModelsState.models)}
-                        ultrafastAvailable={codexModelsState.catalogSource === 'session' && props.session.metadata?.codexProviderScopedCatalog === true && !codexModelsState.error && codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)}
+                        fastAvailable={catalogSupportsFast}
+                        onTierSettingsOpen={agentFlavor === 'codex' && metadata?.capabilities?.concurrentClients === true ? refreshCodexSessionCatalog : undefined}
+                        ultrafastAvailable={catalogSupportsUltrafast && !codexModelsState.isRefreshingSessionCatalog}
                         onServiceTierChange={
                             agentFlavor === 'codex'
                                 && props.session.active
                                 && !controlledByUser
                                 && (props.session.metadata?.codexTierConfirmationPending === true || props.session.serviceTier === 'ultrafast' || props.session.serviceTier === 'fast' || props.session.serviceTier === 'flex'
-                                    || !codexModelsState.error && (codexModelAdvertisesFastTier(props.session.model, codexModelsState.models) || codexModelsState.catalogSource === 'session' && props.session.metadata?.codexProviderScopedCatalog === true && codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)))
+                                    || catalogSupportsFast || catalogSupportsUltrafast)
                                 ? handleServiceTierChange
                                 : undefined
                         }

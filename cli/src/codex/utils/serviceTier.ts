@@ -213,7 +213,9 @@ export async function resolveUltrafastLaunch(
             ...(context.modelProvider === undefined ? { modelProvider: effectiveProvider } : {})
         };
     }
-    return available
-        ? { params, downgraded: false, ultrafastTarget: { model, provider: effectiveProvider } }
-        : { params: { ...params, serviceTier: null }, downgraded: true };
+    return {
+        params: available ? params : { ...params, serviceTier: null },
+        downgraded: !available,
+        ultrafastTarget: { model, provider: effectiveProvider }
+    };
 }

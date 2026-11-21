@@ -349,6 +349,7 @@ export function HappyComposer(props: {
     /** When provided, a Fast-mode toggle renders (Codex GPT-5.5 / GPT-5.4 only). */
     fastAvailable?: boolean
     ultrafastAvailable?: boolean
+    onTierSettingsOpen?: () => void
     onServiceTierChange?: (serviceTier: string | null) => void
     onSwitchToRemote?: () => void
     onTerminal?: () => void
@@ -463,6 +464,7 @@ export function HappyComposer(props: {
         onEffortChange,
         serviceTier: rawServiceTier,
         tierConfirmationPending = false,
+        onTierSettingsOpen,
         onServiceTierChange,
         fastAvailable = true,
         ultrafastAvailable = false,
@@ -1570,6 +1572,7 @@ export function HappyComposer(props: {
         haptic('light')
         if (showSettings && section !== settingsSection) {
             // Open with a different anchor: switch sections, keep the sheet up.
+            if (section !== 'effort' && settingsSection === 'effort') onTierSettingsOpen?.()
             setSettingsSection(section)
             return
         }
@@ -1580,9 +1583,10 @@ export function HappyComposer(props: {
             setSettingsSection(null)
             return
         }
+        if (section !== 'effort') onTierSettingsOpen?.()
         setSettingsSection(section)
         setShowSettings(true)
-    }, [haptic, showSettings, settingsSection])
+    }, [haptic, showSettings, settingsSection, onTierSettingsOpen])
 
     const handleModelChange = useCallback((nextModel: { provider: string; modelId: string } | string | null) => {
         if (!onModelChange || configurationControlsDisabled) return

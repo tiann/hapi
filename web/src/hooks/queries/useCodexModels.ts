@@ -21,6 +21,7 @@ export function useCodexModels(args: {
     catalogSource: 'session' | 'machine' | null
     models: CodexModelSummary[]
     isLoading: boolean
+    isRefreshingSessionCatalog: boolean
     error: string | null
 } {
     const { api, sessionId, sessionRuntimeGeneration, machineId } = args
@@ -82,6 +83,7 @@ export function useCodexModels(args: {
         catalogSource: query.data?.catalogSource ?? null,
         models: query.data?.models ?? [],
         isLoading: query.isLoading,
+        isRefreshingSessionCatalog: preferSession && sharedSessionQuery.isFetching,
         error: query.data?.success === false
             ? (query.data.error ?? 'Failed to load Codex models')
             : query.error instanceof Error
