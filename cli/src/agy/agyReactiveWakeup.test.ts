@@ -5130,6 +5130,11 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             const out = sent();
             expect(out.filter((m) => m.type === 'tool-call')).toHaveLength(0);
             expect(h.bgEntries()).toHaveLength(0);
+            // The live result of the same command arrives after the card ended: no second card.
+            h.client.sendAgentMessage.mockClear();
+            h.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'acp-late', status: 'completed', rawOutput: { output: 'Command exited with code 0.\n\nCommand output:\nDONE', exit_code: 0 } });
+            await new Promise((r) => setTimeout(r, 1200)); // past the idle flush of the message handler
+            expect(sent().filter((m) => m.type === 'tool-call-result')).toHaveLength(0);
             await h.finish();
         });
 
@@ -5169,6 +5174,34 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             expect(out.filter((m) => m.type === 'tool-call' && m.callId?.startsWith('call-b7#'))).toHaveLength(1);
             expect(out.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('call-b7#'))).toHaveLength(1);
             expect(h.bgEntries().some((e) => e.callId.startsWith('call-b7#'))).toBe(true);
+            await h.finish();
+        });
+
+        it('drops a late start of a stopped wakeup command after ready', async () => {
+            const acp = 'conv-live-stop-late-id';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.notify(bgCall('call-stopped-id', 'sleep 9'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`, false));
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            // The unacknowledged cancel lets one more start of the stopped command through.
+            h.notify(bgCall('call-stopped-id', 'sleep 9'));
+            await new Promise((r) => setTimeout(r, 40));
+            h.queue.push('again', { permissionMode: 'always-proceed' }, 'msg-3');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await h.ready();
+            expect(h.bgEntries().filter((e) => e.callId.startsWith('call-stopped-id#'))).toHaveLength(0);
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('call-stopped-id#'))).toHaveLength(0);
             await h.finish();
         });
 

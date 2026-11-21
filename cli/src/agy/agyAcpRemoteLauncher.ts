@@ -25,6 +25,7 @@ import {
 } from '@/modules/common/remote/RemoteLauncherBase';
 import type { SessionEffort, SessionModel } from '@/api/types';
 import type { AgySession } from './session';
+import { parseToolCallLifetimeId } from '@/agent/backends/acp/toolCallLifetimes';
 import { AGY_BACKGROUND_COMMAND_RESULT, mapAgyToolCall, mapAgyToolResult } from './agyToolCards';
 import { formatAgySwarmBoard, parseAgySwarmBoardCommand } from './agySwarmBoard';
 import {
@@ -36,6 +37,7 @@ import {
     defaultAgyBrainDir,
     extractAgyBackgroundTaskIds,
     inspectAgyReactiveSteps,
+    parseLiveCommandCompletionResult,
     inspectSyntheticBackgroundCommandMatch,
     readAgyTranscriptStepsAfter,
     readLatestAgyTranscriptStepIndex,
@@ -306,6 +308,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     // Stop discards the activity that owns the handler: its later command starts are dropped
     // until that activity ends (the aborted turn or wakeup settles before it reports ready).
     private idleDiscarded = false;
+    // Agent ids of the commands of stopped wakeups: a late start of one is dropped, also after ready.
+    private readonly stoppedCommandIds = new Set<string>();
+    // Completions the transcript already showed, so a late ACP result of the same command is
+    // dropped instead of becoming a second card. Bounded.
+    private readonly settledFromTranscript: Array<{ taskId?: string; stdout?: string; exitCode?: number }> = [];
     private backendLost = false;
     private startBackendPromise: Promise<void> | null = null;
     private hasReceivedAvailableCommands = false;
@@ -756,7 +763,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     this.reconcileRetainedAmbiguousCompletions(null);
                     // Live agy completes commands by call id: the conversion may settle
                     // tracked ones but must not mirror the wakeup's own as synthetic.
-                    const renderedFromTranscript = new Set(this.backgroundCommands.filter((e) => e.synthetic).map((e) => e.callId));
+                    const renderedFromTranscript = new Map(
+                        this.backgroundCommands.filter((e) => e.synthetic).map((e) => [e.callId, e.taskId] as const)
+                    );
                     const tracked = live ? [...this.backgroundCommands] : this.backgroundCommands;
                     const converted = convertAgyReactiveSteps(acpSessionId, inspection.steps, tracked);
                     if (live) this.backgroundCommands.splice(0, Infinity, ...this.backgroundCommands.filter((entry) => tracked.includes(entry)));
@@ -767,6 +776,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     for (const msg of converted.messages) {
                         // Live mode forwards only the end of a card the transcript rendered.
                         if (!live || (msg.type === 'tool_result' && renderedFromTranscript.has(msg.id))) {
+                            if (live && msg.type === 'tool_result') this.noteSettledFromTranscript(renderedFromTranscript.get(msg.id), msg.output);
                             this.forwardAgentMessage(this.showQuestionCard(msg));
                         }
                     }
@@ -931,6 +941,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.retainedAmbiguousCompletions.length = 0;
                 this.nativeToolNames.clear();
                 this.syntheticCallAliases.clear();
+                this.settledFromTranscript.length = 0;
+                this.stoppedCommandIds.clear();
             }
             if (this.acpSessionId !== acpSessionId) {
                 this.lastTranscriptStepIndex = -1;
@@ -1343,12 +1355,41 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.idleTurn = null;
         this.idleDiscarded = false;
         if (!turn) return;
+        if (!keep) {
+            for (const id of [...turn.commandCallIds, ...turn.openCommands, ...turn.deferredLiveCommandCalls.keys()]) {
+                this.stoppedCommandIds.add(parseToolCallLifetimeId(id) ?? id);
+            }
+            for (const id of this.stoppedCommandIds) {
+                if (this.stoppedCommandIds.size <= 64) break;
+                this.stoppedCommandIds.delete(id);
+            }
+        }
         if (keep) {
             this.flushDeferredLiveCommandCalls(turn);
             this.closeBackgroundCommands(turn, 0, true);
         }
         turn.deferredLiveCommandCalls.clear();
         turn.openCommands.clear();
+    }
+
+    private noteSettledFromTranscript(taskId: string | undefined, output: unknown): void {
+        const parsed = parseLiveCommandCompletionResult(output);
+        this.settledFromTranscript.push({ taskId, ...parsed });
+        if (this.settledFromTranscript.length > 8) this.settledFromTranscript.shift();
+    }
+
+    /** A result-only ACP update of a command whose card the transcript already ended. */
+    private consumeSettledFromTranscript(message: Extract<AgentMessage, { type: 'tool_result' }>): boolean {
+        const live = parseLiveCommandCompletionResult(message.output);
+        const agentId = parseToolCallLifetimeId(message.id) ?? message.id;
+        const idx = this.settledFromTranscript.findIndex((entry) =>
+            (entry.taskId !== undefined && (agentId === entry.taskId || agentId === entry.taskId.slice(entry.taskId.lastIndexOf('/') + 1)))
+            || (live?.stdout !== undefined && live.stdout === entry.stdout
+                && (live.exitCode === undefined || entry.exitCode === undefined || live.exitCode === entry.exitCode))
+        );
+        if (idx < 0) return false;
+        this.settledFromTranscript.splice(idx, 1);
+        return true;
     }
 
     private liveIdleWakeups(): boolean {
@@ -1734,6 +1775,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     });
                     return { message, suppressForward: true, skipTracking: true };
                 }
+                if (!deferredCall && this.consumeSettledFromTranscript(message)) {
+                    return { message, suppressForward: true, skipTracking: true };
+                }
                 if (deferredCall) {
                     this.emitDeferredLiveCommandCall(turn, deferredCall);
                 }
@@ -1760,7 +1804,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         this.idleTurn = turn;
                         turn.openCommands.clear(); // a cancelled prompt's command is not this wakeup's
                     }
-                    if (this.idleDiscarded && message.type === 'tool_call' && message.nativeName === 'run_command') return;
+                    if (
+                        message.type === 'tool_call' && message.nativeName === 'run_command'
+                        && (this.idleDiscarded || this.stoppedCommandIds.has(parseToolCallLifetimeId(message.id) ?? message.id))
+                    ) return;
                 }
                 turn.sawActivity = true;
                 turn.acknowledge();
