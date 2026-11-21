@@ -1138,7 +1138,23 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 })
                 if (!context) {
                     if (preferLatestOnActivation && !pendingGapRecovery && !overlapsCached && next.hasMore) {
-                        return buildState(next, { preferLatestOnActivation: false, pendingGapRecovery: true })
+                        // Preserve the cached newest cursor while gap recovery
+                        // is pending: the catch-up walk starts from
+                        // initialCursor and stops at the snapshot head, so a
+                        // cursor already advanced to the server head would
+                        // make the next sync believe it is caught up and the
+                        // missing interval would never be walked. The rows
+                        // fetched above stay visible; only the cursor regresses
+                        // until recovery completes.
+                        const cachedNewest = getNewestCursor(initial)
+                        return buildState(next, {
+                            preferLatestOnActivation: false,
+                            pendingGapRecovery: true,
+                            ...(cachedNewest ? {
+                                newestPositionAt: cachedNewest.at,
+                                newestPositionSeq: cachedNewest.seq
+                            } : {})
+                        })
                     }
                     return buildState(next, { preferLatestOnActivation: false, pendingGapRecovery: false })
                 }

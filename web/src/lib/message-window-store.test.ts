@@ -3800,3 +3800,35 @@ describe('gap recovery', () => {
         }
     })
 })
+
+describe('gap recovery cursor preservation', () => {
+    it('keeps the cached newest cursor while gap recovery is pending on a disjoint re-entry', async () => {
+        const id = sessionId('gap-cursor-arm')
+        const cached = makeAgentMessage({ id: 'cached', seq: 5, at: 5_000 })
+        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+            messages: [cached],
+            hasMore: true,
+            oldestPositionAt: 5_000,
+            oldestPositionSeq: 5,
+            newestPositionAt: 5_000,
+            newestPositionSeq: 5,
+            epoch: 1
+        }))
+        activateMessageWindow(id)
+        const latest = makeAgentMessage({ id: 'latest-1', seq: 2_039, at: 2_039_000 })
+        const getMessages = vi.fn().mockResolvedValueOnce(latestResponse([latest], {
+            limit: INITIAL_PAGE_SIZE,
+            epoch: 1,
+            hasMore: true,
+            nextBeforeAt: 2_039_000,
+            nextBeforeSeq: 2_039
+        }))
+        await syncTailMessages(createApi(getMessages), id)
+        const state = getMessageWindowState(id)
+        expect(state.pendingGapRecovery).toBe(true)
+        // The newest cursor stays at the CACHED tail while recovery is armed:
+        // advancing it to the server head would make the catch-up walk believe
+        // it is already caught up and the gap would never be walked.
+        expect(state.newestPositionSeq).toBe(5)
+    })
+})
