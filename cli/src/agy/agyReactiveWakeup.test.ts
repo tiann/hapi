@@ -637,7 +637,7 @@ describe('agyReactiveWakeup pure helpers', () => {
         expect(advanceAgyTurnTranscriptCursor(
             postTerminalSteps,
             -1,
-            new Map([['Turn finished.', 1]])
+            ['Turn finished.']
         )).toBe(1);
 
         // Intra-turn SYSTEM_MESSAGE folded into the active turn (before terminal planner, streamed text matches) advances.
@@ -656,14 +656,14 @@ describe('agyReactiveWakeup pure helpers', () => {
         expect(advanceAgyTurnTranscriptCursor(
             intraTurnFolded,
             -1,
-            new Map([['Handled inside turn.', 1]])
+            ['Handled inside turn.']
         )).toBe(3);
 
         // Unstreamed text after SYSTEM_MESSAGE is preserved even if no earlier terminal planner was seen.
         expect(advanceAgyTurnTranscriptCursor(
             intraTurnFolded,
             -1,
-            new Map()
+            []
         )).toBe(1);
 
         // Mixed batch with a confirmed backgrounded run_command + completed swarm_wait marks the
@@ -729,7 +729,7 @@ describe('agyReactiveWakeup pure helpers', () => {
         expect(advanceAgyTurnTranscriptCursor(
             mixedBackgroundSwarmTurnFollowedByWakeup,
             -1,
-            new Map()
+            []
         )).toBe(3);
     });
 });
@@ -4408,7 +4408,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'SECOND_WAKEUP' }
             ],
             -1,
-            new Map([['STARTED', 1], ['FINISHED:DONE_BG', 1]])
+            ['STARTED', 'FINISHED:DONE_BG']
         )).toBe(3);
     });
 
@@ -4435,7 +4435,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'FINISHED:next' }
             ],
             -1,
-            new Map([['STARTED', 1], ['FINISHED:next', 1]])
+            ['STARTED', 'FINISHED:next']
         )).toBe(1);
     });
 
@@ -4452,7 +4452,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'SECOND_WAKEUP' }
             ],
             -1,
-            new Map([['STARTED\n\nFINISHED:DONE_BG', 1]])
+            ['STARTED\n\nFINISHED:DONE_BG']
         )).toBe(3);
 
         // Mid-word prefix ("OKAY" vs "OK") must not peel "AY" into a synthetic remainder.
@@ -4464,26 +4464,54 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'AY' }
             ],
             -1,
-            new Map([['OKAY', 1]])
+            ['OKAY']
         )).toBe(1);
 
-            // 3-part coalesced chain ("A\n\nB\n\nC"): peeling A -> "B\n\nC" -> "C" empties
-            // the streamed pool once C is consumed, so a following unstreamed SYSTEM_MESSAGE stops the cursor.
-            expect(advanceAgyTurnTranscriptCursor(
-                [
-                    { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'chain' },
-                    { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'A' },
-                    { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m1</SYSTEM_MESSAGE>' },
-                    { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'B' },
-                    { step_index: 4, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m2</SYSTEM_MESSAGE>' },
-                    { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'C' },
-                    { step_index: 6, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m3</SYSTEM_MESSAGE>' },
-                    { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'NEXT_WAKEUP' }
-                ],
-                -1,
-                new Map([['A\n\nB\n\nC', 1]])
-            )).toBe(5);
-        });
+        // 3-part coalesced chain ("A\n\nB\n\nC"): peeling A -> "B\n\nC" -> "C" empties
+        // the streamed pool once C is consumed, so a following unstreamed SYSTEM_MESSAGE stops the cursor.
+        expect(advanceAgyTurnTranscriptCursor(
+            [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'chain' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'A' },
+                { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m1</SYSTEM_MESSAGE>' },
+                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'B' },
+                { step_index: 4, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m2</SYSTEM_MESSAGE>' },
+                { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'C' },
+                { step_index: 6, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>m3</SYSTEM_MESSAGE>' },
+                { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'NEXT_WAKEUP' }
+            ],
+            -1,
+            ['A\n\nB\n\nC']
+        )).toBe(5);
+    });
+
+    it('preserves a later wakeup when foreground text was streamed in fragments or cannot be matched', () => {
+        // Two ordered foreground ACP fragments stored as one transcript step must both be consumed,
+        // leaving nothing to swallow a later unstreamed wakeup that repeats the second fragment.
+        expect(advanceAgyTurnTranscriptCursor(
+            [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Starting the job.\n\nReady.' },
+                { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>done</SYSTEM_MESSAGE>' },
+                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Ready.' }
+            ],
+            -1,
+            ['Starting the job.', 'Ready.']
+        )).toBe(1);
+
+        // When the foreground response cannot be matched against streamed text at all,
+        // leftover streamed text must not advance past a later wakeup.
+        expect(advanceAgyTurnTranscriptCursor(
+            [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Different foreground response.' },
+                { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>done</SYSTEM_MESSAGE>' },
+                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Ready.' }
+            ],
+            -1,
+            ['Something else.', 'Ready.']
+        )).toBe(1);
+    });
 
     it('publishes a completed unrendered idle wakeup before a queued user prompt advances the cursor', async () => {
         const acpSessionId = 'conv-real-acp-queued-preempt';

@@ -209,9 +209,9 @@ type AgyTurn = {
     deferredLiveCommandCalls: Map<string, Extract<AgentMessage, { type: 'tool_call' }>>;
     corroboratedSyntheticMatches: number;
     turnStartStepIndex: number;
-    // Settled non-live assistant text segments streamed during this turn, used
-    // to distinguish intra-turn SYSTEM_MESSAGE folds from post-turn wakeups.
-    streamedTextCounts: Map<string, number>;
+    // Settled non-live assistant text segments streamed in emission order during
+    // this turn, used to distinguish intra-turn SYSTEM_MESSAGE folds from post-turn wakeups.
+    streamedTexts: string[];
     // Turn count for the round footer: agy's own report when its ACP result
     // carries one, else this turn's transcript model calls.
     numTurns: number | undefined;
@@ -285,7 +285,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // Optional wider counting boundary for an internal wakeup reattach:
         // the wakeup's pre-approval model calls sit before turnStartStepIndex.
         countFromStepIndex?: number;
-        streamedTextCounts: Map<string, number>;
+        streamedTexts: string[];
     } | null = null;
     private reactiveWakeupAbort: AbortController | null = null;
     private lastTurnMode: AgyMode | null = null;
@@ -428,7 +428,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             ...(countFromStepIndex !== undefined && countFromStepIndex < turnStartStepIndex
                 ? { countFromStepIndex }
                 : {}),
-            streamedTextCounts: new Map(turn.streamedTextCounts)
+            streamedTexts: [...turn.streamedTexts]
         };
         this.advanceCursorFromLastTurnState(turn);
         this.pausedWakeupStepIndex = null;
@@ -442,7 +442,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const nextCursor = advanceAgyTurnTranscriptCursor(
             stepsAfterStart,
             state.turnStartStepIndex,
-            state.streamedTextCounts
+            state.streamedTexts
         );
         if (nextCursor > this.lastTranscriptStepIndex) {
             this.lastTranscriptStepIndex = nextCursor;
@@ -1074,7 +1074,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             deferredLiveCommandCalls: new Map(),
             corroboratedSyntheticMatches: 0,
             turnStartStepIndex: this.lastTranscriptStepIndex,
-            streamedTextCounts: new Map(),
+            streamedTexts: [],
             numTurns: undefined,
             transcriptNumTurns: undefined,
             usage: null,
@@ -1730,7 +1730,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (effective.type === 'text' && !effective.live) {
                     const trimmed = effective.text.trim();
                     if (trimmed) {
-                        turn.streamedTextCounts.set(trimmed, (turn.streamedTextCounts.get(trimmed) ?? 0) + 1);
+                        turn.streamedTexts.push(trimmed);
                     }
                 }
                 this.trackOpenCommand(turn, effective, !reconciled.suppressForward);
