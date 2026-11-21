@@ -916,7 +916,10 @@ export class MessageService {
         }
         const room = this.io.of('/cli').to(roomName)
         const accepted = await new Promise<boolean>((resolve) => {
-            room.timeout(500).emit(
+            // Same admission budget as deliver-now: the CLI's preparation
+            // reuse gate applies to this forced retry too and can outlast the
+            // probe round-trip.
+            room.timeout(MessageService.FORCED_RETRY_ACK_TIMEOUT_MS).emit(
                 'update',
                 update,
                 (_err: Error | null, responses: Array<{ accepted?: boolean }>) => {
@@ -1029,7 +1032,14 @@ export class MessageService {
                     return true
                 }
                 const boundaryRows = queuedRows.filter((row) => row.scheduledAt == null || row.scheduledAt <= Date.now())
-                return boundaryRows.some((row) => isSpecialRow(row, /^\s*\/clear(?:\s|$)/i))
+                if (boundaryRows.some((row) => isSpecialRow(row, /^\s*\/clear(?:\s|$)/i))) {
+                    return true
+                }
+                // FIFO through forced admission: the target must be the first
+                // mature deliverable row. Force-delivering a later prompt
+                // would run it ahead of everything still queued before it.
+                const targetIndex = boundaryRows.findIndex((row) => row.id === lookup.resolvedId)
+                return targetIndex > 0
             }
             if (openCodeBoundaryRefuses()) {
                 return { status: 'unavailable', localId: lookup.localId }
@@ -1134,7 +1144,12 @@ export class MessageService {
                 // kill the delivery the user just requested; invocation is
                 // still governed by the normal messages-consumed ack.
                 queueMicrotask(() => {
-                    void this.cancelQueuedMessage(deferred.sessionId, deferred.messageId)
+                    // The final outcome reaches every client (including an
+                    // Edit that received the busy deferral) through the inner
+                    // cancel's SSE events: message-cancelled or
+                    // messages-indeterminate. Failures must not surface as
+                    // unhandled rejections.
+                    this.cancelQueuedMessage(deferred.sessionId, deferred.messageId).catch(() => {})
                 })
             } else if (deferred) {
                 this.deferredCancels.delete(deliverKey)
@@ -1292,7 +1307,11 @@ export class MessageService {
         // the pre-insert `now` capture could misclassify a borderline scheduledAt
         // as future when it has already become past by the time we check.
         const isFutureScheduled = msg.scheduledAt !== null && msg.scheduledAt > Date.now()
-        if (shouldEmitToCli && !isFutureScheduled && !this.store.isOpenCodeClearDeliveryGated(actualSessionId)) {
+        if (shouldEmitToCli && !isFutureScheduled && !this.store.isOpenCodeClearDeliveryGated(actualSessionId)
+            && !this.activeDeliverNow.has(`${actualSessionId}:${msg.localId}`)) {
+            // A deliver-now is mid-flight for this row: the forced copy (and its
+            // admission bookkeeping) owns delivery until it settles; a replay
+            // here would hand the runner a second copy it has not deduped.
             const update = {
                 id: msg.id,
                 seq: msg.seq,
@@ -1377,6 +1396,7 @@ export class MessageService {
     /** Replay durable immediate prompts whenever their CLI session attaches. */
     replayImmediateQueuedMessages(sessionId: string): number {
         const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
+            .filter((msg) => !this.activeDeliverNow.has(`${sessionId}:${msg.localId}`))
         if (queued.length === 0 || this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
         for (const msg of queued) {
             const update = {
@@ -1404,7 +1424,8 @@ export class MessageService {
     releaseDeliverableQueuedMessages(sessionId: string, now: number = Date.now()): number {
         if (this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
         const queued = this.store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
-            .filter((msg) => msg.scheduledAt === null || msg.scheduledAt <= now)
+            .filter((msg) => (msg.scheduledAt === null || msg.scheduledAt <= now)
+                && !this.activeDeliverNow.has(`${sessionId}:${msg.localId}`))
         for (const msg of queued) {
             const update = {
                 id: msg.id,

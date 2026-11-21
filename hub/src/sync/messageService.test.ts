@@ -2780,4 +2780,52 @@ describe('MessageService deliverQueuedMessageNow', () => {
         store.close()
     })
 
+    it('reserves the row against replay while a deliver-now is in flight', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-replay-reserve')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'reserved' } }, 'rr-q')
+        let release: () => void = () => {}
+        const gate = new Promise<void>(resolve => { release = resolve })
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                void gate.then(() => ack(null, [{ removed: false }]))
+                return
+            }
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        const delivering = service.deliverQueuedMessageNow(session.id, 'rr-q')
+        // Session-alive replay and the clear-release sweep both skip the
+        // reserved row: a replay here would hand the runner a second copy it
+        // has not deduped.
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(0)
+        expect(service.releaseDeliverableQueuedMessages(session.id)).toBe(0)
+        expect(calls).toBe(1)
+        release()
+        expect(await delivering).toEqual({ status: 'delivered', localId: 'rr-q' })
+        // After the window closes, replay paths see the row again.
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(1)
+        store.close()
+    })
+
+    it('forces OpenCode prompt recovery in FIFO order', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-fifo', { path: '/tmp/x', flavor: 'opencode' }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'first' } }, 'fifo-a')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'second' } }, 'fifo-b')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, calls === 1 ? [{ removed: false }] : [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'fifo-b'))
+            .toEqual({ status: 'unavailable', localId: 'fifo-b' })
+        expect(calls).toBe(0)
+        expect(await service.deliverQueuedMessageNow(session.id, 'fifo-a'))
+            .toEqual({ status: 'delivered', localId: 'fifo-a' })
+        expect(calls).toBe(2)
+        store.close()
+    })
+
 })
