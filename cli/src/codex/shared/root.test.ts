@@ -1766,10 +1766,20 @@ describe('Ultrafast native settings', () => {
         request.mockRestore();
     });
 
-    it('allows Retry for a queued Ultrafast command after pre-write discovery fails', async () => {
+    it.each(['catalog discovery', 'confirmation read'])('allows Retry for a queued Ultrafast command after %s fails before mutation', async phase => {
         const f = await fixture(); await f.root.activate();
-        vi.spyOn(f.root.client, 'listModels').mockRejectedValueOnce(new Error('catalog disconnected'));
-        const request = vi.spyOn(f.root.client, 'request');
+        const repeated = phase === 'confirmation read';
+        if (repeated) await f.root.applySettings({ serviceTier: 'ultrafast' });
+        else vi.spyOn(f.root.client, 'listModels').mockRejectedValueOnce(new Error('catalog disconnected'));
+        const original = f.root.client.request.bind(f.root.client);
+        let failRead = repeated;
+        const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/resume' && failRead) {
+                failRead = false;
+                throw new Error('confirmation read disconnected');
+            }
+            return original(method, params);
+        });
         f.submit('/ultrafast on', 'retry-tier-command');
         await vi.waitFor(async () => expect((await f.ledger()).entries['retry-tier-command']?.state).toBe('rejected'));
         expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
@@ -1779,7 +1789,7 @@ describe('Ultrafast native settings', () => {
         expect(await f.retry('retry-tier-command', true)).toBe(true);
         f.submit('/ultrafast on', 'retry-tier-command');
         await vi.waitFor(async () => expect((await f.ledger()).entries['retry-tier-command']?.state).toBe('consumed'));
-        expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update')).toHaveLength(1);
+        expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update')).toHaveLength(repeated ? 0 : 1);
     });
 
     it('does not follow a confirmed fallback with an Ultrafast-enabled slash reply', async () => {
@@ -2533,20 +2543,29 @@ it('announces fallback confirmed by a newer notification during native reconcili
     expect(f.events).toHaveBeenCalledWith({ type: 'message', message: notice });
 });
 
-it('holds Web and native input if Standard is rejected after an accepted Ultrafast turn', async () => {
+it.each(['turn', 'web', 'native'])('holds Web and native input if Standard is rejected after Ultrafast selection through %s', async origin => {
     const f = await fixture(); await f.root.activate();
     const turn = await f.root.prepareNativeTurn({ serviceTier: 'ultrafast' });
     const original = f.root.client.request.bind(f.root.client);
     let rejectReset = true;
     const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
-        if (method === 'thread/settings/update' && rejectReset) {
+        if (method === 'thread/settings/update' && (params as { serviceTier?: unknown }).serviceTier === null && rejectReset) {
             rejectReset = false;
             throw new Error('Native settings reset rejected');
         }
+        if (method === 'thread/resume' && f.native.settings.serviceTier === 'ultrafast') {
+            return { ...f.native.settings, serviceTier: null, thread: structuredClone(f.native.thread) } as never;
+        }
         return original(method, params);
     });
-    f.native.settings.serviceTier = null;
-    await expect(f.root.confirmNativeTurn(turn.params, true, turn.fallbackNotice, turn.generation)).resolves.toBeUndefined();
+    if (origin === 'turn') {
+        f.native.settings.serviceTier = 'ultrafast';
+        await expect(f.root.confirmNativeTurn(turn.params, true, turn.fallbackNotice, turn.generation)).resolves.toBeUndefined();
+    } else {
+        const operation = origin === 'web' ? f.root.applySettings({ serviceTier: 'ultrafast' })
+            : f.root.applyNativeSettings({ threadId: 'thread', serviceTier: 'ultrafast' });
+        await expect(operation).rejects.toThrow('Native settings reset rejected');
+    }
     expect(f.root.needsTierConfirmation).toBe(true);
     expect(f.metadata().codexTierConfirmationPending).toBe(true);
     f.submit('hold until Standard', 'paused-web-input');

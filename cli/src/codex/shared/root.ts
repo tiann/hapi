@@ -755,14 +755,14 @@ export class SharedCodexRoot {
         }
     }
     private settingsWrites: Promise<unknown> = Promise.resolve();
-    applySettings(raw: unknown, beforeReconciliation?: () => void): Promise<{ applied: RuntimeSettings }> {
+    applySettings(raw: unknown, onMutation?: () => void): Promise<{ applied: RuntimeSettings }> {
         const deadline = Date.now() + 25_000;
         const operationId = ++this.tierOperationCounter;
-        const operation = this.settingsWrites.catch(() => {}).then(() => this.applySettingsNow(raw, deadline, operationId, beforeReconciliation));
+        const operation = this.settingsWrites.catch(() => {}).then(() => this.applySettingsNow(raw, deadline, operationId, onMutation));
         this.settingsWrites = operation;
         return operation;
     }
-    private async applySettingsNow(raw: unknown, deadline: number, operationId: number, beforeReconciliation?: () => void): Promise<{ applied: RuntimeSettings }> {
+    private async applySettingsNow(raw: unknown, deadline: number, operationId: number, onMutation?: () => void): Promise<{ applied: RuntimeSettings }> {
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
         const config = SettingsSchema.parse(raw);
         if (this.pendingLaunchCollaborationMode && config.collaborationMode === undefined) config.collaborationMode = this.pendingLaunchCollaborationMode;
@@ -820,16 +820,18 @@ export class SharedCodexRoot {
             } } } : {})
         };
         const confirmsTier = config.serviceTier !== undefined || this.hasUltrafastTier;
-        beforeReconciliation?.();
-        const confirmed = await this.writeNativeSettings(params, params, deadline, operationId);
+        const confirmed = await this.writeNativeSettings(params, params, deadline, operationId, undefined, onMutation);
         if (config.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
-        await this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, fallbackNotice);
+        await this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, fallbackNotice, onMutation);
         this.alive(); return { applied: this.settings };
     }
-    private async confirmSettingsWrite(operationId: number | undefined, explicitTier: boolean, confirmsTier: boolean, fallbackNotice?: string): Promise<void> {
+    private async confirmSettingsWrite(operationId: number | undefined, explicitTier: boolean, confirmsTier: boolean, fallbackNotice?: string, onMutation?: () => void): Promise<void> {
         if (operationId === undefined || !this.isCurrentTierOperation(operationId)) return;
         if (explicitTier) this.serviceTierExplicit = true;
-        if (confirmsTier) await this.completeTierConfirmation(operationId);
+        if (confirmsTier) {
+            onMutation?.();
+            await this.completeTierConfirmation(operationId);
+        }
         if (fallbackNotice && this.isCurrentTierOperation(operationId)) this.notice(fallbackNotice);
     }
     private async completeTierConfirmation(operationId = ++this.tierOperationCounter): Promise<void> {
@@ -1081,7 +1083,7 @@ export class SharedCodexRoot {
         } finally { clearTimeout(timer); }
     }
     private async writeNativeSettings(params: Record<string, unknown>, expected = params, deadline = Date.now() + 25_000,
-        operationId = ++this.tierOperationCounter, canWrite?: () => boolean): Promise<number | undefined> {
+        operationId = ++this.tierOperationCounter, canWrite?: () => boolean, onMutation?: () => void): Promise<number | undefined> {
         if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
         if (canWrite && !canWrite()) return;
@@ -1105,7 +1107,7 @@ export class SharedCodexRoot {
             else if (canWrite) return;
             if (canWrite && !canWrite()) return;
             if (matches(comparable)) {
-                if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, requestedUltrafast);
+                if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, requestedUltrafast, onMutation);
                 return operationId;
             }
         }
@@ -1124,25 +1126,26 @@ export class SharedCodexRoot {
             if (canWrite) {
                 if (!canWrite()) return;
             } else operationId = ++this.tierOperationCounter;
+            onMutation?.();
             await this.settingsRequest('thread/settings/update', params, deadline, true, () => changesTier && operationId >= this.confirmedTierOperation, operationId);
             // The RPC only acknowledges queueing the settings operation. The
             // native notification, not our submitted candidate, establishes state.
             await accepted;
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
-        if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, requestedUltrafast);
+        if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, requestedUltrafast, onMutation);
         return operationId;
     }
     private isCurrentTierOperation(operationId: number): boolean {
         return operationId >= Math.max(this.confirmedTierOperation, this.pendingTierOperation, this.acceptedNativeTierOperation);
     }
-    private async fallbackToStandard(deadline: number, operationId: number): Promise<boolean> {
+    private async fallbackToStandard(deadline: number, operationId: number, onMutation?: () => void): Promise<boolean> {
         const canWrite = () => this.isCurrentTierOperation(operationId) && !this.hasUltrafastTier && !this.hasOtherEffectiveTier;
-        const confirmed = await this.writeNativeSettings({ threadId: this.threadId, serviceTier: null }, { serviceTier: null }, deadline, operationId, canWrite);
+        const confirmed = await this.writeNativeSettings({ threadId: this.threadId, serviceTier: null }, { serviceTier: null }, deadline, operationId, canWrite, onMutation);
         if (confirmed === undefined || !canWrite()) return false;
         this.notice('Codex did not apply Ultrafast; changed to Standard.');
         return true;
     }
-    private async confirmEffectiveUltrafast(deadline: number, operationId: number, requestedUltrafast = false): Promise<void> {
+    private async confirmEffectiveUltrafast(deadline: number, operationId: number, requestedUltrafast = false, onMutation?: () => void): Promise<void> {
         // Settings notifications report selection; a loaded thread can still
         // filter Ultrafast using the feature state captured when it started.
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -1158,7 +1161,12 @@ export class SharedCodexRoot {
                 if (requestedUltrafast) throw new Error('Codex settings were superseded by a newer tier selection; refresh before retrying');
                 return;
             }
-            if (await this.fallbackToStandard(deadline, operationId)) return;
+            try {
+                if (await this.fallbackToStandard(deadline, operationId, onMutation)) return;
+            } catch (error) {
+                if (current()) this.pauseTierConfirmation(operationId);
+                throw error;
+            }
             if (!current()) throw new Error('Codex settings were superseded by a newer tier selection; refresh before retrying');
             // A selection notification can invalidate the fallback read, but
             // only the next effective snapshot can satisfy confirmation.
@@ -1469,10 +1477,10 @@ export class SharedCodexRoot {
         }
         if (slash.updates?.proactiveMultiAgent !== undefined) throw new Error('This Codex version uses Ultra reasoning effort instead of a multi-agent toggle');
         if (slash.updates?.model === null) throw new Error('Choose an explicit model in a shared thread');
-        let reconciliationStarted = false;
-        const applied = slash.updates ? await this.applySettings(slash.updates, () => { reconciliationStarted = true; })
+        let mutationPossible = false;
+        const applied = slash.updates ? await this.applySettings(slash.updates, () => { mutationPossible = true; })
             .catch((error: unknown) => {
-                if (reconciliationStarted) throw error;
+                if (mutationPossible) throw error;
                 const message = error instanceof Error ? error.message : String(error);
                 throw new QueueCommandRejected(message, { cause: error });
             }) : undefined;
