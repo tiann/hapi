@@ -315,7 +315,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly settledFromTranscript: string[] = [];
     // After a Stop, starts of commands first seen once the stopped activity is over are held:
     // released when a new wakeup row proves ownership, discarded at the next handler swap.
-    private quarantine: { afterStep: number; held: Array<{ turn: AgyTurn; message: AgentMessage }> } | null = null;
+    private quarantine: { afterStep: number; held: Array<{ turn: AgyTurn; message: AgentMessage }>; consumed: Set<string> } | null = null;
     private backendLost = false;
     private startBackendPromise: Promise<void> | null = null;
     private hasReceivedAvailableCommands = false;
@@ -1365,7 +1365,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.idleTurn = null;
         this.idleDiscarded = false;
         this.quarantine = !keep && this.acpSessionId
-            ? { afterStep: readLatestAgyTranscriptStepIndex(this.brainDir, this.acpSessionId), held: [] }
+            ? { afterStep: readLatestAgyTranscriptStepIndex(this.brainDir, this.acpSessionId), held: [], consumed: new Set<string>() }
             : null;
         if (!turn) return;
         if (!keep) {
@@ -1415,22 +1415,35 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const steps = readAgyTranscriptStepsAfter(this.brainDir, this.acpSessionId, q.afterStep);
         const first = steps.findIndex((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE');
         if (first < 0) return;
-        const planned = steps.slice(first).flatMap((step) =>
-            step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE'
-                ? (step.tool_calls ?? []).filter((call) => call.name === 'run_command').map((call) => decodeAgyTranscriptArgs(call.args).CommandLine)
-                : []
-        );
-        const owned = new Set<string>();
+        // Planned entries by command line, each identified by step and call position; an entry
+        // that already released a start (an earlier tick) is not counted again.
+        const planned = new Map<string, string[]>();
+        for (const step of steps.slice(first)) {
+            if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') continue;
+            (step.tool_calls ?? []).forEach((call, position) => {
+                const key = `${step.step_index}:${position}`;
+                const line = call.name === 'run_command' ? decodeAgyTranscriptArgs(call.args).CommandLine : undefined;
+                if (typeof line === 'string' && !q.consumed.has(key)) planned.set(line, [...(planned.get(line) ?? []), key]);
+            });
+        }
+        const startsByLine = new Map<string, Array<Extract<AgentMessage, { type: 'tool_call' }>>>();
         for (const { message } of q.held) {
             if (message.type !== 'tool_call') continue;
             const args = message.nativeArgs && typeof message.nativeArgs === 'object'
                 ? (message.nativeArgs as Record<string, unknown>)
                 : undefined;
-            const at = typeof args?.CommandLine === 'string' ? planned.indexOf(args.CommandLine) : -1;
-            if (at >= 0) {
-                planned.splice(at, 1);
-                owned.add(message.id);
-            }
+            const line = args?.CommandLine;
+            if (typeof line === 'string') startsByLine.set(line, [...(startsByLine.get(line) ?? []), message]);
+        }
+        // More held starts than planned entries for a command line: nothing tells them apart, so none is released.
+        const owned = new Set<string>();
+        for (const [line, starts] of startsByLine) {
+            const keys = planned.get(line) ?? [];
+            if (starts.length > keys.length) continue;
+            starts.forEach((start, i) => {
+                q.consumed.add(keys[i]!);
+                owned.add(start.id);
+            });
         }
         if (owned.size === 0) return;
         const replay = q.held.filter((item) => owned.has(('id' in item.message ? item.message.id : undefined) ?? ''));
