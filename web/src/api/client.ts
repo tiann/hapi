@@ -1,4 +1,5 @@
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import { isAuthRejectionStatus } from '@/lib/authConnection'
 import type {
     AttachmentMetadata,
     AbortChunkedUploadResponse,
@@ -330,16 +331,27 @@ export class ApiClient {
     }
 
     async authenticate(
-        auth: { initData: string } | { accessToken: string } | { passkeySession: string }
+        auth: { initData: string } | { accessToken: string } | { passkeySession: string },
+        options?: { signal?: AbortSignal }
     ): Promise<AuthResponse> {
         const res = await fetchThroughAuthProxy(this.buildUrl('/api/auth'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(auth)
+            body: JSON.stringify(auth),
+            ...(options?.signal ? { signal: options.signal } : {})
         })
 
         if (!res.ok) {
-            const body = await res.text().catch(() => '')
+            let body: string
+            try { body = await res.text() }
+            catch (error) {
+                // Headers already establish a transient server failure. A partial
+                // credential rejection must still remain retryable.
+                if (!isAuthRejectionStatus(res.status)) {
+                    throw new ApiError(`Auth failed: HTTP ${res.status} ${res.statusText}`, res.status)
+                }
+                throw error
+            }
             const code = parseErrorCode(body)
             const detail = body ? `: ${body}` : ''
             throw new ApiError(`Auth failed: HTTP ${res.status} ${res.statusText}${detail}`, res.status, code, body || undefined)

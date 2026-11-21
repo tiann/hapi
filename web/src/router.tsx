@@ -304,7 +304,7 @@ function SessionsPage() {
                 className={`${shouldShowSidebar ? (isSessionsIndex ? 'flex' : 'hidden split:flex') : 'hidden'} min-w-0 w-full shrink-0 flex-col bg-[var(--app-bg)]`}
                 style={{ '--sidebar-w': `${sidebar.width}px` } as React.CSSProperties}
             >
-                <div className="flex min-h-0 flex-1 flex-col pt-[env(safe-area-inset-top)]">
+                <div className="flex min-h-0 flex-1 flex-col pt-[var(--route-safe-area-top,env(safe-area-inset-top))]">
                     {error ? (
                         <div className="mx-auto w-full max-w-content px-3 py-2">
                             <div className="text-sm text-red-600">{error}</div>
@@ -374,7 +374,7 @@ function SessionsPage() {
 
             <div className={`${isSessionsIndex ? 'hidden split:flex' : 'flex'} relative min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
                 {isSessionsIndex ? (
-                    <div className="absolute right-3 top-[calc(env(safe-area-inset-top)+0.75rem)] z-10 hidden split:block">
+                    <div className="absolute right-3 top-[calc(var(--route-safe-area-top,env(safe-area-inset-top))+0.75rem)] z-10 hidden split:block">
                         <NativeAppPromoButton />
                     </div>
                 ) : null}
@@ -1155,7 +1155,7 @@ function NewSessionPage() {
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+env(safe-area-inset-top))]">
+            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+var(--route-safe-area-top,env(safe-area-inset-top)))]">
                 {!isTelegramApp() && (
                     <button
                         type="button"
@@ -1212,7 +1212,7 @@ function BrowsePage() {
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+env(safe-area-inset-top))]">
+            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+var(--route-safe-area-top,env(safe-area-inset-top)))]">
                 {!isTelegramApp() && (
                     <button
                         type="button"
