@@ -48,6 +48,7 @@ const harness = vi.hoisted(() => ({
         getMetadata: vi.fn(() => null as Metadata | null),
         onUserMessage: vi.fn(),
         onCancelQueuedMessage: vi.fn(),
+        onBeforeReuseLocalId: vi.fn(),
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn(),
         emitMessagesConsumed: vi.fn(),

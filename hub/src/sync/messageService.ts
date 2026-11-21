@@ -195,6 +195,20 @@ export type RetryIndeterminateMessageResult =
     | { status: 'invoked'; message: DecryptedMessage }
     | { status: 'not-found' }
 
+/**
+ * Explicit "send now" outcome for a queued row. 'delivered' means the CLI
+ * force-accepted the row; invocation is stamped later through the normal
+ * messages-consumed ack. Every non-invoked outcome leaves the row queued
+ * and unchanged.
+ */
+export type DeliverQueuedMessageNowResult =
+    | { status: 'delivered'; localId: string }
+    | { status: 'busy'; localId: string }
+    | { status: 'unavailable'; localId: string }
+    | { status: 'scheduled'; localId: string }
+    | { status: 'invoked'; message: DecryptedMessage }
+    | { status: 'not-found' }
+
 function contentForDeferredDelivery(content: unknown): unknown {
     if (!isObject(content) || content.role !== 'user' || !isObject(content.meta)) {
         return content
@@ -217,6 +231,13 @@ export class MessageService {
     /** One scheduled-matured SSE per localId per hub process (cleared on cancel/consume paths here). */
     private readonly scheduledMatureNotifiedLocalIds = new Set<string>()
     private readonly activeIndeterminateRetries = new Set<string>()
+    private readonly activeDeliverNow = new Set<string>()
+    /** (session:localId) keys with a cancel probe in flight; deliver-now defers on them. */
+    private readonly activeCancels = new Set<string>()
+    /** Ack budget for the forced retry emit: must cover the CLI's preparation reuse gate. */
+    private static readonly FORCED_RETRY_ACK_TIMEOUT_MS = 5000
+    /** Cancels deferred by the deliver-now mutex, replayed once delivery settles. */
+    private readonly deferredCancels = new Map<string, { sessionId: string; messageId: string }>()
 
     constructor(
         private readonly store: Store,
@@ -589,7 +610,39 @@ export class MessageService {
         }))
     }
 
+    /**
+     * Cancel a queued message. Coordinates with deliver-now on the same
+     * (session, localId): the two paths race on the CLI probe and the row,
+     * so while a forced delivery is in flight the cancel defers (busy) and
+     * vice versa — one action wins and the other can be retried afterwards.
+     */
     async cancelQueuedMessage(
+        sessionId: string,
+        messageId: string
+    ): Promise<CancelQueuedMessageResult> {
+        const coordinationLookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+        const coordinationLocalId = 'localId' in coordinationLookup ? (coordinationLookup.localId ?? null) : null
+        const coordinationCancellable = ['queued', 'dispatching', 'indeterminate'].includes(coordinationLookup.status)
+        if (coordinationLocalId && coordinationCancellable) {
+            const key = `${sessionId}:${coordinationLocalId}`
+            if (this.activeDeliverNow.has(key)) {
+                // Deferred, not dropped: once the delivery settles, the
+                // intent replays automatically (a no-op if the row was
+                // delivered and consumed meanwhile).
+                this.deferredCancels.set(key, { sessionId, messageId })
+                return { status: 'busy', localId: coordinationLocalId }
+            }
+            this.activeCancels.add(key)
+            try {
+                return await this.cancelQueuedMessageInner(sessionId, messageId)
+            } finally {
+                this.activeCancels.delete(key)
+            }
+        }
+        return this.cancelQueuedMessageInner(sessionId, messageId)
+    }
+
+    private async cancelQueuedMessageInner(
         sessionId: string,
         messageId: string
     ): Promise<CancelQueuedMessageResult> {
@@ -636,7 +689,7 @@ export class MessageService {
         // A live dispatch is not cancellable by timeout. Convert it to the
         // durable unknown state and require a second explicit resolution.
         if (isDispatching) {
-            const ackResult = await this.requestCliCancelAck(sessionId, localId, messageId, 500)
+            const ackResult = (await this.requestCliCancelAck(sessionId, localId, messageId, 500)).result
             if (ackResult === 'consumed') {
                 return this.recordConsumedAcknowledgement(sessionId, localId)
             }
@@ -661,7 +714,7 @@ export class MessageService {
             const roomName = `session:${sessionId}`
             const cliCount = this.io.of('/cli').adapter.rooms.get(roomName)?.size ?? 0
             const ackResult = cliCount > 0
-                ? await this.requestCliCancelAck(sessionId, localId, messageId, 500)
+                ? (await this.requestCliCancelAck(sessionId, localId, messageId, 500)).result
                 : 'timeout' as const
             if (ackResult === 'consumed') {
                 return this.recordConsumedAcknowledgement(sessionId, localId)
@@ -747,7 +800,7 @@ export class MessageService {
             return { status: 'cancelled', localId }
         }
 
-        const ackResult = await this.requestCliCancelAck(sessionId, localId, messageId, 500)
+        const ackResult = (await this.requestCliCancelAck(sessionId, localId, messageId, 500)).result
 
         if (ackResult === 'consumed') {
             return this.recordConsumedAcknowledgement(sessionId, localId)
@@ -816,7 +869,7 @@ export class MessageService {
             return { status: 'retry-unavailable', localId: lookup.localId }
         }
 
-        const cancelResult = await this.requestCliCancelAck(sessionId, lookup.localId, messageId, 500)
+        const cancelResult = (await this.requestCliCancelAck(sessionId, lookup.localId, messageId, 500)).result
         if (cancelResult === 'consumed') {
             const settled = this.recordConsumedAcknowledgement(sessionId, lookup.localId)
             return settled.status === 'invoked'
@@ -863,7 +916,10 @@ export class MessageService {
         }
         const room = this.io.of('/cli').to(roomName)
         const accepted = await new Promise<boolean>((resolve) => {
-            room.timeout(500).emit(
+            // Same admission budget as deliver-now: the CLI's preparation
+            // reuse gate applies to this forced retry too and can outlast the
+            // probe round-trip.
+            room.timeout(MessageService.FORCED_RETRY_ACK_TIMEOUT_MS).emit(
                 'update',
                 update,
                 (_err: Error | null, responses: Array<{ accepted?: boolean }>) => {
@@ -890,24 +946,247 @@ export class MessageService {
     }
 
     /**
+     * Explicit "send now" for a queued row (the queued bar's ↑ affordance).
+     *
+     * Recovery path for rows stranded by an abort: the hub's session-alive
+     * replay of the still-queued row is dropped by the CLI's message-id dedup,
+     * so the row can hang with invoked_at NULL until the end-of-session sweep
+     * discards it unread — a hub-side recovery gap that is independent of how
+     * each flavor manages its in-memory queue around aborts. This mirrors
+     * retryIndeterminateMessage's CLI round-trip — a cancel-ack to release any
+     * stale in-memory copy, then a force 'retry-queued-message' emit that
+     * bypasses the dedup — but keeps the row in the 'queued' delivery state
+     * throughout: the CLI consumes it into a fresh turn and stamps invoked_at
+     * through the normal messages-consumed ack. Claude-flavor sessions keep
+     * their in-memory copy across aborts; there the cancel-ack removes it and
+     * the re-emit re-accepts it, so the click is still a no-op reorder at worst.
+     *
+     * Shared-native sessions (capabilities.concurrentClients) multiplex
+     * several clients over one worker, so a cancel-ack here could disrupt a
+     * turn another client is running. They are rejected up front, before any
+     * probe leaves the hub.
+     *
+     * Every non-invoked outcome leaves the row exactly as it was; concurrent
+     * clicks are serialized by the activeDeliverNow guard on top of the web
+     * client's queued-operation mutex.
+     */
+    async deliverQueuedMessageNow(
+        sessionId: string,
+        messageId: string
+    ): Promise<DeliverQueuedMessageNowResult> {
+        const lookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+        if (lookup.status === 'absent') return { status: 'not-found' }
+        if (lookup.status === 'invoked') {
+            return { status: 'invoked', message: toDecryptedMessage(lookup.message) }
+        }
+        if (!lookup.localId) return { status: 'not-found' }
+        if ((this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.capabilities?.concurrentClients) {
+            // Shared-native sessions multiplex several clients over one worker;
+            // the cancel-ack probe could disrupt a turn another client is
+            // running, so reject before anything leaves the hub.
+            return { status: 'unavailable', localId: lookup.localId }
+        }
+        if (lookup.status !== 'queued') {
+            // dispatching / indeterminate rows are not deliverable through this
+            // path; indeterminate rows already own the retry affordance.
+            return { status: 'unavailable', localId: lookup.localId }
+        }
+        if (lookup.scheduledAt != null && lookup.scheduledAt > Date.now()) {
+            // Future-scheduled rows mature through the scheduler tick, the same
+            // rule steer enforces.
+            return { status: 'scheduled', localId: lookup.localId }
+        }
+        const deliverKey = `${sessionId}:${lookup.localId}`
+        if (this.activeDeliverNow.has(deliverKey) || this.activeCancels.has(deliverKey)) {
+            return { status: 'busy', localId: lookup.localId }
+        }
+        this.activeDeliverNow.add(deliverKey)
+        let deliveryAdmitted = false
+        try {
+            const roomName = `session:${sessionId}`
+            const cliCount = this.io.of('/cli').adapter.rooms.get(roomName)?.size ?? 0
+            if (this.store.isOpenCodeClearDeliveryGated(sessionId) || cliCount !== 1) {
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            // Ordering guard: an OpenCode /clear or /compact is a queue
+            // transition the runner's release path owns — Send-now never
+            // force-delivers one, and while a clear is queued EVERY row is
+            // refused (a prompt queued before it would be re-enqueued behind
+            // the runner's isolated clear batch, silently crossing the
+            // boundary). The matchers mirror the runner's
+            // resolveOpencodeSlashCommand (case-insensitive, leading
+            // whitespace, trailing arguments); future-scheduled rows leave
+            // the boundary until they mature. Re-checked after the probe: a
+            // clear can arrive while it is in flight.
+            const openCodeBoundaryRefuses = (): boolean => {
+                const flavor = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.flavor
+                if (flavor !== 'opencode') return false
+                const isSpecialRow = (row: { content: unknown }, pattern: RegExp) => {
+                    const content = row.content as { role?: unknown; content?: { type?: unknown; text?: unknown } } | null
+                    return content?.role === 'user' && content.content?.type === 'text'
+                        && pattern.test(String(content.content.text ?? ''))
+                }
+                const queuedRows = this.store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
+                const targetRow = queuedRows.find((row) => row.id === lookup.resolvedId)
+                if (targetRow !== undefined && (isSpecialRow(targetRow, /^\s*\/clear(?:\s|$)/i) || isSpecialRow(targetRow, /^\s*\/compact(?:\s|$)/i))) {
+                    return true
+                }
+                const boundaryRows = queuedRows.filter((row) => row.scheduledAt == null || row.scheduledAt <= Date.now())
+                if (boundaryRows.some((row) => isSpecialRow(row, /^\s*\/clear(?:\s|$)/i))) {
+                    return true
+                }
+                // FIFO through forced admission: the target must be the first
+                // mature deliverable row. Force-delivering a later prompt
+                // would run it ahead of everything still queued before it.
+                const targetIndex = boundaryRows.findIndex((row) => row.id === lookup.resolvedId)
+                return targetIndex > 0
+            }
+            if (openCodeBoundaryRefuses()) {
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+
+            const probe = await this.requestCliCancelAck(sessionId, lookup.localId, messageId, 500)
+            const cancelResult = probe.result
+            if (cancelResult === 'consumed') {
+                const settled = this.recordConsumedAcknowledgement(sessionId, lookup.localId)
+                return settled.status === 'invoked'
+                    ? { status: 'invoked', message: toDecryptedMessage(settled.message) }
+                    : { status: 'not-found' }
+            }
+            if (cancelResult === 'in-flight' || cancelResult === 'timeout' || cancelResult === 'indeterminate') {
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            const refreshed = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+            if (refreshed.status === 'invoked') {
+                return { status: 'invoked', message: toDecryptedMessage(refreshed.message) }
+            }
+            if (refreshed.status === 'absent') return { status: 'not-found' }
+            if (refreshed.status !== 'queued') {
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            if (openCodeBoundaryRefuses()) {
+                // A clear (or compact) matured or arrived while the probe was
+                // in flight; the pre-probe snapshot is stale.
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            const message = this.store.messages.getMessageById(sessionId, lookup.resolvedId)
+            if (!message || !message.localId) return { status: 'not-found' }
+
+            const update = {
+                id: message.id,
+                seq: message.seq,
+                createdAt: message.createdAt,
+                body: {
+                    t: 'retry-queued-message' as const,
+                    sid: sessionId,
+                    messageId: message.id,
+                    localId: message.localId,
+                    message: {
+                        id: message.id,
+                        seq: message.seq,
+                        createdAt: message.createdAt,
+                        localId: message.localId,
+                        content: contentForDeferredDelivery(message.content)
+                    }
+                }
+            }
+            // Bind the forced retry to the same server-selected socket the
+            // per-socket probe cleared, and require it to STILL be the room's
+            // sole member: membership can change between the two emits, and a
+            // second runner joining means multi-client semantics the probe
+            // never validated. Either way, nothing is emitted.
+            const soleMemberIs = (socketId: string): boolean => {
+                const members = this.io.of('/cli').adapter.rooms.get(roomName)
+                return members?.size === 1 && members.has(socketId)
+            }
+            if (probe.responderId === null || !soleMemberIs(probe.responderId)) {
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            const room = this.io.of('/cli').to(probe.responderId)
+            const accepted = await new Promise<boolean>((resolve) => {
+                // The CLI's reuse gate can wait out asynchronous preparation
+                // (image reads, command discovery) that easily outlasts the
+                // probe round-trip; timing out here while the runner still
+                // dispatches afterwards would misreport the row as
+                // unavailable and invite a duplicate delivery.
+                room.timeout(MessageService.FORCED_RETRY_ACK_TIMEOUT_MS).emit(
+                    'update',
+                    update,
+                    (_err: Error | null, responses: Array<{ accepted?: boolean }>) => {
+                        resolve(responses?.some((response) => response.accepted === true) ?? false)
+                    }
+                )
+            })
+            if (!accepted) {
+                // The row was safely queued before this call; keep it that way
+                // rather than degrading it to indeterminate.
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            if (probe.responderId === null || !soleMemberIs(probe.responderId)) {
+                // The sole-member invariant broke between the emit and the
+                // admission. Best-effort rollback of the copy the probe-cleared
+                // socket just admitted (the cancel fan-out also reaches any
+                // copy a joining runner replayed), so the row cannot execute
+                // twice; the caller sees the row as still queued.
+                void this.requestCliCancelAck(sessionId, lookup.localId, messageId, 500)
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            deliveryAdmitted = true
+            return { status: 'delivered', localId: message.localId }
+        } finally {
+            this.activeDeliverNow.delete(deliverKey)
+            const deferred = this.deferredCancels.get(deliverKey)
+            if (deferred && !deliveryAdmitted) {
+                this.deferredCancels.delete(deliverKey)
+                // Replay only when delivery did NOT admit the copy: the row is
+                // still queued and the user's cancel lands. After a successful
+                // admission the prompt is in flight — cancelling then would
+                // kill the delivery the user just requested; invocation is
+                // still governed by the normal messages-consumed ack.
+                queueMicrotask(() => {
+                    // The final outcome reaches every client (including an
+                    // Edit that received the busy deferral) through the inner
+                    // cancel's SSE events: message-cancelled or
+                    // messages-indeterminate. Failures must not surface as
+                    // unhandled rejections.
+                    this.cancelQueuedMessage(deferred.sessionId, deferred.messageId).catch(() => {})
+                })
+            } else if (deferred) {
+                this.deferredCancels.delete(deliverKey)
+            }
+        }
+    }
+
+    /**
      * Ask the CLI (via socket.io ack) whether it removed the in-memory queue item.
      * Returns 'removed', 'not-found', or 'timeout'.
      *
      * Re-uses the existing 'update' event channel with a cancel-queued-message body,
      * matching the ack pattern already used by rpcGateway
      * (socket.timeout(ms).emitWithAck / BroadcastOperator.timeout(ms).emit + ack cb).
+     *
+     * The probe is emitted per socket (not broadcast to the room) so the
+     * SERVER records which socket answered — deliver-now binds its forced
+     * retry to that server-selected socket. A client-reported socketId in
+     * the ack is never trusted for targeting; the aggregation precedence is
+     * unchanged (an explicit in-flight/consumed report from any socket
+     * dominates a removed from another, so a stale duplicate socket cannot
+     * orphan an executing message).
      */
-    private requestCliCancelAck(
+    private async requestCliCancelAck(
         sessionId: string,
         localId: string,
         messageId: string,
         timeoutMs: number
-    ): Promise<'removed' | 'in-flight' | 'indeterminate' | 'consumed' | 'not-found' | 'timeout'> {
-        return new Promise((resolve) => {
-            const room = this.io.of('/cli').to(`session:${sessionId}`)
-            // socket.io v4 BroadcastOperator: .timeout(ms).emit(event, data, ackCb)
-            // ack signature: (err: Error | null, responses: T[])
-            room.timeout(timeoutMs).emit(
+    ): Promise<{ result: 'removed' | 'in-flight' | 'indeterminate' | 'consumed' | 'not-found' | 'timeout'; responderId: string | null }> {
+        const roomName = `session:${sessionId}`
+        const socketIds = [...(this.io.of('/cli').adapter.rooms.get(roomName) ?? [])]
+        if (socketIds.length === 0) {
+            return { result: 'timeout', responderId: null }
+        }
+        type Ack = { removed?: boolean; inFlight?: boolean; indeterminate?: boolean; consumed?: boolean }
+        const answered = await Promise.all(socketIds.map((socketId: string) => new Promise<{ socketId: string; ack: Ack } | null>((resolve) => {
+            this.io.of('/cli').to(socketId).timeout(timeoutMs).emit(
                 'update',
                 {
                     id: randomUUID(),
@@ -920,38 +1199,41 @@ export class MessageService {
                         localId
                     }
                 },
-                (err: Error | null, responses: Array<{ removed: boolean; inFlight?: boolean; indeterminate?: boolean; consumed?: boolean }>) => {
+                (err: Error | null, responses: Array<Ack>) => {
                     // Check responses before err: in a reconnect overlap or any room with
                     // multiple CLI sockets, Socket.IO may set err (one socket timed out)
                     // while still delivering successful responses from the sockets that did
                     // ack. An explicit in-flight report dominates: one socket may be
                     // dispatching the steer while a stale duplicate socket reports
                     // removed — deleting the row then would orphan the executing message.
-                    if (responses?.some((r) => r.consumed === true)) {
-                        resolve('consumed')
+                    const ack = responses?.[0]
+                    if (ack === undefined) {
+                        resolve(null)
                         return
                     }
-                    if (responses?.some((r) => r.indeterminate === true)) {
-                        resolve('indeterminate')
-                        return
-                    }
-                    if (responses?.some((r) => r.inFlight === true)) {
-                        resolve('in-flight')
-                        return
-                    }
-                    const removed = responses?.some((r) => r.removed === true) ?? false
-                    if (removed) {
-                        resolve('removed')
-                        return
-                    }
-                    if (err) {
-                        resolve('timeout')
-                        return
-                    }
-                    resolve('not-found')
+                    resolve({ socketId, ack })
                 }
             )
-        })
+        })))
+        const responses = answered.filter((entry): entry is { socketId: string; ack: Ack } => entry !== null)
+        const responderId = responses.length > 0 ? responses[0]!.socketId : null
+        if (responses.some((r) => r.ack.consumed === true)) {
+            return { result: 'consumed', responderId }
+        }
+        if (responses.some((r) => r.ack.indeterminate === true)) {
+            return { result: 'indeterminate', responderId }
+        }
+        if (responses.some((r) => r.ack.inFlight === true)) {
+            return { result: 'in-flight', responderId }
+        }
+        if (responses.some((r) => r.ack.removed === true)) {
+            return { result: 'removed', responderId }
+        }
+        if (responses.length < socketIds.length) {
+            // At least one probed socket failed to answer within the timeout.
+            return { result: 'timeout', responderId }
+        }
+        return { result: 'not-found', responderId }
     }
 
     async sendMessage(
@@ -1025,7 +1307,11 @@ export class MessageService {
         // the pre-insert `now` capture could misclassify a borderline scheduledAt
         // as future when it has already become past by the time we check.
         const isFutureScheduled = msg.scheduledAt !== null && msg.scheduledAt > Date.now()
-        if (shouldEmitToCli && !isFutureScheduled && !this.store.isOpenCodeClearDeliveryGated(actualSessionId)) {
+        if (shouldEmitToCli && !isFutureScheduled && !this.store.isOpenCodeClearDeliveryGated(actualSessionId)
+            && !this.activeDeliverNow.has(`${actualSessionId}:${msg.localId}`)) {
+            // A deliver-now is mid-flight for this row: the forced copy (and its
+            // admission bookkeeping) owns delivery until it settles; a replay
+            // here would hand the runner a second copy it has not deduped.
             const update = {
                 id: msg.id,
                 seq: msg.seq,
@@ -1110,6 +1396,7 @@ export class MessageService {
     /** Replay durable immediate prompts whenever their CLI session attaches. */
     replayImmediateQueuedMessages(sessionId: string): number {
         const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
+            .filter((msg) => !this.activeDeliverNow.has(`${sessionId}:${msg.localId}`))
         if (queued.length === 0 || this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
         for (const msg of queued) {
             const update = {
@@ -1137,7 +1424,8 @@ export class MessageService {
     releaseDeliverableQueuedMessages(sessionId: string, now: number = Date.now()): number {
         if (this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
         const queued = this.store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
-            .filter((msg) => msg.scheduledAt === null || msg.scheduledAt <= now)
+            .filter((msg) => (msg.scheduledAt === null || msg.scheduledAt <= now)
+                && !this.activeDeliverNow.has(`${sessionId}:${msg.localId}`))
         for (const msg of queued) {
             const update = {
                 id: msg.id,

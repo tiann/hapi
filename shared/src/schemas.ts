@@ -1047,3 +1047,20 @@ export const SteerQueuedMessageResponseSchema = z.discriminatedUnion('status', [
 ])
 
 export type SteerQueuedMessageResponse = z.infer<typeof SteerQueuedMessageResponseSchema>
+
+export const DeliverQueuedMessageNowResponseSchema = z.discriminatedUnion('status', [
+    // The CLI force-accepted the row; it will be consumed into a fresh turn
+    // and stamped invoked through the normal messages-consumed ack.
+    z.object({ status: z.literal('delivered'), localId: z.string() }),
+    z.object({ status: z.literal('invoked'), message: DecryptedMessageSchema }),
+    // Another deliver/steer attempt for the same row is still in flight.
+    z.object({ status: z.literal('busy'), localId: z.string() }),
+    // No single connected CLI accepted the re-delivery (offline / mid-reconnect
+    // / concurrent-client ambiguity). The row stays queued and unchanged.
+    z.object({ status: z.literal('unavailable'), localId: z.string() }),
+    // Future-scheduled rows mature through the scheduler, not manual delivery.
+    z.object({ status: z.literal('scheduled'), localId: z.string() }),
+    z.object({ status: z.literal('not-found') }),
+])
+
+export type DeliverQueuedMessageNowResponse = z.infer<typeof DeliverQueuedMessageNowResponseSchema>

@@ -47,7 +47,7 @@ import {
 import { isUserInputMessage } from '../store/sessionUserActivity'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
-import { MessageService, type RetryIndeterminateMessageResult } from './messageService'
+import { MessageService, type RetryIndeterminateMessageResult, type DeliverQueuedMessageNowResult } from './messageService'
 import { createTitleSuggestionService, type TitleSuggestionService } from './titleSuggestion'
 import { createPromptTitle } from './promptTitle'
 import { resolveForkBoundary, resolveRewindBoundary, invokedTailSeq, type ResolvedBoundary } from './forkBoundary'
@@ -2069,6 +2069,19 @@ export class SyncEngine {
     ): Promise<RetryIndeterminateMessageResult> {
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         return this.messageService.retryIndeterminateMessage(sessionId, messageId)
+    }
+
+    /**
+     * Explicit "send now" for a queued row: force re-deliver it to the CLI
+     * (bypassing the message-id dedup that eats the session-alive replay)
+     * so it is consumed into a fresh turn. Recovery affordance for rows left
+     * stranded by an abort; see MessageService.deliverQueuedMessageNow.
+     */
+    async deliverQueuedMessageNow(
+        sessionId: string,
+        messageId: string
+    ): Promise<DeliverQueuedMessageNowResult> {
+        return this.messageService.deliverQueuedMessageNow(sessionId, messageId)
     }
 
     /**

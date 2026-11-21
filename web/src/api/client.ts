@@ -86,7 +86,7 @@ import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
 import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
 import type { PasskeyListResponse, PasskeyBrowserStartRequest, PasskeyBrowserStartResponse, PasskeyBrowserExchangeResponse } from '@hapi/protocol'
 
-import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
+import type { CancelMessageResponse, SteerQueuedMessageResponse, DeliverQueuedMessageNowResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
 
 export type RetryIndeterminateMessageResponse =
@@ -885,6 +885,14 @@ export class ApiClient {
     async retryIndeterminateMessage(sessionId: string, messageId: string): Promise<RetryIndeterminateMessageResponse> {
         return await this.request<RetryIndeterminateMessageResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/retry`,
+            { method: 'POST' }
+        )
+    }
+
+    /** Force re-deliver one queued row to the CLI ("send now" / ↑ affordance). */
+    async deliverQueuedMessageNow(sessionId: string, messageId: string): Promise<DeliverQueuedMessageNowResponse> {
+        return await this.request<DeliverQueuedMessageNowResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/deliver-now`,
             { method: 'POST' }
         )
     }
