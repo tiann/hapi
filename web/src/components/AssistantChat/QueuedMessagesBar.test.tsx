@@ -109,6 +109,7 @@ function renderQueuedMessage(
     api: ApiClient | null = null,
     delivery: Partial<DecryptedMessage> = {},
     deliveryActive = canSteer,
+    sharedNative = false,
 ) {
     const onEdit = vi.fn()
     let currentPendingScheduleRevision = pendingScheduleRevision
@@ -128,6 +129,7 @@ function renderQueuedMessage(
                 onEdit={onEdit}
                 canSteer={canSteer}
                 deliveryActive={deliveryActive}
+                sharedNative={sharedNative}
             />
         </QueryClientProvider>
     )
@@ -987,6 +989,11 @@ describe('QueuedMessagesBar send-now affordance', () => {
 
     it('hides ↑ for future-scheduled rows', () => {
         renderQueuedMessage(Date.now() + 60_000, null, 0, false, null)
+        expect(screen.queryByRole('button', { name: 'queuedMessages.deliverNow' })).toBeNull()
+    })
+
+    it('hides ↑ for shared-native sessions — the hub refuses deliver-now for them', () => {
+        renderQueuedMessage(null, null, 0, false, null, {}, false, true)
         expect(screen.queryByRole('button', { name: 'queuedMessages.deliverNow' })).toBeNull()
     })
 

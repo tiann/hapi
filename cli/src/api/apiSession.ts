@@ -205,6 +205,7 @@ export class ApiSessionClient extends EventEmitter {
     private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
     private cancelQueuedMessageCallback: ((localId: string) => QueueCancelResult | Promise<QueueCancelResult>) | null = null
     private retryQueuedMessageCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
+    private beforeReuseLocalIdCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
     private readonly incomingFilter = new IncomingMessageFilter()
     private reconciledRewindOperationId: string | undefined
     private incomingCursorEpoch = 0
@@ -411,7 +412,7 @@ export class ApiSessionClient extends EventEmitter {
             this.agentTerminalActive = false
         }))
 
-        this.socket.on('update', async (data: Update, ack?: (response: { removed: boolean; inFlight?: boolean; indeterminate?: boolean; accepted?: boolean; consumed?: boolean }) => void) => {
+        this.socket.on('update', async (data: Update, ack?: (response: { removed: boolean; inFlight?: boolean; indeterminate?: boolean; accepted?: boolean; consumed?: boolean; socketId?: string }) => void) => {
             try {
                 if (!data.body) return
 
@@ -435,6 +436,17 @@ export class ApiSessionClient extends EventEmitter {
                             ack?.({ removed: false, accepted: false, consumed: true })
                             return
                         }
+                        if (accepted && this.beforeReuseLocalIdCallback) {
+                            // The forced acceptance reuses this localId. Retire
+                            // any earlier asynchronous preparation first: flavors
+                            // like Pi/OpenCode release their preparing/cancelled
+                            // bookkeeping only when the preparation chain link
+                            // settles, and a re-admission racing that cleanup
+                            // loses its markers — a later cancel could then no
+                            // longer find the copy and the cancelled prompt
+                            // would still execute.
+                            accepted = await this.beforeReuseLocalIdCallback(data.body.localId) === true
+                        }
                     }
                     if (accepted) {
                         this.handleIncomingMessage(data.body.message, true)
@@ -450,12 +462,16 @@ export class ApiSessionClient extends EventEmitter {
                     const result = cancellation instanceof Promise ? await cancellation : cancellation
                     // 'in-flight' = the row is inside an async steer: not
                     // removed, but also NOT consumed — the hub must neither
-                    // delete it nor stamp invoked_at.
+                    // delete it nor stamp invoked_at. The socketId lets the
+                    // hub address the forced retry to the CLI that actually
+                    // answered this probe instead of re-broadcasting to the
+                    // room (membership can shift between the two emits).
                     ack?.({
                         removed: result === true,
                         inFlight: result === 'in-flight',
                         indeterminate: result === 'indeterminate',
-                        consumed: result === 'consumed'
+                        consumed: result === 'consumed',
+                        socketId: this.socket?.id ?? undefined
                     })
                     return
                 }
@@ -698,6 +714,16 @@ export class ApiSessionClient extends EventEmitter {
 
     onRetryQueuedMessage(callback: (localId: string) => boolean | Promise<boolean>): void {
         this.retryQueuedMessageCallback = callback
+    }
+
+    /**
+     * Gate invoked before a forced retry (deliver-now) re-admits a message
+     * under a localId an earlier delivery may still hold. The callback must
+     * resolve once every trace of the earlier asynchronous preparation for
+     * that localId has settled, and return whether the reuse may proceed.
+     */
+    onBeforeReuseLocalId(callback: (localId: string) => boolean | Promise<boolean>): void {
+        this.beforeReuseLocalIdCallback = callback
     }
 
     private cancelQueuedMessage(localId: string): QueueCancelResult | Promise<QueueCancelResult> {

@@ -66,6 +66,7 @@ type AckCallback = (
         indeterminate?: boolean
         consumed?: boolean
         accepted?: boolean
+        socketId?: string
     }>
 ) => void
 
@@ -2415,6 +2416,115 @@ describe('MessageService deliverQueuedMessageNow', () => {
             .toEqual({ status: 'unavailable', localId: 'unknown-q' })
         expect(calls).toBe(0)
         expect(store.messages.lookupQueuedMessage(session.id, 'unknown-q').status).toBe('indeterminate')
+        store.close()
+    })
+
+    it('sends the forced retry only to the socket that answered the cancel probe', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-targeted')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'targeted' } }, 'targeted-q')
+        const targets: string[] = []
+        let calls = 0
+        const broadcastRoom = {
+            timeout: (_ms: number) => ({
+                emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                    calls += 1
+                    callback(null, calls === 1
+                        ? [{ removed: false, socketId: 'socket-0' }]
+                        : [{ removed: false, accepted: true }])
+                }
+            }),
+            emit: () => {}
+        }
+        const io = {
+            of: (_ns: string) => ({
+                to: (target: string) => {
+                    targets.push(target)
+                    return broadcastRoom
+                },
+                adapter: { rooms: { get: () => new Set(['socket-0']) } }
+            })
+        } as unknown as Server
+        const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'targeted-q'))
+            .toEqual({ status: 'delivered', localId: 'targeted-q' })
+        // First emit addresses the room (probe); the forced retry addresses
+        // the answering socket only — room membership can change between the
+        // two emits, and a socket the probe never cleared must not receive a
+        // forced copy.
+        expect(targets).toEqual([`session:${session.id}`, 'socket-0'])
+        store.close()
+    })
+
+    it('falls back to the room emit when the probe responder did not report its socketId', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-legacy-ack')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'legacy' } }, 'legacy-q')
+        const targets: string[] = []
+        let calls = 0
+        const broadcastRoom = {
+            timeout: (_ms: number) => ({
+                emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                    calls += 1
+                    callback(null, calls === 1
+                        ? [{ removed: false }]
+                        : [{ removed: false, accepted: true }])
+                }
+            }),
+            emit: () => {}
+        }
+        const io = {
+            of: (_ns: string) => ({
+                to: (target: string) => {
+                    targets.push(target)
+                    return broadcastRoom
+                },
+                adapter: { rooms: { get: () => new Set(['socket-0']) } }
+            })
+        } as unknown as Server
+        const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'legacy-q'))
+            .toEqual({ status: 'delivered', localId: 'legacy-q' })
+        expect(targets).toEqual([`session:${session.id}`, `session:${session.id}`])
+        store.close()
+    })
+
+    it('refuses deliver-now when a queued OpenCode /clear sits ahead of the target', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-clear-order', { path: '/tmp/deliver-clear-order', flavor: 'opencode' }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/clear' } }, 'clear-q')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'after the clear' } }, 'after-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, calls === 1 ? [{ removed: false }] : [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        // Force-delivering the follow-up would let it jump the pending
+        // /clear; nothing leaves the hub.
+        expect(await service.deliverQueuedMessageNow(session.id, 'after-q'))
+            .toEqual({ status: 'unavailable', localId: 'after-q' })
+        expect(calls).toBe(0)
+        expect(store.messages.lookupQueuedMessage(session.id, 'after-q').status).toBe('queued')
+        // The /clear row itself stays deliverable in delivery order.
+        expect(await service.deliverQueuedMessageNow(session.id, 'clear-q'))
+            .toEqual({ status: 'delivered', localId: 'clear-q' })
+        expect(calls).toBe(2)
+        store.close()
+    })
+
+    it('lets deliver-now pass for non-OpenCode flavors with a queued /clear-shaped row', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-clear-claude')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/clear' } }, 'c-clear-q')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'plain follow-up' } }, 'c-after-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, calls === 1 ? [{ removed: false }] : [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'c-after-q'))
+            .toEqual({ status: 'delivered', localId: 'c-after-q' })
+        expect(calls).toBe(2)
         store.close()
     })
 })

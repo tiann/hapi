@@ -2525,6 +2525,7 @@ function SessionChatInner(props: SessionChatProps) {
                                 canSteer={props.session.active && props.session.thinking
                                     && hasActiveSteeringTurn(props.session)
                                     && !controlledByUser}
+                                sharedNative={props.session.metadata?.capabilities?.concurrentClients === true}
                             />
                         </div>
 

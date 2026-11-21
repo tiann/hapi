@@ -651,7 +651,7 @@ export class MessageService {
         // A live dispatch is not cancellable by timeout. Convert it to the
         // durable unknown state and require a second explicit resolution.
         if (isDispatching) {
-            const ackResult = await this.requestCliCancelAck(sessionId, localId, messageId, 500)
+            const ackResult = (await this.requestCliCancelAck(sessionId, localId, messageId, 500)).result
             if (ackResult === 'consumed') {
                 return this.recordConsumedAcknowledgement(sessionId, localId)
             }
@@ -676,7 +676,7 @@ export class MessageService {
             const roomName = `session:${sessionId}`
             const cliCount = this.io.of('/cli').adapter.rooms.get(roomName)?.size ?? 0
             const ackResult = cliCount > 0
-                ? await this.requestCliCancelAck(sessionId, localId, messageId, 500)
+                ? (await this.requestCliCancelAck(sessionId, localId, messageId, 500)).result
                 : 'timeout' as const
             if (ackResult === 'consumed') {
                 return this.recordConsumedAcknowledgement(sessionId, localId)
@@ -762,7 +762,7 @@ export class MessageService {
             return { status: 'cancelled', localId }
         }
 
-        const ackResult = await this.requestCliCancelAck(sessionId, localId, messageId, 500)
+        const ackResult = (await this.requestCliCancelAck(sessionId, localId, messageId, 500)).result
 
         if (ackResult === 'consumed') {
             return this.recordConsumedAcknowledgement(sessionId, localId)
@@ -831,7 +831,7 @@ export class MessageService {
             return { status: 'retry-unavailable', localId: lookup.localId }
         }
 
-        const cancelResult = await this.requestCliCancelAck(sessionId, lookup.localId, messageId, 500)
+        const cancelResult = (await this.requestCliCancelAck(sessionId, lookup.localId, messageId, 500)).result
         if (cancelResult === 'consumed') {
             const settled = this.recordConsumedAcknowledgement(sessionId, lookup.localId)
             return settled.status === 'invoked'
@@ -966,8 +966,27 @@ export class MessageService {
             if (this.store.isOpenCodeClearDeliveryGated(sessionId) || cliCount !== 1) {
                 return { status: 'unavailable', localId: lookup.localId }
             }
+            // Ordering guard: a queued OpenCode /clear must reach the worker
+            // before anything queued after it. Force-delivering a later row
+            // would let it jump the pending /clear, so refuse unless the
+            // target IS the earliest queued /clear itself.
+            {
+                const flavor = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.flavor
+                if (flavor === 'opencode') {
+                    const queuedRows = this.store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
+                    const firstClear = queuedRows.find((row) => {
+                        const content = row.content as { role?: unknown; content?: { type?: unknown; text?: unknown } } | null
+                        return content?.role === 'user' && content.content?.type === 'text'
+                            && String(content.content.text ?? '').trim() === '/clear'
+                    })
+                    if (firstClear && firstClear.id !== lookup.resolvedId) {
+                        return { status: 'unavailable', localId: lookup.localId }
+                    }
+                }
+            }
 
-            const cancelResult = await this.requestCliCancelAck(sessionId, lookup.localId, messageId, 500)
+            const probe = await this.requestCliCancelAck(sessionId, lookup.localId, messageId, 500)
+            const cancelResult = probe.result
             if (cancelResult === 'consumed') {
                 const settled = this.recordConsumedAcknowledgement(sessionId, lookup.localId)
                 return settled.status === 'invoked'
@@ -1006,7 +1025,13 @@ export class MessageService {
                     }
                 }
             }
-            const room = this.io.of('/cli').to(roomName)
+            // Send the forced retry only to the CLI that answered the probe
+            // (when it reported its socketId): room membership can change
+            // between the probe and this emit, and a socket the probe never
+            // cleared must not receive a forced copy.
+            const room = probe.responderId !== null
+                ? this.io.of('/cli').to(probe.responderId)
+                : this.io.of('/cli').to(roomName)
             const accepted = await new Promise<boolean>((resolve) => {
                 room.timeout(500).emit(
                     'update',
@@ -1040,11 +1065,24 @@ export class MessageService {
         localId: string,
         messageId: string,
         timeoutMs: number
-    ): Promise<'removed' | 'in-flight' | 'indeterminate' | 'consumed' | 'not-found' | 'timeout'> {
+    ): Promise<{ result: 'removed' | 'in-flight' | 'indeterminate' | 'consumed' | 'not-found' | 'timeout'; responderId: string | null }> {
         return new Promise((resolve) => {
             const room = this.io.of('/cli').to(`session:${sessionId}`)
             // socket.io v4 BroadcastOperator: .timeout(ms).emit(event, data, ackCb)
             // ack signature: (err: Error | null, responses: T[])
+            //
+            // The probe also records WHICH socket answered, when the client
+            // includes its socketId in the ack: deliver-now must send its
+            // forced retry to that same CLI, not re-broadcast to the room
+            // (room membership can change between the probe and the retry —
+            // a newly joined or stale duplicate socket could otherwise accept
+            // a forced copy the probe never cleared). Older clients that do
+            // not report a socketId yield null and the caller falls back to
+            // the room emit.
+            let firstResponderId: string | null = null
+            const noteResponder = (value: unknown) => {
+                if (typeof value === 'string' && value && firstResponderId === null) firstResponderId = value
+            }
             room.timeout(timeoutMs).emit(
                 'update',
                 {
@@ -1058,35 +1096,36 @@ export class MessageService {
                         localId
                     }
                 },
-                (err: Error | null, responses: Array<{ removed: boolean; inFlight?: boolean; indeterminate?: boolean; consumed?: boolean }>) => {
+                (err: Error | null, responses: Array<{ removed?: boolean; inFlight?: boolean; indeterminate?: boolean; consumed?: boolean; socketId?: string }>) => {
                     // Check responses before err: in a reconnect overlap or any room with
                     // multiple CLI sockets, Socket.IO may set err (one socket timed out)
                     // while still delivering successful responses from the sockets that did
                     // ack. An explicit in-flight report dominates: one socket may be
                     // dispatching the steer while a stale duplicate socket reports
                     // removed — deleting the row then would orphan the executing message.
+                    for (const r of responses ?? []) noteResponder(r.socketId)
                     if (responses?.some((r) => r.consumed === true)) {
-                        resolve('consumed')
+                        resolve({ result: 'consumed', responderId: firstResponderId })
                         return
                     }
                     if (responses?.some((r) => r.indeterminate === true)) {
-                        resolve('indeterminate')
+                        resolve({ result: 'indeterminate', responderId: firstResponderId })
                         return
                     }
                     if (responses?.some((r) => r.inFlight === true)) {
-                        resolve('in-flight')
+                        resolve({ result: 'in-flight', responderId: firstResponderId })
                         return
                     }
                     const removed = responses?.some((r) => r.removed === true) ?? false
                     if (removed) {
-                        resolve('removed')
+                        resolve({ result: 'removed', responderId: firstResponderId })
                         return
                     }
                     if (err) {
-                        resolve('timeout')
+                        resolve({ result: 'timeout', responderId: firstResponderId })
                         return
                     }
-                    resolve('not-found')
+                    resolve({ result: 'not-found', responderId: firstResponderId })
                 }
             )
         })

@@ -201,6 +201,7 @@ export function QueuedMessagesBar({
     onEdit,
     canSteer,
     deliveryActive = canSteer,
+    sharedNative,
     compactionPendingMessageIds,
 }: {
     sessionId: string
@@ -223,6 +224,11 @@ export function QueuedMessagesBar({
     canSteer?: boolean
     /** An existing dispatch may still be confirming after new Steer admission closes. */
     deliveryActive?: boolean
+    /**
+     * Shared-native sessions multiplex several clients over one worker; the
+     * hub refuses deliver-now for them, so the affordance stays hidden.
+     */
+    sharedNative?: boolean
 }) {
     const queued = useQueuedMessages(sessionId)
     const assistantApi = useAui()
@@ -416,6 +422,7 @@ export function QueuedMessagesBar({
                         const canDeliverNowRow = Boolean(
                             !canSteerRow
                                 && !deliveryActive
+                                && !sharedNative
                                 && msg.deliveryState !== 'indeterminate'
                                 && msg.scheduledAt == null
                                 && canCancel

@@ -229,6 +229,50 @@ describe('ApiSessionClient input buffered during initialization', () => {
         client.close()
     })
 
+    it.each([false, true])('gates forced localId reuse on the before-reuse callback (allow=%s)', async (allow) => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const update = socket.listeners.get('update')![0]!
+        const gate = vi.fn(async () => allow)
+        client.onBeforeReuseLocalId(gate)
+        await update({ body: { t: 'new-message', message: message('original', 'local-1', 1) } })
+        const ack = vi.fn()
+        await update({ body: { t: 'retry-queued-message', localId: 'local-1', message: message('replacement', 'local-1', 1) } }, ack)
+        // The gate always runs before the localId is reused, and its verdict
+        // decides whether the forced copy is admitted.
+        expect(gate).toHaveBeenCalledWith('local-1')
+        expect(ack).toHaveBeenCalledWith({ removed: false, accepted: allow })
+        const onMessage = vi.fn()
+        client.onUserMessage(onMessage)
+        if (allow) {
+            expect(onMessage).toHaveBeenCalledTimes(1)
+            expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ content: { type: 'text', text: 'replacement' } }), 'local-1')
+        } else {
+            // The buffered original was cancelled and the replacement was
+            // refused: nothing flushes. The hub keeps the row queued.
+            expect(onMessage).not.toHaveBeenCalled()
+        }
+        client.close()
+    })
+
+    it('skips the before-reuse gate when the cancel already reported the row consumed', async () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const update = socket.listeners.get('update')![0]!
+        const gate = vi.fn(async () => true)
+        client.onCancelQueuedMessage(() => 'consumed' as const)
+        client.onBeforeReuseLocalId(gate)
+        // Nothing buffered under local-1, so the cancel reaches the flavor
+        // callback, which reports the row as already consumed.
+        const ack = vi.fn()
+        await update({ body: { t: 'retry-queued-message', localId: 'local-1', message: message('replacement', 'local-1', 1) } }, ack)
+        expect(ack).toHaveBeenCalledWith({ removed: false, accepted: false, consumed: true })
+        expect(gate).not.toHaveBeenCalled()
+        client.close()
+    })
+
     it.each(['in-flight', 'consumed', 'indeterminate'] as const)('keeps %s cancellation semantics after input leaves the buffer', async (result) => {
         socketHarness.sockets.length = 0
         const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
