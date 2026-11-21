@@ -833,6 +833,8 @@ export class AcpSdkBackend implements AgentBackend {
              * real user turn); prompt() then resolves false.
              */
             shouldSend?: () => boolean
+            /** Runs after the pre-prompt drain, right before the new handler replaces the old one. */
+            beforeHandlerSwap?: () => Promise<void>
             // prompt() waits for earlier output before it sends and for late output
             // after the answer; callers timing the agent itself need both moments.
             timing?: { onSent?: () => void; onAnswered?: () => void }
@@ -855,6 +857,7 @@ export class AcpSdkBackend implements AgentBackend {
         );
         await this.sessionUpdateQueue;
         this.messageHandler?.drainBuffers();
+        await options?.beforeHandlerSwap?.();
         if (options?.shouldSend && !options.shouldSend()) {
             return false;
         }

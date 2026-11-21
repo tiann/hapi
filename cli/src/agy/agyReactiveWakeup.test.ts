@@ -4414,7 +4414,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 .map(([msg]) => msg as { type?: string; message?: string })
                 .filter((m) => m.type === 'message')
                 .map((m) => m.message?.trim());
-            expect(texts).toEqual(['FINISHED:DURING_CONFIG', 'FINISHED:QUIET_WINDOW', 'OK']);
+            expect(texts).toEqual(['FINISHED:DURING_CONFIG\n\nFINISHED:QUIET_WINDOW', 'OK']);
 
             queue.close();
             await runPromise;
@@ -4673,7 +4673,8 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             acpSessionId: string,
             onPrompt: (n: number, notify: (update: Record<string, unknown>) => void) => string | void,
             launcherOpts: Record<string, number> = {},
-            resumeSessionId: string | null = null
+            resumeSessionId: string | null = null,
+            onMethod: (method: string) => void = () => {}
         ) {
             const backend = new AcpSdkBackend({ command: 'agy', args: ['acp'], flavor: 'agy', textChunkMode: 'delta', toolCallLifetimeStore: null });
             const internal = backend as unknown as { transport: unknown; initializeResult: unknown; handleNotification: (m: string, p: unknown) => void };
@@ -4690,6 +4691,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             internal.transport = {
                 sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
                     requests.push(method);
+                    onMethod(method);
                     if (method === 'session/new') return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
                     if (method === 'session/resume') return { sessionId: String(params.sessionId) };
                     if (method === 'session/list') return { sessions: [] };
@@ -4860,6 +4862,38 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.ready();
             await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(1));
             expect(h.bgEntries()[0]).toMatchObject({ callId: expect.stringMatching(/^call-w-5#/), taskId: `${acp}/task-7` });
+            await h.finish();
+        });
+
+        it('settles a wakeup command that starts during the pre-prompt quiet wait and keeps the next turn command apart', async () => {
+            const acp = 'conv-live-quiet-swap';
+            const h = startLive(acp, (n, notify) => {
+                if (n === 1) { turnRows(acp); return; }
+                notify(bgCall('call-b', 'sleep 8'));
+                h.append([
+                    { step_index: 5, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'next' },
+                    { step_index: 6, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 8"' } }] },
+                    { step_index: 7, source: 'MODEL', type: 'RUN_COMMAND', status: 'RUNNING', content: `Tool is running as a background task with task id: ${acp}/task-8` },
+                    { step_index: 8, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'OK' }
+                ]);
+            }, {}, null, (method) => {
+                if (method !== 'session/set_model') return;
+                // A fresh frame opens the quiet wait; the command lands inside it, after the old settle point.
+                h.notify({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '' } });
+                setTimeout(() => {
+                    h.notify(bgCall('call-a', 'sleep 9'));
+                    h.append(bgRows(2, 'sleep 9', `${acp}/task-7`, false));
+                }, 3);
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(2));
+            const byCall = (prefix: string) => h.bgEntries().find((e) => e.callId.startsWith(prefix));
+            expect(byCall('call-a#')?.taskId).toBe(`${acp}/task-7`);
+            expect(byCall('call-b#')?.taskId).toBe(`${acp}/task-8`);
             await h.finish();
         });
 

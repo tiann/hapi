@@ -1149,37 +1149,44 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 restoreIfUserTurn();
                 return;
             }
-            const preSyncStepIndex = this.lastTranscriptStepIndex;
-            this.syncTranscriptCursor();
-            const turnStartStepIndex = this.lastTranscriptStepIndex;
+            let turnStartStepIndex = this.lastTranscriptStepIndex;
             let commandWindowAfterStepIndex = turnStartStepIndex;
             // Live agy does not replay a preempted wakeup into this prompt: it
             // settles on its own handler turn, and this turn's window starts after it.
+            // The boundary is taken once the pre-prompt drain is done, right before the
+            // handler swap, so a command the wakeup starts during that wait is settled too.
             const live = this.liveIdleWakeups();
-            const baseAfterStep = Math.min(
-                opts.replayAfterStepIndex ?? preSyncStepIndex,
-                preSyncStepIndex,
-                turnStartStepIndex
-            );
-            // Only rows from a pending autonomous `SYSTEM_MESSAGE` wakeup onward
-            // can belong to it; earlier rows are late-flushed steps from the
-            // already-completed previous turn.
-            const firstWakeupStep = !relaunched && baseAfterStep < turnStartStepIndex
-                ? readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, baseAfterStep)
-                    .find((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')
-                : undefined;
-            if (live) await this.settleLiveWakeup((firstWakeupStep?.step_index ?? turnStartStepIndex + 1) - 1);
-            if (firstWakeupStep && !(live && !internalWakeup)) {
-                commandWindowAfterStepIndex = Math.max(baseAfterStep, firstWakeupStep.step_index - 1);
-            }
-            turn.turnStartStepIndex = commandWindowAfterStepIndex;
-            turn.priorBackgroundCallIds = new Set(this.backgroundCommands.map((entry) => entry.callId));
-            resolveAgyBackgroundTaskIds(this.brainDir, acpSessionId, this.backgroundCommands, commandWindowAfterStepIndex);
-            for (const entry of this.backgroundCommands) {
-                if (!entry.taskId && entry.maxStepIndex === undefined) {
-                    entry.maxStepIndex = commandWindowAfterStepIndex;
+            const beginWindow = async (): Promise<void> => {
+                const preSyncStepIndex = this.lastTranscriptStepIndex;
+                this.syncTranscriptCursor();
+                turnStartStepIndex = this.lastTranscriptStepIndex;
+                commandWindowAfterStepIndex = turnStartStepIndex;
+                const baseAfterStep = Math.min(
+                    opts.replayAfterStepIndex ?? preSyncStepIndex,
+                    preSyncStepIndex,
+                    turnStartStepIndex
+                );
+                // Only rows from a pending autonomous `SYSTEM_MESSAGE` wakeup onward
+                // can belong to it; earlier rows are late-flushed steps from the
+                // already-completed previous turn.
+                const firstWakeupStep = !relaunched && baseAfterStep < turnStartStepIndex
+                    ? readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, baseAfterStep)
+                        .find((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')
+                    : undefined;
+                if (live) await this.settleLiveWakeup((firstWakeupStep?.step_index ?? turnStartStepIndex + 1) - 1);
+                if (firstWakeupStep && !(live && !internalWakeup)) {
+                    commandWindowAfterStepIndex = Math.max(baseAfterStep, firstWakeupStep.step_index - 1);
                 }
-            }
+                turn.turnStartStepIndex = commandWindowAfterStepIndex;
+                turn.priorBackgroundCallIds = new Set(this.backgroundCommands.map((entry) => entry.callId));
+                resolveAgyBackgroundTaskIds(this.brainDir, acpSessionId, this.backgroundCommands, commandWindowAfterStepIndex);
+                for (const entry of this.backgroundCommands) {
+                    if (!entry.taskId && entry.maxStepIndex === undefined) {
+                        entry.maxStepIndex = commandWindowAfterStepIndex;
+                    }
+                }
+            };
+            if (!live) await beginWindow();
             if (!internalWakeup) {
                 this.messageBuffer.addMessage(message, 'user');
             }
@@ -1187,6 +1194,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             session.client.updateAgentState((state) => ({ ...state, steeringActive: true }));
             try {
                 await backend.prompt(acpSessionId, prompt, (update) => this.handleTurnUpdate(turn, update), {
+                    ...(live ? { beforeHandlerSwap: beginWindow } : {}),
                     timing: {
                         onSent: () => { turn.sentAt = Date.now(); },
                         onAnswered: () => {
