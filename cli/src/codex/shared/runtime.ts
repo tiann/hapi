@@ -50,6 +50,11 @@ function rejoinThreadParams(params: Record<string, unknown>): Record<string, unk
     // subscribers have disconnected. Rejoin the already accepted settings.
     return { threadId: params.threadId, excludeTurns: params.excludeTurns, initialTurnsPage: params.initialTurnsPage };
 }
+function requiresTierAdmission(root: SharedCodexRoot, tier: unknown, downgraded: boolean): boolean {
+    const metadata = root.session.getMetadata();
+    return downgraded || tier === 'ultrafast' || metadata?.codexTierConfirmationPending === true
+        || tier === 'priority' && metadata?.codexPendingServiceTier === 'fast';
+}
 async function freePort(): Promise<number> {
     const server = createServer();
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -307,7 +312,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 throw new Error('Codex thread was archived during binding');
             }
         };
-        if (resume || requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
+        const confirmBeforeInput = requiresTierAdmission(root, requestedUltrafast ? 'ultrafast' : expectedResumeTier, downgraded);
+        if (resume || confirmBeforeInput) pendingAdmission.add(threadId);
         if (!reserved) await reserve(root, threadId);
         if (ending.has(root)) throw new Error('Codex thread was archived during binding');
         if (!resume?.rootBound) {
@@ -315,7 +321,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
             assertRunning();
             if (ending.has(root)) throw new Error('Codex thread was archived during binding');
-            if (requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) root.beginTierConfirmation();
+            if (confirmBeforeInput) root.beginTierConfirmation();
             roots.set(threadId, root);
         }
         if (!resume?.rootBound || subscribe && !root.client.isInitialized()) {
@@ -564,9 +570,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 serviceTierExplicit: params.serviceTier !== undefined || request.method === 'thread/resume' && metadata?.codexPendingServiceTier !== undefined
                     ? true : request.method === 'thread/resume' ? undefined : false,
                 requestedUltrafast: tier.params.serviceTier === 'ultrafast', downgraded: tier.downgraded });
-            if (request.method === 'thread/resume' && threadId && (tier.downgraded || tier.params.serviceTier === 'ultrafast'
-                || tier.params.serviceTier === 'priority' && metadata?.codexPendingServiceTier === 'fast'
-                || metadata?.codexTierConfirmationPending === true)) pendingAdmission.add(threadId);
+            if (request.method === 'thread/resume' && threadId && requiresTierAdmission(root, tier.params.serviceTier, tier.downgraded)) {
+                pendingAdmission.add(threadId);
+            }
             return { ...request, params: root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
         } catch (error) {
             const retained = threadId && retryableBindings.get(threadId)?.root === root;
@@ -729,7 +735,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             const resolved = await resolveUltrafastLaunch(control, 'thread/resume', { ...resumeParams, cwd: root.bootstrap.workingDirectory }, root.bootstrap.workingDirectory, undefined, thread, startupCatalogConfig);
             const downgraded = resolved.downgraded;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
-            if (downgraded || resolved.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
+            if (requiresTierAdmission(root, resolved.params.serviceTier, downgraded)) pendingAdmission.add(threadId);
             const response = await serializeNativeLifecycle(threadId, async () => {
                 assertRunning();
                 if (ownedRoot(threadId) !== root || ending.has(root)) throw new Error('Codex thread was archived during resume');
