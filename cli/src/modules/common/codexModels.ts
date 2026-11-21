@@ -6,7 +6,7 @@ import type { CodexModelsResponse, CodexModelSummary } from '@hapi/protocol/apiT
 import { CodexAppServerClient, resolveCodexAppServerCommand } from '@/codex/codexAppServerClient';
 import { resolveModelCatalogArgs } from '@/codex/utils/modelCatalog';
 import { resolveCodexHome } from '@/codex/utils/codexHome';
-import { probeCodexCliVersion, resolveCodexCommand, resolveSelectedCodexCommand, type CodexCommand } from '@/codex/utils/codexExecutable';
+import { probeCodexCliVersion, resolveCodexCommand, type CodexCommand } from '@/codex/utils/codexExecutable';
 import { getErrorMessage } from './rpcResponses';
 
 export interface ListCodexModelsRequest {
@@ -136,16 +136,17 @@ export async function listCodexModels(includeHidden: boolean = false): Promise<C
     // Desktop discovery can use a different binary. The shared Runner's
     // actual executable must also understand effective Ultrafast settings.
     const runnerCommand = resolveCodexCommand();
-    const discoveryCommand = resolveSelectedCodexCommand(resolveCodexAppServerCommand());
+    const [catalogKey, runnerVersion, discovery] = await Promise.all([
+        catalogFingerprint(), probeCodexCliVersion(runnerCommand), resolveCodexAppServerCommand(homedir())
+    ]);
+    const discoveryCommand = discovery.command;
     const runnerKey = JSON.stringify(runnerCommand);
     const discoveryKey = JSON.stringify(discoveryCommand);
-    const runnerVersionProbe = probeCodexCliVersion(runnerCommand);
-    const discoveryVersionProbe = discoveryKey === runnerKey && isAbsolute(discoveryCommand.command)
-        ? runnerVersionProbe
-        : probeCodexCliVersion(discoveryCommand, homedir());
-    const [catalogKey, runnerVersion, discoveryVersion] = await Promise.all([
-        catalogFingerprint(), runnerVersionProbe, discoveryVersionProbe
-    ]);
+    const discoveryVersion = discovery.version !== undefined
+        ? discovery.version
+        : discoveryKey === runnerKey && isAbsolute(discoveryCommand.command)
+            ? runnerVersion
+            : await probeCodexCliVersion(discoveryCommand, homedir());
     const fingerprint = JSON.stringify([catalogKey, runnerKey, runnerVersion, discoveryKey, discoveryVersion]);
     const cached = cache.get(includeHidden);
     if (cached && cached.fingerprint === fingerprint && cached.expiresAt > Date.now()) {

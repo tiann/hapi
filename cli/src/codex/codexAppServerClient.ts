@@ -1,12 +1,17 @@
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { stat } from 'node:fs/promises';
+import { delimiter, resolve } from 'node:path';
+import { resolveExecutable } from '@/agent/agentLaunchCommand';
 import WebSocket from 'ws';
 import { logger } from '@/ui/logger';
 import { JsonLineParser } from '@/utils/jsonLineParser';
 import { killProcessByChildProcess } from '@/utils/process';
 import { CODEX_WEBSOCKET_MAX_PAYLOAD } from './websocketLimits';
 import { resolveModelCatalogArgs } from './utils/modelCatalog';
-import { MACOS_CODEX_APP_COMMAND, resolveSelectedCodexCommand, type CodexCommand } from './utils/codexExecutable';
+import {
+    MACOS_CODEX_APP_COMMAND, probeCodexCliVersion, resolveSelectedCodexCommand,
+    type CodexCliVersion, type CodexCommand
+} from './utils/codexExecutable';
 import type {
     AccountRateLimitsReadResponse,
     AccountReadResponse,
@@ -106,32 +111,13 @@ function createAbortError(): Error {
     return error;
 }
 
-type CodexCommandCandidate = {
-    command: string;
-    source: 'desktop' | 'path';
-    version: number[] | null;
-};
-
-function parseCodexVersion(output: string): number[] | null {
-    const match = /(\d+)\.(\d+)\.(\d+)(?:[-+][^\s]+)?/u.exec(output);
-    if (!match) return null;
-    return [Number(match[1]), Number(match[2]), Number(match[3])];
+interface CodexAppServerSelection {
+    command: CodexCommand;
+    /** Present when selection already compared the Desktop and PATH versions. */
+    version?: CodexCliVersion | null;
 }
 
-function getCodexVersion(command: string): number[] | null {
-    try {
-        const output = execFileSync(command, ['--version'], {
-            encoding: 'utf8',
-            timeout: 3_000,
-            stdio: ['ignore', 'pipe', 'ignore']
-        });
-        return parseCodexVersion(output);
-    } catch {
-        return null;
-    }
-}
-
-function compareVersion(a: number[] | null, b: number[] | null): number {
+function compareVersion(a: CodexCliVersion | null, b: CodexCliVersion | null): number {
     if (!a && !b) return 0;
     if (a && !b) return 1;
     if (!a && b) return -1;
@@ -142,38 +128,38 @@ function compareVersion(a: number[] | null, b: number[] | null): number {
     return 0;
 }
 
-export function resolveCodexAppServerCommand(): string {
+export async function resolveCodexAppServerCommand(cwd = process.cwd()): Promise<CodexAppServerSelection> {
     if (process.env.HAPI_CODEX_APP_SERVER_BIN) {
-        return process.env.HAPI_CODEX_APP_SERVER_BIN;
+        return { command: resolveSelectedCodexCommand(process.env.HAPI_CODEX_APP_SERVER_BIN) };
     }
 
-    if (process.platform !== 'darwin' || !existsSync(MACOS_CODEX_APP_COMMAND)) {
-        return 'codex';
+    const pathCommand = resolveSelectedCodexCommand('codex');
+    if (process.platform !== 'darwin' || !(await stat(MACOS_CODEX_APP_COMMAND).catch(() => null))?.isFile()) {
+        return { command: pathCommand };
     }
 
-    const candidates: CodexCommandCandidate[] = [
-        { command: 'codex', source: 'path', version: getCodexVersion('codex') },
-        { command: MACOS_CODEX_APP_COMMAND, source: 'desktop', version: getCodexVersion(MACOS_CODEX_APP_COMMAND) }
-    ];
+    const pathValue = process.env.PATH?.split(delimiter).map(directory => resolve(cwd, directory)).join(delimiter);
+    const pathCodex = resolveExecutable('codex', { pathValue, cwd });
+    const cli = pathCodex ? { command: pathCodex, args: [] } : pathCommand;
+    const desktop = { command: MACOS_CODEX_APP_COMMAND, args: [] };
+    const [cliVersion, desktopVersion] = await Promise.all([
+        probeCodexCliVersion(cli, cwd), probeCodexCliVersion(desktop, cwd)
+    ]);
 
     // 中文注释：Codex Desktop 与 npm CLI 都可能写 thread-store；恢复时选择版本更新的 app-server，
     // 避免旧 CLI 读取新 rollout 格式失败。版本相同优先 Desktop，和用户看到的 Codex.app 保持一致。
-    const best = candidates.sort((left, right) => {
-        const versionDiff = compareVersion(right.version, left.version);
-        if (versionDiff !== 0) return versionDiff;
-        if (left.source === right.source) return 0;
-        return left.source === 'desktop' ? -1 : 1;
-    })[0];
+    const best = compareVersion(desktopVersion, cliVersion) >= 0
+        ? { command: desktop, version: desktopVersion }
+        : { command: cli, version: cliVersion };
 
     logger.debug('[CodexAppServer] Resolved codex command', {
-        selected: best.command,
-        candidates: candidates.map((candidate) => ({
-            command: candidate.command,
-            source: candidate.source,
-            version: candidate.version?.join('.') ?? null
-        }))
+        selected: best.command.command,
+        candidates: [
+            { command: cli.command, source: 'path', version: cliVersion?.join('.') ?? null },
+            { command: desktop.command, source: 'desktop', version: desktopVersion?.join('.') ?? null }
+        ]
     });
-    return best.command;
+    return best;
 }
 
 export class CodexAppServerClient extends JsonLineParser {
@@ -254,7 +240,7 @@ export class CodexAppServerClient extends JsonLineParser {
             return;
         }
 
-        const codexCommand = this.options.command ?? resolveSelectedCodexCommand(resolveCodexAppServerCommand());
+        const codexCommand = this.options.command ?? (await resolveCodexAppServerCommand(this.options.cwd)).command;
         logger.debug(`[CodexAppServer] Starting ${codexCommand.command} app-server`);
         const catalogArgs = resolveModelCatalogArgs();
         const child = spawn(codexCommand.command, [...codexCommand.args, 'app-server', ...catalogArgs], {
@@ -560,6 +546,9 @@ export class CodexAppServerClient extends JsonLineParser {
     }
 
     async disconnect(options?: { gracefulTimeoutMs?: number }): Promise<void> {
+        if (!this.options.endpoint && this.connecting && !this.connected) {
+            await this.connecting.catch(() => undefined);
+        }
         if (this.socket) {
             const socket = this.socket;
             this.socket = null;

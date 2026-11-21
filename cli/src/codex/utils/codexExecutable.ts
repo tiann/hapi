@@ -1,5 +1,6 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { open, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { resolveExecutable } from '@/agent/agentLaunchCommand';
@@ -11,17 +12,56 @@ export interface CodexCommand {
     args: string[];
 }
 
-export function parseCodexCliVersion(stdout: string): [number, number, number] | null {
+export type CodexCliVersion = [number, number, number];
+
+export function parseCodexCliVersion(stdout: string): CodexCliVersion | null {
     const version = stdout.match(/codex-cli (\d+)\.(\d+)\.(\d+)/);
     return version ? [Number(version[1]), Number(version[2]), Number(version[3])] : null;
 }
 
-export function probeCodexCliVersion(command: CodexCommand, cwd?: string): Promise<[number, number, number] | null> {
+function readCodexCliVersion(command: CodexCommand, cwd?: string): Promise<CodexCliVersion | null> {
     return new Promise(resolve => {
         execFile(command.command, [...command.args, '--version'], {
             cwd, encoding: 'utf8', timeout: 3_000, windowsHide: process.platform === 'win32'
         }, (error, stdout) => resolve(error ? null : parseCodexCliVersion(stdout)));
     });
+}
+
+const codexVersions = new Map<string, { identity: string; version: Promise<CodexCliVersion | null> }>();
+
+async function isNativeExecutable(command: string): Promise<boolean> {
+    const file = await open(command, 'r');
+    try {
+        const header = Buffer.alloc(4);
+        if ((await file.read(header, 0, header.length, 0)).bytesRead !== header.length) return false;
+        const magic = header.readUInt32BE();
+        return header.readUInt16BE() === 0x4d5a // PE
+            || magic === 0x7f454c46 // ELF
+            || [0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe, 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca].includes(magic); // Mach-O
+    } finally {
+        await file.close();
+    }
+}
+
+export async function probeCodexCliVersion(command: CodexCommand, cwd?: string): Promise<CodexCliVersion | null> {
+    if (command.args.length > 0 || !path.isAbsolute(command.command)) return readCodexCliVersion(command, cwd);
+    const file = await stat(command.command).catch(() => null);
+    if (!file?.isFile()) return readCodexCliVersion(command, cwd);
+
+    const identity = JSON.stringify([file.dev, file.ino, file.size, file.mtimeMs, file.ctimeMs]);
+    const cached = codexVersions.get(command.command);
+    if (cached?.identity === identity) return cached.version;
+
+    // Launchers can upgrade the executable they delegate to without changing their own file.
+    if (!await isNativeExecutable(command.command).catch(() => false)) return readCodexCliVersion(command, cwd);
+    const existing = codexVersions.get(command.command);
+    if (existing?.identity === identity) return existing.version;
+    const version = readCodexCliVersion(command, cwd).then(result => {
+        if (!result && codexVersions.get(command.command)?.version === version) codexVersions.delete(command.command);
+        return result;
+    });
+    codexVersions.set(command.command, { identity, version });
+    return version;
 }
 
 function findWhereResults(command: string): string[] {

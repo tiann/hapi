@@ -1,7 +1,10 @@
-import { win32 } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, win32 } from 'node:path';
 import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { execFileSyncMock, existsSyncMock, homedirMock } = vi.hoisted(() => ({
+const { execFileMock, execFileSyncMock, existsSyncMock, homedirMock } = vi.hoisted(() => ({
+    execFileMock: vi.fn(),
     execFileSyncMock: vi.fn(),
     existsSyncMock: vi.fn(),
     homedirMock: vi.fn(() => 'home\junes')
@@ -11,6 +14,7 @@ vi.mock('node:child_process', async () => {
     const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
     return {
         ...actual,
+        execFile: execFileMock,
         execFileSync: execFileSyncMock
     };
 });
@@ -69,6 +73,47 @@ function setPlatform(value: string) {
         configurable: true
     });
 }
+
+describe('probeCodexCliVersion', () => {
+    it('skips subprocesses for unchanged native binaries and observes a replacement', async () => {
+        execFileMock.mockReset();
+        execFileMock.mockImplementationOnce((_command, _args, _options, done) => done(null, 'codex-cli 0.169.0'));
+        execFileMock.mockImplementationOnce((_command, _args, _options, done) => done(null, 'codex-cli 0.170.0'));
+        const home = await mkdtemp(join(tmpdir(), 'hapi-codex-version-'));
+        const command = { command: join(home, 'codex'), args: [] };
+        const { probeCodexCliVersion } = await import('./codexExecutable');
+        try {
+            // Mach-O fixtures are only read for identity. execFile is mocked.
+            await writeFile(command.command, Buffer.from('feedfacf', 'hex'));
+            await expect(probeCodexCliVersion(command)).resolves.toEqual([0, 169, 0]);
+            await expect(probeCodexCliVersion(command)).resolves.toEqual([0, 169, 0]);
+            expect(execFileMock).toHaveBeenCalledTimes(1);
+
+            await writeFile(command.command, Buffer.from('feedfacf00', 'hex'));
+            await expect(probeCodexCliVersion(command)).resolves.toEqual([0, 170, 0]);
+            expect(execFileMock).toHaveBeenCalledTimes(2);
+        } finally {
+            await rm(home, { recursive: true, force: true });
+        }
+    });
+
+    it('rechecks script launchers because their target can change independently', async () => {
+        execFileMock.mockReset();
+        execFileMock.mockImplementationOnce((_command, _args, _options, done) => done(null, 'codex-cli 0.169.0'));
+        execFileMock.mockImplementationOnce((_command, _args, _options, done) => done(null, 'codex-cli 0.170.0'));
+        const home = await mkdtemp(join(tmpdir(), 'hapi-codex-shim-version-'));
+        const command = { command: join(home, 'codex'), args: [] };
+        const { probeCodexCliVersion } = await import('./codexExecutable');
+        try {
+            await writeFile(command.command, '#!/bin/sh\nexec other-codex "$@"\n');
+            await expect(probeCodexCliVersion(command)).resolves.toEqual([0, 169, 0]);
+            await expect(probeCodexCliVersion(command)).resolves.toEqual([0, 170, 0]);
+            expect(execFileMock).toHaveBeenCalledTimes(2);
+        } finally {
+            await rm(home, { recursive: true, force: true });
+        }
+    });
+});
 
 describe('resolveCodexCommand', () => {
     beforeAll(() => {

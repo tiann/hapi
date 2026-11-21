@@ -19,7 +19,6 @@ vi.mock('node:os', async () => {
 
 vi.mock('@/codex/utils/codexExecutable', () => ({
     resolveCodexCommand: resolveRunnerCommand,
-    resolveSelectedCodexCommand: (command: string) => ({ command, args: [] }),
     probeCodexCliVersion: probeVersion
 }));
 
@@ -48,7 +47,7 @@ describe('listCodexModels cwd', () => {
         constructorOptions.length = 0;
         listModelsMock.mockReset();
         resolveRunnerCommand.mockReset().mockReturnValue({ command: '/path/codex', args: [] });
-        resolveDiscoveryCommand.mockReset().mockReturnValue('/desktop/codex');
+        resolveDiscoveryCommand.mockReset().mockResolvedValue({ command: { command: '/desktop/codex', args: [] } });
         probeVersion.mockReset().mockResolvedValue([0, 170, 0]);
         discoverySupportsUltrafast.mockReset().mockReturnValue(true);
         _resetCodexModelsCacheForTests();
@@ -116,10 +115,20 @@ describe('listCodexModels cwd', () => {
         await listCodexModels();
         expect(listModelsMock).toHaveBeenCalledTimes(2);
 
-        resolveDiscoveryCommand.mockReturnValue('/updated-desktop/codex');
+        resolveDiscoveryCommand.mockResolvedValue({ command: { command: '/updated-desktop/codex', args: [] } });
         await listCodexModels();
         expect(listModelsMock).toHaveBeenCalledTimes(3);
         expect(constructorOptions.at(-1)).toMatchObject({ command: { command: '/updated-desktop/codex' } });
+    });
+
+    it('reuses the version selected by Desktop discovery without a duplicate probe', async () => {
+        resolveDiscoveryCommand.mockResolvedValue({
+            command: { command: '/desktop/codex', args: [] },
+            version: [0, 170, 0]
+        });
+        listModelsMock.mockResolvedValue({ data: [{ id: 'eligible', serviceTiers: [{ id: 'ultrafast' }] }] });
+        expect((await listCodexModels())[0]?.serviceTiers).toEqual(['ultrafast']);
+        expect(probeVersion).toHaveBeenCalledExactlyOnceWith({ command: '/path/codex', args: [] });
     });
 
     it('keeps visible and hidden model lists in separate cache slots', async () => {
