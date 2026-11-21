@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeFilePathHref, remarkFilePathLinks } from '@/lib/remark-file-path-links'
+import { decodeFilePathCandidateHref, decodeFilePathHref, remarkFilePathLinks } from '@/lib/remark-file-path-links'
 
 type TestNode = {
     type: string
@@ -195,13 +195,66 @@ describe('remarkFilePathLinks — explicit markdown links', () => {
         'C:\\Users\\dev\\project\\handoff.md',
         'D:/work/app/src/main.ts:12',
         'D:/outside/secret.ts#L1',
+        'D:/3d/foo%20bar.md',
     ])('rewrites Windows absolute file link %s to hapi-file-candidate (not premature hapi-file)', (url) => {
         const nodes = transformNodes([linkNode(url)])
         const link = nodes.find((node) => node.type === 'link')!
         const withoutMeta = url.replace(/#.*$/, '').replace(/\?.*$/, '')
-        const expectedPath = withoutMeta.replace(/:\d+(?::\d+)?$/, '')
+        const expectedPath = decodeURIComponent(withoutMeta).replace(/:\d+(?::\d+)?$/, '')
         expect(decodeFilePathHref(link.url as string)).toBeNull()
         expect(link.url).toBe('hapi-file-candidate:' + encodeURIComponent(expectedPath))
+    })
+
+    it.each([
+        ['file:///D:/3d/result.json', 'D:/3d/result.json'],
+        ['file:///D:/3d/foo%20bar/preview.png#L10', 'D:/3d/foo bar/preview.png'],
+        ['file://localhost/C:/Users/dev/docs/handoff.md:12:4', 'C:/Users/dev/docs/handoff.md'],
+        ['file:///D:/3d/report%2520draft.md', 'D:/3d/report%20draft.md'],
+    ])('rewrites local Windows file URI %s to hapi-file-candidate', (url, expectedPath) => {
+        const nodes = transformNodes([linkNode(url)])
+        const link = nodes.find((node) => node.type === 'link')!
+        expect(decodeFilePathHref(link.url as string)).toBeNull()
+        expect(link.url).toBe('hapi-file-candidate:' + encodeURIComponent(expectedPath))
+    })
+
+    it('decodes hapi-file-candidate payloads exactly once while normalizing scheme bypasses', () => {
+        expect(
+            decodeFilePathCandidateHref('hapi-file-candidate:' + encodeURIComponent('D:/3d/report%20draft.md'))
+        ).toBe('D:/3d/report%20draft.md')
+        expect(
+            decodeFilePathCandidateHref('hapi%2Dfile%2Dcandidate:' + encodeURIComponent('D:/3d/report%20draft.md'))
+        ).toBe('D:/3d/report%20draft.md')
+        expect(decodeFilePathCandidateHref('hapi-file-candidate:')).toBeNull()
+        expect(decodeFilePathCandidateHref('hapi-file-candidate:D:/3d/%ZZbad.md')).toBeNull()
+    })
+
+    it('unwraps local POSIX file:/// URI to scheme-less path for <A> workspace check', () => {
+        const nodes = transformNodes([linkNode('file:///home/ada/coding/hapi/docs/a.md#section')])
+        const link = nodes.find((node) => node.type === 'link')!
+        expect(decodeFilePathHref(link.url as string)).toBeNull()
+        expect(link.url).toBe('/home/ada/coding/hapi/docs/a.md')
+    })
+
+    it.each([
+        ['file:///home/ada/coding/hapi/docs/report%23draft.md', '/home/ada/coding/hapi/docs/report%23draft.md'],
+        ['file:///home/ada/coding/hapi/docs/report%3Fdraft.md', '/home/ada/coding/hapi/docs/report%3Fdraft.md'],
+        ['file:///home/ada/coding/hapi/docs/report%25draft.md', '/home/ada/coding/hapi/docs/report%25draft.md'],
+        ['file:///home/ada/coding/hapi/docs/report%23draft.md#section', '/home/ada/coding/hapi/docs/report%23draft.md'],
+    ])('preserves encoded delimiters when unwrapping local POSIX file URI %s', (url, expectedHref) => {
+        const nodes = transformNodes([linkNode(url)])
+        const link = nodes.find((node) => node.type === 'link')!
+        expect(decodeFilePathHref(link.url as string)).toBeNull()
+        expect(link.url).toBe(expectedHref)
+    })
+
+    it.each([
+        'file://remote-server/share/a.md',
+        'file:///D:/3d/unknown.bin',
+        'file:///D:/3d/%ZZbad.md',
+    ])('leaves unsafe or non-allowlisted file URI %s untouched', (url) => {
+        const nodes = transformNodes([linkNode(url)])
+        const link = nodes.find((node) => node.type === 'link')!
+        expect(link.url).toBe(url)
     })
 
     it.each([
