@@ -41,6 +41,9 @@ import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStat
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
+import { getSessionTitle } from '@/lib/sessionTitle'
+import { buildSessionReferenceText, matchSessionsForMention } from '@/lib/sessionReference'
+import { isSkillAutocompleteQuery, normalizeSkillAutocompleteQuery } from '@/lib/autocomplete'
 import { buildSessionMentionSuggestions } from '@/lib/sessionMentionSuggestions'
 import { createDeferredSuggestions } from '@/lib/deferredSuggestions'
 import type { Suggestion, SuggestionRequestContext } from '@/hooks/useActiveSuggestions'
@@ -856,8 +859,8 @@ function SessionPage() {
             }
             return sessionHits
         }
-        if (query.startsWith('$')) {
-            return await getSkillSuggestions(query)
+        if (isSkillAutocompleteQuery(query)) {
+            return await getSkillSuggestions(normalizeSkillAutocompleteQuery(query))
         }
         return await getSlashSuggestions(query)
     }, [
