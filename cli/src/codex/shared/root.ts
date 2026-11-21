@@ -20,7 +20,7 @@ import { resolveCodexSlashCommand } from '../utils/slashCommands';
 import { parseReasoningEffortValue } from '../utils/reasoningEffort';
 import { SharedCodexPermissions } from './permissions';
 import { SharedCodexAsyncQuestions } from './asyncQuestions';
-import { QueueAdmissionPaused, SharedCodexQueue } from './queue';
+import { QueueAdmissionPaused, QueueCommandRejected, SharedCodexQueue } from './queue';
 import { SharedCodexProjection, inputText, userMessageDisplayText } from './projection';
 import { getCodexSystemPrompt } from '../utils/systemPrompt';
 import { record, string } from './gateway';
@@ -755,14 +755,14 @@ export class SharedCodexRoot {
         }
     }
     private settingsWrites: Promise<unknown> = Promise.resolve();
-    applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
+    applySettings(raw: unknown, beforeReconciliation?: () => void): Promise<{ applied: RuntimeSettings }> {
         const deadline = Date.now() + 25_000;
         const operationId = ++this.tierOperationCounter;
-        const operation = this.settingsWrites.catch(() => {}).then(() => this.applySettingsNow(raw, deadline, operationId));
+        const operation = this.settingsWrites.catch(() => {}).then(() => this.applySettingsNow(raw, deadline, operationId, beforeReconciliation));
         this.settingsWrites = operation;
         return operation;
     }
-    private async applySettingsNow(raw: unknown, deadline: number, operationId: number): Promise<{ applied: RuntimeSettings }> {
+    private async applySettingsNow(raw: unknown, deadline: number, operationId: number, beforeReconciliation?: () => void): Promise<{ applied: RuntimeSettings }> {
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
         const config = SettingsSchema.parse(raw);
         if (this.pendingLaunchCollaborationMode && config.collaborationMode === undefined) config.collaborationMode = this.pendingLaunchCollaborationMode;
@@ -820,6 +820,7 @@ export class SharedCodexRoot {
             } } } : {})
         };
         const confirmsTier = config.serviceTier !== undefined || this.hasUltrafastTier;
+        beforeReconciliation?.();
         const confirmed = await this.writeNativeSettings(params, params, deadline, operationId);
         if (config.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
         await this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, fallbackNotice);
@@ -1031,11 +1032,11 @@ export class SharedCodexRoot {
                 if (fallbackNotice && this.hasConfirmedStandardTier) this.notice(fallbackNotice);
                 return;
             }
-            if (confirmsTier) this.pauseTierConfirmation(operationId);
             throw new Error('Native turn settings are not confirmed');
         } catch {
             if (!current()) return;
             // Input has already been accepted. Never return a send error inviting a duplicate.
+            if (confirmsTier) this.pauseTierConfirmation(operationId, this.confirmedTierOperation === operationId);
             this.notice('Codex accepted the turn, but its settings could not be confirmed. Reconnect before changing the service tier.');
         }
     }
@@ -1468,7 +1469,13 @@ export class SharedCodexRoot {
         }
         if (slash.updates?.proactiveMultiAgent !== undefined) throw new Error('This Codex version uses Ultra reasoning effort instead of a multi-agent toggle');
         if (slash.updates?.model === null) throw new Error('Choose an explicit model in a shared thread');
-        const applied = slash.updates ? await this.applySettings(slash.updates) : undefined;
+        let reconciliationStarted = false;
+        const applied = slash.updates ? await this.applySettings(slash.updates, () => { reconciliationStarted = true; })
+            .catch((error: unknown) => {
+                if (reconciliationStarted) throw error;
+                const message = error instanceof Error ? error.message : String(error);
+                throw new QueueCommandRejected(message, { cause: error });
+            }) : undefined;
         const tierFellBack = slash.updates?.serviceTier === 'ultrafast' && applied?.applied.serviceTier !== 'ultrafast';
         if (slash.message && !tierFellBack) this.notice(slash.message);
         return slash.kind === 'replace' ? slash.text : null;

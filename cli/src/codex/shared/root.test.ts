@@ -1766,6 +1766,22 @@ describe('Ultrafast native settings', () => {
         request.mockRestore();
     });
 
+    it('allows Retry for a queued Ultrafast command after pre-write discovery fails', async () => {
+        const f = await fixture(); await f.root.activate();
+        vi.spyOn(f.root.client, 'listModels').mockRejectedValueOnce(new Error('catalog disconnected'));
+        const request = vi.spyOn(f.root.client, 'request');
+        f.submit('/ultrafast on', 'retry-tier-command');
+        await vi.waitFor(async () => expect((await f.ledger()).entries['retry-tier-command']?.state).toBe('rejected'));
+        expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+        expect(f.uncertain).not.toHaveBeenCalled();
+
+        expect(await f.cancel('retry-tier-command')).toBe(true);
+        expect(await f.retry('retry-tier-command', true)).toBe(true);
+        f.submit('/ultrafast on', 'retry-tier-command');
+        await vi.waitFor(async () => expect((await f.ledger()).entries['retry-tier-command']?.state).toBe('consumed'));
+        expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update')).toHaveLength(1);
+    });
+
     it('does not follow a confirmed fallback with an Ultrafast-enabled slash reply', async () => {
         const f = await fixture();
         await f.root.applySettings({ model: 'standard-only', serviceTier: 'standard' });
@@ -2515,6 +2531,32 @@ it('announces fallback confirmed by a newer notification during native reconcili
     f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'default' } });
     release({ model: 'mock', serviceTier: 'default' }); await pending;
     expect(f.events).toHaveBeenCalledWith({ type: 'message', message: notice });
+});
+
+it('holds Web and native input if Standard is rejected after an accepted Ultrafast turn', async () => {
+    const f = await fixture(); await f.root.activate();
+    const turn = await f.root.prepareNativeTurn({ serviceTier: 'ultrafast' });
+    const original = f.root.client.request.bind(f.root.client);
+    let rejectReset = true;
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/settings/update' && rejectReset) {
+            rejectReset = false;
+            throw new Error('Native settings reset rejected');
+        }
+        return original(method, params);
+    });
+    f.native.settings.serviceTier = null;
+    await expect(f.root.confirmNativeTurn(turn.params, true, turn.fallbackNotice, turn.generation)).resolves.toBeUndefined();
+    expect(f.root.needsTierConfirmation).toBe(true);
+    expect(f.metadata().codexTierConfirmationPending).toBe(true);
+    f.submit('hold until Standard', 'paused-web-input');
+    await expect(f.root.nativeQueueMutation('thread/queue/add', { threadId: 'thread', input: [] })).rejects.toThrow('tier confirmation');
+    expect(request.mock.calls.some(([method]) => method === 'thread/queue/add')).toBe(false);
+
+    await f.root.applySettings({ serviceTier: 'standard' });
+    expect(f.root.needsTierConfirmation).toBe(false);
+    await vi.waitFor(async () => expect((await f.ledger()).entries['paused-web-input']?.state).toBe('queued'));
+    expect(request.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(1);
 });
 
 it.each(['web', 'native', 'turn', 'web-model', 'native-model', 'turn-model'])('confirms the loaded effective tier after %s settings selection', async origin => {

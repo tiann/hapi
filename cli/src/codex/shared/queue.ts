@@ -31,6 +31,7 @@ const LedgerV2Schema = z.object({
 });
 export type QueueInput = z.infer<typeof InputSchema>;
 export class QueueAdmissionPaused extends Error {}
+export class QueueCommandRejected extends Error {}
 type Entry = z.infer<typeof EntrySchema>;
 type Member = z.infer<typeof MemberSchema>;
 type Removal = z.infer<typeof RemovalSchema>;
@@ -246,7 +247,15 @@ export class SharedCodexQueue {
                 if (result === null) await this.committed(id);
                 else { delete this.entries[id]; await this.save(); }
                 return result;
-            } catch (error) { this.uncertain([id]); throw error; }
+            } catch (error) {
+                if (error instanceof QueueCommandRejected) {
+                    if (this.entries[id]?.state !== 'consumed') {
+                        this.entries[id] = { input: [], state: 'rejected' };
+                        await this.save();
+                    }
+                } else this.uncertain([id]);
+                throw error;
+            }
         });
     }
 
