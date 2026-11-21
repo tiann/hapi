@@ -51,7 +51,15 @@ describe('shared launch configuration', () => {
     it('does not interpret flags after -- as configuration', () => {
         expect(sharedLaunchConfig({ codexArgs: ['--', '--profile=explain'] }, '/tmp').tuiArgs).toEqual(['--', '--profile=explain']);
         expect(sharedLaunchConfig({ codexArgs: ['--', '-C', 'literal'] }, '/tmp').tuiArgs).toEqual(['--', '-C', 'literal']);
+        expect(sharedLaunchConfig({ codexArgs: ['--', '-c', 'service_tier=ultrafast'] }, '/tmp').hasServiceTierOverride).toBe(false);
     });
+    it.each([['-c', 'service_tier="ultrafast"'], ['--config=service_tier=ultrafast'], ['-cservice_tier=ultrafast']])(
+        'recognizes a native tier override supplied as %j', (...codexArgs) => {
+            const options = { codexArgs, serviceTier: 'standard' };
+            const result = sharedLaunchConfig(options, '/tmp');
+            expect(result.hasServiceTierOverride).toBe(true);
+            expect(result.threadParams.serviceTier).toBeNull();
+        });
     it('maps HAPI autoReview to native auto-review in the workspace-write sandbox', () => {
         const result = sharedLaunchConfig({ permissionMode: 'autoReview', codexArgs: ['--yolo'] }, '/tmp');
         expect(result.threadParams).toMatchObject({ approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: 'workspace-write' });

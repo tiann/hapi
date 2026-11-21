@@ -253,6 +253,20 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 });
                 verified.abort.abort(); await verified.done;
             } finally { resumeBootstrap(); state.beforeBootstrap = undefined; providerRead.mockRestore(); providerCatalog.mockRestore(); }
+            const nativeTierCatalog = vi.spyOn(CodexAppServerClient.prototype, 'listModels')
+                .mockResolvedValue({ data: [] } as never);
+            try {
+                const nativeOverride = await start({ model: 'gpt-6-astra',
+                    codexArgs: ['-c', 'service_tier="priority"', '--config=service_tier="ultrafast"'] });
+                const nativeThread = nativeOverride.runtime.sessions[nativeOverride.sessionId].threadId;
+                await expect(nativeOverride.client.request('thread/resume', { threadId: nativeThread, excludeTurns: true }))
+                    .resolves.toMatchObject({ serviceTier: 'default' });
+                expect(nativeTierCatalog).toHaveBeenCalledExactlyOnceWith({ includeHidden: true, modelProvider: 'mock' });
+                expect(state.sessions.get(nativeOverride.sessionId)?.messages).toContainEqual({
+                    type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.'
+                });
+                nativeOverride.abort.abort(); await nativeOverride.done;
+            } finally { nativeTierCatalog.mockRestore(); }
             const original = await start(); const threadId = original.runtime.sessions[original.sessionId].threadId;
             original.abort.abort(); await original.done;
             await configure('default');

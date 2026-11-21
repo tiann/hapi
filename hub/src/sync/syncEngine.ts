@@ -2557,6 +2557,7 @@ export class SyncEngine {
             const updated = this.store.sessions.updateSessionMetadata(childId,
                 { ...child.metadata!, codexSessionId: attempt.nativeSessionId,
                     codexServiceTierExplicit: attempt.nativeServiceTier ? true : source.metadata?.codexServiceTierExplicit,
+                    codexPendingServiceTier: metadata.codexPendingServiceTier,
                     codexPreserveNativeTier: this.codexUsesNativeTier(source) ? true : undefined
                 }, child.metadataVersion, namespace, { touchUpdatedAt: false })
             if (updated.result !== 'success') throw new Error('Failed to bind native fork to its child')

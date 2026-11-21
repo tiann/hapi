@@ -52,6 +52,7 @@ export function coldResumeDirectory(options: SharedLaunchOptions, launch: { cwd:
 
 export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
     cwd: string; cwdExplicit: boolean; serverArgs: string[]; tuiArgs: string[]; threadParams: Record<string, unknown>;
+    hasServiceTierOverride: boolean;
 } {
     const args = options.codexArgs ?? [];
     const serverArgs: string[] = [];
@@ -62,12 +63,14 @@ export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
     let provider: string | undefined;
     let oss = false;
     let autoReview = false;
+    let hasServiceTierOverride = false;
     for (let i = 0; i < args.length; i++) {
         const raw = args[i];
         if (raw === '--') { tuiArgs.push(...args.slice(i)); break; }
         const equal = raw.indexOf('=');
-        const arg = equal > 0 ? raw.slice(0, equal) : /^-[cmiCasp].+/.test(raw) ? raw.slice(0, 2) : raw;
-        const inline = equal > 0 ? raw.slice(equal + 1) : arg !== raw ? raw.slice(2) : undefined;
+        const shortJoined = /^-[cmiCasp][^=]/.test(raw);
+        const arg = shortJoined ? raw.slice(0, 2) : equal > 0 ? raw.slice(0, equal) : raw;
+        const inline = shortJoined ? raw.slice(2) : equal > 0 ? raw.slice(equal + 1) : undefined;
         const value = () => {
             const result = inline ?? args[++i];
             if (!result || result === '--' || result.startsWith('-') && arg !== '-c' && arg !== '--config') throw new Error(`Missing ${arg} value`);
@@ -81,6 +84,7 @@ export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
         if (arg.startsWith('--remote')) throw new Error('HAPI owns --remote and its authentication options');
         if (['-c', '--config', '--enable', '--disable'].includes(arg)) {
             const v = value(); serverArgs.push(arg, v);
+            if ((arg === '-c' || arg === '--config') && /^\s*service_tier\s*=/.test(v)) hasServiceTierOverride = true;
             // Remote resume inherits permissions from the server; do not send
             // competing client-side permission config (including native /new).
             if (!['-c', '--config'].includes(arg) || !/^\s*["']?(approval_policy|sandbox_mode|approvals_reviewer)["']?\s*=/.test(v)) tuiArgs.push(arg, v);
@@ -145,7 +149,7 @@ export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
     for (const [key, value] of Object.entries(config)) serverArgs.push('-c', `${key}=${JSON.stringify(value)}`);
     serverArgs.push(...resolveModelCatalogArgs(serverArgs));
     return {
-        cwd: directory, cwdExplicit: overrides.cwd !== undefined, serverArgs, tuiArgs,
+        cwd: directory, cwdExplicit: overrides.cwd !== undefined, serverArgs, tuiArgs, hasServiceTierOverride,
         threadParams: {
             ...(model ? { model } : {}),
             ...(provider ? { modelProvider: provider } : {}),

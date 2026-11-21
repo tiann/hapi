@@ -502,6 +502,30 @@ it.each([false, true])('opens the exact paused archived child for tier recovery 
     } finally { f.engine.stop(); }
 });
 
+it('preserves deferred Fast on an archived fork child that needs tier recovery', async () => {
+    const f = fixture();
+    try {
+        await f.engine.applySessionConfig(f.source.id, { serviceTier: 'fast' });
+        f.rpc.hasSessionConfigHandler = () => true;
+        let childId = '';
+        f.rpc.spawnSession = async (...args) => {
+            childId = args[12]!;
+            expect(args[11]).toBe('fast');
+            const child = f.store.sessions.getSession(childId)!;
+            expect(child.metadata).toMatchObject({ codexPendingServiceTier: 'fast' });
+            f.store.sessions.updateSessionMetadata(childId, { ...child.metadata!, codexTierConfirmationPending: true },
+                child.metadataVersion, 'ns');
+            f.engine.handleSessionAlive({ sid: childId, time: Date.now(), mode: 'remote', serviceTier: null });
+            return { type: 'success', sessionId: childId };
+        };
+        expect(await f.engine.forkConversation(f.source.id, 'ns')).toEqual({ type: 'success', sessionId: childId });
+        expect(f.engine.getSession(childId)?.metadata).toMatchObject({
+            codexPendingServiceTier: 'fast', codexTierConfirmationPending: true
+        });
+        expect(f.engine.getSession(f.source.id)?.active).toBe(false);
+    } finally { f.engine.stop(); }
+});
+
 it('waits for the settings RPC before exposing a paused archived child', async () => {
     const f = fixture();
     try {
