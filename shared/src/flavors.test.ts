@@ -130,6 +130,13 @@ describe('convenience functions', () => {
         expect(isCodexFamilyFlavor('grok')).toBe(true)
     })
 
+    test('excludes non-family, unknown, and nullish flavors from the Codex family', () => {
+        expect(isCodexFamilyFlavor('claude')).toBe(false)
+        expect(isCodexFamilyFlavor('unknown-flavor')).toBe(false)
+        expect(isCodexFamilyFlavor(null)).toBe(false)
+        expect(isCodexFamilyFlavor(undefined)).toBe(false)
+    })
+
     test('supportsModelChange matches hasCapability', () => {
         expect(supportsModelChange('agy')).toBe(true)
         expect(supportsModelChange('claude')).toBe(true)

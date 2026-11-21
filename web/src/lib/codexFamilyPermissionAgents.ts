@@ -1,15 +1,17 @@
-import type { AgentFlavor } from '@hapi/protocol'
+import { CODEX_FAMILY_FLAVORS, type AgentFlavor, type CodexFamilyFlavor } from '@hapi/protocol'
 
-/** Agents that share codex-family permission modes (default / read-only / yolo). */
-export const CODEX_FAMILY_PERMISSION_AGENTS = [
-    'codex',
-    'gemini',
-    'kimi',
-    'copilot',
-    'opencode'
-] as const satisfies readonly AgentFlavor[]
+export type CodexFamilyPermissionAgent = Exclude<CodexFamilyFlavor, 'grok'>
 
-export type CodexFamilyPermissionAgent = typeof CODEX_FAMILY_PERMISSION_AGENTS[number]
+/**
+ * Codex-family flavors that use the shared create-form permission state.
+ * Derived from the shared codex-family membership minus grok: grok belongs to
+ * the family for tool-permission UI and uses separate create-form state for
+ * its own mode catalog (default / auto / plan / bypassPermissions).
+ */
+export const CODEX_FAMILY_PERMISSION_AGENTS: readonly CodexFamilyPermissionAgent[] =
+    CODEX_FAMILY_FLAVORS.filter(
+        (flavor): flavor is CodexFamilyPermissionAgent => flavor !== 'grok'
+    )
 
 export function usesCodexFamilyPermissionModes(
     flavor: string | null | undefined
@@ -19,19 +21,18 @@ export function usesCodexFamilyPermissionModes(
 }
 
 /**
- * Flavors whose create-form permission control is the native-mode select.
+ * Flavors outside the codex-family mode set that still render the create-form
+ * permission control through the native-mode select.
  * Ports: `NewSessionLogic.usesNativePermissionSelect`
  * (`ios/Packages/HapiKit/Sources/HapiClient/NewSession/NewSessionForm.swift`,
  * `android/app/src/main/kotlin/app/hapi/companion/feature/newsession/NewSessionForm.kt`).
- * claude, grok, cursor and agy do not share the codex-family mode set, but
- * they render through the same native select.
  */
+const NATIVE_PERMISSION_SELECT_EXTRA_FLAVORS: readonly AgentFlavor[] = ['claude', 'grok', 'cursor', 'agy']
+
 export function usesNativePermissionSelect(flavor: string | null | undefined): boolean {
-    return flavor === 'claude'
-        || flavor === 'grok'
-        || flavor === 'cursor'
-        || flavor === 'agy'
-        || usesCodexFamilyPermissionModes(flavor)
+    return typeof flavor === 'string'
+        && ((NATIVE_PERMISSION_SELECT_EXTRA_FLAVORS as readonly string[]).includes(flavor)
+            || usesCodexFamilyPermissionModes(flavor))
 }
 
 /**

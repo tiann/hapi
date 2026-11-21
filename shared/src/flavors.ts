@@ -62,11 +62,19 @@ export function supportsEffort(flavor: string | null | undefined): boolean {
     return hasCapability(flavor, Capabilities.Effort)
 }
 
+// --- Codex-family membership (single source of truth) ---
+export const CODEX_FAMILY_FLAVORS = [
+    'codex',
+    'gemini',
+    'grok',
+    'kimi',
+    'copilot',
+    'opencode',
+] as const satisfies readonly AgentFlavor[]
+
+export type CodexFamilyFlavor = typeof CODEX_FAMILY_FLAVORS[number]
+
 export function isCodexFamilyFlavor(flavor: string | null | undefined): boolean {
-    return flavor === 'codex'
-        || flavor === 'gemini'
-        || flavor === 'grok'
-        || flavor === 'kimi'
-        || flavor === 'copilot'
-        || flavor === 'opencode'
+    return typeof flavor === 'string'
+        && (CODEX_FAMILY_FLAVORS as readonly string[]).includes(flavor)
 }
