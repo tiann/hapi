@@ -255,6 +255,11 @@ describe('SessionHeader', () => {
         expect(screen.queryByText('effort default')).not.toBeInTheDocument()
     })
 
+    it('honors a null display tier without using the saved Ultrafast tier', () => {
+        renderHeader(baseSession({ serviceTier: 'ultrafast' }), { serviceTier: null })
+        expect(screen.queryByTestId('session-header-fast')).not.toBeInTheDocument()
+    })
+
     it('shows Pi ordinary effort as effort metadata', () => {
         renderHeader(baseSession({
             metadata: { flavor: 'pi', path: '/repo', host: 'machine' },

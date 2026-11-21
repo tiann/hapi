@@ -1,12 +1,17 @@
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { stat } from 'node:fs/promises';
+import { delimiter, resolve } from 'node:path';
+import { resolveExecutable } from '@/agent/agentLaunchCommand';
 import WebSocket from 'ws';
 import { logger } from '@/ui/logger';
 import { JsonLineParser } from '@/utils/jsonLineParser';
 import { killProcessByChildProcess } from '@/utils/process';
 import { CODEX_WEBSOCKET_MAX_PAYLOAD } from './websocketLimits';
 import { resolveModelCatalogArgs } from './utils/modelCatalog';
-import { resolveSelectedCodexCommand } from './utils/codexExecutable';
+import {
+    MACOS_CODEX_APP_COMMAND, probeCodexCliVersion, resolveSelectedCodexCommand,
+    type CodexCliVersion, type CodexCommand
+} from './utils/codexExecutable';
 import type {
     AccountRateLimitsReadResponse,
     AccountReadResponse,
@@ -87,6 +92,7 @@ export function isIndeterminateError(error: unknown): boolean {
 
 type CodexAppServerClientOptions = {
     cwd?: string;
+    command?: CodexCommand;
     /** An independently owned shared server. Disconnect only detaches this client. */
     endpoint?: string;
     token?: string;
@@ -105,32 +111,13 @@ function createAbortError(): Error {
     return error;
 }
 
-type CodexCommandCandidate = {
-    command: string;
-    source: 'desktop' | 'path';
-    version: number[] | null;
-};
-
-function parseCodexVersion(output: string): number[] | null {
-    const match = /(\d+)\.(\d+)\.(\d+)(?:[-+][^\s]+)?/u.exec(output);
-    if (!match) return null;
-    return [Number(match[1]), Number(match[2]), Number(match[3])];
+interface CodexAppServerSelection {
+    command: CodexCommand;
+    /** Present when selection already compared the Desktop and PATH versions. */
+    version?: CodexCliVersion | null;
 }
 
-function getCodexVersion(command: string): number[] | null {
-    try {
-        const output = execFileSync(command, ['--version'], {
-            encoding: 'utf8',
-            timeout: 3_000,
-            stdio: ['ignore', 'pipe', 'ignore']
-        });
-        return parseCodexVersion(output);
-    } catch {
-        return null;
-    }
-}
-
-function compareVersion(a: number[] | null, b: number[] | null): number {
+function compareVersion(a: CodexCliVersion | null, b: CodexCliVersion | null): number {
     if (!a && !b) return 0;
     if (a && !b) return 1;
     if (!a && b) return -1;
@@ -141,46 +128,38 @@ function compareVersion(a: number[] | null, b: number[] | null): number {
     return 0;
 }
 
-export function resolveCodexAppServerCommand(): string {
-    if (process.env.HAPI_CODEX_APP_SERVER_BIN) {
-        return process.env.HAPI_CODEX_APP_SERVER_BIN;
+export async function resolveCodexAppServerCommand(cwd = process.cwd(), windowsRunnerCommand?: CodexCommand): Promise<CodexAppServerSelection> {
+    const override = process.env.HAPI_CODEX_APP_SERVER_BIN;
+    if (windowsRunnerCommand && (!override || override === 'codex')) return { command: windowsRunnerCommand };
+    if (override) return { command: await resolveSelectedCodexCommand(override) };
+
+    const pathCommand = await resolveSelectedCodexCommand('codex');
+    if (process.platform !== 'darwin' || !(await stat(MACOS_CODEX_APP_COMMAND).catch(() => null))?.isFile()) {
+        return { command: pathCommand };
     }
 
-    const candidates: CodexCommandCandidate[] = [{
-        command: 'codex',
-        source: 'path',
-        version: getCodexVersion('codex')
-    }];
-
-    if (process.platform === 'darwin') {
-        const desktopCodex = '/Applications/Codex.app/Contents/Resources/codex';
-        if (existsSync(desktopCodex)) {
-            candidates.push({
-                command: desktopCodex,
-                source: 'desktop',
-                version: getCodexVersion(desktopCodex)
-            });
-        }
-    }
+    const pathValue = process.env.PATH?.split(delimiter).map(directory => resolve(cwd, directory)).join(delimiter);
+    const pathCodex = resolveExecutable('codex', { pathValue, cwd });
+    const cli = pathCodex ? { command: pathCodex, args: [] } : pathCommand;
+    const desktop = { command: MACOS_CODEX_APP_COMMAND, args: [] };
+    const [cliVersion, desktopVersion] = await Promise.all([
+        probeCodexCliVersion(cli, cwd), probeCodexCliVersion(desktop, cwd)
+    ]);
 
     // 中文注释：Codex Desktop 与 npm CLI 都可能写 thread-store；恢复时选择版本更新的 app-server，
     // 避免旧 CLI 读取新 rollout 格式失败。版本相同优先 Desktop，和用户看到的 Codex.app 保持一致。
-    const best = candidates.sort((left, right) => {
-        const versionDiff = compareVersion(right.version, left.version);
-        if (versionDiff !== 0) return versionDiff;
-        if (left.source === right.source) return 0;
-        return left.source === 'desktop' ? -1 : 1;
-    })[0];
+    const best = compareVersion(desktopVersion, cliVersion) >= 0
+        ? { command: desktop, version: desktopVersion }
+        : { command: cli, version: cliVersion };
 
     logger.debug('[CodexAppServer] Resolved codex command', {
-        selected: best.command,
-        candidates: candidates.map((candidate) => ({
-            command: candidate.command,
-            source: candidate.source,
-            version: candidate.version?.join('.') ?? null
-        }))
+        selected: best.command.command,
+        candidates: [
+            { command: cli.command, source: 'path', version: cliVersion?.join('.') ?? null },
+            { command: desktop.command, source: 'desktop', version: desktopVersion?.join('.') ?? null }
+        ]
     });
-    return best.command;
+    return best;
 }
 
 export class CodexAppServerClient extends JsonLineParser {
@@ -190,6 +169,8 @@ export class CodexAppServerClient extends JsonLineParser {
     private process: ChildProcessWithoutNullStreams | null = null;
     private connected = false;
     private initialized = false;
+    private serverUserAgent?: string;
+    private initializedClientName?: string;
 
     /** True while the app-server process is connected. */
     isConnected(): boolean {
@@ -259,7 +240,7 @@ export class CodexAppServerClient extends JsonLineParser {
             return;
         }
 
-        const codexCommand = resolveSelectedCodexCommand(resolveCodexAppServerCommand());
+        const codexCommand = this.options.command ?? (await resolveCodexAppServerCommand(this.options.cwd)).command;
         logger.debug(`[CodexAppServer] Starting ${codexCommand.command} app-server`);
         const catalogArgs = resolveModelCatalogArgs();
         const child = spawn(codexCommand.command, [...codexCommand.args, 'app-server', ...catalogArgs], {
@@ -351,9 +332,35 @@ export class CodexAppServerClient extends JsonLineParser {
 
     async initialize(params: InitializeParams): Promise<InitializeResponse> {
         const response = await this.sendRequest('initialize', params, { timeoutMs: 30_000 });
+        this.serverUserAgent = (response as InitializeResponse).userAgent;
+        this.initializedClientName = params.clientInfo.name;
         this.sendNotification('initialized');
         this.initialized = true;
         return response as InitializeResponse;
+    }
+
+    private catalogVersion(): number[] | undefined {
+        // Native userAgent uses clientInfo.name as its product, but the native
+        // binary version rather than the caller's clientInfo.version.
+        const version = this.serverUserAgent?.match(/^([^/\s]+)\/(\d+)\.(\d+)\.\d+/);
+        if (!version || !['codex_cli_rs', 'codex', this.initializedClientName].includes(version[1])) return undefined;
+        return [Number(version[2]), Number(version[3])];
+    }
+    supportsEffectiveUltrafastLaunch(): boolean {
+        const version = this.catalogVersion();
+        return Boolean(version && (version[0] > 0 || version[1] >= 170));
+    }
+    supportsProviderScopedModels(): boolean {
+        const version = this.catalogVersion();
+        return Boolean(version && (version[0] > 0 || version[1] >= 169));
+    }
+    retainsResumeModelProvider(): boolean {
+        const version = this.catalogVersion();
+        return Boolean(version && (version[0] > 0 || version[1] >= 166));
+    }
+    usesStartupModelCatalog(): boolean {
+        const version = this.catalogVersion();
+        return Boolean(version && version[0] === 0 && version[1] < 164);
     }
 
     async readConfig(params: ConfigReadParams): Promise<ConfigReadResponse> {
@@ -539,6 +546,9 @@ export class CodexAppServerClient extends JsonLineParser {
     }
 
     async disconnect(options?: { gracefulTimeoutMs?: number }): Promise<void> {
+        if (!this.options.endpoint && this.connecting && !this.connected) {
+            await this.connecting.catch(() => undefined);
+        }
         if (this.socket) {
             const socket = this.socket;
             this.socket = null;

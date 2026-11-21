@@ -33,6 +33,7 @@ import {
     wrapperHasActiveSiblingRoots,
 } from '@/runner/sharedSessionStop';
 import { PERMISSION_MODES } from '@hapi/protocol/modes';
+import { SessionServiceTierRequestSchema } from '@hapi/protocol/apiTypes';
 import { RUNNER_CAPABILITIES } from '@hapi/protocol';
 import { monotonicTimeMs, withRetry } from '@/utils/time';
 import { isRetryableConnectionError } from '@/utils/errorUtils';
@@ -2304,8 +2305,9 @@ export function buildCliArgs(
   if (options.modelReasoningEffort && (agent === 'codex' || agent === 'opencode')) {
     args.push('--model-reasoning-effort', options.modelReasoningEffort);
   }
-  if (options.serviceTier && agent === 'codex') {
-    args.push('--service-tier', options.serviceTier);
+  if (agent === 'codex') {
+    const tier = SessionServiceTierRequestSchema.shape.serviceTier.safeParse(options.serviceTier);
+    if (tier.success) args.push('--service-tier', tier.data);
   }
   if (options.collaborationMode && options.collaborationMode !== 'default' && agent === 'codex') {
     args.push('--collaboration-mode', options.collaborationMode);

@@ -24,6 +24,7 @@ import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '
 import type { Server } from 'socket.io'
 import { createHash, randomUUID } from 'node:crypto'
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import { SessionServiceTierRequestSchema } from '@hapi/protocol/apiTypes'
 import { branchSessionId, buildBranchPrompt } from './branchTranscript'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import type { StoredMessage } from '../store/types'
@@ -2280,7 +2281,8 @@ export class SyncEngine {
         expectedNativeSessionId: string,
         metadataKey: 'grokSessionId' | 'piSessionId' | 'opencodeSessionId' | 'codexSessionId',
         requireSessionReady: boolean,
-        timeoutMs: number = 60_000
+        timeoutMs: number = 60_000,
+        allowCodexTierRecovery: boolean = false
     ): Promise<boolean> {
         const startedAt = Date.now()
         while (Date.now() - startedAt < timeoutMs) {
@@ -2289,7 +2291,8 @@ export class SyncEngine {
             const boundId = child?.metadata?.[metadataKey]
             if (typeof boundId === 'string' && boundId.length > 0) {
                 if (boundId !== expectedNativeSessionId) return false
-                if (!requireSessionReady || this.sessionReadyIds.has(childId)) return true
+                if (!requireSessionReady || this.sessionReadyIds.has(childId)
+                    || allowCodexTierRecovery && this.canRecoverCodexTier(child)) return true
             }
             if (child && !child.active && Date.now() - startedAt > 5_000) {
                 return false
@@ -2297,6 +2300,11 @@ export class SyncEngine {
             await new Promise((resolve) => setTimeout(resolve, 250))
         }
         return false
+    }
+
+    private canRecoverCodexTier(child: Session | undefined): boolean {
+        return child?.active === true && child.metadata?.codexTierConfirmationPending === true
+            && this.rpcGateway.hasSessionConfigHandler(child.id)
     }
 
     /** Drop history locators that no longer have a corresponding message row. */
@@ -2460,7 +2468,8 @@ export class SyncEngine {
     private async reconcileCodexResume(session: Session): Promise<boolean> {
         const pending = session.metadata?.codexResumePending
         if (!pending) return true
-        if (session.active && this.sessionReadyIds.has(session.id) && session.metadata?.codexSessionId === pending.nativeSessionId) {
+        if (session.active && (this.sessionReadyIds.has(session.id) || this.canRecoverCodexTier(session))
+            && session.metadata?.codexSessionId === pending.nativeSessionId && session.metadata?.machineId === pending.machineId) {
             this.writeCodexResumePending(session.id, session.namespace, undefined)
             return true
         }
@@ -2499,7 +2508,10 @@ export class SyncEngine {
             }
             if (!attempt) {
                 attempt = { operationId: randomUUID(), childSessionId: randomUUID(),
-                    ...(messageLocalId ? { boundaryLocalId: messageLocalId, boundaryTurnId: turnId! } : {}) }
+                    ...(messageLocalId ? { boundaryLocalId: messageLocalId, boundaryTurnId: turnId! } : {}),
+                    ...(metadata.codexServiceTierExplicit === true && metadata.codexPendingServiceTier === undefined
+                        && (metadata.codexConfirmedServiceTier ?? source.serviceTier) === 'flex'
+                        ? { nativeServiceTier: 'flex' } : {}) }
                 this.setArchivedForkAttempt(source.id, namespace, attempt)
             }
             const childId = attempt.childSessionId
@@ -2507,7 +2519,7 @@ export class SyncEngine {
             if (child?.active) {
                 if (!attempt.nativeSessionId || child.metadata?.codexSessionId !== attempt.nativeSessionId
                     || child.namespace !== namespace || child.metadata?.forkedFrom !== source.id) throw new Error('Archived fork child binding is unconfirmed')
-                if (!await this.waitForExactNativeForkBound(childId, attempt.nativeSessionId, 'codexSessionId', true, 90_000)
+                if (!await this.waitForExactNativeForkBound(childId, attempt.nativeSessionId, 'codexSessionId', true, 90_000, true)
                     || !this.sessionCache.getSession(childId)?.active) throw new Error('Archived fork child native startup is not confirmed')
                 this.setArchivedForkAttempt(source.id, namespace, undefined)
                 return { type: 'success', sessionId: childId }
@@ -2527,7 +2539,8 @@ export class SyncEngine {
                 const result = await this.rpcGateway.forkArchivedCodex(machineId, {
                     operationId: attempt.operationId, sourceSessionId: source.id,
                     sourceThreadId: codexSessionId, directory: path,
-                    ...(messageLocalId ? { boundary: { localId: messageLocalId, turnId: turnId! } } : {})
+                    ...(messageLocalId ? { boundary: { localId: messageLocalId, turnId: turnId! } } : {}),
+                    ...(attempt.nativeServiceTier ? { nativeServiceTier: attempt.nativeServiceTier } : {})
                 })
                 if ('error' in result) {
                     if (result.rollbackSafe) {
@@ -2542,14 +2555,24 @@ export class SyncEngine {
             }
             child = this.sessionCache.refreshSession(childId)!
             const updated = this.store.sessions.updateSessionMetadata(childId,
-                { ...child.metadata!, codexSessionId: attempt.nativeSessionId }, child.metadataVersion, namespace, { touchUpdatedAt: false })
+                { ...child.metadata!, codexSessionId: attempt.nativeSessionId,
+                    codexServiceTierExplicit: attempt.nativeServiceTier ? true : source.metadata?.codexServiceTierExplicit,
+                    codexPendingServiceTier: metadata.codexPendingServiceTier,
+                    codexPreserveNativeTier: this.codexUsesNativeTier(source) ? true : undefined
+                }, child.metadataVersion, namespace, { touchUpdatedAt: false })
             if (updated.result !== 'success') throw new Error('Failed to bind native fork to its child')
-            this.sessionCache.refreshSession(childId)
+            if (attempt.nativeServiceTier) {
+                this.store.sessions.setSessionServiceTier(childId, attempt.nativeServiceTier, namespace, { touchUpdatedAt: false })
+            }
+            child = this.sessionCache.refreshSession(childId)
+            if (attempt.nativeServiceTier && child?.serviceTier !== attempt.nativeServiceTier) {
+                throw new Error('Failed to preserve the native tier for the archived fork child')
+            }
             attempt = { ...attempt, spawnAttempted: true }
             this.setArchivedForkAttempt(source.id, namespace, attempt)
             const spawn = await this.rpcGateway.spawnSession(machineId, path, 'codex',
                 source.model ?? undefined, source.modelReasoningEffort ?? undefined, undefined, 'simple', undefined,
-                attempt.nativeSessionId, source.effort ?? undefined, source.permissionMode, source.serviceTier ?? undefined,
+                attempt.nativeSessionId, source.effort ?? undefined, source.permissionMode, this.codexResumeTier(source),
                 childId, source.collaborationMode)
             if (spawn.type === 'success' && spawn.sessionId !== childId) throw new Error('Fork launcher returned a different session')
             if (spawn.type === 'error' && spawn.childStarted === false) throw new Error(spawn.message)
@@ -2561,7 +2584,7 @@ export class SyncEngine {
             do {
                 const ready = this.sessionCache.refreshSession(childId)
                 if (!ready || ready.metadata?.codexSessionId !== attempt.nativeSessionId) throw new Error('Fork child native binding changed')
-                bound = ready.active && this.sessionReadyIds.has(childId)
+                bound = ready.active && (this.sessionReadyIds.has(childId) || this.canRecoverCodexTier(ready))
                 if (!bound) await new Promise(resolve => setTimeout(resolve, 250))
             } while (!bound && Date.now() < deadline)
             if (!bound) throw new Error(spawn.type === 'error' ? spawn.message : 'Archived fork child did not become ready')
@@ -2683,6 +2706,19 @@ export class SyncEngine {
         }
     }
 
+    private forkAdmissionError(source: Session | undefined, sessionId: string, namespace: string): string | undefined {
+        if (source?.metadata?.codexTierConfirmationPending) {
+            return 'Resume the source and confirm its service tier in settings before forking.'
+        }
+        if (source?.metadata?.codexResumePending) {
+            return 'Codex resume startup is unconfirmed; retry resume or archive to confirm its process stopped before forking'
+        }
+        if (this.archivedForkPending(sessionId, namespace) && (!source?.metadata?.codexArchivedFork || source.active)) {
+            return 'Archived fork is pending; wait for its child binding before creating another branch'
+        }
+        return undefined
+    }
+
     async forkConversation(
         sessionId: string,
         namespace: string,
@@ -2691,12 +2727,8 @@ export class SyncEngine {
         boundary?: ForkBoundary
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string; code?: ForkBoundaryErrorCode }> {
         const candidate = this.sessionCache.getSessionByNamespace(sessionId, namespace)
-        if (candidate?.metadata?.codexResumePending) {
-            return { type: 'error', message: 'Codex resume startup is unconfirmed; retry resume or archive to confirm its process stopped before forking' }
-        }
-        if (this.archivedForkPending(sessionId, namespace) && (!candidate?.metadata?.codexArchivedFork || candidate.active)) {
-            return { type: 'error', message: 'Archived fork is pending; wait for its child binding before creating another branch' }
-        }
+        const admissionError = this.forkAdmissionError(candidate, sessionId, namespace)
+        if (admissionError) return { type: 'error', message: admissionError }
         if (this.historyActionsInFlight.has(sessionId)) {
             return { type: 'error', message: 'Conversation history action already in progress' }
         }
@@ -2862,12 +2894,8 @@ export class SyncEngine {
         // preview must never open a dialog whose confirm the engine refuses
         // outright. (The rewind confirm runs its own guards, so rewind
         // previews keep theirs.)
-        if (source.metadata?.codexResumePending) {
-            return { type: 'error', message: 'Codex resume startup is unconfirmed; retry resume or archive to confirm its process stopped before forking' }
-        }
-        if (this.archivedForkPending(sessionId, namespace) && (!source.metadata?.codexArchivedFork || source.active)) {
-            return { type: 'error', message: 'Archived fork is pending; wait for its child binding before creating another branch' }
-        }
+        const admissionError = this.forkAdmissionError(source, sessionId, namespace)
+        if (admissionError) return { type: 'error', message: admissionError }
 
         if (!source.active) {
             // Archived fork is hub-decided and the transcript is static; run
@@ -4269,6 +4297,24 @@ export class SyncEngine {
         this.releaseSessionEnumerations(sessionId)
     }
 
+    private codexUsesNativeTier(session: Pick<Session, 'metadata' | 'serviceTier'>): boolean {
+        const { metadata, serviceTier } = session
+        return metadata?.codexServiceTierExplicit === undefined
+            && (metadata?.codexPreserveNativeTier === true
+                || Boolean(metadata?.codexSourceSessionId) && serviceTier == null && metadata?.codexConfirmedServiceTier === undefined)
+    }
+
+    private codexResumeTier(session: Pick<Session, 'metadata' | 'serviceTier'>): string | undefined {
+        const metadata = session.metadata
+        const pending = metadata?.codexPendingServiceTier
+        if (pending === undefined && (metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined
+            || metadata?.codexServiceTierExplicit === false || this.codexUsesNativeTier(session))) return undefined
+        // Native-only effective tiers are restored by Codex, outside the
+        // HAPI runner's selectable service-tier overrides.
+        const tier = SessionServiceTierRequestSchema.shape.serviceTier.safeParse(pending ?? metadata?.codexConfirmedServiceTier ?? session.serviceTier)
+        return tier.success ? tier.data : undefined
+    }
+
     async applySessionConfig(
         sessionId: string,
         config: {
@@ -4288,7 +4334,7 @@ export class SyncEngine {
             // For inactive sessions, update the in-memory cache directly without
             // an RPC call — the CLI is not running yet. The updated value will be
             // passed to the spawned process when the session is resumed.
-            this.sessionCache.applySessionConfig(sessionId, config)
+            this.sessionCache.applySessionConfig(sessionId, config, { deferCodexTier: true })
             return
         }
 
@@ -5622,7 +5668,7 @@ export class SyncEngine {
                 resumeToken,
                 session.effort ?? undefined,
                 preferredPermissionMode,
-                session.serviceTier ?? undefined,
+                flavor === 'codex' ? this.codexResumeTier(session) : session.serviceTier ?? undefined,
                 access.sessionId,
                 session.collaborationMode ?? undefined,
                 session.copilotAgentMode ?? undefined,

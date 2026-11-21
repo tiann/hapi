@@ -208,3 +208,13 @@ describe('resolveCodexSlashCommand', () => {
         expect(resolveCodexSlashCommand('/unknown', state)).toEqual({ kind: 'passthrough' });
     });
 });
+
+
+describe('Ultrafast command', () => {
+    const state = { permissionMode: 'default' as const, collaborationMode: 'default' as const };
+    it('requests the distinct tier and can turn it off explicitly', () => {
+        expect(resolveCodexSlashCommand('/ultrafast on', state)).toMatchObject({ updates: { serviceTier: 'ultrafast' } });
+        expect(resolveCodexSlashCommand('/ultrafast off', state)).toMatchObject({ updates: { serviceTier: 'standard' } });
+        expect(resolveCodexSlashCommand('/ultrafast status', { ...state, serviceTier: 'ultrafast' })).toMatchObject({ message: 'Codex Ultrafast mode: on' });
+    });
+});

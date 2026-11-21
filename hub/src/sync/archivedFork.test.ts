@@ -41,6 +41,47 @@ function fixture() {
 }
 
 describe('archived Codex fork coordination', () => {
+    it('keeps the native tier implicit when resuming a fork of an archived import', async () => {
+        const f = fixture()
+        try {
+            const source = f.store.sessions.getSession(f.source.id)!
+            f.store.sessions.updateSessionMetadata(source.id, {
+                ...source.metadata!, codexSourceSessionId: 'original-import'
+            }, source.metadataVersion, 'ns')
+            ;(f.engine as unknown as { sessionCache: { refreshSession(id: string): void } }).sessionCache.refreshSession(source.id)
+            const tiers: Array<string | undefined> = []
+            const spawn = f.rpc.spawnSession
+            f.rpc.spawnSession = async (...args) => { tiers.push(args[11]); return spawn(...args) }
+            const fork = await f.engine.forkConversation(source.id, 'ns')
+            if (fork.type !== 'success') throw new Error(fork.message)
+            const child = f.engine.getSession(fork.sessionId)!
+            expect(child.metadata?.codexSourceSessionId).toBeUndefined()
+            expect(child.metadata?.codexPreserveNativeTier).toBe(true)
+            f.engine.handleSessionAlive({ sid: child.id, time: Date.now(), serviceTier: 'fast' })
+            f.engine.handleSessionEnd({ sid: child.id, time: Date.now() })
+            expect(f.engine.getSession(child.id)?.serviceTier).toBe('fast')
+            f.rpc.spawnSession = async (...args) => {
+                const result = await spawn(...args)
+                f.engine.handleSessionAlive({ sid: child.id, time: Date.now(), serviceTier: 'standard' })
+                tiers.push(args[11])
+                return result
+            }
+            expect(await f.engine.resumeSession(child.id, 'ns')).toEqual({ type: 'success', sessionId: child.id })
+            expect(f.engine.getSession(child.id)?.serviceTier).toBe('standard')
+            expect(tiers).toEqual([undefined, undefined])
+        } finally { f.engine.stop() }
+    })
+
+    it('requires recovery before forking a source with unconfirmed tier settings', async () => {
+        const f = fixture();
+        try {
+            const current = f.store.sessions.getSession(f.source.id)!;
+            f.store.sessions.updateSessionMetadata(f.source.id, { ...current.metadata as object, codexTierConfirmationPending: true }, current.metadataVersion, 'ns');
+            (f.engine as unknown as { sessionCache: { refreshSession(id: string): void } }).sessionCache.refreshSession(f.source.id);
+            expect(await f.engine.forkConversation(f.source.id, 'ns')).toMatchObject({ type: 'error', message: expect.stringContaining('confirm its service tier') });
+            expect(f.counts()).toEqual({ forks: 0, spawns: 0 });
+        } finally { f.engine.stop(); }
+    });
     it('refuses local resume discovery of a CLI-archived source while its fork child is starting', async () => {
         const f = fixture()
         let entered!: () => void
@@ -403,3 +444,125 @@ describe('archived Codex fork coordination', () => {
         } finally { f.engine.stop() }
     })
 })
+
+it.each([
+    { effective: 'ultrafast', explicit: false, pending: false, expected: undefined },
+    { effective: 'ultrafast', explicit: true, pending: false, expected: 'ultrafast' },
+    { effective: 'ultrafast', explicit: true, pending: true, expected: 'standard' },
+    { effective: 'flex', explicit: true, pending: false, expected: undefined },
+    { effective: 'flex', explicit: true, pending: true, expected: 'standard' },
+])('preserves tier intent when launching an archived fork (%j)', async ({ effective, explicit, pending, expected }) => {
+    const f = fixture();
+    try {
+        const current = f.store.sessions.getSession(f.source.id)!;
+        f.store.sessions.updateSessionMetadata(f.source.id, { ...current.metadata!, codexServiceTierExplicit: explicit }, current.metadataVersion, 'ns');
+        ;(f.engine as any).sessionCache.refreshSession(f.source.id);
+        f.engine.handleSessionAlive({ sid: f.source.id, time: Date.now(), serviceTier: effective });
+        f.engine.handleSessionEnd({ sid: f.source.id, time: Date.now() });
+        expect(f.engine.getSession(f.source.id)?.serviceTier).toBe(effective);
+        if (pending) await f.engine.applySessionConfig(f.source.id, { serviceTier: 'standard' });
+        let tier: string | undefined;
+        let nativeTier: string | undefined;
+        const forkNative = f.rpc.forkArchivedCodex;
+        f.rpc.forkArchivedCodex = async (machine, request) => {
+            nativeTier = request.nativeServiceTier;
+            return forkNative(machine, request);
+        };
+        const spawn = f.rpc.spawnSession;
+        f.rpc.spawnSession = async (...args) => {
+            tier = args[11];
+            if (nativeTier) expect(f.store.sessions.getSession(args[12]!)?.serviceTier).toBe(nativeTier);
+            return spawn.apply(f.rpc, args);
+        };
+        expect((await f.engine.forkConversation(f.source.id, 'ns')).type).toBe('success');
+        expect(tier).toBe(expected);
+        expect(nativeTier).toBe(effective === 'flex' && !pending ? 'flex' : undefined);
+    } finally { f.engine.stop(); }
+});
+
+it.each([false, true])('opens the exact paused archived child for tier recovery (retry %s)', async retry => {
+    const f = fixture();
+    try {
+        let childId = '';
+        f.rpc.hasSessionConfigHandler = () => true;
+        f.rpc.spawnSession = async (...args) => {
+            childId = args[12]!;
+            const child = f.store.sessions.getSession(childId)!;
+            f.store.sessions.updateSessionMetadata(childId, { ...child.metadata as object, codexTierConfirmationPending: true }, child.metadataVersion, 'ns');
+            f.engine.handleSessionAlive({ sid: childId, time: Date.now(), mode: 'remote' });
+            return retry ? { type: 'error', message: 'interrupted acknowledgement', childStarted: false } : { type: 'success', sessionId: childId };
+        };
+        const first = await f.engine.forkConversation(f.source.id, 'ns');
+        if (retry) expect(first.type).toBe('error');
+        const result = retry ? await f.engine.forkConversation(f.source.id, 'ns') : first;
+        expect(result).toEqual({ type: 'success', sessionId: childId });
+        expect(f.engine.getSession(childId)?.metadata?.codexTierConfirmationPending).toBe(true);
+        expect((f.engine as unknown as { sessionReadyIds: Set<string> }).sessionReadyIds.has(childId)).toBe(false);
+        expect(f.engine.getSession(f.source.id)?.active).toBe(false);
+    } finally { f.engine.stop(); }
+});
+
+it('preserves deferred Fast on an archived fork child that needs tier recovery', async () => {
+    const f = fixture();
+    try {
+        await f.engine.applySessionConfig(f.source.id, { serviceTier: 'fast' });
+        f.rpc.hasSessionConfigHandler = () => true;
+        let childId = '';
+        f.rpc.spawnSession = async (...args) => {
+            childId = args[12]!;
+            expect(args[11]).toBe('fast');
+            const child = f.store.sessions.getSession(childId)!;
+            expect(child.metadata).toMatchObject({ codexPendingServiceTier: 'fast' });
+            f.store.sessions.updateSessionMetadata(childId, { ...child.metadata!, codexTierConfirmationPending: true },
+                child.metadataVersion, 'ns');
+            f.engine.handleSessionAlive({ sid: childId, time: Date.now(), mode: 'remote', serviceTier: null });
+            return { type: 'success', sessionId: childId };
+        };
+        expect(await f.engine.forkConversation(f.source.id, 'ns')).toEqual({ type: 'success', sessionId: childId });
+        expect(f.engine.getSession(childId)?.metadata).toMatchObject({
+            codexPendingServiceTier: 'fast', codexTierConfirmationPending: true
+        });
+        expect(f.engine.getSession(f.source.id)?.active).toBe(false);
+    } finally { f.engine.stop(); }
+});
+
+it('waits for the settings RPC before exposing a paused archived child', async () => {
+    const f = fixture();
+    try {
+        let controls = false, childId = '', completed = false;
+        f.rpc.hasSessionConfigHandler = () => controls;
+        f.rpc.spawnSession = async (...args) => {
+            childId = args[12]!;
+            const child = f.store.sessions.getSession(childId)!;
+            f.store.sessions.updateSessionMetadata(childId, { ...child.metadata as object, codexTierConfirmationPending: true }, child.metadataVersion, 'ns');
+            f.engine.handleSessionAlive({ sid: childId, time: Date.now(), mode: 'remote' });
+            return { type: 'success', sessionId: childId };
+        };
+        const pending = f.engine.forkConversation(f.source.id, 'ns').then(result => { completed = true; return result; });
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(completed).toBe(false);
+        controls = true;
+        expect(await pending).toEqual({ type: 'success', sessionId: childId });
+    } finally { f.engine.stop(); }
+});
+
+it.each(['resume', 'reopen'])('preserves the active tier-recovery session on a retried %s', async action => {
+    const f = fixture();
+    try {
+        const current = f.store.sessions.getSession(f.source.id)!;
+        f.store.sessions.updateSessionMetadata(f.source.id, { ...current.metadata as object,
+            lifecycleState: undefined, archivedBy: undefined, codexTierConfirmationPending: true,
+            codexResumePending: { machineId: f.machineId, nativeSessionId: 'native-source' }
+        }, current.metadataVersion, 'ns');
+        (f.engine as unknown as { sessionCache: { refreshSession(id: string): void } }).sessionCache.refreshSession(f.source.id);
+        f.engine.handleSessionAlive({ sid: f.source.id, time: Date.now(), mode: 'remote' });
+        f.rpc.hasSessionConfigHandler = () => true;
+        f.rpc.stopRunnerSession = async () => { throw new Error('Must not stop tier recovery'); };
+        const result = action === 'resume' ? await f.engine.resumeSession(f.source.id, 'ns') : await f.engine.reopenSession(f.source.id, 'ns');
+        expect(result).toMatchObject({ type: 'success', sessionId: f.source.id });
+        expect(f.engine.getSession(f.source.id)?.active).toBe(true);
+        expect(f.engine.getSession(f.source.id)?.metadata?.codexTierConfirmationPending).toBe(true);
+        expect(f.engine.getSession(f.source.id)?.metadata?.codexResumePending).toBeUndefined();
+        expect(f.counts()).toEqual({ forks: 0, spawns: 0 });
+    } finally { f.engine.stop(); }
+});

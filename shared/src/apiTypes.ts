@@ -467,12 +467,12 @@ export const SessionEffortRequestSchema = z.object({
 
 export type SessionEffortRequest = z.infer<typeof SessionEffortRequestSchema>
 
-// Fast mode is an explicit two-way choice. `'standard'` (not `null`) is the
+// Service tiers are explicit choices, including catalog-gated Ultrafast. `'standard'` (not `null`) is the
 // stored sentinel for an explicit Fast-off so it stays distinct from
 // "untouched" and survives restart/resume. Reject anything else so stray tier
 // strings are never forwarded to the Codex app-server.
 export const SessionServiceTierRequestSchema = z.object({
-    serviceTier: z.enum(['fast', 'standard'])
+    serviceTier: z.enum(['fast', 'standard', 'ultrafast'])
 })
 
 export type SessionServiceTierRequest = z.infer<typeof SessionServiceTierRequestSchema>
@@ -880,7 +880,8 @@ export const ForkArchivedCodexRequestSchema = z.object({
     sourceSessionId: z.string().uuid(),
     sourceThreadId: z.string().min(1),
     directory: z.string().min(1),
-    boundary: z.object({ localId: z.string().min(1), turnId: z.string().min(1) }).optional()
+    boundary: z.object({ localId: z.string().min(1), turnId: z.string().min(1) }).optional(),
+    nativeServiceTier: z.literal('flex').optional()
 })
 export type ForkArchivedCodexRequest = z.infer<typeof ForkArchivedCodexRequestSchema>
 export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: string; rollbackSafe: boolean }
@@ -946,7 +947,7 @@ export const SpawnSessionRequestSchema = z.object({
     permissionMode: PermissionModeSchema.optional(),
     sessionType: z.enum(['simple', 'worktree']).optional(),
     worktreeName: z.string().optional(),
-    serviceTier: z.enum(['fast', 'standard']).optional(),
+    serviceTier: z.enum(['fast', 'standard', 'ultrafast']).optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
     copilotAgentMode: CopilotAgentModeSchema.optional(),
     startingMode: z.enum(['remote', 'pty']).optional()

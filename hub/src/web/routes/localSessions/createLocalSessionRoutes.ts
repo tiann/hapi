@@ -95,7 +95,7 @@ function extractLaunchConfig(body: Record<string, unknown>): {
         launch.serviceTier = body.serviceTier === null || body.serviceTier === undefined
             ? null
             : typeof body.serviceTier === 'string' ? body.serviceTier : undefined
-        if (launch.serviceTier !== null && launch.serviceTier !== 'fast' && launch.serviceTier !== 'standard') {
+        if (launch.serviceTier !== null && launch.serviceTier !== 'fast' && launch.serviceTier !== 'standard' && launch.serviceTier !== 'ultrafast') {
             return { launch, validationError: 'Invalid serviceTier' }
         }
     }

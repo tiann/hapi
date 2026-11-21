@@ -344,9 +344,12 @@ export function HappyComposer(props: {
     onModelEffortChange?: (wireId: string | null) => void
     onModelReasoningEffortChange?: (modelReasoningEffort: string | null) => void
     onEffortChange?: (effort: string | null) => void
-    /** Codex Fast mode (service tier): current value ('fast' or null/standard). */
     serviceTier?: string | null
+    tierConfirmationPending?: boolean
     /** When provided, a Fast-mode toggle renders (Codex GPT-5.5 / GPT-5.4 only). */
+    fastAvailable?: boolean
+    ultrafastAvailable?: boolean
+    onTierSettingsOpen?: () => void
     onServiceTierChange?: (serviceTier: string | null) => void
     onSwitchToRemote?: () => void
     onTerminal?: () => void
@@ -460,7 +463,11 @@ export function HappyComposer(props: {
         onModelReasoningEffortChange,
         onEffortChange,
         serviceTier: rawServiceTier,
+        tierConfirmationPending = false,
+        onTierSettingsOpen,
         onServiceTierChange,
+        fastAvailable = true,
+        ultrafastAvailable = false,
         onSwitchToRemote,
         onTerminal,
         terminalUnsupported = false,
@@ -489,7 +496,7 @@ export function HappyComposer(props: {
     const modelReasoningEffort = rawModelReasoningEffort ?? null
     const effort = rawEffort ?? null
     const serviceTier = rawServiceTier ?? null
-    const displayedServiceTier = getDisplayedCodexServiceTier(serviceTier)
+    const displayedServiceTier = tierConfirmationPending ? null : getDisplayedCodexServiceTier(serviceTier)
 
     const api = useAui()
     const { composerEnterBehavior } = useComposerEnterBehavior()
@@ -1565,6 +1572,7 @@ export function HappyComposer(props: {
         haptic('light')
         if (showSettings && section !== settingsSection) {
             // Open with a different anchor: switch sections, keep the sheet up.
+            if (section !== 'effort' && settingsSection === 'effort') onTierSettingsOpen?.()
             setSettingsSection(section)
             return
         }
@@ -1575,9 +1583,10 @@ export function HappyComposer(props: {
             setSettingsSection(null)
             return
         }
+        if (section !== 'effort') onTierSettingsOpen?.()
         setSettingsSection(section)
         setShowSettings(true)
-    }, [haptic, showSettings, settingsSection])
+    }, [haptic, showSettings, settingsSection, onTierSettingsOpen])
 
     const handleModelChange = useCallback((nextModel: { provider: string; modelId: string } | string | null) => {
         if (!onModelChange || configurationControlsDisabled) return
@@ -1710,8 +1719,9 @@ export function HappyComposer(props: {
     // distinctly from an untouched/account-default session.
     const fastModeOptions: Array<{ value: string; label: string }> = useMemo(() => [
         { value: 'standard', label: t('misc.fastModeStandard') },
-        { value: 'fast', label: t('misc.fastModeFast') }
-    ], [t])
+        ...(fastAvailable ? [{ value: 'fast', label: t('misc.fastModeFast') }] : []),
+        ...(ultrafastAvailable ? [{ value: 'ultrafast', label: t('misc.fastModeUltrafast') }] : [])
+    ], [t, fastAvailable, ultrafastAvailable])
 
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showCopilotAgentModeSettings = Boolean(onCopilotAgentModeChange && copilotAgentModeOptions.length > 0)
@@ -2153,6 +2163,7 @@ export function HappyComposer(props: {
                                                 ? 'cursor-not-allowed opacity-50'
                                                 : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
                                         }`}
+                                        aria-pressed={displayedServiceTier === option.value}
                                         onClick={() => handleServiceTierChange(option.value)}
                                         onMouseDown={(e) => e.preventDefault()}
                                     >
@@ -2565,7 +2576,7 @@ export function HappyComposer(props: {
                                 modelValueOpen={showSettings && settingsSection !== 'effort'}
                                 onModelValueToggle={handleModelValueToggle}
                                 fastModeEnabled={displayedServiceTier === 'fast'}
-                                onFastModeToggle={onServiceTierChange
+                                onFastModeToggle={onServiceTierChange && fastAvailable
                                     ? () => handleServiceTierChange(displayedServiceTier === 'fast' ? 'standard' : 'fast')
                                     : undefined}
                                 effortValueLabel={effortValueLabel}

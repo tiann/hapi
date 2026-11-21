@@ -1,11 +1,11 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import { apiErrorMessage } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, OpencodeLocalSessionSummary, PiLocalSessionSummary } from '@/types/api'
 import { CREATABLE_AGENT_FLAVORS, resolveHapiYoloPermissionMode, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import type { AgentAvailabilityEntry, CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
-import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
+import { codexModelAdvertisesFastTier, codexModelAdvertisesUltrafastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
@@ -175,6 +175,7 @@ export function NewSession(props: {
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
     const [opencodeSelectedModel, setOpencodeSelectedModel] = useState<string | null | undefined>(undefined)
     const [serviceTier, setServiceTier] = useState<NewSessionServiceTier>('standard')
+    const [serviceTierExplicit, setServiceTierExplicit] = useState(false)
     const [collaborationMode, setCollaborationMode] = useState<CodexCollaborationMode>('default')
     const [copilotAgentMode, setCopilotAgentMode] = useState<CopilotAgentMode>('interactive')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
@@ -186,6 +187,7 @@ export function NewSession(props: {
     const [error, setError] = useState<string | null>(null)
     const [codexImportSessions, setCodexImportSessions] = useState<CodexLocalSessionSummary[]>([])
     const [selectedCodexImportSessionId, setSelectedCodexImportSessionId] = useState<string | null>(null)
+    const [codexImportTier, setCodexImportTier] = useState<NewSessionServiceTier | 'default'>('default')
     const [codexImportMachineId, setCodexImportMachineId] = useState<string | null>(null)
     const [isLoadingCodexImportSessions, setIsLoadingCodexImportSessions] = useState(false)
     const [codexImportError, setCodexImportError] = useState<string | null>(null)
@@ -347,6 +349,7 @@ export function NewSession(props: {
             draft.agent === 'dsh' && draft.model !== 'auto' ? draft.model : null
         )
         setServiceTier(draft.serviceTier)
+        setServiceTierExplicit(draft.serviceTierExplicit === true)
         setCollaborationMode(draft.collaborationMode)
         setCopilotAgentMode(draft.copilotAgentMode)
         setYoloMode(draft.yoloMode)
@@ -555,21 +558,36 @@ export function NewSession(props: {
             setModel('auto')
         }
     }, [agent, codexModelsState.error, codexModelsState.isLoading, codexModelsState.models, model])
+    const showCodexUltrafastMode = agent === 'codex' && !selectedCodexImportSessionId && model !== 'auto' && !codexModelsState.error
+        && codexModelAdvertisesUltrafastTier(model === 'auto' ? null : model, codexModelsState.models)
     const showCodexFastMode = agent === 'codex'
         && !codexModelsState.error
         && codexModelAdvertisesFastTier(model === 'auto' ? null : model, codexModelsState.models)
+    const resolvedCodexImportTier = codexImportTier === 'fast' && agent === 'codex'
+        && !codexModelsState.isLoading && !codexModelsState.error && !showCodexFastMode
+        ? 'default' : codexImportTier
+    const importFastModel = showCodexFastMode && !codexModelsState.isLoading ? model : undefined
+    const importFastModelRef = useRef(importFastModel)
+    useLayoutEffect(() => {
+        importFastModelRef.current = importFastModel
+    }, [importFastModel])
+
+    useEffect(() => {
+        if (resolvedCodexImportTier !== codexImportTier) setCodexImportTier(resolvedCodexImportTier)
+    }, [codexImportTier, resolvedCodexImportTier])
 
     useEffect(() => {
         // Wait for the Codex model catalog to settle before clearing Fast;
         // otherwise Browse → remount restores serviceTier: 'fast' and this
         // effect would wipe it while models are still loading.
-        if (agent === 'codex' && codexModelsState.isLoading) {
+        if (agent === 'codex' && (codexModelsState.isLoading || codexModelsState.error)) {
             return
         }
-        if (!showCodexFastMode && serviceTier !== 'standard') {
+        if (serviceTier === 'fast' && !showCodexFastMode) {
             setServiceTier('standard')
+            setServiceTierExplicit(false)
         }
-    }, [agent, codexModelsState.isLoading, showCodexFastMode, serviceTier])
+    }, [agent, codexModelsState.isLoading, showCodexFastMode, showCodexUltrafastMode, codexModelsState.error, serviceTier])
     const cursorModelsState = useCursorModelsForMachine({
         api: props.api,
         machineId,
@@ -1156,6 +1174,7 @@ export function NewSession(props: {
         setEffort(preferred.effort)
         setModelReasoningEffort(preferred.modelReasoningEffort)
         setServiceTier(agent === 'codex' ? preferred.serviceTier ?? 'standard' : 'standard')
+        setServiceTierExplicit(agent === 'codex' && preferred.serviceTier !== undefined)
         if (usesSharedPermissionMode) {
             setNativePermissionMode(preferred.permissionMode ?? resolvePermissionModeForFlavor('default', agent))
         }
@@ -1869,6 +1888,7 @@ export function NewSession(props: {
             effort,
             modelReasoningEffort,
             serviceTier,
+            serviceTierExplicit,
             collaborationMode,
             copilotAgentMode,
             yoloMode,
@@ -1890,6 +1910,7 @@ export function NewSession(props: {
         effort,
         modelReasoningEffort,
         serviceTier,
+        serviceTierExplicit,
         collaborationMode,
         copilotAgentMode,
         yoloMode,
@@ -1902,6 +1923,7 @@ export function NewSession(props: {
 
     const handleSelectCodexImportSession = useCallback((session: CodexLocalSessionSummary) => {
         setSelectedCodexImportSessionId(session.id)
+        setCodexImportTier('default')
         if (session.cwd?.trim()) {
             setDirectory(session.cwd.trim())
         }
@@ -1976,6 +1998,7 @@ export function NewSession(props: {
 
     async function handleCreate() {
         if (!machineId || !trimmedDirectory || createInFlightRef.current) return
+        if (fastModeSelectionPending) return
         if (hubDefaultsPending) return
 
         createInFlightRef.current = true
@@ -2046,10 +2069,10 @@ export function NewSession(props: {
                 cursorSelectedBase,
                 effort,
                 modelReasoningEffort,
-                ...(agent === 'codex' && showCodexFastMode ? { serviceTier } : {}),
+                ...(agent === 'codex' && serviceTierExplicit ? { serviceTier } : {}),
                 ...(usesSharedPermissionMode ? { permissionMode: nativePermissionMode } : {})
             }
-            const resolvedServiceTier = agent === 'codex' && showCodexFastMode
+            const resolvedServiceTier = agent === 'codex' && serviceTierExplicit
                 ? serviceTier
                 : undefined
             const resolvedCollaborationMode = agent === 'codex' && collaborationMode !== 'default'
@@ -2057,6 +2080,8 @@ export function NewSession(props: {
                 : undefined
 
             if (agent === 'codex' && selectedCodexImportSession) {
+                // The catalog can change while the directory check is in flight.
+                if (resolvedCodexImportTier === 'fast' && importFastModelRef.current !== model) return
                 setIsImportingCodexSession(true)
                 const result = await props.api.syncCodexSession({
                     sessionIds: [selectedCodexImportSession.id],
@@ -2064,7 +2089,7 @@ export function NewSession(props: {
                     machineId: codexImportMachineId ?? machineId,
                     model: resolvedModel ?? null,
                     modelReasoningEffort: resolvedModelReasoningEffort ?? null,
-                    serviceTier: resolvedServiceTier,
+                    serviceTier: resolvedCodexImportTier === 'default' ? undefined : resolvedCodexImportTier,
                     collaborationMode: resolvedCollaborationMode ?? 'default',
                     yolo: nativePermissionMode === 'yolo'
                 })
@@ -2269,9 +2294,16 @@ export function NewSession(props: {
         || (agent === 'pi'
             && model !== 'auto'
             && piModelsState.isLoading)
+    const hasExplicitCatalogModel = model !== 'auto' && codexModelsState.models.some(candidate => candidate.id === model)
+    const importingCodex = agent === 'codex' && Boolean(selectedCodexImportSessionId)
+    const selectedTier = importingCodex ? resolvedCodexImportTier : serviceTierExplicit ? serviceTier : 'default'
     const fastModeSelectionPending = agent === 'codex'
-        && serviceTier === 'fast'
-        && codexModelsState.isLoading
+        && selectedTier !== 'standard' && selectedTier !== 'default'
+        && (codexModelsState.isLoading
+            || (selectedTier === 'ultrafast' && (!hasExplicitCatalogModel || importingCodex || Boolean(codexModelsState.error)))
+            || (importingCodex && Boolean(codexModelsState.error)))
+    const verifySavedUltrafastOnLaunch = agent === 'codex' && !importingCodex && selectedTier === 'ultrafast'
+        && !showCodexUltrafastMode && !fastModeSelectionPending
     const canCreate = Boolean(
         machineId
         && trimmedDirectory
@@ -2594,10 +2626,23 @@ export function NewSession(props: {
                 onChange={setCopilotAgentMode}
             />
             <FastModeSelector
-                visible={showCodexFastMode}
-                value={serviceTier}
+                visible={agent === 'codex'}
+                fastAvailable={showCodexFastMode}
+                ultrafastAvailable={showCodexUltrafastMode}
+                keepExistingTier={importingCodex}
+                verifySavedUltrafastOnLaunch={verifySavedUltrafastOnLaunch}
+                ultrafastNeedsModel={agent === 'codex' && selectedTier === 'ultrafast' && !importingCodex
+                    && !codexModelsState.isLoading && !codexModelsState.error && !hasExplicitCatalogModel}
+                availabilityUnverified={agent === 'codex' && Boolean(codexModelsState.error) && (importingCodex || selectedTier !== 'default' && selectedTier !== 'standard')}
+                value={selectedTier}
                 isDisabled={isFormDisabled}
-                onChange={setServiceTier}
+                onChange={value => {
+                    if (importingCodex) setCodexImportTier(value)
+                    else {
+                        setServiceTier(value === 'default' ? 'standard' : value)
+                        setServiceTierExplicit(value !== 'default')
+                    }
+                }}
             />
 
             {(error ?? spawnError) ? (

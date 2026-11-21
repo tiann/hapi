@@ -288,6 +288,10 @@ type DbSessionRow = {
     seq: number
 }
 
+// SQL NULL is an unreported tier. Use an empty string for a reported null
+// so existing databases can retain that distinction without a schema change.
+const REPORTED_EMPTY_SERVICE_TIER = ''
+
 function toStoredSession(row: DbSessionRow): StoredSession {
     return {
         id: row.id,
@@ -308,7 +312,8 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         model: row.model,
         modelReasoningEffort: row.model_reasoning_effort,
         effort: row.effort,
-        serviceTier: row.service_tier,
+        serviceTier: row.service_tier === REPORTED_EMPTY_SERVICE_TIER ? null : row.service_tier,
+        serviceTierReported: row.service_tier !== null,
         todos: safeJsonParse(row.todos),
         todosUpdatedAt: row.todos_updated_at,
         teamState: safeJsonParse(row.team_state),
@@ -872,24 +877,39 @@ export function setSessionServiceTier(
     id: string,
     serviceTier: string | null,
     namespace: string,
-    options?: { touchUpdatedAt?: boolean }
+    options?: { touchUpdatedAt?: boolean; pendingCodexTier?: boolean }
 ): boolean {
     const now = Date.now()
     const touchUpdatedAt = options?.touchUpdatedAt === true
+    const deferTier = options?.pendingCodexTier === true
+    const clearOverride = deferTier && serviceTier === null
 
     try {
         const result = prepareCached(db, `
             UPDATE sessions
-            SET service_tier = @service_tier,
+            SET service_tier = CASE WHEN @pending_tier = 1 THEN service_tier ELSE @reported_service_tier END,
+                metadata = CASE
+                    WHEN @clear_override = 1 THEN json_remove(
+                        json_set(metadata, '$.codexPreserveNativeTier', json('true')),
+                        '$.codexServiceTierExplicit', '$.codexPendingServiceTier',
+                        '$.codexConfirmedServiceTier', '$.codexTierConfirmationPending',
+                        '$.codexInheritedTierDiscoveryPending')
+                    WHEN @pending_tier = 1 THEN json_set(metadata, '$.codexPendingServiceTier', @service_tier)
+                    ELSE metadata
+                END,
+                metadata_version = metadata_version + @pending_tier + @clear_override,
                 updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
-              AND service_tier IS NOT @service_tier
+              AND (service_tier IS NOT @reported_service_tier OR @pending_tier = 1 OR @clear_override = 1)
         `).run({
             id,
             namespace,
             service_tier: serviceTier,
+            reported_service_tier: clearOverride ? null : serviceTier ?? REPORTED_EMPTY_SERVICE_TIER,
+            pending_tier: deferTier && !clearOverride ? 1 : 0,
+            clear_override: clearOverride ? 1 : 0,
             updated_at: now,
             touch_updated_at: touchUpdatedAt ? 1 : 0
         })

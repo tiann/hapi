@@ -34,6 +34,7 @@ describe('newSessionFormDraft', () => {
             effort: 'auto',
             modelReasoningEffort: 'default',
             serviceTier: 'standard',
+            serviceTierExplicit: false,
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: false,
@@ -51,6 +52,7 @@ describe('newSessionFormDraft', () => {
             effort: 'auto',
             modelReasoningEffort: 'default',
             serviceTier: 'standard',
+            serviceTierExplicit: false,
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: false,
@@ -81,6 +83,7 @@ describe('newSessionFormDraft', () => {
             effort: 'auto',
             modelReasoningEffort: 'default',
             serviceTier: 'standard',
+            serviceTierExplicit: false,
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: false,
@@ -160,6 +163,7 @@ describe('newSessionFormDraft', () => {
             effort: 'auto',
             modelReasoningEffort: 'default',
             serviceTier: 'standard',
+            serviceTierExplicit: false,
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: true,
@@ -181,6 +185,7 @@ describe('newSessionFormDraft', () => {
             effort: 'auto',
             modelReasoningEffort: 'default',
             serviceTier: 'standard',
+            serviceTierExplicit: false,
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: true,
@@ -202,6 +207,7 @@ describe('newSessionFormDraft', () => {
             effort: 'auto',
             modelReasoningEffort: 'default',
             serviceTier: 'standard',
+            serviceTierExplicit: false,
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: true,
@@ -223,6 +229,7 @@ describe('newSessionFormDraft', () => {
             effort: 'auto',
             modelReasoningEffort: 'default',
             serviceTier: 'standard',
+            serviceTierExplicit: false,
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: true,
@@ -235,3 +242,10 @@ describe('newSessionFormDraft', () => {
         expect(loaded.nativePermissionMode).toBe('bypassPermissions')
     })
 })
+
+
+it('restores an Ultrafast draft across navigation', () => {
+    sessionStorage.setItem('hapi:new-session-form-draft', JSON.stringify({ agent: 'codex', model: 'gpt-6.2-sol', serviceTier: 'ultrafast' }));
+    expect(loadNewSessionFormDraft()?.serviceTier).toBe('ultrafast');
+    clearNewSessionFormDraft();
+});

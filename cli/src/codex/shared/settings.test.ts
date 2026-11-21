@@ -6,6 +6,9 @@ describe('native shared settings', () => {
         expect(settingsMatch({ model: 'a', effort: 'high' }, { threadId: 't', model: 'b' })).toBe(false);
         expect(settingsMatch({ model: 'b', effort: 'high' }, { threadId: 't', model: 'b' })).toBe(true);
         expect(settingsMatch({ serviceTier: 'priority' }, { serviceTier: null })).toBe(false);
+        expect(settingsMatch({ serviceTier: 'default' }, { serviceTier: null })).toBe(true);
+        expect(settingsMatch({ serviceTier: null }, { serviceTier: null })).toBe(false);
+        expect(settingsMatch({ serviceTier: 'ultrafast' }, { serviceTier: null })).toBe(false);
     });
     it('matches collaboration settings including model and effort, but accepts expanded built-in instructions', () => {
         const expected = { collaborationMode: { mode: 'plan', settings: { model: 'b', reasoning_effort: 'high', developer_instructions: null } } };

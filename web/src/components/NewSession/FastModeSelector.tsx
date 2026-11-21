@@ -5,10 +5,16 @@ import { SelectControl } from '@/components/ui/select-control'
 export type { NewSessionServiceTier }
 
 export function FastModeSelector(props: {
+    fastAvailable?: boolean
+    ultrafastAvailable?: boolean
+    availabilityUnverified?: boolean
+    keepExistingTier?: boolean
+    verifySavedUltrafastOnLaunch?: boolean
+    ultrafastNeedsModel?: boolean
     visible: boolean
-    value: NewSessionServiceTier
+    value: NewSessionServiceTier | 'default'
     isDisabled: boolean
-    onChange: (value: NewSessionServiceTier) => void
+    onChange: (value: NewSessionServiceTier | 'default') => void
 }) {
     const { t } = useTranslation()
 
@@ -25,13 +31,20 @@ export function FastModeSelector(props: {
             <SelectControl
                 aria-label={t('newSession.fastMode')}
                 value={props.value}
-                onChange={(e) => props.onChange(e.target.value as NewSessionServiceTier)}
+                onChange={(e) => props.onChange(e.target.value as NewSessionServiceTier | 'default')}
                 disabled={props.isDisabled}
                 className="py-2 pl-3 text-sm rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
             >
+                <option value="default">{t(props.keepExistingTier ? 'newSession.keepExistingTier' : 'newSession.accountDefaultTier')}</option>
                 <option value="standard">{t('misc.fastModeStandard')}</option>
-                <option value="fast">{t('misc.fastModeFast')}</option>
+                {(props.fastAvailable !== false || props.value === 'fast') && <option value="fast" disabled={props.fastAvailable === false}>{t('misc.fastModeFast')}</option>}
+                {(props.ultrafastAvailable || props.value === 'ultrafast') && <option value="ultrafast" disabled={!props.ultrafastAvailable}>{t('misc.fastModeUltrafast')}</option>}
             </SelectControl>
+            {props.ultrafastNeedsModel ? <p role="status" className="text-xs text-[var(--app-hint)]">{t('newSession.ultrafastNeedsModel')}</p> : null}
+            {props.verifySavedUltrafastOnLaunch ? <p role="status" className="text-xs text-[var(--app-hint)]">{t('newSession.verifySavedUltrafastOnLaunch')}</p> : null}
+            {props.availabilityUnverified ? <p role="status" className="text-xs text-[var(--app-hint)]">
+                {t(props.keepExistingTier ? 'newSession.importTierAvailabilityUnverified' : 'newSession.tierAvailabilityUnverified')}
+            </p> : null}
         </div>
     )
 }

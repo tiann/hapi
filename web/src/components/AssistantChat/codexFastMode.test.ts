@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { fromCodexServiceTier } from '@hapi/protocol'
 import {
     codexModelAdvertisesFastTier,
     getEffectiveCodexServiceTier,
@@ -57,21 +58,43 @@ describe('isFastServiceTier', () => {
 })
 
 describe('getEffectiveCodexServiceTier', () => {
+    it('does not promote a null effective tier from an Ultrafast catalog default', () => {
+        const catalog = [{ id: 'gpt-6-astra', isDefault: true, defaultServiceTier: 'ultrafast' }]
+        expect(getEffectiveCodexServiceTier(null, 'gpt-6-astra', catalog)).toBeNull()
+        expect(getDisplayedCodexServiceTier(getEffectiveCodexServiceTier(null, 'gpt-6-astra', catalog))).toBe('standard')
+        expect(getEffectiveCodexServiceTier('ultrafast', 'gpt-6-astra', catalog)).toBe('ultrafast')
+    })
     it('uses the active model default only when the session has no override', () => {
         const modelsWithDefault = models.map((model) => (
             model.id === 'gpt-5.5' ? { ...model, defaultServiceTier: 'priority' } : model
         ))
 
-        expect(getEffectiveCodexServiceTier(null, null, modelsWithDefault)).toBe('priority')
+        expect(getEffectiveCodexServiceTier(undefined, null, modelsWithDefault)).toBe('priority')
+        expect(getEffectiveCodexServiceTier(null, null, modelsWithDefault)).toBeNull()
         expect(getEffectiveCodexServiceTier('standard', null, modelsWithDefault)).toBe('standard')
+    })
+    it('keeps a confirmed native Flex tier when the model catalog defaults to Fast', () => {
+        const catalog = [{ id: 'gpt-5.5', isDefault: true, defaultServiceTier: 'priority' }]
+        const effectiveTier = getEffectiveCodexServiceTier(fromCodexServiceTier('flex'), 'gpt-5.5', catalog)
+        expect(effectiveTier).toBe('flex')
+        expect(isFastServiceTier(effectiveTier)).toBe(false)
+    })
+    it('does not infer Fast from the catalog during tier recovery', () => {
+        const catalog = [{ id: 'gpt-5.5', isDefault: true, defaultServiceTier: 'priority' }]
+        expect(getEffectiveCodexServiceTier(undefined, 'gpt-5.5', catalog, true)).toBeUndefined()
+        expect(getEffectiveCodexServiceTier(undefined, 'gpt-5.5', catalog, false)).toBe('priority')
     })
 })
 
 describe('getDisplayedCodexServiceTier', () => {
-    it('displays untouched and explicit non-fast tiers as standard', () => {
+    it('displays untouched and explicit Standard tiers as standard', () => {
         expect(getDisplayedCodexServiceTier(null)).toBe('standard')
         expect(getDisplayedCodexServiceTier(undefined)).toBe('standard')
         expect(getDisplayedCodexServiceTier('standard')).toBe('standard')
+    })
+
+    it('leaves native-only tiers unselected', () => {
+        expect(getDisplayedCodexServiceTier('flex')).toBeNull()
     })
 
     it('preserves the fast selection', () => {

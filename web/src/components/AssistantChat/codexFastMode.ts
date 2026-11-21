@@ -1,3 +1,4 @@
+import { codexModelHasUltrafastTier } from '@hapi/protocol'
 // Codex Fast mode (service tier) availability is advertised per-model by the
 // Codex app-server `model/list` catalog, which is resolved server-side from the
 // user's account/auth/plan. An API-key session (no Fast credits) or a model
@@ -13,7 +14,7 @@ type CodexModelCatalogEntry = {
 }
 
 function isFastTierId(tierId: string): boolean {
-    return /fast/i.test(tierId.trim())
+    return /^(fast|priority)$/i.test(tierId.trim())
 }
 
 /**
@@ -47,23 +48,40 @@ export function codexModelAdvertisesFastTier(
     return Boolean(active?.serviceTiers?.some(isFastTierId))
 }
 
+export function codexModelAdvertisesUltrafastTier(
+    sessionModel: string | null | undefined,
+    models: ReadonlyArray<CodexModelCatalogEntry>
+): boolean {
+    return codexModelHasUltrafastTier(findActiveModel(sessionModel, models))
+}
+
 export function isFastServiceTier(serviceTier?: string | null): boolean {
-    return /^(fast|priority)$/i.test(serviceTier?.trim() ?? '')
+    return /^(fast|priority|ultrafast)$/i.test(serviceTier?.trim() ?? '')
 }
 
 export function getEffectiveCodexServiceTier(
     serviceTier: string | null | undefined,
     sessionModel: string | null | undefined,
-    models: ReadonlyArray<CodexModelCatalogEntry>
+    models: ReadonlyArray<CodexModelCatalogEntry>,
+    confirmationPending = false
 ): string | null | undefined {
-    return serviceTier ?? findActiveModel(sessionModel, models)?.defaultServiceTier
+    // A null native result means no effective tier. Only an absent report
+    // leaves room to display a provisional account default.
+    if (confirmationPending) return isFastServiceTier(serviceTier) ? null : serviceTier
+    if (serviceTier !== undefined) return serviceTier
+    const catalogTier = findActiveModel(sessionModel, models)?.defaultServiceTier
+    // Ultrafast requires an effective native confirmation; the account catalog
+    // default can still advertise it when the thread feature is disabled.
+    return catalogTier?.trim().toLowerCase() === 'ultrafast' ? serviceTier : catalogTier
 }
 
 /**
- * The persisted null tier means the user has not chosen an override. The
- * current two-option control still needs a visible selection, so display that
- * untouched state as Standard without changing the value sent to the backend.
+ * Show the untouched tier as Standard. A native-only tier has no matching
+ * option, but the user can still choose Standard to reset it.
  */
-export function getDisplayedCodexServiceTier(serviceTier?: string | null): 'standard' | 'fast' {
-    return isFastServiceTier(serviceTier) ? 'fast' : 'standard'
+export function getDisplayedCodexServiceTier(serviceTier?: string | null): 'standard' | 'fast' | 'ultrafast' | null {
+    const tier = serviceTier?.trim().toLowerCase()
+    if (!tier || tier === 'standard' || tier === 'default') return 'standard'
+    if (tier === 'ultrafast') return 'ultrafast'
+    return isFastTierId(tier) ? 'fast' : null
 }

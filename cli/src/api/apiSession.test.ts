@@ -246,6 +246,31 @@ describe('ApiSessionClient input buffered during initialization', () => {
         client.close()
     })
 
+    it.each([false, true])('notifies an opted-in handler before retrying acknowledged cancellation (opted in=%s)', async (afterCancellation) => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const update = socketHarness.sockets[0]!.listeners.get('update')![0]!
+        const retry = vi.fn(async () => true)
+        const onMessage = vi.fn()
+        client.onUserMessage(onMessage)
+        client.onCancelQueuedMessage(async () => true)
+        client.onRetryQueuedMessage(retry, { afterCancellation })
+        try {
+            await update({ body: { t: 'cancel-queued-message', localId: 'local-1' } })
+            expect(retry).not.toHaveBeenCalled()
+            const ack = vi.fn()
+            await update({ body: { t: 'retry-queued-message', localId: 'local-1', message: message('replacement', 'local-1', 1) } }, ack)
+            expect(ack).toHaveBeenCalledWith({ removed: false, accepted: true })
+            expect(onMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ content: { type: 'text', text: 'replacement' } }), 'local-1')
+            if (afterCancellation) {
+                expect(retry).toHaveBeenCalledExactlyOnceWith('local-1', true)
+                expect(retry.mock.invocationCallOrder[0]).toBeLessThan(onMessage.mock.invocationCallOrder[0])
+            } else {
+                expect(retry).not.toHaveBeenCalled()
+            }
+        } finally { client.close() }
+    })
+
     it.each(['in-flight', 'consumed', 'indeterminate'] as const)('keeps %s cancellation semantics after input leaves the buffer', async (result) => {
         socketHarness.sockets.length = 0
         const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))

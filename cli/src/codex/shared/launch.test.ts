@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { checkSharedCapabilities, sharedLaunchConfig, takeReservedSessionId } from './launch';
+import { checkSharedCapabilities, sharedLaunchConfig, coldResumeDirectory, takeReservedSessionId } from './launch';
 import { parseCodexCliOverrides } from '../utils/codexCliOverrides';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
 
@@ -32,10 +32,13 @@ describe('shared launch configuration', () => {
         expect(sharedLaunchConfig({}, '/tmp').threadParams.config).not.toHaveProperty('model_reasoning_effort');
         expect(sharedLaunchConfig({ serviceTier: 'standard' }, '/tmp').threadParams.serviceTier).toBeNull();
         expect(sharedLaunchConfig({ serviceTier: 'fast' }, '/tmp').threadParams.serviceTier).toBe('priority');
+        expect(sharedLaunchConfig({ serviceTier: 'ultrafast' }, '/tmp').threadParams.serviceTier).toBe('ultrafast');
     });
     it('normalizes short flags, forwards configuration and resolves cwd exactly once', () => {
         const result = sharedLaunchConfig({ codexArgs: ['-C', 'project', '-mcustom', '-a', 'never', '--search', '--add-dir', '../extra', '-c', 'model_reasoning_effort="high"'] }, '/tmp');
         const expectedCwd = resolve('/tmp', 'project');
+        expect(result.cwdExplicit).toBe(true);
+        expect(sharedLaunchConfig({}, '/tmp').cwdExplicit).toBe(false);
         expect(result.cwd).toBe(expectedCwd); expect(result.tuiArgs).not.toContain('-C');
         expect(result.threadParams).toMatchObject({ model: 'custom', approvalPolicy: 'never', config: { web_search: 'live', 'sandbox_workspace_write.writable_roots': [resolve(expectedCwd, '../extra')] } });
         expect(result.serverArgs).toContain('model_reasoning_effort="high"');
@@ -48,7 +51,15 @@ describe('shared launch configuration', () => {
     it('does not interpret flags after -- as configuration', () => {
         expect(sharedLaunchConfig({ codexArgs: ['--', '--profile=explain'] }, '/tmp').tuiArgs).toEqual(['--', '--profile=explain']);
         expect(sharedLaunchConfig({ codexArgs: ['--', '-C', 'literal'] }, '/tmp').tuiArgs).toEqual(['--', '-C', 'literal']);
+        expect(sharedLaunchConfig({ codexArgs: ['--', '-c', 'service_tier=ultrafast'] }, '/tmp').hasServiceTierOverride).toBe(false);
     });
+    it.each([['-c', 'service_tier="ultrafast"'], ['--config=service_tier=ultrafast'], ['-cservice_tier=ultrafast']])(
+        'recognizes a native tier override supplied as %j', (...codexArgs) => {
+            const options = { codexArgs, serviceTier: 'standard' };
+            const result = sharedLaunchConfig(options, '/tmp');
+            expect(result.hasServiceTierOverride).toBe(true);
+            expect(result.threadParams.serviceTier).toBeNull();
+        });
     it('maps HAPI autoReview to native auto-review in the workspace-write sandbox', () => {
         const result = sharedLaunchConfig({ permissionMode: 'autoReview', codexArgs: ['--yolo'] }, '/tmp');
         expect(result.threadParams).toMatchObject({ approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: 'workspace-write' });
@@ -72,4 +83,11 @@ describe('takeReservedSessionId', () => {
 it('rejects an engine without atomic queue replacement before accepting batched messages', async () => {
     const client = { supportsMethod: async (method: string) => method !== 'thread/queue/update' };
     await expect(checkSharedCapabilities(client)).rejects.toThrow('Codex lacks thread/queue/update');
+});
+
+it('keeps runner validation authoritative over native saved cwd and terminal flags', () => {
+    expect(coldResumeDirectory({ startedBy: 'runner', workingDirectory: '/allowed' }, { cwd: '/allowed', cwdExplicit: false }, '/outside')).toBe('/allowed');
+    expect(coldResumeDirectory({ startedBy: 'runner', workingDirectory: '/allowed' }, { cwd: '/flag-outside', cwdExplicit: true }, '/outside')).toBe('/allowed');
+    expect(coldResumeDirectory({ startedBy: 'terminal' }, { cwd: '/shell', cwdExplicit: false }, '/saved')).toBe('/saved');
+    expect(coldResumeDirectory({ startedBy: 'terminal' }, { cwd: '/explicit', cwdExplicit: true }, '/saved')).toBe('/explicit');
 });

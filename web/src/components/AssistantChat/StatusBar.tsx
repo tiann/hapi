@@ -488,7 +488,7 @@ export function StatusBar(props: {
                 ) : null}
                 {codexFastMode ? (
                     <span className="whitespace-nowrap text-xs text-[#34C759]">
-                        fast
+                        {props.serviceTier === 'ultrafast' ? 'ultrafast' : 'fast'}
                     </span>
                 ) : null}
                 {collaborationModeLabel ? (

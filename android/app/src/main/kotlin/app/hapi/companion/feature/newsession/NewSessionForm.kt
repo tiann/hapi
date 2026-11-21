@@ -320,7 +320,10 @@ object NewSessionLogic {
         } else {
             models.firstOrNull { it.isDefault }
         }
-        return active?.serviceTiers?.any { it.trim().contains("fast", ignoreCase = true) } == true
+        return active?.serviceTiers?.any {
+            val tier = it.trim().lowercase()
+            tier == "fast" || tier == "priority"
+        } == true
     }
 
     /**

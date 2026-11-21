@@ -267,7 +267,7 @@ function parseSyncSessionRequest(body: unknown): SyncSessionRequestParseResult {
     const hasModelReasoningEffort = Object.prototype.hasOwnProperty.call(bodyRecord, 'modelReasoningEffort')
     const hasServiceTier = Object.prototype.hasOwnProperty.call(bodyRecord, 'serviceTier')
     const hasCollaborationMode = Object.prototype.hasOwnProperty.call(bodyRecord, 'collaborationMode')
-    if (hasServiceTier && bodyRecord.serviceTier !== null && bodyRecord.serviceTier !== 'fast' && bodyRecord.serviceTier !== 'standard') {
+    if (hasServiceTier && bodyRecord.serviceTier !== null && bodyRecord.serviceTier !== 'fast' && bodyRecord.serviceTier !== 'standard' && bodyRecord.serviceTier !== 'ultrafast') {
         return { sessionIds: [], error: 'Invalid serviceTier' }
     }
     if (hasCollaborationMode && bodyRecord.collaborationMode !== 'default' && bodyRecord.collaborationMode !== 'plan') {
@@ -281,7 +281,7 @@ function parseSyncSessionRequest(body: unknown): SyncSessionRequestParseResult {
         machineId: typeof bodyRecord.machineId === 'string' && bodyRecord.machineId.trim() ? bodyRecord.machineId.trim() : null,
         model: hasModel ? (typeof bodyRecord.model === 'string' && bodyRecord.model.trim() ? bodyRecord.model.trim() : null) : undefined,
         modelReasoningEffort: hasModelReasoningEffort ? (typeof bodyRecord.modelReasoningEffort === 'string' && bodyRecord.modelReasoningEffort.trim() ? bodyRecord.modelReasoningEffort.trim() : null) : undefined,
-        serviceTier: hasServiceTier ? bodyRecord.serviceTier as 'fast' | 'standard' | null : undefined,
+        serviceTier: hasServiceTier ? bodyRecord.serviceTier as 'fast' | 'standard' | 'ultrafast' | null : undefined,
         collaborationMode: hasCollaborationMode ? bodyRecord.collaborationMode as CodexCollaborationMode : undefined,
         yolo: bodyRecord.yolo === true
     }

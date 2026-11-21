@@ -214,7 +214,8 @@ export function SessionHeader(props: {
         ? formatReasoningLabel(reasoningEffort, headerMetadata.showLabels)
         : null
     // Match expected Fast badge semantics (#1004): only explicit service tier, no effort/model heuristics.
-    const showFastBadge = agentFlavor === 'codex' && isFastServiceTier(props.serviceTier ?? session.serviceTier)
+    const serviceTier = props.serviceTier === undefined ? session.serviceTier : props.serviceTier
+    const showFastBadge = agentFlavor === 'codex' && !session.metadata?.codexTierConfirmationPending && isFastServiceTier(serviceTier)
     const createdAtLabel = headerMetadata.createdAt ? formatSessionHeaderTimestamp(session.createdAt, locale) : null
     const updatedAtLabel = headerMetadata.updatedAt ? formatSessionHeaderTimestamp(session.updatedAt, locale) : null
     const codexSessionId = session.metadata?.flavor === 'codex'
@@ -510,7 +511,7 @@ export function SessionHeader(props: {
                             ) : null}
                             {headerMetadata.fastMode && showFastBadge ? (
                                 <span data-testid="session-header-fast" className="text-[#34C759]">
-                                    fast
+                                    {serviceTier === 'ultrafast' ? 'ultrafast' : 'fast'}
                                 </span>
                             ) : null}
                             {createdAtLabel ? <span>{headerMetadata.showLabels ? `${t('session.header.createdAt')}: ` : ''}{createdAtLabel}</span> : null}

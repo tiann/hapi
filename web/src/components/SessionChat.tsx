@@ -44,7 +44,7 @@ import {
     isDictateHotkeyBlockedTarget,
     isDictateToggleHotkey,
 } from '@/lib/composerDictateShortcut'
-import { codexModelAdvertisesFastTier, getEffectiveCodexServiceTier } from '@/components/AssistantChat/codexFastMode'
+import { codexModelAdvertisesFastTier, codexModelAdvertisesUltrafastTier, getEffectiveCodexServiceTier } from '@/components/AssistantChat/codexFastMode'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
@@ -753,6 +753,7 @@ export function SessionChat(props: SessionChatProps) {
 function SessionChatInner(props: SessionChatProps) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
+    const [codexSettingsError, setCodexSettingsError] = useState<string | null>(null)
     const { codexExplorationCollapsed } = useCodexExplorationCollapse()
     const navigate = useNavigate()
     const { toolCardDisplayMode } = useToolCardDisplayMode()
@@ -1203,18 +1204,33 @@ function SessionChatInner(props: SessionChatProps) {
     }, [agentFlavor, sessionId, sessionModel, queryClient])
     const controlledByUser = props.session.agentState?.controlledByUser === true && !props.session.metadata?.capabilities?.concurrentClients
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
+    const metadata = props.session.metadata
+    // Cold resume keeps the session ID but refreshes the process metadata.
+    const catalogRuntimeGeneration = JSON.stringify([
+        metadata?.machineId, metadata?.hostPid, metadata?.hostStartMarker,
+        metadata?.lifecycleStateSince, metadata?.codexRuntime?.bindingId
+    ])
+    const refreshCodexSessionCatalog = useCallback(() => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.sessionCodexModels(sessionId, catalogRuntimeGeneration), exact: true }, { cancelRefetch: false })
+    }, [queryClient, sessionId, catalogRuntimeGeneration])
     const codexModelsState = useCodexModels({
         api: props.api,
         sessionId: props.session.id,
-        machineId: props.session.metadata?.machineId ?? null,
-        preferSession: props.session.metadata?.capabilities?.concurrentClients === true,
+        machineId: metadata?.machineId ?? null,
+        sessionRuntimeGeneration: catalogRuntimeGeneration,
+        preferSession: metadata?.capabilities?.concurrentClients === true,
         enabled: agentFlavor === 'codex' && props.session.active && !controlledByUser
     })
+    const catalogSupportsFast = !codexModelsState.error
+        && codexModelAdvertisesFastTier(props.session.model, codexModelsState.models)
+    const catalogSupportsUltrafast = !codexModelsState.error && codexModelsState.catalogSource === 'session'
+        && metadata?.codexProviderScopedCatalog === true && codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)
     const effectiveCodexServiceTier = agentFlavor === 'codex'
         ? getEffectiveCodexServiceTier(
-            props.session.serviceTier,
+            props.session.serviceTierReported || props.session.serviceTier !== null ? props.session.serviceTier : undefined,
             props.session.model,
-            codexModelsState.models
+            codexModelsState.models,
+            metadata?.codexTierConfirmationPending
         )
         : undefined
     const codexModelOptions = useMemo(() => {
@@ -1959,6 +1975,7 @@ function SessionChatInner(props: SessionChatProps) {
 
     // Model mode change handler
     const handleModelChange = useCallback(async (model: SessionModelSelection) => {
+        setCodexSettingsError(null)
         const previousModelReasoningEffort = props.session.modelReasoningEffort
         const shouldClearReasoningEffort = shouldClearReasoningEffortForModelChange({
             agentFlavor,
@@ -1994,6 +2011,7 @@ function SessionChatInner(props: SessionChatProps) {
         } catch (e) {
             haptic.notification('error')
             console.error('Failed to set model:', e)
+            setCodexSettingsError(e instanceof Error ? e.message : 'Could not change the model. Try again.')
         }
     }, [
         agentFlavor,
@@ -2077,6 +2095,7 @@ function SessionChatInner(props: SessionChatProps) {
     }, [agentFlavor, agyCurrentModel, setModel, setEffort, props.onRefresh, haptic])
 
     const handleServiceTierChange = useCallback(async (serviceTier: string | null) => {
+        setCodexSettingsError(null)
         try {
             await setServiceTier(serviceTier)
             haptic.notification('success')
@@ -2084,8 +2103,10 @@ function SessionChatInner(props: SessionChatProps) {
         } catch (e) {
             haptic.notification('error')
             console.error('Failed to set service tier:', e)
+            refreshCodexSessionCatalog()
+            setCodexSettingsError(e instanceof Error ? e.message : 'Could not verify model availability. Try again.')
         }
-    }, [setServiceTier, props.onRefresh, haptic])
+    }, [setServiceTier, props.onRefresh, haptic, refreshCodexSessionCatalog])
 
     // Abort handler
     const handleAbort = useCallback(async () => {
@@ -2510,6 +2531,7 @@ function SessionChatInner(props: SessionChatProps) {
                     </div>
 
                     <div className={outlineOpen ? 'max-sm:hidden' : undefined}>
+                        {codexSettingsError ? <div role="alert" className="px-3 py-2 text-sm text-red-600">Could not change settings: {codexSettingsError}</div> : null}
                         {codexCollaborationModeSupported && codexModelsState.error ? (
                             <div className="px-3 pb-2">
                                 <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-red-600">
@@ -2771,12 +2793,16 @@ function SessionChatInner(props: SessionChatProps) {
                                 : handleEffortChange
                         }
                         serviceTier={effectiveCodexServiceTier}
+                        tierConfirmationPending={metadata?.codexTierConfirmationPending}
+                        fastAvailable={catalogSupportsFast}
+                        onTierSettingsOpen={agentFlavor === 'codex' && metadata?.capabilities?.concurrentClients === true ? refreshCodexSessionCatalog : undefined}
+                        ultrafastAvailable={catalogSupportsUltrafast && !codexModelsState.isRefreshingSessionCatalog}
                         onServiceTierChange={
                             agentFlavor === 'codex'
                                 && props.session.active
                                 && !controlledByUser
-                                && !codexModelsState.error
-                                && codexModelAdvertisesFastTier(props.session.model, codexModelsState.models)
+                                && (props.session.metadata?.codexTierConfirmationPending === true || props.session.serviceTier === 'ultrafast' || props.session.serviceTier === 'fast' || props.session.serviceTier === 'flex'
+                                    || catalogSupportsFast || catalogSupportsUltrafast)
                                 ? handleServiceTierChange
                                 : undefined
                         }

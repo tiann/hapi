@@ -1,29 +1,34 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AgentState, Metadata } from '@/api/types';
 import type { ApiSessionClient } from '@/api/apiSession';
-import { CodexAppServerClient } from '../codexAppServerClient';
+import { CodexAppServerClient, INDETERMINATE_SYMBOL } from '../codexAppServerClient';
 import { initializeSharedClient } from './launch';
 import { record } from './gateway';
+import { findRuntime, saveRuntime, withThreadOwnership } from './registry';
+import { runtimeControl } from './frontend';
 import { isProcessAlive } from '@/utils/process';
 import { notifyRunnerSessionStarted } from '@/runner/controlClient';
+import { bootstrapExistingSession } from '@/agent/sessionFactory';
 import { asyncQuestionsForItem } from './asyncQuestions';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 const state = vi.hoisted(() => ({ home: '', sessions: new Map<string, MockSession>(), beforeBootstrap: undefined as (() => Promise<void>) | undefined }));
 const BOOTSTRAP_START_MARKER = vi.hoisted(() => 'Tue Sep 29 09:00:00 2026');
 class MockSession extends EventEmitter {
-    readonly sessionId = randomUUID();
+    readonly sessionId: string;
     state: AgentState = { requests: { 'old-worker': { tool: 'request_user_input', arguments: {}, createdAt: 0 } } }; metadata: Metadata;
-    messages: unknown[] = []; consumed: string[] = []; dead = false;
+    messages: unknown[] = []; consumed: string[] = []; dead = false; readySignals = 0;
+    serviceTier?: string | null;
     user?: (message: { content: { text: string } }, id?: string) => void;
     rpc = new Map<string, (params: unknown) => Promise<unknown>>();
     rpcHandlerManager = { registerHandler: (name: string, fn: (params: unknown) => Promise<unknown>) => { this.rpc.set(name, fn); } };
-    constructor(cwd: string) { super(); this.metadata = { path: cwd, host: 'test', hostPid: process.pid, machineId: 'test', flavor: 'codex', capabilities: { concurrentClients: true } }; }
+    constructor(cwd: string, id: string = randomUUID()) { super(); this.sessionId = id; this.metadata = { path: cwd, host: 'test', hostPid: process.pid, machineId: 'test', flavor: 'codex', capabilities: { concurrentClients: true } }; }
     getMetadata() { return this.metadata; }
     updateMetadata(fn: (m: Metadata) => Metadata) { this.metadata = fn(this.metadata); }
     updateAgentState(fn: (s: AgentState) => AgentState) { this.state = fn(this.state); }
@@ -33,10 +38,12 @@ class MockSession extends EventEmitter {
     sendAgentMessage(body: unknown) { this.messages.push(body); }
     sendSessionEvent(body: unknown) { this.messages.push(body); }
     emitMessagesConsumed(ids: string[]) { this.consumed.push(...ids); }
-    emitSteerIndeterminate() {} keepAlive() {} emitSessionReady() {}
+    emitSteerIndeterminate() {}
+    keepAlive(_thinking?: boolean, _mode?: unknown, settings?: { serviceTier?: string | null }) { if (settings && 'serviceTier' in settings) this.serviceTier = settings.serviceTier; }
+    emitSessionReady() { this.readySignals++; }
     async setSteerDeliveryState() { return true; }
     syncNativeQueuedMessage() {}
-    sendSessionDeath() { this.dead = true; } async flush() {} close() {} isPending() { return false; }
+    sendSessionDeath() { this.dead = true; } async flush() {} async flushMetadata() { return true; } close() {} isPending() { return false; }
 }
 vi.mock('@/configuration', () => ({ configuration: { get happyHomeDir() { return state.home; }, apiUrl: 'http://mock-hub', cliApiToken: 'test' } }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: (...args: unknown[]) => { if (process.env.HAPI_DEBUG_SHARED_TEST) console.log(...args); }, warn: vi.fn(), info: vi.fn(), debugLargeJson: vi.fn() } }));
@@ -55,6 +62,1212 @@ vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => 
 // Explicit opt-in: installed official binary, entirely isolated CODEX_HOME, mock Responses API only.
 describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Codex shared runtime', () => {
     afterEach(() => { vi.unstubAllEnvs(); state.sessions.clear(); state.beforeBootstrap = undefined; });
+    it.each(['priority', null])('reports no effective override after accepting tier %s with disabled native Fast', async serviceTier => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-shared-filtered-tier-'));
+        let requests = 0;
+        const http = createServer((request, response) => {
+            request.resume();
+            if (!request.url?.endsWith('/responses')) { response.writeHead(404).end(); return; }
+            request.on('end', () => {
+                requests++;
+                const id = randomUUID();
+                const events = [{ type: 'response.created', response: { id } },
+                    { type: 'response.output_item.done', item: { id: `msg_${id}`, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] } },
+                    { type: 'response.completed', response: { id, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } }];
+                response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                response.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+            });
+        });
+        const client = new CodexAppServerClient({ cwd: home });
+        const selections: unknown[] = [];
+        client.setNotificationHandler((method, params) => {
+            if (method === 'thread/settings/updated') selections.push(record(record(params).threadSettings).serviceTier);
+        });
+        try {
+            await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+            const port = (http.address() as { port: number }).port;
+            await writeFile(join(home, 'config.toml'), [
+                'model = "mock-model"', 'model_provider = "mock"', 'check_for_update_on_startup = false',
+                '[features]', 'fast_mode = false', '[model_providers.mock]', 'name = "Mock Responses API"',
+                `base_url = "http://127.0.0.1:${port}/v1"`, 'wire_api = "responses"', 'supports_websockets = false',
+                'requires_openai_auth = false', 'request_max_retries = 0', 'stream_max_retries = 0',
+                '[analytics]', 'enabled = false', '[feedback]', 'enabled = false', ''
+            ].join('\n'));
+            vi.stubEnv('CODEX_HOME', home);
+            await initializeSharedClient(client);
+            const start = await client.request<{ thread: { id: string } }>('thread/start', { cwd: home });
+            const threadId = start.thread.id;
+            await client.request('thread/metadata/update', { threadId, gitInfo: { branch: null } });
+            const accepted = await client.request<{ turn: { id: string } }>('turn/start', {
+                threadId, serviceTier, input: [{ type: 'text', text: 'Isolated test', text_elements: [] }]
+            });
+            expect(accepted.turn.id).toBeTruthy();
+            await vi.waitFor(async () => {
+                expect(requests).toBeGreaterThan(0);
+                expect(await client.request('thread/read', { threadId, includeTurns: false }))
+                    .toMatchObject({ thread: { status: { type: 'idle' } } });
+            }, { timeout: 10_000 });
+            expect(await client.request('thread/resume', { threadId, excludeTurns: true })).toMatchObject({ serviceTier: null });
+            if (serviceTier === 'priority') {
+                expect(selections).toContain('priority');
+                await client.request('thread/settings/update', { threadId, serviceTier: null });
+                await vi.waitFor(() => expect(selections.at(-1)).toBe('default'));
+                await client.request('thread/settings/update', { threadId, serviceTier: 'priority' });
+                await vi.waitFor(() => expect(selections.at(-1)).toBe('priority'));
+                expect(await client.request('thread/resume', { threadId, excludeTurns: true })).toMatchObject({ serviceTier: null });
+            }
+        } finally {
+            await client.disconnect({ gracefulTimeoutMs: 2_000 });
+            await new Promise<void>(resolve => http.close(() => resolve()));
+            await rm(home, { recursive: true, force: true });
+        }
+    }, 30_000);
+    it('forks an archived Flex thread against a Standard directory default', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-shared-flex-fork-'));
+        const cwd = join(home, 'work');
+        const ch = join(home, 'codex');
+        await mkdir(cwd); await mkdir(ch);
+        await writeFile(join(ch, 'config.toml'), [
+            'model = "mock-model"', 'model_provider = "mock"', 'service_tier = "default"',
+            '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
+            'wire_api = "responses"', 'requires_openai_auth = false',
+            '[analytics]', 'enabled = false', '[feedback]', 'enabled = false', ''
+        ].join('\n'));
+        vi.stubEnv('CODEX_HOME', ch);
+        const client = new CodexAppServerClient({ cwd });
+        try {
+            await initializeSharedClient(client);
+            const source = await client.request<{ thread: { id: string; cwd: string }; serviceTier: string }>('thread/start', { cwd, serviceTier: 'flex' });
+            expect(source.serviceTier).toBe('flex');
+            await client.request('thread/metadata/update', { threadId: source.thread.id, gitInfo: { branch: null } });
+            await client.request('thread/archive', { threadId: source.thread.id });
+            const archived = await client.request<{ thread: { cwd: string } }>('thread/read', { threadId: source.thread.id, includeTurns: true });
+            const { performArchivedFork } = await import('./archivedFork');
+            const request = { operationId: randomUUID(), sourceSessionId: randomUUID(),
+                sourceThreadId: source.thread.id, directory: archived.thread.cwd, nativeServiceTier: 'flex' as const };
+            const journal = { request, done: false, restoreRequired: false, forkIssued: false };
+            let childTier: unknown;
+            const observe = { request: async <T>(method: string, params?: unknown): Promise<T> => {
+                const result = await client.request<T>(method, params);
+                if (method === 'thread/fork') childTier = record(result).serviceTier;
+                return result;
+            } };
+            const child = await performArchivedFork(observe, request, journal, async () => {}, async () => {});
+            expect(child).not.toBe(source.thread.id);
+            expect(childTier).toBe('flex');
+            await client.request('thread/unarchive', { threadId: child });
+            const { inheritedResumeTier } = await import('../utils/serviceTier');
+            const params = await inheritedResumeTier(client, { threadId: child, excludeTurns: true }, true, cwd, childTier);
+            expect(await client.request('thread/resume', params)).toMatchObject({ thread: { id: child }, serviceTier: 'flex' });
+        } finally {
+            await client.disconnect({ gracefulTimeoutMs: 2_000 });
+            await rm(home, { recursive: true, force: true });
+        }
+    }, 30_000);
+    it('releases a failed gateway cold resume for retry from another runtime without pinning inherited tier', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-shared-tier-retry-')); state.home = home;
+        const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        vi.stubEnv('CODEX_HOME', ch);
+        const configure = (tier?: string) => writeFile(join(ch, 'config.toml'), [
+            'model = "gpt-6-astra"', 'model_provider = "mock"',
+            ...(tier === undefined ? [] : [`service_tier = "${tier}"`]),
+            '[features]', 'fast_mode = true', 'ultrafast_mode = false',
+            '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
+            'wire_api = "responses"', 'requires_openai_auth = false',
+            '[analytics]', 'enabled = false', '[feedback]', 'enabled = false', ''
+        ].join('\n'));
+        const running: Array<{ abort: AbortController; done: Promise<void> }> = [];
+        const clients: CodexAppServerClient[] = [];
+        const { runSharedRuntime } = await import('./runtime');
+        const start = async (overrides: Partial<import('./launch').SharedLaunchOptions> = {}) => {
+            const abort = new AbortController(); let ready!: (value: import('./runtime').RuntimeReady) => void;
+            const pending = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
+            const done = runSharedRuntime({ workingDirectory: cwd, ...overrides }, ready, abort.signal);
+            running.push({ abort, done });
+            const value = await Promise.race([pending, done.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            const client = new CodexAppServerClient({ endpoint: value.runtime.endpoint, token: value.runtime.token });
+            clients.push(client); await initializeSharedClient(client);
+            return { ...value, client, abort, done };
+        };
+        let failConfig: ReturnType<typeof vi.spyOn> | undefined;
+        const extraSpies: Array<{ mockRestore(): void }> = [];
+        let releaseLaunch = () => {};
+        try {
+            vi.mocked(bootstrapExistingSession).mockImplementation(async options => {
+                const previous = state.sessions.get(options.sessionId)!;
+                const session = new MockSession(options.workingDirectory, previous.sessionId); session.metadata = { ...previous.metadata }; session.serviceTier = previous.serviceTier;
+                state.sessions.set(session.sessionId, session);
+                return { session: session as unknown as ApiSessionClient, sessionInfo: { id: session.sessionId, namespace: 'test', serviceTier: session.serviceTier }, metadata: session.metadata,
+                    workingDirectory: options.workingDirectory, machineId: 'test', startedBy: options.startedBy, api: {} } as never;
+            });
+            await configure('priority');
+            const readConfig = CodexAppServerClient.prototype.readConfig;
+            let releaseSnapshot!: () => void;
+            const snapshotGate = new Promise<void>(resolve => { releaseSnapshot = resolve; });
+            const stalledCatalog = vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockImplementation(async function(this: CodexAppServerClient, params) {
+                if (params.includeLayers) await snapshotGate;
+                return readConfig.call(this, params);
+            });
+            extraSpies.push(stalledCatalog);
+            try {
+                const standard = await start({ serviceTier: 'standard' });
+                const standardThread = standard.runtime.sessions[standard.sessionId].threadId;
+                expect(await standard.client.request('thread/resume', { threadId: standardThread, excludeTurns: true })).toMatchObject({ serviceTier: 'default' });
+                releaseSnapshot();
+                standard.abort.abort(); await standard.done;
+            } finally { releaseSnapshot(); stalledCatalog.mockRestore(); }
+            const legacyCatalog = vi.spyOn(CodexAppServerClient.prototype, 'usesStartupModelCatalog').mockReturnValue(true);
+            const legacyLaunch = vi.spyOn(CodexAppServerClient.prototype, 'supportsEffectiveUltrafastLaunch').mockReturnValue(false);
+            const legacyReadConfig = vi.spyOn(CodexAppServerClient.prototype, 'readConfig');
+            extraSpies.push(legacyCatalog, legacyLaunch, legacyReadConfig);
+            try {
+                const standard = await start({ serviceTier: 'standard' });
+                const standardThread = standard.runtime.sessions[standard.sessionId].threadId;
+                expect(await standard.client.request('thread/resume', { threadId: standardThread, excludeTurns: true })).toMatchObject({ serviceTier: 'default' });
+                expect(legacyReadConfig).not.toHaveBeenCalled();
+                standard.abort.abort(); await standard.done;
+            } finally { legacyCatalog.mockRestore(); legacyLaunch.mockRestore(); legacyReadConfig.mockRestore(); }
+            let provider = 'provider-before-bootstrap';
+            const providerRead = vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockImplementation(async function(this: CodexAppServerClient, params) {
+                const snapshot = await readConfig.call(this, params);
+                return { ...snapshot, config: { ...snapshot.config, model_provider: provider } };
+            });
+            const providerCatalog = vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockImplementation(async params => ({
+                data: [{ id: 'gpt-6-astra', serviceTiers: params?.modelProvider === 'mock' ? [] : [{ id: 'ultrafast' }] }]
+            } as never));
+            extraSpies.push(providerRead, providerCatalog);
+            let enteredBootstrap!: () => void;
+            const bootstrapEntered = new Promise<void>(resolve => { enteredBootstrap = resolve; });
+            let resumeBootstrap!: () => void;
+            const bootstrapPaused = new Promise<void>(resolve => { resumeBootstrap = resolve; });
+            state.beforeBootstrap = async () => { enteredBootstrap(); await bootstrapPaused; };
+            try {
+                const creating = start({ model: 'gpt-6-astra', serviceTier: 'ultrafast' });
+                await Promise.race([bootstrapEntered, creating]);
+                provider = 'mock';
+                resumeBootstrap();
+                const verified = await creating;
+                expect(providerCatalog).toHaveBeenCalledExactlyOnceWith({ includeHidden: true, modelProvider: 'mock' });
+                expect(state.sessions.get(verified.sessionId)?.messages).toContainEqual({
+                    type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.'
+                });
+                verified.abort.abort(); await verified.done;
+            } finally { resumeBootstrap(); state.beforeBootstrap = undefined; providerRead.mockRestore(); providerCatalog.mockRestore(); }
+            const nativeTierCatalog = vi.spyOn(CodexAppServerClient.prototype, 'listModels')
+                .mockResolvedValue({ data: [] } as never);
+            try {
+                const nativeOverride = await start({ model: 'gpt-6-astra',
+                    codexArgs: ['-c', 'service_tier="priority"', '--config=service_tier="ultrafast"'] });
+                const nativeThread = nativeOverride.runtime.sessions[nativeOverride.sessionId].threadId;
+                await expect(nativeOverride.client.request('thread/resume', { threadId: nativeThread, excludeTurns: true }))
+                    .resolves.toMatchObject({ serviceTier: 'default' });
+                expect(nativeTierCatalog).toHaveBeenCalledExactlyOnceWith({ includeHidden: true, modelProvider: 'mock' });
+                expect(state.sessions.get(nativeOverride.sessionId)?.messages).toContainEqual({
+                    type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.'
+                });
+                const nativeNew = await nativeOverride.client.request<{ thread: { id: string }; serviceTier: string }>(
+                    'thread/start', { cwd, model: 'gpt-6-astra' });
+                expect(nativeNew.serviceTier).toBe('default');
+                const nativeSession = [...state.sessions.values()].find(session => session.metadata.codexSessionId === nativeNew.thread.id);
+                expect(nativeSession?.metadata.codexServiceTierExplicit).toBe(true);
+                expect(nativeSession?.messages).toContainEqual({
+                    type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.'
+                });
+                expect(nativeTierCatalog).toHaveBeenCalledTimes(2);
+                await expect(nativeOverride.client.request('thread/start', { cwd, model: 'gpt-6-astra', serviceTier: null }))
+                    .resolves.toMatchObject({ serviceTier: 'default' });
+                expect(nativeTierCatalog).toHaveBeenCalledTimes(2);
+                nativeOverride.abort.abort(); await nativeOverride.done;
+            } finally { nativeTierCatalog.mockRestore(); }
+            const original = await start(); const threadId = original.runtime.sessions[original.sessionId].threadId;
+            original.abort.abort(); await original.done;
+            await configure('default');
+            const second = await start();
+            const { SharedCodexRoot } = await import('./root');
+            const originalClose = SharedCodexRoot.prototype.close;
+            let enteredClose!: () => void, releaseClose!: () => void;
+            const closingEntered = new Promise<void>(resolve => { enteredClose = resolve; });
+            const closingGate = new Promise<void>(resolve => { releaseClose = resolve; });
+            const closing = vi.spyOn(SharedCodexRoot.prototype, 'close').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, archived) {
+                enteredClose(); await closingGate; return originalClose.call(this, archived);
+            });
+            extraSpies.push(closing); releaseLaunch = releaseClose;
+            const concurrent = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
+            clients.push(concurrent); await initializeSharedClient(concurrent);
+            let enteredConfig!: () => void, releaseConfig!: () => void;
+            const enteredRead = new Promise<void>(resolve => { enteredConfig = resolve; });
+            const configGate = new Promise<void>(resolve => { releaseConfig = resolve; });
+            failConfig = vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockImplementationOnce(async () => {
+                enteredConfig(); await configGate; throw new Error('fixture concurrent config unavailable');
+            });
+            const firstResume = second.client.request('thread/resume', { threadId, excludeTurns: true });
+            void firstResume.catch(() => {});
+            await enteredRead;
+            try { await expect(concurrent.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('already being attached'); }
+            finally { releaseConfig(); }
+            await closingEntered;
+            try {
+                expect(second.runtime.sessions[original.sessionId].active).toBe(true);
+                await expect(concurrent.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('already being attached');
+            } finally { releaseClose(); }
+            await expect(firstResume).rejects.toThrow('fixture concurrent config unavailable');
+            closing.mockRestore();
+            failConfig.mockRestore(); failConfig = undefined;
+            failConfig = vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockRejectedValueOnce(new Error('fixture config unavailable'));
+            await expect(second.client.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('fixture config unavailable');
+            failConfig.mockRestore(); failConfig = undefined;
+            expect(second.runtime.sessions[original.sessionId].active).toBe(false);
+            expect(state.sessions.get(original.sessionId)?.metadata.lifecycleState).not.toBe('archived');
+            const originalNativeRequest = CodexAppServerClient.prototype.request;
+            let rejectMetadata = true;
+            let rejectSideSubscription = true;
+            let controlConnection: CodexAppServerClient | undefined;
+            const metadataFailure = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (rejectMetadata && method === 'thread/metadata/update' && !clients.includes(this) && record(params).threadId === threadId) {
+                    controlConnection = this;
+                    rejectMetadata = false; return Promise.reject(new Error('fixture metadata update unavailable'));
+                }
+                if (rejectSideSubscription && controlConnection && this !== controlConnection && !clients.includes(this)
+                    && method === 'thread/resume' && record(params).threadId === threadId) {
+                    rejectSideSubscription = false;
+                    return Promise.reject(new Error('fixture side subscription unavailable'));
+                }
+                return originalNativeRequest.call(this, method, params) as Promise<T>;
+            }); extraSpies.push(metadataFailure);
+            const interruptedFrontend = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
+            clients.push(interruptedFrontend); await initializeSharedClient(interruptedFrontend);
+            await expect(interruptedFrontend.request('thread/resume', {
+                threadId, excludeTurns: true, serviceTier: 'priority', config: { thread_unload_delay_secs: 0 }
+            })).rejects.toThrow('fixture metadata update unavailable');
+            await interruptedFrontend.disconnect();
+            await vi.waitFor(async () => {
+                expect(await concurrent.request('thread/read', { threadId, includeTurns: false }))
+                    .toMatchObject({ thread: { status: { type: 'notLoaded' } } });
+            }, { timeout: 5_000 });
+            const retainedSession = state.sessions.get(original.sessionId);
+            expect(second.runtime.sessions[original.sessionId].active).toBe(true);
+            await expect(concurrent.request('thread/queue/start', { threadId })).rejects.toThrow('tier confirmation');
+            const lastBound = second.runtime.sessions[second.sessionId].threadId;
+            await second.client.request('thread/archive', { threadId: lastBound });
+            await vi.waitFor(() => expect(state.sessions.get(second.sessionId)?.dead).toBe(true));
+            expect(second.runtime.sessions[second.sessionId].active).toBe(false);
+            const retryFrontend = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
+            clients.push(retryFrontend); await initializeSharedClient(retryFrontend);
+            const configs = vi.spyOn(SharedCodexRoot.prototype, 'config');
+            extraSpies.push(configs);
+            await expect(retryFrontend.request('thread/resume', {
+                threadId, excludeTurns: true, serviceTier: 'ultrafast', model: 'gpt-6.1-sol', config: { service_tier: 'ultrafast' }
+            })).rejects.toThrow('fixture side subscription unavailable');
+            expect(configs.mock.results.map(result => result.value)).toContainEqual(expect.objectContaining({
+                threadId, serviceTier: 'priority', config: expect.objectContaining({
+                    'shell_environment_policy.set.HAPI_SESSION_ID': original.sessionId,
+                    thread_unload_delay_secs: 0
+                })
+            }));
+            configs.mockRestore();
+            metadataFailure.mockRestore();
+            await retryFrontend.disconnect();
+            await vi.waitFor(async () => {
+                expect(await concurrent.request('thread/read', { threadId, includeTurns: false }))
+                    .toMatchObject({ thread: { status: { type: 'notLoaded' } } });
+            }, { timeout: 5_000 });
+            if (!controlConnection) throw new Error('Fixture did not observe the runtime control connection');
+            const abandonedTransport = (controlConnection as unknown as { transportAbandonedHandler: () => void }).transportAbandonedHandler;
+            const controlReconnect = vi.spyOn(controlConnection, 'request');
+            extraSpies.push(controlReconnect);
+            await controlConnection.disconnect();
+            abandonedTransport();
+            await vi.waitFor(() => expect(controlConnection!.isInitialized()).toBe(true));
+            expect(await concurrent.request('thread/read', { threadId, includeTurns: false }))
+                .toMatchObject({ thread: { status: { type: 'notLoaded' } } });
+            expect(controlReconnect).not.toHaveBeenCalledWith('thread/resume', expect.objectContaining({ threadId }));
+            controlReconnect.mockRestore();
+            expect(second.runtime.sessions[original.sessionId].active).toBe(true);
+            await expect(concurrent.request('thread/settings/update', { threadId, serviceTier: null })).rejects.toThrow('initialization is pending');
+            await expect(second.client.request('thread/queue/delete', { threadId, queuedSubmissionId: 'not-bound' })).rejects.toThrow('tier confirmation');
+            const originalBind = SharedCodexRoot.prototype.bind;
+            let sideConnection: CodexAppServerClient | undefined;
+            const bound = vi.spyOn(SharedCodexRoot.prototype, 'bind').mockImplementation(async function(this: InstanceType<typeof SharedCodexRoot>, ...args) {
+                await originalBind.apply(this, args);
+                if (this.threadId === threadId) sideConnection = this.client;
+            });
+            const dropSideConnection = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(async function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (sideConnection && this === controlConnection && method === 'thread/resume' && record(params).threadId === threadId) {
+                    const abandon = (sideConnection as unknown as { transportAbandonedHandler: () => void }).transportAbandonedHandler;
+                    await sideConnection.disconnect();
+                    abandon();
+                }
+                return originalNativeRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(bound, dropSideConnection);
+            await expect(concurrent.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('side connection closed before the session was ready');
+            expect(retainedSession?.readySignals).toBe(0);
+            expect(second.runtime.sessions[original.sessionId].active).toBe(true);
+            bound.mockRestore(); dropSideConnection.mockRestore();
+            const activate = vi.spyOn(SharedCodexRoot.prototype, 'activate');
+            extraSpies.push(activate);
+            const attempts = await Promise.allSettled([second.client, concurrent].map(client =>
+                client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true })));
+            const response = attempts.find(result => result.status === 'fulfilled');
+            expect(response).toMatchObject({ status: 'fulfilled', value: { serviceTier: 'priority' } });
+            expect(await concurrent.request('thread/resume', {
+                threadId, excludeTurns: true, initialTurnsPage: { limit: 1 }, serviceTier: 'ultrafast'
+            })).toMatchObject({
+                model: 'gpt-6-astra', serviceTier: 'priority', initialTurnsPage: { data: expect.any(Array) }
+            });
+            for (const attempt of attempts) {
+                if (attempt.status === 'rejected') expect(attempt.reason).toMatchObject({ message: expect.stringContaining('already being attached') });
+            }
+            await concurrent.request('thread/resume', { threadId, excludeTurns: true });
+            expect(activate).toHaveBeenCalledTimes(1);
+            expect(retainedSession?.readySignals).toBe(1);
+            activate.mockRestore();
+            const third = await start();
+            await saveRuntime({ ...third.runtime, pendingCreations: ['unrelated-creation'] });
+            try {
+                await expect(withThreadOwnership(second.runtime.codexHome, threadId, second.runtime.id, async () => {})).rejects.toThrow('unconfirmed creation');
+                await expect(concurrent.request('thread/resume', { threadId, excludeTurns: true })).resolves.toMatchObject({ serviceTier: 'priority' });
+            } finally {
+                await saveRuntime(third.runtime);
+            }
+            expect(state.sessions.get(original.sessionId)).toBe(retainedSession);
+            expect(state.sessions.get(original.sessionId)?.metadata.codexServiceTierExplicit).toBe(true);
+            extraSpies.push(vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockResolvedValue({ data: [
+                { id: 'gpt-6-astra', serviceTiers: [{ id: 'ultrafast' }] },
+                { id: 'gpt-6.1-sol', serviceTiers: [{ id: 'priority' }] },
+            ] } as never));
+            const originalRequest = CodexAppServerClient.prototype.request;
+            const originalConfirm = SharedCodexRoot.prototype.confirmUltrafastLaunch;
+            let entered!: (threadId: string) => void;
+            const confirming = new Promise<string>(resolve => { entered = resolve; });
+            const delayed = new Promise<void>(resolve => { releaseLaunch = resolve; });
+            const confirmation = vi.spyOn(SharedCodexRoot.prototype, 'confirmUltrafastLaunch').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, ...args) {
+                entered(this.threadId); await delayed; return originalConfirm.apply(this, args);
+            });
+            extraSpies.push(confirmation);
+            const observer = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
+            clients.push(observer); await initializeSharedClient(observer);
+            const lostTierReply = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (!clients.includes(this) && method === 'thread/settings/update' && record(params).threadId === threadId) {
+                    return Promise.reject(Object.assign(new Error('Shared Codex connection closed'), { [INDETERMINATE_SYMBOL]: true }));
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(lostTierReply);
+            await expect(second.client.request('thread/settings/update', { threadId, serviceTier: null })).rejects.toThrow('connection closed');
+            lostTierReply.mockRestore();
+            await expect(observer.request('thread/queue/start', { threadId })).rejects.toThrow('tier confirmation');
+            // The original scenario keeps Fast after the later cold resume.
+            await observer.request('thread/settings/update', { threadId, serviceTier: 'priority' });
+            const failSettings = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (method === 'thread/settings/update' && !clients.includes(this)) return Promise.reject(new Error('fixture Standard confirmation unavailable'));
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(failSettings);
+            const creating = second.client.request<{ thread: { id: string } }>('thread/start', { cwd, model: 'gpt-6-astra', serviceTier: 'ultrafast' });
+            const confirmingThread = await confirming;
+            await expect(observer.request('thread/queue/start', { threadId: confirmingThread })).rejects.toThrow('tier confirmation');
+            await expect(observer.request('thread/settings/update', { threadId: confirmingThread, serviceTier: 'priority' })).rejects.toThrow('initialization is pending');
+            releaseLaunch();
+            const child = await creating;
+            const childSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === child.thread.id)![0];
+            const childSession = state.sessions.get(childSid)!;
+            expect(childSession.metadata.codexTierConfirmationPending).toBe(true);
+            expect(second.runtime.sessions[original.sessionId].active).toBe(true);
+            await expect(second.client.request('turn/start', { threadId: child.thread.id, input: [{ type: 'text', text: 'must not execute' }] })).rejects.toThrow('tier confirmation');
+            await expect(second.client.request('thread/queue/start', { threadId: child.thread.id })).rejects.toThrow('tier confirmation');
+            const plan = await start({ collaborationMode: 'plan', serviceTier: 'ultrafast', model: 'gpt-6-astra' });
+            const planThread = plan.runtime.sessions[plan.sessionId].threadId;
+            expect(state.sessions.get(plan.sessionId)?.metadata.codexTierConfirmationPending).toBe(true);
+            failSettings.mockRestore();
+            await plan.client.request('thread/settings/update', { threadId: planThread, collaborationMode: { mode: 'default', settings: {
+                model: 'gpt-6-astra', reasoning_effort: null, developer_instructions: null
+            } } });
+            await plan.client.request('thread/settings/update', { threadId: planThread, serviceTier: null });
+            const planSettings = await plan.client.request<{ serviceTier: string; collaborationMode: { mode: string } }>('thread/resume', { threadId: planThread, excludeTurns: true });
+            expect(planSettings.serviceTier).toBe('default'); expect(planSettings.collaborationMode.mode).toBe('default');
+            expect(state.sessions.get(plan.sessionId)?.metadata.codexTierConfirmationPending).toBe(false);
+            await observer.request('thread/settings/update', { threadId: child.thread.id, serviceTier: null });
+            expect(childSession.metadata.codexTierConfirmationPending).toBe(false);
+            expect((await second.client.request<{ serviceTier: string }>('thread/resume', { threadId: child.thread.id, excludeTurns: true })).serviceTier).toBe('default');
+            const originalPrepare = SharedCodexRoot.prototype.prepareNativeTurn;
+            let preparingRoot!: InstanceType<typeof SharedCodexRoot>, enterDiscovery!: () => void;
+            const discovering = new Promise<void>(resolve => { enterDiscovery = resolve; });
+            const discoveryGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
+            const prepare = vi.spyOn(SharedCodexRoot.prototype, 'prepareNativeTurn').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, params) {
+                preparingRoot = this; enterDiscovery(); await discoveryGate; return originalPrepare.call(this, params);
+            });
+            extraSpies.push(prepare);
+            const heldTurn = observer.request('turn/start', { threadId: child.thread.id, model: 'gpt-6-astra', serviceTier: 'ultrafast', input: [{ type: 'text', text: 'must not be forwarded' }] });
+            void heldTurn.catch(() => {});
+            await discovering;
+            const pause = vi.spyOn(preparingRoot, 'needsTierConfirmation', 'get').mockReturnValue(true); extraSpies.push(pause);
+            releaseLaunch();
+            await expect(heldTurn).rejects.toThrow('tier confirmation');
+            await expect(observer.request('turn/steer', { threadId: child.thread.id, expectedTurnId: 'not-running', input: [{ type: 'text', text: 'must not steer' }] })).rejects.toThrow('tier confirmation');
+            expect(record((await observer.request<{ thread: unknown }>('thread/read', { threadId: child.thread.id, includeTurns: true })).thread).turns).toEqual([]);
+            pause.mockRestore(); prepare.mockRestore();
+            const knownThreads = new Set(Object.values(second.runtime.sessions).map(binding => binding.threadId));
+            let acceptedThread: string | undefined;
+            const failNewSubscription = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                const candidate = record(params).threadId;
+                if (!acceptedThread && !clients.includes(this) && method === 'thread/resume' && record(params).excludeTurns === true
+                    && typeof candidate === 'string' && !knownThreads.has(candidate)) {
+                    acceptedThread = candidate;
+                    return Promise.reject(new Error('fixture accepted start subscription unavailable'));
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(failNewSubscription);
+            await expect(second.client.request('thread/start', { cwd, model: 'gpt-6-astra', serviceTier: 'ultrafast' })).rejects.toThrow('fixture accepted start subscription unavailable');
+            failNewSubscription.mockRestore();
+            const createdBindings = Object.entries(second.runtime.sessions).filter(([, binding]) => !knownThreads.has(binding.threadId));
+            expect(createdBindings).toHaveLength(1);
+            const [acceptedSid, acceptedBinding] = createdBindings[0];
+            expect(acceptedBinding).toMatchObject({ threadId: acceptedThread, active: true });
+            await expect(observer.request('thread/queue/start', { threadId: acceptedThread })).rejects.toThrow('tier confirmation');
+            await expect(observer.request('thread/resume', { threadId: acceptedThread, excludeTurns: true })).resolves.toMatchObject({ thread: { id: acceptedThread } });
+            expect(state.sessions.get(acceptedSid)?.metadata.codexServiceTierExplicit).toBe(true);
+            expect(Object.entries(second.runtime.sessions).filter(([, binding]) => !knownThreads.has(binding.threadId))).toHaveLength(1);
+            const beforeWebFork = new Set(Object.values(second.runtime.sessions).map(binding => binding.threadId));
+            let webForkThread: string | undefined;
+            const failWebForkSubscription = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                const candidate = record(params).threadId;
+                if (!webForkThread && !clients.includes(this) && method === 'thread/resume' && record(params).excludeTurns === true
+                    && typeof candidate === 'string' && !beforeWebFork.has(candidate)) {
+                    webForkThread = candidate;
+                    return Promise.reject(new Error('fixture Web fork subscription unavailable'));
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(failWebForkSubscription);
+            // This fixture checks bind recovery, not inheritance of the
+            // engine's implicit named permission profile.
+            const selectedUltrafast = vi.spyOn(SharedCodexRoot.prototype, 'freshParams').mockReturnValueOnce({
+                cwd, model: 'gpt-6-astra', serviceTier: 'ultrafast', approvalPolicy: 'never', sandbox: 'read-only'
+            });
+            extraSpies.push(selectedUltrafast);
+            const fork = await retainedSession!.rpc.get(RPC_METHODS.ForkConversation)!({}) as { sessionId: string; nativeSessionId: string };
+            expect(webForkThread).toBeTruthy();
+            expect(fork.nativeSessionId).toBe(webForkThread);
+            expect(second.runtime.sessions[fork.sessionId]).toMatchObject({ threadId: webForkThread, active: true });
+            expect(Object.values(second.runtime.sessions).filter(binding => !beforeWebFork.has(binding.threadId))).toHaveLength(1);
+            failWebForkSubscription.mockRestore(); selectedUltrafast.mockRestore();
+            await retainedSession!.rpc.get(RPC_METHODS.SetSessionConfig)!({ collaborationMode: 'plan' });
+            const beforePlanFork = new Set(Object.values(second.runtime.sessions).map(binding => binding.threadId));
+            let planForkThread: string | undefined;
+            let nativeForks = 0;
+            const failPlanUpdate = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                const options = record(params);
+                if (!clients.includes(this) && method === 'thread/fork') nativeForks++;
+                if (!planForkThread && !clients.includes(this) && method === 'thread/settings/update'
+                    && record(options.collaborationMode).mode === 'plan'
+                    && typeof options.threadId === 'string' && !beforePlanFork.has(options.threadId)) {
+                    planForkThread = options.threadId;
+                    return Promise.reject(new Error('fixture inherited Plan update unavailable'));
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            const selectedStandard = vi.spyOn(SharedCodexRoot.prototype, 'freshParams').mockReturnValueOnce({
+                cwd, model: 'gpt-6-astra', serviceTier: null, approvalPolicy: 'never', sandbox: 'read-only'
+            });
+            extraSpies.push(failPlanUpdate, selectedStandard);
+            const planFork = await retainedSession!.rpc.get(RPC_METHODS.ForkConversation)!({}) as { sessionId: string; nativeSessionId: string };
+            expect(planForkThread).toBeTruthy();
+            expect(planFork.nativeSessionId).toBe(planForkThread);
+            expect(nativeForks).toBe(1);
+            expect(second.runtime.sessions[planFork.sessionId]).toMatchObject({ threadId: planForkThread, active: true });
+            expect(await second.client.request('thread/resume', { threadId: planFork.nativeSessionId, excludeTurns: true })).toMatchObject({
+                serviceTier: 'default', collaborationMode: { mode: 'plan' },
+            });
+            failPlanUpdate.mockRestore(); selectedStandard.mockRestore();
+            await retainedSession!.rpc.get(RPC_METHODS.SetSessionConfig)!({ collaborationMode: 'default' });
+            const originalStandard = SharedCodexRoot.prototype.confirmStandardLaunch;
+            const standardRace = vi.spyOn(SharedCodexRoot.prototype, 'confirmStandardLaunch').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, explicit) {
+                await this.client.request('thread/settings/update', { threadId: this.threadId, serviceTier: 'priority' });
+                return originalStandard.call(this, explicit);
+            }); extraSpies.push(standardRace);
+            const unsupported = await second.client.request<{ thread: { id: string }; serviceTier: string }>('thread/start', { cwd, model: 'gpt-6.1-sol', serviceTier: 'ultrafast' });
+            standardRace.mockRestore();
+            expect(unsupported.serviceTier).toBe('default');
+            expect((await second.client.request<{ serviceTier: string }>('thread/resume', { threadId: unsupported.thread.id, excludeTurns: true })).serviceTier).toBe('default');
+            const unsupportedSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === unsupported.thread.id)![0];
+            expect(state.sessions.get(unsupportedSid)?.messages).toContainEqual({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
+            const failedStandard = vi.spyOn(SharedCodexRoot.prototype, 'confirmStandardLaunch').mockRejectedValueOnce(new Error('fixture fallback confirmation unavailable'));
+            extraSpies.push(failedStandard);
+            const pausedFallback = await second.client.request<{ thread: { id: string } }>('thread/start', { cwd, model: 'gpt-6.1-sol', serviceTier: 'ultrafast' });
+            failedStandard.mockRestore();
+            const pausedSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === pausedFallback.thread.id)![0];
+            expect(state.sessions.get(pausedSid)?.metadata.codexTierConfirmationPending).toBe(true);
+            expect(state.sessions.get(pausedSid)?.messages).not.toContainEqual({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
+            await second.client.request('thread/settings/update', { threadId: pausedFallback.thread.id, serviceTier: null });
+            expect(state.sessions.get(pausedSid)?.metadata.codexTierConfirmationPending).toBe(false);
+            let archivedDuringTier: InstanceType<typeof SharedCodexRoot> | undefined;
+            let enterTier!: (root: InstanceType<typeof SharedCodexRoot>) => void;
+            let releaseTier!: () => void;
+            let releaseArchiveCleanup!: () => void;
+            const tierEntered = new Promise<InstanceType<typeof SharedCodexRoot>>(resolve => { enterTier = resolve; });
+            const heldTier = new Promise<void>(resolve => { releaseTier = resolve; });
+            const heldArchiveCleanup = new Promise<void>(resolve => { releaseArchiveCleanup = resolve; });
+            const confirmWhileArchiving = vi.spyOn(SharedCodexRoot.prototype, 'confirmStandardLaunch').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>) {
+                archivedDuringTier = this;
+                enterTier(this);
+                await heldTier;
+            });
+            const archiveCleanup = vi.spyOn(SharedCodexRoot.prototype, 'close').mockImplementation(async function(this: InstanceType<typeof SharedCodexRoot>, archived) {
+                if (this === archivedDuringTier) await heldArchiveCleanup;
+                return originalClose.call(this, archived);
+            });
+            extraSpies.push(confirmWhileArchiving, archiveCleanup);
+            const archivedLaunch = second.client.request('thread/start', { cwd, model: 'gpt-6.1-sol', serviceTier: 'ultrafast' });
+            const rejectedArchiveLaunch = expect(archivedLaunch).rejects.toThrow('archived during binding');
+            const archivedRoot = await tierEntered;
+            const archivedSid = archivedRoot.session.sessionId;
+            try {
+                await expect(runtimeControl(second.runtime, 'hapi/stopSession', archivedSid)).resolves.toEqual({ stopped: true });
+                releaseTier();
+                await rejectedArchiveLaunch;
+                expect(archivedRoot.isActivated).toBe(false);
+                expect(state.sessions.get(archivedSid)?.readySignals).toBe(0);
+                expect(second.runtime.sessions[archivedSid].active).toBe(false);
+            } finally { releaseTier(); releaseArchiveCleanup(); }
+            await vi.waitFor(() => expect(state.sessions.get(archivedSid)?.dead).toBe(true));
+            await vi.waitFor(() => expect(vi.mocked(notifyRunnerSessionStarted).mock.calls.filter(([sid]) => sid === archivedSid))
+                .toEqual([[archivedSid, expect.objectContaining({ lifecycleState: 'archived' })]]));
+            confirmWhileArchiving.mockRestore(); archiveCleanup.mockRestore();
+            for (const path of ['gateway', 'web-fork']) {
+                const tierParams = { cwd, model: 'gpt-6-astra', serviceTier: 'ultrafast', config: { thread_unload_delay_secs: 0 } };
+                let tierThread = '';
+                const waitForUnloadedThread = () => vi.waitFor(async () => {
+                    expect(controlConnection!.isInitialized()).toBe(true);
+                    expect(await observer.request('thread/read', { threadId: tierThread, includeTurns: false }))
+                        .toMatchObject({ thread: { status: { type: 'notLoaded' } } });
+                }, { timeout: 5_000 });
+                // Simulate a previously enabled feature. The real native server
+                // on reload runs with the feature disabled and falls back.
+                const oldTier = vi.spyOn(SharedCodexRoot.prototype, 'confirmUltrafastLaunch').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>) {
+                    tierThread = this.threadId;
+                    this.acceptSettings({ model: tierParams.model, serviceTier: 'ultrafast' }, true);
+                    expect(this.hasUltrafastTier).toBe(true);
+                });
+                const originalActivate = SharedCodexRoot.prototype.activate;
+                const lostBeforeActivation = vi.spyOn(SharedCodexRoot.prototype, 'activate').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, ...args) {
+                    await this.client.disconnect();
+                    const reconnect = (controlConnection as unknown as { transportAbandonedHandler: () => void }).transportAbandonedHandler;
+                    await controlConnection!.disconnect();
+                    reconnect();
+                    if (path === 'web-fork') await waitForUnloadedThread();
+                    return originalActivate.apply(this, args);
+                });
+                extraSpies.push(oldTier, lostBeforeActivation);
+                const beforeRetry = new Set(Object.values(second.runtime.sessions).map(binding => binding.threadId));
+                if (path === 'web-fork') {
+                    const selection = vi.spyOn(SharedCodexRoot.prototype, 'freshParams').mockReturnValueOnce({
+                        ...tierParams, approvalPolicy: 'never', sandbox: 'read-only'
+                    });
+                    extraSpies.push(selection);
+                    const fork = await retainedSession!.rpc.get(RPC_METHODS.ForkConversation)!({}) as { sessionId: string; nativeSessionId: string };
+                    expect(fork.nativeSessionId).toBe(tierThread);
+                    expect(second.runtime.sessions[fork.sessionId]).toMatchObject({ threadId: tierThread, active: true });
+                    selection.mockRestore();
+                } else {
+                    const tierFrontend = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
+                    clients.push(tierFrontend); await initializeSharedClient(tierFrontend);
+                    await expect(tierFrontend.request('thread/start', tierParams)).rejects.toThrow('side connection closed before the session was ready');
+                    await tierFrontend.disconnect();
+                    await waitForUnloadedThread();
+                    await observer.request('thread/resume', { threadId: tierThread, excludeTurns: true });
+                }
+                expect(oldTier.mock.contexts.filter(root => root instanceof SharedCodexRoot && root.threadId === tierThread)).toHaveLength(2);
+                const bindings = Object.entries(second.runtime.sessions).filter(([, binding]) => !beforeRetry.has(binding.threadId));
+                expect(bindings).toHaveLength(1);
+                const tierSession = state.sessions.get(bindings[0][0]);
+                expect(tierSession?.messages).toContainEqual({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
+                expect(tierSession?.serviceTier).toBe('standard');
+                expect(tierSession?.readySignals).toBe(1);
+                oldTier.mockRestore(); lostBeforeActivation.mockRestore();
+            }
+            await second.client.request('thread/settings/update', { threadId: unsupported.thread.id, serviceTier: 'priority' });
+            const imported = await second.client.request<{ thread: { id: string } }>('thread/start', { cwd, serviceTier: 'priority' });
+            const importedSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === imported.thread.id)![0];
+            // Codex records the selected tier in the rollout's turn context.
+            const importedTurn = await second.client.request<{ turn: { id: string } }>('turn/start', {
+                threadId: imported.thread.id, input: [{ type: 'text', text: 'Persist the local tier fixture', text_elements: [] }]
+            });
+            await second.client.request('turn/interrupt', { threadId: imported.thread.id, turnId: importedTurn.turn.id }).catch(() => {});
+            const abandoned = await second.client.request<{ thread: { id: string } }>('thread/start', { cwd, serviceTier: null });
+            const abandonedSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === abandoned.thread.id)![0];
+            const racingArchive = await second.client.request<{ thread: { id: string } }>('thread/start', { cwd, serviceTier: null });
+            const racingSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === racingArchive.thread.id)![0];
+            second.abort.abort(); await second.done;
+            await configure('default');
+            delete state.sessions.get(importedSid)!.metadata.codexServiceTierExplicit;
+            expect(await third.client.request('thread/resume', { threadId: imported.thread.id, excludeTurns: true })).toMatchObject({ serviceTier: 'priority' });
+            expect(state.sessions.get(importedSid)?.metadata.codexServiceTierExplicit).toBeUndefined();
+            const abandonedMetadata = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (method === 'thread/metadata/update' && record(params).threadId === abandoned.thread.id) {
+                    return Promise.reject(new Error('fixture metadata update unavailable before archive'));
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            const preparingAbandoned = vi.spyOn(SharedCodexRoot.prototype, 'prepare');
+            extraSpies.push(abandonedMetadata, preparingAbandoned);
+            await expect(third.client.request('thread/resume', { threadId: abandoned.thread.id, excludeTurns: true })).rejects.toThrow('before archive');
+            expect(third.runtime.sessions[abandonedSid].active).toBe(true);
+            const abandonedRoot = preparingAbandoned.mock.contexts.find((root): root is InstanceType<typeof SharedCodexRoot> =>
+                root instanceof SharedCodexRoot && root.session.sessionId === abandonedSid);
+            expect(abandonedRoot?.client.isInitialized()).toBe(true);
+            await abandonedRoot!.client.disconnect();
+            expect(abandonedRoot?.client.isInitialized()).toBe(false);
+            preparingAbandoned.mockRestore();
+            await expect(runtimeControl(third.runtime, 'hapi/stopSession', abandonedSid)).resolves.toEqual({ stopped: true });
+            abandonedMetadata.mockRestore();
+            await vi.waitFor(() => expect(state.sessions.get(abandonedSid)?.dead).toBe(true));
+            expect(state.sessions.get(abandonedSid)?.metadata.lifecycleState).toBe('archived');
+            expect(third.runtime.sessions[abandonedSid].active).toBe(false);
+            expect(third.runtime.sessions[importedSid].active).toBe(true);
+            expect(state.sessions.get(importedSid)?.dead).toBe(false);
+            await expect(third.client.request('thread/read', { threadId: imported.thread.id, includeTurns: false }))
+                .resolves.toMatchObject({ thread: { id: imported.thread.id } });
+            await expect(withThreadOwnership(third.runtime.codexHome, abandoned.thread.id, 'archive-verifier', async () => true)).resolves.toBe(true);
+            const archiveClient = new CodexAppServerClient({ endpoint: third.runtime.endpoint, token: third.runtime.token });
+            clients.push(archiveClient); await initializeSharedClient(archiveClient);
+            let enteredArchiveRace!: () => void;
+            const metadataEntered = new Promise<void>(resolve => { enteredArchiveRace = resolve; });
+            const stalledMetadata = new Promise<void>(resolve => { releaseLaunch = resolve; });
+            const archiveRace = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (method === 'thread/metadata/update' && record(params).threadId === racingArchive.thread.id) {
+                    enteredArchiveRace();
+                    return stalledMetadata.then(() => { throw new Error('fixture metadata update lost during archive'); });
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(archiveRace);
+            const racingBind = third.client.request('thread/resume', { threadId: racingArchive.thread.id, excludeTurns: true });
+            const rejectedBind = expect(racingBind).rejects.toThrow('lost during archive');
+            await metadataEntered;
+            try {
+                await archiveClient.request('thread/archive', { threadId: racingArchive.thread.id });
+                expect(third.runtime.sessions[racingSid].active).toBe(false);
+            } finally { releaseLaunch(); }
+            await rejectedBind; archiveRace.mockRestore();
+            await vi.waitFor(() => expect(state.sessions.get(racingSid)?.metadata.lifecycleState).toBe('archived'));
+            await expect(withThreadOwnership(third.runtime.codexHome, racingArchive.thread.id, 'archive-verifier', async () => true)).resolves.toBe(true);
+            const observingActivation = vi.spyOn(SharedCodexRoot.prototype, 'activate');
+            extraSpies.push(observingActivation);
+            const archivedNativeOnly = await third.client.request<{ thread: { id: string } }>('thread/start', { cwd, serviceTier: null });
+            const notificationRoot = observingActivation.mock.contexts.find((root): root is InstanceType<typeof SharedCodexRoot> =>
+                root instanceof SharedCodexRoot && root.threadId === archivedNativeOnly.thread.id);
+            expect(notificationRoot).toBeDefined();
+            observingActivation.mockRestore();
+            // Bypass the gateway so only the native subscription can cause cleanup.
+            await notificationRoot!.client.request('thread/archive', { threadId: archivedNativeOnly.thread.id });
+            await vi.waitFor(() => expect(third.runtime.sessions[notificationRoot!.session.sessionId].active).toBe(false));
+            expect((await third.client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true })).serviceTier).toBe('priority');
+            expect(state.sessions.get(original.sessionId)?.metadata.codexServiceTierExplicit).toBe(true);
+            // Re-import selected Ultrafast in HAPI while the native snapshot still stores Fast.
+            state.sessions.get(unsupportedSid)!.serviceTier = 'fast';
+            state.sessions.get(unsupportedSid)!.metadata.codexPendingServiceTier = 'ultrafast';
+            const resumed = await third.client.request<{ serviceTier: string }>('thread/resume', { threadId: unsupported.thread.id, model: 'gpt-6.1-sol', excludeTurns: true });
+            expect(resumed.serviceTier).toBe('default');
+            expect(state.sessions.get(unsupportedSid)?.metadata.codexPendingServiceTier).toBeUndefined();
+            // Persisted recovery state must fence input before a cold bind completes.
+            state.sessions.get(childSid)!.metadata.codexTierConfirmationPending = true;
+            state.sessions.get(childSid)!.metadata.codexServiceTierExplicit = true;
+            state.sessions.get(childSid)!.serviceTier = 'fast';
+            const recoveryClient = new CodexAppServerClient({ endpoint: third.runtime.endpoint, token: third.runtime.token });
+            clients.push(recoveryClient); await initializeSharedClient(recoveryClient);
+            let binding!: () => void;
+            const enteredBind = new Promise<void>(resolve => { binding = resolve; });
+            const bindGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
+            const metadataDelay = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (method === 'thread/metadata/update' && (params as { threadId?: string })?.threadId === child.thread.id) {
+                    binding(); return bindGate.then(() => originalRequest.call(this, method, params)) as Promise<T>;
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(metadataDelay);
+            const coldPending = third.client.request('thread/resume', { threadId: child.thread.id, excludeTurns: true });
+            await enteredBind;
+            await expect(recoveryClient.request('thread/queue/start', { threadId: child.thread.id })).rejects.toThrow('tier confirmation');
+            releaseLaunch(); await coldPending;
+            await recoveryClient.request('thread/settings/update', { threadId: child.thread.id, serviceTier: null });
+            expect(state.sessions.get(childSid)?.metadata.codexTierConfirmationPending).toBe(false);
+            metadataDelay.mockRestore();
+            // Accepted input must not wait for side-client settings reconciliation.
+            let lookupEntered!: () => void;
+            const lookupStarted = new Promise<void>(resolve => { lookupEntered = resolve; });
+            const lookupGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
+            const stalledSnapshot = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (this !== third.client && method === 'thread/resume' && (params as { threadId?: string })?.threadId === unsupported.thread.id) {
+                    lookupEntered(); return lookupGate.then(() => originalRequest.call(this, method, params)) as Promise<T>;
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(stalledSnapshot);
+            state.sessions.get(unsupportedSid)!.metadata.codexServiceTierExplicit = false;
+            const accepted = third.client.request<{ turn: { id: string } }>('turn/start', { threadId: unsupported.thread.id, model: 'gpt-6.1-sol',
+                serviceTier: 'priority', input: [{ type: 'text', text: 'Local no-network acceptance test', text_elements: [] }] });
+            await lookupStarted;
+            const result = await Promise.race([accepted, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Accepted turn blocked on snapshot')), 2_000))]);
+            expect(result.turn.id).toBeTruthy();
+            expect(state.sessions.get(unsupportedSid)!.metadata.codexServiceTierExplicit).toBe(true);
+            await expect(recoveryClient.request('thread/queue/add', {
+                threadId: unsupported.thread.id, clientUserMessageId: randomUUID(),
+                input: [{ type: 'text', text: 'Must wait for tier confirmation', text_elements: [] }]
+            })).rejects.toThrow('tier confirmation is pending');
+            await third.client.request('thread/settings/update', { threadId: unsupported.thread.id, model: 'gpt-6-astra' });
+            releaseLaunch(); stalledSnapshot.mockRestore();
+            await vi.waitFor(() => expect(state.sessions.get(unsupportedSid)!.metadata.codexTierConfirmationPending).toBe(false));
+            expect(state.sessions.get(unsupportedSid)!.metadata.codexServiceTierExplicit).toBe(true);
+            await third.client.request('turn/interrupt', { threadId: unsupported.thread.id, turnId: result.turn.id }).catch(() => {});
+            third.abort.abort(); await third.done;
+            const importedAgain = await start({ resumeSessionId: imported.thread.id });
+            expect(await importedAgain.client.request('thread/resume', { threadId: imported.thread.id, excludeTurns: true })).toMatchObject({ serviceTier: 'priority' });
+            expect(state.sessions.get(importedSid)?.metadata.codexServiceTierExplicit).toBeUndefined();
+            importedAgain.abort.abort(); await importedAgain.done;
+            await configure();
+            const unset = await start();
+            const unsetThread = unset.runtime.sessions[unset.sessionId].threadId;
+            expect((await unset.client.request<{ serviceTier: string | null }>('thread/resume', { threadId: unsetThread, excludeTurns: true })).serviceTier).toBeNull();
+            unset.abort.abort(); await unset.done;
+            const inherited = await start();
+            expect((await inherited.client.request<{ serviceTier: string | null }>('thread/resume', { threadId: unsetThread, excludeTurns: true })).serviceTier).toBeNull();
+            inherited.abort.abort(); await inherited.done;
+            const validatedCwd = join(home, 'runner-validated'); await mkdir(validatedCwd);
+            const runner = await start({ startedBy: 'runner', workingDirectory: validatedCwd, resumeSessionId: unsetThread });
+            expect(vi.mocked(bootstrapExistingSession).mock.calls.at(-1)?.[0].workingDirectory).toBe(validatedCwd);
+            const saved = await runner.client.request<{ thread: { cwd: string } }>('thread/read', { threadId: unsetThread, includeTurns: false });
+            expect((await realpath(saved.thread.cwd)).toLowerCase()).toBe((await realpath(validatedCwd)).toLowerCase());
+
+            runner.abort.abort(); await runner.done;
+            const archiveWitness = await start();
+            let enterColdCatalog!: () => void;
+            const coldCatalogEntered = new Promise<void>(resolve => { enterColdCatalog = resolve; });
+            const coldCatalogGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
+            const coldCatalog = vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockImplementationOnce(async () => {
+                enterColdCatalog(); await coldCatalogGate; return { data: [] } as never;
+            });
+            extraSpies.push(coldCatalog);
+            const coldReady = vi.fn();
+            const coldAbort = new AbortController();
+            const coldDone = runSharedRuntime({ startedBy: 'runner', workingDirectory: validatedCwd, resumeSessionId: unsetThread,
+                existingSessionId: unset.sessionId, serviceTier: 'ultrafast' }, coldReady, coldAbort.signal);
+            running.push({ abort: coldAbort, done: coldDone });
+            await Promise.race([coldCatalogEntered, coldDone.then(() => { throw new Error('Cold runtime exited before catalog discovery'); })]);
+            const coldRuntime = await findRuntime(unset.sessionId);
+            expect(coldRuntime?.sessions[unset.sessionId]).toMatchObject({ threadId: unsetThread, active: true });
+            const resumeAfterArchive = vi.spyOn(CodexAppServerClient.prototype, 'request');
+            extraSpies.push(resumeAfterArchive);
+            try {
+                await expect(runtimeControl(coldRuntime!, 'hapi/stopSession', unset.sessionId)).resolves.toEqual({ stopped: true });
+            } finally { releaseLaunch(); }
+            await expect(coldDone).rejects.toThrow('archived during resume');
+            expect(coldReady).not.toHaveBeenCalled();
+            expect(resumeAfterArchive.mock.calls.some(([method, params]) => ['thread/resume', 'thread/unarchive'].includes(method)
+                && record(params).threadId === unsetThread)).toBe(false);
+            await expect(archiveWitness.client.request('thread/list', { archived: true, limit: 100 }))
+                .resolves.toMatchObject({ data: expect.arrayContaining([expect.objectContaining({ id: unsetThread })]) });
+            coldCatalog.mockRestore(); resumeAfterArchive.mockRestore();
+
+        } finally {
+            releaseLaunch();
+            for (const spy of extraSpies.reverse()) spy.mockRestore();
+            failConfig?.mockRestore(); vi.mocked(bootstrapExistingSession).mockReset();
+            for (const item of running) item.abort.abort();
+            await Promise.allSettled(running.map(item => item.done));
+            await Promise.allSettled(clients.map(client => client.disconnect()));
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 120_000);
+    it.each(['fast', 'ultrafast'] as const)('preserves saved %s when a cold resume stops before recovery metadata is acknowledged', async savedTier => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-shared-cold-tier-')); state.home = home;
+        const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        vi.stubEnv('CODEX_HOME', ch);
+        const configure = (enabled: boolean) => writeFile(join(ch, 'config.toml'), [
+            'model = "gpt-6-astra"', 'model_provider = "mock"',
+            '[features]', 'fast_mode = ' + enabled, 'ultrafast_mode = ' + enabled,
+            '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
+            'wire_api = "responses"', 'requires_openai_auth = false',
+            '[analytics]', 'enabled = false', '[feedback]', 'enabled = false', ''
+        ].join('\n'));
+        const running: Array<{ abort: AbortController; done: Promise<void> }> = [];
+        const clients: CodexAppServerClient[] = [];
+        const spies: Array<{ mockRestore(): void }> = [];
+        let releaseLaunch = () => {};
+        const { runSharedRuntime } = await import('./runtime');
+        const { SharedCodexRoot } = await import('./root');
+        const originalRequest = CodexAppServerClient.prototype.request;
+        const start = async (options: import('./launch').SharedLaunchOptions) => {
+            const abort = new AbortController();
+            let reportReady!: (value: import('./runtime').RuntimeReady) => void;
+            const ready = new Promise<import('./runtime').RuntimeReady>(resolve => { reportReady = resolve; });
+            const done = runSharedRuntime({ workingDirectory: cwd, ...options }, reportReady, abort.signal);
+            running.push({ abort, done });
+            const runtime = await Promise.race([ready, done.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            return { ...runtime, abort, done };
+        };
+        try {
+            vi.mocked(bootstrapExistingSession).mockImplementation(async options => {
+                const previous = state.sessions.get(options.sessionId)!;
+                const session = new MockSession(options.workingDirectory, previous.sessionId);
+                session.metadata = { ...previous.metadata }; session.serviceTier = previous.serviceTier;
+                state.sessions.set(session.sessionId, session);
+                return { session, sessionInfo: { id: session.sessionId, namespace: 'test', serviceTier: session.serviceTier }, metadata: session.metadata,
+                    workingDirectory: options.workingDirectory, machineId: 'test', startedBy: options.startedBy, api: {} } as never;
+            });
+            await configure(false);
+            const initial = await start({ serviceTier: 'standard' });
+            const sessionId = initial.sessionId;
+            const threadId = initial.runtime.sessions[sessionId].threadId;
+            initial.abort.abort(); await initial.done;
+            const saved = state.sessions.get(sessionId)!;
+            saved.serviceTier = savedTier;
+            saved.metadata.codexServiceTierExplicit = true;
+            saved.metadata.codexConfirmedServiceTier = undefined;
+            saved.metadata.codexPendingServiceTier = undefined;
+            saved.metadata.codexTierConfirmationPending = false;
+            const catalog = savedTier === 'ultrafast'
+                ? vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockResolvedValue({ data: [
+                    { id: 'gpt-6-astra', serviceTiers: [{ id: 'ultrafast' }] }
+                ] } as never) : undefined;
+            const failedFallback = savedTier === 'ultrafast'
+                ? vi.spyOn(SharedCodexRoot.prototype, 'confirmUltrafastLaunch').mockRejectedValueOnce(new Error('fixture Standard confirmation did not finish'))
+                : undefined;
+            if (catalog && failedFallback) spies.push(catalog, failedFallback);
+            let enterBind!: () => void;
+            const bindEntered = new Promise<void>(resolve => { enterBind = resolve; });
+            const bindGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
+            const delayBind = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (method === 'thread/metadata/update' && record(params).threadId === threadId) {
+                    const session = state.sessions.get(sessionId)!;
+                    const updateMetadata = session.updateMetadata.bind(session);
+                    let held = false;
+                    spies.push(vi.spyOn(session, 'updateMetadata').mockImplementation(update => {
+                        held ||= update(session.metadata).codexPendingServiceTier === savedTier;
+                        if (!held) updateMetadata(update);
+                    }));
+                    enterBind(); return bindGate.then(() => originalRequest.call(this, method, params)) as Promise<T>;
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            spies.push(delayBind);
+            const abort = new AbortController();
+            let reportReady!: () => void;
+            const ready = new Promise<void>(resolve => { reportReady = resolve; });
+            const resumeOptions = { startedBy: 'runner' as const, workingDirectory: cwd,
+                resumeSessionId: threadId, existingSessionId: sessionId };
+            const done = runSharedRuntime(resumeOptions, reportReady, abort.signal);
+            running.push({ abort, done });
+            const stoppedEarly = done.then(() => { throw new Error('Cold tier runtime exited before activation'); });
+            await Promise.race([bindEntered, stoppedEarly]);
+            const runtime = await findRuntime(sessionId);
+            expect(runtime?.sessions[sessionId]).toMatchObject({ threadId: threadId, active: true });
+            const client = new CodexAppServerClient({ endpoint: runtime!.endpoint, token: runtime!.token });
+            clients.push(client); await initializeSharedClient(client);
+            const turnInput = { threadId: threadId, input: [{ type: 'text', text: 'Must wait for tier confirmation', text_elements: [] }] };
+            try {
+                await expect(client.request('turn/start', turnInput)).rejects.toThrow('tier confirmation is pending');
+            } finally { releaseLaunch(); }
+            await Promise.race([ready, stoppedEarly]);
+            const paused = state.sessions.get(sessionId)!;
+            expect(paused.metadata.codexPendingServiceTier).toBeUndefined();
+            expect(paused.serviceTier).toBe(savedTier);
+            expect(paused.readySignals).toBe(0);
+            expect(paused.messages).toContainEqual({ type: 'message', message: expect.stringContaining(
+                savedTier === 'fast' ? 'could not confirm the requested Fast tier' : 'Standard could not be confirmed') });
+            await expect(client.request('turn/start', turnInput)).rejects.toThrow('tier confirmation is pending');
+            abort.abort(); await done;
+            expect(paused.serviceTier).toBe(savedTier);
+            delayBind.mockRestore();
+            failedFallback?.mockRestore();
+            await configure(true);
+            const resumed = vi.spyOn(CodexAppServerClient.prototype, 'request');
+            spies.push(resumed);
+            const recovered = await start(resumeOptions);
+            expect(resumed).toHaveBeenCalledWith('thread/resume', expect.objectContaining({
+                threadId, serviceTier: savedTier === 'fast' ? 'priority' : 'ultrafast'
+            }));
+            expect(state.sessions.get(sessionId)?.readySignals).toBe(1);
+            recovered.abort.abort(); await recovered.done;
+        } finally {
+            releaseLaunch();
+            for (const spy of spies.reverse()) spy.mockRestore();
+            for (const item of running) item.abort.abort();
+            await Promise.allSettled(running.map(item => item.done));
+            await Promise.allSettled(clients.map(client => client.disconnect()));
+            vi.mocked(bootstrapExistingSession).mockReset();
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 45_000);
+    it.each(['ultrafast', 'inherited', 'inherited ultrafast', 'provider configuration changed', 'ultrafast with an archived goal', 'unconfirmed saved tier'])('keeps a Runner cold resume recoverable for %s', async intent => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-runner-tier-discovery-')); state.home = home;
+        const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        const archivedGoal = intent === 'ultrafast with an archived goal';
+        const confirmationPending = intent === 'unconfirmed saved tier';
+        const savedGoal = intent === 'ultrafast' || archivedGoal || confirmationPending;
+        let modelRequests = 0;
+        const provider = createServer((request, response) => {
+            if (request.url?.endsWith('/responses')) modelRequests++;
+            response.writeHead(400).end();
+        });
+        let endpoint = 'http://127.0.0.1:1/v1';
+        if (savedGoal) {
+            await new Promise<void>(resolve => { provider.listen(0, '127.0.0.1', resolve); });
+            endpoint = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1`;
+        }
+        const configure = (tier?: string, modelEndpoint = endpoint) => writeFile(join(ch, 'config.toml'), [
+            'model = "gpt-6-astra"', 'model_provider = "mock"', ...(tier ? [`service_tier = "${tier}"`] : []),
+            '[features]', 'ultrafast_mode = true', 'fast_mode = true', 'goals = true',
+            '[model_providers.mock]', 'name = "No model calls"', `base_url = "${modelEndpoint}"`,
+            'wire_api = "responses"', 'requires_openai_auth = false', '[analytics]', 'enabled = false',
+            '[feedback]', 'enabled = false', ''
+        ].join('\n'));
+        await configure();
+        vi.stubEnv('CODEX_HOME', ch);
+        const { runSharedRuntime } = await import('./runtime');
+        const running: Array<{ abort: AbortController; done: Promise<void> }> = [];
+        const start = async (options: import('./launch').SharedLaunchOptions) => {
+            const abort = new AbortController();
+            let reportReady!: (value: import('./runtime').RuntimeReady) => void;
+            const ready = new Promise<import('./runtime').RuntimeReady>(resolve => { reportReady = resolve; });
+            const done = runSharedRuntime({ workingDirectory: cwd, ...options }, reportReady, abort.signal);
+            running.push({ abort, done });
+            const runtime = await Promise.race([ready, done.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            return { ...runtime, abort, done };
+        };
+        let client: CodexAppServerClient | undefined;
+        let discovery: { mockRestore(): void } | undefined;
+        try {
+            const providerChanged = intent === 'provider configuration changed';
+            const inherited = intent === 'inherited' || intent === 'inherited ultrafast';
+            const inheritedUltrafast = intent === 'inherited ultrafast';
+            const old = await start({ serviceTier: inheritedUltrafast ? 'fast' : 'standard' });
+            const sessionId = old.sessionId;
+            const threadId = old.runtime.sessions[sessionId].threadId;
+            old.abort.abort(); await old.done;
+            if (savedGoal) {
+                const admin = new CodexAppServerClient({ cwd });
+                try {
+                    await initializeSharedClient(admin);
+                    await expect(admin.request('thread/read', { threadId, includeTurns: false }))
+                        .resolves.toMatchObject({ thread: { status: { type: 'notLoaded' } } });
+                    await expect(admin.setThreadGoal({ threadId, status: 'active', objective: 'Retain this goal', tokenBudget: 500 }))
+                        .resolves.toMatchObject({ goal: { status: 'active', objective: 'Retain this goal', tokenBudget: 500 } });
+                    if (archivedGoal) await admin.request('thread/archive', { threadId });
+                } finally { await admin.disconnect(); }
+            }
+            const saved = state.sessions.get(sessionId)!;
+            saved.serviceTier = inheritedUltrafast ? 'fast' : inherited || confirmationPending ? null : 'ultrafast';
+            saved.metadata.codexServiceTierExplicit = !inherited;
+            saved.metadata.codexConfirmedServiceTier = inherited || confirmationPending ? undefined : 'ultrafast';
+            saved.metadata.codexPendingServiceTier = undefined;
+            if (confirmationPending) saved.metadata.codexTierConfirmationPending = true;
+            vi.mocked(bootstrapExistingSession).mockImplementation(async options => {
+                const previous = state.sessions.get(options.sessionId)!;
+                const session = new MockSession(options.workingDirectory, previous.sessionId);
+                session.metadata = { ...previous.metadata };
+                session.serviceTier = previous.serviceTier;
+                state.sessions.set(session.sessionId, session);
+                return { session, sessionInfo: { id: session.sessionId, namespace: 'test', serviceTier: session.serviceTier }, metadata: session.metadata,
+                    workingDirectory: options.workingDirectory, machineId: 'test', startedBy: options.startedBy, api: {} } as never;
+            });
+            if (inheritedUltrafast) await configure('ultrafast');
+            const readConfig = CodexAppServerClient.prototype.readConfig;
+            const pendingCatalog = confirmationPending ? vi.spyOn(CodexAppServerClient.prototype, 'listModels') : undefined;
+            discovery = pendingCatalog ?? (intent === 'inherited'
+                ? vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockImplementation(function(this: CodexAppServerClient, params) {
+                    if (!params.includeLayers) return Promise.reject(new Error('Inherited tier lookup unavailable'));
+                    return readConfig.call(this, params);
+                })
+                : vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockImplementation(async () => {
+                    if (!providerChanged) throw new Error('Untrusted native catalog response');
+                    await configure(undefined, 'http://127.0.0.1:2/v1');
+                    return { data: [{ id: 'gpt-6-astra', serviceTiers: [{ id: 'ultrafast' }] }] } as never;
+                }));
+            if (confirmationPending) {
+                const gateway = await start({ serviceTier: 'standard' });
+                const frontend = new CodexAppServerClient({ endpoint: gateway.runtime.endpoint, token: gateway.runtime.token });
+                try {
+                    await initializeSharedClient(frontend);
+                    const resume = { threadId, excludeTurns: true, serviceTier: 'priority' };
+                    await expect(frontend.request('thread/resume', { ...resume, sandbox: 'read-only', permissions: 'read-only' }))
+                        .rejects.toThrow('cannot be combined');
+                    await expect(frontend.getThreadGoal({ threadId })).resolves.toMatchObject({ goal: { status: 'active' } });
+                    await expect(frontend.request('thread/resume', { ...resume, sandbox: 'hapi-invalid-sandbox' }))
+                        .rejects.toThrow(/invalid params|unknown variant|hapi-invalid-sandbox/i);
+                    await expect(frontend.getThreadGoal({ threadId })).resolves.toMatchObject({
+                        goal: { status: 'active', objective: 'Retain this goal', tokenBudget: 500 }
+                    });
+                    expect(state.sessions.get(sessionId)?.messages).toContainEqual({
+                        type: 'message', message: expect.stringContaining('saved goal remains active')
+                    });
+                    expect(modelRequests).toBe(0);
+                } finally { await frontend.disconnect(); gateway.abort.abort(); await gateway.done; }
+            }
+            const resumed = await start({ startedBy: 'runner', existingSessionId: sessionId, resumeSessionId: threadId,
+                ...(inherited || confirmationPending ? {} : { serviceTier: 'ultrafast' }) });
+            if (pendingCatalog) expect(pendingCatalog).not.toHaveBeenCalled();
+            expect(resumed.sessionId).toBe(sessionId);
+            expect(resumed.runtime.sessions[sessionId].threadId).toBe(threadId);
+            const session = state.sessions.get(sessionId)!;
+            expect(session.metadata).toMatchObject({
+                codexTierConfirmationPending: true, codexPendingServiceTier: inherited || confirmationPending ? undefined : 'ultrafast',
+                codexServiceTierExplicit: !inherited
+            });
+            expect(session.metadata.codexInheritedTierDiscoveryPending).toBe(inherited ? true : undefined);
+            expect(session.readySignals).toBe(0);
+            if (!confirmationPending) expect(session.messages).toContainEqual({ type: 'message', message: expect.stringContaining(
+                inherited ? 'verify the inherited Codex service tier' : 'catalog could not verify Ultrafast') });
+            if (providerChanged) expect(session.messages).toContainEqual({ type: 'message', message: expect.stringContaining('Restart the Codex runtime and retry.') });
+            expect(session.messages).not.toContainEqual({ type: 'message', message: expect.stringContaining('Untrusted native catalog response') });
+            expect(vi.mocked(notifyRunnerSessionStarted)).toHaveBeenCalledWith(sessionId, expect.objectContaining({ codexTierConfirmationPending: true }));
+
+            client = new CodexAppServerClient({ endpoint: resumed.runtime.endpoint, token: resumed.runtime.token });
+            await initializeSharedClient(client);
+            if (savedGoal) {
+                await expect(client.getThreadGoal({ threadId })).resolves.toMatchObject({
+                    goal: { status: 'paused', objective: 'Retain this goal', tokenBudget: 500 }
+                });
+                expect(modelRequests).toBe(0);
+                expect(session.messages).toContainEqual({ type: 'message', message: expect.stringContaining('saved goal was paused') });
+            }
+            const work: Array<[string, Record<string, unknown>]> = [
+                ['turn/start', { input: [{ type: 'text', text: 'Must wait' }] }],
+                ['review/start', { target: { type: 'uncommittedChanges' }, delivery: 'inline' }],
+                ['thread/goal/set', { objective: 'Must not start a goal' }],
+                ['thread/goal/set', { status: 'active' }],
+                ['thread/compact/start', {}],
+                ['thread/realtime/start', {}],
+                ['thread/realtime/appendText', { text: 'Must wait' }],
+            ];
+            for (const [method, params] of work) {
+                await expect(client.request(method, { threadId, ...params })).rejects.toThrow('tier confirmation');
+            }
+            await expect(client.request('thread/goal/set', { threadId, status: 'paused', objective: 'Paused test goal' }))
+                .resolves.toMatchObject({ goal: { status: 'paused' } });
+            await client.request('thread/goal/clear', { threadId });
+            await expect(client.request('thread/goal/get', { threadId })).resolves.toMatchObject({ goal: null });
+            if (inherited) {
+                resumed.abort.abort(); await resumed.done;
+                discovery.mockRestore(); discovery = undefined;
+                await configure('priority');
+                const configReads = vi.spyOn(CodexAppServerClient.prototype, 'readConfig');
+                discovery = configReads;
+                const retried = await start({ startedBy: 'runner', existingSessionId: sessionId, resumeSessionId: threadId });
+                expect(configReads).toHaveBeenCalledWith({ cwd: expect.any(String), includeLayers: false });
+                expect(retried.runtime.sessions[sessionId].threadId).toBe(threadId);
+                const active = state.sessions.get(sessionId)!;
+                expect(active.readySignals).toBe(1);
+                expect(active.serviceTier).toBe('fast');
+                expect(active.metadata).toMatchObject({ codexServiceTierExplicit: false, codexTierConfirmationPending: false });
+                expect(active.metadata.codexInheritedTierDiscoveryPending).toBeUndefined();
+            } else {
+                await session.rpc.get(RPC_METHODS.SetSessionConfig)!({ serviceTier: 'standard' });
+                expect(session.readySignals).toBe(1);
+                expect(session.serviceTier).toBe('standard');
+                expect(session.metadata.codexTierConfirmationPending).toBe(false);
+            }
+        } finally {
+            discovery?.mockRestore();
+            for (const item of running) item.abort.abort();
+            await Promise.allSettled(running.map(item => item.done));
+            await client?.disconnect();
+            if (provider.listening) await new Promise<void>((resolve, reject) => provider.close(error => error ? reject(error) : resolve()));
+            vi.mocked(bootstrapExistingSession).mockReset();
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 60_000);
+    it.each([true, false])('retains a fork after a native model change following an Ultrafast check (available=%s)', async available => {
+        const initialModel = available ? 'gpt-6-astra' : 'gpt-6.1-sol';
+        const replacementModel = available ? 'gpt-6.1-sol' : 'gpt-6-astra';
+        const home = await mkdtemp(join(tmpdir(), 'hapi-fork-tier-target-')); state.home = home;
+        const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        const configure = (model: string) => writeFile(join(ch, 'config.toml'), [
+            `model = "${model}"`, 'model_provider = "mock"', '[features]', 'fast_mode = true', 'ultrafast_mode = true',
+            '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
+            'wire_api = "responses"', 'requires_openai_auth = false',
+            '[analytics]', 'enabled = false', '[feedback]', 'enabled = false', ''
+        ].join('\n'));
+        await configure(initialModel);
+        vi.stubEnv('CODEX_HOME', ch);
+        const { runSharedRuntime } = await import('./runtime');
+        const abort = new AbortController();
+        let ready!: (value: import('./runtime').RuntimeReady) => void;
+        const readiness = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
+        const running = runSharedRuntime({ workingDirectory: cwd, serviceTier: 'standard' }, ready, abort.signal);
+        let client: CodexAppServerClient | undefined;
+        const spies: Array<{ mockRestore(): void }> = [];
+        try {
+            const { runtime, sessionId } = await Promise.race([readiness, running.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            const parentThread = runtime.sessions[sessionId].threadId;
+            client = new CodexAppServerClient({ endpoint: runtime.endpoint, token: runtime.token });
+            await initializeSharedClient(client);
+            const { SharedCodexRoot } = await import('./root');
+            const activate = SharedCodexRoot.prototype.activate;
+            let childRoot: InstanceType<typeof SharedCodexRoot> | undefined;
+            spies.push(vi.spyOn(SharedCodexRoot.prototype, 'activate').mockImplementation(function(this: InstanceType<typeof SharedCodexRoot>, ...args) {
+                childRoot = this;
+                return activate.apply(this, args);
+            }));
+            let catalogRead = false, changed = false;
+            const readConfig = CodexAppServerClient.prototype.readConfig;
+            spies.push(vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockImplementation(async () => {
+                catalogRead = true;
+                return { data: [{ id: initialModel, serviceTiers: available ? [{ id: 'ultrafast' }] : [] }] } as never;
+            }));
+            spies.push(vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockImplementation(async function(this: CodexAppServerClient, params) {
+                const snapshot = await readConfig.call(this, params);
+                if (catalogRead && params.includeLayers && !changed) {
+                    changed = true;
+                    await configure(replacementModel);
+                }
+                return snapshot;
+            }));
+            const fork = await client.request<{ model: string; thread: { id: string } }>(
+                'thread/fork', { threadId: parentThread, cwd, serviceTier: 'ultrafast', sandbox: 'read-only' });
+            expect(changed).toBe(true);
+            expect(fork.model).toBe(replacementModel);
+            const child = [...state.sessions.values()].find(session => session.metadata.codexSessionId === fork.thread.id)!;
+            expect(child.metadata.codexTierConfirmationPending).toBe(true);
+            expect(child.readySignals).toBe(0);
+            expect(child.serviceTier).not.toBe('ultrafast');
+            expect(child.messages).toContainEqual({ type: 'message', message: expect.stringContaining('changed after Ultrafast validation') });
+            expect(child.messages).not.toContainEqual({ type: 'message', message: expect.stringContaining('was not advertised') });
+            await child.rpc.get(RPC_METHODS.SetSessionConfig)!({ modelReasoningEffort: 'high' });
+            await client.request('thread/settings/update', { threadId: fork.thread.id, effort: 'medium' });
+            expect(child.metadata.codexTierConfirmationPending).toBe(true);
+            expect(child.readySignals).toBe(0);
+            expect(child.serviceTier).not.toBe('ultrafast');
+            await expect(client.request('turn/start', { threadId: fork.thread.id, input: [{ type: 'text', text: 'Must not run' }] }))
+                .rejects.toThrow('tier confirmation is pending');
+            await client.request('thread/settings/update', { threadId: fork.thread.id, serviceTier: null });
+            expect(child.readySignals).toBe(1);
+            expect(child.serviceTier).toBe('standard');
+
+            if (!available) {
+                let entered!: () => void, release!: () => void;
+                const preparing = new Promise<void>(resolve => { entered = resolve; });
+                const held = new Promise<void>(resolve => { release = resolve; });
+                state.beforeBootstrap = async () => { entered(); await held; };
+                const request = vi.spyOn(CodexAppServerClient.prototype, 'request');
+                spies.push(request);
+                const clear = child.rpc.get(RPC_METHODS.ClearConversation)!({});
+                try {
+                    await Promise.race([preparing, clear.then(() => { throw new Error('Clear completed before preparation'); })]);
+                    const source = childRoot as unknown as { pauseTierConfirmation(id: number): void; tierOperationCounter: number };
+                    source.pauseTierConfirmation(++source.tierOperationCounter);
+                } finally { release(); state.beforeBootstrap = undefined; }
+                await expect(clear).rejects.toThrow('Confirm the service tier');
+                expect(request.mock.calls.some(([method]) => method === 'thread/start')).toBe(false);
+            }
+        } finally {
+            for (const spy of spies.reverse()) spy.mockRestore();
+            abort.abort(); await running.catch(() => {});
+            await client?.disconnect();
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 45_000);
     it('projects native async questions and delivers answers during generation and after completion', async () => {
         const home = await mkdtemp('/tmp/hapi-shared-async-'); state.home = home;
         const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
@@ -279,7 +1492,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             web.user?.({ content: { text: 'HELLO FROM WEB' } }, 'web-1');
             await vi.waitFor(() => expect(web.consumed).toContain('web-1'), { timeout: 15_000 });
             await vi.waitFor(() => expect(web.messages).toContainEqual(expect.objectContaining({ type: 'message', message: 'MOCK ANSWER' })), { timeout: 15_000 });
-            const newResponse = record(await first.request('thread/start', { cwd }));
+            const newResponse = record(await first.request('thread/start', { cwd, serviceTier: null }));
             const next = String(record(newResponse.thread).id); roots.push(next);
             expect(next).not.toBe(initial); expect(state.sessions.size).toBe(2);
             const nextSession = [...state.sessions.values()].find(session => session.metadata.codexSessionId === next)!;
@@ -287,10 +1500,14 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(process.env.HAPI_SESSION_ID).toBe('parent-must-not-leak');
             // A thread created through the gateway (native /new) is fresh: the
             // first turn must measure from the zero seed, not a null baseline.
-            await first.request('turn/start', { threadId: next, input: [{ type: 'text', text: 'HELLO NEW THREAD', text_elements: [] }] });
+            await first.request('turn/start', { threadId: next, serviceTierForTurn: 'priority',
+                input: [{ type: 'text', text: 'HELLO NEW THREAD', text_elements: [] }] });
             await vi.waitFor(() => expect(nextSession.messages).toContainEqual(expect.objectContaining({
                 type: 'turn_duration', generationMs: expect.any(Number), generationOutputTokens: 3
             })), { timeout: 15_000 });
+            await expect(first.request('thread/resume', { threadId: next, excludeTurns: true })).resolves.toMatchObject({ serviceTier: 'default' });
+            expect(nextSession.metadata.codexPendingServiceTier).toBeUndefined();
+            expect(nextSession.serviceTier).toBe('standard');
             await first.request('thread/archive', { threadId: next }); roots = [initial];
             await vi.waitFor(() => expect(nextSession.dead).toBe(true)); expect(web.dead).toBe(false);
             await second.request('turn/start', { threadId: initial, model: 'second-mock', input: [{ type: 'text', text: 'HELLO FROM TERMINAL', text_elements: [] }], clientUserMessageId: 'native-1' });

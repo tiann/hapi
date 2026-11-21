@@ -681,3 +681,10 @@ describe('appServerConfig', () => {
         ]);
     });
 });
+
+
+it('forwards the distinct Ultrafast request value to thread and turn params', () => {
+    const mode: EnhancedMode = { permissionMode: 'default', collaborationMode: 'default', serviceTier: 'ultrafast', model: 'gpt-6.2-sol' };
+    expect(buildThreadStartParams({ cwd: '/tmp', mode, mcpServers: {} }).serviceTier).toBe('ultrafast');
+    expect(buildTurnStartParams({ threadId: 'thread', message: 'hello', cwd: '/tmp', mode }).serviceTier).toBe('ultrafast');
+});

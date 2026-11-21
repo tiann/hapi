@@ -253,12 +253,37 @@ describe('HappyComposer generic model/effort value buttons', () => {
 
     it('offers Codex fast mode in the model picker', () => {
         const onServiceTierChange = vi.fn()
+        const onTierSettingsOpen = vi.fn()
         renderComposer('codex', { model: 'gpt-5.6', availableModelOptions: [{ value: 'gpt-5.6', label: 'GPT-5.6' }],
-            serviceTier: 'standard', onServiceTierChange })
+            serviceTier: 'standard', onServiceTierChange, onTierSettingsOpen })
         fireEvent.click(screen.getByRole('button', { name: 'GPT-5.6' }))
+        expect(onTierSettingsOpen).toHaveBeenCalledOnce()
         expect(screen.getByText('Fast Mode')).toBeInTheDocument()
         fireEvent.click(screen.getByRole('button', { name: 'Fast' }))
         expect(onServiceTierChange).toHaveBeenCalledWith('fast')
+    })
+
+    it.each([
+        { serviceTier: null, tierConfirmationPending: true },
+        { serviceTier: 'flex', tierConfirmationPending: false }
+    ])('leaves $serviceTier unselected and allows confirming Standard', ({ serviceTier, tierConfirmationPending }) => {
+        const onServiceTierChange = vi.fn()
+        renderComposer('codex', {
+            model: 'gpt-5.6',
+            availableModelOptions: [{ value: 'gpt-5.6', label: 'GPT-5.6' }],
+            serviceTier,
+            tierConfirmationPending,
+            fastAvailable: false,
+            ultrafastAvailable: true,
+            onServiceTierChange
+        })
+        fireEvent.click(screen.getByRole('button', { name: 'GPT-5.6' }))
+        const standard = screen.getByRole('button', { name: 'Standard' })
+        expect(standard).toHaveAttribute('aria-pressed', 'false')
+        expect(standard).toBeEnabled()
+        expect(screen.getByRole('button', { name: 'Ultrafast' })).toHaveAttribute('aria-pressed', 'false')
+        fireEvent.click(standard)
+        expect(onServiceTierChange).toHaveBeenCalledWith('standard')
     })
 
     it('toggles Codex fast mode directly from the composer toolbar', () => {

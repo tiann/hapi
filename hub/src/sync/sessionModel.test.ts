@@ -1,5 +1,6 @@
 import { describe, expect, it, spyOn } from 'bun:test'
 import { toSessionSummary } from '@hapi/protocol'
+import { SessionPatchSchema, SessionSchema } from '@hapi/protocol/schemas'
 import type { SyncEvent } from '@hapi/protocol/types'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
@@ -5508,4 +5509,177 @@ describe('session model', () => {
             expect(meta?.name).toBe('parallel-rename')
         })
     })
+})
+
+it.each([
+    { effective: 'ultrafast', intent: { codexServiceTierExplicit: false }, expected: undefined },
+    { effective: 'ultrafast', intent: { codexServiceTierExplicit: true }, expected: 'ultrafast' },
+    { effective: 'ultrafast', intent: {}, expected: 'ultrafast' },
+    { effective: 'flex', intent: { codexServiceTierExplicit: true }, expected: undefined },
+    { effective: 'standard', intent: { codexServiceTierExplicit: true, codexPendingServiceTier: 'ultrafast', codexTierConfirmationPending: true }, expected: 'ultrafast' },
+    { effective: 'standard', intent: { codexServiceTierExplicit: true, codexConfirmedServiceTier: 'ultrafast' }, expected: 'ultrafast' },
+    { effective: 'ultrafast', intent: { codexServiceTierExplicit: true, codexConfirmedServiceTier: 'standard', codexTierConfirmationPending: true }, expected: 'standard' },
+    { effective: 'standard', intent: { codexServiceTierExplicit: true, codexPendingServiceTier: 'flex', codexTierConfirmationPending: true }, expected: undefined },
+] as const)('keeps the effective tier distinct from the durable runner intent (%j)', async ({ effective, intent, expected }) => {
+    const store = new Store(':memory:')
+    const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+    try {
+        const session = engine.getOrCreateSession('tier-inheritance', {
+            path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
+            codexSessionId: 'native-tier', ...intent,
+        }, null, 'default')
+        engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.36.5' }, null, 'default')
+        engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: effective })
+        engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+        expect(engine.getSession(session.id)?.serviceTier).toBe(effective)
+        let tier: string | undefined = 'not-called'
+        ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+            tier = args[11]
+            return { type: 'success', sessionId: session.id }
+        }
+        ;(engine as any).waitForSessionActive = async () => true
+        expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
+        expect(tier as string | undefined).toBe(expected)
+    } finally { engine.stop() }
+})
+
+it('distinguishes an unreported tier from a reported null in full sessions and keep-alive patches', () => {
+    const store = new Store(':memory:')
+    try {
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const session = cache.getOrCreateSession('tier-report', { path: '/tmp/project', host: 'localhost', flavor: 'codex' }, null, 'default')
+        const time = Date.now()
+        cache.handleSessionAlive({ sid: session.id, time })
+        const payload = () => SessionSchema.parse(JSON.parse(JSON.stringify(cache.refreshSession(session.id))))
+        expect(payload()).toMatchObject({ serviceTier: null, serviceTierReported: false })
+
+        cache.handleSessionAlive({ sid: session.id, time: time + 1, serviceTier: null })
+        const event = events.at(-1)
+        if (event?.type !== 'session-updated') throw new Error('Expected a session update for the first explicit tier report')
+        expect(SessionPatchSchema.parse(JSON.parse(JSON.stringify(event.data))))
+            .toMatchObject({ serviceTier: null, serviceTierReported: true })
+        expect(payload()).toMatchObject({ serviceTier: null, serviceTierReported: true })
+        expect(new SessionCache(store, createPublisher([])).refreshSession(session.id))
+            .toMatchObject({ serviceTier: null, serviceTierReported: true })
+    } finally { store.close() }
+})
+
+it('clears the confirmed Codex recovery tier after the effective heartbeat is durable', () => {
+    const store = new Store(':memory:')
+    const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+    try {
+        const session = engine.getOrCreateSession('tier-reconciliation', {
+            path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'native-tier',
+            codexServiceTierExplicit: true, codexConfirmedServiceTier: 'ultrafast',
+        }, null, 'default')
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: 'standard' })
+        expect(engine.getSession(session.id)?.metadata?.codexConfirmedServiceTier).toBe('ultrafast')
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: 'ultrafast' })
+        expect(engine.getSession(session.id)).toMatchObject({ serviceTier: 'ultrafast' })
+        expect(engine.getSession(session.id)?.metadata?.codexConfirmedServiceTier).toBeUndefined()
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: 'fast' })
+        expect(store.sessions.getSession(session.id)?.serviceTier).toBe('fast')
+    } finally { engine.stop() }
+})
+
+it.each(['ultrafast', 'standard'])('retains explicit %s on re-import of an inherited inactive Codex session', async selected => {
+    const store = new Store(':memory:')
+    const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+    try {
+        const session = engine.getOrCreateSession('tier-reimport', {
+            path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
+            codexSessionId: 'native-reimport', codexServiceTierExplicit: false,
+        }, null, 'default')
+        engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.36.5' }, null, 'default')
+        engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: 'fast' })
+        engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+        await engine.applySessionConfig(session.id, { serviceTier: selected })
+        expect(store.sessions.getSession(session.id)).toMatchObject({
+            serviceTier: 'fast',
+            metadata: { codexServiceTierExplicit: false, codexPendingServiceTier: selected },
+        })
+        expect(engine.getSession(session.id)).toMatchObject({ serviceTier: 'fast' })
+        let tier: unknown
+        ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => { tier = args[11]; return { type: 'success', sessionId: session.id } }
+        ;(engine as any).waitForSessionActive = async () => true
+        expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
+        expect(tier).toBe(selected)
+    } finally { engine.stop() }
+})
+
+it('clears a saved and pending tier when an inactive Codex import requests native inheritance', async () => {
+    const store = new Store(':memory:')
+    const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+    try {
+        const session = engine.getOrCreateSession('clear-import-tier', {
+            path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
+            codexSessionId: 'native-tier', codexSourceSessionId: 'source-tier', codexImportedAt: null,
+            codexServiceTierExplicit: true, codexConfirmedServiceTier: 'fast',
+            codexPendingServiceTier: 'ultrafast', codexTierConfirmationPending: true, codexInheritedTierDiscoveryPending: true
+        }, null, 'default')
+        engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.36.5' }, null, 'default')
+        engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: 'ultrafast' })
+        engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+        await engine.applySessionConfig(session.id, { serviceTier: null })
+        const stored = store.sessions.getSession(session.id)
+        expect(stored).toMatchObject({ serviceTier: null, serviceTierReported: false, metadata: { codexPreserveNativeTier: true } })
+        expect(stored?.metadata).not.toHaveProperty('codexServiceTierExplicit')
+        expect(stored?.metadata).not.toHaveProperty('codexPendingServiceTier')
+        expect(stored?.metadata).not.toHaveProperty('codexConfirmedServiceTier')
+        expect(stored?.metadata).not.toHaveProperty('codexTierConfirmationPending')
+        expect(stored?.metadata).not.toHaveProperty('codexInheritedTierDiscoveryPending')
+
+        const tiers: Array<string | undefined> = []
+        ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+            tiers.push(args[11])
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: 'fast' })
+            engine.handleSessionReady({ sid: session.id, time: Date.now() })
+            return { type: 'success', sessionId: session.id }
+        }
+        expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
+        engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+        expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
+        expect(tiers).toEqual([undefined, undefined])
+    } finally { engine.stop() }
+})
+
+it.each([undefined, 'standard', 'fast'])('resumes an inactive Codex import with saved tier intent %s', async savedTier => {
+    const store = new Store(':memory:')
+    const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+    try {
+        const session = engine.getOrCreateSession('native-import-tier', {
+            path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
+            codexSessionId: 'native-tier', codexSourceSessionId: 'source-tier', codexImportedAt: null,
+            ...(savedTier === undefined ? { codexPreserveNativeTier: true } : {}),
+        }, null, 'default')
+        engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.36.5' }, null, 'default')
+        engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+        const tiers: Array<string | undefined> = []
+        ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+            tiers.push(args[11])
+            engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+            engine.handleSessionReady({ sid: session.id, time: Date.now() })
+            return { type: 'success', sessionId: session.id }
+        }
+        if (savedTier !== undefined) {
+            // Older imports persisted the explicit choice in the session
+            // column before the runner had ever published a heartbeat.
+            expect(store.sessions.setSessionServiceTier(session.id, savedTier, 'default')).toBe(true)
+            ;(engine as any).sessionCache.refreshSession(session.id)
+            expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
+            expect(tiers).toEqual([savedTier])
+            return
+        }
+        for (const serviceTier of ['fast', 'standard']) {
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier })
+            engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+            expect(engine.getSession(session.id)?.serviceTier).toBe(serviceTier)
+            expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
+        }
+        expect(tiers).toEqual([undefined, undefined])
+    } finally { engine.stop() }
 })

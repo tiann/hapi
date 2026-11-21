@@ -1,8 +1,12 @@
 import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { execFileSyncMock, spawnMock } = vi.hoisted(() => ({
+const { execFileMock, execFileSyncMock, openMock, statMock, resolveExecutableMock, spawnMock } = vi.hoisted(() => ({
+    execFileMock: vi.fn(),
     execFileSyncMock: vi.fn(() => 'codex-cli 1.0.0'),
+    openMock: vi.fn(),
+    statMock: vi.fn(),
+    resolveExecutableMock: vi.fn(),
     spawnMock: vi.fn()
 }));
 
@@ -10,6 +14,7 @@ vi.mock('node:child_process', async () => {
     const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
     return {
         ...actual,
+        execFile: execFileMock,
         execFileSync: execFileSyncMock,
         spawn: spawnMock
     };
@@ -20,6 +25,16 @@ vi.mock('node:fs', async () => {
     return { ...actual, existsSync: vi.fn(() => false) };
 });
 
+vi.mock('node:fs/promises', async () => ({
+    ...await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises'),
+    open: openMock,
+    stat: statMock
+}));
+
+vi.mock('@/agent/agentLaunchCommand', () => ({
+    resolveExecutable: resolveExecutableMock
+}));
+
 vi.mock('@/utils/process', () => ({
     killProcessByChildProcess: vi.fn(async () => true)
 }));
@@ -28,7 +43,8 @@ vi.mock('@/ui/logger', () => ({
     logger: { debug: vi.fn() }
 }));
 
-import { CodexAppServerClient, isIndeterminateError } from './codexAppServerClient';
+import { CodexAppServerClient, isIndeterminateError, resolveCodexAppServerCommand } from './codexAppServerClient';
+import { MACOS_CODEX_APP_COMMAND } from './utils/codexExecutable';
 import { killProcessByChildProcess } from '@/utils/process';
 
 function fakeStream(): EventEmitter & { setEncoding: ReturnType<typeof vi.fn> } {
@@ -61,9 +77,71 @@ function deferred<T>() {
 
 describe('CodexAppServerClient process cwd', () => {
     beforeEach(() => {
+        execFileMock.mockReset().mockImplementation((_command, _args, _options, done) => done(new Error('not found'), ''));
         execFileSyncMock.mockClear();
+        statMock.mockReset().mockResolvedValue(null);
         spawnMock.mockReset();
         vi.mocked(killProcessByChildProcess).mockClear();
+    });
+
+    it('selects the newer macOS app-server without repeating warm native version probes', async () => {
+        const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+        Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
+        vi.stubEnv('HAPI_CODEX_APP_SERVER_BIN', '');
+        const pathCodex = '/path-test/codex';
+        let pathVersion = 169;
+        resolveExecutableMock.mockReturnValue(pathCodex);
+        statMock.mockImplementation(async command => ({
+            dev: 1, ino: command === pathCodex ? 1 : 2, size: 100,
+            mtimeMs: command === pathCodex ? pathVersion : 170, ctimeMs: 1, isFile: () => true
+        }));
+        openMock.mockResolvedValue({
+            read: vi.fn(async (header: Buffer) => {
+                header.writeUInt32BE(0xfeedfacf);
+                return { bytesRead: 4 };
+            }),
+            close: vi.fn(async () => {})
+        });
+        execFileMock.mockImplementation((command, _args, _options, done) =>
+            queueMicrotask(() => done(null, `codex-cli 0.${command === pathCodex ? pathVersion : 170}.0`))
+        );
+        try {
+            const expected = { command: { command: MACOS_CODEX_APP_COMMAND, args: [] }, version: [0, 170, 0] };
+            await expect(resolveCodexAppServerCommand()).resolves.toEqual(expected);
+            await expect(resolveCodexAppServerCommand()).resolves.toEqual(expected);
+            expect(execFileMock).toHaveBeenCalledTimes(2);
+            expect(execFileSyncMock).not.toHaveBeenCalled();
+
+            pathVersion = 171;
+            await expect(resolveCodexAppServerCommand()).resolves.toEqual({
+                command: { command: pathCodex, args: [] }, version: [0, 171, 0]
+            });
+            expect(execFileMock).toHaveBeenCalledTimes(3);
+        } finally {
+            vi.unstubAllEnvs();
+            Object.defineProperty(process, 'platform', platform);
+        }
+    });
+
+    it('reuses the resolved Windows Runner command for default catalog discovery', async () => {
+        vi.stubEnv('HAPI_CODEX_APP_SERVER_BIN', '');
+        const command = { command: 'codex.exe', args: [] };
+        try {
+            await expect(resolveCodexAppServerCommand('/neutral-home', command)).resolves.toEqual({ command });
+            expect(execFileMock).not.toHaveBeenCalled();
+            expect(execFileSyncMock).not.toHaveBeenCalled();
+        } finally { vi.unstubAllEnvs(); }
+    });
+
+    it('cleans up a local app-server disconnected while executable selection is pending', async () => {
+        const child = fakeChild();
+        spawnMock.mockReturnValue(child);
+        const client = new CodexAppServerClient();
+        const ready = client.connect();
+        await client.disconnect();
+        await ready;
+        expect(killProcessByChildProcess).toHaveBeenCalledWith(child);
+        expect(client.isConnected()).toBe(false);
     });
 
     it('lets a completed read/fork helper exit on stdin EOF without process-tree probing', async () => {
@@ -329,4 +407,36 @@ describe('CodexAppServerClient process cwd', () => {
         expect(newChild.stdin.write).not.toHaveBeenCalled();
         await client.disconnect();
     });
+});
+
+it.each([
+    ['codex_cli_rs/0.159.3', false, true],
+    ['hapi/0.163.0', false, true],
+    ['hapi/0.164.0', false, false],
+    ['hapi/0.165.0', false, false],
+    ['hapi/0.166.0', false, false],
+    ['hapi/0.168.0', false, false],
+    ['hapi/0.169.0', true, false],
+    ['codex_cli_rs/0.170.0 (Windows)', true, false],
+    ['hapi/0.170.0 (Windows)', true, false],
+    ['hapi/0.159.3 (Windows)', false, true],
+    ['codex_cli_rs/1.0.0', true, false],
+    ['unknown/0.170.0', false, false],
+    [undefined, false, false],
+])('derives catalog routing from native initialize identity %s', async (userAgent, scoped, startup) => {
+    const child = fakeChild(); spawnMock.mockReturnValue(child);
+    const client = new CodexAppServerClient(); await client.connect();
+    child.stdin.write = vi.fn((line: string) => {
+        const request = JSON.parse(line);
+        if (request.method === 'initialize') queueMicrotask(() => child.stdout.emit('data', JSON.stringify({ id: request.id, result: { userAgent } }) + '\n'));
+        return true;
+    });
+    try {
+        await client.initialize({ clientInfo: { name: 'hapi', version: '1' }, capabilities: { experimentalApi: true } });
+        expect(client.supportsProviderScopedModels()).toBe(scoped);
+        expect(client.usesStartupModelCatalog()).toBe(startup);
+        expect(client.supportsEffectiveUltrafastLaunch()).toBe(Boolean(userAgent && /^(?:hapi|codex_cli_rs)\/(?:0\.170\.|1\.)/.test(userAgent)));
+        const minor = userAgent?.match(/\/0\.(\d+)/)?.[1];
+        expect(client.retainsResumeModelProvider()).toBe(Boolean(scoped || (minor && Number(minor) >= 166 && userAgent?.startsWith('hapi/'))));
+    } finally { await client.disconnect(); }
 });

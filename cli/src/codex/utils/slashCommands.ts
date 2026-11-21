@@ -255,32 +255,34 @@ export function resolveCodexSlashCommand(
         };
     }
 
-    if (command === 'fast') {
+    if (command === 'fast' || command === 'ultrafast') {
+        const tier = command === 'ultrafast' ? 'ultrafast' : 'fast';
+        const label = command === 'ultrafast' ? 'Ultrafast' : 'Fast';
         const arg = rest.toLowerCase();
         if (arg === '' || arg === 'on') {
             return {
                 kind: 'handled',
-                message: 'Codex Fast mode enabled',
-                updates: { serviceTier: 'fast' }
+                message: `Codex ${label} mode enabled`,
+                updates: { serviceTier: tier }
             };
         }
         if (arg === 'off') {
             return {
                 kind: 'handled',
-                message: 'Codex Fast mode disabled',
+                message: `Codex ${label} mode disabled`,
                 updates: { serviceTier: 'standard' }
             };
         }
         if (arg === 'status') {
-            const on = state.serviceTier === 'fast';
+            const on = state.serviceTier === tier;
             return {
                 kind: 'handled',
-                message: `Codex Fast mode: ${on ? 'on' : 'off'}`
+                message: `Codex ${label} mode: ${on ? 'on' : 'off'}`
             };
         }
         return {
             kind: 'handled',
-            message: 'Usage: /fast [on|off|status]'
+            message: `Usage: /${command} [on|off|status]`
         };
     }
 
@@ -317,6 +319,7 @@ export function resolveCodexSlashCommand(
                 '- `/model [name|auto]` — show or set model',
                 '- `/reasoning [level|default]` — show or set reasoning effort',
                 '- `/personality [friendly|pragmatic|none]` — show or set response style (sticky on thread)',
+                '- `/ultrafast [on|off|status]` ? toggle Ultrafast when available for the current model/account',
                 '- `/fast [on|off|status]` — toggle Fast mode (GPT-5.5 / GPT-5.4, ChatGPT login)',
                 '- `/permissions [default|read-only|autoReview|yolo]` — show or set permission mode',
                 '',

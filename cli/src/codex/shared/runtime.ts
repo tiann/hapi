@@ -1,9 +1,12 @@
+import { CodexTierDiscoveryError, catalogConfiguration, nativeTierParams, inheritedResumeTier, resolveUltrafastLaunch, ULTRAFAST_FALLBACK_NOTICE, type UltrafastTarget } from '../utils/serviceTier';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdir, mkdtemp, chmod, rm, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import type { ThreadGoal } from '../appServerTypes';
 import { configuration } from '@/configuration';
 import { bootstrapSession, bootstrapExistingSession } from '@/agent/sessionFactory';
 import { notifyRunnerSessionStarted } from '@/runner/controlClient';
@@ -12,12 +15,26 @@ import { logger } from '@/ui/logger';
 import { CodexAppServerClient, isIndeterminateError } from '../codexAppServerClient';
 import { codexHome, saveRuntime, runtimeDirectory, runtimeAuthHash, findColdBinding, withThreadOwnership, type CodexRuntimeRecord } from './registry';
 import { startCodexGateway, record, string, type Envelope } from './gateway';
-import { resolveSharedCodex, sharedLaunchConfig, initializeSharedClient, checkSharedCapabilities, takeReservedSessionId, type SharedLaunchOptions } from './launch';
-import { SharedCodexRoot } from './root';
+import { resolveSharedCodex, sharedLaunchConfig, coldResumeDirectory, initializeSharedClient, checkSharedCapabilities, takeReservedSessionId, type SharedLaunchOptions } from './launch';
+import { SharedCodexRoot, UltrafastTargetChangedError } from './root';
 import { buildForkSessionSummary } from '@hapi/protocol';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
-type Reservation = { root: SharedCodexRoot; resumeId?: string };
+type TierDiscoveryFailure = { kind: 'ultrafast' | 'inherited'; reason?: string };
+type Reservation = {
+    root: SharedCodexRoot;
+    executionParams: Record<string, unknown>;
+    resumeId?: string;
+    freshThread?: boolean;
+    initialOptions?: SharedLaunchOptions;
+    serviceTierExplicit?: boolean;
+    ultrafastTarget?: UltrafastTarget;
+    downgraded?: boolean;
+    rootBound?: boolean;
+    controlSubscription?: number;
+    tierConfirmationPending?: boolean;
+    heldGoal?: ThreadGoal;
+};
 
 function gitInfo(cwd: string): { sha: string | null; branch: string | null; originUrl: string | null } {
     const git = (...args: string[]) => {
@@ -30,6 +47,21 @@ function gitInfo(cwd: string): { sha: string | null; branch: string | null; orig
         catch { originUrl = null; }
     }
     return { sha: git('rev-parse', 'HEAD'), branch: git('symbolic-ref', '--short', 'HEAD'), originUrl };
+}
+
+function rejoinThreadParams(params: Record<string, unknown>): Record<string, unknown> {
+    // Codex can rebuild an idle thread when an override differs and all
+    // subscribers have disconnected. Rejoin the already accepted settings.
+    return { threadId: params.threadId, excludeTurns: params.excludeTurns, initialTurnsPage: params.initialTurnsPage };
+}
+const NATIVE_INPUT_METHODS = new Set([
+    'turn/start', 'turn/steer', 'review/start', 'thread/compact/start',
+    'thread/realtime/start', 'thread/realtime/appendAudio', 'thread/realtime/appendText', 'thread/realtime/appendSpeech'
+]);
+function requiresTierAdmission(root: SharedCodexRoot, tier: unknown, downgraded: boolean, explicitTier?: boolean): boolean {
+    const metadata = root.session.getMetadata();
+    return downgraded || tier === 'ultrafast' || metadata?.codexTierConfirmationPending === true
+        || metadata?.codexInheritedTierDiscoveryPending === true || root.requiresEffectiveFastConfirmation(tier, explicitTier);
 }
 async function freePort(): Promise<number> {
     const server = createServer();
@@ -72,15 +104,36 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     let finish!: () => void;
     const done = new Promise<void>(resolve => { finish = resolve; });
     const ending = new Set<SharedCodexRoot>();
+    const nativeLifecycles = new Map<string, Promise<unknown>>();
+    const serializeNativeLifecycle = <T>(threadId: string, work: () => Promise<T>): Promise<T> => {
+        const pending = (nativeLifecycles.get(threadId) ?? Promise.resolve()).catch(() => {}).then(work);
+        nativeLifecycles.set(threadId, pending);
+        return pending.finally(() => {
+            if (nativeLifecycles.get(threadId) === pending) nativeLifecycles.delete(threadId);
+        });
+    };
     const roots = new Map<string, SharedCodexRoot>();
     const prepared = new Set<SharedCodexRoot>();
     const reservations = new Map<string, Reservation>();
+    const pendingAdmission = new Set<string>();
+    const resumingThreads = new Set<string>();
+    const retryableBindings = new Map<string, Reservation>();
+    const nativeTurns = new Map<string, { root: SharedCodexRoot; explicitTier: boolean } & Awaited<ReturnType<SharedCodexRoot['prepareNativeTurn']>>>();
     const runtime: CodexRuntimeRecord = { id, pid: process.pid, marker: getProcessStartMarker(process.pid) ?? '',
         endpoint: '', command: command.command, args: command.args, codexHome: home, hub: configuration.apiUrl, authHash: runtimeAuthHash(), sessions: {} };
     if (!runtime.marker) throw new Error('Cannot verify the runtime process generation');
     let writes = Promise.resolve();
     const persist = () => { writes = writes.catch(() => {}).then(() => saveRuntime(runtime)); return writes; };
+    let startupCatalogConfig: unknown = null;
     const control = new CodexAppServerClient({ endpoint: upstream, token: upstreamToken, cwd: launch.cwd });
+    const withNativeLaunchTier = async (params: Record<string, unknown>, cwd: string): Promise<Record<string, unknown>> => {
+        if (params.serviceTier !== undefined || !launch.hasServiceTierOverride) return params;
+        // Let Codex parse its own CLI overrides and apply their precedence.
+        const configured = (await control.readConfig({ cwd, includeLayers: false })).config.service_tier;
+        if (typeof configured !== 'string') return params;
+        const serviceTier = configured === 'default' ? null : configured === 'fast' ? 'priority' : configured;
+        return { ...params, serviceTier };
+    };
     control.setServerRequestHandler(() => {});
     // An independent observer preserves settings when a root's side-client
     // reconnects: native resume responses omit collaboration mode.
@@ -94,18 +147,23 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         // Never interleave unversioned streams while the root is healthy:
         // an older control packet must not replace a newer root notification.
         const root = roots.get(threadId);
-        if (root && !root.client.isInitialized()) root.acceptSettings(settings);
+        if (root && !root.client.isInitialized()) root.acceptSettings(settings, false);
     });
     let reconnectingControl = false;
+    let controlGeneration = 0;
     const reconnectControl = () => {
-        if (stopping || reconnectingControl) return;
+        if (stopping) return;
+        controlGeneration++;
+        if (reconnectingControl) return;
         reconnectingControl = true;
         void (async () => {
             while (!stopping) {
                 try {
                     await initializeSharedClient(control);
                     // Roots remain loaded by their independent side-clients.
-                    for (const threadId of roots.keys()) await control.request('thread/resume', { threadId, excludeTurns: true });
+                    for (const [threadId, root] of roots) {
+                        if (root.isActivated && !ending.has(root)) await control.request('thread/resume', { threadId, excludeTurns: true });
+                    }
                     return;
                 } catch (error) {
                     logger.debug('[Codex shared] control reconnect', error);
@@ -153,21 +211,44 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         });
         return shutdownPromise;
     };
-    const end = async (root: SharedCodexRoot, nativeArchive = true): Promise<void> => {
-        if (!roots.has(root.threadId) || ending.has(root)) return;
+    const ownedRoot = (threadId: string): SharedCodexRoot | undefined => roots.get(threadId) ?? retryableBindings.get(threadId)?.root
+        ?? [...prepared].find(root => {
+            const binding = runtime.sessions[root.session.sessionId];
+            return binding?.active && binding.threadId === threadId;
+        });
+    const endOwnedThread = (root: SharedCodexRoot, threadId: string, nativeArchive: boolean): Promise<unknown> => serializeNativeLifecycle(threadId, async () => {
+        if (ownedRoot(threadId) !== root || ending.has(root)) return;
         ending.add(root);
-        try { if (nativeArchive) await root.client.request('thread/archive', { threadId: root.threadId }); } catch (error) { ending.delete(root); throw error; }
-        roots.delete(root.threadId);
-        runtime.sessions[root.session.sessionId].active = false; await persist();
+        let result: unknown;
+        try {
+            if (nativeArchive) {
+                // A retained binding may have lost its side connection before
+                // activation. Archive the same thread through the live control.
+                const client = root.client.isInitialized() ? root.client : control;
+                if (!client.isInitialized()) throw new Error('Codex is disconnected; retry archive after reconnect');
+                result = await client.request('thread/archive', { threadId });
+            }
+        } catch (error) { ending.delete(root); throw error; }
+        root.stopAccepting();
+        roots.delete(threadId);
+        retryableBindings.delete(threadId);
+        resumingThreads.delete(threadId);
+        pendingAdmission.delete(threadId);
+        nativeSettings.delete(threadId);
+        const binding = runtime.sessions[root.session.sessionId];
+        if (binding) binding.active = false;
+        await persist();
         // Let the RPC acknowledgement leave both gateway and hub sockets before detach.
         setTimeout(() => {
             void root.close(true).then(async () => {
                 prepared.delete(root);
                 await notifyRunnerSessionStarted(root.session.sessionId, { ...root.bootstrap.metadata, lifecycleState: 'archived' });
-                if (roots.size === 0 && reservations.size === 0) await shutdown();
+                if (prepared.size === 0 && roots.size === 0 && reservations.size === 0 && retryableBindings.size === 0) await shutdown();
             }).catch(error => logger.debug('[Codex shared] root cleanup', error));
         }, 100);
-    };
+        return result;
+    });
+    const end = async (root: SharedCodexRoot, nativeArchive = true): Promise<void> => { await endOwnedThread(root, root.threadId, nativeArchive); };
     const prepare = async (cwd: string, existingSessionId?: string, parent?: SharedCodexRoot): Promise<SharedCodexRoot> => {
         assertRunning();
         // Seed the generated title before Shared Codex replays inherited history.
@@ -199,7 +280,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 agentState: { controlledByUser: false },
             });
         const root = new SharedCodexRoot(bootstrap, { directory: join(runtimeDirectory(), 'queues'), generation: id, endpoint: upstream, token: upstreamToken,
-            settingsFor: threadId => nativeSettings.get(threadId), create, end });
+            settingsFor: threadId => nativeSettings.get(threadId), startupCatalogConfig, create, end });
         prepared.add(root);
         try { assertRunning(); await root.prepare(); assertRunning(); return root; }
         catch (error) { await root.close(!stopping && !existingSessionId); prepared.delete(root); throw error; }
@@ -213,50 +294,233 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId); await persist();
     };
     const reserve = async (root: SharedCodexRoot, threadId: string) => withThreadOwnership(home, threadId, id, () => reserveRecord(root, threadId));
-    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false) => {
+    const hasControlSubscription = (reservation: Reservation) =>
+        reservation.controlSubscription === controlGeneration && control.isInitialized();
+    const holdSavedGoal = async (root: SharedCodexRoot, threadId: string, params: Record<string, unknown>): Promise<ThreadGoal | undefined> => {
+        if (params.sandbox != null && params.permissions != null) throw new Error('`permissions` cannot be combined with `sandbox`');
+        const goal = await control.getThreadGoal({ threadId }).catch(error => {
+            if (!(error instanceof Error) || !/^(?:goals feature is disabled|method not found|unknown method)/i.test(error.message)) throw error;
+            // The resume may otherwise load different project flags.
+            params.config = { ...record(params.config), 'features.goals': false };
+            return { goal: null };
+        });
+        if (goal.goal?.status !== 'active') return;
+        assertRunning();
+        // An unloaded goal can be paused without starting its engine.
+        const paused = await control.setThreadGoal({ threadId, status: 'paused' });
+        if (paused.goal.status !== 'paused') throw new Error('Could not pause the saved Codex goal before tier recovery.');
+        root.session.sendSessionEvent({ type: 'message',
+            message: 'The saved goal was paused while checking the service tier. Resume the goal when the tier is confirmed.' });
+        return paused.goal;
+    };
+    const restoreRejectedResumeGoal = async (root: SharedCodexRoot, threadId: string, heldGoal: ThreadGoal) => {
+        try {
+            const signal = AbortSignal.timeout(5_000);
+            const { thread } = await control.readThread({ threadId, includeTurns: false }, { signal });
+            if (record(record(thread).status).type !== 'notLoaded') return;
+            const current = await control.getThreadGoal({ threadId }, { signal });
+            if (!isDeepStrictEqual(current.goal, heldGoal) || stopping || ending.has(root) || ownedRoot(threadId) !== root) return;
+            const restored = await control.setThreadGoal({ threadId, status: 'active' }, { signal });
+            if (restored.goal.status === 'active') root.session.sendSessionEvent({ type: 'message',
+                message: 'Codex rejected the resume. The saved goal remains active for the next resume.' });
+        } catch (error) {
+            logger.debug('[Codex shared] Could not restore the saved goal after resume rejection', error);
+        }
+    };
+    const acceptedResumeParams = async (
+        reservation: Reservation, params: Record<string, unknown>, savedThread?: Record<string, unknown>, client = control
+    ): Promise<Record<string, unknown>> => {
+        const view = rejoinThreadParams(params);
+        if (hasControlSubscription(reservation)) return view;
+        const root = reservation.root;
+        // Without a confirmed live subscription, Codex can load the thread
+        // again. Restore HAPI's configuration from the original intent.
+        const tier = await resolveUltrafastLaunch(client, 'thread/resume', { ...reservation.executionParams, ...view },
+            root.bootstrap.workingDirectory, undefined, savedThread, startupCatalogConfig);
+        reservation.tierConfirmationPending = undefined;
+        if (tier.ultrafastTarget) reservation.ultrafastTarget = tier.ultrafastTarget;
+        if (tier.downgraded) {
+            reservation.executionParams = { ...reservation.executionParams, serviceTier: null };
+            reservation.downgraded = true;
+        }
+        const configured = root.config(tier.params);
+        if (reservation.resumeId && requiresTierAdmission(root, tier.params.serviceTier, tier.downgraded, reservation.serviceTierExplicit)) {
+            pendingAdmission.add(reservation.resumeId);
+            await holdSavedGoal(root, reservation.resumeId, configured);
+        }
+        return configured;
+    };
+    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, ultrafastTarget?: UltrafastTarget, downgraded = false, resume?: Reservation,
+        expectedResumeTier = resume?.executionParams.serviceTier, tierDiscoveryFailure?: TierDiscoveryFailure) => {
         assertRunning();
         const threadId = string(record(response.thread).id);
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
         const reserved = runtime.sessions[root.session.sessionId];
         if (reserved && reserved.threadId !== threadId) throw new Error('Codex retargeted a reserved thread');
+        const assertBindingActive = () => {
+            assertRunning();
+            const binding = runtime.sessions[root.session.sessionId];
+            if (!binding?.active || binding.threadId !== threadId || ownedRoot(threadId) !== root) {
+                throw new Error('Codex thread was archived during binding');
+            }
+        };
+        const retryInheritedDiscovery = root.session.getMetadata()?.codexInheritedTierDiscoveryPending === true;
+        const requestedUltrafast = !downgraded && ultrafastTarget !== undefined;
+        const confirmBeforeInput = tierDiscoveryFailure !== undefined || requiresTierAdmission(root, requestedUltrafast ? 'ultrafast' : expectedResumeTier, downgraded, serviceTierExplicit);
+        const explicitTier = serviceTierExplicit ?? root.session.getMetadata()?.codexServiceTierExplicit === true;
+        if (resume || confirmBeforeInput) pendingAdmission.add(threadId);
         if (!reserved) await reserve(root, threadId);
-        // No fake user turn/name. Metadata write materializes an empty legacy rollout for native resume.
-        await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
+        if (ending.has(root)) throw new Error('Codex thread was archived during binding');
+        if (!resume?.rootBound) {
+            // Native resume needs an empty thread's rollout to be materialized.
+            await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
+            assertRunning();
+            if (ending.has(root)) throw new Error('Codex thread was archived during binding');
+            if (confirmBeforeInput) root.beginTierConfirmation(explicitTier && (requestedUltrafast || downgraded || tierDiscoveryFailure?.kind === 'ultrafast'), ultrafastTarget);
+            roots.set(threadId, root);
+        } else if (confirmBeforeInput) root.beginTierConfirmation(false, ultrafastTarget);
+        if (!resume?.rootBound || subscribe && !root.client.isInitialized()) {
+            await root.bind(threadId, response, subscribe, expectedResumeTier, serviceTierExplicit);
+            // A new thread starts with zero cumulative usage. Seed once before
+            // activation, including when the first bind had to be retried.
+            if (freshThread && !resume?.rootBound) root.seedFreshUsage();
+            if (resume) resume.rootBound = true;
+        } else {
+            root.acceptSettings(response, true);
+            root.confirmResumeTier(response, expectedResumeTier, serviceTierExplicit);
+        }
         assertRunning();
-        roots.set(threadId, root);
-        await root.bind(threadId, response, subscribe);
-        // A thread this runtime created (thread/start) starts from zero
-        // cumulative usage: seed before activate() opens the input gates, or
-        // a prompt released at session-ready starts the first turn with a
-        // null baseline that later seeding cannot repair. Forks are
-        // excluded: their totals arrive through the app-server's attach-time
-        // usage replay.
-        if (freshThread) root.seedFreshUsage();
-        assertRunning();
-        // Cold-resumed threads predate the control connection's automatic
-        // new-thread subscription. Subscribe once without changing settings.
-        await control.request('thread/resume', { threadId, excludeTurns: true });
-        await root.activate(initialOptions);
+        if (resume?.controlSubscription !== controlGeneration) {
+            const generation = controlGeneration;
+            await control.request('thread/resume', { threadId, excludeTurns: true });
+            if (resume) resume.controlSubscription = generation;
+        }
+        if (ending.has(root)) throw new Error('Codex thread was archived during binding');
+        let tierConfirmationPending = tierDiscoveryFailure !== undefined || (resume?.tierConfirmationPending ?? false);
+        if (tierDiscoveryFailure?.kind === 'inherited') root.session.updateMetadata(metadata => ({ ...metadata, codexInheritedTierDiscoveryPending: true }));
+        if (tierDiscoveryFailure) {
+            const summary = tierDiscoveryFailure.kind === 'ultrafast'
+                ? 'The Codex model catalog could not verify Ultrafast.'
+                : 'Could not verify the inherited Codex service tier.';
+            root.session.sendSessionEvent({ type: 'message', message: [summary, tierDiscoveryFailure.reason,
+                'Input is paused. Select a service tier in settings to continue.'].filter(Boolean).join(' ') });
+        }
+        let standardConfirmed = false;
+        if (!tierDiscoveryFailure && resume?.tierConfirmationPending === undefined && (requestedUltrafast || downgraded || retryInheritedDiscovery)) {
+            try {
+                if (downgraded) { await root.confirmStandardLaunch(explicitTier); standardConfirmed = true; }
+                else if (requestedUltrafast) await root.confirmUltrafastLaunch(explicitTier);
+                else await root.confirmInheritedTierLaunch(expectedResumeTier);
+            }
+            catch (error) {
+                const targetChanged = error instanceof UltrafastTargetChangedError;
+                tierConfirmationPending = retryInheritedDiscovery || targetChanged || downgraded || !root.hasConfirmedStandardTier;
+                root.session.sendSessionEvent({ type: 'message', message: targetChanged
+                    ? 'The Codex model or provider changed after Ultrafast validation. Input is paused. Select a service tier in settings to continue.'
+                    : retryInheritedDiscovery
+                        ? 'Could not confirm the inherited Codex service tier. Input is paused. Select a service tier in settings to continue.'
+                    : tierConfirmationPending
+                        ? 'Ultrafast was not applied and Standard could not be confirmed. Input is paused. Select a service tier in settings to retry on this conversation.'
+                        : 'Ultrafast was not applied; Standard is active.' });
+                logger.debug('[Codex shared] tier confirmation pending', error);
+            }
+        }
+        assertBindingActive();
+        if (resume) {
+            resume.tierConfirmationPending = tierConfirmationPending;
+            if (!tierConfirmationPending && (requestedUltrafast || downgraded) && root.hasConfirmedStandardTier) {
+                resume.executionParams = { ...resume.executionParams, serviceTier: null };
+            }
+        }
+        if (downgraded && standardConfirmed) root.session.sendSessionEvent({ type: 'message', message: ULTRAFAST_FALLBACK_NOTICE });
+        await root.activate(initialOptions, serviceTierExplicit, tierConfirmationPending);
+        assertBindingActive();
+        pendingAdmission.delete(threadId);
         await root.session.flush();
         await persist();
+        assertBindingActive();
         // The hub's view of the metadata is what the hub kept of it: a hub
         // without the field strips hostStartMarker, and the runner ignores an
         // untracked runner-started webhook that cannot prove its process
         // generation. The marker therefore comes from the local bootstrap.
         await notifyRunnerSessionStarted(root.session.sessionId, { ...(root.session.getMetadata() ?? root.bootstrap.metadata), hostStartMarker: root.bootstrap.metadata.hostStartMarker });
+        assertBindingActive();
     };
-    const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
-        const root = await prepare(string(params.cwd) ?? launch.cwd, undefined, parent);
+    const bindAccepted = async (reservation: Reservation, result: Record<string, unknown>): Promise<void> => {
+        const nativeThreadId = string(record(result.thread).id);
+        if (!reservation.resumeId && nativeThreadId) {
+            reservation.resumeId = nativeThreadId;
+            resumingThreads.add(nativeThreadId);
+        }
+        const threadId = reservation.resumeId;
+        try {
+            await bind(reservation.root, result, true, reservation.initialOptions, reservation.freshThread,
+                reservation.serviceTierExplicit, reservation.ultrafastTarget, reservation.downgraded, threadId ? reservation : undefined);
+        } catch (error) {
+            if (threadId && threadId === nativeThreadId && !stopping && !ending.has(reservation.root) && !reservation.root.isActivated) {
+                retryableBindings.set(threadId, reservation);
+                pendingAdmission.add(threadId);
+                resumingThreads.delete(threadId);
+            } else if (threadId) {
+                retryableBindings.delete(threadId);
+                if (reservation.root.isActivated) resumingThreads.delete(threadId);
+            }
+            throw error;
+        }
+        if (threadId) {
+            resumingThreads.delete(threadId);
+            retryableBindings.delete(threadId);
+        }
+    };
+    const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions, assertAdmission?: () => void): Promise<SharedCodexRoot> => operation(async () => {
+        params = nativeTierParams(params);
+        const source = method === 'thread/fork'
+            ? record(record(await control.request('thread/read', { threadId: params.threadId, includeTurns: false })).thread) : undefined;
+        const cwd = string(params.cwd) ?? string(source?.cwd) ?? launch.cwd;
+        const root = await prepare(cwd, undefined, parent);
+        let nativeDispatched = false;
         let nativeSucceeded = false;
         try {
             runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
-            const response = record(await root.client.request(method, root.config({ ...params, ...(method === 'thread/fork' ? { deferGoalContinuation: true } : {}) })));
+            params = await withNativeLaunchTier(params, cwd);
+            const serviceTierExplicit = params.serviceTier !== undefined;
+            const resolved = await resolveUltrafastLaunch(control, method, params, cwd, undefined, source, startupCatalogConfig);
+            assertRunning();
+            const request = root.config({ ...resolved.params, ...(method === 'thread/fork' ? { deferGoalContinuation: true } : {}) });
+            if (method === 'thread/fork') parent?.assertForkTierConfirmed();
+            assertAdmission?.();
+            nativeDispatched = true;
+            const response = record(await root.client.request(method, request));
             nativeSucceeded = true;
-            await bind(root, response, true, initialOptions, method === 'thread/start');
+            const reservation: Reservation = { root, initialOptions, freshThread: method === 'thread/start', executionParams: resolved.params,
+                serviceTierExplicit, ultrafastTarget: resolved.ultrafastTarget, downgraded: resolved.downgraded };
+            try {
+                await bindAccepted(reservation, response);
+            } catch (error) {
+                const threadId = reservation.resumeId;
+                if (!threadId || retryableBindings.get(threadId) !== reservation || resumingThreads.has(threadId) || stopping) throw error;
+                // A transient setup failure must not require repeating a Web
+                // fork. The native writer already accepted this conversation.
+                resumingThreads.add(threadId);
+                let result = response;
+                // If both subscriptions were lost, restore the original
+                // configuration and confirm the tier again before activation.
+                if (!root.client.isInitialized() && !hasControlSubscription(reservation)) {
+                    try {
+                        await initializeSharedClient(root.client);
+                        const params = await acceptedResumeParams(reservation, { threadId, excludeTurns: true }, undefined, root.client);
+                        result = record(await root.client.request('thread/resume', params));
+                    } catch (error) {
+                        resumingThreads.delete(threadId);
+                        throw error;
+                    }
+                }
+                await bindAccepted(reservation, result);
+            }
             return root;
         } catch (error) {
             // A timed-out native mutation may have succeeded. Never replay it or kill unrelated roots.
-            if (!nativeSucceeded && !isIndeterminateError(error)) {
+            if (!nativeSucceeded && (!nativeDispatched || !isIndeterminateError(error))) {
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId); await persist();
                 prepared.delete(root); await root.close(true);
             }
@@ -266,10 +530,41 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     });
     const key = (connection: string, request: Envelope) => `${connection}:${typeof request.id}:${request.id}`;
     const before = (request: Envelope, connection: string): Promise<Envelope> => operation(async () => {
-        const params = record(request.params);
+        const params = ['thread/start', 'thread/resume', 'thread/fork'].includes(request.method ?? '') ? nativeTierParams(record(request.params)) : record(request.params);
+        if (request.method === 'thread/archive') {
+            const threadId = string(params.threadId);
+            const owner = threadId ? ownedRoot(threadId) : undefined;
+            if (owner && threadId) {
+                if (request.id === undefined) throw new Error('Lifecycle operations require a JSON-RPC request ID');
+                return { id: request.id, result: await endOwnedThread(owner, threadId, true) ?? {} };
+            }
+        }
         const queueRoot = roots.get(string(params.threadId) ?? '');
-        if (queueRoot && ['thread/queue/add', 'thread/queue/update', 'thread/queue/delete',
-            'thread/queue/reorder', 'thread/queue/start'].includes(request.method ?? '')) {
+        const queueMutation = ['thread/queue/add', 'thread/queue/update', 'thread/queue/delete', 'thread/queue/reorder', 'thread/queue/start'].includes(request.method ?? '');
+        const initializing = pendingAdmission.has(string(params.threadId) ?? '');
+        const tierPending = initializing || queueRoot?.needsTierConfirmation;
+        const canCancelQueue = request.method === 'thread/queue/delete' && queueRoot && !initializing;
+        // Opening or editing an active goal can immediately start a native turn.
+        const goalCanRun = request.method === 'thread/goal/set' && params.status !== 'paused' && params.status !== 'complete';
+        if (tierPending && (NATIVE_INPUT_METHODS.has(request.method ?? '') || goalCanRun || queueMutation && !canCancelQueue)) {
+            throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
+        }
+        if (tierPending && request.method === 'thread/fork') throw new Error('Confirm the service tier in settings before forking this conversation.');
+        if (initializing && request.method === 'thread/settings/update') throw new Error('Codex thread initialization is pending. Retry settings when the thread is ready.');
+        if (queueRoot && request.method === 'turn/start') {
+            if (params.serviceTier === undefined && !((params.model || record(record(params.collaborationMode).settings).model) && queueRoot.hasUltrafastTier)) return request;
+            if (request.id === undefined) throw new Error('Turn mutations require a JSON-RPC request ID');
+            const resolved = await queueRoot.prepareNativeTurn(params);
+            if (queueRoot.needsTierConfirmation || pendingAdmission.has(string(params.threadId) ?? '')) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
+            nativeTurns.set(key(connection, request), { root: queueRoot, ...resolved, explicitTier: params.serviceTier !== undefined });
+            return { ...request, params: resolved.params };
+        }
+        if (queueRoot && request.method === 'thread/settings/update' && (params.serviceTier !== undefined || params.collaborationMode !== undefined && queueRoot.needsTierConfirmation || (params.model || record(record(params.collaborationMode).settings).model) && queueRoot.hasUltrafastTier)) {
+            if (request.id === undefined) throw new Error('Settings mutations require a JSON-RPC request ID');
+            await queueRoot.applyNativeSettings(params);
+            return { id: request.id, result: {} };
+        }
+        if (queueRoot && queueMutation) {
             if (request.id === undefined) throw new Error('Queue mutations require a JSON-RPC request ID');
             return { id: request.id, result: await queueRoot.nativeQueueMutation(request.method!, params) };
         }
@@ -280,6 +575,14 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         if (request.id === undefined) throw new Error('Lifecycle operations require a JSON-RPC request ID');
         if (params.history || params.path) throw new Error('Use a native thread ID to resume through HAPI');
         const threadId = string(params.threadId);
+        const localRoot = threadId ? roots.get(threadId) : undefined;
+        if (request.method === 'thread/resume' && threadId && localRoot?.isActivated && !ending.has(localRoot)
+            && !resumingThreads.has(threadId) && !retryableBindings.has(threadId)) {
+            return { ...request, params: rejoinThreadParams(params) };
+        }
+        if (request.method === 'thread/resume' && threadId && resumingThreads.has(threadId)) {
+            throw new Error('Thread is already being attached in this runtime; retry after it is ready');
+        }
         let existing = threadId ? roots.get(threadId) : undefined;
         if (threadId && !existing) {
             let candidate = threadId; const visited = new Set<string>();
@@ -295,33 +598,108 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
             if (candidate !== threadId && !existing) throw new Error('Resume the parent HAPI session before attaching a child agent');
         }
-        if (request.method === 'thread/resume' && existing) return { ...request, params: existing.config(params) };
-        if (threadId) await withThreadOwnership(home, threadId, id, async () => {});
-        const cwd = string(params.cwd) ?? existing?.bootstrap.workingDirectory ?? launch.cwd;
-        const root = request.method === 'thread/resume' && threadId
+        const savedThread = threadId && (request.method === 'thread/fork' || request.method === 'thread/resume' && !existing)
+            ? record(record(await control.request('thread/read', { threadId, includeTurns: false })).thread) : undefined;
+        const cwd = string(params.cwd) ?? string(savedThread?.cwd) ?? existing?.bootstrap.workingDirectory ?? launch.cwd;
+        // Actual live changes go through thread/settings/update above.
+        if (threadId && request.method !== 'thread/resume') await withThreadOwnership(home, threadId, id, async () => {});
+        const claim = request.method === 'thread/resume' && threadId
             ? await withThreadOwnership(home, threadId, id, async () => {
-                const root = await prepare(cwd, await findColdBinding(home, threadId));
-                await reserveRecord(root, threadId); return root;
-            }) : await prepare(cwd, undefined, request.method === 'thread/fork' ? existing : undefined);
+                if (resumingThreads.has(threadId)) throw new Error('Thread is already being attached in this runtime; retry after it is ready');
+                const accepted = retryableBindings.get(threadId);
+                const live = roots.get(threadId) ?? (existing && roots.get(existing.threadId) === existing ? existing : undefined);
+                if (live && !accepted) {
+                    if (!live.isActivated || ending.has(live)) throw new Error('Thread is already being attached in this runtime; retry after it is ready');
+                    return { root: live, rejoin: true };
+                }
+                resumingThreads.add(threadId);
+                try {
+                    if (accepted) return { root: accepted.root, accepted };
+                    const root = await prepare(cwd, await findColdBinding(home, threadId));
+                    await reserveRecord(root, threadId);
+                    return { root };
+                } catch (error) { resumingThreads.delete(threadId); throw error; }
+            }) : { root: await prepare(cwd, undefined, request.method === 'thread/fork' ? existing : undefined) };
+        const { root, accepted } = claim;
+        if (claim.rejoin) return { ...request, params: rejoinThreadParams(params) };
         try {
+            if (accepted) {
+                // Keep the tier intent already checked for this reservation.
+                const retainedParams = await acceptedResumeParams(accepted, params, savedThread);
+                reservations.set(key(connection, request), accepted);
+                return { ...request, params: retainedParams };
+            }
             if (request.method !== 'thread/resume') {
                 runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
             }
-            reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined });
-            return { ...request, params: root.config({ ...params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
-        } catch (error) { prepared.delete(root); await root.close(true); throw error; }
+            const metadata = root.session.getMetadata();
+            const resuming = request.method === 'thread/resume';
+            const resolved = resuming
+                ? await inheritedResumeTier(control, params, metadata?.codexServiceTierExplicit, cwd, metadata?.codexConfirmedServiceTier ?? root.bootstrap.sessionInfo.serviceTier,
+                    metadata?.codexPendingServiceTier, metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined && !metadata.codexInheritedTierDiscoveryPending)
+                : await withNativeLaunchTier(params, cwd);
+            const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, undefined, savedThread, startupCatalogConfig);
+            if (request.method === 'thread/fork') existing?.assertForkTierConfirmed();
+            const resumeOverride = params.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined;
+            const serviceTierExplicit = resuming ? resumeOverride ? true : undefined : resolved.serviceTier !== undefined;
+            const configured = root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) });
+            let heldGoal: ThreadGoal | undefined;
+            if (request.method === 'thread/resume' && threadId && requiresTierAdmission(root, tier.params.serviceTier, tier.downgraded, serviceTierExplicit)) {
+                pendingAdmission.add(threadId);
+                heldGoal = await holdSavedGoal(root, threadId, configured);
+                assertRunning();
+            }
+            reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
+                freshThread: request.method === 'thread/start', executionParams: tier.params,
+                serviceTierExplicit,
+                ultrafastTarget: tier.ultrafastTarget, downgraded: tier.downgraded, heldGoal });
+            return { ...request, params: configured };
+        } catch (error) {
+            const retained = threadId && retryableBindings.get(threadId)?.root === root;
+            if (!retained) await root.close(request.method !== 'thread/resume');
+            const binding = runtime.sessions[root.session.sessionId];
+            if (binding) binding.active = Boolean(threadId && retryableBindings.has(threadId));
+            runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId);
+            await persist(); if (!retained) prepared.delete(root);
+            if (request.method === 'thread/resume' && threadId) {
+                resumingThreads.delete(threadId);
+                if (!retained) pendingAdmission.delete(threadId);
+            }
+            throw error;
+        }
     });
     const after = (request: Envelope, response: Envelope, connection: string): Promise<void | Envelope[]> => operation(async () => {
+        const turn = nativeTurns.get(key(connection, request)); nativeTurns.delete(key(connection, request));
+        if (turn && !response.error) {
+            // Native acceptance must reach the frontend without waiting for a side-client snapshot.
+            void operation(() => turn.root.confirmNativeTurn(
+                turn.params, turn.explicitTier, turn.fallbackNotice, turn.generation, turn.inheritedUltrafast, turn.ultrafastTarget, turn.previousTierSelectionRevision))
+                .catch(error => logger.debug('[Codex shared] native tier reconciliation', error));
+        }
         const reservation = reservations.get(key(connection, request)); reservations.delete(key(connection, request));
         if (reservation) {
             if (response.error) {
-                const binding = runtime.sessions[reservation.root.session.sessionId]; if (binding) binding.active = false;
+                const { root, resumeId, heldGoal } = reservation;
+                const retained = resumeId && retryableBindings.get(resumeId)?.root === root;
+                const code = record(response.error).code;
+                // Native invalid-request/invalid-params replies are definitive.
+                // An internal or transport failure may already have loaded the thread.
+                if (!retained && resumeId && heldGoal && (code === -32600 || code === -32602)) {
+                    await serializeNativeLifecycle(resumeId, () => restoreRejectedResumeGoal(root, resumeId, heldGoal));
+                }
+                if (!retained) await root.close(!resumeId);
+                if (reservation.resumeId && !retryableBindings.has(reservation.resumeId)) pendingAdmission.delete(reservation.resumeId);
+                const binding = runtime.sessions[reservation.root.session.sessionId]; if (binding) binding.active = Boolean(reservation.resumeId && retryableBindings.has(reservation.resumeId));
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== reservation.root.session.sessionId);
-                await persist(); prepared.delete(reservation.root); await reservation.root.close(true); return;
+                await persist(); if (!retained) prepared.delete(reservation.root);
+                if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);
+                return;
             }
-            await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start');
+            await bindAccepted(reservation, record(response.result));
         } else if (request.method === 'thread/archive' && !response.error) {
-            const root = roots.get(string(record(request.params).threadId) ?? ''); if (root) await end(root, false);
+            const threadId = string(record(request.params).threadId);
+            const root = threadId ? ownedRoot(threadId) : undefined;
+            if (root && threadId) await endOwnedThread(root, threadId, false);
         } else if (request.method === 'thread/queue/delete' && !response.error && record(response.result).deleted === true) {
             const root = roots.get(string(record(request.params).threadId) ?? '');
             const nativeId = string(record(request.params).queuedSubmissionId);
@@ -358,21 +736,55 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             catch (error) { if (Date.now() > deadline || stopping) throw error; await new Promise(resolve => setTimeout(resolve, 100)); }
         }
         assertRunning();
+        // Even provider-scoped model/list can resolve a named provider from
+        // startup config while thread/start loads the current provider config.
+        if (control.supportsEffectiveUltrafastLaunch()) {
+            startupCatalogConfig = (async () => {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                try {
+                    return await Promise.race([
+                        control.readConfig({ cwd: launch.cwd, includeLayers: true }).then(catalogConfiguration),
+                        new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 5_000); })
+                    ]) ?? null;
+                } catch {
+                    logger.debug('[Codex shared] catalog provider snapshot unavailable');
+                    return null;
+                } finally { clearTimeout(timer); }
+            })();
+        }
+        assertRunning();
         control.setTransportAbandonedHandler(reconnectControl);
         await checkSharedCapabilities(control);
         assertRunning();
         gateway = await startCodexGateway({ upstream, upstreamToken, path: process.platform === 'win32' ? undefined : join(sockets, 'clients.sock'), token,
             hooks: { before, after, disconnected: connection => {
+                for (const [key, turn] of nativeTurns) {
+                    if (!key.startsWith(`${connection}:`)) continue;
+                    nativeTurns.delete(key);
+                    void operation(() => turn.root.recoverLostNativeTurn(turn))
+                        .catch(error => logger.debug('[Codex shared] lost turn tier reconciliation', error));
+                }
                 for (const [key, reservation] of reservations) {
                     if (!key.startsWith(`${connection}:`)) continue;
                     reservation.root.session.sendSessionEvent({ type: 'message', message: 'Native lifecycle outcome is unknown after transport loss. Do not retry blindly; inspect the shared runtime log.' });
                     logger.debug('[Codex shared] quarantined lifecycle reservation', { runtimeId: id, sessionId: reservation.root.session.sessionId });
                 }
             }, control: (method, params) => operation(async () => {
-                const sid = string(record(params).sessionId); const root = [...roots.values()].find(root => root.session.sessionId === sid);
-                if (!root) throw new Error('Shared session not found');
-                if (method === 'hapi/stopSession') { await end(root); return { stopped: true }; }
-                if (method === 'hapi/attach') return { threadId: root.threadId };
+                const sid = string(record(params).sessionId);
+                const binding = sid ? runtime.sessions[sid] : undefined;
+                if (!binding?.active) throw new Error('Shared session not found');
+                const { threadId } = binding;
+                const root = ownedRoot(threadId);
+                if (!root || root.session.sessionId !== sid) throw new Error('Shared session not found');
+                if (method === 'hapi/stopSession') {
+                    await endOwnedThread(root, threadId, true);
+                    if (binding.active) throw new Error('Shared session archive is still in progress');
+                    return { stopped: true };
+                }
+                if (method === 'hapi/attach') {
+                    if (roots.get(threadId) === root || retryableBindings.get(threadId)?.root === root) return { threadId };
+                    throw new Error('Shared session not found');
+                }
                 throw new Error('Unknown runtime control');
             }) } });
         if (stopping) { await gateway.close(); assertRunning(); }
@@ -394,23 +806,62 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             // row's hostPid/metadata. Hold the lock until the reservation is durable.
             root = await withThreadOwnership(home, threadId, id, async () => {
                 const existing = options.existingSessionId ?? await findColdBinding(home, threadId);
-                const root = await prepare(launch.cwd, existing);
+                const root = await prepare(coldResumeDirectory(options, launch, string(thread.cwd)), existing);
                 await reserveRecord(root, threadId); return root;
             });
-            const params = root.config({ ...launch.threadParams, threadId, excludeTurns: true });
-            let response: Record<string, unknown>;
+            const metadata = root.session.getMetadata();
+            const explicitParams = await withNativeLaunchTier(launch.threadParams, root.bootstrap.workingDirectory);
+            const serviceTierExplicit = explicitParams.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined
+                ? true : metadata?.codexServiceTierExplicit;
+            const cwd = root.bootstrap.workingDirectory;
+            let candidate: Record<string, unknown> = { ...explicitParams, cwd };
+            let tierDiscoveryFailure: TierDiscoveryFailure | undefined;
+            let resolved: Awaited<ReturnType<typeof resolveUltrafastLaunch>>;
             try {
-                response = record(await root.client.request('thread/resume', params));
+                candidate = await inheritedResumeTier(control, candidate, metadata?.codexServiceTierExplicit, cwd,
+                    metadata?.codexConfirmedServiceTier ?? root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier,
+                    metadata?.codexTierConfirmationPending && metadata.codexConfirmedServiceTier === undefined && !metadata.codexInheritedTierDiscoveryPending);
+                resolved = await resolveUltrafastLaunch(control, 'thread/resume', candidate, cwd, undefined, thread, startupCatalogConfig);
             } catch (error) {
-                // Reopening a HAPI binding also restores its native archive.
-                // Only retry an explicit archived rejection, never a transport
-                // failure whose resume outcome may be unknown.
-                if (!options.existingSessionId || !(error instanceof Error)
-                    || !error.message.startsWith(`session ${threadId} is archived.`)) throw error;
-                await root.client.request('thread/unarchive', { threadId });
-                response = record(await root.client.request('thread/resume', params));
+                if (options.startedBy !== 'runner' || !options.existingSessionId) throw error;
+                // Bind the existing session without requesting an unverified
+                // override. Settings recovery can then confirm Standard.
+                logger.debug('[Codex shared] cold resume tier discovery unavailable', error);
+                const { serviceTier, ...params } = candidate;
+                tierDiscoveryFailure = {
+                    kind: serviceTier === 'ultrafast' && serviceTierExplicit === true ? 'ultrafast' : 'inherited',
+                    reason: error instanceof CodexTierDiscoveryError ? error.message : undefined
+                };
+                resolved = { params, downgraded: false };
             }
-            await bind(root, response, false, options);
+            const { downgraded } = resolved;
+            const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
+            const needsTierAdmission = tierDiscoveryFailure !== undefined || requiresTierAdmission(root, resolved.params.serviceTier, downgraded, serviceTierExplicit);
+            if (needsTierAdmission) pendingAdmission.add(threadId);
+            const response = await serializeNativeLifecycle(threadId, async () => {
+                assertRunning();
+                if (ownedRoot(threadId) !== root || ending.has(root)) throw new Error('Codex thread was archived during resume');
+                const resume = async () => {
+                    if (needsTierAdmission) {
+                        await holdSavedGoal(root, threadId, params);
+                        assertRunning();
+                    }
+                    return record(await root.client.request('thread/resume', params));
+                };
+                try {
+                    return await resume();
+                } catch (error) {
+                    // The goal API only finds unarchived rollouts. The binding
+                    // may restore its native archive before either operation.
+                    if (!options.existingSessionId || !(error instanceof Error)
+                        || !(error.message.startsWith(`session ${threadId} is archived.`)
+                            || needsTierAdmission && error.message === `thread not found: ${threadId}`)) throw error;
+                    await root.client.request('thread/unarchive', { threadId });
+                    return resume();
+                }
+            });
+            await bind(root, response, false, options, false, serviceTierExplicit,
+                resolved.ultrafastTarget, downgraded, undefined, resolved.params.serviceTier, tierDiscoveryFailure);
         } else root = await create('thread/start', { ...launch.threadParams, cwd: launch.cwd }, undefined, options);
         assertRunning();
         onReady?.({ sessionId: root.session.sessionId, runtime });

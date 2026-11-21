@@ -89,7 +89,7 @@ export async function startCodexGateway(options: {
                         send(downstream, transformed);
                         return;
                     }
-                    if (transformed.id !== undefined && ['thread/start', 'thread/resume', 'thread/fork', 'thread/archive', 'thread/revert', 'thread/rollback', 'thread/queue/delete'].includes(transformed.method ?? '')) {
+                    if (transformed.id !== undefined && ['turn/start', 'thread/start', 'thread/resume', 'thread/fork', 'thread/archive', 'thread/revert', 'thread/rollback', 'thread/queue/delete'].includes(transformed.method ?? '')) {
                         pending.set(transformed.id, transformed);
                     }
                     send(upstream, transformed);

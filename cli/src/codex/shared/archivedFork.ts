@@ -12,7 +12,7 @@ import { record, string } from './gateway'
 
 const JournalSchema = z.object({
     request: z.object({ operationId: z.string(), sourceSessionId: z.string(), sourceThreadId: z.string(), directory: z.string(),
-        boundary: z.object({ localId: z.string(), turnId: z.string() }).optional() }),
+        boundary: z.object({ localId: z.string(), turnId: z.string() }).optional(), nativeServiceTier: z.literal('flex').optional() }),
     restoreRequired: z.boolean(), forkIssued: z.boolean(), nativeSessionId: z.string().optional(), done: z.boolean()
 })
 export type ArchivedForkJournal = z.infer<typeof JournalSchema>
@@ -85,6 +85,7 @@ export async function performArchivedFork(
             const response = record(await client.request('thread/fork', {
                 threadId: request.sourceThreadId,
                 ...(request.boundary ? { beforeTurnId: request.boundary.turnId } : {}),
+                ...(request.nativeServiceTier ? { serviceTier: request.nativeServiceTier } : {}),
                 deferGoalContinuation: true, excludeTurns: true
             }))
             const child = record(response.thread)

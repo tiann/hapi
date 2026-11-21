@@ -23,6 +23,45 @@ Choose a supported coding agent from your terminal and control its sessions remo
 
 ## Commands
 
+### Codex service tiers
+
+Codex sessions offer Standard, Fast (`priority`), and Ultrafast (`ultrafast`).
+Ultrafast appears only when the selected model advertises it in the current
+account catalog; model name or subscription alone is not proof of availability.
+Use `/ultrafast [on|off|status]` in chat or `--service-tier ultrafast` on launch.
+HAPI requires Codex 0.170 or newer to verify Ultrafast execution; older or
+unidentified engines do not offer it and reject explicit requests without changing settings.
+When the returned catalog does not advertise Ultrafast, HAPI switches to
+Standard and emits a system notice after native confirmation. Reported catalog
+RPC failures leave settings unchanged and surface the error. Codex can return
+a bundled fallback after a backend refresh failure without exposing that failure
+or catalog provenance; a negative catalog result is not an independent entitlement
+check. If provider configuration changed after the Codex runtime started,
+discovery reports that the catalog could not be verified and leaves the tier
+unchanged. Restart the Codex runtime before retrying Ultrafast.
+HAPI stores explicit tier intent separately from the effective tier displayed by
+Codex. Cold resume re-resolves a configured inherited tier from current settings.
+When the account tier is unset, HAPI omits the override: Codex may restore its
+persisted native snapshot. The native API cannot clear that snapshot to omission;
+HAPI does not silently turn an unset tier into explicit Standard. Select Standard
+explicitly to reset a saved tier. Codex 0.169+
+uses provider-scoped model discovery; 0.166+ retains the saved provider independently
+of model/reasoning overrides. Versions before 0.164 use the startup catalog context.
+Reloading unscoped catalogs on 0.164–0.168 cannot be verified from that snapshot.
+An unknown native version or catalog identity leaves eligibility unverified.
+If native launch configuration discards explicit Ultrafast, HAPI confirms Standard
+and reports that outcome as well.
+If Standard confirmation fails after a thread was created, that same conversation
+keeps its settings controls while input is paused. Select a tier in settings to
+retry confirmation without creating another thread. The pending state survives
+cold resume; it is cleared only after a confirmed tier update.
+
+An optional persistence probe runs against an installed Codex 0.170 executable:
+`node scripts/dev/probe-codex-tier-resume.mjs /path/to/codex` (Node 24+).
+It uses an isolated CODEX_HOME and a local fixture backend, preserves the real
+profile, and checks native saved-provider/tier behavior plus HAPI's inherited-tier
+resolver without paid model requests.
+
 ### Session commands
 
 - `hapi` - Choose an agent interactively. Unavailable agents are shown with a reason and cannot be selected.

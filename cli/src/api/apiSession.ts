@@ -211,7 +211,8 @@ export class ApiSessionClient extends EventEmitter {
     private pendingHubPromptEchoes: { text: string; localIds: string[] }[] = []
     private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
     private cancelQueuedMessageCallback: ((localId: string) => QueueCancelResult | Promise<QueueCancelResult>) | null = null
-    private retryQueuedMessageCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
+    private retryQueuedMessageCallback: ((localId: string, cancellationAcknowledged?: boolean) => boolean | Promise<boolean>) | null = null
+    private retryAfterCancellation = false
     private readonly incomingFilter = new IncomingMessageFilter()
     private reconciledRewindOperationId: string | undefined
     // truncateFromLocalId of the Claude rewind intent last seen in metadata.
@@ -445,6 +446,8 @@ if (isReconnect) {
                         accepted = cancelled !== 'in-flight' && cancelled !== 'consumed'
                         if (cancelled === 'indeterminate') {
                             accepted = await this.retryQueuedMessageCallback?.(data.body.localId) === true
+                        } else if (cancelled === true && this.retryAfterCancellation) {
+                            accepted = await this.retryQueuedMessageCallback?.(data.body.localId, true) === true
                         }
                         if (cancelled === 'consumed') {
                             ack?.({ removed: false, accepted: false, consumed: true })
@@ -717,8 +720,12 @@ if (isReconnect) {
         this.cancelQueuedMessageCallback = callback
     }
 
-    onRetryQueuedMessage(callback: (localId: string) => boolean | Promise<boolean>): void {
+    onRetryQueuedMessage(
+        callback: (localId: string, cancellationAcknowledged?: boolean) => boolean | Promise<boolean>,
+        options?: { afterCancellation?: boolean }
+    ): void {
         this.retryQueuedMessageCallback = callback
+        this.retryAfterCancellation = options?.afterCancellation === true
     }
 
     private cancelQueuedMessage(localId: string): QueueCancelResult | Promise<QueueCancelResult> {

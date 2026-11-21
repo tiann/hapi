@@ -390,10 +390,14 @@ class NewSessionLogicTest {
         val models = listOf(
             CodexModelSummary(id = "gpt-5.2-codex", displayName = "GPT-5.2", isDefault = true, serviceTiers = listOf("standard", "fast")),
             CodexModelSummary(id = "gpt-5.2-mini", displayName = "Mini", isDefault = false, serviceTiers = listOf("standard")),
+            CodexModelSummary(id = "ultrafast-only", displayName = "Ultrafast only", isDefault = false, serviceTiers = listOf("ultrafast")),
+            CodexModelSummary(id = "priority-only", displayName = "Priority only", isDefault = false, serviceTiers = listOf(" PRIORITY ")),
         )
         assertTrue(NewSessionLogic.codexModelAdvertisesFastTier("auto", models))
         assertTrue(NewSessionLogic.codexModelAdvertisesFastTier("gpt-5.2-codex", models))
         assertFalse(NewSessionLogic.codexModelAdvertisesFastTier("gpt-5.2-mini", models))
+        assertFalse(NewSessionLogic.codexModelAdvertisesFastTier("ultrafast-only", models))
+        assertTrue(NewSessionLogic.codexModelAdvertisesFastTier("priority-only", models))
         assertFalse(NewSessionLogic.codexModelAdvertisesFastTier("auto", emptyList()))
     }
 

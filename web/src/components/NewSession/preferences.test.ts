@@ -333,3 +333,9 @@ describe('NewSession preferences', () => {
         })
     })
 })
+
+
+it('persists Ultrafast launch preferences', () => {
+    savePreferredLaunchSettings('machine-ultra', 'codex', { model: 'gpt-6.2-sol', serviceTier: 'ultrafast', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'default' });
+    expect(loadPreferredLaunchSettings('machine-ultra', 'codex')?.serviceTier).toBe('ultrafast');
+});

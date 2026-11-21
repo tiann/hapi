@@ -225,6 +225,16 @@ export const MetadataSchema = z.object({
         workspace: z.enum(['current', 'worktree'])
     }).optional(),
     codexSessionId: z.string().optional(),
+    // Distinguish a HAPI tier override from the effective native configuration.
+    codexServiceTierExplicit: z.boolean().optional(),
+    // Retain the confirmed override until the Hub receives its effective heartbeat.
+    codexConfirmedServiceTier: z.string().min(1).optional(),
+    // A fork can retain native tier inheritance without importing source history.
+    codexPreserveNativeTier: z.literal(true).optional(),
+    codexPendingServiceTier: z.enum(['standard', 'fast', 'ultrafast', 'flex']).optional(),
+    codexTierConfirmationPending: z.boolean().optional(),
+    codexInheritedTierDiscoveryPending: z.boolean().optional(),
+    codexProviderScopedCatalog: z.boolean().optional(),
     // A bridge to an externally owned app-server, never an owned cold-resume target.
     codexRuntime: z.object({
         kind: z.literal('attached'),
@@ -396,7 +406,8 @@ export const MetadataSchema = z.object({
     codexArchivedFork: z.object({
         operationId: z.string().uuid(), childSessionId: z.string().uuid(),
         boundaryLocalId: z.string().optional(), boundaryTurnId: z.string().optional(),
-        nativeSessionId: z.string().optional(), spawnAttempted: z.boolean().optional()
+        nativeSessionId: z.string().optional(), spawnAttempted: z.boolean().optional(),
+        nativeServiceTier: z.literal('flex').optional()
     }).optional(),
     // A timed-out resume can still activate later; retain until native ready or proven stopped.
     codexResumePending: z.object({ machineId: z.string(), nativeSessionId: z.string() }).optional(),
@@ -646,6 +657,8 @@ export const SessionSchema = z.object({
     modelReasoningEffort: z.string().nullable().optional().default(null),
     effort: z.string().nullable().optional().default(null),
     serviceTier: z.string().nullable().optional().default(null),
+    // Records an effective value even when the reported tier is null.
+    serviceTierReported: z.boolean().optional(),
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
     copilotAgentMode: CopilotAgentModeSchema.optional()
@@ -783,6 +796,7 @@ export const SessionPatchSchema = z.object({
     modelReasoningEffort: z.string().nullable().optional(),
     effort: z.string().nullable().optional(),
     serviceTier: z.string().nullable().optional(),
+    serviceTierReported: z.boolean().optional(),
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
     copilotAgentMode: CopilotAgentModeSchema.optional(),
