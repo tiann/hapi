@@ -33,10 +33,10 @@ describe('shared native queue', () => {
         await restarted.load(); restarted.replay();
         expect(uncertain).toHaveBeenCalledWith(['tier-command']);
         const execute = vi.fn(async () => null);
-        await restarted.command('tier-command', execute);
+        await expect(restarted.command('tier-command', execute)).resolves.toBeUndefined();
         expect(execute).not.toHaveBeenCalled();
         expect(await restarted.cancel('tier-command')).toBe(true);
-        await restarted.command('tier-command', execute);
+        await expect(restarted.command('tier-command', execute)).resolves.toBeUndefined();
         expect(execute).not.toHaveBeenCalled();
 
         await restarted.retryHeldCancellation('tier-command');

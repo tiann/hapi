@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ApiSessionClient } from '@/api/apiSession';
@@ -468,9 +468,14 @@ it.each(['current', 'latest', 'clear'])('passes Plan into activation and returns
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
     initialTierPending?: boolean; initialFast?: 'deferred' | 'confirmed'; holdTierMetadata?: boolean; bindTier?: string | null; expectedResumeTier?: string;
-    startupCatalogConfig?: unknown; nativeImport?: boolean;
+    startupCatalogConfig?: unknown; nativeImport?: boolean; rejectedCommandId?: string;
     attached?: boolean; settingsFor?: RootHost['settingsFor']; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
+    if (opts?.rejectedCommandId) {
+        await writeFile(join(directory, 'sid.queue.json'), JSON.stringify({
+            version: 2, entries: { [opts.rejectedCommandId]: { input: [], state: 'rejected' } }, batches: {}
+        }));
+    }
     let state: AgentState = opts?.initialState ?? { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex',
         ...(opts?.nativeImport ? {} : { codexServiceTierExplicit: false }),
@@ -2025,6 +2030,24 @@ describe('Ultrafast native settings', () => {
         await (f.root as unknown as { command(text: string): Promise<string | null> }).command('/ultrafast on');
         expect(f.events).toHaveBeenCalledOnce();
         expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
+    });
+
+    it('does not mark a rejected command consumed when the Hub redelivers it after restart', async () => {
+        const id = 'redelivered-ultrafast-command';
+        const f = await fixture({ rejectedCommandId: id });
+        await f.root.activate();
+        const request = vi.spyOn(f.root.client, 'request');
+        f.submit('/ultrafast on', id);
+        await vi.waitFor(() => expect(f.uncertain).toHaveBeenCalledWith([id]));
+        expect(f.consumed).not.toHaveBeenCalled();
+        expect((await f.ledger()).entries[id].state).toBe('rejected');
+        expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+
+        expect(await f.cancel(id)).toBe(true);
+        expect(await f.retry(id, true)).toBe(true);
+        f.submit('/ultrafast on', id);
+        await vi.waitFor(() => expect(f.consumed).toHaveBeenCalledWith([id], { clearQueuedThinkingGrace: true }));
+        expect((await f.ledger()).entries[id].state).toBe('consumed');
     });
 
     it('rechecks the latest model after another client changes it during catalog discovery', async () => {

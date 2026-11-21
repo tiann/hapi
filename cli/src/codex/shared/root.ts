@@ -225,12 +225,14 @@ export class SharedCodexRoot {
                         if (attempt.cancellation) { await attempt.cancellation; continue; }
                         if (this.closed || this.stopping || !stillHeld() || this.queue.isHeldCancellation(id)) return;
                         try {
-                            resolved = await this.queue.command(id, () => this.command(text), () => {
+                            const command = await this.queue.command(id, () => this.command(text), () => {
                                 if (!stillHeld() || attempt.cancellation) throw new QueueAdmissionPaused('Command cancellation is pending.');
                                 // The command ledger takes over cancellation
                                 // only after the durable preflight succeeds.
                                 releaseHeld();
                             });
+                            if (command === undefined) return;
+                            resolved = command;
                             break;
                         } catch (error) {
                             if (!(error instanceof QueueAdmissionPaused)) throw error;

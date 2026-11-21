@@ -226,13 +226,14 @@ export class SharedCodexQueue {
     }
 
     /** Slash commands can mutate native state too. Crash/redelivery must not
-     * repeat /new, /compact, or a settings change whose outcome was lost. */
-    command(id: string, work: () => Promise<string | null>, beforeDispatch?: () => void): Promise<string | null> {
+     * repeat /new, /compact, or a settings change whose outcome was lost.
+     * Return undefined when no command ran and the delivery stays held. */
+    command(id: string, work: () => Promise<string | null>, beforeDispatch?: () => void): Promise<string | null | undefined> {
         return this.serial(async () => {
             const existing = this.entries[id];
             if (existing?.state === 'consumed') { this.consumed([id]); return null; }
-            if (existing?.canceledBeforeAdmission) return null;
-            if (this.isRejectedCommand(existing)) { this.uncertain([id]); return null; }
+            if (existing?.canceledBeforeAdmission) return undefined;
+            if (this.isRejectedCommand(existing)) { this.uncertain([id]); return undefined; }
             if (existing && !['rejected', 'canceled'].includes(existing.state)) {
                 this.uncertain([id]); throw new Error('Previous command outcome is unknown; not replaying');
             }
