@@ -19,7 +19,6 @@ import {
     shouldRouteToScratchlist,
     shouldStageScratchlistAttachmentsForComposeSend,
     usePendingScratchlistSendCleanup,
-    isRewindForkFallbackError,
 } from './SessionChat'
 import { ApiError } from '@/api/client'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -195,25 +194,6 @@ describe('usePendingScratchlistSendCleanup', () => {
         } finally {
             vi.useRealTimers()
         }
-    })
-})
-
-describe('isRewindForkFallbackError', () => {
-    it('recognizes the structured safe-Fork boundary code', () => {
-        expect(isRewindForkFallbackError(new ApiError(
-            'native boundary is ambiguous',
-            409,
-            'ambiguous_native_boundary_fork_safe'
-        ))).toBe(true)
-    })
-
-    it('does not classify unsafe or message-only errors as fallback candidates', () => {
-        expect(isRewindForkFallbackError(new ApiError(
-            'native boundary is ambiguous',
-            409,
-            'ambiguous_native_boundary'
-        ))).toBe(false)
-        expect(isRewindForkFallbackError(new Error('ambiguous native boundary'))).toBe(false)
     })
 })
 

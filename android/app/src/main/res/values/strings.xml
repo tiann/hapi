@@ -642,6 +642,11 @@
     <string name="pairing_notice_token_revoked">This device’s pairing was revoked — the hub’s access token changed. Pair again to continue.</string>
     <string name="pairing_notice_retry_exhausted">The hub kept rejecting this device’s session. Pair again to continue.</string>
     <string name="pairing_notice_missing_credentials">The stored credentials for this hub went missing. Pair again to continue.</string>
+    <string name="pairing_passkey_entry">Sign in with a passkey</string>
+    <string name="pairing_passkey_title">Sign in with a passkey</string>
+    <string name="pairing_passkey_hint">Choose a passkey to sign in to its Hub. Web and App passkeys work in both clients.</string>
+    <string name="pairing_passkey_button">Continue with passkey</string>
+    <string name="pairing_notice_passkey_session_invalid">Your passkey sign-in ended — the passkey was deleted, the hub’s access token changed, or the session expired. Sign in again to continue.</string>
 
     <!-- New session form notices (B-M3d) -->
     <string name="new_session_error_worktree_missing">Worktree sessions require an existing repository directory.</string>
@@ -780,4 +785,37 @@
     <string name="runner_skew_binary_updated_hint">(newer CLI on disk — runner should self-restart soon)</string>
     <string name="runner_skew_upgrade_cli_first">(no newer CLI on disk yet — install/upgrade on that host)</string>
     <string name="runner_skew_restart_failed">Failed to restart runner</string>
+
+    <!-- Passkeys: sign-in errors + Settings → Passkeys -->
+    <string name="passkey_error_no_credential">This device has no HAPI passkey.</string>
+    <string name="passkey_error_unavailable">Passkeys aren’t available on this device. Make sure a password manager such as Google Password Manager is set up.</string>
+    <string name="passkey_error_rp_mismatch">The hub asked for a passkey for %1$s, but this app only uses %2$s. Update the hub and try again.</string>
+    <string name="passkey_error_revoked">This passkey stopped working because the hub’s access token changed. Pair with the new access token and add a new passkey.</string>
+    <string name="passkey_error_verification_failed">The hub couldn’t verify the passkey. Try again.</string>
+    <string name="passkey_error_already_registered">This passkey is already registered with the hub.</string>
+    <string name="passkey_error_unreachable">Could not reach the hub. Check your network and try again.</string>
+    <string name="passkey_error_http">The passkey request failed (HTTP %1$d). Try again in a moment.</string>
+    <string name="passkey_error_failed">The passkey request failed.</string>
+    <string name="passkey_error_failed_detail">The passkey request failed: %1$s</string>
+    <string name="settings_passkeys">Passkeys</string>
+    <string name="settings_passkeys_summary">Sign in to this hub without the access token</string>
+    <string name="settings_passkeys_description">Passkeys let this app sign in to this hub without the access token. They are tied to the hub’s current access token: rotating it makes them inactive.</string>
+    <string name="settings_passkeys_add">Add passkey</string>
+    <string name="settings_passkeys_add_message">Name this passkey so you can recognize it later.</string>
+    <string name="settings_passkeys_name_label">Name</string>
+    <string name="settings_passkeys_add_confirm">Continue</string>
+    <string name="settings_passkeys_empty">No passkeys yet.</string>
+    <string name="settings_passkeys_dates">Created %1$s · Last used %2$s</string>
+    <string name="settings_passkeys_dates_unused">Created %1$s · Never used</string>
+    <string name="settings_passkeys_tag_inactive">Inactive</string>
+    <string name="settings_passkeys_unnamed">Unnamed passkey</string>
+    <string name="settings_passkeys_delete_title">Delete passkey</string>
+    <string name="settings_passkeys_delete_message">Delete “%1$s”? Anyone signed in with it will have to sign in again. It may stay in your password manager; remove it there separately.</string>
+    <string name="settings_passkeys_delete_confirm">Delete</string>
+    <string name="settings_passkeys_added">Passkey added.</string>
+    <string name="settings_passkeys_deleted">Passkey deleted.</string>
+    <string name="passkey_find_hub">Find Hub with a passkey</string>
+    <string name="passkey_enter_hub">Enter Hub address manually</string>
+    <string name="passkey_hub_address_required">This passkey does not include its Hub address. Enter the address, then continue with the passkey.</string>
+    <string name="passkey_error_wrong_hub">This passkey belongs to a different Hub. Choose a passkey for this Hub or check the address.</string>
 </resources>

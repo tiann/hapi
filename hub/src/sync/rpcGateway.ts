@@ -18,7 +18,10 @@ import {
     ListOpencodeSessionsRpcResponseSchema,
     ListPiSessionsRpcResponseSchema
 } from '@hapi/protocol/apiTypes'
+import { ListLocalSessionsRpcResponseSchema } from '@hapi/protocol/localTranscript'
+import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
 import type {
+    AbortChunkedUploadResponse,
     AgyModelsResponse,
     ClaudeModelsResponse,
     AgentAvailabilityResponse,
@@ -35,6 +38,8 @@ import type {
     FileReadResponse,
     GeneratedImageResponse,
     ImplementCodexPlanResult,
+    InitChunkedUploadRequest,
+    InitChunkedUploadResponse,
     CopilotModelsResponse,
     CopilotReasoningEffortResponse,
     GrokModelsResponse,
@@ -54,6 +59,7 @@ import type {
     PiModelsResponse,
     SlashCommandsResponse,
     StatFilesResponse,
+    UploadChunkResponse,
     UploadFileResponse,
     WorkspaceReadFileRequest,
     WorkspaceListDirectoryRequest,
@@ -69,6 +75,7 @@ import type { RpcRegistry } from '../socket/rpcRegistry'
 const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
 // Codex can spend 30s awaiting startup after preflight and process creation.
 const CODEX_SPAWN_RPC_TIMEOUT_MS = 60_000
+const UPLOAD_CHUNK_RPC_TIMEOUT_MS = 60_000
 
 export class RunnerStopRpcError extends Error {
     constructor(readonly timedOut: boolean, cause: unknown) {
@@ -323,7 +330,9 @@ export class RpcGateway {
         // latter is adopt-stub (create/getOrCreate with id), not reopen.
         forkSession?: boolean,
         /** Fresh machine-spawn stub — distinct from reopen existingSessionId. */
-        reservedSessionId?: string
+        reservedSessionId?: string,
+        /** Claude: resume the spawned child truncated to this entry uuid. */
+        resumeSessionAt?: string
     ): Promise<
         | { type: 'success'; sessionId: string }
         | {
@@ -360,7 +369,8 @@ export class RpcGateway {
                     collaborationMode,
                     copilotAgentMode,
                     startingMode,
-                    forkSession: forkSession === true
+                    forkSession: forkSession === true,
+                    resumeSessionAt
                 },
                 agent === 'codex' ? CODEX_SPAWN_RPC_TIMEOUT_MS : DEFAULT_RPC_TIMEOUT_MS
             )
@@ -542,6 +552,32 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.UploadFile, { sessionId, filename, content, mimeType }) as RpcUploadFileResponse
     }
 
+    async initChunkedUpload(sessionId: string, request: InitChunkedUploadRequest): Promise<InitChunkedUploadResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.UploadInit, { sessionId, ...request }) as InitChunkedUploadResponse
+    }
+
+    async uploadFileChunk(sessionId: string, uploadId: string, index: number, content: string): Promise<UploadChunkResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.UploadChunk,
+            { sessionId, uploadId, index, content },
+            UPLOAD_CHUNK_RPC_TIMEOUT_MS
+        ) as UploadChunkResponse
+    }
+
+    async finalizeChunkedUpload(sessionId: string, uploadId: string): Promise<RpcUploadFileResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.UploadFinalize,
+            { sessionId, uploadId },
+            UPLOAD_CHUNK_RPC_TIMEOUT_MS
+        ) as RpcUploadFileResponse
+    }
+
+    async abortChunkedUpload(sessionId: string, uploadId: string): Promise<AbortChunkedUploadResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.UploadAbort, { sessionId, uploadId }) as AbortChunkedUploadResponse
+    }
+
     async deleteUploadFile(sessionId: string, path: string): Promise<RpcDeleteUploadResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.DeleteUpload, { sessionId, path }) as RpcDeleteUploadResponse
     }
@@ -629,6 +665,20 @@ export class RpcGateway {
     async archiveCodexSessionForMachine(machineId: string, sessionId: string): Promise<RpcArchiveCodexSessionResponse> {
         const result = await this.machineRpc(machineId, RPC_METHODS.ArchiveCodexSession, { sessionId }, MODEL_LIST_RPC_TIMEOUT_MS)
         return ArchiveCodexSessionRpcResponseSchema.parse(result)
+    }
+
+    async listLocalSessionsForMachine(machineId: string, params: {
+        flavor: LocalSessionFlavor
+        cwd?: string | null
+        sessionIds?: string[] | null
+    }): Promise<ListLocalSessionsRpcResponse> {
+        const result = await this.machineRpc(
+            machineId,
+            RPC_METHODS.ListLocalSessions,
+            { flavor: params.flavor, cwd: params.cwd ?? null, sessionIds: params.sessionIds ?? undefined },
+            MODEL_LIST_RPC_TIMEOUT_MS
+        )
+        return ListLocalSessionsRpcResponseSchema.parse(result)
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {
@@ -737,7 +787,7 @@ export class RpcGateway {
 
     async forkConversation(
         sessionId: string,
-        params: { messageLocalId?: string; latestCompleted?: boolean }
+        params: { messageLocalId?: string; latestCompleted?: boolean; lastTurnId?: string }
     ): Promise<import('@hapi/protocol/apiTypes').ForkConversationRpcResponse> {
         return await this.sessionRpc(
             sessionId,
@@ -745,6 +795,25 @@ export class RpcGateway {
             params,
             120_000
         ) as import('@hapi/protocol/apiTypes').ForkConversationRpcResponse
+    }
+
+    /** Ask a preview-capable shared runtime where its fork boundary sits. */
+    async previewForkBoundary(
+        sessionId: string,
+        params: import('@hapi/protocol/apiTypes').PreviewForkBoundaryRequest
+    ): Promise<import('@hapi/protocol/apiTypes').PreviewForkBoundaryResult> {
+        // A CLI handler failure arrives as a RESOLVED {error} envelope
+        // (RpcHandlerManager serializes thrown errors), not a rejected RPC:
+        // unwrapped, the cast would answer the preview with a cut of
+        // undefineds instead of the runtime failure.
+        const result = await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.PreviewForkBoundary,
+            params,
+            30_000
+        ) as import('@hapi/protocol/apiTypes').PreviewForkBoundaryResult & { error?: unknown }
+        if (typeof result?.error === 'string' && result.error) throw new Error(result.error)
+        return result
     }
 
     async forkArchivedCodex(machineId: string, request: import('@hapi/protocol/apiTypes').ForkArchivedCodexRequest): Promise<import('@hapi/protocol/apiTypes').ForkArchivedCodexResponse> {
@@ -764,7 +833,7 @@ export class RpcGateway {
 
     async rewindConversation(
         sessionId: string,
-        params: { messageLocalId: string; opencodeRewind?: import('@hapi/protocol/schemas').OpenCodeRewindOperation }
+        params: { messageLocalId: string; discardedThroughSeq?: number; opencodeRewind?: import('@hapi/protocol/schemas').OpenCodeRewindOperation }
     ): Promise<import('@hapi/protocol/apiTypes').RewindConversationRpcResult> {
         return await this.sessionRpc(
             sessionId,

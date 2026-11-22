@@ -93,20 +93,6 @@ export function isComposerPrimaryFillHeight(args: {
     return true
 }
 
-/** Empty idle voice/dictate — FUE + morph target (not the fill-height gate). */
-export function isLargeEmptyVoicePrimary(args: {
-    canSend: boolean
-    voiceEnabled: boolean
-    voiceStatus: ConversationStatus
-    routesToScratchlist?: boolean
-}): boolean {
-    if (args.canSend) return false
-    if (args.routesToScratchlist) return false
-    if (!args.voiceEnabled) return false
-    if (args.voiceStatus === 'connecting' || args.voiceStatus === 'connected') return false
-    return true
-}
-
 /**
  * When draft steals the primary for Send, keep voice/dictate reachable via the
  * compact toolbar DictationButton (under the text — does not eat composer width).

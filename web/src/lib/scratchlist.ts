@@ -256,3 +256,15 @@ export function clearScratchlist(sessionId: string): void {
         // Non-fatal.
     }
 }
+
+/**
+ * Confirm-on-delete threshold. Trivial entries delete instantly; longer
+ * notes deserve a confirmation prompt so a stray click doesn't lose work.
+ * Threshold tuned to "anything longer than a one-line reminder".
+ */
+export const SCRATCHLIST_CONFIRM_DELETE_THRESHOLD = 100
+
+export function shouldConfirmDelete(entry: ScratchlistEntry | null | undefined): boolean {
+    if (!entry) return false
+    return entry.text.length > SCRATCHLIST_CONFIRM_DELETE_THRESHOLD
+}

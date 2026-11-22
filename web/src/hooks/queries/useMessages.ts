@@ -26,6 +26,7 @@ export const EMPTY_STATE: MessageWindowState = {
     newestSeq: null,
     epoch: null,
     isSyncingTail: false,
+    preferLatestOnActivation: false,
     isLoadingMore: false,
     warning: null,
     pendingGapRecovery: false,
@@ -46,6 +47,8 @@ export function useMessages(
     readThroughRevision?: number
     warning: string | null
     isSyncingTail: boolean
+    /** Cached re-entry: the authoritative latest-page fetch is still in flight. */
+    isCatchingUpFromCache: boolean
     isLoadingMore: boolean
     hasMore: boolean
     hasMoreNewer: boolean
@@ -170,6 +173,7 @@ export function useMessages(
             // renderable and searchable.
             || (state.requiresLatestReset && state.viewMode === 'tail')
             || (initialSyncKey !== null && initialSyncReadyKey !== initialSyncKey),
+        isCatchingUpFromCache: state.preferLatestOnActivation,
         isLoadingMore: state.isLoadingMore,
         hasMore: state.hasMore,
         hasMoreNewer: state.hasMoreNewer,

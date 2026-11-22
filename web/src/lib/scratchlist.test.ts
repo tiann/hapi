@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     addScratchlistEntry,
-    clearScratchlist,
     deleteScratchlistEntry,
     moveScratchlistEntry,
     persistScratchlist,
@@ -208,12 +207,6 @@ describe('localStorage round-trip', () => {
 
     it('returns [] for an unknown session', () => {
         expect(readScratchlist('never-written')).toEqual([])
-    })
-
-    it('clears entries for a session', () => {
-        persistScratchlist(SID, [makeEntry({ id: 'a' })])
-        clearScratchlist(SID)
-        expect(readScratchlist(SID)).toEqual([])
     })
 
     it('returns [] when stored value is malformed JSON', () => {

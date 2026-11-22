@@ -8,11 +8,15 @@ import {
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
     ForkConversationRequestSchema,
+    ForkPreviewRequestSchema,
+    BranchConversationRequestSchema,
     ImplementCodexPlanRequestSchema,
+    InitChunkedUploadRequestSchema,
     getPermissionModesForFlavor,
     isLiveLifecycleState,
     isPermissionModeAllowedForFlavor,
     RenameSessionRequestSchema,
+    resolveMaxUploadBytes,
     SetSessionPinnedRequestSchema,
     ResumeSessionRequestSchema,
     RewindConversationRequestSchema,
@@ -27,15 +31,20 @@ import {
     SessionServiceTierRequestSchema,
     SessionModelRequestSchema,
     SessionPermissionModeRequestSchema,
+    SetExternalRefsRequestSchema,
+    UpsertExternalRefRequestSchema,
+    upsertGithubPrIntoExternalRefs,
     UpdateSessionSummaryRequestSchema,
     supportsModelChange,
     supportsEffort,
     toSessionSummary,
+    UPLOAD_CHUNK_MAX_BYTES,
     UploadFileRequestSchema
 } from '@hapi/protocol'
 import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
 import type { SlashCommand } from '@hapi/protocol/apiTypes'
 import { Hono, type Context } from 'hono'
+import { getConfiguration } from '../../configuration'
 import { bodyLimit } from 'hono/body-limit'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
@@ -43,6 +52,7 @@ import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite } from '../../scratchlistAttachments/validate'
 import { TitleSuggestionError } from '../../sync/titleSuggestion'
+import { mapExternalRefRouteError } from '../../sync/externalRefErrors'
 import {
     MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES,
     serializeContentSearchSessionIds
@@ -51,10 +61,124 @@ import { ArchiveCleanupError } from '../../sync/archiveCleanupError'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+const UPLOAD_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
 // Leave room for the query, limit, and JSON envelope; the serialized session
 // scope itself remains bounded by MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES.
 const MAX_CONTENT_SEARCH_REQUEST_BYTES = MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES + 4 * 1024
 const MAX_CONTENT_SEARCH_QUERY_CHARACTERS = 200
+
+export type SessionsRouteOptions = {
+    isGithubPrAwarenessEnabled?: () => boolean
+}
+
+function defaultGithubPrAwarenessEnabled(): boolean {
+    try {
+        return getConfiguration().githubPrAwareness
+    } catch {
+        return false
+    }
+}
+
+function uploadErrorStatus(code?: string): 400 | 404 | 409 | 413 | 500 | 503 {
+    switch (code) {
+        case 'upload_too_large':
+        case 'upload_chunk_too_large':
+            return 413
+        case 'upload_not_found':
+            return 404
+        case 'upload_conflict':
+        case 'upload_incomplete':
+        case 'upload_size_mismatch':
+            return 409
+        case 'upload_invalid_chunk':
+            return 400
+        case RPC_TARGET_MISSING_ERROR_CODE:
+            return 503
+        default:
+            return 500
+    }
+}
+
+async function readBoundedChunkBytes(
+    raw: Request,
+    maxBytes: number
+): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; status: 400 | 413; code: string; error: string }> {
+    const rawLength = raw.headers.get('content-length')
+    if (rawLength !== null && rawLength.trim().length > 0) {
+        const trimmed = rawLength.trim()
+        if (!/^\d+$/.test(trimmed)) {
+            return {
+                ok: false,
+                status: 400,
+                code: 'upload_invalid_chunk',
+                error: 'Invalid Content-Length header'
+            }
+        }
+        if (Number(trimmed) > maxBytes) {
+            return {
+                ok: false,
+                status: 413,
+                code: 'upload_chunk_too_large',
+                error: 'Chunk exceeds maximum size (8MB)'
+            }
+        }
+    }
+
+    const body = raw.body
+    if (!body) {
+        return {
+            ok: false,
+            status: 400,
+            code: 'upload_invalid_chunk',
+            error: 'Chunk body must not be empty'
+        }
+    }
+
+    const reader = body.getReader()
+    const chunks: Uint8Array[] = []
+    let totalBytes = 0
+    try {
+        while (true) {
+            const { done, value } = await reader.read()
+            if (done) {
+                break
+            }
+            if (!value || value.byteLength === 0) {
+                continue
+            }
+            totalBytes += value.byteLength
+            if (totalBytes > maxBytes) {
+                await reader.cancel().catch(() => {})
+                return {
+                    ok: false,
+                    status: 413,
+                    code: 'upload_chunk_too_large',
+                    error: 'Chunk exceeds maximum size (8MB)'
+                }
+            }
+            chunks.push(value)
+        }
+    } finally {
+        reader.releaseLock()
+    }
+
+    if (totalBytes === 0) {
+        return {
+            ok: false,
+            status: 400,
+            code: 'upload_invalid_chunk',
+            error: 'Chunk body must not be empty'
+        }
+    }
+
+    const combined = new Uint8Array(totalBytes)
+    let offset = 0
+    for (const chunk of chunks) {
+        combined.set(chunk, offset)
+        offset += chunk.byteLength
+    }
+    return { ok: true, bytes: combined }
+}
 
 function commandsFromMetadataSlashCommands(names: readonly string[] | undefined): SlashCommand[] {
     if (!names?.length) {
@@ -87,8 +211,12 @@ function estimateBase64Bytes(base64: string): number {
     return Math.floor((len * 3) / 4) - padding
 }
 
-export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
+export function createSessionsRoutes(
+    getSyncEngine: () => SyncEngine | null,
+    options: SessionsRouteOptions = {}
+): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+    const isGithubPrAwarenessEnabled = options.isGithubPrAwarenessEnabled ?? defaultGithubPrAwarenessEnabled
 
     app.get('/sessions', (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
@@ -143,6 +271,17 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         })
 
         return c.json({ sessions })
+    })
+
+    app.get('/sessions/scratchlist-status', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        return c.json({
+            sessionIds: engine.getScratchlistSessionIdsByNamespace(c.get('namespace'))
+        })
     })
 
     const respondToSessionContentSearch = (
@@ -389,6 +528,119 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json({ session: sessionResult.session })
     })
 
+    app.get('/sessions/:id/external-refs', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const externalRefs = sessionResult.session.metadata?.externalRefs ?? []
+        return c.json({ externalRefs })
+    })
+
+    app.put('/sessions/:id/external-refs', async (c) => {
+        if (!isGithubPrAwarenessEnabled()) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = SetExternalRefsRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body: externalRefs is required' }, 400)
+        }
+
+        try {
+            await engine.setSessionExternalRefs(sessionResult.sessionId, parsed.data.externalRefs)
+            return c.json({ ok: true, externalRefs: parsed.data.externalRefs })
+        } catch (error) {
+            const mapped = mapExternalRefRouteError(error, 'Failed to update external refs')
+            return c.json({ error: mapped.message }, mapped.status)
+        }
+    })
+
+    app.post('/sessions/:id/external-refs/upsert', async (c) => {
+        if (!isGithubPrAwarenessEnabled()) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = UpsertExternalRefRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body: ref is required' }, 400)
+        }
+
+        const ref = parsed.data.ref
+        try {
+            const externalRefs = await engine.mutateSessionExternalRefs(sessionResult.sessionId, (current) =>
+                upsertGithubPrIntoExternalRefs(current, ref)
+            )
+            return c.json({ ok: true, externalRefs })
+        } catch (error) {
+            const mapped = mapExternalRefRouteError(error, 'Failed to upsert external ref')
+            return c.json({ error: mapped.message }, mapped.status)
+        }
+    })
+
+    app.post('/sessions/:id/external-refs/remove-primary', async (c) => {
+        if (!isGithubPrAwarenessEnabled()) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        try {
+            const externalRefs = await engine.mutateSessionExternalRefs(sessionResult.sessionId, (current) =>
+                current.filter((candidate) => candidate.kind !== 'github_pr' || candidate.role !== 'primary')
+            )
+            return c.json({ ok: true, externalRefs })
+        } catch (error) {
+            const mapped = mapExternalRefRouteError(error, 'Failed to remove primary external ref')
+            return c.json({ error: mapped.message }, mapped.status)
+        }
+    })
+
     app.get('/sessions/:id/cursor-chat-store', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -533,6 +785,184 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    app.post('/sessions/:id/uploads', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = InitChunkedUploadRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ success: false, error: 'Invalid body' }, 400)
+        }
+
+        const maxUploadBytes = resolveMaxUploadBytes(process.env.HAPI_MAX_UPLOAD_BYTES)
+        if (parsed.data.size > maxUploadBytes) {
+            return c.json({
+                success: false,
+                error: `File too large (max ${Math.floor(maxUploadBytes / (1024 * 1024))}MB)`,
+                code: 'upload_too_large'
+            }, 413)
+        }
+
+        try {
+            const result = await engine.initChunkedUpload(sessionResult.sessionId, parsed.data)
+            if (!result.success) {
+                return c.json(result, uploadErrorStatus(result.code))
+            }
+            return c.json(result)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to initialize upload'
+            }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/uploads/:uploadId/chunk', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const uploadId = c.req.param('uploadId') ?? ''
+        if (!UPLOAD_ID_RE.test(uploadId)) {
+            return c.json({ success: false, error: 'Invalid uploadId', code: 'upload_invalid_chunk' }, 400)
+        }
+
+        const indexRaw = c.req.query('index')
+        if (indexRaw === undefined || !/^\d+$/.test(indexRaw) || !Number.isSafeInteger(Number(indexRaw))) {
+            return c.json({ success: false, error: 'Invalid chunk index', code: 'upload_invalid_chunk' }, 400)
+        }
+
+        const chunkRead = await readBoundedChunkBytes(c.req.raw, UPLOAD_CHUNK_MAX_BYTES)
+        if (!chunkRead.ok) {
+            return c.json({
+                success: false,
+                error: chunkRead.error,
+                code: chunkRead.code
+            }, chunkRead.status)
+        }
+
+        try {
+            const content = Buffer.from(chunkRead.bytes).toString('base64')
+            const result = await engine.uploadFileChunk(
+                sessionResult.sessionId,
+                uploadId,
+                Number(indexRaw),
+                content
+            )
+            if (!result.success) {
+                return c.json(result, uploadErrorStatus(result.code))
+            }
+            return c.json(result)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to upload chunk'
+            }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/uploads/:uploadId/finalize', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const uploadId = c.req.param('uploadId') ?? ''
+        if (!UPLOAD_ID_RE.test(uploadId)) {
+            return c.json({ success: false, error: 'Invalid uploadId', code: 'upload_invalid_chunk' }, 400)
+        }
+
+        try {
+            const result = await engine.finalizeChunkedUpload(sessionResult.sessionId, uploadId)
+            if (!result.success) {
+                return c.json(result, uploadErrorStatus(result.code))
+            }
+            return c.json(result)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to finalize upload'
+            }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/uploads/:uploadId/abort', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const uploadId = c.req.param('uploadId') ?? ''
+        if (!UPLOAD_ID_RE.test(uploadId)) {
+            return c.json({ success: false, error: 'Invalid uploadId', code: 'upload_invalid_chunk' }, 400)
+        }
+
+        try {
+            const result = await engine.abortChunkedUpload(sessionResult.sessionId, uploadId)
+            if (!result.success) {
+                return c.json(result, uploadErrorStatus(result.code))
+            }
+            return c.json(result)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to abort upload'
+            }, 500)
+        }
+    })
+
     app.post('/sessions/:id/upload/delete', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -576,6 +1006,18 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json({ ok: true })
     })
 
+    app.post('/sessions/:id/branch', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const source = requireSessionFromParam(c, engine)
+        if (source instanceof Response) return source
+        const parsed = BranchConversationRequestSchema.safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) return c.json({ error: 'Invalid branch options' }, 400)
+        const result = await engine.branchConversation(source.sessionId, c.get('namespace'), parsed.data)
+        if (result.type === 'error') return c.json({ error: result.message }, 409)
+        return c.json({ sessionId: result.sessionId, ...(result.warning ? { warning: result.warning } : {}) })
+    })
+
     app.post('/sessions/:id/fork', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -605,12 +1047,42 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             sessionResult.sessionId,
             c.get('namespace'),
             parsed.data.messageLocalId,
-            parsed.data.latestCompleted
+            parsed.data.latestCompleted,
+            parsed.data.boundary
+        )
+        if (result.type === 'error') {
+            return c.json({ error: result.message, ...(result.code ? { code: result.code } : {}) }, 409)
+        }
+        return c.json({ sessionId: result.sessionId })
+    })
+
+    app.post('/sessions/:id/fork-preview', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = ForkPreviewRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const result = await engine.forkPreview(
+            sessionResult.sessionId,
+            c.get('namespace'),
+            parsed.data.intent,
+            parsed.data.messageLocalId
         )
         if (result.type === 'error') {
             return c.json({ error: result.message }, 409)
         }
-        return c.json({ sessionId: result.sessionId })
+        return c.json(result.preview)
     })
 
     app.post('/sessions/:id/rewind', async (c) => {
@@ -619,21 +1091,26 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) {
-            return sessionResult
-        }
-
         const body = await c.req.json().catch(() => null)
         const parsed = RewindConversationRequestSchema.safeParse(body)
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
 
+        // Every rewind boundary token is minted on an active source, so a
+        // confirm arriving on an inactive one is a moved boundary the engine
+        // must re-check (boundary_moved refresh), mirroring the fork route.
+        // Legacy token-less rewinds keep the session_inactive 409.
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: !parsed.data.boundary })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
         const result = await engine.rewindConversation(
             sessionResult.sessionId,
             c.get('namespace'),
-            parsed.data.messageLocalId
+            parsed.data.messageLocalId,
+            parsed.data.boundary
         )
         if (result.type === 'error') {
             return c.json({

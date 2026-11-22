@@ -28,6 +28,11 @@ import app.hapi.protocol.wire.MachinePathsExistsRequest
 import app.hapi.protocol.wire.MachinePathsExistsResponse
 import app.hapi.protocol.wire.MachinesResponse
 import app.hapi.protocol.wire.MessagesResponse
+import app.hapi.protocol.wire.PasskeyListResponse
+import app.hapi.protocol.wire.PasskeyLoginResponse
+import app.hapi.protocol.wire.PasskeyLoginVerifyRequest
+import app.hapi.protocol.wire.PasskeyOptionsRequest
+import app.hapi.protocol.wire.PasskeyRegisterVerifyRequest
 import app.hapi.protocol.wire.QueuedStateRequest
 import app.hapi.protocol.wire.QueuedStateResponse
 import app.hapi.protocol.wire.RegisterDeviceRequest
@@ -67,6 +72,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -167,6 +173,21 @@ class HapiApi internal constructor(
         }
     }
 
+    /** [request] without decoding: the 2xx body text verbatim (WebAuthn options pass-through). */
+    private suspend fun requestText(
+        method: String,
+        url: HttpUrl,
+        body: RequestBody? = null,
+        client: OkHttpClient = this.client,
+    ): String {
+        val request = Request.Builder().url(url).method(method, body).build()
+        return client.newCall(request).await().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw ApiError.from(response.code, text)
+            text
+        }
+    }
+
     /** URL builder; each segment is percent-encoded (`encodeURIComponent` twin). */
     private fun url(vararg segments: String): HttpUrl.Builder =
         baseUrl.newBuilder().apply { segments.forEach(::addPathSegment) }
@@ -189,7 +210,57 @@ class HapiApi internal constructor(
      * `TokenAuthenticator`. 401 here means the token was rejected (re-pair).
      */
     suspend fun authenticate(accessToken: String): AuthResponse =
-        request("POST", url("api", "auth").build(), AuthRequest(accessToken).toJsonBody(), authClient)
+        request("POST", url("api", "auth").build(), AuthRequest(accessToken = accessToken).toJsonBody(), authClient)
+
+    // ------------------------------------------------------------ passkeys --
+    // Native passkeys use the shared RP ID `auth.hapi.run`; every call sends
+    // `{"client":"native"}` and exchanges base64url WebAuthn JSON with the
+    // platform credential provider. Hub: `hub/src/web/routes/passkey.ts`.
+
+    /**
+     * `POST /api/passkey/register/options` (JWT required) — `PublicKeyCredentialCreationOptionsJSON`.
+     * Returned verbatim: Credential Manager takes it as `requestJson`.
+     */
+    suspend fun passkeyRegisterOptions(): String =
+        requestText(
+            "POST",
+            url("api", "passkey", "register", "options").build(),
+            PasskeyOptionsRequest.Native.toJsonBody(),
+        )
+
+    /**
+     * `POST /api/passkey/register/verify` — stores the credential under the
+     * caller's namespace. Errors: 400 `Passkey challenge expired` /
+     * `Passkey verification failed`, 409 `Passkey already registered`.
+     */
+    suspend fun passkeyRegisterVerify(response: JsonObject, name: String?): Unit =
+        request<Unit>(
+            "POST",
+            url("api", "passkey", "register", "verify").build(),
+            PasskeyRegisterVerifyRequest(response = response, name = name).toJsonBody(),
+        )
+
+    /**
+     * `POST /api/passkey/login/verify` (no JWT) — JWT + passkey session. The
+     * assertion signs a client-generated challenge
+     * (`NativePasskeys.nativeLoginOptions`); there is no options request.
+     */
+    suspend fun passkeyLoginVerify(response: JsonObject): PasskeyLoginResponse =
+        request(
+            "POST",
+            url("api", "passkey", "login", "verify").build(),
+            PasskeyLoginVerifyRequest(response = response).toJsonBody(),
+            authClient,
+        )
+
+    /** `GET /api/passkeys` — the caller's namespace passkeys, native and web. */
+    suspend fun getPasskeys(): PasskeyListResponse =
+        request("GET", url("api", "passkeys").build())
+
+    /** `DELETE /api/passkeys/:id` — revokes the passkey and its sessions; 404 when gone. */
+    suspend fun deletePasskey(id: String) {
+        request<Unit>("DELETE", url("api", "passkeys", id).build())
+    }
 
     // ------------------------------------------------------------ sessions --
 

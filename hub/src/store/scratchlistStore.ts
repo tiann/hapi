@@ -7,6 +7,7 @@ import {
     deleteScratchlistEntry,
     deleteScratchlistEntryIfUpdatedAt,
     getScratchlistEntry,
+    listScratchlistSessionIdsByNamespace,
     listScratchlistEntries,
     reorderScratchlistEntries,
     sumScratchlistAttachmentBytesForSession,
@@ -28,6 +29,10 @@ export class ScratchlistStore {
 
     count(sessionId: string): number {
         return countScratchlistEntries(this.db, sessionId)
+    }
+
+    listSessionIdsByNamespace(namespace: string): string[] {
+        return listScratchlistSessionIdsByNamespace(this.db, namespace)
     }
 
     get(sessionId: string, entryId: string): StoredScratchlistEntry | null {

@@ -15,11 +15,23 @@ import kotlinx.serialization.json.JsonElement
  * `HapiApi` instead of living here.
  */
 
-/** `POST /api/auth` (`AuthRequestSchema`, accessToken variant — natives never use `initData`). */
+/**
+ * `POST /api/auth` (`AuthRequestSchema`). Natives send exactly one of
+ * [accessToken] (pairing secret) or [passkeySession] (refresh credential from
+ * `POST /api/passkey/login/verify`); never `initData`. Null fields are
+ * omitted on the wire ([HapiJson] skips defaults).
+ */
 @Serializable
 data class AuthRequest(
-    val accessToken: String,
-)
+    val accessToken: String? = null,
+    val passkeySession: String? = null,
+) {
+    init {
+        require((accessToken == null) != (passkeySession == null)) {
+            "AuthRequest needs exactly one of accessToken / passkeySession"
+        }
+    }
+}
 
 /**
  * `POST /api/sessions/:id/messages` (`SendMessageRequestSchema`).

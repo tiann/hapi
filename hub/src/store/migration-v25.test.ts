@@ -50,7 +50,7 @@ describe('schema migration v25 to v31', () => {
         const columns = internalDb.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
         const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
         expect(columns.some((column) => column.name === 'position')).toBe(true)
-        expect(version.user_version).toBe(36)
+        expect(version.user_version).toBe(37)
         migrated.close()
     })
 
@@ -91,7 +91,7 @@ describe('schema migration v25 to v31', () => {
         ).get() as { name: string } | null
         expect(columns.some((column) => column.name === 'position')).toBe(true)
         expect(positionIndex?.name).toBe('idx_session_scratchlist_session_position')
-        expect(version.user_version).toBe(36)
+        expect(version.user_version).toBe(37)
         migrated.close()
     })
 
@@ -131,8 +131,34 @@ describe('schema migration v25 to v31', () => {
         ).get() as { name: string } | null
         expect(columns.some((column) => column.name === 'position')).toBe(true)
         expect(positionIndex?.name).toBe('idx_session_scratchlist_session_position')
-        expect(version.user_version).toBe(36)
+        expect(version.user_version).toBe(37)
         migrated.close()
+    })
+
+    it('upgrades the upstream v36 passkey schema without losing credentials or draft order', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-scratchlist-v36-'))
+        tempDirs.push(dir)
+        const dbPath = join(dir, 'hapi.db')
+        new Store(dbPath).close()
+        const legacy = new Database(dbPath)
+        try {
+            legacy.exec(`
+                DROP INDEX idx_session_scratchlist_session_position;
+                ALTER TABLE session_scratchlist DROP COLUMN position;
+                INSERT INTO passkey_credentials (id, namespace, rp_id, public_key, token_fingerprint, created_at)
+                    VALUES ('fixture-key', 'default', 'example.test', x'01', 'fixture', 1);
+                INSERT INTO session_scratchlist (session_id, entry_id, text, created_at, updated_at, attachments)
+                    VALUES ('s1','older','older',1,1,NULL), ('s1','newer','newer',2,2,NULL);
+                PRAGMA user_version = 36;
+            `)
+        } finally { legacy.close() }
+        const migrated = new Store(dbPath)
+        try {
+            const internal = (migrated as unknown as { db: Database }).db
+            expect(internal.prepare('PRAGMA user_version').get()).toEqual({ user_version: 37 })
+            expect(internal.prepare('SELECT id FROM passkey_credentials').all()).toEqual([{ id: 'fixture-key' }])
+            expect(migrated.scratchlist.list('s1').map(entry => [entry.entryId, entry.position])).toEqual([['newer', 0], ['older', 1]])
+        } finally { migrated.close() }
     })
 
     it('adds an index used by immediate queued-message replay', () => {
@@ -162,7 +188,7 @@ describe('schema migration v25 to v31', () => {
             ORDER BY seq ASC
         `).all('session-id') as Array<{ detail: string }>
 
-        expect(version.user_version).toBe(36)
+        expect(version.user_version).toBe(37)
         expect(plan.some((row) => row.detail.includes('idx_messages_immediate_queued'))).toBe(true)
         migrated.close()
     })

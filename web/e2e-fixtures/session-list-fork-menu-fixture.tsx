@@ -82,6 +82,19 @@ const initialSessions: SessionSummary[] = [
 function Fixture() {
     const [selected, setSelected] = useState<string | null>(null)
     const api = {
+        // The preview flow asks the hub for a boundary first; the fixture
+        // answers like the hub would for each session shape.
+        forkPreview: async (sessionId: string, intent: 'current' | 'message' | 'rewind') => {
+            void intent
+            const mode = sessionId === 'running-completed-source' ? 'latestCompleted' : 'current'
+            return {
+                mode,
+                boundary: { v: 1, mode, epoch: 1, tailSeq: 0 },
+                keptTail: [],
+                excluded: [],
+                counts: { kept: 0, excluded: 0 },
+            }
+        },
         forkConversation: async (sessionId: string, _message?: string, latestCompleted?: boolean) => {
             document.body.dataset.latestCompleted = String(latestCompleted)
             document.body.dataset.forkSource = sessionId

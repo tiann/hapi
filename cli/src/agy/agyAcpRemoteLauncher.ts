@@ -1,17 +1,23 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
 import type { RawJSONLines } from '@/claude/types';
-import { watch, type FSWatcher } from 'node:fs';
+import { statSync, watch, type BigIntStats, type FSWatcher } from 'node:fs';
 import { RPC_METHODS, splitAgyModelSelection } from '@hapi/protocol';
+import { getBuiltinSlashCommands, mergeSlashCommands } from '@hapi/protocol/slashCommands';
 import { logger } from '@/ui/logger';
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { GenerationClock } from '@/agent/generationClock';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PromptContent } from '@/agent/types';
-import type { AcpSdkBackend } from '@/agent/backends/acp';
+import type { AcpAvailableCommand, AcpSdkBackend } from '@/agent/backends/acp';
 import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport';
 import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionHandler';
+import {
+    listSlashCommands,
+    type ListSlashCommandsResponse,
+    type SlashCommand
+} from '@/modules/common/slashCommands';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -20,6 +26,7 @@ import {
 import type { SessionEffort, SessionModel } from '@/api/types';
 import type { AgySession } from './session';
 import { AGY_BACKGROUND_COMMAND_RESULT, mapAgyToolCall, mapAgyToolResult } from './agyToolCards';
+import { formatAgySwarmBoard, parseAgySwarmBoardCommand } from './agySwarmBoard';
 import {
     AGY_WAKEUP_CONTINUE_PROMPT,
     addAgyUsage,
@@ -294,6 +301,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private turnPermissionMode: PermissionMode | undefined = undefined;
     private turn: AgyTurn | null = null;
     private backendLost = false;
+    private startBackendPromise: Promise<void> | null = null;
+    private hasReceivedAvailableCommands = false;
+    private cachedAvailableCommands: AcpAvailableCommand[] = [];
+    private readonly availableCommandsWaiters: Array<() => void> = [];
 
     constructor(session: AgySession, opts: {
         createBackend?: () => AcpSdkBackend;
@@ -349,6 +360,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         session.client.rpcHandlerManager.registerHandler(
             RPC_METHODS.SteerQueuedMessage,
             async (payload: unknown) => await this.handleSteer(payload)
+        );
+        session.client.rpcHandlerManager.registerHandler(
+            RPC_METHODS.ListSlashCommands,
+            async () => await this.handleListSlashCommands()
         );
         try {
             await this.startBackend(session.sessionId);
@@ -482,44 +497,83 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (queue.size() > 0 || queue.isClosed() || outerSignal.aborted) {
             return { kind: 'batch', batch: await queue.waitForMessagesAndGetAsString(outerSignal) };
         }
-        if (this.hasPendingReactiveWakeup()) {
-            return { kind: 'wakeup' };
-        }
 
         const waitController = new AbortController();
         let wakeupTriggered = false;
         const watchRef: { current: FSWatcher | null } = { current: null };
 
+        let directoryIdentity: BigIntStats | undefined;
+        const closeWatcher = () => {
+            const watcher = watchRef.current;
+            watchRef.current = null;
+            watcher?.close();
+        };
+
         const onOuterAbort = () => waitController.abort();
         outerSignal.addEventListener('abort', onOuterAbort, { once: true });
 
-        const tryAttachWatcher = () => {
-            if (watchRef.current || !this.acpSessionId) return;
+        let timer: ReturnType<typeof setInterval> | undefined;
+        let pollMs: number | undefined;
+        let activityRecheck: ReturnType<typeof setTimeout> | undefined;
+        const stopPoll = () => {
+            clearInterval(timer);
+            timer = undefined;
+        };
+        const armPoll = (intervalMs: number) => {
+            if ((timer && pollMs === intervalMs) || waitController.signal.aborted) return;
+            stopPoll();
+            pollMs = intervalMs;
+            timer = setInterval(() => checkWakeup(true), intervalMs);
+            timer.unref?.();
+        };
+
+        const tryAttachWatcher = (verifyIdentity: boolean) => {
+            if ((watchRef.current && !verifyIdentity) || !this.acpSessionId) return;
             const paths = agyTranscriptPaths(this.brainDir, this.acpSessionId);
             if (!paths) return;
             try {
-                const fsWatcher = watch(paths.logsDir, () => checkWakeup());
+                const identity = statSync(paths.logsDir, { bigint: true });
+                if (watchRef.current && directoryIdentity?.dev === identity.dev && directoryIdentity.ino === identity.ino) return;
+                closeWatcher();
+                const fsWatcher = watch(paths.logsDir, (event) => {
+                    if (watchRef.current !== fsWatcher) return;
+                    if (event === 'rename') {
+                        closeWatcher();
+                    }
+                    checkWakeup();
+                    clearTimeout(activityRecheck);
+                    if (!waitController.signal.aborted && watchRef.current) {
+                        activityRecheck = setTimeout(checkWakeup, this.reactivePollMs);
+                        activityRecheck.unref?.();
+                    }
+                });
+                const lost = () => {
+                    if (watchRef.current !== fsWatcher) return;
+                    closeWatcher();
+                    armPoll(this.reactivePollMs);
+                };
+                fsWatcher.once('error', lost);
+                fsWatcher.once('close', lost);
                 fsWatcher.unref?.();
                 watchRef.current = fsWatcher;
+                directoryIdentity = identity;
             } catch {
-                watchRef.current = null;
+                closeWatcher();
             }
         };
 
-        const checkWakeup = () => {
+        const checkWakeup = (verifyIdentity = false) => {
             if (wakeupTriggered || waitController.signal.aborted || this.shouldExit || queue.size() > 0) return;
-            tryAttachWatcher();
+            tryAttachWatcher(verifyIdentity);
+            armPoll(watchRef.current ? 30_000 : this.reactivePollMs);
             if (this.hasPendingReactiveWakeup()) {
                 wakeupTriggered = true;
                 waitController.abort();
             }
         };
 
-        tryAttachWatcher();
-        const timer = setInterval(checkWakeup, this.reactivePollMs);
-        timer.unref?.();
-
         try {
+            checkWakeup();
             const batch = await queue.waitForMessagesAndGetAsString(waitController.signal);
             if (batch) return { kind: 'batch', batch };
             if (wakeupTriggered && !outerSignal.aborted && !this.shouldExit) {
@@ -527,8 +581,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             return { kind: 'batch', batch: null };
         } finally {
-            clearInterval(timer);
-            watchRef.current?.close();
+            stopPoll();
+            clearTimeout(activityRecheck);
+            closeWatcher();
             outerSignal.removeEventListener('abort', onOuterAbort);
         }
     }
@@ -751,7 +806,68 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private recordAvailableCommands(commands: AcpAvailableCommand[]): void {
+        this.hasReceivedAvailableCommands = true;
+        this.cachedAvailableCommands = commands.map((command) => ({ ...command }));
+        this.session.client.updateMetadata((metadata) => ({
+            ...metadata,
+            slashCommands: commands.map((command) => command.name)
+        }));
+        for (const resolve of this.availableCommandsWaiters.splice(0)) {
+            resolve();
+        }
+    }
+
+    private async handleListSlashCommands(): Promise<ListSlashCommandsResponse> {
+        if (this.startBackendPromise) {
+            await this.startBackendPromise.catch(() => {});
+        }
+        if (!this.hasReceivedAvailableCommands && this.backend && !this.backendLost) {
+            const existing = this.backend.getAvailableCommands?.(this.acpSessionId) ?? [];
+            if (existing.length > 0) {
+                this.recordAvailableCommands(existing);
+            } else {
+                await new Promise<void>((resolve) => {
+                    const waiter = () => {
+                        clearTimeout(timer);
+                        resolve();
+                    };
+                    const timer = setTimeout(() => {
+                        const idx = this.availableCommandsWaiters.indexOf(waiter);
+                        if (idx >= 0) this.availableCommandsWaiters.splice(idx, 1);
+                        resolve();
+                    }, 250);
+                    timer.unref?.();
+                    this.availableCommandsWaiters.push(waiter);
+                });
+            }
+        }
+        const baseCommands = await listSlashCommands('agy', this.session.path)
+            .catch(() => getBuiltinSlashCommands('agy'));
+        const negotiated: SlashCommand[] = this.cachedAvailableCommands.map((command) => ({
+            name: command.name,
+            description: command.description,
+            source: 'builtin'
+        }));
+        return {
+            success: true,
+            commands: mergeSlashCommands([...baseCommands, ...negotiated])
+        };
+    }
+
     private async startBackend(resumeSessionId: string | null): Promise<void> {
+        const run = this.startBackendInner(resumeSessionId);
+        this.startBackendPromise = run;
+        try {
+            await run;
+        } finally {
+            if (this.startBackendPromise === run) {
+                this.startBackendPromise = null;
+            }
+        }
+    }
+
+    private async startBackendInner(resumeSessionId: string | null): Promise<void> {
         const session = this.session;
         const backend = this.createBackend();
         this.backend = backend;
@@ -759,6 +875,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         try {
             const titleSync = createAcpSessionTitleSync(session.client);
             registerAcpSessionTitleSync(backend, session.client, titleSync);
+            backend.setAvailableCommandsUpdateListener?.((_sessionId, commands) => {
+                this.recordAvailableCommands(commands);
+            });
             backend.setUserMessageChunkListener((text) => this.handleUserEcho(text));
             backend.onStderrError((error) => {
                 logger.debug('[agy-acp] stderr error', error);
@@ -800,6 +919,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.lastTurnTranscriptState = null;
             }
             this.acpSessionId = acpSessionId;
+            const reportedCommands = backend.getAvailableCommands?.(acpSessionId) ?? [];
+            if (reportedCommands.length > 0) {
+                this.recordAvailableCommands(reportedCommands);
+            }
             this.syncTranscriptCursor();
             session.onSessionFound(acpSessionId);
             session.client.emitSessionReady();
@@ -853,6 +976,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     /** Stops a backend for good: late permission requests are cancelled, not approved. */
     private async retireBackend(backend: AcpSdkBackend): Promise<void> {
+        backend.setAvailableCommandsUpdateListener?.(null);
         backend.onPermissionRequest((request) => {
             void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
         });
@@ -902,9 +1026,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         opts: { internalWakeup?: boolean; replayAfterStepIndex?: number } = {}
     ): Promise<void> {
         const internalWakeup = opts.internalWakeup === true;
+        const swarmBoardCommand = !internalWakeup ? parseAgySwarmBoardCommand(message) : null;
         const session = this.session;
         if (!internalWakeup) {
-            applyAgySessionTitleFallback(session.client, message);
+            if (!swarmBoardCommand) {
+                applyAgySessionTitleFallback(session.client, message);
+            }
             this.lastTurnMode = mode;
             this.lastSessionModeSnapshot = {
                 permissionMode: session.getPermissionMode() as PermissionMode | undefined,
@@ -966,6 +1093,28 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // restarts or switches settings.
         this.turn = turn;
         try {
+            if (swarmBoardCommand) {
+                if (!this.acpSessionId && (this.backendLost || !this.backend || !this.backend.isTransportAlive())) {
+                    try {
+                        await this.relaunchBackend();
+                    } catch {
+                        // Best-effort session discovery; formatAgySwarmBoard handles null acpSessionId.
+                    }
+                }
+                if (turn.aborted) {
+                    restoreIfUserTurn();
+                    return;
+                }
+                turn.acknowledge();
+                this.messageBuffer.addMessage(message, 'user');
+                const boardMarkdown = formatAgySwarmBoard(
+                    this.brainDir,
+                    this.acpSessionId ?? session.sessionId,
+                    swarmBoardCommand
+                );
+                this.forwardAgentMessage({ type: 'text', text: boardMarkdown });
+                return;
+            }
             let relaunched = false;
             if (this.backendLost || !this.backend || !this.backend.isTransportAlive()) {
                 try {
@@ -1579,13 +1728,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // Only a live turn can be asked on: after Stop, or once that turn has
         // ended, nothing would settle the card.
         if (!this.turn || this.turn.aborted || this.shouldExit) return { action: 'cancel' };
-        // Keyed by agy's tool call so the card shows on it, unless that id
-        // was already used for a request.
-        const id = form.toolCallId && !permissionHandler.isUsed(form.toolCallId)
-            ? form.toolCallId
+        // Shown on agy's tool call card (toolCallId). The request id is the
+        // backend's id for this question, unless that id was already used.
+        const preferredId = request.requestId ?? form.toolCallId;
+        const id = preferredId && !permissionHandler.isUsed(preferredId)
+            ? preferredId
             : `agy-question-${randomUUID()}`;
         const shownLabels = form.toolCallId ? this.questionLabels.get(form.toolCallId) : undefined;
-        const answer = await permissionHandler.askUser(id, QUESTION_TOOL_NAME, questionCardInput(form.questions));
+        const answer = await permissionHandler.askUser(id, QUESTION_TOOL_NAME, questionCardInput(form.questions), form.toolCallId ?? undefined);
         if (answer.decision === 'abort') return { action: 'cancel' };
         if (answer.decision === 'denied') return { action: 'decline' };
         const content = agyQuestionContent(form.questions, answer.answers, shownLabels);

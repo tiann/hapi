@@ -18,7 +18,7 @@ test('upgrades an existing upstream v35 database and adds PR schema', () => {
         store.close()
         store = new Store(path)
         db = (store as unknown as { db: Database }).db
-        expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 36 })
+        expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 37 })
         expect(store.sessionJobs.get(session.id, 'batch')?.runId).toBe('run-1')
         expect(db.prepare('PRAGMA table_info(session_scratchlist)').all().map((row) => (row as { name: string }).name)).toContain('position')
     } finally {

@@ -14,7 +14,6 @@ import {
     addSelectedAttachments,
     getComposerToolbarJustifyContent,
     isComposerPrimaryFillHeight,
-    isLargeEmptyVoicePrimary,
     shouldShowDraftVoiceButton,
     UnifiedButton,
     unifiedButtonSizeClass,
@@ -217,11 +216,6 @@ describe('UnifiedButton — fill-height primary (voice ↔ send)', () => {
     afterEach(cleanup)
 
     it('fills height when empty with voice/dictate afforded', () => {
-        expect(isLargeEmptyVoicePrimary({
-            canSend: false,
-            voiceEnabled: true,
-            voiceStatus: 'disconnected',
-        })).toBe(true)
         expect(isComposerPrimaryFillHeight({
             canSend: false,
             voiceEnabled: true,
@@ -250,12 +244,7 @@ describe('UnifiedButton — fill-height primary (voice ↔ send)', () => {
     })
 
     it('keeps the same fill-height layout when a draft swaps the icon to Send', () => {
-        // Draft → Send morph; still fill-height. Empty-voice FUE helper stays false.
-        expect(isLargeEmptyVoicePrimary({
-            canSend: true,
-            voiceEnabled: true,
-            voiceStatus: 'disconnected',
-        })).toBe(false)
+        // Draft → Send morph; still fill-height.
         expect(isComposerPrimaryFillHeight({
             canSend: true,
             voiceEnabled: true,
