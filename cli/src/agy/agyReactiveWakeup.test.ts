@@ -6601,29 +6601,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             });
             onUpdate({ type: 'text', text: 'Ran command again.' } as unknown as AgentMessage);
             onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
-            const { compactPath } = agyTranscriptPaths(tempBrainDir, acp)!;
-            appendFileSync(
-                compactPath,
-                [
-                    JSON.stringify({ step_index: 7, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run again' }),
-                    JSON.stringify({
-                        step_index: 8,
-                        source: 'MODEL',
-                        type: 'PLANNER_RESPONSE',
-                        status: 'DONE',
-                        tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 5 && echo SYNTH_TIMEOUT_OK"' } }]
-                    }),
-                    JSON.stringify({
-                        step_index: 9,
-                        source: 'MODEL',
-                        type: 'RUN_COMMAND',
-                        status: 'DONE',
-                        content: 'Command exited with code 0.\n\nCommand output:\nSYNTH_TIMEOUT_OK'
-                    }),
-                    JSON.stringify({ step_index: 10, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Ran command again.' })
-                ].join('\n') + '\n',
-                'utf8'
-            );
+            // The native planner has not flushed at turn end.
         });
 
         const launcher = new AgyAcpRemoteLauncher(session, {

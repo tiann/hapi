@@ -433,18 +433,18 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    private syncTranscriptCursor(): void {
+    private syncTranscriptCursor(retainReplay = false): void {
         const acpSessionId = this.acpSessionId;
         if (!acpSessionId) return;
         this.reconcileRetainedAmbiguousCompletions(null);
-        this.advanceCursorFromLastTurnState();
+        this.advanceCursorFromLastTurnState(undefined, retainReplay);
         this.lastTurnTranscriptState = null;
         const prevCursor = this.lastTranscriptStepIndex;
         const latest = readLatestAgyTranscriptStepIndex(this.brainDir, acpSessionId);
         if (latest > prevCursor) {
             this.lastTranscriptStepIndex = latest;
             if (prevCursor >= 0 && this.backgroundCommands.length > 0) {
-                this.settleTranscriptBackgroundCommands(latest);
+                this.settleTranscriptBackgroundCommands(latest, retainReplay);
             }
             if (prevCursor >= 0 && this.backgroundCommands.length > 0) {
                 this.recordDeferredTruncatedSystemSteps(
@@ -470,7 +470,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.pausedWakeupStepIndex = null;
     }
 
-    private advanceCursorFromLastTurnState(turn?: AgyTurn): number | null {
+    private advanceCursorFromLastTurnState(turn?: AgyTurn, retainReplay = false): number | null {
         const acpSessionId = this.acpSessionId;
         const state = this.lastTurnTranscriptState;
         if (!acpSessionId || !state) return null;
@@ -486,7 +486,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // Reconcile any late-flushed completion or kill records now inside
             // the newly consumed range before the idle wakeup watcher skips them.
             if (!turn && this.backgroundCommands.length > 0) {
-                this.settleTranscriptBackgroundCommands(this.lastTranscriptStepIndex);
+                this.settleTranscriptBackgroundCommands(this.lastTranscriptStepIndex, retainReplay);
             }
             if (this.backgroundCommands.length > 0) {
                 this.recordDeferredTruncatedSystemSteps(
@@ -1264,7 +1264,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 return;
             }
             const preSyncStepIndex = this.lastTranscriptStepIndex;
-            this.syncTranscriptCursor();
+            this.syncTranscriptCursor(!relaunched);
             const turnStartStepIndex = this.lastTranscriptStepIndex;
             let commandWindowAfterStepIndex = turnStartStepIndex;
             if (!relaunched) {
@@ -1791,9 +1791,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                             if (!allowSettledReplaySuppression) {
                                 continue;
                             }
-                            const turnHasSteps = readLatestAgyTranscriptStepIndex(this.brainDir, acpSessionId)
-                                > item.turnStartStepIndex;
-                            if (!turnHasSteps) {
+                            // An older wakeup completion may already be inside this window.
+                            const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, item.turnStartStepIndex);
+                            const userIndex = steps.findIndex(step => step.source === 'USER_EXPLICIT' && step.type === 'USER_INPUT');
+                            const responseRecorded = userIndex >= 0 && steps.slice(userIndex + 1).some(step =>
+                                step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE'
+                                && !step.tool_calls?.length && turn?.streamedTextCounts.has(step.content?.trim() ?? '')
+                            );
+                            if (!responseRecorded) {
                                 this.retainedAmbiguousCompletions.splice(idx, 1);
                                 idx -= 1;
                                 progressed = true;
