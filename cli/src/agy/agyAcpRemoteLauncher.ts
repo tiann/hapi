@@ -12,7 +12,7 @@ import { convertAgentMessage } from '@/agent/messageConverter';
 import { GenerationClock } from '@/agent/generationClock';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync, type AcpSessionTitleController } from '@/agent/acpSessionTitle';
 import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, McpServerStdio, PermissionRequest, PromptContent } from '@/agent/types';
-import type { AcpAvailableCommand, AcpSdkBackend } from '@/agent/backends/acp';
+import { formatAcpImageEchoToken, type AcpAvailableCommand, type AcpSdkBackend } from '@/agent/backends/acp';
 import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport';
 import { buildHapiMcpBridge, type HapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionHandler';
@@ -252,10 +252,15 @@ function agyTurnConfigKey(mode: AgyMode): string {
 }
 
 function promptTextForEcho(prompt: PromptContent[]): string {
-    return prompt
+    const text = prompt
         .filter((block): block is Extract<PromptContent, { type: 'text' }> => block.type === 'text')
         .map((block) => block.text)
         .join('\n\n');
+    if (text.trim().length > 0) return text;
+    return prompt
+        .filter((block): block is Extract<PromptContent, { type: 'image' }> => block.type === 'image')
+        .map((block) => formatAcpImageEchoToken(block.mimeType, block.data))
+        .join(' ');
 }
 
 type AgyTurn = {

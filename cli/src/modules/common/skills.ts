@@ -401,23 +401,254 @@ function parseAgyNameFilter(obj: Record<string, unknown>): AgyNameFilter | null 
     };
 }
 
-function matchesAgyPattern(name: string, pattern: string): boolean {
+type AgyNfaState =
+    | { kind: 'split'; out1: number; out2: number }
+    | { kind: 'anchor'; at: 'start' | 'end'; out: number }
+    | { kind: 'char'; test: (ch: string) => boolean; out: number }
+    | { kind: 'match' };
+
+type AgyNfaFragment = {
+    start: number;
+    patch: Array<(target: number) => void>;
+};
+
+function compileAgyPatternNfa(pattern: string): { states: AgyNfaState[]; start: number; matchId: number } | null {
+    if (pattern.length > 512) return null;
+    const states: AgyNfaState[] = [];
+    let pos = 0;
+
+    const pushState = (state: AgyNfaState): number => {
+        if (states.length >= 1024) throw new Error('pattern too large');
+        states.push(state);
+        return states.length - 1;
+    };
+
+    const escapePredicate = (ch: string): ((c: string) => boolean) => {
+        switch (ch) {
+            case 'd': return (c) => c >= '0' && c <= '9';
+            case 'D': return (c) => !(c >= '0' && c <= '9');
+            case 'w': return (c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c === '_';
+            case 'W': return (c) => !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c === '_');
+            case 's': return (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f' || c === '\v';
+            case 'S': return (c) => !(c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f' || c === '\v');
+            default: return (c) => c === ch;
+        }
+    };
+
+    const parseCharClass = (): ((c: string) => boolean) => {
+        let negated = false;
+        if (pattern[pos] === '^') {
+            negated = true;
+            pos += 1;
+        }
+        const tests: Array<(c: string) => boolean> = [];
+        let first = true;
+        while (pos < pattern.length && (first || pattern[pos] !== ']')) {
+            first = false;
+            if (pattern[pos] === '\\') {
+                pos += 1;
+                if (pos >= pattern.length) throw new Error('unterminated escape');
+                const esc = pattern[pos]!;
+                pos += 1;
+                tests.push(escapePredicate(esc));
+                continue;
+            }
+            const startCh = pattern[pos]!;
+            pos += 1;
+            if (pattern[pos] === '-' && pos + 1 < pattern.length && pattern[pos + 1] !== ']') {
+                pos += 1;
+                let endCh = pattern[pos]!;
+                if (endCh === '\\') {
+                    pos += 1;
+                    if (pos >= pattern.length) throw new Error('unterminated escape');
+                    endCh = pattern[pos]!;
+                }
+                pos += 1;
+                if (startCh > endCh) throw new Error('invalid range');
+                tests.push((c) => c >= startCh && c <= endCh);
+            } else {
+                tests.push((c) => c === startCh);
+            }
+        }
+        if (pattern[pos] !== ']') throw new Error('unterminated class');
+        pos += 1;
+        return (c) => {
+            const matched = tests.some((fn) => fn(c));
+            return negated ? !matched : matched;
+        };
+    };
+
+    const makeEpsilon = (): AgyNfaFragment => {
+        const st: AgyNfaState = { kind: 'split', out1: -1, out2: -1 };
+        const id = pushState(st);
+        return { start: id, patch: [(t) => { st.out1 = t; }] };
+    };
+
+    const makeChar = (test: (c: string) => boolean): AgyNfaFragment => {
+        const st: AgyNfaState = { kind: 'char', test, out: -1 };
+        const id = pushState(st);
+        return { start: id, patch: [(t) => { st.out = t; }] };
+    };
+
+    const parseAlt = (): AgyNfaFragment => {
+        let left = parseConcat();
+        while (pos < pattern.length && pattern[pos] === '|') {
+            pos += 1;
+            const right = parseConcat();
+            const st: AgyNfaState = { kind: 'split', out1: left.start, out2: right.start };
+            const id = pushState(st);
+            left = { start: id, patch: [...left.patch, ...right.patch] };
+        }
+        return left;
+    };
+
+    const parseConcat = (): AgyNfaFragment => {
+        let current: AgyNfaFragment | null = null;
+        while (pos < pattern.length && pattern[pos] !== '|' && pattern[pos] !== ')') {
+            const next = parsePostfix();
+            if (!current) {
+                current = next;
+            } else {
+                for (const fn of current.patch) fn(next.start);
+                current = { start: current.start, patch: next.patch };
+            }
+        }
+        return current ?? makeEpsilon();
+    };
+
+    const parsePostfix = (): AgyNfaFragment => {
+        let frag = parseAtom();
+        while (pos < pattern.length) {
+            const op = pattern[pos];
+            if (op !== '*' && op !== '+' && op !== '?') break;
+            pos += 1;
+            if (pattern[pos] === '?') pos += 1;
+            if (op === '*') {
+                const st: AgyNfaState = { kind: 'split', out1: frag.start, out2: -1 };
+                const id = pushState(st);
+                for (const fn of frag.patch) fn(id);
+                frag = { start: id, patch: [(t) => { st.out2 = t; }] };
+            } else if (op === '+') {
+                const st: AgyNfaState = { kind: 'split', out1: frag.start, out2: -1 };
+                const id = pushState(st);
+                for (const fn of frag.patch) fn(id);
+                frag = { start: frag.start, patch: [(t) => { st.out2 = t; }] };
+            } else {
+                const st: AgyNfaState = { kind: 'split', out1: frag.start, out2: -1 };
+                const id = pushState(st);
+                frag = { start: id, patch: [...frag.patch, (t) => { st.out2 = t; }] };
+            }
+        }
+        return frag;
+    };
+
+    const parseAtom = (): AgyNfaFragment => {
+        const ch = pattern[pos];
+        if (ch === undefined || ch === '*' || ch === '+' || ch === '?' || ch === '{' || ch === '}') {
+            throw new Error('unexpected quantifier');
+        }
+        if (ch === '^' || ch === '$') {
+            pos += 1;
+            const st: AgyNfaState = { kind: 'anchor', at: ch === '^' ? 'start' : 'end', out: -1 };
+            const id = pushState(st);
+            return { start: id, patch: [(t) => { st.out = t; }] };
+        }
+        if (ch === '(') {
+            pos += 1;
+            if (pattern[pos] === '?') {
+                if (pattern[pos + 1] !== ':') throw new Error('unsupported group');
+                pos += 2;
+            }
+            const inner = parseAlt();
+            if (pattern[pos] !== ')') throw new Error('unclosed group');
+            pos += 1;
+            return inner;
+        }
+        if (ch === '[') {
+            pos += 1;
+            return makeChar(parseCharClass());
+        }
+        if (ch === '.') {
+            pos += 1;
+            return makeChar((c) => c !== '\n' && c !== '\r');
+        }
+        if (ch === '\\') {
+            pos += 1;
+            if (pos >= pattern.length) throw new Error('unterminated escape');
+            const esc = pattern[pos]!;
+            if (esc >= '1' && esc <= '9') throw new Error('backreference unsupported');
+            pos += 1;
+            return makeChar(escapePredicate(esc));
+        }
+        pos += 1;
+        return makeChar((c) => c === ch);
+    };
+
     try {
-        return new RegExp(`^(?:${pattern})$`).test(name);
+        const root = parseAlt();
+        if (pos !== pattern.length) return null;
+        const matchId = pushState({ kind: 'match' });
+        for (const fn of root.patch) fn(matchId);
+        return { states, start: root.start, matchId };
     } catch {
-        return name === pattern;
+        return null;
     }
 }
 
-function passesAgyFilters(name: string, filters: AgyNameFilter[]): boolean {
+function matchesAgyPattern(name: string, pattern: string): boolean {
+    const nfa = compileAgyPatternNfa(pattern);
+    if (!nfa) return name === pattern;
+
+    const addState = (set: Set<number>, id: number, atStart: boolean, atEnd: boolean) => {
+        if (id < 0 || set.has(id)) return;
+        set.add(id);
+        const st = nfa.states[id]!;
+        if (st.kind === 'split') {
+            addState(set, st.out1, atStart, atEnd);
+            addState(set, st.out2, atStart, atEnd);
+        } else if (st.kind === 'anchor') {
+            if ((st.at === 'start' && atStart) || (st.at === 'end' && atEnd)) {
+                addState(set, st.out, atStart, atEnd);
+            }
+        }
+    };
+
+    let current = new Set<number>();
+    addState(current, nfa.start, true, name.length === 0);
+    for (let i = 0; i < name.length; i += 1) {
+        const ch = name[i]!;
+        const next = new Set<number>();
+        const atEnd = i + 1 === name.length;
+        for (const id of current) {
+            const st = nfa.states[id]!;
+            if (st.kind === 'char' && st.test(ch)) {
+                addState(next, st.out, false, atEnd);
+            }
+        }
+        current = next;
+        if (current.size === 0) return false;
+    }
+    return current.has(nfa.matchId);
+}
+
+function matchesAgyNameOrRelPath(name: string, pattern: string, relPath?: string): boolean {
+    if (matchesAgyPattern(name, pattern)) return true;
+    if (relPath !== undefined && relPath !== name) {
+        const normalizedPattern = pattern.replace(/\\/g, '/').replace(/^\.\//, '');
+        return matchesAgyPattern(relPath, normalizedPattern);
+    }
+    return false;
+}
+
+function passesAgyFilters(name: string, filters: AgyNameFilter[], relPath?: string): boolean {
     for (const filter of filters) {
         if (filter.includeOnly && filter.includeOnly.length > 0) {
-            if (!filter.includeOnly.some((pattern) => matchesAgyPattern(name, pattern))) {
+            if (!filter.includeOnly.some((pattern) => matchesAgyNameOrRelPath(name, pattern, relPath))) {
                 return false;
             }
         }
         if (filter.exclude && filter.exclude.length > 0) {
-            if (filter.exclude.some((pattern) => matchesAgyPattern(name, pattern))) {
+            if (filter.exclude.some((pattern) => matchesAgyNameOrRelPath(name, pattern, relPath))) {
                 return false;
             }
         }
@@ -617,9 +848,123 @@ async function listAgyFilteredSkillDirs(
     canonicalBoundary?: string
 ): Promise<string[]> {
     const dirs = await filterAgyCanonicalDirs(await listTopLevelSkillDirs(skillsRoot), canonicalBoundary);
+    const seen = new Set(dirs.map((dir) => resolve(dir)));
+    for (const filter of filters) {
+        for (const pattern of filter.includeOnly ?? []) {
+            if (!pattern.includes('/') && !pattern.includes('\\')) continue;
+            const relSelector = pattern.replace(/\\/g, '/').replace(/^\.\//, '');
+            if (!relSelector || isAbsolute(relSelector)) continue;
+            const candidateDir = resolve(skillsRoot, relSelector);
+            if (!isPathWithinRoot(candidateDir, skillsRoot) || seen.has(candidateDir)) continue;
+            if (!await pathExists(join(candidateDir, 'SKILL.md'))) continue;
+            if (canonicalBoundary && !await isCanonicalPathWithinRoot(candidateDir, canonicalBoundary)) continue;
+            seen.add(candidateDir);
+            dirs.push(candidateDir);
+        }
+    }
     return filters.length === 0
         ? dirs
-        : dirs.filter((dir) => passesAgyFilters(basename(dir), filters));
+        : dirs.filter((dir) => {
+              const rel = relative(skillsRoot, dir).replace(/\\/g, '/');
+              return passesAgyFilters(basename(dir), filters, rel);
+          });
+}
+
+async function readAgyPluginManifest(
+    pluginDir: string,
+    canonicalBoundary?: string
+): Promise<Record<string, unknown> | null> {
+    for (const rel of AGY_PLUGIN_MANIFEST_REL_PATHS) {
+        const manifestPath = join(pluginDir, rel);
+        if (!await pathExists(manifestPath)) continue;
+        if (canonicalBoundary && !await isCanonicalPathWithinRoot(manifestPath, canonicalBoundary)) {
+            continue;
+        }
+        const parsed = await readJsonObject(manifestPath);
+        if (parsed) return parsed;
+    }
+    return null;
+}
+
+async function listAgySkillDirsFromPluginDir(
+    pluginDir: string,
+    canonicalBoundary?: string
+): Promise<string[]> {
+    const pluginBoundary = canonicalBoundary ?? await safeRealpath(pluginDir) ?? undefined;
+    const manifest = await readAgyPluginManifest(pluginDir, pluginBoundary);
+    const pluginFilters: AgyNameFilter[] = [];
+    const collected: string[] = [];
+
+    const localSkillManifests = [
+        join(pluginDir, 'skills.json'),
+        ...AGY_PROJECT_DOT_DIRS.map((dot) => join(pluginDir, dot, 'skills.json')),
+    ];
+    for (const skillsManifestPath of localSkillManifests) {
+        if (!await pathExists(skillsManifestPath)) continue;
+        if (pluginBoundary && !await isCanonicalPathWithinRoot(skillsManifestPath, pluginBoundary)) continue;
+        const raw = await readJsonObject(skillsManifestPath);
+        if (!raw) continue;
+        const localFilter = parseAgyNameFilter(raw);
+        if (localFilter) {
+            pluginFilters.push(localFilter);
+        }
+        const targets = await listAgyJsonManifestEntries(
+            skillsManifestPath,
+            pluginDir,
+            pluginDir,
+            [],
+            new Set(),
+            0,
+            pluginDir,
+            pluginBoundary
+        );
+        for (const target of targets) {
+            collected.push(...await listAgyFilteredSkillDirs(target.dir, target.filters, pluginBoundary));
+        }
+    }
+
+    let declaredSkillPaths: string[] = [];
+    if (typeof manifest?.skills === 'string' && manifest.skills.trim().length > 0) {
+        declaredSkillPaths = [manifest.skills.trim()];
+    } else if (Array.isArray(manifest?.skills)) {
+        declaredSkillPaths = readStringArray(manifest.skills) ?? [];
+    } else if (manifest?.skills !== null && typeof manifest?.skills === 'object') {
+        const skillsObj = manifest.skills as Record<string, unknown>;
+        const objFilter = parseAgyNameFilter(skillsObj);
+        if (objFilter) pluginFilters.push(objFilter);
+        declaredSkillPaths = readStringArray(skillsObj.paths) ?? [];
+    }
+
+    for (const relPath of declaredSkillPaths) {
+        if (isAbsolute(relPath)) continue;
+        const resolvedTarget = resolve(pluginDir, relPath);
+        if (!isPathWithinRoot(resolvedTarget, pluginDir)) continue;
+        if (pluginBoundary && !await isCanonicalPathWithinRoot(resolvedTarget, pluginBoundary)) continue;
+        const directSkillFile = join(resolvedTarget, 'SKILL.md');
+        if (await pathExists(directSkillFile)) {
+            if (!pluginBoundary || await isCanonicalPathWithinRoot(directSkillFile, pluginBoundary)) {
+                collected.push(resolvedTarget);
+            }
+        } else {
+            collected.push(...await listAgyFilteredSkillDirs(resolvedTarget, pluginFilters, pluginBoundary));
+        }
+    }
+
+    collected.push(...await listAgyFilteredSkillDirs(join(pluginDir, 'skills'), pluginFilters, pluginBoundary));
+
+    const deduped: string[] = [];
+    const seen = new Set<string>();
+    for (const dir of collected) {
+        const key = resolve(dir);
+        if (seen.has(key)) continue;
+        const rel = relative(pluginDir, dir).replace(/\\/g, '/');
+        if (pluginFilters.length > 0 && !passesAgyFilters(basename(dir), pluginFilters, rel)) {
+            continue;
+        }
+        seen.add(key);
+        deduped.push(dir);
+    }
+    return deduped;
 }
 
 async function listAgySkillDirsFromPluginsRoot(
@@ -642,7 +987,7 @@ async function listAgySkillDirsFromPluginsRoot(
         if (!await isAgyPluginEnabled(pluginDir, dirName, overrides, canonicalBoundary)) {
             continue;
         }
-        result.push(...await filterAgyCanonicalDirs(await listTopLevelSkillDirs(join(pluginDir, 'skills')), canonicalBoundary));
+        result.push(...await listAgySkillDirsFromPluginDir(pluginDir, canonicalBoundary));
     }
     return result;
 }
@@ -665,9 +1010,7 @@ async function listAgyPluginDirsFromManifestTarget(
         && await hasAgyPluginManifest(target.dir, target.canonicalBoundary)
         && await isAgyPluginEnabled(target.dir, dirName, overrides, target.canonicalBoundary)
     ) {
-        results.push(
-            ...await filterAgyCanonicalDirs(await listTopLevelSkillDirs(join(target.dir, 'skills')), target.canonicalBoundary)
-        );
+        results.push(...await listAgySkillDirsFromPluginDir(target.dir, target.canonicalBoundary));
     }
     return results;
 }

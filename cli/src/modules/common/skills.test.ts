@@ -729,4 +729,52 @@ describe('listSkills', () => {
         expect(names).not.toContain('inherited-escape')
         expect(names).not.toContain('plugin-escape')
     })
+
+    it('evaluates nested-quantifier manifest patterns in linear time, resolves explicit nested skill selectors, and honors plugin skill declarations and exclusions', async () => {
+        const repoDir = join(sandboxDir, 'advanced-agy-repo')
+        await mkdir(join(repoDir, '.git'), { recursive: true })
+        await mkdir(join(repoDir, '.agents', 'plugins', 'custom-plugin'), { recursive: true })
+
+        const adversarialName = `${'a'.repeat(120)}c`
+        await writeSkill(join(repoDir, 'pool', adversarialName), adversarialName, 'Long name for ReDoS check')
+        await writeSkill(join(repoDir, 'pool', 'category', 'nested-skill'), 'nested-skill', 'Explicitly included nested skill')
+        await writeSkill(join(repoDir, 'pool', 'category', 'unlisted-nested'), 'unlisted-nested', 'Unlisted nested skill')
+
+        const pluginDir = join(repoDir, '.agents', 'plugins', 'custom-plugin')
+        await writeFile(join(pluginDir, 'plugin.json'), JSON.stringify({
+            name: 'custom-plugin',
+            skills: ['./custom-skills', './direct-skill'],
+        }))
+        await writeFile(join(pluginDir, 'skills.json'), JSON.stringify({
+            exclude: ['excluded-plugin-skill'],
+        }))
+        await writeSkill(join(pluginDir, 'custom-skills', 'declared-root-skill'), 'declared-root-skill', 'Skill in declared plugin root')
+        await writeSkill(join(pluginDir, 'direct-skill'), 'direct-plugin-skill', 'Direct skill dir in plugin.json')
+        await writeSkill(join(pluginDir, 'skills', 'kept-plugin-skill'), 'kept-plugin-skill', 'Kept conventional plugin skill')
+        await writeSkill(join(pluginDir, 'skills', 'excluded-plugin-skill'), 'excluded-plugin-skill', 'Excluded conventional plugin skill')
+
+        await writeFile(join(repoDir, '.agents', 'skills.json'), JSON.stringify({
+            entries: [
+                {
+                    path: 'pool',
+                    include_only: ['(a+)+b', 'a+c', 'category/nested-skill'],
+                    exclude: ['(a+)+d'],
+                },
+            ],
+        }))
+
+        const startedAt = Date.now()
+        const skills = await listSkills(repoDir, { flavor: 'agy' })
+        const elapsedMs = Date.now() - startedAt
+        expect(elapsedMs).toBeLessThan(1500)
+
+        const names = skills.map((s) => s.name)
+        expect(names).toContain(adversarialName)
+        expect(names).toContain('nested-skill')
+        expect(names).not.toContain('unlisted-nested')
+        expect(names).toContain('declared-root-skill')
+        expect(names).toContain('direct-plugin-skill')
+        expect(names).toContain('kept-plugin-skill')
+        expect(names).not.toContain('excluded-plugin-skill')
+    })
 })

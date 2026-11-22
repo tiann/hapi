@@ -7,7 +7,7 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PromptContent } from '@/agent/types';
-import type { AcpSdkBackend } from '@/agent/backends/acp';
+import { formatAcpImageEchoToken, type AcpSdkBackend } from '@/agent/backends/acp';
 import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport';
 import agySteeredTurn from '@/agent/backends/acp/__fixtures__/agy-steered-turn.json';
 import { AgySession } from './session';
@@ -22,6 +22,7 @@ import {
     resolveAgyHapiMcpAutoApproval
 } from './agyAcpRemoteLauncher';
 import { generationTimeMs } from '@/agent/generationClock';
+import { cleanupUploadDir, registerUploadHandlers } from '@/modules/common/handlers/uploads';
 
 const mcpBridgeHarness = vi.hoisted(() => ({
     calls: [] as Array<{ client: unknown; options: unknown }>,
@@ -2680,5 +2681,63 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
         await run;
 
         expect(sessionEvents(client)).toContainEqual({ type: 'abort-restore', text: '@/uploads/only.png' });
+    });
+
+    it('accepts an image-only inlined steer when echoed before Stop instead of marking it indeterminate', async () => {
+        const { session, queue, client } = makeSession();
+        registerUploadHandlers(client.rpcHandlerManager as never);
+        const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        try {
+            const uploadHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.UploadFile)!;
+            const uploaded = await uploadHandler({
+                sessionId: client.sessionId,
+                filename: 'steer-only.png',
+                content: pngBytes.toString('base64'),
+                mimeType: 'image/png'
+            }) as { success: boolean; path: string };
+            expect(uploaded.success).toBe(true);
+            const imgPath = uploaded.path;
+
+            const backend = new FakeAgyBackend();
+            backend.supportsImages = true;
+            let releaseMain!: () => void;
+            backend.onCancel = () => {
+                backend.steerCompletions[0]?.resolve('cancelled');
+                releaseMain?.();
+            };
+            backend.promptScripts.push(async (onUpdate) => {
+                backend.echo!('start turn');
+                onUpdate({ type: 'tool_call', id: 't-main', name: 'run_command', input: {}, status: 'in_progress' });
+                await new Promise<void>((resolve) => { releaseMain = resolve; });
+                onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+            });
+
+            queue.push('start turn', REVIEW, 'turn-1');
+            const { run } = launch(session, [backend]);
+            await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+
+            queue.push(`@${imgPath}`, {
+                ...REVIEW,
+                imageAttachments: [{ path: imgPath, mimeType: 'image/png', filename: 'steer-only.png' }]
+            }, 'steer-img-only');
+            const steerHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!;
+            await expect(steerHandler({ localId: 'steer-img-only' })).resolves.toEqual({ steered: true });
+            expect(backend.steerPrompts).toEqual([
+                [{ type: 'image', mimeType: 'image/png', data: pngBytes.toString('base64') }]
+            ]);
+
+            // agy echoes the image chunk when folding the steer into the turn, before the user presses Stop.
+            backend.echo!(formatAcpImageEchoToken('image/png', pngBytes.toString('base64')));
+            expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-img-only'], { steered: true });
+
+            await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+            queue.close();
+            await run;
+
+            expect(client.emitSteerIndeterminate).not.toHaveBeenCalled();
+        } finally {
+            await cleanupUploadDir(client.sessionId);
+        }
     });
 });

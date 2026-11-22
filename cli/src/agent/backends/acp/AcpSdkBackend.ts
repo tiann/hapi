@@ -118,10 +118,21 @@ type AcpInitializeResult = {
     };
 };
 
+export function formatAcpImageEchoToken(mimeType: string, data: string): string {
+    return `[acp-image:${mimeType}:${data.length}:${data.slice(0, 64)}:${data.slice(-64)}]`;
+}
+
 function userMessageChunkText(update: unknown): string | null {
     if (!isObject(update) || update.sessionUpdate !== 'user_message_chunk') return null;
     const content = update.content;
-    return isObject(content) && content.type === 'text' ? asString(content.text) : null;
+    if (!isObject(content)) return null;
+    if (content.type === 'text') return asString(content.text);
+    if (content.type === 'image') {
+        const mimeType = asString(content.mimeType);
+        const data = asString(content.data);
+        return mimeType && data ? formatAcpImageEchoToken(mimeType, data) : null;
+    }
+    return null;
 }
 
 export class AcpSdkBackend implements AgentBackend {
