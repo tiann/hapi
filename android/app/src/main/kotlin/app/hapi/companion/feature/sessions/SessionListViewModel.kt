@@ -201,8 +201,8 @@ class SessionListViewModel(
     private val machineStore: MachineListStore,
     private val lastSeenStore: LastSeenStore,
     private val scope: CoroutineScope,
-    /** Last-seen baseline scope, e.g. the hub origin. */
-    private val hubKey: String = "default",
+    /** Hub scope shared by the last-seen baseline and saved Home state. */
+    internal val hubKey: String = "default",
     /** Current clock zone; resolved for every date derivation, including after resume. */
     private val zoneProvider: () -> ZoneId = ZoneId::systemDefault,
     /** Global SSE transport state (`SseEngine.connectionState(Global)`); none in tests by default. */

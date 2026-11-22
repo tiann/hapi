@@ -59,6 +59,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -143,7 +144,8 @@ fun SessionListScreen(
     onNewSession: (() -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
-    var closed by rememberSaveable(viewModel) { mutableStateOf(arrayListOf<String>()) }
+    // Compose restores saved state by position, not by rememberSaveable inputs.
+    var closed by key(viewModel.hubKey) { rememberSaveable { mutableStateOf(arrayListOf<String>()) } }
     val snackbarHostState = remember { SnackbarHostState() }
     var sheetRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var renameRow by remember { mutableStateOf<SessionRowUi?>(null) }
@@ -384,7 +386,7 @@ private fun SessionRows(
                         contentDescription = null, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
                         first.machine?.let { machine ->
                             Text(machine.folderLabel ?: machineFilterLabel(machine), style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
