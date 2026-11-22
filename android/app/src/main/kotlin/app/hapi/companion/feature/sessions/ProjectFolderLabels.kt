@@ -1,5 +1,15 @@
 package app.hapi.companion.feature.sessions
 
+import app.hapi.protocol.wire.SessionSummaryMetadata
+
+/** Git uses forward slashes for Windows worktrees; keep POSIX filenames literal. */
+internal fun projectFolderPath(meta: SessionSummaryMetadata?): String? {
+    val path = meta?.worktree?.basePath?.takeIf { it.isNotBlank() }
+        ?: meta?.path?.takeIf { it.isNotBlank() } ?: return null
+    val windows = (path.length >= 3 && path[0].isLetter() && path[1] == ':' && path[2] in "/\\") || path.startsWith("\\\\")
+    return if (windows) path.replace('\\', '/') else path
+}
+
 /** Compact labels until more path context is needed on the same machine. */
 internal fun projectFolderLabels(paths: Set<String>): Map<String, String> {
     val parts = paths.associateWith { it.split('/', '\\').filter(String::isNotEmpty) }

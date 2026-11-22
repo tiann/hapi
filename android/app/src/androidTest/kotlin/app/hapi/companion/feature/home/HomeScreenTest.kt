@@ -152,11 +152,12 @@ class HomeScreenTest {
         other.performClick()
         sessions.sessions.value = sessions.sessions.value.map { it.copy(contentRevision = 10) }
         compose.waitUntil(10_000) { viewModel.uiState.value.rows.all { it.summary.contentRevision == 10L } }
-        compose.runOnIdle { viewModel.setSearchQuery("unmatched-folder-query") }
+        compose.onNodeWithContentDescription(label(R.string.sessions_search_open)).performClick()
+        compose.onNodeWithTag("home-search-input").performTextInput("zznomatchzz")
         compose.waitUntil(10_000) {
-            compose.onAllNodesWithText("unmatched-folder-query", substring = true).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithText(label(R.string.sessions_search_no_results_hint)).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.runOnIdle { viewModel.setSearchQuery("") }
+        compose.onNodeWithContentDescription(label(R.string.sessions_search_close)).performClick()
         compose.waitUntil(10_000) { compose.onAllNodesWithText("Fix Android").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Build API").assertDoesNotExist()
         compose.onNode(hasClickAction() and hasStateDescription(label(R.string.sessions_folder_collapsed))).performClick()

@@ -343,8 +343,7 @@ private fun SessionRows(
     val sections = remember(remaining, grouped) {
         if (grouped) remaining.groupBy { row ->
             val meta = row.summary.metadata
-            val path = (meta?.worktree?.basePath ?: meta?.path)?.takeIf { it.isNotBlank() }
-            meta?.machineId to path
+            meta?.machineId to projectFolderPath(meta)
         } else emptyMap()
     }
     val folderLabels = remember(sections) {
