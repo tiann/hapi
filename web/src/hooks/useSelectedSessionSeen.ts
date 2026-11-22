@@ -1,6 +1,11 @@
 import { useEffect, useRef, type RefObject } from 'react'
-import { followSessionTail, markSessionSeen } from '@/lib/sessionLastSeen'
+import { followSessionTail, getSessionManualUnreadAt, markSessionSeen } from '@/lib/sessionLastSeen'
 import { useDocumentVisibility } from './useDocumentVisibility'
+
+/** Dwelling on an open session this long counts as having read it even if the
+ * exact-tail acknowledgement above has not settled yet (slow history sync,
+ * fractional mobile scroll offsets). Purely a floor for the fast path. */
+const SEEN_DWELL_MS = 1_000
 
 /** Called by the rendered transcript, never by list selection or SSE metadata. */
 export function useSelectedSessionSeen(
@@ -13,6 +18,8 @@ export function useSelectedSessionSeen(
     const visible = useDocumentVisibility()
     const version = useRef(stateVersion)
     version.current = stateVersion
+    const latestRevision = useRef(renderedRevision)
+    latestRevision.current = renderedRevision
     const followsTail = visible && renderedRevision !== undefined
     // Suppress transient unread dots only while the user is actually at the tail.
     useEffect(() => {
@@ -64,4 +71,19 @@ export function useSelectedSessionSeen(
         }
         // A read-state SSE update alone is not a new viewing action.
     }, [visible, sessionId, renderedRevision, viewportRef, contentRef])
+    // Dwell fallback: staying on an open session means the user read it, even
+    // when the at-tail acknowledgement never settles (cold history fetch over
+    // a slow link, a fractional scroll offset never reaching the 2px epsilon).
+    // Reading the latest rendered revision clears the content-unread bolding
+    // the list shows; a manual unread mark is a deliberate flag and survives.
+    useEffect(() => {
+        if (!visible || !sessionId) return
+        const timer = window.setTimeout(() => {
+            const revision = latestRevision.current
+            if (revision === undefined) return
+            if (getSessionManualUnreadAt(sessionId) !== null) return
+            markSessionSeen(sessionId, revision, version.current)
+        }, SEEN_DWELL_MS)
+        return () => window.clearTimeout(timer)
+    }, [visible, sessionId])
 }

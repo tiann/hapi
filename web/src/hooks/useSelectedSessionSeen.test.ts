@@ -36,7 +36,7 @@ describe('rendered read receipt', () => {
         expect(getSessionLastSeenAt('s')).toBe(3)
     })
 
-    it('does not clear unread while browsing history or when no loaded receipt exists', async () => {
+    it('a short off-tail glance does not clear unread, but dwelling a second does', async () => {
         const view = viewport(false)
         const { rerender } = renderHook(({ revision }: { revision?: number }) => useSelectedSessionSeen('s', revision, 0, view, content), {
             initialProps: { revision: 3 as number | undefined },
@@ -89,5 +89,22 @@ describe('rendered read receipt', () => {
         act(() => view.current.dispatchEvent(new Event('scroll')))
         await settle()
         expect(getSessionManualUnreadAt('s')).toBe(0)
+    })
+
+    it('dwelling on an open session marks it seen even off-tail', async () => {
+        const view = viewport(false)
+        renderHook(() => useSelectedSessionSeen('s', 5, 0, view, content))
+        await act(async () => { await vi.advanceTimersByTimeAsync(900) })
+        expect(getSessionLastSeenAt('s')).toBe(0)
+        await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+        expect(getSessionLastSeenAt('s')).toBe(5)
+    })
+
+    it('dwelling does not clear a manual unread choice', async () => {
+        const view = viewport(false)
+        observeSessionReadStates([{ id: 's', readState: { readRevision: 0, version: 1, manualUnread: true } }])
+        renderHook(() => useSelectedSessionSeen('s', 5, 1, view, content))
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_500) })
+        expect(getSessionManualUnreadAt('s')).not.toBeNull()
     })
 })
