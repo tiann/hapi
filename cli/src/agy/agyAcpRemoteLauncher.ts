@@ -49,7 +49,7 @@ import {
 import type { AgyMode, PermissionMode } from './types';
 import { createAgyAcpBackend } from './utils/agyAcpBackend';
 import { buildAgyPromptContent } from './utils/agyPromptContent';
-import { getAgySystemPromptAppend } from './utils/systemPrompt';
+import { AGY_SAFE_HAPI_MCP_TOOLS, getAgySystemPromptAppend } from './utils/systemPrompt';
 import { applyAgySessionTitleFallback } from './agySessionTitle';
 import { readAgyConversationTitle } from './agyNativeTitle';
 import {
@@ -170,15 +170,10 @@ export function isAgyQuestionRequest(request: PermissionRequest): boolean {
     return Array.isArray(input?.questions) || /\bask_question\b/.test(request.title ?? '');
 }
 
-const AGY_SAFE_HAPI_MCP_TOOLS = new Set([
-    'change_title',
-    'skill_lookup',
-    'list_peers',
-    'session_job'
-]);
+const AGY_SAFE_HAPI_MCP_TOOL_NAMES = new Set<string>(AGY_SAFE_HAPI_MCP_TOOLS);
 
 const AGY_SAFE_DIRECT_HAPI_MCP_NAMES = new Set(
-    [...AGY_SAFE_HAPI_MCP_TOOLS].map((tool) => `mcp__hapi__${tool}`)
+    [...AGY_SAFE_HAPI_MCP_TOOL_NAMES].map((tool) => `mcp__hapi__${tool}`)
 );
 
 function toAcpMcpServers(config: Record<string, { command: string; args: string[] }>): McpServerStdio[] {
@@ -214,7 +209,7 @@ export function resolveAgyHapiMcpAutoApproval(
     if (rawInput && typeof rawInput.ServerName === 'string' && typeof rawInput.ToolName === 'string') {
         const server = rawInput.ServerName.trim().toLowerCase();
         const tool = rawInput.ToolName.trim().toLowerCase();
-        if (server === 'hapi' && AGY_SAFE_HAPI_MCP_TOOLS.has(tool)) {
+        if (server === 'hapi' && AGY_SAFE_HAPI_MCP_TOOL_NAMES.has(tool)) {
             return 'approved';
         }
         return null;
@@ -443,7 +438,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const { server: happyServer, mcpServers } = await this.buildMcpBridge(session.client, {
             onChangeTitle: () => titleSync.markManualTitle(),
             workingDirectory: session.path,
-            skillLookup: { workingDirectory: session.path, flavor: 'agy' }
+            skillLookup: { workingDirectory: session.path, flavor: 'agy' },
+            enabledTools: AGY_SAFE_HAPI_MCP_TOOLS
         });
         this.happyServer = happyServer;
         this.acpMcpServers = toAcpMcpServers(mcpServers);
@@ -709,7 +705,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         return {
             antigravity: {
                 systemPrompt: {
-                    append: getAgySystemPromptAppend()
+                    append: getAgySystemPromptAppend(AGY_SAFE_HAPI_MCP_TOOLS)
                 }
             }
         };

@@ -2449,7 +2449,8 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
         expect(mcpBridgeHarness.calls).toHaveLength(1);
         expect(mcpBridgeHarness.calls[0]?.options).toMatchObject({
             workingDirectory: '/tmp/agy-project',
-            skillLookup: { workingDirectory: '/tmp/agy-project', flavor: 'agy' }
+            skillLookup: { workingDirectory: '/tmp/agy-project', flavor: 'agy' },
+            enabledTools: ['change_title', 'session_job', 'skill_lookup']
         });
 
         const expectedMcpServers = [{
@@ -2462,6 +2463,11 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
         const firstMeta = backend1.newSessionConfigs[0]?.meta as { antigravity?: { systemPrompt?: { append?: string } } };
         expect(firstMeta?.antigravity?.systemPrompt?.append).toContain('change_title');
         expect(firstMeta?.antigravity?.systemPrompt?.append).toContain('skill_lookup');
+        expect(firstMeta?.antigravity?.systemPrompt?.append).toContain('Session-attached jobs:');
+        expect(firstMeta?.antigravity?.systemPrompt?.append).not.toContain('"spawn_peer"');
+        expect(firstMeta?.antigravity?.systemPrompt?.append).not.toContain('"ping_peer"');
+        expect(firstMeta?.antigravity?.systemPrompt?.append).not.toContain('"inspect_peer"');
+        expect(firstMeta?.antigravity?.systemPrompt?.append).not.toContain('"list_peers"');
 
         // Calling onChangeTitle locks manual title so native ACP updates cannot overwrite it.
         const bridgeOpts = mcpBridgeHarness.calls[0]?.options as { onChangeTitle?: (title: string) => void };
@@ -2521,7 +2527,7 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
 
         expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('1', 'hapi', 'change_title'), 'request-review')).toBe('approved');
         expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('2', 'hapi', 'skill_lookup'), 'request-review')).toBe('approved');
-        expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('3', 'hapi', 'list_peers'), 'request-review')).toBe('approved');
+        expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('3', 'hapi', 'list_peers'), 'request-review')).toBeNull();
         expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('4', 'hapi', 'session_job'), 'request-review')).toBe('approved');
         expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('5', 'hapi', 'ping_peer'), 'request-review')).toBeNull();
         expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('6', 'hapi', 'inspect_peer'), 'request-review')).toBeNull();
