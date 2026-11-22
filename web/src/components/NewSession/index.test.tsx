@@ -1559,6 +1559,21 @@ describe('NewSession launch preferences', () => {
         expect(mocks.spawnSession).not.toHaveBeenCalled()
     })
 
+    it('clears the selected AGY history when its runner goes offline', async () => {
+        savePreferredAgent('agy')
+        const api = { getAgySessions: vi.fn().mockResolvedValue({ success: true, machineId: machine.id,
+            sessions: [{ id: 'agy-native-1', title: 'Runner A history', cwd: 'C:\\repo' }] }) } as unknown as ApiClient
+        const form = (runner: Machine) => <NewSession api={api} machines={[runner]} initialDirectory="C:\repo"
+            onSuccess={mocks.onSuccess} onCancel={() => {}} />
+        const view = renderWithQuery(form(machine))
+        fireEvent.click(screen.getByRole('button', { name: 'agyImport.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-agy-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-agy-history'))
+        expect(screen.getByRole('button', { name: 'agyImport.inline.clear' })).toBeInTheDocument()
+        view.rerender(form({ ...machine, id: 'replacement' }))
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'agyImport.inline.clear' })).toBeNull())
+    })
+
     it('hides SessionTypeSelector and skips worktree validation when continuing Antigravity history', async () => {
         savePreferredAgent('agy')
         mocks.checkPathsExists.mockImplementation(async () => ({

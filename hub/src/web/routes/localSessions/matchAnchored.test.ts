@@ -250,6 +250,17 @@ describe('Antigravity live continuation', () => {
         expect(matchAnchored({ transcript: transcript(rows), storedMessages: stored, importPrefix: PREFIX, cursor: null,
             reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: rows.slice(1, 3) })
     })
+    it('matches a live Read by file path after a tool-first import', () => {
+        const read = (callId: string, path: string) => agent({ type: 'tool-call', name: 'Read', callId, input: { file_path: path } })
+        const first = { ...transcriptMessage(`${PREFIX}initial`, ''), content: read('initial', 'initial.ts') }
+        const rows = [first, transcriptMessage(`${PREFIX}p1`, 'check'),
+            { ...transcriptMessage(`${PREFIX}c1`, ''), content: read('c1', 'a.ts') }, transcriptMessage(`${PREFIX}p2`, 'check'),
+            { ...transcriptMessage(`${PREFIX}c2`, ''), content: read('c2', 'b.ts') }]
+        const stored = [{ ...storedMessage(first.id, ''), content: first.content }, storedMessage('sent', 'check'),
+            { ...storedMessage('live-call', ''), content: read('acp', 'b.ts') }]
+        expect(matchAnchored({ transcript: transcript(rows), storedMessages: stored, importPrefix: PREFIX, cursor: null,
+            reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: rows.slice(1, 3) })
+    })
     it('resolves a thousand repeated exchanges in order and excludes a never-acknowledged prompt', () => {
         const initial = transcriptMessage(`${PREFIX}start`, 'start')
         const reply = agent({ type: 'message', message: 'done' })

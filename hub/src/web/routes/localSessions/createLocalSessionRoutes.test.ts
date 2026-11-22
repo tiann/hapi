@@ -8,7 +8,7 @@ import { AGY_LOCAL_SESSION_SOURCE, CLAUDE_LOCAL_SESSION_SOURCE, CODEX_LOCAL_SESS
 import { createLocalSessionRoutes } from './createLocalSessionRoutes'
 import { fetchLocalTranscriptSummaries, fetchLocalTranscriptsByIds } from './fetchLocalTranscripts'
 
-function machine(id = 'm-1', capabilities: string[] = ['local-session-import']): Machine {
+function machine(id = 'm-1', capabilities: string[] = ['local-session-import', 'agy-imported-resume']): Machine {
     return {
         id,
         namespace: 'default',
@@ -71,7 +71,7 @@ function harness(overrides: {
     const appliedConfigs: Array<Record<string, unknown>> = []
     const summaries = overrides.summaries ?? [piSummary()]
     const transcripts = overrides.transcripts ?? [piTranscript()]
-    const machineInstance = machine('m-1', overrides.machineCapabilities ?? ['local-session-import'])
+    const machineInstance = machine('m-1', overrides.machineCapabilities ?? ['local-session-import', 'agy-imported-resume'])
     const onlineMachines = overrides.onlineMachines ?? [machineInstance]
     const engine = {
         getOnlineMachinesByNamespace: () => onlineMachines,
@@ -156,6 +156,14 @@ describe('generic local session routes', () => {
         const body = await response.json() as { success: boolean; sessions: Array<Record<string, unknown>> }
         expect(body.success).toBe(true)
         expect(body.sessions[0]).not.toHaveProperty('hapiSessionId')
+    })
+
+    it('rejects AGY listing on an older generic-import runner before sending the RPC', async () => {
+        const { app, calls, store } = harness({ sources: [AGY_LOCAL_SESSION_SOURCE], machineCapabilities: ['local-session-import'] })
+        stores.push(store)
+        const response = await app.request('/api/agy/sessions')
+        expect(response.status).toBe(503)
+        expect(calls).toEqual([])
     })
 
     it('returns 503 when no machine is online', async () => {

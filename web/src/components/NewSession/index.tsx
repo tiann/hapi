@@ -249,7 +249,9 @@ export function NewSession(props: {
         machineId,
         auto: false
     })
-    const [selectedAgyImportSessionId, setSelectedAgyImportSessionId] = useState<string | null>(null)
+    const [agySelection, setAgySelection] = useState<{ id: string; machineId: string } | null>(null)
+    const selectedAgyImportSessionId = agySelection && agySelection.machineId === machineId ? agySelection.id : null
+    const hasAgyListing = Boolean(machineId && agyImport.machineId === machineId)
     const [isImportingAgySession, setIsImportingAgySession] = useState(false)
     const [isBulkImportingAgySessions, setIsBulkImportingAgySessions] = useState(false)
     const [isAgyImportDialogOpen, setIsAgyImportDialogOpen] = useState(false)
@@ -1423,8 +1425,8 @@ export function NewSession(props: {
     }, [claudeImport.sessions])
 
     useEffect(() => {
-        setSelectedAgyImportSessionId((current) => current && agyImport.sessions.some((session) => session.id === current) ? current : null)
-    }, [agyImport.sessions])
+        setAgySelection((current) => current?.machineId === machineId && agyImport.sessions.some((session) => session.id === current.id) ? current : null)
+    }, [agyImport.sessions, machineId])
 
     const formatClaudeImportError = useCallback((code?: string, message?: string): string => {
         if (code === 'transcript_diverged') return t('claudeImport.error.diverged')
@@ -1822,13 +1824,13 @@ export function NewSession(props: {
     ])
 
     const handleBulkImportAgySessions = useCallback(async (sessionIds: string[]) => {
-        if (isBulkImportingAgySessions || agyImport.isLoading) return
+        if (isBulkImportingAgySessions || agyImport.isLoading || !hasAgyListing) return
         setIsBulkImportingAgySessions(true)
         try {
             const result = await props.api.importAgySessions({
                 sessionIds,
                 cwd: trimmedDirectory || null,
-                machineId: agyImport.machineId ?? machineId
+                machineId: machineId
             })
             const importedCount = result.results.filter((item) => item.hapiSessionId && !item.error && (item.action === 'created' || (item.appended ?? 0) > 0)).length
             const failed = result.results.filter((item) => item.error)
@@ -1856,7 +1858,7 @@ export function NewSession(props: {
                 return
             }
             setIsAgyImportDialogOpen(false)
-            setSelectedAgyImportSessionId(null)
+            setAgySelection(null)
         } catch (importError) {
             addToast({
                 title: t('agyImport.failed.title'),
@@ -1870,7 +1872,7 @@ export function NewSession(props: {
     }, [
         addToast,
         agyImport.isLoading,
-        agyImport.machineId,
+        hasAgyListing,
         agyImport.refresh,
         formatAgyImportError,
         isBulkImportingAgySessions,
@@ -1918,7 +1920,7 @@ export function NewSession(props: {
         setSelectedPiImportSessionId(null)
         setSelectedOpencodeImportSessionId(null)
         setSelectedClaudeImportSessionId(null)
-        setSelectedAgyImportSessionId(null)
+        setAgySelection(null)
         const paths = getRecentPaths(newMachineId)
         if (paths[0]) {
             setDirectory(paths[0])
@@ -2030,10 +2032,11 @@ export function NewSession(props: {
     }, [])
 
     const handleSelectAgyImportSession = useCallback((session: LocalSessionListItem) => {
-        setSelectedAgyImportSessionId(session.id)
+        if (!machineId || !hasAgyListing) return
+        setAgySelection({ id: session.id, machineId })
         const lockedCwd = session.cwd?.trim() || session.savedCwd?.trim()
         if (lockedCwd) setDirectory(lockedCwd)
-    }, [])
+    }, [machineId, hasAgyListing])
 
     const handlePathClick = useCallback((path: string) => {
         setDirectory(path)
@@ -2297,7 +2300,7 @@ export function NewSession(props: {
                 const result = await props.api.importAgySessions({
                     sessionIds: [selectedAgyImportSession.id],
                     cwd: lockedAgyImportCwd ?? trimmedDirectory,
-                    machineId: agyImport.machineId ?? machineId,
+                    machineId: machineId,
                     model: resolvedModel ?? null,
                     effort: resolvedEffort ?? null,
                     permissionMode: nativePermissionMode
@@ -2556,7 +2559,7 @@ export function NewSession(props: {
                         setIsAgyImportDialogOpen(true)
                         void agyImport.refresh()
                     }}
-                    onClear={() => setSelectedAgyImportSessionId(null)}
+                    onClear={() => setAgySelection(null)}
                 />
             ) : null}
             {agent === 'dsh' ? (
@@ -2858,7 +2861,7 @@ export function NewSession(props: {
             <AgySessionImportDialog
                 isOpen={isAgyImportDialogOpen}
                 onClose={() => setIsAgyImportDialogOpen(false)}
-                sessions={agyImport.sessions}
+                sessions={hasAgyListing ? agyImport.sessions : []}
                 currentSessionId={selectedAgyImportSessionId}
                 currentWorkDirectory={trimmedDirectory}
                 onConfirm={async (sessionIds) => {

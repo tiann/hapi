@@ -245,7 +245,7 @@ export const AGY_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     requireWorkingDirectory: true,
     batch: 'continue',
     importLimit: 200,
-    requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport
+    requiredMachineCapability: MACHINE_CAPABILITIES.AgyImportedResume
 }
 
 export const CODEX_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {

@@ -34,7 +34,7 @@ type UserPromptPart = {
 type AgentItemSummary =
     | { kind: 'message'; text: string; index: number }
     | { kind: 'reasoning'; text: string; index: number }
-    | { kind: 'tool-call'; name: string; callId: string; index: number }
+    | { kind: 'tool-call'; name: string; callId: string; input: unknown; index: number }
     | { kind: 'tool-result'; callId: string; isBackgroundPlaceholder: boolean; index: number }
 
 type TurnSummary = {
@@ -180,7 +180,7 @@ function extractAgentItem(content: unknown, index: number): AgentItemSummary | n
     }
     if (data.type === 'tool-call' && typeof data.name === 'string') {
         const callId = typeof data.callId === 'string' ? data.callId : ''
-        return { kind: 'tool-call', name: data.name, callId, index }
+        return { kind: 'tool-call', name: data.name, callId, input: data.input, index }
     }
     if (data.type === 'tool-call-result') {
         const callId = typeof data.callId === 'string' ? data.callId : ''
@@ -244,7 +244,9 @@ function groupIntoTurns(
             continue
         }
         if (!current) {
-            return null
+            // Native history can begin during a tool call.
+            current = { userParts: [], assistantParts: [], agentItems: [], nonSemanticIndices: [],
+                hasAgentContent: true, startIndex: i, endIndex: i }
         }
         current.hasAgentContent = true
         current.endIndex = i
@@ -354,7 +356,8 @@ function agentItemsCompatible(
         return liveItem.text === sourceItem.text
     }
     if (liveItem.kind === 'tool-call' && sourceItem.kind === 'tool-call') {
-        return liveItem.name === sourceItem.name
+        return liveItem.name === sourceItem.name && (liveItem.input === undefined || sourceItem.input === undefined
+            || isDeepStrictEqual(liveItem.input, sourceItem.input))
     }
     if (liveItem.kind === 'tool-result' && sourceItem.kind === 'tool-result') {
         if (liveItem.isBackgroundPlaceholder !== sourceItem.isBackgroundPlaceholder) return false
@@ -456,7 +459,7 @@ function reconcileLiveTurns(
     ))
     // Imported user rows still delimit native turns. Their late assistant rows
     // belong in the delta even when the user has already continued in HAPI.
-    const sourceTurns = nativeTurns.filter(turn => !importedIds.has(sourceSlice[turn.startIndex]!.id))
+    const sourceTurns = nativeTurns.filter(turn => turn.userParts.length > 0 && !importedIds.has(sourceSlice[turn.startIndex]!.id))
     const matchedSourceIndices = new Set<number>()
     for (let i = 0; i < sourceSlice.length; i++) {
         if (importedIds.has(sourceSlice[i]!.id)) matchedSourceIndices.add(i)
