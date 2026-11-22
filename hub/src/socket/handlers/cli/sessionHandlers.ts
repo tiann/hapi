@@ -83,6 +83,7 @@ const updateStateSchema = z.object({
 // Hub-only merge/clear/title links. CLI update-metadata must not forge or erase them
 // (same strip/restore as supersededBySessionId — see sessionHandlers.test.ts).
 const HUB_OWNED_METADATA_KEYS = [
+    'agyImportedAt',
     'codexImportedAt',
     'opencodeRewind',
     'supersededBySessionId',

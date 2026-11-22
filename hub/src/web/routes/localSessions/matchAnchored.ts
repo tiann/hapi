@@ -252,7 +252,7 @@ function groupIntoTurns(
         }
         current.hasAgentContent = true
         current.endIndex = i
-        const item = extractAgentItem(msg.content, i)
+        const item = extractAgentItem(batchAdjacentUsers ? msg.content : truncateOversizedMessageContent(msg.content), i)
         if (item) {
             current.agentItems.push(item)
             if (item.kind === 'message' && item.text) {
@@ -473,11 +473,18 @@ function reconcileLiveTurns(
         if (!anchorTurn || !alignTurnAgentItems({ ...anchorTurn, agentItems: leading },
             { ...anchorTurn, nonSemanticIndices: [] }, matchedSourceIndices, callIdMap)) return null
     }
+    const indicesByPrompt = new Map<string, number[]>()
+    for (const [index, turn] of sourceTurns.entries()) {
+        const prompt = turn.userParts[0]!.raw
+        const bucket = indicesByPrompt.get(prompt)
+        if (bucket) bucket.push(index)
+        else indicesByPrompt.set(prompt, [index])
+    }
     let sIdx = 0
     for (let lIdx = 0; lIdx < liveTurns.length; lIdx += 1) {
         if (sIdx >= sourceTurns.length) return null
         let liveTurn = liveTurns[lIdx]!
-        let sourceTurn = sourceTurns[sIdx]!
+        const sourceTurn = sourceTurns[sIdx]!
         if (!userPromptsMatch(liveTurn, sourceTurn)) {
             // If two adjacent user rows had no invokedAt or shared a timestamp
             // before the first turn produced agent output, try splitting the
@@ -494,22 +501,34 @@ function reconcileLiveTurns(
                 const [firstTurn, restTurn] = splitTurnUserPrefix(liveTurn, splitPrefix)
                 liveTurn = firstTurn
                 liveTurns.splice(lIdx, 1, firstTurn, restTurn)
-            } else {
-                // Import native-only exchanges between established live turns.
-                const candidates = sourceTurns.slice(sIdx + 1).filter(turn => userPromptsMatch(liveTurn, turn))
-                if (candidates.length !== 1) return null
-                sourceTurn = candidates[0]!
-                sIdx = sourceTurns.indexOf(sourceTurn, sIdx + 1)
             }
         }
-        if (!alignTurnAgentItems(
-            liveTurn,
-            sourceTurn,
-            matchedSourceIndices,
-            callIdMap
-        )) {
-            return null
+        // Match the whole exchange before committing a native-to-live ID mapping.
+        // Identical user text may occur in both native-only and delivered turns.
+        let winner: { index: number; indices: Set<number>; ids: Map<string, string> } | undefined
+        const firstPart = liveTurn.userParts[0]!
+        const candidates = liveTurn.userParts.length === 1
+            ? new Set([...(indicesByPrompt.get(firstPart.raw) ?? []), ...(indicesByPrompt.get(firstPart.formatted) ?? [])])
+            : sourceTurns.keys()
+        for (const i of candidates) {
+            if (i < sIdx || sourceTurns.length - i < liveTurns.length - lIdx) continue
+            const candidate = sourceTurns[i]!
+            if (!userPromptsMatch(liveTurn, candidate)) continue
+            const indices = new Set(candidate.agentItems.map(item => item.index).filter(index => matchedSourceIndices.has(index)))
+            const ids = new Map<string, string>()
+            for (const item of candidate.agentItems) {
+                if (item.kind !== 'tool-result') continue
+                const prior = callIdMap.get(item.callId)
+                if (prior) ids.set(item.callId, prior)
+            }
+            if (!alignTurnAgentItems(liveTurn, candidate, indices, ids)) continue
+            if (winner) return null
+            winner = { index: i, indices, ids }
         }
+        if (!winner) return null
+        for (const index of winner.indices) matchedSourceIndices.add(index)
+        for (const [nativeId, liveId] of winner.ids) callIdMap.set(nativeId, liveId)
+        sIdx = winner.index
         sIdx += 1
     }
 

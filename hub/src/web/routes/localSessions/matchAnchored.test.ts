@@ -241,5 +241,14 @@ describe('Antigravity live continuation', () => {
         expect(matchAnchored({ ...options, storedMessages: stored })).toEqual({ status: 'ok', delta: [rows[2]] })
         expect(matchAnchored({ ...options, storedMessages: [...stored, storedMessage(rows[2]!.id, 'native only')] })).toEqual({ status: 'ok', delta: [] })
     })
+    it('uses the answer to distinguish repeated native prompts', () => {
+        const initial = transcriptMessage(`${PREFIX}start`, 'start')
+        const answer = (text: string) => agent({ type: 'message', message: text })
+        const rows = [initial, transcriptMessage(`${PREFIX}first`, 'repeat'), { ...transcriptMessage(`${PREFIX}a`, ''), content: answer('native') },
+            transcriptMessage(`${PREFIX}second`, 'repeat'), { ...transcriptMessage(`${PREFIX}b`, ''), content: answer('live') }]
+        const stored = [storedMessage(initial.id, 'start'), storedMessage('sent', 'repeat'), { ...storedMessage('reply', ''), content: answer('live') }]
+        expect(matchAnchored({ transcript: transcript(rows), storedMessages: stored, importPrefix: PREFIX, cursor: null,
+            reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: rows.slice(1, 3) })
+    })
 
 })

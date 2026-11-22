@@ -5996,6 +5996,9 @@ export class SyncEngine {
         }
 
         if (session.active) {
+            if (metadata?.agyImportedAt != null && !this.sessionReadyIds.has(access.sessionId)) {
+                return { type: 'error', message: 'Antigravity has not confirmed native resume yet', code: 'resume_failed' }
+            }
             return { type: 'success', sessionId: access.sessionId, resumed: false }
         }
 
