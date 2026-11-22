@@ -1,7 +1,19 @@
+import { readdirSync, readFileSync } from 'node:fs'
+import { join, relative, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { randomId } from './randomId'
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const SRC_DIR = resolve(process.cwd(), 'src')
+
+function sourceFiles(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const path = join(dir, entry.name)
+        if (entry.isDirectory()) return sourceFiles(path)
+        if (!/\.(ts|tsx)$/.test(entry.name) || /\.test\.(ts|tsx)$/.test(entry.name)) return []
+        return relative(SRC_DIR, path).replaceAll('\\', '/') === 'lib/randomId.ts' ? [] : [path]
+    })
+}
 
 describe('randomId', () => {
     afterEach(() => {
@@ -58,5 +70,18 @@ describe('randomId', () => {
         expect(id.length).toBeGreaterThan(0)
         // Not UUID v4 format; just needs to be non-empty and unique enough
         expect(id).not.toMatch(UUID_V4)
+    })
+})
+
+describe('crypto.randomUUID usage', () => {
+    it('is confined to randomId() so non-secure contexts cannot break id generation', () => {
+        const offenders = sourceFiles(SRC_DIR)
+            .filter((file) => readFileSync(file, 'utf8').includes('crypto.randomUUID'))
+            .map((file) => relative(SRC_DIR, file).replaceAll('\\', '/'))
+
+        expect(
+            offenders,
+            'Call randomId() from @/lib/randomId instead of crypto.randomUUID: it is unavailable over plain HTTP (non-secure contexts).',
+        ).toEqual([])
     })
 })
