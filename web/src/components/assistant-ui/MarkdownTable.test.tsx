@@ -1126,7 +1126,7 @@ describe('MarkdownTable', () => {
         expect(table.getAttribute('data-hapi-table-wrap')).toBe('true')
     })
 
-    it('stitches oversized exports from bounded vertical tiles', async () => {
+    it('stitches bounded tiles from one snapshot even if the live table changes', async () => {
         const table = document.createElement('table')
         table.innerHTML = '<tr><td>HAPI</td></tr>'
         Object.defineProperty(table, 'scrollWidth', { configurable: true, value: 3_000 })
@@ -1140,11 +1140,21 @@ describe('MarkdownTable', () => {
         const toBlob = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback) => {
             callback(new Blob(['png'], { type: 'image/png' }))
         })
-        html2canvas.mockImplementation(async (_element: HTMLElement, options: { width: number; height: number; scale: number }) => ({
-            width: Math.ceil(options.width * options.scale),
-            height: Math.ceil(options.height * options.scale),
-            toBlob: (callback: BlobCallback) => callback(new Blob(['tile'], { type: 'image/png' })),
-        }))
+        const capturedText: Array<string | null> = []
+        html2canvas.mockImplementation(async (element: HTMLElement, options: { width: number; height: number; scale: number }) => {
+            capturedText.push(element.querySelector('td')?.textContent ?? null)
+            if (capturedText.length === 1) {
+                // The viewer can toggle wrapping or replace its DOM while a tile renders.
+                table.querySelector('td')!.textContent = 'Reflowed live table'
+                table.setAttribute('data-hapi-table-wrap', 'true')
+                await Promise.resolve()
+            }
+            return {
+                width: Math.ceil(options.width * options.scale),
+                height: Math.ceil(options.height * options.scale),
+                toBlob: (callback: BlobCallback) => callback(new Blob(['tile'], { type: 'image/png' })),
+            }
+        })
 
         try {
             await renderTableAsImage(table)
@@ -1152,6 +1162,8 @@ describe('MarkdownTable', () => {
             const expectedTiles = Math.ceil(4_000 / getTableExportTileHeight(3_000, getTableExportScale(3_000, 4_000, 2)))
             expect(html2canvas).toHaveBeenCalledTimes(expectedTiles)
             expect(drawImage).toHaveBeenCalledTimes(expectedTiles)
+            expect(expectedTiles).toBeGreaterThan(1)
+            expect(capturedText).toEqual(Array.from({ length: expectedTiles }, () => 'HAPI'))
             const scale = getTableExportScale(3_000, 4_000, 2)
             const destinationRanges = drawImage.mock.calls.map((call) => ({
                 top: call[6] as number,

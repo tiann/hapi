@@ -698,11 +698,9 @@ function createStaticTableImageClone(
     table: HTMLTableElement,
     tableWidth: number,
     tableHeight: number,
-    tileTop = 0,
-    tileHeight?: number,
 ): {
     table: HTMLTableElement
-    capture: HTMLElement
+    wrapper: HTMLElement
     cleanup: () => void
 } {
     const wrapper = document.createElement('div')
@@ -713,8 +711,8 @@ function createStaticTableImageClone(
         top: '0',
         width: `${tableWidth}px`,
         maxWidth: 'none',
-        height: tileHeight == null ? 'auto' : `${tileHeight}px`,
-        overflow: tileHeight == null ? 'visible' : 'hidden',
+        height: 'auto',
+        overflow: 'visible',
         pointerEvents: 'none',
     })
 
@@ -725,9 +723,6 @@ function createStaticTableImageClone(
     copyTableImageStyles(table, clone)
     applyTableImageColumnWidths(table, clone, tableWidth)
     applyTableImageHeaderBackground(table, clone)
-    if (tileHeight != null && tileTop > 0) {
-        clone.style.setProperty('transform', `translateY(-${tileTop}px)`, 'important')
-    }
     clone.querySelectorAll('thead, thead *').forEach((element) => {
         if (!(element instanceof HTMLElement)) return
         element.style.setProperty('position', 'static', 'important')
@@ -739,7 +734,7 @@ function createStaticTableImageClone(
     document.body.appendChild(wrapper)
     return {
         table: clone,
-        capture: tileHeight == null ? clone : wrapper,
+        wrapper,
         cleanup: () => wrapper.remove(),
     }
 }
@@ -815,7 +810,7 @@ export async function renderTableAsImage(table: HTMLTableElement): Promise<Blob>
     if (rasterPixels <= MAX_TABLE_EXPORT_TILE_PIXELS) {
         const imageTable = createStaticTableImageClone(table, tableWidth, tableHeight)
         try {
-            const canvas = await html2canvas(imageTable.capture, {
+            const canvas = await html2canvas(imageTable.table, {
                 ...renderOptions,
                 width: tableWidth,
                 height: tableHeight,
@@ -833,15 +828,21 @@ export async function renderTableAsImage(table: HTMLTableElement): Promise<Blob>
     if (!outputContext) throw new Error('Failed to create table image canvas')
 
     const tileHeight = getTableExportTileHeight(tableWidth, scale)
-    for (let tileTop = 0; tileTop < tableHeight; tileTop += tileHeight) {
-        const currentTileHeight = Math.min(tileHeight, tableHeight - tileTop)
-        const imageTable = createStaticTableImageClone(table, tableWidth, tableHeight, tileTop, currentTileHeight)
-        try {
-            const tileCanvas = await html2canvas(imageTable.capture, {
+    const viewportHeight = document.documentElement.clientHeight
+    // Freeze the DOM, computed styles and geometry once. Wrapping, resizing
+    // or closing the viewer between tiles must not change the captured rows.
+    const imageTable = createStaticTableImageClone(table, tableWidth, tableHeight)
+    try {
+        imageTable.wrapper.style.overflow = 'hidden'
+        for (let tileTop = 0; tileTop < tableHeight; tileTop += tileHeight) {
+            const currentTileHeight = Math.min(tileHeight, tableHeight - tileTop)
+            imageTable.wrapper.style.height = `${currentTileHeight}px`
+            imageTable.table.style.setProperty('transform', `translateY(-${tileTop}px)`, 'important')
+            const tileCanvas = await html2canvas(imageTable.wrapper, {
                 ...renderOptions,
                 width: tableWidth,
                 height: currentTileHeight,
-                windowHeight: Math.max(document.documentElement.clientHeight, currentTileHeight),
+                windowHeight: Math.max(viewportHeight, currentTileHeight),
             })
             const destinationTop = Math.round(tileTop * scale)
             const destinationBottom = tileTop + currentTileHeight >= tableHeight
@@ -858,12 +859,11 @@ export async function renderTableAsImage(table: HTMLTableElement): Promise<Blob>
                 outputCanvas.width,
                 Math.max(1, destinationBottom - destinationTop),
             )
-        } finally {
-            imageTable.cleanup()
         }
+        return canvasToPngBlob(outputCanvas)
+    } finally {
+        imageTable.cleanup()
     }
-
-    return canvasToPngBlob(outputCanvas)
 }
 
 export async function saveTableAsImage(table: HTMLTableElement, filename = getShareImageFileName('Table', 'table')): Promise<void> {
