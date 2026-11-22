@@ -317,7 +317,7 @@ export function runLocalImportSync(options: {
                     sessionId: transcript.id,
                     ...(target ? { hapiSessionId: target.id } : {}),
                     error: {
-                        code: 'transcript_flushing',
+                        code: transcriptImportError.includes('flushing') ? 'transcript_flushing' : 'empty_transcript',
                         message: transcriptImportError
                     }
                 }, 'failed')

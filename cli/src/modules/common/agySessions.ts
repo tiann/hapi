@@ -604,8 +604,10 @@ export async function listLocalAgySessionsWithMessagesByIds(
         const allSteps = readAgyTranscriptStepsAfter(brainDir, sessionId, -1)
         const { steps, hadMissingFullRows } = selectStableCompleteAgySteps(allSteps)
         const converted = convertAgyTranscriptStepsToMessages(sessionId, steps, modifiedAt)
-        const importError = hadMissingFullRows && converted.messages.length === 0
-            ? 'Antigravity full transcript is still flushing; please retry import shortly'
+        const importError = converted.messages.length === 0
+            ? (hadMissingFullRows || allSteps.length === 0
+                ? 'Antigravity full transcript is still flushing; please retry import shortly'
+                : 'Antigravity session transcript contains no importable messages')
             : undefined
         const lastUserMessage = converted.lastUserMessage ?? formatSummaryPreview(row?.preview)
         const nativeCwd = parseAgyWorkspaceCwd(row?.workspace_uris)

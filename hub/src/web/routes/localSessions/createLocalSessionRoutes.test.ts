@@ -574,11 +574,25 @@ describe('generic local session routes', () => {
         ])
         const hapiId = batchRes.results[1]!.hapiSessionId!
 
-        // Simulate a live turn sent in HAPI on the imported session (stored without agy: localIds).
+        // Simulate a live turn sent in HAPI on the imported session (stored without agy: localIds),
+        // with two batched user messages (first has an attachment) and a background tool call placeholder.
         store.messages.addMessage(
             hapiId,
-            { role: 'user', content: { type: 'text', text: 'live follow-up from HAPI' }, meta: { sentFrom: 'web' } },
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'live follow-up from HAPI',
+                    attachments: [{ path: '/uploads/screen.png', name: 'screen.png', mimeType: 'image/png', size: 100 }]
+                },
+                meta: { sentFrom: 'web' }
+            },
             'web-live-uuid-1'
+        )
+        store.messages.addMessage(
+            hapiId,
+            { role: 'user', content: { type: 'text', text: 'queued second prompt' }, meta: { sentFrom: 'web' } },
+            'web-live-uuid-2'
         )
         store.messages.addMessage(
             hapiId,
@@ -593,13 +607,46 @@ describe('generic local session routes', () => {
             hapiId,
             {
                 role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call',
+                        callId: 'live-call-1',
+                        name: 'Bash',
+                        input: { command: 'sleep 1' }
+                    }
+                },
+                meta: { sentFrom: 'cli' }
+            },
+            undefined
+        )
+        store.messages.addMessage(
+            hapiId,
+            {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call-result',
+                        callId: 'live-call-1',
+                        output: 'Running in the background. The result appears when agy reports it.'
+                    }
+                },
+                meta: { sentFrom: 'cli' }
+            },
+            undefined
+        )
+        store.messages.addMessage(
+            hapiId,
+            {
+                role: 'agent',
                 content: { type: 'event', data: { type: 'round-summary', summary: { provider: 'agy' } } },
                 meta: { sentFrom: 'cli' }
             },
             undefined
         )
 
-        // Native transcript now includes that live turn plus a subsequent external CLI turn.
+        // Native transcript now includes that combined formatted live turn.
         agyContinued = {
             ...agyContinued,
             messages: [
@@ -607,7 +654,14 @@ describe('generic local session routes', () => {
                 {
                     id: 'agy:agy-continued:step:2:user',
                     createdAt: 20,
-                    content: { role: 'user', content: { type: 'text', text: 'live follow-up from HAPI' }, meta: { sentFrom: 'cli' } },
+                    content: {
+                        role: 'user',
+                        content: {
+                            type: 'text',
+                            text: '@/uploads/screen.png\n\nlive follow-up from HAPI\nqueued second prompt'
+                        },
+                        meta: { sentFrom: 'cli' }
+                    },
                     anchor: 'step:2:user'
                 },
                 {
@@ -619,6 +673,41 @@ describe('generic local session routes', () => {
                         meta: { sentFrom: 'cli' }
                     },
                     anchor: 'step:3:text'
+                },
+                {
+                    id: 'agy:agy-continued:step:3:call:0',
+                    createdAt: 21,
+                    content: {
+                        role: 'agent',
+                        content: {
+                            type: 'codex',
+                            data: {
+                                type: 'tool-call',
+                                callId: 'agy-wakeup-agy-continued-3-0',
+                                name: 'Bash',
+                                input: { command: 'sleep 1' }
+                            }
+                        },
+                        meta: { sentFrom: 'cli' }
+                    },
+                    anchor: 'step:3:call:0'
+                },
+                {
+                    id: 'agy:agy-continued:step:4:0',
+                    createdAt: 22,
+                    content: {
+                        role: 'agent',
+                        content: {
+                            type: 'codex',
+                            data: {
+                                type: 'tool-call-result',
+                                callId: 'agy-wakeup-agy-continued-3-0',
+                                output: 'Running in the background. The result appears when agy reports it.'
+                            }
+                        },
+                        meta: { sentFrom: 'cli' }
+                    },
+                    anchor: 'step:4:0'
                 }
             ]
         }
@@ -632,6 +721,41 @@ describe('generic local session routes', () => {
             hapiSessionId: hapiId,
             action: 'unchanged',
             appended: 0
+        })
+
+        // A late native background tool completion arrives in the transcript without a new user prompt.
+        agyContinued = {
+            ...agyContinued,
+            messages: [
+                ...agyContinued.messages,
+                {
+                    id: 'agy:agy-continued:step:5:0',
+                    createdAt: 25,
+                    content: {
+                        role: 'agent',
+                        content: {
+                            type: 'codex',
+                            data: {
+                                type: 'tool-call-result',
+                                callId: 'agy-wakeup-agy-continued-3-0',
+                                output: { stdout: 'done', exit_code: 0 }
+                            }
+                        },
+                        meta: { sentFrom: 'cli' }
+                    },
+                    anchor: 'step:5:0'
+                }
+            ]
+        }
+        const reimportLateToolResult = await (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-continued'], cwd: '/work' })
+        })).json() as { success: boolean; results: Array<{ hapiSessionId?: string; action?: string; appended?: number }> }
+        expect(reimportLateToolResult.success).toBe(true)
+        expect(reimportLateToolResult.results[0]).toMatchObject({
+            hapiSessionId: hapiId,
+            action: 'updated',
+            appended: 1
         })
 
         // External CLI appends one more turn after the HAPI turn.

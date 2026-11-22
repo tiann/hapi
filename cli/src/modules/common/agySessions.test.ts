@@ -388,13 +388,16 @@ const results: Record<string, unknown> = {}
                 content: '<USER_REQUEST>\\nClipped...'
             }
         ])
+        writeTranscript(root, 'conv-empty-file', [])
         const batchWithUnfinished = await listLocalAgySessionsWithMessagesByIds(
-            new Set(['conv-trunc-head', 'conv-trunc-prefix']),
+            new Set(['conv-trunc-head', 'conv-empty-file', 'conv-trunc-prefix']),
             { appDataDir: root }
         )
         const unfinishedHead = batchWithUnfinished.find((item) => item.id === 'conv-trunc-head')
+        const emptyFile = batchWithUnfinished.find((item) => item.id === 'conv-empty-file')
         const headError = unfinishedHead?.importError ?? null
-        results.truncated = { beforeFull, afterFull, headError, batchIds: batchWithUnfinished.map((item) => item.id) }
+        const emptyError = emptyFile?.importError ?? null
+        results.truncated = { beforeFull, afterFull, headError, emptyError, batchIds: batchWithUnfinished.map((item) => item.id) }
     } finally {
         rmSync(root, { recursive: true, force: true })
     }
@@ -437,6 +440,7 @@ function runBunSuite() {
             beforeFull: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
             afterFull: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
             headError: string | null
+            emptyError: string | null
             batchIds: string[]
         }
     }
@@ -519,7 +523,7 @@ describe('agySessions', () => {
             }
         })
 
-        const { beforeFull, afterFull, headError } = output.truncated
+        const { beforeFull, afterFull, headError, emptyError } = output.truncated
         expect(beforeFull.messages).toHaveLength(2)
         expect(afterFull.messages).toHaveLength(3)
         expect(afterFull.messages.slice(0, 2)).toEqual(beforeFull.messages)
@@ -534,6 +538,7 @@ describe('agySessions', () => {
             }
         })
         expect(headError).toContain('full transcript is still flushing')
-        expect(output.truncated.batchIds).toEqual(expect.arrayContaining(['conv-trunc-head', 'conv-trunc-prefix']))
+        expect(emptyError).toContain('full transcript is still flushing')
+        expect(output.truncated.batchIds).toEqual(expect.arrayContaining(['conv-trunc-head', 'conv-empty-file', 'conv-trunc-prefix']))
     })
 })

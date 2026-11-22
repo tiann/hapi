@@ -23,9 +23,23 @@ export type AnchoredMatchResult =
     | { status: 'transcript_diverged'; message: string }
     | { status: 'already_in_hapi'; message: string }
 
+const AGY_BACKGROUND_PLACEHOLDER = 'Running in the background. The result appears when agy reports it.'
+
+type UserPromptPart = {
+    raw: string
+    formatted: string
+}
+
+type AgentItemSummary =
+    | { kind: 'message'; text: string; index: number }
+    | { kind: 'reasoning'; text: string; index: number }
+    | { kind: 'tool-call'; name: string; index: number }
+    | { kind: 'tool-result'; isBackgroundPlaceholder: boolean; index: number }
+
 type TurnSummary = {
-    userText: string
+    userParts: UserPromptPart[]
     assistantText: string
+    agentItems: AgentItemSummary[]
     endIndex: number
 }
 
@@ -35,58 +49,187 @@ function asObj(value: unknown): Record<string, unknown> | null {
         : null
 }
 
-function extractUserText(content: unknown): string | null {
+function extractUserPromptPart(content: unknown): UserPromptPart | null {
     const rec = asObj(content)
     if (rec?.role !== 'user') return null
     const body = asObj(rec.content)
     if (body?.type !== 'text' || typeof body.text !== 'string') return null
-    return normalizeComparableText(body.text)
+    const raw = normalizeComparableText(body.text)
+    const attachments = Array.isArray(body.attachments) ? body.attachments : []
+    const refs: string[] = []
+    for (const item of attachments) {
+        const att = asObj(item)
+        if (typeof att?.path === 'string' && att.path.trim()) {
+            refs.push(`@${att.path}`)
+        }
+    }
+    const formattedRaw = refs.length === 0
+        ? body.text
+        : body.text
+            ? `${refs.join(' ')}\n\n${body.text}`
+            : refs.join(' ')
+    const formatted = normalizeComparableText(formattedRaw)
+    return { raw, formatted }
 }
 
-function extractAssistantText(content: unknown): string | null {
+function extractAgentItem(content: unknown, index: number): AgentItemSummary | null {
     const rec = asObj(content)
     if (rec?.role !== 'agent') return null
     const body = asObj(rec.content)
     if (body?.type !== 'codex') return null
     const data = asObj(body.data)
-    if (data?.type !== 'message' || typeof data.message !== 'string') return null
-    return normalizeComparableText(data.message)
+    if (!data || typeof data.type !== 'string') return null
+    if (data.type === 'message' && typeof data.message === 'string') {
+        return { kind: 'message', text: normalizeComparableText(data.message), index }
+    }
+    if (data.type === 'reasoning' && typeof data.message === 'string') {
+        return { kind: 'reasoning', text: normalizeComparableText(data.message), index }
+    }
+    if (data.type === 'tool-call' && typeof data.name === 'string') {
+        return { kind: 'tool-call', name: data.name, index }
+    }
+    if (data.type === 'tool-call-result') {
+        const isBackgroundPlaceholder = data.output === AGY_BACKGROUND_PLACEHOLDER
+        return { kind: 'tool-result', isBackgroundPlaceholder, index }
+    }
+    return null
 }
 
 function groupIntoTurns(messages: ReadonlyArray<{ content: unknown }>): TurnSummary[] | null {
     const turns: TurnSummary[] = []
-    let current: { userText: string; assistantParts: string[]; endIndex: number } | null = null
+    let current: {
+        userParts: UserPromptPart[]
+        assistantParts: string[]
+        agentItems: AgentItemSummary[]
+        hasAgentContent: boolean
+        endIndex: number
+    } | null = null
     for (let i = 0; i < messages.length; i += 1) {
         const msg = messages[i]!
-        const userText = extractUserText(msg.content)
-        if (userText !== null) {
+        const userPart = extractUserPromptPart(msg.content)
+        if (userPart !== null) {
+            if (current && !current.hasAgentContent) {
+                current.userParts.push(userPart)
+                current.endIndex = i
+                continue
+            }
             if (current) {
                 turns.push({
-                    userText: current.userText,
+                    userParts: current.userParts,
                     assistantText: normalizeComparableText(current.assistantParts.join('\n')),
+                    agentItems: current.agentItems,
                     endIndex: current.endIndex
                 })
             }
-            current = { userText, assistantParts: [], endIndex: i }
+            current = {
+                userParts: [userPart],
+                assistantParts: [],
+                agentItems: [],
+                hasAgentContent: false,
+                endIndex: i
+            }
             continue
         }
         if (!current) {
             return null
         }
+        current.hasAgentContent = true
         current.endIndex = i
-        const assistantText = extractAssistantText(msg.content)
-        if (assistantText) {
-            current.assistantParts.push(assistantText)
+        const item = extractAgentItem(msg.content, i)
+        if (item) {
+            current.agentItems.push(item)
+            if (item.kind === 'message' && item.text) {
+                current.assistantParts.push(item.text)
+            }
         }
     }
     if (current) {
         turns.push({
-            userText: current.userText,
+            userParts: current.userParts,
             assistantText: normalizeComparableText(current.assistantParts.join('\n')),
+            agentItems: current.agentItems,
             endIndex: current.endIndex
         })
     }
     return turns
+}
+
+function buildUserPromptCandidates(parts: readonly UserPromptPart[]): Set<string> {
+    const candidates = new Set<string>()
+    if (parts.length === 0) return candidates
+    const recurse = (index: number, acc: string[]) => {
+        if (index === parts.length) {
+            candidates.add(normalizeComparableText(acc.join('\n')))
+            return
+        }
+        const part = parts[index]!
+        recurse(index + 1, [...acc, part.raw])
+        if (part.formatted !== part.raw) {
+            recurse(index + 1, [...acc, part.formatted])
+        }
+    }
+    recurse(0, [])
+    return candidates
+}
+
+function userPromptsMatch(liveTurn: TurnSummary, sourceTurn: TurnSummary): boolean {
+    const liveCandidates = buildUserPromptCandidates(liveTurn.userParts)
+    const sourceCandidates = buildUserPromptCandidates(sourceTurn.userParts)
+    for (const candidate of liveCandidates) {
+        if (sourceCandidates.has(candidate)) return true
+    }
+    return false
+}
+
+function agentItemsCompatible(liveItem: AgentItemSummary, sourceItem: AgentItemSummary): boolean {
+    if (liveItem.kind !== sourceItem.kind) return false
+    if (liveItem.kind === 'message' && sourceItem.kind === 'message') {
+        return liveItem.text === sourceItem.text
+    }
+    if (liveItem.kind === 'reasoning' && sourceItem.kind === 'reasoning') {
+        return liveItem.text === sourceItem.text
+    }
+    if (liveItem.kind === 'tool-call' && sourceItem.kind === 'tool-call') {
+        return liveItem.name === sourceItem.name
+    }
+    if (liveItem.kind === 'tool-result' && sourceItem.kind === 'tool-result') {
+        return liveItem.isBackgroundPlaceholder === sourceItem.isBackgroundPlaceholder
+    }
+    return false
+}
+
+function alignTurnAgentItems(
+    liveTurn: TurnSummary,
+    sourceTurn: TurnSummary,
+    requireFullConsumption: boolean
+): number | null {
+    let sourceCursor = 0
+    let lastMatchedIndex = sourceTurn.endIndex - sourceTurn.agentItems.length
+    for (const item of sourceTurn.agentItems) {
+        lastMatchedIndex = Math.min(lastMatchedIndex, item.index - 1)
+    }
+    for (const liveItem of liveTurn.agentItems) {
+        let matched = false
+        while (sourceCursor < sourceTurn.agentItems.length) {
+            const candidate = sourceTurn.agentItems[sourceCursor]!
+            sourceCursor += 1
+            if (agentItemsCompatible(liveItem, candidate)) {
+                lastMatchedIndex = candidate.index
+                matched = true
+                break
+            }
+        }
+        if (!matched) {
+            return null
+        }
+    }
+    if (requireFullConsumption && sourceCursor < sourceTurn.agentItems.length) {
+        return null
+    }
+    if (sourceCursor === sourceTurn.agentItems.length) {
+        return sourceTurn.endIndex + 1
+    }
+    return lastMatchedIndex + 1
 }
 
 function reconcileLiveTurns(
@@ -103,15 +246,24 @@ function reconcileLiveTurns(
     if (requireFullConsumption ? sourceTurns.length !== liveTurns.length : sourceTurns.length < liveTurns.length) {
         return null
     }
+    let consumed = 0
     for (let i = 0; i < liveTurns.length; i += 1) {
         const liveTurn = liveTurns[i]!
         const sourceTurn = sourceTurns[i]!
-        if (liveTurn.userText !== sourceTurn.userText) return null
+        if (!userPromptsMatch(liveTurn, sourceTurn)) return null
         if (liveTurn.assistantText && sourceTurn.assistantText && liveTurn.assistantText !== sourceTurn.assistantText) {
             return null
         }
+        const isLastLiveTurn = i === liveTurns.length - 1
+        const turnConsumed = alignTurnAgentItems(
+            liveTurn,
+            sourceTurn,
+            requireFullConsumption || !isLastLiveTurn
+        )
+        if (turnConsumed === null) return null
+        consumed = turnConsumed
     }
-    return sourceTurns[liveTurns.length - 1]!.endIndex + 1
+    return consumed
 }
 
 export function matchAnchored(options: {
