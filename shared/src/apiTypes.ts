@@ -410,6 +410,34 @@ export const ClaudeLocalSessionWithMessagesSchema = ClaudeLocalSessionSummarySch
 export type ClaudeLocalSessionSummary = z.infer<typeof ClaudeLocalSessionSummarySchema>
 export type ClaudeLocalSessionWithMessages = z.infer<typeof ClaudeLocalSessionWithMessagesSchema>
 
+export const AgyImportedMessageContentSchema = CodexImportedMessageSchema
+
+export const AgyImportedMessageSchema = z.object({
+    localId: z.string().min(1),
+    anchor: z.string().min(1),
+    createdAt: z.number(),
+    content: AgyImportedMessageContentSchema
+})
+
+export const AgyLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    file: z.string().min(1),
+    modifiedAt: z.number(),
+    messageCount: z.number().int().nonnegative().optional()
+})
+
+export const AgyLocalSessionWithMessagesSchema = AgyLocalSessionSummarySchema.extend({
+    messages: z.array(AgyImportedMessageSchema)
+})
+
+export type AgyImportedMessageContent = z.infer<typeof AgyImportedMessageContentSchema>
+export type AgyImportedMessage = z.infer<typeof AgyImportedMessageSchema>
+export type AgyLocalSessionSummary = z.infer<typeof AgyLocalSessionSummarySchema>
+export type AgyLocalSessionWithMessages = z.infer<typeof AgyLocalSessionWithMessagesSchema>
+
 export const MAX_OPENCODE_SESSION_IMPORTS = 200
 
 export const ListOpencodeSessionsRpcRequestSchema = z.object({

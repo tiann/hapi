@@ -37,6 +37,7 @@ export type LocalSessionNativeIdKey =
     | 'opencodeSessionId'
     | 'claudeSessionId'
     | 'claudeSessionIdHistory'
+    | 'agySessionId'
     | 'codexSessionId'
     | 'codexSourceSessionId'
 
@@ -226,6 +227,18 @@ export const CLAUDE_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     batch: 'continue',
     importLimit: 200,
     localIdPrefix: 'claude:',
+    requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport
+}
+
+export const AGY_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
+    flavor: 'agy',
+    displayName: 'Antigravity',
+    routeBase: 'agy',
+    nativeIdKeys: ['agySessionId'],
+    match: { strategy: 'anchored' },
+    lifecycleOnCreate: 'archived',
+    batch: 'continue',
+    importLimit: 200,
     requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport
 }
 

@@ -4,7 +4,7 @@ import type { LocalTranscript, LocalTranscriptSummary } from '@hapi/protocol/loc
 import type { Machine, SyncEngine } from '../../../sync/syncEngine'
 import type { WebAppEnv } from '../../middleware/auth'
 import { Store } from '../../../store'
-import { CLAUDE_LOCAL_SESSION_SOURCE, CODEX_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE, PI_LOCAL_SESSION_SOURCE } from './sources'
+import { AGY_LOCAL_SESSION_SOURCE, CLAUDE_LOCAL_SESSION_SOURCE, CODEX_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE, PI_LOCAL_SESSION_SOURCE } from './sources'
 import { createLocalSessionRoutes } from './createLocalSessionRoutes'
 import { fetchLocalTranscriptSummaries, fetchLocalTranscriptsByIds } from './fetchLocalTranscripts'
 
@@ -260,6 +260,54 @@ describe('generic local session routes', () => {
         expect(body.success).toBe(false)
         expect(body.error).toContain('200')
         expect(calls).toHaveLength(0)
+    })
+
+    it('lists and imports local Antigravity sessions with permissionMode and model', async () => {
+        const agySummary: LocalTranscriptSummary = {
+            flavor: 'agy',
+            id: 'agy-1',
+            title: 'Antigravity session',
+            lastUserMessage: 'hello agy',
+            cwd: '/tmp/agy-project',
+            file: '/tmp/.gemini/antigravity-cli/brain/agy-1/.system_generated/logs/transcript.jsonl',
+            modifiedAt: 10
+        }
+        const agyTranscript: LocalTranscript = {
+            ...agySummary,
+            messages: [{
+                id: 'agy:agy-1:step:0:0',
+                createdAt: 10,
+                content: { role: 'user', content: { type: 'text', text: 'hello agy' }, meta: { sentFrom: 'cli' } },
+                anchor: 'step:0:0'
+            }]
+        }
+        const { app, store, appliedConfigs } = harness({
+            sources: [AGY_LOCAL_SESSION_SOURCE],
+            summaries: [agySummary],
+            transcripts: [agyTranscript]
+        })
+        stores.push(store)
+
+        const listRes = await app.request('/api/agy/sessions')
+        expect(listRes.status).toBe(200)
+        const listBody = await listRes.json() as { success: boolean; sessions: Array<Record<string, unknown>> }
+        expect(listBody.success).toBe(true)
+        expect(listBody.sessions).toHaveLength(1)
+        expect(listBody.sessions[0]).toMatchObject({ id: 'agy-1', title: 'Antigravity session' })
+
+        const importRes = await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-1'], model: 'gemini-3-pro', permissionMode: 'request-review' })
+        })
+        expect(importRes.status).toBe(200)
+        const importBody = await importRes.json() as { success: boolean; results: Array<Record<string, unknown>> }
+        expect(importBody.success).toBe(true)
+        expect(importBody.results[0]).toMatchObject({ agySessionId: 'agy-1', action: 'created', appended: 1 })
+        expect(appliedConfigs).toEqual([{ model: 'gemini-3-pro', permissionMode: 'request-review' }])
+
+        const secondListRes = await app.request('/api/agy/sessions')
+        const secondListBody = await secondListRes.json() as { sessions: Array<Record<string, unknown>> }
+        expect(secondListBody.sessions[0]).toMatchObject({ id: 'agy-1', hapiSessionId: importBody.results[0]!.hapiSessionId })
     })
 
 })

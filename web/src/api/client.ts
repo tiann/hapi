@@ -24,6 +24,8 @@ import type {
     MessagesResponse,
     ClaudeImportSessionsResponse,
     ClaudeLocalSessionsResponse,
+    AgyImportSessionsResponse,
+    AgyLocalSessionsResponse,
     OpencodeImportSessionsResponse,
     OpencodeLocalSessionsResponse,
     PermissionMode,
@@ -554,6 +556,21 @@ export class ApiClient {
 
     async importClaudeSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; effort?: string | null; permissionMode?: PermissionMode }): Promise<ClaudeImportSessionsResponse> {
         return await this.request<ClaudeImportSessionsResponse>('/api/claude/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
+
+    async getAgySessions(cwd?: string | null, machineId?: string | null): Promise<AgyLocalSessionsResponse> {
+        const params = new URLSearchParams()
+        if (cwd?.trim()) params.set('cwd', cwd.trim())
+        if (machineId?.trim()) params.set('machineId', machineId.trim())
+        const query = params.size ? `?${params.toString()}` : ''
+        return await this.request<AgyLocalSessionsResponse>(`/api/agy/sessions${query}`)
+    }
+
+    async importAgySessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; permissionMode?: PermissionMode }): Promise<AgyImportSessionsResponse> {
+        return await this.request<AgyImportSessionsResponse>('/api/agy/import-sessions', {
             method: 'POST',
             body: JSON.stringify(payload)
         })

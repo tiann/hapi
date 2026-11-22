@@ -355,6 +355,43 @@ export type ClaudeImportSessionsResponse = {
     error?: string
 }
 
+export type AgyLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    messageCount?: number
+    hapiSessionId?: string
+}
+
+export type AgyLocalSessionsResponse = {
+    success: true
+    sessions: AgyLocalSessionSummary[]
+    machineId: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+export type AgyImportResult = {
+    agySessionId: string
+    hapiSessionId?: string
+    action?: 'created' | 'updated' | 'unchanged'
+    appended?: number
+    error?: { code: string; message: string }
+}
+
+export type AgyImportSessionsResponse = {
+    success: boolean
+    results: AgyImportResult[]
+    machineId?: string
+    error?: string
+}
+
 export type OpencodeLocalSessionSummary = {
     id: string
     title: string
