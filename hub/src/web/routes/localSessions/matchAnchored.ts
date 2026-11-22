@@ -83,15 +83,11 @@ function filterDeliveredLiveMessages(
     createdAt?: number
     seq?: number
 }> {
-    const anyUserInvoked = messages.some((msg) => {
-        const rec = asObj(msg.content)
-        return rec?.role === 'user' && Boolean(msg.localId) && typeof msg.invokedAt === 'number'
-    })
     const filtered = messages.filter((msg) => {
         const rec = asObj(msg.content)
         if (rec?.role !== 'user') return true
         if (isUndeliveredQueuedUserMessage(msg)) return false
-        if (anyUserInvoked && msg.localId && msg.invokedAt == null) return false
+        if (msg.localId && msg.invokedAt == null) return false
         return true
     })
     const ordered = filtered.sort((a, b) => {
@@ -503,33 +499,63 @@ function reconcileLiveTurns(
                 liveTurns.splice(lIdx, 1, firstTurn, restTurn)
             }
         }
-        // Match the whole exchange before committing a native-to-live ID mapping.
-        // Identical user text may occur in both native-only and delivered turns.
-        let winner: { index: number; indices: Set<number>; ids: Map<string, string> } | undefined
-        const firstPart = liveTurn.userParts[0]!
-        const candidates = liveTurn.userParts.length === 1
-            ? new Set([...(indicesByPrompt.get(firstPart.raw) ?? []), ...(indicesByPrompt.get(firstPart.formatted) ?? [])])
+        // Normalize legacy adjacent batches before searching the entire sequence.
+        sIdx += 1
+    }
+
+    type Choice = { source: number; indices: Set<number>; ids: Map<string, string> }
+    const choices: Choice[] = []
+    let solution: Choice[] | undefined
+    // Inconsistent repeated exchanges can have exponentially many partial alignments.
+    // Fail closed once the search exceeds a linear allowance for this transcript.
+    let remainingComparisons = 4096 + 32 * (sourceSlice.length + liveMessages.length)
+    function* matches(liveIndex: number, after: number): Generator<Choice> {
+        const live = liveTurns[liveIndex]!
+        const part = live.userParts[0]!
+        const candidates = live.userParts.length === 1
+            ? part.formatted === part.raw ? indicesByPrompt.get(part.raw) ?? []
+                : new Set([...(indicesByPrompt.get(part.raw) ?? []), ...(indicesByPrompt.get(part.formatted) ?? [])])
             : sourceTurns.keys()
         for (const i of candidates) {
-            if (i < sIdx || sourceTurns.length - i < liveTurns.length - lIdx) continue
+            if (--remainingComparisons < 0) return
+            if (i <= after || sourceTurns.length - i < liveTurns.length - liveIndex) continue
             const candidate = sourceTurns[i]!
-            if (!userPromptsMatch(liveTurn, candidate)) continue
+            if (!userPromptsMatch(live, candidate)) continue
             const indices = new Set(candidate.agentItems.map(item => item.index).filter(index => matchedSourceIndices.has(index)))
             const ids = new Map<string, string>()
             for (const item of candidate.agentItems) {
                 if (item.kind !== 'tool-result') continue
-                const prior = callIdMap.get(item.callId)
+                let prior = callIdMap.get(item.callId)
+                for (let j = choices.length - 1; prior === undefined && j >= 0; j--) prior = choices[j]!.ids.get(item.callId)
                 if (prior) ids.set(item.callId, prior)
             }
-            if (!alignTurnAgentItems(liveTurn, candidate, indices, ids)) continue
-            if (winner) return null
-            winner = { index: i, indices, ids }
+            if (alignTurnAgentItems(live, candidate, indices, ids)) yield { source: i, indices, ids }
         }
-        if (!winner) return null
-        for (const index of winner.indices) matchedSourceIndices.add(index)
-        for (const [nativeId, liveId] of winner.ids) callIdMap.set(nativeId, liveId)
-        sIdx = winner.index
-        sIdx += 1
+    }
+    // A choice is ambiguous only when two complete ordered histories fit. Use
+    // an explicit stack so long transcripts do not exhaust the JS call stack.
+    const stack = liveTurns.length ? [matches(0, -1)] : []
+    while (stack.length) {
+        const next = stack[stack.length - 1]!.next()
+        if (remainingComparisons < 0) return null
+        if (next.done) {
+            stack.pop()
+            choices.pop()
+            continue
+        }
+        choices.push(next.value)
+        if (choices.length < liveTurns.length) {
+            stack.push(matches(choices.length, next.value.source))
+        } else {
+            if (solution) return null
+            solution = [...choices]
+            choices.pop()
+        }
+    }
+    if (liveTurns.length && !solution) return null
+    for (const choice of solution ?? []) {
+        for (const index of choice.indices) matchedSourceIndices.add(index)
+        for (const [nativeId, liveId] of choice.ids) callIdMap.set(nativeId, liveId)
     }
 
     const unconsumed: LocalTranscriptMessage[] = []

@@ -26,7 +26,7 @@ function storedMessage(localId: string, text: string): StoredMessage {
         createdAt: 1,
         seq: 1,
         localId,
-        invokedAt: null,
+        invokedAt: localId.startsWith(PREFIX) ? null : 1,
         scheduledAt: null
     }
 }
@@ -249,6 +249,16 @@ describe('Antigravity live continuation', () => {
         const stored = [storedMessage(initial.id, 'start'), storedMessage('sent', 'repeat'), { ...storedMessage('reply', ''), content: answer('live') }]
         expect(matchAnchored({ transcript: transcript(rows), storedMessages: stored, importPrefix: PREFIX, cursor: null,
             reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: rows.slice(1, 3) })
+    })
+    it('resolves two repeated exchanges in order and excludes a never-acknowledged prompt', () => {
+        const initial = transcriptMessage(`${PREFIX}start`, 'start')
+        const reply = agent({ type: 'message', message: 'done' })
+        const rows = [initial, ...[1, 2].flatMap(i => [transcriptMessage(`${PREFIX}p${i}`, 'repeat'),
+            { ...transcriptMessage(`${PREFIX}r${i}`, ''), content: reply }]), transcriptMessage(`${PREFIX}tail`, 'native only')]
+        const stored = [storedMessage(initial.id, 'start'), ...[1, 2].flatMap(i => [storedMessage(`p${i}`, 'repeat'),
+            { ...storedMessage(`r${i}`, ''), content: reply }]), { ...storedMessage('pending', 'unsent'), invokedAt: null }]
+        expect(matchAnchored({ transcript: transcript(rows), storedMessages: stored, importPrefix: PREFIX, cursor: null,
+            reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: rows.slice(-1) })
     })
 
 })

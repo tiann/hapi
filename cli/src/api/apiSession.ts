@@ -223,6 +223,7 @@ export class ApiSessionClient extends EventEmitter {
     private needsBackfill = false
     private hasConnectedOnce = false
     // Replayed on (re)connect: a volatile heartbeat sent while disconnected is dropped (#2053).
+    private confirmedImportedAgyReady = false
     private latestKeepAlive: Omit<Parameters<ClientToServerEvents['session-alive']>[0], 'sid' | 'time'> | null = null
     readonly rpcHandlerManager: RpcHandlerManager
     private readonly terminalManager: TerminalManager
@@ -336,6 +337,7 @@ if (isReconnect) {
                 thinking: false,
                 ...this.latestKeepAlive
             })
+            if (isReconnect && this.confirmedImportedAgyReady) this.emitSessionReady()
         })
 
         this.socket.on('rpc-request', async (data: { method: string; params: string }, callback: (response: string) => void) => {
@@ -1384,6 +1386,7 @@ if (isReconnect) {
 
     /** Hub waits for this before mergeSessions on Cursor ACP reopen (tiann/hapi#939). */
     emitSessionReady(): void {
+        this.confirmedImportedAgyReady = this.getMetadata()?.agyImportedAt != null
         this.emitOrQueue(() => {
             this.socket.emit('session-ready', {
                 sid: this.sessionId,
@@ -1444,6 +1447,7 @@ if (isReconnect) {
     }
 
     sendSessionDeath(reason?: SessionEndReason, options?: { preserveUploads?: boolean }): void {
+        this.confirmedImportedAgyReady = false
         if (this.state === 'active') {
             if (options?.preserveUploads) preserveUploadDirOnExit(this.sessionId)
             else void cleanupUploadDir(this.sessionId)
