@@ -54,7 +54,8 @@ user input rather than ongoing output. **Active sessions only** in the same
 settings group hides inactive sessions, except the open session and sessions
 with a running job that have not been archived. A disconnected, archived
 conversation stays in **Archived** even if its job is still reporting. Its row
-still shows job progress; archiving does not stop that job.
+retains the job meter. An independent process can keep reporting after archive;
+work in the stopped session process tree can be terminated.
 
 A session counts as working while it has open tool calls, even between agent
 rounds. Autonomous loops that keep running tools therefore show as working
