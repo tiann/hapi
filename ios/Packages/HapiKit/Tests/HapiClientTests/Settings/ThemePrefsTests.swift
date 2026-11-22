@@ -94,6 +94,7 @@ struct ThemePrefsTests {
         #expect(AppLanguage.english.displayName == "English")
         #expect(AppLanguage.simplifiedChinese.displayName == "简体中文")
         #expect(AppLanguage.russian.displayName == "Русский")
+        #expect(AppLanguage.japanese.displayName == "日本語")
         // The follow-system row's label is localized at the app layer; the
         // package carries the English source string.
         #expect(AppLanguage.system.displayName == "Follow system")

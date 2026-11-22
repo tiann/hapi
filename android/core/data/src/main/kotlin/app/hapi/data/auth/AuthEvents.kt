@@ -5,6 +5,13 @@ enum class AuthTerminalReason {
     /** `POST /api/auth` answered 401 — the access token was rotated/revoked. */
     ACCESS_TOKEN_REJECTED,
 
+    /**
+     * `POST /api/auth` answered 401 `passkey_session_invalid` — the passkey
+     * was deleted, `CLI_API_TOKEN` rotated, or the session expired. Sign in
+     * with a passkey (or the access token) again.
+     */
+    PASSKEY_SESSION_INVALID,
+
     /** The retried request 401'd again with a freshly-exchanged JWT. */
     RETRY_EXHAUSTED,
 

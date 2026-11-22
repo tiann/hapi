@@ -9,6 +9,72 @@ import { extractNotifySummary } from '@hapi/protocol/messages';
 import { asyncQuestionsForItem } from './asyncQuestions';
 
 describe('shared history projection', () => {
+    it('projects accepted batch members under their original IDs and one native turn', async () => {
+        let metadata: Record<string, unknown> = {};
+        const user = vi.fn();
+        const content = [{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }];
+        const aliases = [{ id: 'original-A', input: [content[0]] }, { id: 'original-B', input: [content[1]] }];
+        const committed = vi.fn(async () => aliases);
+        const session = {
+            getMetadata: () => metadata,
+            updateMetadata: (fn: (value: Record<string, unknown>) => Record<string, unknown>) => { metadata = fn(metadata); },
+            sendUserMessage: user, sendAgentMessage: vi.fn()
+        } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', committed);
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn',
+            item: { id: 'item', type: 'userMessage', clientId: 'native-batch', content } });
+        expect(committed).toHaveBeenCalledWith('native-batch', content);
+        expect(user.mock.calls).toEqual([['A', undefined, 'original-A'], ['B', undefined, 'original-B']]);
+        expect(metadata.conversationHistoryTurns).toEqual({ 'original-A': 'turn', 'original-B': 'turn' });
+        expect(metadata.conversationHistoryPoints).toEqual({ 'original-A': true });
+    });
+
+    it('does not echo or create history points for an unproven batch version', async () => {
+        const user = vi.fn(); const update = vi.fn();
+        const session = { getMetadata: () => ({}), updateMetadata: update, sendUserMessage: user,
+            sendAgentMessage: vi.fn() } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => []);
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn',
+            item: { id: 'item', type: 'userMessage', clientId: 'native-batch', content: [{ type: 'text', text: 'unconfirmed' }] } });
+        expect(user).not.toHaveBeenCalled();
+        expect(update).not.toHaveBeenCalled();
+        expect(projection.turnFor('native-batch')).toBeUndefined();
+    });
+
+    it('keeps batch aliases and a failed native command consistent through history replay', async () => {
+        let metadata: Record<string, unknown> = {};
+        const user = vi.fn(); const agent = vi.fn();
+        const input = [{ type: 'text', text: 'first' }, { type: 'text', text: 'second' }];
+        const committed = vi.fn(async () => [{ id: 'first-id', input: [input[0]] }, { id: 'second-id', input: [input[1]] }]);
+        const session = {
+            getMetadata: () => metadata,
+            updateMetadata: (fn: (value: Record<string, unknown>) => Record<string, unknown>) => { metadata = fn(metadata); },
+            sendUserMessage: user, sendAgentMessage: agent
+        } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', committed);
+        const items = [
+            { id: 'batch-item', type: 'userMessage', clientId: 'native-batch', content: input },
+            { id: 'stopped-command', type: 'commandExecution', command: 'sleep 100', status: 'cancelled', exitCode: -1 }
+        ];
+        for (const item of items) {
+            await projection.notification('item/started', { threadId: 'thread', turnId: 'turn', item });
+            await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        }
+        const live = agent.mock.calls.slice();
+        const assertProjection = () => {
+            expect([...new Map(user.mock.calls.map(([text, , id]) => [id, text]))]).toEqual([['first-id', 'first'], ['second-id', 'second']]);
+            expect(metadata.conversationHistoryTurns).toEqual({ 'first-id': 'turn', 'second-id': 'turn' });
+            expect(metadata.conversationHistoryPoints).toEqual({ 'first-id': true });
+            expect(agent.mock.calls.map(([body]) => body).filter(body => body.type === 'tool-call-result'))
+                .toMatchObject([{ callId: 'stopped-command', is_error: true, output: { exit_code: -1 } }]);
+        };
+        assertProjection();
+        projection.reset(); user.mockClear(); agent.mockClear();
+        await projection.history({ turns: [{ id: 'turn', status: 'interrupted', items }] });
+        assertProjection();
+        expect(agent.mock.calls).toEqual(live);
+    });
+
     it('displays async answers as readable user messages while preserving native IDs', async () => {
         const sendUserMessage = vi.fn(); const committed = vi.fn(async () => {});
         const observe = vi.fn();
@@ -20,8 +86,29 @@ describe('shared history projection', () => {
         const item = { type: 'userMessage', id: 'native-answer', clientId: 'client-answer', content: [{ type: 'text', text }] };
         await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
         expect(observe).toHaveBeenCalledWith('thread', item);
-        expect(committed).toHaveBeenCalledWith('client-answer');
+        expect(committed).toHaveBeenCalledWith('client-answer', item.content);
         expect(sendUserMessage).toHaveBeenCalledWith('Which client?\nWeb', undefined, 'client-answer');
+    });
+    it('displays async answers per original batch member and retains the first fork boundary', async () => {
+        let metadata: Record<string, unknown> = {};
+        const user = vi.fn();
+        const text = `<send_user_message_question_reply>\n${JSON.stringify([{
+            questionItemId: '["request_user_input_async","call_async",0]', question: 'Which client?', answer: 'Web'
+        }])}\n</send_user_message_question_reply>`;
+        const content = [{ type: 'text', text }, { type: 'text', text: 'Ordinary follow-up' }];
+        const aliases = [{ id: 'answer-original', input: [content[0]] }, { id: 'followup-original', input: [content[1]] }];
+        const committed = vi.fn(async () => aliases); const observe = vi.fn();
+        const session = { getMetadata: () => metadata,
+            updateMetadata: (fn: (value: Record<string, unknown>) => Record<string, unknown>) => { metadata = fn(metadata); },
+            sendUserMessage: user, sendAgentMessage: vi.fn() } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', committed, undefined, undefined, observe);
+        const item = { id: 'native-answer', type: 'userMessage', clientId: 'native-batch', content };
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        expect(committed).toHaveBeenCalledWith('native-batch', content);
+        expect(user.mock.calls).toEqual([['Which client?\nWeb', undefined, 'answer-original'], ['Ordinary follow-up', undefined, 'followup-original']]);
+        expect(metadata.conversationHistoryTurns).toEqual({ 'answer-original': 'turn', 'followup-original': 'turn' });
+        expect(metadata.conversationHistoryPoints).toEqual({ 'answer-original': true });
+        expect(observe).toHaveBeenCalledWith('thread', item);
     });
     it.each([undefined, 'root'])('projects async questions as actionable cards, including active snapshots (parent: %s)', async parentThreadId => {
         const send = vi.fn();

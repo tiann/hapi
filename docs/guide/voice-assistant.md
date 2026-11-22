@@ -1,3 +1,7 @@
+---
+description: "Talk to your coding agent hands-free with the HAPI voice assistant, or dictate messages and review them before sending."
+---
+
 # Voice input and assistant
 
 Control your AI coding agent with your voice. The built-in voice assistant supports three backends: **ElevenLabs** Conversational AI, **Gemini Live**, and **Qwen Realtime**. Pick whichever provider you have credentials for — the hub detects what's configured and the web app lets you switch.

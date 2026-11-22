@@ -50,6 +50,19 @@ function parseMaybeJson(value: unknown): unknown {
     return value;
 }
 
+/**
+ * OpenCode's id for a tool call in a part or hook payload. The model's callID
+ * comes before any part id so every path (part updates, hook events) names
+ * one call the same way; part.id is only a fallback for payloads without it.
+ */
+export function extractNativeToolCallId(record: Record<string, unknown>): string | null {
+    return getString(record.callID)
+        || getString(record.callId)
+        || getString(record.tool_call_id)
+        || getString(record.toolCallId)
+        || getString(record.id);
+}
+
 export function parseToolCall(part: unknown): ParsedToolCall | null {
     if (!isObject(part)) {
         return null;
@@ -61,12 +74,7 @@ export function parseToolCall(part: unknown): ParsedToolCall | null {
         return null;
     }
     const name = getString(record.tool) || getString(record.name);
-    // Prefer OpenCode's tool callID over part.id so lifecycle updates share one id.
-    const callId = getString(record.callID)
-        || getString(record.callId)
-        || getString(record.tool_call_id)
-        || getString(record.toolCallId)
-        || getString(record.id);
+    const callId = extractNativeToolCallId(record);
     if (!name || !callId) {
         return null;
     }
@@ -108,11 +116,7 @@ export function parseToolResult(part: unknown): ParsedToolResult | null {
     if (getString(record.type) !== 'tool') {
         return null;
     }
-    const callId = getString(record.callID)
-        || getString(record.callId)
-        || getString(record.tool_call_id)
-        || getString(record.toolCallId)
-        || getString(record.id);
+    const callId = extractNativeToolCallId(record);
     if (!callId) {
         return null;
     }

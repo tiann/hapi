@@ -7,7 +7,10 @@
     "types": "./src/index.ts",
     "exports": {
         ".": "./src/index.ts",
+        "./passkey": "./src/passkey.ts",
         "./apiTypes": "./src/apiTypes.ts",
+"./forkBoundary": "./src/forkBoundary.ts",
+        "./localTranscript": "./src/localTranscript.ts",
         "./messages": "./src/messages.ts",
         "./slashCommands": "./src/slashCommands.ts",
         "./buildInfo": "./src/buildInfo.ts",
