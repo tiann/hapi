@@ -94,12 +94,34 @@ function filterDeliveredLiveMessages(
         if (anyUserInvoked && msg.localId && msg.invokedAt == null) return false
         return true
     })
-    return [...filtered].sort((a, b) => {
+    const ordered = filtered.sort((a, b) => {
         const posA = a.invokedAt ?? a.createdAt ?? 0
         const posB = b.invokedAt ?? b.createdAt ?? 0
         if (posA !== posB) return posA - posB
         return (a.seq ?? 0) - (b.seq ?? 0)
     })
+    const delivered: typeof ordered = []
+    for (const row of ordered) {
+        const record = asObj(row.content)
+        const event = record?.role === 'agent' ? asObj(record.content) : null
+        const data = event?.type === 'event' ? asObj(event.data) : null
+        if (data?.type === 'abort-restore' && typeof data.text === 'string') {
+            // Status events can intervene between the queued prompt and its restore.
+            for (let i = delivered.length - 1; i >= 0; i--) {
+                const candidate = delivered[i]!
+                const part = extractUserPromptPart(candidate)
+                if (part) {
+                    const restored = normalizeComparableText(data.text)
+                    if (part.raw === restored || part.formatted === restored) delivered.splice(i, 1)
+                    break
+                }
+                if (extractAgentItem(candidate.content, i)) break
+            }
+            continue
+        }
+        delivered.push(row)
+    }
+    return delivered
 }
 
 function extractUserPromptPart(
@@ -417,7 +439,9 @@ function reconcileLiveTurns(
     callIdMap: Map<string, string>
 ): LocalTranscriptMessage[] | null {
     const deliveredLive = filterDeliveredLiveMessages(liveMessages)
-    const rawLiveTurns = groupIntoTurns(deliveredLive)
+    const firstPrompt = deliveredLive.findIndex(row => extractUserPromptPart(row) !== null)
+    const leadingCount = firstPrompt < 0 ? deliveredLive.length : firstPrompt
+    const rawLiveTurns = groupIntoTurns(deliveredLive.slice(leadingCount))
     const nativeTurns = groupIntoTurns(sourceSlice, false)
     if (!rawLiveTurns || !nativeTurns) return null
     const liveTurns = rawLiveTurns.filter(turn => !(
@@ -431,6 +455,14 @@ function reconcileLiveTurns(
     const matchedSourceIndices = new Set<number>()
     for (let i = 0; i < sourceSlice.length; i++) {
         if (importedIds.has(sourceSlice[i]!.id)) matchedSourceIndices.add(i)
+    }
+    // Autonomous output may arrive between reopening the archive and the first user turn.
+    const leading = deliveredLive.slice(0, leadingCount).flatMap((row, i) => extractAgentItem(row.content, i) ?? [])
+    if (leading.length) {
+        const firstNativePrompt = sourceTurns[0]?.startIndex ?? sourceSlice.length
+        const anchorTurn = nativeTurns.filter(turn => turn.startIndex < firstNativePrompt).at(-1)
+        if (!anchorTurn || !alignTurnAgentItems({ ...anchorTurn, agentItems: leading },
+            { ...anchorTurn, nonSemanticIndices: [] }, matchedSourceIndices, callIdMap)) return null
     }
     let sIdx = 0
     for (let lIdx = 0; lIdx < liveTurns.length; lIdx += 1) {

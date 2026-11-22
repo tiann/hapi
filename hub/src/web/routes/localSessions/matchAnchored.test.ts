@@ -224,4 +224,15 @@ describe('Antigravity live continuation', () => {
             transcript: transcript([initial, prompt, ...native]), importPrefix: PREFIX, cursor: null,
             reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: [] })
     })
+    it('matches an autonomous wakeup before a restored prompt and the first dispatched turn', () => {
+        const initial = transcriptMessage(`${PREFIX}start`, 'start')
+        const wakeup = agent({ type: 'message', message: 'timer finished' })
+        const native = [initial, { ...transcriptMessage(`${PREFIX}wake`, ''), content: wakeup }, transcriptMessage(`${PREFIX}next`, 'next')]
+        const restored = { role: 'agent', content: { type: 'event', data: { type: 'abort-restore', text: 'cancelled' } } }
+        const stored = [storedMessage(initial.id, 'start'), { ...storedMessage('wake', ''), content: wakeup },
+            storedMessage('cancel', 'cancelled'), { ...storedMessage('restore', ''), content: restored }, storedMessage('next', 'next')]
+        expect(matchAnchored({ storedMessages: stored, transcript: transcript(native), importPrefix: PREFIX,
+            cursor: null, reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: [] })
+    })
+
 })
