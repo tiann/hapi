@@ -35,7 +35,7 @@ type AgentItemSummary =
     | { kind: 'message'; text: string; index: number }
     | { kind: 'reasoning'; text: string; index: number }
     | { kind: 'tool-call'; name: string; callId: string; input: unknown; index: number }
-    | { kind: 'tool-result'; callId: string; isBackgroundPlaceholder: boolean; stdout?: string; exitCode?: number; index: number }
+    | { kind: 'tool-result'; callId: string; isBackgroundPlaceholder: boolean; markerOnly?: boolean; stdout?: string; exitCode?: number; index: number }
 
 type TurnSummary = {
     userParts: UserPromptPart[]
@@ -401,6 +401,7 @@ function alignTurnAgentItems(
             matchedSourceIndices.add(placeholder.index)
             continue
         }
+        const cursorBeforeItem = sourceCursor
         let matched = false
         while (sourceCursor < sourceTurn.agentItems.length) {
             const candidate = sourceTurn.agentItems[sourceCursor]!
@@ -413,6 +414,15 @@ function alignTurnAgentItems(
                 }
                 matched = true
                 break
+            }
+        }
+        if (!matched && liveItem.kind === 'tool-result' && liveItem.callId && !liveItem.isBackgroundPlaceholder) {
+            const marker = sourceTurn.agentItems.find(item => item.kind === 'tool-result' && item.markerOnly
+                && !matchedSourceIndices.has(item.index) && callIdMap.get(item.callId) === liveItem.callId)
+            if (marker) {
+                sourceCursor = cursorBeforeItem
+                matchedSourceIndices.add(marker.index)
+                continue
             }
         }
         if (!matched) {
@@ -462,6 +472,13 @@ function reconcileLiveTurns(
     const rawLiveTurns = groupIntoTurns(deliveredLive.slice(leadingCount))
     const nativeTurns = groupIntoTurns(sourceSlice, false)
     if (!rawLiveTurns || !nativeTurns) return null
+    // A terminal ACP result may be the only completion for a background command.
+    // Prefer a real native completion whenever one exists anywhere in the transcript.
+    const nativeResults = nativeTurns.flatMap(turn => turn.agentItems.filter(item => item.kind === 'tool-result'))
+    const completedIds = new Set(nativeResults.filter(item => !item.isBackgroundPlaceholder).map(item => item.callId))
+    for (const item of nativeResults) {
+        item.markerOnly = item.isBackgroundPlaceholder && !completedIds.has(item.callId)
+    }
     const liveTurns = rawLiveTurns.filter(turn => !(
         turn.userParts.length === 1 && /^\/swarm\s+board(?:\s+(?:--channel(?:=|\s+)|#)[a-zA-Z0-9_-]+)?$/i.test(turn.userParts[0]!.formatted)
         && turn.agentItems.length === 1 && (turn.assistantText.startsWith('### Swarm Board')

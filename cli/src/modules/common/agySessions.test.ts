@@ -8,7 +8,7 @@ import { join } from 'node:path'
 // the filesystem fallback when no database exists.
 
 const RUNNER = /* ts */ `
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Database } from 'bun:sqlite'
@@ -380,6 +380,16 @@ const results: Record<string, unknown> = {}
         )
         const afterFull = (await listLocalAgySessionsWithMessagesByIds(new Set(['conv-trunc-prefix']), { appDataDir: root }))[0]!
 
+        writeTranscript(root, 'conv-tail', [{ step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' }])
+        const tailFile = join(root, 'brain', 'conv-tail', '.system_generated', 'logs', 'transcript.jsonl')
+        const tail = JSON.stringify({ step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'finished' })
+        appendFileSync(tailFile, tail.slice(0, -2))
+        const readTail = async () => (await listLocalAgySessionsWithMessagesByIds(new Set(['conv-tail']), { appDataDir: root }))[0]!
+        const unfinished = await readTail()
+        appendFileSync(tailFile, tail.slice(-2) + '\\n')
+        const finished = await readTail()
+        results.tail = { pending: unfinished.importError, error: finished.importError, count: finished.messages.length }
+
         // Rewrite equal-length content past the cached file header, on the same inode.
         const rewrite = (text: string) => writeTranscript(root, 'conv-rewrite', [
             { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'p'.repeat(180) },
@@ -451,6 +461,7 @@ function runBunSuite() {
             beforeActions: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
             afterFirstAction: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
         }
+        tail: { pending?: string; error?: string; count: number }
         rewritten: string
         truncated: {
             beforeFull: { importError?: string; messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
@@ -544,6 +555,9 @@ describe('agySessions', () => {
         })
 
         const { beforeFull, afterFull, headError, emptyError } = output.truncated
+        expect(output.tail.pending).toContain('still flushing')
+        expect(output.tail.error).toBeUndefined()
+        expect(output.tail.count).toBe(2)
         expect(output.rewritten).toBe('bravo')
         expect(beforeFull.importError).toContain('still flushing')
         expect(beforeFull.messages).toHaveLength(2)

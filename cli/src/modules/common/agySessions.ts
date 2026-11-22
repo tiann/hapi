@@ -21,6 +21,7 @@ import {
     convertAgyReactiveSteps,
     decodeAgyTranscriptArgs,
     extractAgyBackgroundTaskId,
+    readAgyTranscriptForImport,
     readAgyTranscriptStepsAfter
 } from '@/agy/agyReactiveWakeup'
 import { AGY_BACKGROUND_COMMAND_RESULT, mapAgyToolCall, mapAgyToolResult } from '@/agy/agyToolCards'
@@ -603,11 +604,11 @@ export async function listLocalAgySessionsWithMessagesByIds(
 
         const row = rowsById.get(sessionId)
         const modifiedAt = parseAgyTimestampMs(row?.last_modified_time) ?? stats.mtimeMs
-        const allSteps = readAgyTranscriptStepsAfter(brainDir, sessionId, -1, 'fresh')
+        const { steps: allSteps, incompleteTail } = readAgyTranscriptForImport(brainDir, sessionId)
         const { steps, hadMissingFullRows } = selectStableCompleteAgySteps(allSteps)
         const converted = convertAgyTranscriptStepsToMessages(sessionId, steps, modifiedAt)
         let importError: string | undefined
-        if (hadMissingFullRows || allSteps.length === 0) {
+        if (incompleteTail || hadMissingFullRows || allSteps.length === 0) {
             importError = 'Antigravity full transcript is still flushing; please retry import shortly'
         } else if (converted.messages.length === 0) {
             importError = 'Antigravity session transcript contains no importable messages'

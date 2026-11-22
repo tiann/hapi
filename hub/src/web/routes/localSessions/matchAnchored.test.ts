@@ -224,6 +224,21 @@ describe('Antigravity live continuation', () => {
             transcript: transcript([initial, prompt, ...native]), importPrefix: PREFIX, cursor: null,
             reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: [] })
     })
+    it('preserves a mapped ACP completion when native history only recorded the background marker', () => {
+        const initial = transcriptMessage(`${PREFIX}start`, 'initial')
+        const prompt = transcriptMessage(`${PREFIX}run`, 'run')
+        const next = transcriptMessage(`${PREFIX}next`, 'steer')
+        const call = (callId: string) => agent({ type: 'tool-call', name: 'Bash', callId, input: { command: 'echo STEER_DONE' } })
+        const result = (callId: string, stdout: string) => agent({ type: 'tool-call-result', callId, output: { stdout } })
+        const marker = result('native', 'Running in the background. The result appears when agy reports it.')
+        const native = [call('native'), marker].map((content, i) => ({ ...transcriptMessage(`${PREFIX}${i}`, ''), content }))
+        const options = { transcript: transcript([initial, prompt, ...native, next]), importPrefix: PREFIX, cursor: null, reconcileLiveContinuation: true }
+        const stored = [storedMessage(initial.id, 'initial'), storedMessage('prompt', 'run'), { ...storedMessage('call', ''), content: call('acp') }]
+        const check = (id: string) => matchAnchored({ ...options, storedMessages: [...stored,
+            { ...storedMessage('result', ''), content: result(id, 'STEER_DONE') }] })
+        expect(check('acp')).toEqual({ status: 'ok', delta: [next] })
+        expect(check('other').status).toBe('transcript_diverged')
+    })
     it('matches an autonomous wakeup before a restored prompt and the first dispatched turn', () => {
         const initial = transcriptMessage(`${PREFIX}start`, 'start')
         const wakeup = agent({ type: 'message', message: 'timer finished' })

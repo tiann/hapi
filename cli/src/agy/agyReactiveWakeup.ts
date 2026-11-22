@@ -165,29 +165,29 @@ function parseJsonlChunk(raw: string, out: AgyTranscriptStep[]): void {
  * Unchanged files cost a single `statSync` (0 bytes read); appended turns read
  * and parse only the newly written tail bytes.
  */
-function readCompleteJsonlSteps(filePath: string, mode: 'incremental' | 'fresh' = 'incremental'): AgyTranscriptStep[] {
+function readCompleteJsonlSteps(filePath: string, mode: 'incremental' | 'fresh' = 'incremental'): { steps: AgyTranscriptStep[]; incompleteTail: boolean } {
     let stat: ReturnType<typeof statSync>;
     try {
         stat = statSync(filePath);
     } catch {
         jsonlFileCache.delete(filePath);
-        return [];
+        return { steps: [], incompleteTail: false };
     }
     if (stat.size === 0) {
         jsonlFileCache.delete(filePath);
-        return [];
+        return { steps: [], incompleteTail: false };
     }
 
     const cached = mode === 'fresh' ? undefined : jsonlFileCache.get(filePath);
     if (cached && cached.ino === stat.ino && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
-        return cached.steps;
+        return { steps: cached.steps, incompleteTail: cached.parsedOffset < cached.size };
     }
 
     let fd: number;
     try {
         fd = openSync(filePath, 'r');
     } catch {
-        return cached?.steps ?? [];
+        return { steps: cached?.steps ?? [], incompleteTail: true };
     }
 
     try {
@@ -217,7 +217,8 @@ function readCompleteJsonlSteps(filePath: string, mode: 'incremental' | 'fresh' 
             }
         }
 
-        if (mode === 'fresh') return steps;
+        const snapshot = { steps, incompleteTail: parsedOffset < stat.size };
+        if (mode === 'fresh') return snapshot;
 
         let head = canAppend && cached ? cached.head : Buffer.alloc(0);
         if (head.length === 0 && parsedOffset > 0) {
@@ -239,7 +240,7 @@ function readCompleteJsonlSteps(filePath: string, mode: 'incremental' | 'fresh' 
             head,
             steps
         });
-        return steps;
+        return snapshot;
     } finally {
         closeSync(fd);
     }
@@ -249,7 +250,7 @@ function readCompleteJsonlSteps(filePath: string, mode: 'incremental' | 'fresh' 
 export function readLatestAgyTranscriptStepIndex(brainDir: string, sessionId: string): number {
     const paths = agyTranscriptPaths(brainDir, sessionId);
     if (!paths) return -1;
-    const steps = readCompleteJsonlSteps(paths.compactPath);
+    const { steps } = readCompleteJsonlSteps(paths.compactPath);
     let maxStep = -1;
     for (const step of steps) {
         if (step.step_index > maxStep) maxStep = step.step_index;
@@ -264,29 +265,41 @@ export function readLatestAgyTranscriptStepIndex(brainDir: string, sessionId: st
 export function readAgyTranscriptStepsAfter(
     brainDir: string,
     sessionId: string,
-    afterStepIndex: number,
-    mode: 'incremental' | 'fresh' = 'incremental'
+    afterStepIndex: number
 ): AgyTranscriptStep[] {
+    return readTranscriptSnapshot(brainDir, sessionId, afterStepIndex, 'incremental').steps;
+}
+
+export function readAgyTranscriptForImport(brainDir: string, sessionId: string) {
+    return readTranscriptSnapshot(brainDir, sessionId, -1, 'fresh');
+}
+
+function readTranscriptSnapshot(
+    brainDir: string,
+    sessionId: string,
+    afterStepIndex: number,
+    mode: 'incremental' | 'fresh'
+): { steps: AgyTranscriptStep[]; incompleteTail: boolean } {
     const paths = agyTranscriptPaths(brainDir, sessionId);
-    if (!paths) return [];
-    const compactSteps = readCompleteJsonlSteps(paths.compactPath, mode)
-        .filter((step) => step.step_index > afterStepIndex);
-    if (compactSteps.length === 0) return [];
+    if (!paths) return { steps: [], incompleteTail: false };
+    const compact = readCompleteJsonlSteps(paths.compactPath, mode);
+    const compactSteps = compact.steps.filter((step) => step.step_index > afterStepIndex);
+    const snapshot = { steps: compactSteps, incompleteTail: compact.incompleteTail };
 
     const needsFull = compactSteps.some(
         (step) => Array.isArray(step.truncated_fields) && step.truncated_fields.length > 0
     );
-    if (!needsFull) return compactSteps;
+    if (!needsFull) return snapshot;
 
-    const fullSteps = readCompleteJsonlSteps(paths.fullPath, mode);
-    if (fullSteps.length === 0) return compactSteps;
+    const { steps: fullSteps } = readCompleteJsonlSteps(paths.fullPath, mode);
+    if (fullSteps.length === 0) return snapshot;
     const fullByIndex = new Map<number, AgyTranscriptStep>();
     for (const step of fullSteps) {
         if (step.step_index > afterStepIndex) {
             fullByIndex.set(step.step_index, step);
         }
     }
-    return compactSteps.map((step) => fullByIndex.get(step.step_index) ?? step);
+    return { ...snapshot, steps: compactSteps.map((step) => fullByIndex.get(step.step_index) ?? step) };
 }
 
 function isOutsideWorkspace(filePath: unknown, workspacePath: string): boolean {
