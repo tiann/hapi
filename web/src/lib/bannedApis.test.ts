@@ -10,21 +10,31 @@ const BANNED = [
     { api: 'navigator.clipboard.writeText', allow: 'lib/clipboard.ts', replacement: 'safeCopyToClipboard()' },
 ] as const
 
-// Dotted name of an access chain (covers optional chaining, e.g. `crypto?.randomUUID`).
-const dotted = (node: ts.Expression): string | undefined => {
-    if (ts.isIdentifier(node)) return node.text
-    if (!ts.isPropertyAccessExpression(node)) return undefined
-    const base = dotted(node.expression)
-    return base && `${base}.${node.name.text}`
-}
+// The hazard is the member itself, whatever the receiver: match by member name.
+const BY_MEMBER = new Map(BANNED.map((b) => [b.api.slice(b.api.lastIndexOf('.') + 1), b]))
 
-// One parse and one tree pass per string; comments and literal text are never nodes.
-function findOffenders(code: string) {
-    const sf = ts.createSourceFile('inline.ts', code, ts.ScriptTarget.Latest, true)
+// One parse and one tree pass per file; the file name selects the TS/TSX grammar.
+function findOffenders(code: string, fileName = 'inline.ts') {
+    const sf = ts.createSourceFile(fileName, code, ts.ScriptTarget.Latest, true)
     const hits: { api: string; line: number }[] = []
-    const visit = (node: ts.Node): void => {
-        const api = ts.isPropertyAccessExpression(node) && BANNED.find((b) => b.api === dotted(node))
+    const flag = (name: string, node: ts.Node) => {
+        const api = BY_MEMBER.get(name)
         if (api) hits.push({ api: api.api, line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 })
+    }
+    const visit = (node: ts.Node): void => {
+        if (ts.isPropertyAccessExpression(node)) {
+            flag(node.name.text, node) // covers optional chaining (`crypto?.randomUUID`)
+        } else if (ts.isElementAccessExpression(node)) {
+            const arg = node.argumentExpression
+            if (arg && ts.isStringLiteralLike(arg)) flag(arg.text, node) // `crypto['randomUUID']()`
+        } else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent) && !node.dotDotDotToken) {
+            const prop = node.propertyName
+            if (prop && (ts.isIdentifier(prop) || ts.isStringLiteralLike(prop))) {
+                flag(prop.text, node) // `{ randomUUID: r }`
+            } else if (!prop && ts.isIdentifier(node.name)) {
+                flag(node.name.text, node) // `{ randomUUID }`
+            }
+        }
         ts.forEachChild(node, visit)
     }
     visit(sf)
@@ -40,7 +50,7 @@ function walk(dir: string): string[] {
 }
 const FILES = walk(SRC_DIR).map((file) => ({
     path: relative(SRC_DIR, file).replaceAll('\\', '/'),
-    hits: findOffenders(readFileSync(file, 'utf8')),
+    hits: findOffenders(readFileSync(file, 'utf8'), file),
 }))
 
 describe('secure-context browser APIs', () => {
@@ -52,9 +62,23 @@ describe('secure-context browser APIs', () => {
 })
 describe('matcher self-checks', () => {
     it('flags a call inside a template interpolation', () =>
-        expect(findOffenders('const key = `branch-${crypto.randomUUID()}`')).toEqual([{ api: 'crypto.randomUUID', line: 1 }]))
+        expect(findOffenders('const key = `branch-${crypto.randomUUID()}`', 'case.ts')).toEqual([{ api: 'crypto.randomUUID', line: 1 }]))
     it('flags an optional-chained call', () =>
-        expect(findOffenders('const key = crypto?.randomUUID()')).toEqual([{ api: 'crypto.randomUUID', line: 1 }]))
+        expect(findOffenders('const key = crypto?.randomUUID()', 'case.ts')).toEqual([{ api: 'crypto.randomUUID', line: 1 }]))
+    it('flags a window-prefixed call', () =>
+        expect(findOffenders('window.crypto.randomUUID()', 'case.ts')).toEqual([{ api: 'crypto.randomUUID', line: 1 }]))
+    it('flags a globalThis-nested clipboard call', () =>
+        expect(findOffenders('globalThis.navigator.clipboard.writeText(x)', 'case.ts')).toEqual([{ api: 'navigator.clipboard.writeText', line: 1 }]))
+    it('flags a call on an aliased receiver', () =>
+        expect(findOffenders('const c = crypto; c.randomUUID()', 'case.ts')).toEqual([{ api: 'crypto.randomUUID', line: 1 }]))
+    it('flags an element-access call', () =>
+        expect(findOffenders("crypto['randomUUID']()", 'case.ts')).toEqual([{ api: 'crypto.randomUUID', line: 1 }]))
+    it('flags a destructured property name', () =>
+        expect(findOffenders('const { randomUUID } = crypto', 'case.ts')).toEqual([{ api: 'crypto.randomUUID', line: 1 }]))
+    it('flags a call in a TSX expression', () =>
+        expect(findOffenders('const View = () => <span>{crypto.randomUUID()}</span>', 'case.tsx')).toEqual([{ api: 'crypto.randomUUID', line: 1 }]))
+    it('ignores TSX text', () =>
+        expect(findOffenders('const View = () => <p>crypto.randomUUID()</p>', 'case.tsx')).toEqual([]))
     it('ignores comments, strings and template text', () =>
-        expect(findOffenders('// crypto.randomUUID()\nconst s = "navigator.clipboard.writeText"\nconst t = `crypto.randomUUID`')).toEqual([]))
+        expect(findOffenders('// crypto.randomUUID()\nconst s = "navigator.clipboard.writeText"\nconst t = `crypto.randomUUID`', 'case.ts')).toEqual([]))
 })
