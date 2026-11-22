@@ -246,6 +246,107 @@ describe('ApiSessionClient input buffered during initialization', () => {
         client.close()
     })
 
+    it.each([false, true])('gates forced localId reuse on the before-reuse callback (allow=%s)', async (allow) => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const update = socket.listeners.get('update')![0]!
+        const gate = vi.fn(async () => allow)
+        client.onBeforeReuseLocalId(gate)
+        await update({ body: { t: 'new-message', message: message('original', 'local-1', 1) } })
+        const ack = vi.fn()
+        await update({ body: { t: 'retry-queued-message', localId: 'local-1', message: message('replacement', 'local-1', 1) } }, ack)
+        // The gate always runs before the localId is reused, and its verdict
+        // decides whether the forced copy is admitted.
+        expect(gate).toHaveBeenCalledWith('local-1')
+        expect(ack).toHaveBeenCalledWith({ removed: false, accepted: allow })
+        const onMessage = vi.fn()
+        client.onUserMessage(onMessage)
+        if (allow) {
+            expect(onMessage).toHaveBeenCalledTimes(1)
+            expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ content: { type: 'text', text: 'replacement' } }), 'local-1')
+        } else {
+            // The buffered original was cancelled and the replacement was
+            // refused: nothing flushes. The hub keeps the row queued.
+            expect(onMessage).not.toHaveBeenCalled()
+        }
+        client.close()
+    })
+
+    it('skips the before-reuse gate when the cancel already reported the row consumed', async () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const update = socket.listeners.get('update')![0]!
+        const gate = vi.fn(async () => true)
+        client.onCancelQueuedMessage(() => 'consumed' as const)
+        client.onBeforeReuseLocalId(gate)
+        // Nothing buffered under local-1, so the cancel reaches the flavor
+        // callback, which reports the row as already consumed.
+        const ack = vi.fn()
+        await update({ body: { t: 'retry-queued-message', localId: 'local-1', message: message('replacement', 'local-1', 1) } }, ack)
+        expect(ack).toHaveBeenCalledWith({ removed: false, accepted: false, consumed: true })
+        expect(gate).not.toHaveBeenCalled()
+        client.close()
+    })
+
+    it('keeps the invalidation alive for an overlapping retry on the same localId', async () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const update = socket.listeners.get('update')![0]!
+        let releaseGate!: () => void
+        const gatePromise = new Promise<boolean>((resolve) => {
+            releaseGate = () => resolve(true)
+        })
+        const gate = vi.fn(() => gatePromise)
+        client.onBeforeReuseLocalId(gate)
+        const firstAck = vi.fn()
+        const firstDone = update({ body: { t: 'retry-queued-message', localId: 'local-1', message: message('one', 'local-1', 1) } }, firstAck)
+        const secondAck = vi.fn()
+        const secondDone = update({ body: { t: 'retry-queued-message', localId: 'local-1', message: message('two', 'local-1', 1) } }, secondAck)
+        // Cancel while BOTH gates are pending.
+        const cancelAck = vi.fn()
+        await update({ body: { t: 'cancel-queued-message', localId: 'local-1' } }, cancelAck)
+        releaseGate()
+        await Promise.all([firstDone, secondDone])
+        // The invalidation outlives the first gate's cleanup: neither
+        // overlapping retry may dispatch the cancelled prompt.
+        expect(firstAck).toHaveBeenCalledWith({ removed: false, accepted: false })
+        expect(secondAck).toHaveBeenCalledWith({ removed: false, accepted: false })
+        const onMessage = vi.fn()
+        client.onUserMessage(onMessage)
+        expect(onMessage).not.toHaveBeenCalled()
+        client.close()
+    })
+
+    it('a cancel landing while the reuse gate is in flight invalidates the forced retry', async () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const update = socket.listeners.get('update')![0]!
+        let releaseGate!: () => void
+        const gate = vi.fn(() => new Promise<boolean>((resolve) => {
+            releaseGate = () => resolve(true)
+        }))
+        client.onBeforeReuseLocalId(gate)
+        const retryAck = vi.fn()
+        const retryDone = update({ body: { t: 'retry-queued-message', localId: 'local-1', message: message('replacement', 'local-1', 1) } }, retryAck)
+        // The gate is pending; the user cancels the row in that window.
+        const cancelAck = vi.fn()
+        await update({ body: { t: 'cancel-queued-message', localId: 'local-1' } }, cancelAck)
+        expect(cancelAck).toHaveBeenCalled()
+        releaseGate()
+        await retryDone
+        // The gate allowed the reuse, but the cancel invalidated it: nothing
+        // dispatches and the hub keeps the row queued.
+        expect(retryAck).toHaveBeenCalledWith({ removed: false, accepted: false })
+        const onMessage = vi.fn()
+        client.onUserMessage(onMessage)
+        expect(onMessage).not.toHaveBeenCalled()
+        client.close()
+    })
+
     it.each(['in-flight', 'consumed', 'indeterminate'] as const)('keeps %s cancellation semantics after input leaves the buffer', async (result) => {
         socketHarness.sockets.length = 0
         const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))

@@ -51,6 +51,12 @@ export class PiPromptQueue {
         return this.entries[0];
     }
 
+    /** True while an entry with this localId sits in the FIFO (not yet dispatched). */
+    hasLocalId(localId: string): boolean {
+        if (!localId) return false
+        return this.entries.some((entry) => entry.localId === localId)
+    }
+
     cancelByLocalId(localId: string): boolean {
         if (!localId) return false;
         const index = this.entries.findIndex((entry) => entry.localId === localId);

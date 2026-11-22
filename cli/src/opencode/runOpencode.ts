@@ -541,6 +541,26 @@ export async function runOpencode(opts: {
         return false;
     });
 
+    // --- Forced-retry localId reuse gate ---
+    // deliver-now cancels the held copy then force-accepts a fresh one under
+    // the SAME localId. The pre-enqueue preparing window releases
+    // preparingLocalIds/cancelledBeforeEnqueue only when its userMessageChain
+    // link settles; re-admitting before that lets the original link's
+    // cleanup delete the retry's markers, after which
+    // cancel-queued-message can no longer find the item — a subsequently
+    // cancelled prompt would still execute. The chain never rejects (each
+    // link carries its own catch), so awaiting it waits for every in-flight
+    // link, including the one holding this localId.
+    session.onBeforeReuseLocalId(async (localId) => {
+        await userMessageChain;
+        if (preparingLocalIds.has(localId)) return false;
+        // An earlier forced retry already moved this prompt into the queue (or
+        // it is held behind a queued clear); a second admission would duplicate
+        // or reorder it. The first copy stays.
+        return !messageQueue.hasLocalId(localId)
+            && !heldDuringClear.some((held) => held.localId === localId);
+    });
+
     registerSessionConfigRpc<PermissionMode>({
         rpcHandlerManager: session.rpcHandlerManager,
         flavor: 'opencode',

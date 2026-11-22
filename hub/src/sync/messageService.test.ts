@@ -65,6 +65,8 @@ type AckCallback = (
         inFlight?: boolean
         indeterminate?: boolean
         consumed?: boolean
+        accepted?: boolean
+        socketId?: string
     }>
 ) => void
 
@@ -2221,4 +2223,631 @@ describe('tool-call upsert write skip', () => {
         expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
         store.close()
     })
+})
+
+// ---------------------------------------------------------------------------
+// deliverQueuedMessageNow ("send now" recovery for abort-stranded rows)
+// ---------------------------------------------------------------------------
+
+describe('MessageService deliverQueuedMessageNow', () => {
+    it('force re-delivers a stranded queued row the CLI no longer holds (post-abort DSH shape)', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-stranded')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'stranded' } }, 'stranded-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                // Cancel-ack: the CLI no longer holds the row in memory.
+                ack(null, [{ removed: false }])
+            } else {
+                // Forced re-delivery bypasses the message-id dedup.
+                ack(null, [{ removed: false, accepted: true }])
+            }
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'stranded-q'))
+            .toEqual({ status: 'delivered', localId: 'stranded-q' })
+        expect(calls).toBe(2)
+        // The row stays queued; invocation is stamped later via messages-consumed.
+        expect(store.messages.lookupQueuedMessage(session.id, 'stranded-q').status).toBe('dispatching')
+        store.close()
+    })
+
+    it('re-accepts a row the CLI still holds in memory (post-abort Claude shape)', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-held')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'held' } }, 'held-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, calls === 1 ? [{ removed: true }] : [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'held-q'))
+            .toEqual({ status: 'delivered', localId: 'held-q' })
+        expect(store.messages.lookupQueuedMessage(session.id, 'held-q').status).toBe('dispatching')
+        store.close()
+    })
+
+    it('returns unavailable and never emits when no CLI socket is in the room', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-offline')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'offline' } }, 'off-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false, accepted: true }])
+        }, 0), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'off-q'))
+            .toEqual({ status: 'unavailable', localId: 'off-q' })
+        expect(calls).toBe(0)
+        expect(store.messages.lookupQueuedMessage(session.id, 'off-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('keeps the row queued when the CLI does not accept the forced emit', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-refused')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'refused' } }, 'refused-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, calls === 1 ? [{ removed: false }] : [{ removed: false, accepted: false }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'refused-q'))
+            .toEqual({ status: 'unavailable', localId: 'refused-q' })
+        // Refusal never degrades the row to indeterminate — it was safely queued.
+        expect(store.messages.lookupQueuedMessage(session.id, 'refused-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('reports invoked when the row was already consumed', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-done')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'done' } }, 'done-q')
+        store.messages.markMessagesInvoked(session.id, ['done-q'], Date.now())
+        const service = new MessageService(store, makeIo(ack => ack(null, [{ removed: false, accepted: true }])), makePublisher() as unknown as EventPublisher)
+        const result = await service.deliverQueuedMessageNow(session.id, 'done-q')
+        expect(result.status).toBe('invoked')
+        if (result.status === 'invoked') {
+            expect(result.message.localId).toBe('done-q')
+        }
+        store.close()
+    })
+
+    it('refuses future-scheduled rows', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-scheduled')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'later' } }, 'sched-q', Date.now() + 60_000)
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'sched-q'))
+            .toEqual({ status: 'scheduled', localId: 'sched-q' })
+        expect(calls).toBe(0)
+        store.close()
+    })
+
+    it('waits for an in-flight deliver-now and resolves the cancel against the final state', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-cancel-race')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'race' } }, 'cr-q')
+        let release: () => void = () => {}
+        const gate = new Promise<void>(resolve => { release = resolve })
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                void gate.then(() => ack(null, [{ removed: false }]))
+                return
+            }
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        const delivering = service.deliverQueuedMessageNow(session.id, 'cr-q')
+        // The cancel arrives mid-probe and WAITS for the delivery to settle
+        // instead of returning a deferral the caller must retry.
+        const cancelling = service.cancelQueuedMessage(session.id, 'cr-q')
+        release()
+        expect(await delivering).toEqual({ status: 'delivered', localId: 'cr-q' })
+        // Admission stamped the row dispatching; the waited cancel then probes
+        // it and reports the in-flight semantics (busy keeps the row for the
+        // consumption ack or a later explicit resolution).
+        const cancelOutcome = await cancelling
+        expect(['busy', 'cancelled']).toContain(cancelOutcome.status)
+        // Probe could not prove CLI removal -> durable unknown, not deletion.
+        expect(store.messages.lookupQueuedMessage(session.id, 'cr-q').status).toBe('indeterminate')
+        store.close()
+    })
+
+    it('serializes concurrent clicks on the same row', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-race')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'race' } }, 'race-q')
+        let release: () => void = () => {}
+        const gate = new Promise<void>(resolve => { release = resolve })
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                void gate.then(() => ack(null, [{ removed: false }]))
+                return
+            }
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        const first = service.deliverQueuedMessageNow(session.id, 'race-q')
+        const second = await service.deliverQueuedMessageNow(session.id, 'race-q')
+        expect(second).toEqual({ status: 'busy', localId: 'race-q' })
+        release()
+        expect(await first).toEqual({ status: 'delivered', localId: 'race-q' })
+        store.close()
+    })
+
+    it('returns unavailable without emitting when the CLI reports the row is mid-dispatch (in-flight)', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-inflight')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'busy row' } }, 'inflight-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false, inFlight: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'inflight-q'))
+            .toEqual({ status: 'unavailable', localId: 'inflight-q' })
+        expect(calls).toBe(1)
+        expect(store.messages.lookupQueuedMessage(session.id, 'inflight-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('returns unavailable when the cancel-ack round-trip times out', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-timeout')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'timeout row' } }, 'timeout-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(new Error('socket timeout'), [])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'timeout-q'))
+            .toEqual({ status: 'unavailable', localId: 'timeout-q' })
+        expect(calls).toBe(1)
+        expect(store.messages.lookupQueuedMessage(session.id, 'timeout-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('rejects shared concurrent-client sessions before any cancel probe leaves the hub', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-shared', { capabilities: { concurrentClients: true } }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'shared row' } }, 'shared-deliver-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'shared-deliver-q'))
+            .toEqual({ status: 'unavailable', localId: 'shared-deliver-q' })
+        // Zero emits — not even the cancel-ack probe: the worker multiplexes
+        // several clients, and a cancel could disrupt another client's turn.
+        expect(calls).toBe(0)
+        expect(store.messages.lookupQueuedMessage(session.id, 'shared-deliver-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('returns unavailable for indeterminate rows — the retry affordance owns those', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-indeterminate')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'unknown row' } }, 'unknown-q')
+        store.messages.setMessagesDeliveryState(session.id, ['unknown-q'], 'indeterminate')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'unknown-q'))
+            .toEqual({ status: 'unavailable', localId: 'unknown-q' })
+        expect(calls).toBe(0)
+        expect(store.messages.lookupQueuedMessage(session.id, 'unknown-q').status).toBe('indeterminate')
+        store.close()
+    })
+
+    it('sends the forced retry only to the socket that answered the cancel probe', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-targeted')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'targeted' } }, 'targeted-q')
+        const targets: string[] = []
+        let calls = 0
+        const broadcastRoom = {
+            timeout: (_ms: number) => ({
+                emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                    calls += 1
+                    callback(null, calls === 1
+                        ? [{ removed: false, socketId: 'socket-0' }]
+                        : [{ removed: false, accepted: true }])
+                }
+            }),
+            emit: () => {}
+        }
+        const io = {
+            of: (_ns: string) => ({
+                to: (target: string) => {
+                    targets.push(target)
+                    return broadcastRoom
+                },
+                adapter: { rooms: { get: () => new Set(['socket-0']) } }
+            })
+        } as unknown as Server
+        const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'targeted-q'))
+            .toEqual({ status: 'delivered', localId: 'targeted-q' })
+        // The probe and the forced retry both address the server-selected
+        // answering socket — never the room, whose membership can change
+        // between the two emits.
+        expect(targets).toEqual(['socket-0', 'socket-0'])
+        store.close()
+    })
+
+    it('targets the server-selected socket even when the client reports a different one', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-legacy-ack')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'legacy' } }, 'legacy-q')
+        const targets: string[] = []
+        let calls = 0
+        const broadcastRoom = {
+            timeout: (_ms: number) => ({
+                emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                    calls += 1
+                    callback(null, calls === 1
+                        ? [{ removed: false, socketId: 'client-claimed-other' }]
+                        : [{ removed: false, accepted: true }])
+                }
+            }),
+            emit: () => {}
+        }
+        const io = {
+            of: (_ns: string) => ({
+                to: (target: string) => {
+                    targets.push(target)
+                    return broadcastRoom
+                },
+                adapter: { rooms: { get: () => new Set(['socket-0']) } }
+            })
+        } as unknown as Server
+        const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'legacy-q'))
+            .toEqual({ status: 'delivered', localId: 'legacy-q' })
+        // The client-reported socketId is never trusted for targeting: both
+        // emits go to the socket the server selected for the probe.
+        expect(targets).toEqual(['socket-0', 'socket-0'])
+        store.close()
+    })
+
+    it('refuses the forced retry when the answering socket left the room before it', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-stale-responder')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'stale' } }, 'stale-q')
+        const targets: string[] = []
+        let calls = 0
+        const broadcastRoom = {
+            timeout: (_ms: number) => ({
+                emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                    calls += 1
+                    callback(null, calls === 1
+                        ? [{ removed: false }]
+                        : [{ removed: false, accepted: true }])
+                }
+            }),
+            emit: () => {}
+        }
+        // socket-0 answers the per-socket probe, then leaves the room; the
+        // membership recheck before the retry finds it gone.
+        const io = {
+            of: (_ns: string) => ({
+                to: (target: string) => {
+                    targets.push(target)
+                    return broadcastRoom
+                },
+                adapter: { rooms: { get: () => (calls === 0 ? new Set(['socket-0']) : new Set<string>()) } }
+            })
+        } as unknown as Server
+        const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'stale-q'))
+            .toEqual({ status: 'unavailable', localId: 'stale-q' })
+        // Only the per-socket probe left the hub; the vanished socket got nothing.
+        expect(calls).toBe(1)
+        expect(targets).toEqual(['socket-0'])
+        store.close()
+    })
+
+    it('refuses the forced retry when another socket joins before it', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-legacy-joined')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'joined' } }, 'joined-q')
+        let calls = 0
+        const broadcastRoom = {
+            timeout: (_ms: number) => ({
+                emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                    calls += 1
+                    callback(null, calls === 1
+                        ? [{ removed: false }]
+                        : [{ removed: false, accepted: true }])
+                }
+            }),
+            emit: () => {}
+        }
+        // One socket at entry (the cliCount gate); a second joins after the
+        // probe. The probed runner is no longer the sole room member, so the
+        // multi-client semantics the probe never validated must not receive a
+        // forced copy.
+        const io = {
+            of: (_ns: string) => ({
+                to: (target: string) => broadcastRoom,
+                adapter: { rooms: { get: () => new Set(calls === 0 ? ['socket-0'] : ['socket-0', 'socket-1']) } }
+            })
+        } as unknown as Server
+        const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'joined-q'))
+            .toEqual({ status: 'unavailable', localId: 'joined-q' })
+        expect(calls).toBe(1)
+        store.close()
+    })
+
+    it('refuses deliver-now when a queued OpenCode /clear sits ahead of the target', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-clear-order', { path: '/tmp/deliver-clear-order', flavor: 'opencode' }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/clear' } }, 'clear-q')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'after the clear' } }, 'after-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, calls === 1 ? [{ removed: false }] : [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        // Force-delivering the follow-up would let it jump the pending
+        // /clear; nothing leaves the hub.
+        expect(await service.deliverQueuedMessageNow(session.id, 'after-q'))
+            .toEqual({ status: 'unavailable', localId: 'after-q' })
+        expect(calls).toBe(0)
+        expect(store.messages.lookupQueuedMessage(session.id, 'after-q').status).toBe('queued')
+        // The /clear row itself is never force-delivered: the runner's
+        // normal release path owns the clear transition.
+        expect(await service.deliverQueuedMessageNow(session.id, 'clear-q'))
+            .toEqual({ status: 'unavailable', localId: 'clear-q' })
+        expect(calls).toBe(0)
+        store.close()
+    })
+
+    it('refuses rows queued before an OpenCode /clear too — forced delivery would cross the boundary', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-clear-before', { path: '/tmp/deliver-clear-before', flavor: 'opencode' }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'before the clear' } }, 'before-q')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/CLEAR now' } }, 'clear-q')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'after the clear' } }, 'after-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        // A prompt before the clear would be re-enqueued behind the runner's
+        // isolated clear batch — silently crossing the boundary — so every
+        // row is refused until the clear transitions through the normal path.
+        expect(await service.deliverQueuedMessageNow(session.id, 'before-q'))
+            .toEqual({ status: 'unavailable', localId: 'before-q' })
+        expect(await service.deliverQueuedMessageNow(session.id, 'after-q'))
+            .toEqual({ status: 'unavailable', localId: 'after-q' })
+        expect(calls).toBe(0)
+        store.close()
+    })
+
+    it('lets deliver-now pass for non-OpenCode flavors with a queued /clear-shaped row', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-clear-claude')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/clear' } }, 'c-clear-q')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'plain follow-up' } }, 'c-after-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, calls === 1 ? [{ removed: false }] : [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'c-after-q'))
+            .toEqual({ status: 'delivered', localId: 'c-after-q' })
+        expect(calls).toBe(2)
+        store.close()
+    })
+    it('refuses when an OpenCode /clear arrives while the probe is in flight', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-clear-during-probe', { path: '/tmp/x', flavor: 'opencode' }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'prompt' } }, 'during-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                // The clear lands while the probe is awaiting its ack.
+                store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/clear' } }, 'late-clear-q')
+                ack(null, [{ removed: false }])
+                return
+            }
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'during-q'))
+            .toEqual({ status: 'unavailable', localId: 'during-q' })
+        expect(calls).toBe(1)
+        store.close()
+    })
+
+    it('refuses deliver-now for a queued OpenCode /compact row', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-compact', { path: '/tmp/x', flavor: 'opencode' }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/compact' } }, 'compact-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'compact-q'))
+            .toEqual({ status: 'unavailable', localId: 'compact-q' })
+        expect(calls).toBe(0)
+        store.close()
+    })
+
+    it('rolls back an admitted copy when the sole-member invariant breaks during the retry emit', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-rollback')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'rollback' } }, 'rb-q')
+        let calls = 0
+        const broadcastRoom = {
+            timeout: (_ms: number) => ({
+                emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                    calls += 1
+                    // 1 = probe, 2 = retry (accepted), 3/4 = rollback cancel
+                    // fan-out to both sockets now in the room.
+                    callback(null, calls === 1
+                        ? [{ removed: false }]
+                        : [{ removed: false, accepted: true }])
+                }
+            }),
+            emit: () => {}
+        }
+        // socket-0 alone at entry and probe; socket-1 joins before the retry
+        // emit resolves, breaking the sole-member invariant at admission.
+        const io = {
+            of: (_ns: string) => ({
+                to: () => broadcastRoom,
+                adapter: { rooms: { get: () => new Set(calls <= 1 ? ['socket-0'] : ['socket-0', 'socket-1']) } }
+            })
+        } as unknown as Server
+        const service = new MessageService(store, io, makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'rb-q'))
+            .toEqual({ status: 'unavailable', localId: 'rb-q' })
+        // Probe + retry + rollback cancel fan-out all left the hub; the row
+        // reads as still queued to the caller.
+        expect(calls).toBe(4)
+        expect(store.messages.lookupQueuedMessage(session.id, 'rb-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('a cancel that waited through a failed delivery lands on the queued row', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-deferred-cancel')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'defer' } }, 'dc-q')
+        let release: () => void = () => {}
+        const gate = new Promise<void>(resolve => { release = resolve })
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                void gate.then(() => ack(null, [{ removed: false }]))
+                return
+            }
+            ack(null, [{ removed: false, accepted: false }])
+        }), makePublisher() as unknown as EventPublisher)
+        const delivering = service.deliverQueuedMessageNow(session.id, 'dc-q')
+        const cancelling = service.cancelQueuedMessage(session.id, 'dc-q')
+        release()
+        expect(await delivering).toEqual({ status: 'unavailable', localId: 'dc-q' })
+        // The row stayed queued after the refused emit; the waited cancel now
+        // probes it. Without a flavor queue in this harness the probe reads
+        // not-found, so the row moves to the explicit-resolution state and the
+        // response reports busy — the FINAL outcome reaches the caller.
+        const outcome = await cancelling
+        expect(outcome.status).toBe('busy')
+        expect(store.messages.lookupQueuedMessage(session.id, 'dc-q').status).toBe('indeterminate')
+        store.close()
+    })
+
+    it('a cancel that waited through a successful delivery probes the admitted copy', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-deferred-keep')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'keep' } }, 'dk-q')
+        let release: () => void = () => {}
+        const gate = new Promise<void>(resolve => { release = resolve })
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                void gate.then(() => ack(null, [{ removed: false }]))
+                return
+            }
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        const delivering = service.deliverQueuedMessageNow(session.id, 'dk-q')
+        const cancelling = service.cancelQueuedMessage(session.id, 'dk-q')
+        release()
+        expect(await delivering).toEqual({ status: 'delivered', localId: 'dk-q' })
+        // The row is dispatching (admitted, consumption pending); the waited
+        // cancel probes the CLI copy and reports in-flight semantics — never
+        // deleting the in-flight prompt outright.
+        const outcome = await cancelling
+        expect(['busy', 'cancelled']).toContain(outcome.status)
+        // Probe could not prove CLI removal -> durable unknown, not deletion.
+        expect(store.messages.lookupQueuedMessage(session.id, 'dk-q').status).toBe('indeterminate')
+        expect(calls).toBe(3)
+        store.close()
+    })
+
+    it('reserves the row against replay while a deliver-now is in flight', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-replay-reserve')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'reserved' } }, 'rr-q')
+        let release: () => void = () => {}
+        const gate = new Promise<void>(resolve => { release = resolve })
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                void gate.then(() => ack(null, [{ removed: false }]))
+                return
+            }
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        const delivering = service.deliverQueuedMessageNow(session.id, 'rr-q')
+        // Session-alive replay and the clear-release sweep both skip the
+        // reserved row: a replay here would hand the runner a second copy it
+        // has not deduped.
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(0)
+        expect(service.releaseDeliverableQueuedMessages(session.id)).toBe(0)
+        expect(calls).toBe(1)
+        release()
+        expect(await delivering).toEqual({ status: 'delivered', localId: 'rr-q' })
+        // After admission the row is dispatching — replay paths keep skipping
+        // it until the consumption ack settles it.
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(0)
+        store.close()
+    })
+
+    it('lets FIFO recovery pass a queued bare /status row', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-status-pass', { path: '/tmp/x', flavor: 'opencode' }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/status' } }, 'st-q')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'the prompt' } }, 'prompt-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, calls === 1 ? [{ removed: false }] : [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        // /status is a runner-handled query that never occupies the FIFO, so
+        // the prompt behind it is still the first recoverable row.
+        expect(await service.deliverQueuedMessageNow(session.id, 'prompt-q'))
+            .toEqual({ status: 'delivered', localId: 'prompt-q' })
+        expect(calls).toBe(2)
+        store.close()
+    })
+
+    it('forces OpenCode prompt recovery in FIFO order', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-fifo', { path: '/tmp/x', flavor: 'opencode' }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'first' } }, 'fifo-a')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'second' } }, 'fifo-b')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, calls === 1 ? [{ removed: false }] : [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'fifo-b'))
+            .toEqual({ status: 'unavailable', localId: 'fifo-b' })
+        expect(calls).toBe(0)
+        expect(await service.deliverQueuedMessageNow(session.id, 'fifo-a'))
+            .toEqual({ status: 'delivered', localId: 'fifo-a' })
+        expect(calls).toBe(2)
+        store.close()
+    })
+
 })

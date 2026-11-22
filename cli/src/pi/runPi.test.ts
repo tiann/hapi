@@ -20,6 +20,7 @@ const harness = vi.hoisted(() => ({
         keepAlive: vi.fn(),
         onUserMessage: vi.fn(),
         onCancelQueuedMessage: vi.fn(),
+        onBeforeReuseLocalId: vi.fn(),
         emitMessagesConsumed: vi.fn(),
         sendSessionEvent: vi.fn(),
         sendAgentMessage: vi.fn(),

@@ -212,6 +212,18 @@ export class ApiSessionClient extends EventEmitter {
     private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
     private cancelQueuedMessageCallback: ((localId: string) => QueueCancelResult | Promise<QueueCancelResult>) | null = null
     private retryQueuedMessageCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
+    private beforeReuseLocalIdCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
+    /**
+     * Upper bound for the preparation reuse gate during a forced retry — kept
+     * just under the hub's forced-retry ack budget so the hub never times out
+     * while the CLI still admits the copy afterwards (which would leave the
+     * row queued and invite a duplicate delivery).
+     */
+    private static readonly REUSE_GATE_DEADLINE_MS = 4500
+    /** localIds whose forced-retry reuse gate is currently awaiting flavor preparation, with overlap counts. */
+    private readonly inFlightForcedRetries = new Map<string, number>()
+    /** localIds cancelled while their forced-retry gate was in flight; the retry must not dispatch. */
+    private readonly invalidatedForcedRetries = new Set<string>()
     private readonly incomingFilter = new IncomingMessageFilter()
     private reconciledRewindOperationId: string | undefined
     // truncateFromLocalId of the Claude rewind intent last seen in metadata.
@@ -450,6 +462,49 @@ if (isReconnect) {
                             ack?.({ removed: false, accepted: false, consumed: true })
                             return
                         }
+                        if (accepted && this.beforeReuseLocalIdCallback) {
+                            // The forced acceptance reuses this localId. Retire
+                            // any earlier asynchronous preparation first: flavors
+                            // like Pi/OpenCode release their preparing/cancelled
+                            // bookkeeping only when the preparation chain link
+                            // settles, and a re-admission racing that cleanup
+                            // loses its markers — a later cancel could then no
+                            // longer find the copy and the cancelled prompt
+                            // would still execute. While the gate awaits, a
+                            // cancel-queued-message for the same localId must
+                            // still win: record the in-flight gate so the cancel
+                            // handler can invalidate it instead of racing it.
+                            // Overlapping retries for one localId share the
+                            // bookkeeping; entries are only removed when the
+                            // LAST gate settles, so an invalidation recorded
+                            // against one retry still suppresses the others.
+                            const pending = this.inFlightForcedRetries.get(data.body.localId) ?? 0
+                            this.inFlightForcedRetries.set(data.body.localId, pending + 1)
+                            try {
+                                const gate = Promise.resolve(this.beforeReuseLocalIdCallback(data.body.localId))
+                                const settled = gate.then(() => true as const)
+                                const deadline = new Promise<false>((resolve) => {
+                                    const timer = setTimeout(() => resolve(false), ApiSessionClient.REUSE_GATE_DEADLINE_MS)
+                                    timer.unref?.()
+                                })
+                                const withinBudget = await Promise.race([settled, deadline])
+                                // Past the ack budget the hub has (or is about
+                                // to) treat the emit as refused; admitting the
+                                // copy afterwards would desynchronize the two
+                                // sides, so the retry is dropped instead.
+                                accepted = withinBudget
+                                    && await gate === true
+                                    && !this.invalidatedForcedRetries.has(data.body.localId)
+                            } finally {
+                                const remaining = (this.inFlightForcedRetries.get(data.body.localId) ?? 1) - 1
+                                if (remaining <= 0) {
+                                    this.inFlightForcedRetries.delete(data.body.localId)
+                                    this.invalidatedForcedRetries.delete(data.body.localId)
+                                } else {
+                                    this.inFlightForcedRetries.set(data.body.localId, remaining)
+                                }
+                            }
+                        }
                     }
                     if (accepted) {
                         this.handleIncomingMessage(data.body.message, true)
@@ -462,10 +517,18 @@ if (isReconnect) {
                     const cancellation = data.body.localId
                         ? this.cancelQueuedMessage(data.body.localId)
                         : false
+                    if (data.body.localId && this.inFlightForcedRetries.has(data.body.localId)) {
+                        // A forced retry is waiting on its preparation gate for
+                        // this localId; cancelling the row must also stop that
+                        // retry from dispatching once the gate resolves.
+                        this.invalidatedForcedRetries.add(data.body.localId)
+                    }
                     const result = cancellation instanceof Promise ? await cancellation : cancellation
                     // 'in-flight' = the row is inside an async steer: not
                     // removed, but also NOT consumed — the hub must neither
-                    // delete it nor stamp invoked_at.
+                    // delete it nor stamp invoked_at. Targeting is entirely
+                    // hub-side: the probe is emitted per socket, so the hub
+                    // knows who answered without any client-reported id.
                     ack?.({
                         removed: result === true,
                         inFlight: result === 'in-flight',
@@ -719,6 +782,16 @@ if (isReconnect) {
 
     onRetryQueuedMessage(callback: (localId: string) => boolean | Promise<boolean>): void {
         this.retryQueuedMessageCallback = callback
+    }
+
+    /**
+     * Gate invoked before a forced retry (deliver-now) re-admits a message
+     * under a localId an earlier delivery may still hold. The callback must
+     * resolve once every trace of the earlier asynchronous preparation for
+     * that localId has settled, and return whether the reuse may proceed.
+     */
+    onBeforeReuseLocalId(callback: (localId: string) => boolean | Promise<boolean>): void {
+        this.beforeReuseLocalIdCallback = callback
     }
 
     private cancelQueuedMessage(localId: string): QueueCancelResult | Promise<QueueCancelResult> {

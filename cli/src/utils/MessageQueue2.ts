@@ -398,6 +398,13 @@ export class MessageQueue2<T> {
      * Best-effort: if the CLI is offline when cancel is issued, the message
      * may already have been collected for invocation and won't be found here.
      */
+    /** True while the queue or an outstanding reservation holds this localId. */
+    hasLocalId(localId: string): boolean {
+        if (!localId) return false
+        if (this.reservations.has(localId)) return true
+        return this.queue.some((item) => item.localId === localId)
+    }
+
     cancelByLocalId(localId: string): boolean | 'in-flight' | 'indeterminate' | 'consumed' {
         if (!localId) return false;
         const idx = this.queue.findIndex(item => item.localId === localId);

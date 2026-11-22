@@ -9,6 +9,7 @@ import type { DecryptedMessage } from '@/types/api'
 import { useCancelQueuedMessage } from '@/hooks/mutations/useCancelQueuedMessage'
 import { useSteerQueuedMessage } from '@/hooks/mutations/useSteerQueuedMessage'
 import { useRetryIndeterminateMessage } from '@/hooks/mutations/useRetryIndeterminateMessage'
+import { useDeliverQueuedMessageNow } from '@/hooks/mutations/useDeliverQueuedMessageNow'
 import { useTranslation } from '@/lib/use-translation'
 import { useToast } from '@/lib/toast-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -200,6 +201,7 @@ export function QueuedMessagesBar({
     onEdit,
     canSteer,
     deliveryActive = canSteer,
+    sharedNative,
     compactionPendingMessageIds,
 }: {
     sessionId: string
@@ -222,6 +224,11 @@ export function QueuedMessagesBar({
     canSteer?: boolean
     /** An existing dispatch may still be confirming after new Steer admission closes. */
     deliveryActive?: boolean
+    /**
+     * Shared-native sessions multiplex several clients over one worker; the
+     * hub refuses deliver-now for them, so the affordance stays hidden.
+     */
+    sharedNative?: boolean
 }) {
     const queued = useQueuedMessages(sessionId)
     const assistantApi = useAui()
@@ -229,6 +236,7 @@ export function QueuedMessagesBar({
     const cancelMutation = useCancelQueuedMessage(api)
     const steerMutation = useSteerQueuedMessage(api)
     const retryMutation = useRetryIndeterminateMessage(api)
+    const deliverNowMutation = useDeliverQueuedMessageNow(api)
     const { t } = useTranslation()
     const { addToast } = useToast()
     const pendingScheduleRef = useRef(pendingSchedule)
@@ -400,6 +408,40 @@ export function QueuedMessagesBar({
                                 messageId: msg.id,
                             }).catch(() => {
                                 // useSteerQueuedMessage already toasts the failure.
+                            }).finally(() => {
+                                endQueuedOperation(sessionId, token)
+                            })
+                        }
+
+                        // "Send now" (↑) recovers rows stranded by an abort:
+                        // the hub's session-alive replay is deduped away by
+                        // the CLI, so the row would hang until the session-end
+                        // sweep discards it unread. Offered only when no turn
+                        // is dispatching (deliveryActive) and Steer cannot run
+                        // (canSteerRow covers the mid-turn case).
+                        const canDeliverNowRow = Boolean(
+                            !canSteerRow
+                                && !deliveryActive
+                                && !sharedNative
+                                && msg.deliveryState !== 'indeterminate'
+                                // Future-scheduled rows mature through the
+                                // scheduler tick; once matured the hub accepts
+                                // deliver-now for them, so keep ↑ available.
+                                && (msg.scheduledAt == null || msg.scheduledAt <= Date.now())
+                                && canCancel
+                        )
+                        const deliverNowPending = deliverNowMutation.isPending
+                            && deliverNowMutation.variables?.sessionId === sessionId
+                            && deliverNowMutation.variables.messageId === msg.id
+                        const handleDeliverNow = () => {
+                            if (!canDeliverNowRow) return
+                            const token = beginQueuedOperation(sessionId)
+                            if (!token) return
+                            void deliverNowMutation.mutateAsync({
+                                sessionId,
+                                messageId: msg.id,
+                            }).catch(() => {
+                                // useDeliverQueuedMessageNow already toasts the failure.
                             }).finally(() => {
                                 endQueuedOperation(sessionId, token)
                             })
@@ -589,6 +631,19 @@ export function QueuedMessagesBar({
                                             className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
                                         >
                                             <SteerIcon />
+                                        </button>
+                                    ) : null}
+                                    {canDeliverNowRow ? (
+                                        <button
+                                            type="button"
+                                            aria-label={t('queuedMessages.deliverNow')}
+                                            title={t('queuedMessages.deliverNow')}
+                                            disabled={deliverNowPending}
+                                            onClick={handleDeliverNow}
+                                            onMouseDown={(e) => e.preventDefault()}
+                                            className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                        >
+                                            <span aria-hidden="true" className="text-sm leading-none font-semibold">↑</span>
                                         </button>
                                     ) : null}
                                     <button

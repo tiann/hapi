@@ -56,3 +56,15 @@ describe('PiPromptQueue', () => {
         expect(queue.removeByLocalId('one')).toBeUndefined();
     });
 });
+
+describe('PiPromptQueue.hasLocalId', () => {
+    it('reports whether the FIFO still holds an entry', () => {
+        const q = new PiPromptQueue()
+        expect(q.hasLocalId('l1')).toBe(false)
+        q.enqueue({ message: 'hi', images: [], outboundSequence: 1, localId: 'l1' })
+        expect(q.hasLocalId('l1')).toBe(true)
+        expect(q.hasLocalId('l2')).toBe(false)
+        expect(q.dequeue()).toBeDefined()
+        expect(q.hasLocalId('l1')).toBe(false)
+    })
+})

@@ -1247,6 +1247,25 @@ export async function runPi(opts: {
         return promptQueue.cancelByLocalId(localId) || steerDispatcher?.cancelByLocalId(localId) === true;
     });
 
+    // --- Forced-retry localId reuse gate ---
+    // deliver-now cancels the held copy then force-accepts a fresh one under
+    // the SAME localId. Asynchronous preparation (image reads, command
+    // discovery) releases preparingLocalIds/cancelledWhilePreparing only when
+    // its chain link settles; re-admitting before that lets the original
+    // link's cleanup delete the retry's markers, after which
+    // cancel-queued-message can no longer find the item — a subsequently
+    // cancelled prompt would still execute. The preparation chain never
+    // rejects (each link carries its own catch), so awaiting it waits for
+    // every in-flight link, including the one holding this localId.
+    apiSession.onBeforeReuseLocalId(async (localId) => {
+        await preparationChain;
+        if (preparingLocalIds.has(localId)) return false;
+        // An earlier forced retry already shepherded this prompt through
+        // preparation into the FIFO; admitting a second copy would duplicate
+        // the turn. The reuse is unnecessary — keep the first copy.
+        return !promptQueue.hasLocalId(localId);
+    });
+
     // --- Abort handler ---
     // Only cancel the current turn, keep session alive for next prompt.
     // Pi's `abort` command cancels the active turn but the process stays in RPC mode.
