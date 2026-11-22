@@ -38,7 +38,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getOrCreateCliApiToken } from './config/cliApiToken'
 import { applyProviderCredentialsFromSettings } from './config/providerCredentials'
-import { getSettingsFile } from './config/settings'
+import { getSettingsFile, updateSettings } from './config/settings'
 import { loadServerSettings, type ServerSettings, type ServerSettingsResult } from './config/serverSettings'
 import { readTitleProviderConfig, type OpenAICompatibleTitleProviderConfig } from './sync/titleSuggestion'
 
@@ -54,6 +54,7 @@ export interface ConfigSources {
     listenPort: ConfigSource
     publicUrl: ConfigSource
     corsOrigins: ConfigSource
+    githubPrAwareness: ConfigSource
     androidPushMode: ConfigSource
     fcmServiceAccountPath: ConfigSource
     iosPushMode: ConfigSource
@@ -117,6 +118,13 @@ class Configuration {
 
     /** Effective on-demand session title provider configuration. */
     public readonly titleProviderConfig: OpenAICompatibleTitleProviderConfig | null
+
+    /**
+     * Opt-in GitHub PR awareness (session↔PR attach + chip). Mutable via PATCH /api/features
+     * unless pinned by HAPI_GITHUB_PR_AWARENESS. tiann/hapi#1162.
+     */
+    public githubPrAwareness: boolean
+
     // Push delivery (FCM + iOS/APNs) — nullable strings interpreted by
     // fcm/fcmConfig.ts and push-ios/iosPushConfig.ts.
     public readonly androidPushMode: string | null
@@ -155,6 +163,7 @@ class Configuration {
         this.publicUrl = serverSettings.publicUrl
         this.corsOrigins = serverSettings.corsOrigins
         this.titleProviderConfig = readTitleProviderConfig(process.env, serverSettings.titleProvider)
+        this.githubPrAwareness = serverSettings.githubPrAwareness
         this.androidPushMode = serverSettings.androidPushMode
         this.fcmServiceAccountPath = serverSettings.fcmServiceAccountPath
         this.iosPushMode = serverSettings.iosPushMode
@@ -230,6 +239,22 @@ class Configuration {
         this.cliApiTokenSource = source
         this.cliApiTokenIsNew = isNew
         ;(this.sources as { cliApiToken: string }).cliApiToken = source
+    }
+
+    /**
+     * Persist githubPrAwareness to settings.json and update in-memory state.
+     * Refuses when the value is pinned by HAPI_GITHUB_PR_AWARENESS.
+     */
+    async setGithubPrAwareness(enabled: boolean): Promise<void> {
+        if (this.sources.githubPrAwareness === 'env') {
+            throw new Error('githubPrAwareness is pinned by HAPI_GITHUB_PR_AWARENESS')
+        }
+        await updateSettings(this.settingsFile, (settings) => ({
+            settings: { ...settings, githubPrAwareness: enabled },
+            result: undefined
+        }))
+        this.githubPrAwareness = enabled
+        ;(this.sources as { githubPrAwareness: ConfigSource }).githubPrAwareness = 'file'
     }
 }
 

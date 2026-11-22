@@ -1,11 +1,18 @@
+import * as shutdown from '@/modules/common/remote/settleAcpLauncherShutdown'
+import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createGrokBackend } from './utils/grokBackend'
+import { expectAcpKill } from '@/test/expectAcpKill'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import type { GrokMode } from './types'
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 
 const harness = vi.hoisted(() => ({
     setModels: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
     setModes: [] as Array<{ sessionId: string; modeId: string }>,
     prompts: [] as unknown[][],
+    backends: [] as Array<Record<string, ReturnType<typeof vi.fn>>>,
+    deferSetModel: null as null | Promise<void>,
     autoCommandAvailable: true,
     stderrHandler: null as null | ((error: { message: string; raw: string }) => void),
     sessionInfoUpdateHandler: null as null | ((update: { title?: string | null }) => void),
@@ -17,22 +24,24 @@ const harness = vi.hoisted(() => ({
 }))
 
 vi.mock('./utils/grokBackend', () => ({
-    createGrokBackend: vi.fn(() => ({
-        initialize: vi.fn(async () => {}),
-        newSession: vi.fn(async () => {
-            harness.newSessionCalls += 1
-            return 'grok-new-session'
-        }),
-        loadSession: vi.fn(async (params: { sessionId: string }) => {
-            harness.loadSessionCalls.push(params.sessionId)
-            if (harness.loadSessionError) {
-                throw harness.loadSessionError
-            }
-            return params.sessionId
-        }),
-        setModel: vi.fn(async (sessionId: string, modelId: string, opts?: { flavor?: string }) => {
-            harness.setModels.push({ sessionId, modelId, flavor: opts?.flavor })
-        }),
+    createGrokBackend: vi.fn(() => {
+        const backend = {
+            initialize: vi.fn(async () => {}),
+            newSession: vi.fn(async () => {
+                harness.newSessionCalls += 1
+                return 'grok-new-session'
+            }),
+            loadSession: vi.fn(async (params: { sessionId: string }) => {
+                harness.loadSessionCalls.push(params.sessionId)
+                if (harness.loadSessionError) {
+                    throw harness.loadSessionError
+                }
+                return params.sessionId
+            }),
+            setModel: vi.fn(async (sessionId: string, modelId: string, opts?: { flavor?: string }) => {
+                harness.setModels.push({ sessionId, modelId, flavor: opts?.flavor })
+                if (modelId === 'grok-b' && harness.deferSetModel) await harness.deferSetModel
+            }),
         setMode: vi.fn(async (sessionId: string, modeId: string) => {
             harness.setModes.push({ sessionId, modeId })
         }),
@@ -67,7 +76,10 @@ vi.mock('./utils/grokBackend', () => ({
         hasAvailableCommand: vi.fn((_sessionId: string, command: string) => (
             command === 'auto' && harness.autoCommandAvailable
         ))
-    })),
+        }
+        harness.backends.push(backend)
+        return backend
+    }),
     formatGrokError: (error: unknown) => error instanceof Error ? error.message : String(error),
     isGrokBuildAuxiliaryQuotaError: (value: string, activeModel?: string | null) => (
         activeModel !== 'grok-build'
@@ -77,7 +89,7 @@ vi.mock('./utils/grokBackend', () => ({
 }))
 
 vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
-    buildHapiMcpBridge: async () => ({ server: { stop: () => {} }, mcpServers: {} })
+    buildHapiMcpBridge: vi.fn(async () => ({ server: { stop: () => {} }, mcpServers: {} }))
 }))
 vi.mock('./utils/permissionHandler', () => ({
     GrokPermissionHandler: class { async cancelAll(): Promise<void> {} }
@@ -87,15 +99,18 @@ vi.mock('@/ui/logger', () => ({
     logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() }
 }))
 
-import { grokRemoteLauncher } from './grokRemoteLauncher'
+import { grokRemoteLauncher, GrokRemoteLauncher } from './grokRemoteLauncher'
 
-function createSession() {
+function createSession(keepQueueOpen = false) {
     const queue = new MessageQueue2<GrokMode>((mode) => JSON.stringify(mode))
-    queue.pushIsolateAndClear('first', { permissionMode: 'default', model: 'grok-a', effort: 'low' })
-    queue.push('second', { permissionMode: 'default', model: 'grok-b', effort: 'medium' })
-    queue.close()
+    if (!keepQueueOpen) {
+        queue.pushIsolateAndClear('first', { permissionMode: 'default', model: 'grok-a', effort: 'low' })
+        queue.push('second', { permissionMode: 'default', model: 'grok-b', effort: 'medium' })
+        queue.close()
+    }
     const rpcHandlers = new Map<string, () => unknown>()
     const session = {
+        setKillHandler: vi.fn(),
         path: '/tmp/grok-test',
         logPath: '/tmp/grok-test/test.log',
         client: {
@@ -139,6 +154,141 @@ function createPermissionSession(modes: GrokMode['permissionMode'][]) {
 }
 
 describe('grokRemoteLauncher runtime config', () => {
+
+
+    it.each(['initialize', 'loadSession'] as const)('disconnects during a stalled %s', async (phase) => {
+        const { session } = createSession(true)
+        session.sessionId = 'resume-me'
+        const blocked = Promise.withResolvers<never>()
+        void blocked.promise.catch(() => undefined)
+        const entered = vi.fn()
+        const disconnect = vi.fn(async () => { blocked.reject(new Error('stopped during startup')) })
+        const create = vi.mocked(createGrokBackend)
+        const factory = create.getMockImplementation()!
+        create.mockImplementationOnce((...args) => {
+            const backend = factory(...args)
+            vi.mocked(backend[phase]).mockImplementation(async () => {
+                entered()
+                return blocked.promise
+            })
+            vi.mocked(backend.disconnect).mockImplementation(disconnect)
+            return backend
+        })
+        const running = grokRemoteLauncher(session as never, {})
+        const failure = running.catch(() => undefined)
+        try {
+            await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce())
+            const killing = (session.setKillHandler.mock.calls[0][0] as () => Promise<void>)()
+            void killing.catch(() => undefined)
+            await vi.waitFor(() => expect(disconnect).toHaveBeenCalledOnce(), { timeout: 350 })
+            await expect(killing).resolves.toBeUndefined()
+            await expect(running).resolves.toBe('exit')
+        } finally {
+            blocked.reject(new Error('test cleanup'))
+            session.queue.close()
+            await failure
+        }
+    })
+
+    it('does not start the backend after a kill during bridge setup', async () => {
+        const { session } = createSession(true)
+        const bridge = Promise.withResolvers<Awaited<ReturnType<typeof buildHapiMcpBridge>>>()
+        vi.mocked(buildHapiMcpBridge).mockReturnValueOnce(bridge.promise)
+        const before = vi.mocked(createGrokBackend).mock.calls.length
+        const running = grokRemoteLauncher(session as never, {})
+        const stop = vi.fn()
+        try {
+            const killing = (session.setKillHandler.mock.calls[0][0] as () => Promise<void>)()
+            bridge.resolve({ server: { stop, url: 'http://localhost' }, mcpServers: {} })
+            await killing
+            expect(createGrokBackend).toHaveBeenCalledTimes(before)
+            expect(stop).toHaveBeenCalledOnce()
+            await expect(running).resolves.toBe('exit')
+        } finally {
+            session.queue.close()
+            await running
+        }
+    })
+
+    it.each(['rejects', 'hangs'] as const)('settles kill when disconnect %s', async (outcome) => {
+        const { session } = createSession(true)
+        const waiting = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString')
+        const running = grokRemoteLauncher(session as never, {})
+        const failure = running.catch(() => undefined)
+        const disconnect = Promise.withResolvers<void>()
+        try {
+            await vi.waitFor(() => expect(waiting).toHaveBeenCalled())
+            const backend = harness.backends.at(-1)!
+            backend.disconnect.mockReturnValue(disconnect.promise)
+            const kill = session.setKillHandler.mock.calls[0][0] as () => Promise<void>
+            vi.useFakeTimers()
+            const settled = vi.fn()
+            const killing = kill().then(settled)
+            void killing.catch(() => undefined)
+            if (outcome === 'rejects') disconnect.reject(new Error('disconnect failed'))
+            await vi.advanceTimersByTimeAsync(5_000)
+            expect(settled).toHaveBeenCalledOnce()
+            expect(backend.disconnect).toHaveBeenCalledOnce()
+        } finally {
+            vi.useRealTimers()
+            disconnect.resolve()
+            session.queue.close()
+            await failure
+        }
+    })
+
+    it('ends an active prompt and wins over a pending switch to local', async () => {
+        const { session, rpcHandlers } = createSession(true)
+        const waiting = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString')
+        const running = grokRemoteLauncher(session as never, {})
+        const prompt = Promise.withResolvers<void>()
+        const settle = vi.spyOn(shutdown, 'settleAcpLauncherShutdown')
+        const switching = Promise.withResolvers<void>()
+        try {
+            await vi.waitFor(() => expect(waiting).toHaveBeenCalled())
+            const backend = harness.backends.at(-1)!
+            backend.prompt.mockReturnValue(prompt.promise)
+            backend.cancelPrompt.mockReturnValueOnce(switching.promise)
+            backend.disconnect.mockImplementation(async () => { prompt.reject(new Error('ACP transport closed')) })
+            session.queue.push('active', { permissionMode: 'default', model: 'grok-a', effort: 'low' })
+            await vi.waitFor(() => expect(backend.prompt).toHaveBeenCalledOnce())
+            const switchToLocal = rpcHandlers.get(RPC_METHODS.Switch)!
+            const switched = switchToLocal()
+            const kill = session.setKillHandler.mock.calls[0][0] as () => Promise<void>
+            await kill()
+            switching.resolve()
+            await switched
+            // Check the base loop result before launch() applies its final shutdown guard.
+            await expect(settle.mock.calls[0][0].running).resolves.toBe('exit')
+            await expect(running).resolves.toBe('exit')
+            expect(session.sendSessionEvent).not.toHaveBeenCalledWith({
+                type: 'message',
+                message: expect.stringContaining('prompt failed')
+            })
+        } finally {
+            settle.mockRestore()
+            switching.resolve()
+            prompt.resolve()
+            session.queue.close()
+            await running
+        }
+    })
+
+    it('waits for one backend disconnect when killed', async () => {
+        const { session } = createSession(true)
+        const setKillHandler = vi.spyOn(session, 'setKillHandler')
+        const waitForMessage = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString')
+        const running = grokRemoteLauncher(session as never, {})
+        try {
+            await vi.waitFor(() => expect(waitForMessage).toHaveBeenCalled())
+            expect(setKillHandler).toHaveBeenCalled()
+            const backend = harness.backends.at(-1)!
+            await expectAcpKill(setKillHandler.mock.calls[0][0] as () => Promise<void>, vi.mocked(backend.disconnect), running)
+        } finally {
+            session.queue.close()
+            await running
+        }
+    })
     afterEach(() => {
         harness.setModels = []
         harness.setModes = []
@@ -210,6 +360,137 @@ describe('grokRemoteLauncher runtime config', () => {
             expect.stringContaining('/always-approve off'),
             expect.stringContaining('permission-2')
         ])
+    })
+
+    it('requeues the hub-ACKed batch when a plain Stop lands during the queued model apply', async () => {
+        const queue = new MessageQueue2<GrokMode>((mode) => JSON.stringify(mode))
+        queue.push('first', { permissionMode: 'default', model: 'grok-b', effort: 'low' }, 'id-first')
+        const rpcHandlers = new Map<string, () => unknown>()
+        const session = {
+            setKillHandler: vi.fn(),
+            path: '/tmp/grok-test',
+            logPath: '/tmp/grok-test/test.log',
+            client: {
+                rpcHandlerManager: {
+                    registerHandler(method: string, handler: () => unknown) { rpcHandlers.set(method, handler) }
+                },
+                updateMetadata: vi.fn(),
+                getMetadata: vi.fn(() => null),
+                sendAgentMessage: vi.fn(),
+                sendSessionEvent: vi.fn(),
+                sendClaudeSessionMessage: vi.fn()
+            },
+            queue,
+            sessionId: null as string | null,
+            thinking: false,
+            getPermissionMode: () => 'default' as const,
+            registerExistingNativeSession(id: string) { session.sessionId = id },
+            setModel: vi.fn(),
+            setEffort: vi.fn(),
+            setPermissionMode: vi.fn(),
+            onThinkingChange(thinking: boolean) { session.thinking = thinking },
+            sendAgentMessage: vi.fn(),
+            sendSessionEvent: vi.fn()
+        }
+        let releaseModel!: () => void
+        harness.deferSetModel = new Promise<void>(resolve => { releaseModel = resolve })
+        const consumed = vi.fn()
+        queue.onBatchConsumed = consumed
+        const launcher = new GrokRemoteLauncher(session as never, { model: 'grok-a', effort: 'low' })
+        const launchPromise = launcher.launch()
+        let releaseCancel: (() => void) | undefined
+        try {
+            await vi.waitFor(() => expect(harness.setModels.some(entry => entry.modelId === 'grok-b')).toBe(true))
+            const backend = harness.backends.at(-1)!
+            backend.cancelPrompt.mockImplementationOnce(() => new Promise<void>(resolve => { releaseCancel = resolve }))
+            const stop = rpcHandlers.get(RPC_METHODS.Abort)!() as Promise<unknown>
+            await vi.waitFor(() => expect(releaseCancel).toBeTypeOf('function'))
+            releaseModel()
+            await new Promise<void>(resolve => setImmediate(resolve))
+            await new Promise<void>(resolve => setImmediate(resolve))
+            // The permission-mode sync may emit its own synthetic prompt; only
+            // the queued user turn counts here (the title instruction prefix
+            // is prepended at dispatch).
+            const userPrompts = harness.prompts.filter(prompt => (prompt[0] as { text?: string })?.text?.endsWith('first'))
+            // The batch was dequeued but never hub-ACKed (the ACK is deferred
+            // to the dispatch commit); the Stop must preserve it behind the
+            // in-flight teardown instead of dispatching a cancelled turn.
+            expect(userPrompts).toHaveLength(0)
+            expect(consumed).not.toHaveBeenCalled()
+            releaseCancel?.()
+            await stop
+            await vi.waitFor(() => expect(harness.prompts.filter(prompt => (prompt[0] as { text?: string })?.text?.endsWith('first'))).toHaveLength(1))
+            expect(consumed).toHaveBeenCalledExactlyOnceWith(['id-first'])
+            queue.close()
+            await launchPromise
+        } finally {
+            releaseModel?.()
+            releaseCancel?.()
+            queue.close()
+            await launchPromise.catch(() => {})
+        }
+    })
+
+    it('an idle switch teardown does not consume a newly arrived row', async () => {
+        const queue = new MessageQueue2<GrokMode>((mode) => JSON.stringify(mode))
+        const consumed = vi.fn()
+        queue.onBatchConsumed = consumed
+        const rpcHandlers = new Map<string, () => unknown>()
+        const session = {
+            setKillHandler: vi.fn(),
+            path: '/tmp/grok-test',
+            logPath: '/tmp/grok-test/test.log',
+            client: {
+                rpcHandlerManager: {
+                    registerHandler(method: string, handler: () => unknown) { rpcHandlers.set(method, handler) }
+                },
+                updateMetadata: vi.fn(),
+                getMetadata: vi.fn(() => null),
+                sendAgentMessage: vi.fn(),
+                sendSessionEvent: vi.fn(),
+                sendClaudeSessionMessage: vi.fn()
+            },
+            queue,
+            sessionId: null as string | null,
+            thinking: false,
+            getPermissionMode: () => 'default' as const,
+            registerExistingNativeSession(id: string) { session.sessionId = id },
+            setModel: vi.fn(),
+            setEffort: vi.fn(),
+            setPermissionMode: vi.fn(),
+            onThinkingChange(thinking: boolean) { session.thinking = thinking },
+            sendAgentMessage: vi.fn(),
+            sendSessionEvent: vi.fn()
+        }
+        const launcher = new GrokRemoteLauncher(session as never, { model: 'grok-a', effort: 'low' })
+        const launchPromise = launcher.launch().catch((error: unknown) => error)
+        let releaseCancel: (() => void) | undefined
+        try {
+            // Wait until the loop is parked: the Switch handler is registered
+            // immediately before the drain loop starts.
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true))
+            const backend = harness.backends.at(-1)!
+            backend.cancelPrompt.mockImplementationOnce(() => new Promise<void>(resolve => { releaseCancel = resolve }))
+            const switchPromise = rpcHandlers.get(RPC_METHODS.Switch)!() as Promise<unknown>
+            await vi.waitFor(() => expect(releaseCancel).toBeTypeOf('function'))
+            queue.push('late', { permissionMode: 'default', model: 'grok-b', effort: 'low' }, 'late')
+            await new Promise<void>(resolve => setImmediate(resolve))
+            await new Promise<void>(resolve => setImmediate(resolve))
+            // Pre-fix the dequeue signal stayed live during the teardown: the
+            // row was dequeued+ACKed and its model applied on the closing
+            // backend. The teardown must abort the signal at entry instead.
+            expect(consumed).not.toHaveBeenCalled()
+            expect(harness.setModels.some(entry => entry.modelId === 'grok-b')).toBe(false)
+            releaseCancel?.()
+            await switchPromise
+            expect(queue.pendingLocalIds()).toEqual([])
+            queue.close()
+            expect(await launchPromise).toBe('switch')
+        } finally {
+            releaseCancel?.()
+            queue.close()
+            await launchPromise.catch(() => {})
+        }
     })
 
     it('forwards ACP native titles while retaining the prompt fallback', async () => {

@@ -124,14 +124,16 @@ describe('AgyAcpRemoteLauncher replaying a recorded agy 1.5.3 question', () => {
         const launcher = new AgyAcpRemoteLauncher(session, { createBackend: createAgyAcpBackend });
         const run = launcher.launch();
 
-        await vi.waitFor(() => expect(agentRequests(client).call_q).toMatchObject({
+        // HAPI shows agy's call_q under that call's lifetime id.
+        const questionId = (): string => Object.keys(agentRequests(client)).find((id) => id.startsWith('call_q#')) ?? 'missing';
+        await vi.waitFor(() => expect(agentRequests(client)[questionId()]).toMatchObject({
             tool: 'AskUserQuestion',
             arguments: { questions: [{ question: 'Do you prefer RED or BLUE?', multiSelect: false, allowFreeText: true, options: [{ label: '(Recommended) RED' }, { label: 'BLUE' }] }] }
         }), { timeout: 5000 });
         expect(transport.initializeParams).toMatchObject({ clientCapabilities: { elicitation: { form: {} } } });
-        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool-call', callId: 'call_q', name: 'AskUserQuestion' }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool-call', callId: questionId(), name: 'AskUserQuestion' }));
 
-        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission)!({ id: 'call_q', approved: true, answers: { '0': ['BLUE'] } });
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission)!({ id: questionId(), approved: true, answers: { '0': ['BLUE'] } });
         await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }), { timeout: 10_000 });
         queue.close();
         await run;

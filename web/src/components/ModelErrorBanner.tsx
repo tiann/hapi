@@ -92,10 +92,6 @@ export function hasUrgentModelError(metadata: ModelErrorHolder | null | undefine
     return state === 'unrecovered' || state === 'bridge_failed'
 }
 
-export function hasRecoveredModelError(metadata: ModelErrorHolder | null | undefined): boolean {
-    return getModelErrorUiState(metadata) === 'recovered'
-}
-
 export function ModelErrorBanner({
     metadata,
     onDismiss,

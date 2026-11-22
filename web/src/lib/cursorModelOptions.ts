@@ -410,24 +410,3 @@ export function formatCursorModelPickerLabel(modelId: string, _name?: string | n
     return variant ? `${base} · ${variant}` : base
 }
 
-/**
- * iOS-style "configure my model" view: when a non-Default base is selected, hide
- * every other base row so the user sees Default + selected + (optional Variant
- * section below). Caller appends a "Change model…" toggle to re-expand.
- *
- * Default-row passthrough recognizes both `'auto'` (the in-picker token) and
- * `null` (the underlying base option value) so callers don't need to normalize.
- */
-export function filterCursorModelOptionsForCompactView(
-    modelOptions: readonly { value: string | null; label: string }[],
-    selectedModelBase: string | null | undefined
-): readonly { value: string | null; label: string }[] {
-    if (!selectedModelBase || selectedModelBase === 'auto') {
-        return modelOptions
-    }
-    return modelOptions.filter(
-        (option) => option.value === null
-            || option.value === 'auto'
-            || option.value === selectedModelBase
-    )
-}

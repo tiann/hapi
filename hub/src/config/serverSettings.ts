@@ -42,6 +42,7 @@ export interface ServerSettings {
     publicUrl: string
     corsOrigins: string[]
     titleProvider: TitleProviderSettings
+    githubPrAwareness: boolean
     androidPushMode: string | null
     fcmServiceAccountPath: string | null
     iosPushMode: string | null
@@ -65,6 +66,7 @@ export interface ServerSettingsResult {
         listenPort: 'env' | 'file' | 'default'
         publicUrl: 'env' | 'file' | 'default'
         corsOrigins: 'env' | 'file' | 'default'
+        githubPrAwareness: 'env' | 'file' | 'default'
     } & Record<PushSettingKey, 'env' | 'file' | 'default'>
     savedToFile: boolean
 }
@@ -149,6 +151,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             listenPort: 'default',
             publicUrl: 'default',
             corsOrigins: 'default',
+            githubPrAwareness: 'default',
             androidPushMode: 'default',
             fcmServiceAccountPath: 'default',
             iosPushMode: 'default',
@@ -293,6 +296,23 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             corsOrigins = deriveCorsOrigins(publicUrl)
         }
 
+        // githubPrAwareness: env > file > false (opt-in). tiann/hapi#1162.
+        let githubPrAwareness = false
+        if (process.env.HAPI_GITHUB_PR_AWARENESS !== undefined) {
+            const raw = process.env.HAPI_GITHUB_PR_AWARENESS.trim().toLowerCase()
+            githubPrAwareness = raw === '1' || raw === 'true' || raw === 'yes'
+            sources.githubPrAwareness = 'env'
+            if (settings.githubPrAwareness === undefined) {
+                settings.githubPrAwareness = githubPrAwareness
+                needsSave = true
+            }
+        } else if (typeof settings.githubPrAwareness === 'boolean') {
+            githubPrAwareness = settings.githubPrAwareness
+            sources.githubPrAwareness = 'file'
+        } else if (settings.githubPrAwareness !== undefined) {
+            throw new Error('githubPrAwareness must be a boolean')
+        }
+
         const titleProvider = normalizeTitleProviderSettings(settings.titleProvider)
         // Push settings: env > file > null, env persisted on first sight —
         // one loop instead of nine copies of the per-field block above.
@@ -337,6 +357,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                     publicUrl,
                     corsOrigins,
                     titleProvider,
+                    githubPrAwareness,
                     ...push,
                 },
                 sources,
