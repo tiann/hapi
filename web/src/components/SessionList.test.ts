@@ -913,7 +913,8 @@ describe('bucketRunningSessions', () => {
         expect(bucketRunningSessions([archived], 'jobs').jobs).toEqual([])
         expect(bucketRunningSessions([archived], 'all').jobs).toEqual([])
         expect(filterSessionsForListStatus([archived], 'active')).toEqual([])
-        expect(filterSessionsForListStatus([archived], 'archived')).toEqual([archived])
+        const prepared = prepareSidebarSessions([archived])
+        expect(filterSessionsForListStatus(prepared, 'archived')).toEqual([archived])
     })
 
     it('puts running attachedJob into jobs under mode jobs', () => {

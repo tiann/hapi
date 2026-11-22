@@ -110,6 +110,7 @@ import {
 import {
     hasAgentForegroundWork,
     hasRunningAttachedJob,
+    hasInProgressJobSession,
 } from '@/lib/sessionInProgress'
 import {
     compareDescWithKeyTiebreak,
@@ -288,9 +289,9 @@ export function isPinnedInProgressSession(
         return false
     }
     if (mode === 'jobs') {
-        return hasRunningAttachedJob(session)
+        return hasInProgressJobSession(session)
     }
-    return hasRunningAttachedJob(session) || hasAgentInProgressActivity(session)
+    return hasInProgressJobSession(session) || hasAgentInProgressActivity(session)
 }
 
 
@@ -481,7 +482,7 @@ export function filterActiveSessionsOnly(sessions: SessionSummary[], selectedSes
     return sessions.filter(session =>
         session.active
         || session.id === selectedSessionId
-        || hasRunningAttachedJob(session)
+        || hasInProgressJobSession(session)
     )
 }
 
@@ -498,7 +499,7 @@ export function filterSessionsForListStatus(
     if (status === 'active') return filterActiveSessionsOnly(sessions, selectedSessionId)
     return sessions.filter(session =>
         session.id === selectedSessionId
-        || (!session.active && !hasRunningAttachedJob(session))
+        || (!session.active && !hasInProgressJobSession(session))
     )
 }
 
@@ -1616,7 +1617,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     // The row can turn inactive before the archive request settles (the hub
     // still confirms cleanup); keep the spinner until it does.
     const canArchive = s.active || isLiveLifecycleState(s.metadata?.lifecycleState)
-    const showQuickArchive = canArchive || quickArchivePending
+    const showQuickArchive = s.active || quickArchivePending
     const quickActionCount = (showQuickUnpin ? 1 : 0) + (showQuickArchive ? 1 : 0)
     const hasQuickAction = quickActionCount > 0
     const handleQuickArchive = async () => {
