@@ -8,6 +8,7 @@ import { CodexAppServerClient } from '@/codex/codexAppServerClient'
 import {
     _resetAgentQuotasCacheForTests,
     _setClaudeStatusProbeForTests,
+    extractClaudeUsageBuckets,
     extractCodexQuotaBuckets,
     getAgentQuotasResponse,
     parseAgyCreditsCommandJson,
@@ -201,7 +202,7 @@ describe('agentQuotas parsers and probes', () => {
                 }
             }
         }), target)
-        expect(initStep).toEqual({ initDone: true, statusDone: false })
+        expect(initStep).toEqual({ initDone: true, statusDone: false, usageDone: false })
         expect(target.account).toEqual({
             email: 'dev@example.com',
             subscriptionType: 'Claude Max'
@@ -225,11 +226,120 @@ describe('agentQuotas parsers and probes', () => {
                 }
             }
         }), target)
-        expect(statusStep).toEqual({ initDone: false, statusDone: true })
+        expect(statusStep).toEqual({ initDone: false, statusDone: true, usageDone: false })
         expect(Object.fromEntries(target.statusRows.entries())).toEqual({
             'Auth token': 'apiKeyHelper',
             'Anthropic base URL': 'https://any.s6o.org'
         })
+    })
+
+    it('parses Claude get_usage control_response and tolerates CLIs that reject it', () => {
+        const target = {
+            account: null as Record<string, unknown> | null,
+            statusRows: new Map<string, string>(),
+            rateLimits: undefined as Record<string, unknown> | null | undefined
+        }
+        const rateLimits = {
+            five_hour: { utilization: 2, resets_at: '2026-11-16T18:49:59.838188+00:00' },
+            seven_day: { utilization: 0, resets_at: '2026-11-19T15:59:59.838209+00:00' },
+            seven_day_opus: null
+        }
+
+        const usageStep = parseClaudeQuotaControlLine(JSON.stringify({
+            type: 'control_response',
+            response: {
+                subtype: 'success',
+                request_id: 'hapi-claude-quota-usage',
+                response: { subscription_type: 'pro', rate_limits_available: true, rate_limits: rateLimits }
+            }
+        }), target)
+        expect(usageStep).toEqual({ initDone: false, statusDone: false, usageDone: true })
+        expect(target.rateLimits).toEqual(rateLimits)
+
+        const errorStep = parseClaudeQuotaControlLine(JSON.stringify({
+            type: 'control_response',
+            response: {
+                subtype: 'error',
+                request_id: 'hapi-claude-quota-usage',
+                error: 'Unsupported control request subtype: get_usage'
+            }
+        }), target)
+        expect(errorStep).toEqual({ initDone: false, statusDone: false, usageDone: true })
+        expect(target.rateLimits).toBeNull()
+    })
+
+    it('extracts Claude 5h and weekly buckets from get_usage rate limits', () => {
+        expect(extractClaudeUsageBuckets({
+            five_hour: { utilization: 37.5, resets_at: '2026-11-16T18:49:59.838Z' },
+            seven_day: { utilization: 120, resets_at: null },
+            seven_day_opus: { utilization: 50, resets_at: null },
+            extra_usage: { is_enabled: false, utilization: null }
+        })).toEqual([
+            {
+                id: 'claude-five_hour',
+                label: '5h window',
+                group: null,
+                window: '5h',
+                usedPercent: 37.5,
+                remainingPercent: 62.5,
+                resetsAt: Date.parse('2026-11-16T18:49:59.838Z')
+            },
+            {
+                id: 'claude-seven_day',
+                label: 'Weekly (7d)',
+                group: null,
+                window: 'weekly',
+                usedPercent: 100,
+                remainingPercent: 0,
+                resetsAt: null
+            }
+        ])
+        expect(extractClaudeUsageBuckets(null)).toEqual([])
+        expect(extractClaudeUsageBuckets({ five_hour: { utilization: null, resets_at: null }, seven_day: null })).toEqual([])
+    })
+
+    it('prefers get_usage windows over live rate_limit_event observations and keeps the rest', async () => {
+        const hapiHome = mkdtempSync(join(tmpdir(), 'hapi-usage-probe-'))
+        try {
+            const env = { HAPI_HOME: hapiHome }
+            const resetSec = Math.floor(Date.now() / 1000) + 3600
+            recordClaudeRateLimitEvent({
+                status: 'allowed_warning',
+                rateLimitType: 'five_hour',
+                utilization: 0.85,
+                resetsAt: resetSec
+            }, env, 'userA@example.com')
+            recordClaudeRateLimitEvent({
+                status: 'allowed_warning',
+                rateLimitType: 'seven_day_opus',
+                utilization: 0.5,
+                resetsAt: resetSec
+            }, env, 'userA@example.com')
+
+            vi.spyOn(agentAvailability, 'getAgentAvailability').mockImplementation((agent) => ({
+                agent,
+                available: agent === 'claude'
+            }))
+            _setClaudeStatusProbeForTests(async () => ({
+                account: { email: 'userA@example.com', subscriptionType: 'Claude Pro' },
+                statusRows: new Map([['Email', 'userA@example.com']]),
+                rateLimits: {
+                    five_hour: { utilization: 12, resets_at: '2026-11-16T18:00:00Z' },
+                    seven_day: { utilization: 40, resets_at: '2026-11-19T16:00:00Z' }
+                }
+            }))
+
+            const claude = await probeClaudeQuota(env)
+            expect(claude.status).toBe('ok')
+            expect(claude.note).toBeNull()
+            expect(claude.buckets.map((bucket) => [bucket.id, bucket.usedPercent])).toEqual([
+                ['claude-five_hour', 12],
+                ['claude-seven_day', 40],
+                ['claude-seven_day_opus', 50]
+            ])
+        } finally {
+            rmSync(hapiHome, { recursive: true, force: true })
+        }
     })
 
     it('probes Codex account and rate limits and formats credits and plan', async () => {

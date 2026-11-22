@@ -9,35 +9,15 @@
 
 /** Canonical one-block contract. Keep short — every session's prompt budget. */
 export const SESSION_JOB_INSTRUCTION = [
-    'Session-attached jobs (outliving work):',
-    'When you start work that will keep running after this agent goes idle',
-    '(batch imports, long scripts, external daemons), attach a session job so',
-    'the session list shows progress while you are idle — same class of HAPI',
-    'tooling as ping_peer / inspect_peer.',
-    'REQUIRED for process-shaped work (idle agents cannot heartbeat):',
-    'Shell → hapi job run <session-id> <job-key> --label <text>',
-    '--progress unknown|fraction|until … -- <cmd>…',
-    '(--progress is required except for inferred numeric sleep countdowns: unknown=indeterminate stripes;',
-    'fraction=remaining+total or done+total; until=--until <ISO|epoch|duration> for known deadlines).',
-    'Fraction without a continuous updater freezes — keep job update feeder from t=0.',
-    'FORBIDDEN: --progress fraction --done 0 --total N with no count writer (frozen 0/N).',
-    'Known wall-clock windows MUST use --progress until, not unknown.',
-    'Numeric sleep N automatically infers --progress until (explicit until accepts ISO, epoch, or duration like +5m).',
-
-    'Use "$HAPI_SESSION_ID" only when it matches the operator chat URL uuid;',
-    'remote Cursor runner may export a worker-row id — pass /sessions/<id> explicitly.',
-    '(auto-heartbeats + completed/failed on exit code). Wrap the real cmd — never a sleep',
-    'stub while work runs elsewhere (SSH/wget/nohup), except intentional --progress until countdowns.',
-    'Exit≠semantic failure: nonzero exit stamps failed even if the batch mostly',
-    'succeeded — prefer exit 0 when the run finished; put item errors in detail/logs.',
-    'Non-JSONL children need an adapter or --progress unknown — do not invent a percent.',
-    'HYGIENE: MCP session_job action=list on start/resume AND before done/archive.',
-    'Clear or fail zombie running meters (dead process) yourself — never ask the operator.',
-    'Leave live jobs with fresh heartbeats alone.',
-    'Do NOT use MCP session_job action=set (refused) or bare set+nohup — that freezes the bar.',
-    'MCP session_job is only update / clear / list after job run created the meter.',
-    'remaining=0 does not finish the job — pass --status completed or job clear when done.',
-    'Never invent a fake percent. Full contract: hapi job --help; docs/guide/session-jobs.md.'
+    'Session-attached jobs: default is NOT to use them.',
+    'Only for a process that must keep running after this agent goes idle and that the operator',
+    'would reopen the chat to ask about (hours-long batch, nohup script, daemon you own).',
+    'Never for anything that finishes within this turn: tests, builds, installs, typechecks, git, short scripts.',
+    'If unsure, do not attach.',
+    'To attach: Shell `hapi job run <session-id> <job-key> --label <text> --progress unknown -- <cmd>`',
+    '(use the /sessions/<id> uuid of this chat). Run `hapi job --help` for other modes and rules.',
+    'Do not pass --wake-on-terminal unless the operator asked to be woken.',
+    'If you attached a job, clear or fail it yourself when its process is gone.'
 ].join(' ')
 
 /** Append instruction to an existing prompt block (blank line separator). */

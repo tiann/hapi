@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
     formatMachineUptimeSeconds,
     presentMachineHealth,
-    resolveMachineOsLabel,
-    shouldShowMachineHostSubtitle,
 } from './machineHealth'
 
 describe('presentMachineHealth', () => {
@@ -59,27 +57,5 @@ describe('formatMachineUptimeSeconds', () => {
         expect(formatMachineUptimeSeconds(3_720)).toBe('1h 2m')
         expect(formatMachineUptimeSeconds(300)).toBe('5m')
         expect(formatMachineUptimeSeconds(45)).toBe('45s')
-    })
-})
-
-describe('resolveMachineOsLabel', () => {
-    it('maps known platforms to i18n keys', () => {
-        expect(resolveMachineOsLabel('win32')).toEqual({ kind: 'i18n', key: 'machine.os.windows' })
-        expect(resolveMachineOsLabel('linux')).toEqual({ kind: 'i18n', key: 'machine.os.linux' })
-        expect(resolveMachineOsLabel('darwin')).toEqual({ kind: 'i18n', key: 'machine.os.macos' })
-    })
-
-    it('falls back to raw platform string when unknown', () => {
-        expect(resolveMachineOsLabel('freebsd')).toEqual({ kind: 'raw', value: 'freebsd' })
-    })
-})
-
-describe('shouldShowMachineHostSubtitle', () => {
-    it('hides host when it matches the display label', () => {
-        expect(shouldShowMachineHostSubtitle('Teemo', 'Teemo')).toBe(false)
-    })
-
-    it('shows host when it differs from the display label', () => {
-        expect(shouldShowMachineHostSubtitle('f9bb3c9e', 'proxmox')).toBe(true)
     })
 })

@@ -223,6 +223,13 @@ export default defineConfig({
             },
             injectManifest: {
                 globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+                // KaTeX fonts keep their stable filenames across releases, so
+                // they must NOT match the default dontCacheBustURLsMatching
+                // (/^assets\//): Workbox then gives each font a content-hash
+                // revision, and a same-named font that changed after an
+                // upgrade gets a new precache key that refreshes existing
+                // installations instead of surviving worker updates forever.
+                dontCacheBustURLsMatching: /^assets\/(?!fonts\/)/,
                 // Optional syntax grammars are cached after use, not during PWA installation.
                 globIgnores: ['**/shiki-*.js'],
                 // The SPA entry contains the complete multi-agent control surface.

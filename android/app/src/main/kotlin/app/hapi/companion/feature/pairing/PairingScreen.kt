@@ -27,10 +27,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.feature.passkey.passkeyIssueText
 
 /**
  * Pairing landing: explains the self-hosted model, offers Scan QR / Manual
- * entry, renders the deep-link confirm card ([prefill]) and the "why am I
+ * entry / passkey sign-in, renders the deep-link confirm card ([prefill]) and the "why am I
  * here" [notice] banner (auth-terminal sign-outs, bad links).
  */
 @Composable
@@ -41,6 +42,7 @@ fun PairingScreen(
     onDismissNotice: () -> Unit,
     onScanQr: () -> Unit,
     onManualEntry: () -> Unit,
+    onPasskeySignIn: () -> Unit,
     onPairPrefill: () -> Unit,
     onSwitchToPrefilledHub: () -> Unit,
     onDismissPrefill: () -> Unit,
@@ -105,6 +107,14 @@ fun PairingScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(stringResource(R.string.pairing_manual_entry))
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            TextButton(
+                onClick = onPasskeySignIn,
+                enabled = state !is PairingUiState.Validating,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.pairing_passkey_entry))
             }
             app.hapi.companion.ui.components.PrivacyPolicyLink()
         }
@@ -242,4 +252,5 @@ internal fun pairingErrorText(error: PairingError): String = when (error) {
         error.supportedVersion,
     )
     is PairingError.AuthFailed -> stringResource(R.string.pairing_error_auth_failed, error.httpStatus)
+    is PairingError.Passkey -> passkeyIssueText(error.issue)
 }

@@ -134,6 +134,22 @@ describe('NotifySummaryText', () => {
         expect(screen.queryByText(/AGENT_NOTIFY_SUMMARY/)).toBeNull()
     })
 
+    it('never shows a truncated footer once the message completes', () => {
+        renderText('Did the work.\n\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok')
+
+        expect(screen.getByTestId('visible-markdown')).toHaveTextContent('Did the work.')
+        expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
+        expect(screen.queryByText(/AGENT_NOTIFY_SUMMARY/)).toBeNull()
+    })
+
+    it('never shows a truncated footer when chat display is off', () => {
+        mockUseSessionSummaryInChat.mockReturnValue(false)
+        renderText('Did the work.\n\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok')
+
+        expect(screen.getByTestId('visible-markdown')).toHaveTextContent('Did the work.')
+        expect(screen.queryByText(/AGENT_NOTIFY_SUMMARY/)).toBeNull()
+    })
+
     it('keeps a complete-looking footer in markdown while the message is streaming', () => {
         mockUseSessionSummaryInChat.mockReturnValue(true)
         renderText('Still working.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}', 'running')

@@ -22,6 +22,7 @@ export type HappyChatContextValue = {
     continuedPlanIds?: ReadonlySet<string>
     onRetryMessage?: (localId: string) => void
     historyActionPending?: boolean
+    onBranchConversation?: (messageLocalId?: string, messageId?: string) => void
     onForkConversation?: (messageLocalId?: string) => Promise<void>
     onRewindConversation?: (messageLocalId: string) => Promise<void>
     isLatestCompletedBoundary?: (messageId: string) => boolean
