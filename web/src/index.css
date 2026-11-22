@@ -641,7 +641,8 @@ html:has(.chat-scroll-y) #root {
 .sidebar-hide-button {
     position: absolute;
     top: 50%;
-    left: 50%;
+    left: 100%;
+    transform-origin: left center;
     z-index: 10;
     display: flex;
     width: 36px;
@@ -649,7 +650,7 @@ html:has(.chat-scroll-y) #root {
     cursor: pointer;
     align-items: center;
     justify-content: center;
-    transform: translate(-50%, -50%) scale(1);
+    transform: translateY(-50%) scale(1);
     border: 0;
     background: transparent;
     opacity: 1;
@@ -668,7 +669,7 @@ html:has(.chat-scroll-y) #root {
 
 @media (hover: hover) and (pointer: fine) {
     .sidebar-hide-button {
-        transform: translate(-50%, -50%) scale(0.85);
+        transform: translateY(-50%) scale(0.85);
         opacity: 0;
         pointer-events: none;
     }
@@ -676,7 +677,7 @@ html:has(.chat-scroll-y) #root {
     .sidebar-resize-handle:hover .sidebar-hide-button,
     .sidebar-resize-handle:focus-within .sidebar-hide-button,
     .sidebar-hide-button:focus-visible {
-        transform: translate(-50%, -50%) scale(1);
+        transform: translateY(-50%) scale(1);
         opacity: 1;
         pointer-events: auto;
     }
@@ -685,14 +686,14 @@ html:has(.chat-scroll-y) #root {
 /* Hybrid devices may keep a fine primary pointer while also exposing touch. */
 @media (any-pointer: coarse) {
     .sidebar-hide-button {
-        transform: translate(-50%, -50%) scale(1);
+        transform: translateY(-50%) scale(1);
         opacity: 1;
         pointer-events: auto;
     }
 }
 
 .sidebar-resize-handle[data-dragging] .sidebar-hide-button {
-    transform: translate(-50%, -50%) scale(0.85);
+    transform: translateY(-50%) scale(0.85);
     opacity: 0;
     pointer-events: none;
 }

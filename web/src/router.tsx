@@ -24,7 +24,7 @@ import {
 import { App } from '@/App'
 import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
-import { SidebarResizeHandle, SidebarShowButton } from '@/components/SidebarToggle'
+import { SidebarResizeHandle, SidebarShowButton, useSidebarToggleFocus } from '@/components/SidebarToggle'
 import { NewSession } from '@/components/NewSession'
 import { WorkspaceBrowser } from '@/components/WorkspaceBrowser'
 import { LoadingState } from '@/components/LoadingState'
@@ -235,6 +235,7 @@ function SessionsPage() {
         )
     }, [isSessionsIndex, pathname, router, sidebarHidden, sidebarSearch])
     const sidebar = useSidebarResize()
+    const sidebarToggleFocus = useSidebarToggleFocus()
     const handleSelectSession = useCallback((
         sessionId: string,
         targetMessageId?: string,
@@ -382,6 +383,7 @@ function SessionsPage() {
                     canHide={!isSessionsIndex}
                     hideLabel={t('session.sidebar.hide')}
                     isDragging={sidebar.isDragging}
+                    toggleFocus={sidebarToggleFocus}
                     onHide={hideSidebar}
                     onPointerDown={sidebar.onPointerDown}
                 />
@@ -396,6 +398,7 @@ function SessionsPage() {
                 {!shouldShowSidebar ? (
                     <SidebarShowButton
                         showLabel={t('session.sidebar.show')}
+                        toggleFocus={sidebarToggleFocus}
                         onShow={showSidebar}
                     />
                 ) : null}

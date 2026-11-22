@@ -26,6 +26,36 @@ async function assertTouchToggle(page: Page) {
 }
 
 test.describe('session sidebar toggle', () => {
+    test('leaves the centre of the divider available for dragging', async ({ page }) => {
+        await page.setViewportSize({ width: 1200, height: 800 })
+        await page.goto('/e2e-fixtures/session-sidebar-toggle-fixture.html')
+        const sidebar = page.getByRole('complementary')
+        const previous = (await sidebar.boundingBox())!.width
+        const divider = (await page.locator('.sidebar-resize-handle').boundingBox())!
+        const x = divider.x + divider.width / 2
+        const y = divider.y + divider.height / 2
+        await page.mouse.move(x, y)
+        await expect(page.getByRole('button', { name: 'Hide session list' })).toHaveCSS('opacity', '1')
+        await page.mouse.down()
+        await expect(page.locator('.sidebar-resize-handle')).toHaveAttribute('data-dragging', 'true')
+        await page.mouse.move(x + 60, y)
+        await page.mouse.up()
+        await expect.poll(async () => (await sidebar.boundingBox())!.width).toBe(previous + 60)
+    })
+
+    test('transfers keyboard focus to the new toggle in both directions', async ({ page }) => {
+        await page.setViewportSize({ width: 1200, height: 800 })
+        await page.goto('/e2e-fixtures/session-sidebar-toggle-fixture.html')
+        const hide = page.getByRole('button', { name: 'Hide session list' })
+        const show = page.getByRole('button', { name: 'Show session list' })
+        await page.keyboard.press('Tab')
+        await expect(hide).toBeFocused()
+        await page.keyboard.press('Enter')
+        await expect(show).toBeFocused()
+        await page.keyboard.press('Space')
+        await expect(hide).toBeFocused()
+    })
+
     test.describe('coarse primary pointer', () => {
         test.use({
             viewport: splitViewport,
@@ -99,7 +129,7 @@ test.describe('session sidebar toggle', () => {
                 dragStateIndex: expect.any(Number),
                 opacity: '1',
                 pointerEvents: 'auto',
-                transform: 'translate(-50%, -50%) scale(1)',
+                transform: 'translateY(-50%) scale(1)',
             })
             expect(rule!.finePointerIndex).toBeGreaterThanOrEqual(0)
             expect(rule!.finePointerIndex).toBeLessThan(rule!.anyPointerIndex)

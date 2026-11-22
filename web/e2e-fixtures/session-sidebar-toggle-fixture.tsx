@@ -1,23 +1,28 @@
 import React, { useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import '../src/index.css'
-import { SidebarResizeHandle, SidebarShowButton } from '../src/components/SidebarToggle'
+import { useSidebarResize } from '../src/hooks/useSidebarResize'
+import { SidebarResizeHandle, SidebarShowButton, useSidebarToggleFocus } from '../src/components/SidebarToggle'
 
 function Harness() {
     const [sidebarVisible, setSidebarVisible] = useState(true)
+    const sidebar = useSidebarResize()
+    const toggleFocus = useSidebarToggleFocus()
 
     return (
         <div className="flex h-screen min-h-0 bg-[var(--app-bg)]">
             {sidebarVisible ? (
                 <>
-                    <aside className="flex w-80 shrink-0 items-center justify-center border-r border-[var(--app-border)]">
+                    <aside style={{ width: sidebar.width }} className="flex shrink-0 items-center justify-center border-r border-[var(--app-border)]">
                         Session list
                     </aside>
                     <SidebarResizeHandle
                         canHide={true}
                         hideLabel="Hide session list"
                         onHide={() => setSidebarVisible(false)}
-                        onPointerDown={() => {}}
+                        toggleFocus={toggleFocus}
+                        isDragging={sidebar.isDragging}
+                        onPointerDown={sidebar.onPointerDown}
                     />
                 </>
             ) : null}
@@ -25,6 +30,7 @@ function Harness() {
                 {!sidebarVisible ? (
                     <SidebarShowButton
                         showLabel="Show session list"
+                        toggleFocus={toggleFocus}
                         onShow={() => setSidebarVisible(true)}
                     />
                 ) : null}

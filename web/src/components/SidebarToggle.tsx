@@ -1,4 +1,19 @@
-import type { PointerEventHandler } from 'react'
+import { useCallback, useRef, type MouseEvent, type PointerEventHandler } from 'react'
+
+export function useSidebarToggleFocus() {
+    const transferPending = useRef(false)
+    const markActivation = (event: MouseEvent<HTMLButtonElement>) => {
+        transferPending.current = event.detail === 0
+    }
+    const focusNewButton = useCallback((button: HTMLButtonElement | null) => {
+        if (!button || !transferPending.current) return
+        transferPending.current = false
+        button.focus({ preventScroll: true })
+    }, [])
+    return { markActivation, focusNewButton }
+}
+
+type SidebarToggleFocus = ReturnType<typeof useSidebarToggleFocus>
 
 function SidebarIcon(props: { direction: 'hide' | 'show'; className?: string }) {
     const arrowPath = props.direction === 'hide'
@@ -28,6 +43,7 @@ export function SidebarResizeHandle(props: {
     canHide: boolean
     hideLabel: string
     isDragging?: boolean
+    toggleFocus?: SidebarToggleFocus
     onHide: () => void
     onPointerDown: PointerEventHandler<HTMLDivElement>
 }) {
@@ -44,7 +60,11 @@ export function SidebarResizeHandle(props: {
                     aria-label={props.hideLabel}
                     title={props.hideLabel}
                     onPointerDown={(event) => event.stopPropagation()}
-                    onClick={props.onHide}
+                    ref={props.toggleFocus?.focusNewButton}
+                    onClick={(event) => {
+                        props.toggleFocus?.markActivation(event)
+                        props.onHide()
+                    }}
                 >
                     <SidebarIcon direction="hide" />
                 </button>
@@ -55,6 +75,7 @@ export function SidebarResizeHandle(props: {
 
 export function SidebarShowButton(props: {
     showLabel: string
+    toggleFocus?: SidebarToggleFocus
     onShow: () => void
 }) {
     return (
@@ -63,7 +84,11 @@ export function SidebarShowButton(props: {
             className="sidebar-show-button hidden split:flex"
             aria-label={props.showLabel}
             title={props.showLabel}
-            onClick={props.onShow}
+            ref={props.toggleFocus?.focusNewButton}
+            onClick={(event) => {
+                props.toggleFocus?.markActivation(event)
+                props.onShow()
+            }}
         >
             <SidebarIcon direction="show" />
         </button>
