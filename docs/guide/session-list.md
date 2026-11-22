@@ -43,7 +43,7 @@ can therefore be idle; see [active is transport liveness, not agent health](../a
 section shown above the project folders (global pins stay above it):
 
 - **Off** keeps every session in its project folder.
-- **Long-running jobs** (the default) lifts sessions with a running
+- **Long-running jobs** (the default) lifts unarchived sessions with a running
   [session job](./session-jobs.md) meter.
 - **Working & pending** also lifts sessions whose agent is working or waiting
   on you.
@@ -52,7 +52,9 @@ Connected-but-idle sessions stay in their project folders in every mode. Rows
 move into and out of the section as their status changes, but are ordered by
 user input rather than ongoing output. **Active sessions only** in the same
 settings group hides inactive sessions, except the open session and sessions
-with a running long-running job.
+with a running job that have not been archived. A disconnected, archived
+conversation stays in **Archived** even if its job is still reporting. Its row
+still shows job progress; archiving does not stop that job.
 
 A session counts as working while it has open tool calls, even between agent
 rounds. Autonomous loops that keep running tools therefore show as working
@@ -111,10 +113,10 @@ matching rows.
   chips under the toolbar on wide screens, a filter button in the toolbar on
   narrow ones. The selection is remembered locally in the browser and falls
   back to All when that machine is no longer available.
-- **Keep unread sessions visible** (Settings → Display, on by default): a
-  collapsed project still lists its unread sessions under its header, and the
-  preview limit never hides one. Turn it off to fold collapsed projects
-  completely. The toolbar shows **Mark all as read** with the unread count
+- **Keep unread sessions visible** (Settings → Display, on by default): an
+  automatically folded project shows unread sessions beneath its header, and
+  preview limits keep them visible. Manually closing a project hides all its
+  rows. Turn this setting off to hide unread previews in automatic folds too. The toolbar shows **Mark all as read** with the unread count
   while any session is unread.
 - **Session preview limit** controls how many rows are initially visible within
   each project group. Unread sessions, sessions with pending requests, and the
