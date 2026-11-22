@@ -224,24 +224,25 @@ describe('listSkills', () => {
         await writeSkill(join(repoRoot, 'tools', 'team-skills', 'shared-tool'), 'shared-tool', 'Shared workspace skill')
         await writeSkill(join(repoRoot, 'tools', 'team-skills', 'exp-beta'), 'exp-beta', 'Should be excluded by regex')
 
-        const sharedSkillsRoot = join(sandboxDir, 'shared-pool', 'skills')
+        const sharedSkillsRoot = join(repoRoot, 'shared-pool', 'skills')
         await writeSkill(join(sharedSkillsRoot, 'lint-helper'), 'lint-helper', 'Inherited lint helper')
         await writeSkill(join(sharedSkillsRoot, 'skip-me'), 'skip-me', 'Excluded inherited skill')
         await writeSkill(join(homeDir, 'home-skills', 'til-skill'), 'til-skill', 'Home relative skill')
 
-        const cycleA = join(sandboxDir, 'cycle-a.json')
-        const cycleB = join(sandboxDir, 'cycle-b.json')
+        await mkdir(join(repoRoot, 'manifests'), { recursive: true })
+        const cycleA = join(repoRoot, 'manifests', 'cycle-a.json')
+        const cycleB = join(repoRoot, 'manifests', 'cycle-b.json')
         await writeFile(cycleA, JSON.stringify({
-            entries: [{ path: sharedSkillsRoot, include_only: ['lint-helper', '[unclosed-regex'] }],
-            inherits: [{ path: cycleB }]
+            entries: [{ path: 'shared-pool/skills', include_only: ['lint-helper', '[unclosed-regex'] }],
+            inherits: [{ path: 'manifests/cycle-b.json' }]
         }))
         await writeFile(cycleB, JSON.stringify({
-            inherits: [{ path: cycleA }]
+            inherits: [{ path: 'manifests/cycle-a.json' }]
         }))
 
         await writeFile(join(repoRoot, '.agents', 'skills.json'), JSON.stringify({
             entries: [{ path: 'tools/team-skills', exclude: ['exp-.*'] }],
-            inherits: [{ path: cycleA, exclude: ['skip-me'] }]
+            inherits: [{ path: 'manifests/cycle-a.json', exclude: ['skip-me'] }]
         }))
         await writeFile(join(homeDir, '.gemini', 'config', 'skills.json'), JSON.stringify({
             entries: [{ path: '~/home-skills' }]
@@ -596,11 +597,11 @@ describe('listSkills', () => {
     it('rejects oversized agy manifests (>256 KiB)', async () => {
         const projectDir = join(sandboxDir, 'oversized-proj')
         await mkdir(join(projectDir, '.agents'), { recursive: true })
-        await writeSkill(join(sandboxDir, 'outside-skills', 'ok'), 'ok', 'Should not load')
+        await writeSkill(join(projectDir, 'local-ok-skills', 'ok'), 'ok', 'Should not load')
         await writeFile(
             join(projectDir, '.agents', 'skills.json'),
             JSON.stringify({
-                entries: [{ path: join(sandboxDir, 'outside-skills') }],
+                entries: [{ path: 'local-ok-skills' }],
                 padding: 'x'.repeat(260 * 1024),
             })
         )
@@ -660,5 +661,72 @@ describe('listSkills', () => {
         expect(names).toContain('alpha')
         expect(names).toContain('beta')
         expect(names).not.toContain('gamma')
+    })
+
+    it('enforces workspace confinement on project manifests, plugins, and symlinks while keeping user external manifests working', async () => {
+        const repoDir = join(sandboxDir, 'confined-repo')
+        const subDir = join(repoDir, 'packages', 'app')
+        await mkdir(join(repoDir, '.git'), { recursive: true })
+        await mkdir(join(subDir, '.agents', 'skills'), { recursive: true })
+        await mkdir(join(subDir, '.agents', 'plugins'), { recursive: true })
+        await mkdir(join(homeDir, '.gemini', 'config'), { recursive: true })
+
+        await writeSkill(join(repoDir, 'local-pool', 'in-repo-ok'), 'in-repo-ok', 'Allowed inside repo')
+
+        const outsideSkills = join(sandboxDir, 'outside-secret-skills')
+        await writeSkill(join(outsideSkills, 'abs-escape'), 'abs-escape', 'Absolute escape')
+        await writeSkill(join(outsideSkills, 'rel-escape'), 'rel-escape', 'Parent traversal escape')
+        await writeSkill(join(outsideSkills, 'symlink-dir-escape'), 'symlink-dir-escape', 'Symlink dir escape')
+        const outsideSkillMd = join(sandboxDir, 'outside-skill.md')
+        await writeFile(outsideSkillMd, '---\nname: symlink-file-escape\ndescription: Symlink file escape\n---\n\n# secret')
+
+        const outsideManifest = join(sandboxDir, 'external-shared.json')
+        await writeFile(outsideManifest, JSON.stringify({ entries: [{ path: outsideSkills }] }))
+        await writeSkill(join(outsideSkills, 'inherited-escape'), 'inherited-escape', 'Inherited manifest escape')
+
+        const outsidePlugin = join(sandboxDir, 'outside-plugin')
+        await mkdir(outsidePlugin, { recursive: true })
+        await writeFile(join(outsidePlugin, 'plugin.json'), JSON.stringify({ name: 'outside-plugin' }))
+        await writeSkill(join(outsidePlugin, 'skills', 'plugin-escape'), 'plugin-escape', 'Escaped plugin skill')
+
+        const dirSymlinkType = process.platform === 'win32' ? 'junction' : 'dir'
+        await symlink(join(outsideSkills, 'symlink-dir-escape'), join(subDir, '.agents', 'skills', 'symlink-dir-escape'), dirSymlinkType)
+        await mkdir(join(subDir, '.agents', 'skills', 'symlink-file-wrap'), { recursive: true })
+        await symlink(outsideSkillMd, join(subDir, '.agents', 'skills', 'symlink-file-wrap', 'SKILL.md'))
+        await symlink(outsidePlugin, join(subDir, '.agents', 'plugins', 'outside-plugin'), dirSymlinkType)
+
+        await writeFile(join(subDir, '.agents', 'skills.json'), JSON.stringify({
+            entries: [
+                { path: '../../local-pool' },
+                { path: outsideSkills },
+                { path: '../../../outside-secret-skills' },
+            ],
+            inherits: [{ path: '../../../external-shared.json' }],
+        }))
+        await writeFile(join(subDir, '.agents', 'plugins.json'), JSON.stringify({
+            entries: [
+                { path: outsidePlugin },
+                { path: '.agents/plugins' },
+            ],
+        }))
+
+        const userSharedDir = join(sandboxDir, 'user-shared-pool')
+        await writeSkill(join(userSharedDir, 'user-external-ok'), 'user-external-ok', 'Allowed via user manifest')
+        const userSharedManifest = join(sandboxDir, 'user-shared.json')
+        await writeFile(userSharedManifest, JSON.stringify({ entries: [{ path: userSharedDir }] }))
+        await writeFile(join(homeDir, '.gemini', 'config', 'skills.json'), JSON.stringify({
+            inherits: [{ path: userSharedManifest }],
+        }))
+
+        const skills = await listSkills(subDir, { flavor: 'agy' })
+        const names = skills.map((s) => s.name)
+        expect(names).toContain('in-repo-ok')
+        expect(names).toContain('user-external-ok')
+        expect(names).not.toContain('abs-escape')
+        expect(names).not.toContain('rel-escape')
+        expect(names).not.toContain('symlink-dir-escape')
+        expect(names).not.toContain('symlink-file-escape')
+        expect(names).not.toContain('inherited-escape')
+        expect(names).not.toContain('plugin-escape')
     })
 })
