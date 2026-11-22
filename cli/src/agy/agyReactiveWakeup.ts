@@ -884,7 +884,7 @@ export function parseCompletedBackgroundTasks(
     if (!systemMessageContent) return [];
     const normalized = systemMessageContent.replace(/\r\n/g, '\n');
     const escapedSession = sessionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const messageHeader = `\\[Message\\] timestamp=\\S+ sender=\\S+(?:\\s+priority=\\S+)?(?:\\s+content=|\\n+)`;
+    const messageHeader = `\\[Message\\] (?:timestamp=\\S+ )?sender=\\S+(?:\\s+priority=\\S+)?(?:\\s+content=|\\n+)`;
     const taskStartPrefix = `(?:<SYSTEM_MESSAGE>\\s*(?:${messageHeader})?|(?:\\n+Log: file:\\/\\/\\/[^\\n]*)?\\n+${messageHeader}|\\n+Log: file:\\/\\/\\/[^\\n]*\\n+)`;
     const nextTaskBoundary = `(?:(?:\\n+Log: file:\\/\\/\\/[^\\n]*)?\\n+${messageHeader}|\\n+Log: file:\\/\\/\\/[^\\n]*\\n+)Task id "${escapedSession}\\/task-\\d+" finished with result:`;
     const nextNonTaskMessageBoundary = `\\n+Log: file:\\/\\/\\/[^\\n]*\\n+${messageHeader}`;
@@ -1049,28 +1049,37 @@ export function inspectSyntheticBackgroundCommandMatch(
             .map((entry) => entry.stepIndex)
             .filter((idx): idx is number => idx !== undefined)
     );
-    const turnPlannedCompatibleCommand = recentSteps.some((step) => {
-        if (step.step_index <= turnStartStepIndex) return false;
-        if (candidateStepIndexes.has(step.step_index)) return false;
-        if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') return false;
-        return (step.tool_calls ?? []).some((call) => {
-            if (call.name !== 'run_command') return false;
+    const actionsByStep = new Map(recentSteps.map(step => [step.step_index, step]));
+    const freshActions: Array<AgyTranscriptStep | undefined> = [];
+    for (const step of recentSteps) {
+        if (step.step_index <= turnStartStepIndex) continue;
+        if (candidateStepIndexes.has(step.step_index)) continue;
+        if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') continue;
+        (step.tool_calls ?? []).forEach((call, index) => {
+            if (call.name !== 'run_command') return;
             const args = decodeAgyTranscriptArgs(call.args);
             const plannedCmd = typeof args.CommandLine === 'string' ? args.CommandLine : undefined;
-            if (liveCommandLine !== undefined && plannedCmd !== liveCommandLine) return false;
+            if (liveCommandLine !== undefined && plannedCmd !== liveCommandLine) return;
             if (liveArgs) {
                 for (const [key, val] of Object.entries(liveArgs)) {
                     if (typeof val !== 'string' && typeof val !== 'number' && typeof val !== 'boolean') {
                         continue;
                     }
-                    if (args[key] !== undefined && args[key] !== val) return false;
+                    if (args[key] !== undefined && args[key] !== val) return;
                 }
             }
-            return true;
+            freshActions.push(actionsByStep.get(step.step_index + index + 1));
         });
-    });
+    }
 
-    if (turnPlannedCompatibleCommand) {
+    // A different persisted output distinguishes an older replay even when
+    // both commands have identical arguments. Until the result arrives, defer.
+    if (freshActions.length && (completedCandidates.length === 0 || freshActions.some(action => {
+        if (!action || action.type !== 'RUN_COMMAND' || action.status !== 'DONE' || !action.content || isAgyStepContentTruncated(action)) return true;
+        const fresh = normalizeAgyCommandBody(action.content);
+        return (liveResult?.stdout !== undefined && fresh.stdout === liveResult.stdout
+            && (liveResult.exitCode === undefined || fresh.exitCode === liveResult.exitCode));
+    }))) {
         return { kind: 'none' };
     }
 
@@ -1138,13 +1147,13 @@ export function inspectSyntheticBackgroundCommandMatch(
             }
             return { kind: 'ambiguous' };
         }
-        if (!turnPlannedCompatibleCommand && unpersistedCompatible.length > 0) {
+        if (freshActions.length === 0 && unpersistedCompatible.length > 0) {
             return { kind: 'ambiguous' };
         }
         return { kind: 'none' };
     }
 
-    if (turnPlannedCompatibleCommand) {
+    if (freshActions.length > 0) {
         return { kind: 'none' };
     }
     if (unpersistedCompatible.length > 0) {

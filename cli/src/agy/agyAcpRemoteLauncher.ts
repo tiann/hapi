@@ -277,6 +277,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     // Live ACP completions held while multiple compatible synthetic commands
     // remain open with incomplete `SYSTEM_MESSAGE` persistence.
     private readonly retainedAmbiguousCompletions: Array<{
+        turnEndedAt?: number;
+        streamedTexts?: ReadonlySet<string>;
         turnStartStepIndex: number;
         callMessage?: Extract<AgentMessage, { type: 'tool_call' }>;
         resultMessage: Extract<AgentMessage, { type: 'tool_result' }>;
@@ -657,7 +659,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const checkWakeup = (verifyIdentity = false) => {
             if (wakeupTriggered || waitController.signal.aborted || this.shouldExit || queue.size() > 0) return;
             tryAttachWatcher(verifyIdentity);
-            armPoll(watchRef.current && this.deferredTruncatedSystemSteps.size === 0 ? 30_000 : this.reactivePollMs);
+            armPoll(watchRef.current && this.deferredTruncatedSystemSteps.size === 0 && this.retainedAmbiguousCompletions.length === 0 ? 30_000 : this.reactivePollMs);
             if (this.hasPendingReactiveWakeup()) {
                 wakeupTriggered = true;
                 waitController.abort();
@@ -1788,16 +1790,19 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         const exactTaskMatch = match.entry.taskId !== undefined
                             && matchesBackgroundTaskId(item.resultMessage.id, match.entry.taskId);
                         if (!exactTaskMatch) {
-                            if (!allowSettledReplaySuppression) {
-                                continue;
+                            if (allowSettledReplaySuppression && turn && item.turnEndedAt === undefined) {
+                                item.turnEndedAt = Date.now();
+                                item.streamedTexts = new Set(turn.streamedTextCounts.keys());
                             }
+                            if (item.turnEndedAt === undefined) continue;
                             // An older wakeup completion may already be inside this window.
                             const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, item.turnStartStepIndex);
                             const userIndex = steps.findIndex(step => step.source === 'USER_EXPLICIT' && step.type === 'USER_INPUT');
                             const responseRecorded = userIndex >= 0 && steps.slice(userIndex + 1).some(step =>
                                 step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE'
-                                && !step.tool_calls?.length && turn?.streamedTextCounts.has(step.content?.trim() ?? '')
+                                && !step.tool_calls?.length && item.streamedTexts?.has(step.content?.trim() ?? '')
                             );
+                            if (!responseRecorded && Date.now() - item.turnEndedAt < this.reactiveTimings.maxIdleMs) continue;
                             if (!responseRecorded) {
                                 this.retainedAmbiguousCompletions.splice(idx, 1);
                                 idx -= 1;

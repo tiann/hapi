@@ -6235,6 +6235,12 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         await runPromise;
     });
 
+    it('settles messages with a sender-only envelope', () => {
+        const body = 'Command exited with code 0.\n\nCommand output:\ndone';
+        const content = `<SYSTEM_MESSAGE>\n[Message] sender=runner content=Task id "session/task-1" finished with result:\n${body}\n</SYSTEM_MESSAGE>`;
+        expect(parseCompletedBackgroundTasks(content, 'session')).toEqual([{ taskId: 'session/task-1', body, exitCode: 0 }]);
+    });
+
     it('preserves [Message] timestamp= sender= content= stdout lines until the real task frame ends', () => {
         const sessionId = 'conv-msg-content-stdout';
         const content = [
@@ -6453,15 +6459,6 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             });
             onUpdate({ type: 'text', text: 'Done follow-up.' } as unknown as AgentMessage);
             onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
-            const { compactPath } = agyTranscriptPaths(tempBrainDir, acp)!;
-            appendFileSync(
-                compactPath,
-                [
-                    JSON.stringify({ step_index: 7, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'follow up' }),
-                    JSON.stringify({ step_index: 8, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Done follow-up.' })
-                ].join('\n') + '\n',
-                'utf8'
-            );
         });
 
         const launcher = new AgyAcpRemoteLauncher(session, {
@@ -6538,6 +6535,17 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         // User sends a follow-up prompt whose ACP stream replays `live-replay-synth-1`.
         queue.push('follow up', { permissionMode: 'always-proceed' }, 'm2');
         await vi.waitFor(() => expect(readyCount()).toBe(4));
+
+        // ACP returned before either native turn row reached disk.
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({ step_index: 7, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'follow up' }),
+                JSON.stringify({ step_index: 8, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Done follow-up.' })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+        await new Promise(resolve => setTimeout(resolve, 150));
 
         const turn2Messages = client.sendAgentMessage.mock.calls.map(([msg]) => msg as {
             type?: string;
@@ -6675,6 +6683,9 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         queue.push('run again', { permissionMode: 'always-proceed' }, 'm2');
         await vi.waitFor(() => expect(readyCount()).toBe(4));
 
+        await vi.waitFor(() => expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'tool-call-result', callId: 'call-fresh-same-output'
+        })));
         const turn2Messages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
         expect(turn2Messages).toContainEqual(expect.objectContaining({
             type: 'tool-call',
