@@ -84,8 +84,14 @@ export interface AgyTranscriptCommandRecord {
 
 export interface AgyTranscriptBackgroundSettlement {
     callId: string;
+    taskId?: string;
     reason: 'completed' | 'killed';
     toolResult?: Extract<AgentMessage, { type: 'tool_result' }>;
+}
+
+/** Reports whether compact transcript `content` is truncated and still awaits `transcript_full.jsonl`. */
+export function isAgyStepContentTruncated(step: AgyTranscriptStep): boolean {
+    return Array.isArray(step.truncated_fields) && step.truncated_fields.includes('content');
 }
 
 export interface AgyLiveBackgroundCompletionLookup {
@@ -868,7 +874,7 @@ export function parseCompletedBackgroundTasks(
     const normalized = systemMessageContent.replace(/\r\n/g, '\n');
     const escapedSession = sessionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(
-        `Task id "(${escapedSession}\\/task-\\d+)" finished with result:\\n([\\s\\S]*?)(?=(?:\\n+Log: file:\\/\\/\\/[^\\n]*)?(?:\\n+\\[Message\\] timestamp=\\S+ sender=\\S+(?:\\s+priority=\\S+)?(?:\\s+content=|\\n+Task id "${escapedSession}\\/task-\\d+" finished with result:)|\\n+Task id "${escapedSession}\\/task-\\d+" finished with result:|\\s*<\\/SYSTEM_MESSAGE>|$))`,
+        `Task id "(${escapedSession}\\/task-\\d+)" finished with result:\\n([\\s\\S]*?)(?=(?:\\n+Log: file:\\/\\/\\/[^\\n]*)?(?:\\n+\\[Message\\] timestamp=\\S+ sender=\\S+(?:\\s+priority=\\S+)?(?:\\s+content=|\\n+Task id "${escapedSession}\\/task-\\d+" finished with result:)|\\n+Task id "${escapedSession}\\/task-\\d+" finished with result:|\\s*<\\/SYSTEM_MESSAGE>))`,
         'g'
     );
     const results: AgyCompletedBackgroundTask[] = [];
@@ -998,7 +1004,7 @@ export function inspectSyntheticBackgroundCommandMatch(
     const recentSteps = readAgyTranscriptStepsAfter(brainDir, sessionId, Math.max(-1, earliestStep - 1));
     const completedTasks = new Map<string, { stdout: string; exitCode?: number }>();
     for (const step of recentSteps) {
-        if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
+        if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE' && !isAgyStepContentTruncated(step)) {
             for (const parsed of parseCompletedBackgroundTasks(step.content, sessionId)) {
                 const normalized = normalizeAgyCommandBody(parsed.body);
                 const exitCode = parsed.exitCode ?? normalized.exitCode;
@@ -1193,12 +1199,25 @@ export function buildAgyBackgroundCompletionToolResult(
     };
 }
 
+/** Builds the terminal `tool_result` event for a background command stopped via `manage_task`. */
+export function buildAgyBackgroundKilledToolResult(
+    callId: string
+): Extract<AgentMessage, { type: 'tool_result' }> {
+    return {
+        type: 'tool_result',
+        id: callId,
+        status: 'completed',
+        output: { output: 'Background task stopped.' }
+    };
+}
+
 function applyCompletedSystemMessageStep(
     step: AgyTranscriptStep,
     sessionId: string,
     openBackgroundCommands: AgyOpenBackgroundCommand[],
     messages: AgentMessage[]
 ): void {
+    if (isAgyStepContentTruncated(step)) return;
     for (const completedBg of parseCompletedBackgroundTasks(step.content, sessionId)) {
         if (openBackgroundCommands.length === 0) break;
         const matchIdx = openBackgroundCommands.findIndex(
@@ -1245,7 +1264,9 @@ export function settleCompletedBackgroundCommandsFromTranscript(
 
     const completedByTaskId = new Map<string, AgyCompletedBackgroundTask>();
     for (const step of steps) {
-        if (step.source !== 'SYSTEM' || step.type !== 'SYSTEM_MESSAGE') continue;
+        if (step.source !== 'SYSTEM' || step.type !== 'SYSTEM_MESSAGE' || isAgyStepContentTruncated(step)) {
+            continue;
+        }
         for (const parsed of parseCompletedBackgroundTasks(step.content, sessionId)) {
             completedByTaskId.set(parsed.taskId, parsed);
         }
@@ -1260,6 +1281,7 @@ export function settleCompletedBackgroundCommandsFromTranscript(
             openBackgroundCommands.splice(idx, 1);
             settled.push({
                 callId: entry.callId,
+                ...(entry.taskId ? { taskId: entry.taskId } : {}),
                 reason: 'completed',
                 toolResult: buildAgyBackgroundCompletionToolResult(entry.callId, completed)
             });
@@ -1272,7 +1294,12 @@ export function settleCompletedBackgroundCommandsFromTranscript(
         );
         if (killed) {
             openBackgroundCommands.splice(idx, 1);
-            settled.push({ callId: entry.callId, reason: 'killed' });
+            settled.push({
+                callId: entry.callId,
+                ...(entry.taskId ? { taskId: entry.taskId } : {}),
+                reason: 'killed',
+                toolResult: buildAgyBackgroundKilledToolResult(entry.callId)
+            });
         }
     }
     settled.reverse();
@@ -1286,7 +1313,8 @@ export function settleCompletedBackgroundCommandsFromTranscript(
 export function convertAgyReactiveSteps(
     sessionId: string,
     steps: AgyTranscriptStep[],
-    openBackgroundCommands: AgyOpenBackgroundCommand[]
+    openBackgroundCommands: AgyOpenBackgroundCommand[],
+    alreadySettledTaskIds?: ReadonlySet<string>
 ): {
     messages: AgentMessage[];
     usage: UsageMessage | null;
@@ -1362,7 +1390,8 @@ export function convertAgyReactiveSteps(
                         || (entry.taskId !== undefined && matchesBackgroundTaskId(killedTaskId, entry.taskId))
                 );
                 if (killIdx >= 0) {
-                    openBackgroundCommands.splice(killIdx, 1);
+                    const killed = openBackgroundCommands.splice(killIdx, 1)[0]!;
+                    messages.push(buildAgyBackgroundKilledToolResult(killed.callId));
                 }
             }
             const id = `agy-wakeup-${sessionId}-${step.step_index}-${callIdx}`;
@@ -1370,13 +1399,17 @@ export function convertAgyReactiveSteps(
                 ? buildGenericToolOutput(call.name, action)
                 : { output: '', status: 'completed' as const, backgrounded: false };
             // agy task ids are unique per session. A backgrounded command whose
-            // task is already open was streamed by a live turn before this slice
-            // was replayed: a second card and a second entry would leave one of
-            // the two open after the task's single completion.
+            // task is already open (or was already settled on `timed_out`) was
+            // streamed before this slice was replayed: a second card and entry
+            // would duplicate the card or leave one open after completion.
             const backgroundTaskId = resultInfo.backgrounded && action
                 ? extractAgyBackgroundTaskId(action.content)
                 : undefined;
-            if (backgroundTaskId && openBackgroundCommands.some((entry) => entry.taskId === backgroundTaskId)) {
+            if (
+                backgroundTaskId
+                && (openBackgroundCommands.some((entry) => entry.taskId === backgroundTaskId)
+                    || alreadySettledTaskIds?.has(backgroundTaskId))
+            ) {
                 continue;
             }
             messages.push({
