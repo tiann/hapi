@@ -141,6 +141,7 @@ class FakeAgyBackend {
         reject: (error: unknown) => void;
         // agy answered, but HAPI is still draining late output.
         answer: () => void;
+        refuse: (error: unknown, drainMs: number) => void;
         onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void;
     }> = [];
     abortSoftSteersCalls = 0;
@@ -160,8 +161,20 @@ class FakeAgyBackend {
         let answer!: () => void;
         const answered = new Promise<void>((res) => { answer = res; });
         void completed.then(answer, answer);
-        const succeeded = completed.then(() => true, () => false);
-        this.steerCompletions.push({ resolve, reject, answer, onUsage: options?.onUsage });
+        let settleSucceeded!: (ok: boolean) => void;
+        const succeeded = new Promise<boolean>((res) => { settleSucceeded = res; });
+        void completed.then(() => settleSucceeded(true), () => settleSucceeded(false));
+        this.steerCompletions.push({
+            resolve,
+            reject,
+            answer,
+            // agy refuses at once; HAPI rejects `completed` only after draining late output.
+            refuse: (error, drainMs) => {
+                settleSucceeded(false);
+                setTimeout(() => reject(error), drainMs);
+            },
+            onUsage: options?.onUsage
+        });
         const dispatched = this.steerDispatchError ? Promise.reject(this.steerDispatchError) : Promise.resolve();
         void dispatched.catch(() => {});
         return { dispatched, answered, succeeded, completed };
@@ -1852,6 +1865,51 @@ describe('AgyAcpRemoteLauncher steer state matrix', () => {
             expect(consumedSteer(client, 'steer-1')).toBe(false);
             queue.close();
             backend.steerCompletions[0]!.resolve('end_turn');
+            await run;
+        });
+
+        it('confirms a steer sent before agy produced any output', async () => {
+            const backend = new FakeAgyBackend();
+            const { session, queue, client } = makeSession();
+            let release!: () => void;
+            backend.promptScripts.push(async () => {
+                await new Promise<void>((resolve) => { release = resolve; });
+            });
+            queue.push('run the tests', REVIEW, 'first');
+            const { run } = launch(session, [backend]);
+            await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+            queue.push('also lint', REVIEW, 'steer-1');
+            expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' })).toEqual({ steered: true });
+
+            release();
+            await vi.waitFor(() => expect(consumedSteer(client, 'steer-1')).toBe(true));
+            queue.close();
+            backend.steerCompletions[0]!.resolve('end_turn');
+            await run;
+        });
+
+        it('confirms a steer sent while a refused steer drains, at the answer to the request it really interrupted', async () => {
+            const backend = new FakeAgyBackend();
+            const { queue, client, run, release } = await heldTurn(backend);
+            queue.push('also lint', REVIEW, 'steer-1');
+            queue.push('and format', REVIEW, 'steer-2');
+            queue.push('and test', REVIEW, 'steer-3');
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' });
+            release();
+            await vi.waitFor(() => expect(consumedSteer(client, 'steer-1')).toBe(true));
+
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-2' });
+            backend.steerCompletions[1]!.refuse(Object.assign(new Error("Can't add this prompt to session"), { code: -32603 }), 300);
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            // The refused steer is still draining; agy answers the first steer's request, which the third steer interrupted.
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-3' });
+            backend.steerCompletions[0]!.resolve('end_turn');
+
+            await vi.waitFor(() => expect(consumedSteer(client, 'steer-3')).toBe(true));
+            await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-2'], 'queued'));
+            expect(consumedSteer(client, 'steer-2')).toBe(false);
+            queue.close();
+            backend.steerCompletions[2]!.resolve('end_turn');
             await run;
         });
 

@@ -1349,9 +1349,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
         // A steer interrupts the request agy holds open; agy answers that request once it takes the steer.
         const interrupted = turn.openRequest;
-        // agy 1.5.9+ echoes nothing: output without an echo of the prompt marks it.
-        const echoless = turn.sawActivity && !turn.promptEcho.echo;
+        // agy 1.5.9+ echoes nothing; an agy that echoes does so at the start of the turn.
+        const echoless = !turn.promptEcho.echo;
         let steerSucceeded: Promise<boolean> | null = null;
+        let refused = false;
         let resolved = false;
         let steerCounted = false;
         let forgetEcho = () => {};
@@ -1428,6 +1429,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         steerCounted = true;
         steerSucceeded = steer.succeeded;
         turn.openRequest = steerSucceeded;
+        // A refused steer leaves the request it interrupted open, before late output is drained.
+        void steerSucceeded.then((succeeded) => {
+            refused = !succeeded;
+            if (refused && turn.openRequest === steerSucceeded) turn.openRequest = interrupted;
+        });
         turn.steerAnswers.push(steer.answered.then(() => {
             if (this.turn === turn) {
                 turn.answeredAt = Date.now();
@@ -1462,7 +1468,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
         if (echoless) {
             void interrupted.then((succeeded) => {
-                if (succeeded && this.turn === turn && !turn.aborted && !this.backendLost) accept();
+                if (succeeded && !refused && this.turn === turn && !turn.aborted && !this.backendLost) accept();
             });
         }
 
