@@ -62,9 +62,11 @@ export interface AgyOpenBackgroundCommand {
     taskId?: string;
     afterStepIndex?: number;
     ordinalInTurn?: number;
+    reservedOrdinals?: number[];
     maxStepIndex?: number;
     stepIndex?: number;
     synthetic?: boolean;
+    dismissedFromIndicator?: boolean;
     commandLine?: string;
     nativeArgs?: Record<string, unknown>;
 }
@@ -604,23 +606,33 @@ export function matchAgyBackgroundTaskId(
     records: AgyTranscriptCommandRecord[],
     preferredOrdinal: number | undefined,
     commandLine: string | undefined,
-    excludeTaskIds: ReadonlySet<string>
+    excludeTaskIds: ReadonlySet<string>,
+    reservedOrdinals?: ReadonlySet<number>
 ): string | undefined {
     if (preferredOrdinal !== undefined && preferredOrdinal >= 0 && preferredOrdinal < records.length) {
         const direct = records[preferredOrdinal]!;
         const cmdCompatible = !commandLine || !direct.commandLine || direct.commandLine === commandLine;
-        if (direct.taskId && !excludeTaskIds.has(direct.taskId) && cmdCompatible) {
-            return direct.taskId;
+        if (cmdCompatible) {
+            if (direct.taskId && !excludeTaskIds.has(direct.taskId)) {
+                return direct.taskId;
+            }
+            // Wait for this ordinal's own action row to flush rather than
+            // borrowing an earlier identical command's task ID.
+            if (!direct.taskId) {
+                return undefined;
+            }
         }
     }
     if (commandLine) {
-        const byCommand = records.find(
-            (record) =>
-                record.taskId !== undefined
-                && !excludeTaskIds.has(record.taskId)
-                && record.commandLine === commandLine
+        const matches = records.filter((record, index) =>
+            record.taskId !== undefined
+            && !excludeTaskIds.has(record.taskId)
+            && !(reservedOrdinals?.has(index))
+            && record.commandLine === commandLine
         );
-        if (byCommand?.taskId) return byCommand.taskId;
+        if (matches.length === 1) {
+            return matches[0]!.taskId;
+        }
     }
     return undefined;
 }
@@ -685,11 +697,19 @@ export function resolveAgyBackgroundTaskIds(
             records = extractAgyBackgroundCommandRecords(steps);
             recordsByWindow.set(key, records);
         }
+        const reservedOrdinals = new Set<number>(entry.reservedOrdinals ?? []);
+        for (const sibling of openBackgroundCommands) {
+            if (sibling === entry || sibling.afterStepIndex !== entry.afterStepIndex || sibling.ordinalInTurn === undefined) {
+                continue;
+            }
+            reservedOrdinals.add(sibling.ordinalInTurn);
+        }
         const resolved = matchAgyBackgroundTaskId(
             records,
             entry.ordinalInTurn,
             entry.commandLine,
-            claimedTaskIds
+            claimedTaskIds,
+            reservedOrdinals
         );
         if (resolved) {
             entry.taskId = resolved;
@@ -848,7 +868,7 @@ export function parseCompletedBackgroundTasks(
     const normalized = systemMessageContent.replace(/\r\n/g, '\n');
     const escapedSession = sessionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(
-        `Task id "(${escapedSession}\\/task-\\d+)" finished with result:\\n([\\s\\S]*?)(?=(?:\\n+Log: file:\\/\\/\\/[^\\n]*)?(?:\\n+\\[Message\\] timestamp=|\\n+Task id "${escapedSession}\\/task-\\d+" finished with result:|\\s*<\\/SYSTEM_MESSAGE>|$))`,
+        `Task id "(${escapedSession}\\/task-\\d+)" finished with result:\\n([\\s\\S]*?)(?=(?:\\n+Log: file:\\/\\/\\/[^\\n]*)?(?:\\n+\\[Message\\] timestamp=\\S+ sender=\\S+(?:\\s+priority=\\S+)?(?:\\s+content=|\\n+Task id "${escapedSession}\\/task-\\d+" finished with result:)|\\n+Task id "${escapedSession}\\/task-\\d+" finished with result:|\\s*<\\/SYSTEM_MESSAGE>|$))`,
         'g'
     );
     const results: AgyCompletedBackgroundTask[] = [];

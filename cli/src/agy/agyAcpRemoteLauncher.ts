@@ -454,8 +454,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             state.turnStartStepIndex,
             state.streamedTextCounts
         );
-        if (nextCursor > this.lastTranscriptStepIndex) {
+        const prevCursor = this.lastTranscriptStepIndex;
+        if (nextCursor > prevCursor) {
             this.lastTranscriptStepIndex = nextCursor;
+            // Reconcile any late-flushed completion or kill records now inside
+            // the newly consumed range before the idle wakeup watcher skips them.
+            if (!turn && this.backgroundCommands.length > 0) {
+                this.settleTranscriptBackgroundCommands(this.lastTranscriptStepIndex);
+            }
         }
         if (turn) {
             // Round footer turn count (google-antigravity/antigravity-cli#1045):
@@ -1283,16 +1289,23 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 .map((entry) => entry.taskId)
                 .filter((taskId): taskId is string => Boolean(taskId))
         );
+        const ownedStepLimit = this.lastTranscriptStepIndex;
+        const ownedTurnSteps = turnSteps.filter((step) => step.step_index <= ownedStepLimit);
         const completedByTaskId = new Map<string, AgyCompletedBackgroundTask>();
         if (this.acpSessionId) {
-            for (const step of turnSteps) {
+            for (const step of ownedTurnSteps) {
                 if (step.source !== 'SYSTEM' || step.type !== 'SYSTEM_MESSAGE') continue;
                 for (const parsed of parseCompletedBackgroundTasks(step.content, this.acpSessionId)) {
                     completedByTaskId.set(parsed.taskId, parsed);
                 }
             }
         }
-        const killedTaskIds = extractKilledBackgroundTasks(turnSteps);
+        const killedTaskIds = extractKilledBackgroundTasks(ownedTurnSteps);
+
+        const openSet = new Set(openIds);
+        const finishedOrdinals = turn.commandCallIds
+            .map((callId, ordIdx) => (!openSet.has(callId) ? ordIdx : -1))
+            .filter((ordIdx) => ordIdx >= 0);
 
         let registeredAny = false;
         let retiredAny = false;
@@ -1301,7 +1314,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             const callOrdinal = turn.commandCallIds.indexOf(id);
             const ordinalInTurn = callOrdinal >= 0 ? callOrdinal : idx;
             const commandLine = turn.bgCommandLines.get(id);
-            const taskId = matchAgyBackgroundTaskId(records, ordinalInTurn, commandLine, claimedTaskIds);
+            const reservedOrdinals = new Set<number>(finishedOrdinals);
+            for (let otherIdx = 0; otherIdx < openIds.length; otherIdx += 1) {
+                if (otherIdx === idx) continue;
+                const otherOrdinal = turn.commandCallIds.indexOf(openIds[otherIdx]!);
+                reservedOrdinals.add(otherOrdinal >= 0 ? otherOrdinal : otherIdx);
+            }
+            const taskId = matchAgyBackgroundTaskId(records, ordinalInTurn, commandLine, claimedTaskIds, reservedOrdinals);
             if (taskId) claimedTaskIds.add(taskId);
 
             const completed = taskId ? completedByTaskId.get(taskId) : undefined;
@@ -1340,10 +1359,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     callId: id,
                     afterStepIndex: turnStartStepIndex,
                     ordinalInTurn,
+                    ...(finishedOrdinals.length > 0 ? { reservedOrdinals: [...finishedOrdinals] } : {}),
                     ...(commandLine !== undefined ? { commandLine } : {}),
                     ...(taskId ? { taskId } : {})
                 });
             } else {
+                if (finishedOrdinals.length > 0 && !existing.reservedOrdinals) {
+                    existing.reservedOrdinals = [...finishedOrdinals];
+                }
                 if (taskId && !existing.taskId) {
                     existing.taskId = taskId;
                 }
@@ -1955,6 +1978,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private registerTranscriptBackgroundTasks(excludedCallIds?: ReadonlySet<string>): void {
         let changed = false;
         for (const entry of this.backgroundCommands) {
+            if (entry.dismissedFromIndicator) continue;
             if (excludedCallIds?.has(entry.callId)) continue;
             if (this.activeBgTasks.has(entry.callId)) continue;
             const description = typeof entry.commandLine === 'string' && entry.commandLine.trim().length > 0
@@ -2120,9 +2144,18 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const hadTurn = this.turn !== null || this.reactiveWakeupAbort !== null;
         await this.cancelActiveTurn();
         this.clearBackgroundTasksSnapshot();
-        this.backgroundCommands.length = 0;
-        this.retainedAmbiguousCompletions.length = 0;
-        this.syntheticCallAliases.clear();
+        if (hadTurn || this.shouldExit) {
+            this.backgroundCommands.length = 0;
+            this.retainedAmbiguousCompletions.length = 0;
+            this.syntheticCallAliases.clear();
+        } else {
+            // Abort while idle clears the indicator without cancelling ACP, so
+            // retain task correlation for late completions without re-surfacing
+            // these commands in future running-task snapshots.
+            for (const entry of this.backgroundCommands) {
+                entry.dismissedFromIndicator = true;
+            }
+        }
         this.abortController.abort();
         this.abortController = new AbortController();
         if (hadTurn) {
