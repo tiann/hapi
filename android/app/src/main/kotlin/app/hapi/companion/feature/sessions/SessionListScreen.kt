@@ -345,9 +345,10 @@ private fun SessionRows(
             meta?.machineId to path
         } else emptyMap()
     }
-    val collidingLabels = remember(sections) {
-        sections.values.map { group -> group.first().let { it.summary.metadata?.machineId to SessionListViewModel.projectLabel(it.summary) } }
-            .groupingBy { it }.eachCount().filterValues { it > 1 }.keys
+    val folderLabels = remember(sections) {
+        sections.keys.groupBy({ it.first }, { it.second }).mapValues { (_, paths) ->
+            projectFolderLabels(paths.filterNotNull().toSet())
+        }
     }
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         if (pinned.isNotEmpty()) {
@@ -371,12 +372,7 @@ private fun SessionRows(
             val expanded = key !in closed
             item(key = key, contentType = "project") {
                 val first = members.first()
-                val compact = SessionListViewModel.projectLabel(first.summary)
-                val title = when {
-                    path == null -> stringResource(R.string.sessions_other_project)
-                    machine to compact in collidingLabels -> path
-                    else -> compact ?: path
-                }
+                val title = folderLabels[machine]?.get(path) ?: stringResource(R.string.sessions_other_project)
                 val label = first.machine?.let { "$title · ${machineFilterLabel(it)}" } ?: title
                 val status = stringResource(if (expanded) R.string.sessions_folder_expanded else R.string.sessions_folder_collapsed)
                 Row(

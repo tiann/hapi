@@ -130,13 +130,25 @@ class HomeScreenTest {
     }
 
     @Test fun manualFolderCollapseHidesOnlyItsOwnRowsAndSurvivesARefresh() {
+        val prefix = "/very/long/shared/parent/project/workspaces"
+        sessions.sessions.value = sessions.sessions.value.map { row ->
+            when (row.id) {
+                "build" -> row.copy(metadata = row.metadata!!.copy(path = "$prefix/team-a/src/app"))
+                "fix" -> row.copy(metadata = row.metadata!!.copy(path = "$prefix/team-b/src/app"))
+                else -> row
+            }
+        }
         mount()
         capture("projects-expanded")
-        val folder = compose.onNode(hasClickAction() and hasText("repo/api", substring = true) and hasStateDescription(label(R.string.sessions_folder_expanded)))
+        val folder = compose.onNode(hasClickAction() and hasText("team-a/src/app", substring = true) and hasStateDescription(label(R.string.sessions_folder_expanded)))
         folder.performClick()
         compose.onNodeWithText("Build API").assertDoesNotExist()
         compose.onNodeWithText("Fix Android").assertIsDisplayed()
+        val other = compose.onNode(hasClickAction() and hasText("team-b/src/app", substring = true))
+        other.performClick()
+        compose.onNodeWithText("Fix Android").assertDoesNotExist()
         capture("project-folded")
+        other.performClick()
         sessions.sessions.value = sessions.sessions.value.map { it.copy(contentRevision = 10) }
         compose.waitUntil(10_000) { viewModel.uiState.value.rows.all { it.summary.contentRevision == 10L } }
         compose.runOnIdle { viewModel.setSearchQuery("unmatched-folder-query") }
