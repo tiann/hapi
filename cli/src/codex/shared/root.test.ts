@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ApiSessionClient } from '@/api/apiSession';
@@ -9,6 +9,8 @@ import { SharedCodexRoot, latestCompletedForkCutoff, type RootHost } from './roo
 import { codexPlanProposalId } from './plan';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { asyncQuestionsForItem } from './asyncQuestions';
+import { CodexAppServerClient } from '../codexAppServerClient';
+import { buildHapiMcpBridge } from '../utils/buildHapiMcpBridge';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
 type NativeRequest = { id: string | number; method: string; params: unknown };
@@ -40,6 +42,12 @@ vi.mock('../codexAppServerClient', () => ({
                 this.notify?.('thread/settings/updated', { threadId: 'thread', threadSettings: this.settings });
                 return {};
             }
+            if (method === 'thread/queue/update') {
+                const entry = this.queue.find(item => item.id === params.queuedSubmissionId);
+                if (!entry) throw new Error('queued submission not found');
+                entry.input = params.input;
+                return { queuedSubmission: entry };
+            }
             if (method === 'thread/queue/add') {
                 const entry = { id: `queued-${this.queue.length}`, clientUserMessageId: params.clientUserMessageId, input: params.input };
                 this.queue.push(entry);
@@ -50,9 +58,9 @@ vi.mock('../codexAppServerClient', () => ({
     },
     isIndeterminateError: () => false
 }));
-vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => ({
+vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: vi.fn(async () => ({
     mcpServers: {}, server: { stop() {} }
-}) }));
+})) }));
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -60,14 +68,19 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
-async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'] }) {
+async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
+    attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
-    let state: AgentState = { steeringActive: true };
+    let state: AgentState = opts?.initialState ?? { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
+    if (opts?.attached) metadata.codexRuntime = { kind: 'attached', bindingId: '11111111-1111-4111-8111-111111111111', state: 'attached' };
     let reconnect: (() => void) | null = null;
+    let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;
+    let retryMessage: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0] | undefined;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
+    const events = vi.fn();
     const consumed = vi.fn();
     const uncertain = vi.fn();
     const sessionReady = vi.fn();
@@ -77,25 +90,28 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         hubArchived: opts?.hubArchived ?? false,
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
         updateAgentState: updateState, keepAlive() {},
-        onUserMessage() {}, onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
+        onUserMessage: (callback: Parameters<ApiSessionClient['onUserMessage']>[0]) => { userMessage = callback; },
+        onCancelQueuedMessage() {},
+        onRetryQueuedMessage: (callback: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0]) => { retryMessage = callback; },
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
         on(event: string, listener: () => void) {
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
-        sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady: sessionReady,
+        sendSessionEvent: events, sendAgentMessage: send, emitSessionReady: sessionReady,
         sendUserMessage() {}, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
-    const root = new SharedCodexRoot({ session, workingDirectory: directory } as SessionBootstrapResult, {
+    const root = new SharedCodexRoot({ session, sessionInfo: { agentState: state }, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
         create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
+        attached: opts?.attached, beforeSubscribe: opts?.beforeSubscribe, validateHistory: opts?.validateHistory,
         end
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
     await root.prepare();
-    await root.bind('thread', { model: 'mock', thread: { turns: [] } }, false);
+    await root.bind('thread', { model: 'mock', thread: { turns: [] } }, opts?.attached ?? false);
     const native = root.client as unknown as {
         initialized: boolean;
         thread: { id: string; turns: NativeTurn[] };
@@ -106,7 +122,10 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         responses: Array<{ id: string | number; result: unknown }>;
     };
     return {
-        session, root, native, rpc, send, consumed, uncertain, sessionReady, metadata: () => metadata, state: () => state, updateState,
+session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
+        ledger: async () => JSON.parse(await readFile(join(directory, 'sid.queue.json'), 'utf8')),
+        retry: (id: string) => retryMessage?.(id),
+        submit: (text: string, id: string) => userMessage?.({ role: 'user', content: { type: 'text', text } }, id), metadata: () => metadata, state: () => state, updateState,
         drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
@@ -114,6 +133,66 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         end,
     };
 }
+
+describe('externally attached root', () => {
+    it('skips MCP, instructions and initial settings injection, and disables lifecycle actions', async () => {
+        const builds = vi.mocked(buildHapiMcpBridge).mock.calls.length;
+        const calls = vi.spyOn(CodexAppServerClient.prototype, 'request');
+        const beforeSubscribe = vi.fn(async () => {});
+        const end = vi.fn(async () => {});
+        try {
+            const f = await fixture({ attached: true, end, beforeSubscribe });
+            await f.root.activate({ permissionMode: 'yolo', model: 'must-not-inject' });
+            expect(vi.mocked(buildHapiMcpBridge).mock.calls).toHaveLength(builds);
+            expect(beforeSubscribe).toHaveBeenCalledWith('thread');
+            expect(calls).toHaveBeenCalledWith('thread/resume', { threadId: 'thread' });
+            expect(calls.mock.calls.some(([method]) => ['thread/start', 'thread/settings/update', 'thread/metadata/update'].includes(method))).toBe(false);
+            expect(() => f.root.config({})).toThrow('cannot inject');
+            expect(f.metadata().capabilities).toMatchObject({ terminal: false, conversationHistory: {
+                forkCurrent: false, forkAtMessage: false, forkLatestCompleted: false, rewindToMessage: false } });
+            await expect(f.rpc.get(RPC_METHODS.ClearConversation)!({})).rejects.toThrow('owning desktop');
+            await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({})).rejects.toThrow('owning desktop');
+            await f.root.close(false);
+            expect(calls.mock.calls.some(([method]) => ['thread/archive', 'thread/queue/delete', 'turn/interrupt'].includes(method))).toBe(false);
+        } finally { calls.mockRestore(); }
+    });
+    it.each(['thread/reverted', 'thread/rolledBack'])('freezes immediately on native %s', async method => {
+        const end = vi.fn(async () => {}); const f = await fixture({ attached: true, end });
+        await f.root.activate();
+        f.native.notify(method, { threadId: 'thread' });
+        expect(f.metadata().conversationHistoryDiverged).toBe(true);
+        expect(f.metadata().codexRuntime?.state).toBe('history-changed');
+        expect(end).toHaveBeenCalledWith(f.root, false, 'history-changed');
+        await expect(f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'changed' })).rejects.toThrow('stopping');
+    });
+    it.each(['thread/deleted', 'thread/closed'])('detaches on native %s without archiving the engine', async method => {
+        const end = vi.fn(async () => {}); const f = await fixture({ attached: true, end });
+        await f.root.activate(); f.native.notify(method, { threadId: 'thread' }); await f.drain();
+        expect(end).toHaveBeenCalledWith(f.root, false, 'unavailable');
+    });
+    it('fails closed on unverifiable native history and never reconnects a lost engine', async () => {
+        const end = vi.fn(async () => {}); const f = await fixture({ attached: true, end });
+        await f.root.activate();
+        const request = vi.spyOn(f.root.client, 'request').mockRejectedValue(new Error('read unavailable'));
+        await expect(f.root.refresh()).rejects.toThrow('read unavailable');
+        expect(end).toHaveBeenCalledWith(f.root, false, 'unavailable');
+        request.mockRestore();
+        const other = await fixture({ attached: true, end }); await other.root.activate();
+        other.native.initialized = false; other.native.abandoned();
+        expect(end).toHaveBeenCalledWith(other.root, false, 'unavailable');
+        expect(other.native.initialized).toBe(false);
+    });
+    it('revalidates history before an explicit native control instead of relying only on rewrite notifications', async () => {
+        let changed = false;
+        const validateHistory = vi.fn(async () => { if (changed) throw new Error('changed history'); });
+        const end = vi.fn(async () => {}); const f = await fixture({ attached: true, end, validateHistory });
+        await f.root.activate(); changed = true;
+        const request = vi.spyOn(f.root.client, 'request');
+        await expect(f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'must-not-apply' })).rejects.toThrow('changed history');
+        expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+        expect(end).toHaveBeenCalledWith(f.root, false, 'unavailable');
+    });
+});
 
 describe('native readiness after Hub reconnect', () => {
     it('replays readiness only after an activated root revalidates native history', async () => {
@@ -168,6 +247,21 @@ describe('async question delivery', () => {
             expect(f.state().requests![q.id]).toBeUndefined();
             expect(f.state().completedRequests![q.id]).toMatchObject({ status: 'resolved' });
         } finally { request.mockRestore(); }
+    });
+
+    it('preserves an explicit dismissal when a new root replays the same native thread', async () => {
+        const before = await fixture(); await before.root.activate();
+        before.native.notify('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        await before.drain();
+        const q = asyncQuestionsForItem('thread', item)[0];
+        await before.rpc.get(RPC_METHODS.Permission)!({ id: q.id, approved: false });
+        await before.root.close(false);
+
+        const after = await fixture({ initialState: before.state() });
+        after.native.thread.turns = [{ id: 'turn', status: 'completed', items: [item] }];
+        await after.root.refresh();
+        expect(after.state().requests?.[q.id]).toBeUndefined();
+        expect(after.state().completedRequests?.[q.id]).toMatchObject({ status: 'canceled', decision: 'denied' });
     });
 
     it('retains unanswered questions across turn completion and native reconnect', async () => {
@@ -304,7 +398,7 @@ describe('historical fork during generation', () => {
         const f = await fixture({ create })
         f.native.thread.turns = [
             { id: 'earlier', status: 'completed', items: [
-                { id: 'u1', type: 'userMessage', clientId: 'first' },
+                { id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] },
                 { id: 'u2', type: 'userMessage', clientId: 'steer' }
             ] },
             { id: 'unknown', status: 'unknown', items: [{ id: 'u3', type: 'userMessage', clientId: 'unknown' }] },
@@ -340,6 +434,55 @@ describe('historical fork during generation', () => {
 })
 
 describe('compaction delivery confirmation', () => {
+    async function compactBatch() {
+        const f = await fixture();
+        await f.root.activate();
+        f.submit('BATCH-A', 'original-A');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        f.submit('BATCH-B', 'original-B');
+        await vi.waitFor(() => expect(f.native.queue[0]?.input).toEqual([
+            { type: 'text', text: 'BATCH-A' }, { type: 'text', text: 'BATCH-B' }
+        ]));
+        const submission = structuredClone(f.native.queue[0]);
+        f.native.notify('thread/queue/changed', { threadId: 'thread' });
+        await f.drain();
+        expect(f.uncertain).not.toHaveBeenCalled();
+        f.native.queue = [];
+        f.native.notify('thread/queue/changed', { threadId: 'thread' });
+        const turn = { id: 'batch-turn', status: 'inProgress', items: [] };
+        f.native.thread.turns.push(turn);
+        f.native.notify('turn/started', { threadId: 'thread', turn });
+        f.native.notify('item/started', { threadId: 'thread', turnId: turn.id,
+            item: { id: 'batch-compact', type: 'contextCompaction' } });
+        await f.drain();
+        expect(f.state().codexCompactionPendingMessageIds).toEqual(['original-A', 'original-B']);
+        expect(f.consumed).not.toHaveBeenCalled();
+        return { f, submission, turn };
+    }
+
+    it('tracks every original batch member during compaction until native acceptance', async () => {
+        const { f, submission, turn } = await compactBatch();
+        f.native.notify('item/started', { threadId: 'thread', turnId: turn.id,
+            item: { id: 'batch-user', type: 'userMessage', clientId: submission.clientUserMessageId, content: submission.input } });
+        await f.drain();
+        expect(f.consumed).toHaveBeenCalledExactlyOnceWith(['original-A', 'original-B'], { steered: undefined });
+        expect(f.state().codexCompactionPendingMessageIds).toEqual([]);
+        expect(f.native.queue).toEqual([]);
+    });
+
+    it.each(['completed', 'interrupted', 'failed'])('keeps an unaccepted batch uncertain after a %s compaction turn', async status => {
+        const { f, turn } = await compactBatch();
+        turn.status = status;
+        f.native.notify('turn/completed', { threadId: 'thread', turn });
+        await f.drain();
+        expect(f.state().codexCompactionPendingMessageIds).toEqual([]);
+        expect(f.consumed).not.toHaveBeenCalled();
+        const ledger = await f.ledger();
+        expect(ledger.entries['original-A'].state).toBe('unknown');
+        expect(ledger.entries['original-B'].state).toBe('unknown');
+        expect(f.native.queue).toEqual([]);
+    });
+
     it('does not turn uncertainty discovered by a cold snapshot into live compaction evidence', async () => {
         const f = await fixture();
         f.native.queue = [{ id: 'old-native', clientUserMessageId: 'old', input: [] }];
@@ -504,6 +647,29 @@ it('keeps the active round measurable when only the hub reconnects', async () =>
 });
 
 describe('shared plan actions', () => {
+    it('allows the Hub retry callback to resubmit input after a failed preflight read', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const original = f.root.client.request.bind(f.root.client);
+        let failLookup = true;
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/queue/list' && failLookup) {
+                failLookup = false;
+                throw new Error('preflight read failed');
+            }
+            return original(method, params);
+        });
+        f.submit('retry me', 'retry-id');
+        await vi.waitFor(() => expect(f.events).toHaveBeenCalledWith({
+            type: 'message', message: expect.stringContaining('preflight read failed')
+        }));
+        expect(f.native.queue).toHaveLength(0);
+        await expect(f.retry('retry-id')).resolves.toBe(true);
+        f.submit('retry me', 'retry-id');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        await expect(f.retry('retry-id')).resolves.toBe(false);
+    });
+
     it('applies remote change_title as metadata.name then lets native terminal rename win', async () => {
         const f = await fixture();
         const item = { id: 'title', type: 'mcpToolCall', server: 'hapi', tool: 'change_title',
@@ -711,6 +877,98 @@ describe('shared steering availability', () => {
     });
 });
 
+describe('shared root Abort retains the native queue (control: no drain/resume policy change)', () => {
+    it('turn/interrupts only the active turn and leaves native queued entries intact', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const requests: Array<{ method: string; params: unknown }> = [];
+        const client = f.root.client as unknown as { request(method: string, params?: Record<string, unknown>): Promise<unknown> };
+        const origRequest = client.request.bind(client);
+        client.request = async (method: string, params: Record<string, unknown> = {}) => {
+            requests.push({ method, params });
+            if (method === 'turn/interrupt') return {};
+            return origRequest(method, params);
+        };
+
+        // Drive an active native turn.
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn-1' } });
+
+        // A native queued submission is pending.
+        await client.request('thread/queue/add', { clientUserMessageId: 'm1', input: [{ type: 'text', text: 'hi' }] });
+        expect(f.native.queue.length).toBe(1);
+        requests.length = 0;
+
+        const abort = f.rpc.get(RPC_METHODS.Abort)!;
+        await abort({});
+
+        // Abort must call exactly one method — turn/interrupt for the active
+        // turn — and must not drain, reset or replay the native queue.
+        expect(requests).toEqual([{ method: 'turn/interrupt', params: { threadId: 'thread', turnId: 'turn-1' } }]);
+        expect(f.native.queue.length).toBe(1);
+
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'turn-1', status: 'interrupted' } });
+    });
+
+    it('does not call turn/interrupt when no turn is active, and leaves the queue untouched', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const requests: Array<{ method: string; params: unknown }> = [];
+        const client = f.root.client as unknown as { request(method: string, params?: Record<string, unknown>): Promise<unknown> };
+        const origRequest = client.request.bind(client);
+        client.request = async (method: string, params: Record<string, unknown> = {}) => {
+            requests.push({ method, params });
+            if (method === 'turn/interrupt') return {};
+            return origRequest(method, params);
+        };
+
+        const abort = f.rpc.get(RPC_METHODS.Abort)!;
+        await abort({});
+
+        expect(requests.filter((r) => r.method === 'turn/interrupt')).toEqual([]);
+        expect(f.native.queue.length).toBe(0);
+    });
+});
+
+
+describe('batch history fork boundaries', () => {
+    it.each([1, 2])('forks at the first original member of a %i-member accepted batch', async count => {
+        const create = vi.fn().mockResolvedValue({
+            threadId: 'child-thread', session: { sessionId: 'child-session' }, initialSettings: vi.fn()
+        });
+        const f = await fixture({ create });
+        await f.root.activate();
+        f.submit('A', 'original-A');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        if (count === 2) {
+            vi.spyOn(f.root.client, 'request').mockImplementation(async (method, raw) => {
+                const params = raw as Record<string, unknown>;
+                if (method === 'thread/queue/list') return { data: f.native.queue } as never;
+                if (method === 'thread/queue/update') {
+                    f.native.queue[0].input = params.input;
+                    return { queuedSubmission: f.native.queue[0] } as never;
+                }
+                if (method === 'thread/read') return { thread: structuredClone(f.native.thread) } as never;
+                throw new Error(`Unexpected ${method}`);
+            });
+            f.submit('B', 'original-B');
+            await vi.waitFor(() => expect(f.native.queue[0].input).toEqual([{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }]));
+        }
+        const item = { id: 'user-batch', type: 'userMessage',
+            clientId: f.native.queue[0].clientUserMessageId, content: f.native.queue[0].input };
+        f.native.thread.turns.push({ id: 'batch-turn', status: 'completed', items: [item] });
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'batch-turn', item });
+        await vi.waitFor(() => expect(f.metadata().conversationHistoryPoints?.['original-A']).toBe(true));
+        const fork = f.rpc.get(RPC_METHODS.ForkConversation)!;
+        expect(await fork({ messageLocalId: 'original-A' })).toEqual({ nativeSessionId: 'child-thread', sessionId: 'child-session' });
+        expect(create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ threadId: 'thread', beforeTurnId: 'batch-turn' }), f.root);
+        if (count === 2) {
+            await expect(fork({ messageLocalId: 'original-B' })).rejects.toThrow('Cannot cut inside');
+        }
+        item.content = [{ type: 'text', text: 'unmatched native content' }];
+        await expect(fork({ messageLocalId: 'original-A' })).rejects.toThrow('Cannot cut inside');
+    });
+});
+
 describe('latest completed list fork', () => {
     it('uses an inclusive fixed cutoff while later source turns advance', async () => {
         const initialSettings = vi.fn(async () => {});
@@ -723,9 +981,9 @@ describe('latest completed list fork', () => {
         });
         const f = await fixture({ create });
         f.native.thread.turns = [
-            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first' }] },
-            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second' }] },
-            { id: 'three', status: 'inProgress', items: [{ id: 'u3', type: 'userMessage', clientId: 'running' }] }
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] },
+            { id: 'three', status: 'inProgress', items: [{ id: 'u3', type: 'userMessage', clientId: 'running', content: [{ type: 'text', text: 'running prompt' }] }] }
         ];
         await f.root.refresh(); await f.root.activate();
         expect(f.metadata().capabilities?.conversationHistory?.forkLatestCompleted).toBe(true);
@@ -745,6 +1003,273 @@ describe('latest completed list fork', () => {
         f.native.thread.turns = [{ id: 'bad', status: 'unknown', items: [] }];
         await expect(fork({ latestCompleted: true })).rejects.toThrow('prefix');
         await expect(fork({ latestCompleted: true, messageLocalId: 'first' })).rejects.toThrow();
+        expect(create).not.toHaveBeenCalled();
+    });
+});
+
+describe('fork preview boundary answers', () => {
+    const preview = async (f: Awaited<ReturnType<typeof fixture>>, raw: unknown) =>
+        f.rpc.get(RPC_METHODS.PreviewForkBoundary)!(raw);
+
+    it('publishes the forkPreview capability for the shared runtime', async () => {
+        const f = await fixture();
+        await f.root.refresh(); await f.root.activate();
+        expect(f.metadata().capabilities?.conversationHistory?.forkPreview).toBe(true);
+    });
+
+    it('answers the latestCompleted preview with the completed cutoff and the excluded user row', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] },
+            { id: 'three', status: 'inProgress', items: [{ id: 'u3', type: 'userMessage', clientId: 'running', content: [{ type: 'text', text: 'running prompt' }] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'latestCompleted' })).resolves.toEqual({
+            nativeTurnId: 'two', cutBeforeLocalId: 'running'
+        });
+    });
+
+    it('excludes a failed trailing turn from the running-source preview', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'failed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] },
+            { id: 'three', status: 'inProgress', items: [] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'latestCompleted' })).resolves.toEqual({
+            nativeTurnId: 'one', cutBeforeLocalId: 'second'
+        });
+    });
+
+    it('answers an idle current preview with the last turn and no cut', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'current' })).resolves.toEqual({ nativeTurnId: 'two' });
+        await expect(preview(f, { mode: 'current' })).resolves.not.toHaveProperty('cutBeforeLocalId');
+    });
+
+    it('omits the idle-current pin when the pinned prefix is not terminal', async () => {
+        const f = await fixture();
+        // A turn left 'unknown' in the rollout (e.g. a crashed write) is not
+        // adopted as the running turn, so the idle branch pins the last turn.
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'unknown', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        // Confirm verifies the pinned turn's prefix and would reject this
+        // fork; the preview must not answer a pin the confirm refuses. An
+        // unpinned answer keeps preview and confirm on the same whole-history
+        // cut.
+        await expect(preview(f, { mode: 'current' })).resolves.toEqual({});
+    });
+
+    it('omits the idle-current pin when a middle turn is unfinished', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'unknown', items: [] },
+            { id: 'three', status: 'completed', items: [{ id: 'u3', type: 'userMessage', clientId: 'third', content: [{ type: 'text', text: 'third prompt' }] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'current' })).resolves.toEqual({});
+    });
+
+    it('reads the native thread once for a message preview', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        const read = vi.spyOn(f.root, 'readThread');
+        await preview(f, { mode: 'message', messageLocalId: 'second' });
+        expect(read).toHaveBeenCalledTimes(1);
+    });
+
+    it('answers an empty thread current preview without a pin', async () => {
+        const f = await fixture();
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'current' })).resolves.toEqual({});
+    });
+
+    it('answers a current preview with the completed cut once a turn starts running', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] },
+            { id: 'three', status: 'inProgress', items: [{ id: 'u3', type: 'userMessage', clientId: 'running', content: [{ type: 'text', text: 'running prompt' }] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'current' })).resolves.toEqual({
+            nativeTurnId: 'two', cutBeforeLocalId: 'running'
+        });
+    });
+
+    it('answers a message preview with the pinned predecessor turn and the excluded row', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'message', messageLocalId: 'second' })).resolves.toEqual({
+            nativeTurnId: 'one', cutBeforeLocalId: 'second'
+        });
+    });
+
+    it('answers a first-turn message preview without a pin', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'message', messageLocalId: 'first' })).resolves.toEqual({
+            cutBeforeLocalId: 'first'
+        });
+    });
+
+    it('refuses a message preview inside a steered turn or without native history', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [
+                { id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] },
+                { id: 'u2', type: 'userMessage', clientId: 'steer' }
+            ] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'message', messageLocalId: 'steer' })).rejects.toThrow('first message');
+        await expect(preview(f, { mode: 'message', messageLocalId: 'unknown' })).rejects.toThrow('native history point');
+    });
+
+    it('refuses a message preview whose completed-turn prefix contains a running turn', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'inProgress', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        // ForkConversation refuses this boundary after the confirm; the
+        // preview must refuse it with the same rule before the user commits.
+        await expect(preview(f, { mode: 'message', messageLocalId: 'second' }))
+            .rejects.toThrow('Historical fork requires a completed turn and history prefix');
+    });
+
+    it('skips an empty-text userMessage when naming the excluded boundary row', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] },
+            { id: 'three', status: 'inProgress', items: [{ id: 'u3', type: 'userMessage', clientId: 'running', content: [] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        // An empty-text user message never reaches the hub transcript, so
+        // naming it as the cut would make the hub preview throw
+        // 'Fork boundary message not found'.
+        await expect(preview(f, { mode: 'latestCompleted' })).resolves.toEqual({ nativeTurnId: 'two' });
+    });
+
+    it('names the original member id when the first excluded turn was queued as a batch', async () => {
+        const create = vi.fn().mockResolvedValue({
+            threadId: 'child-thread', session: { sessionId: 'child-session' }, initialSettings: vi.fn()
+        });
+        const f = await fixture({ create });
+        await f.root.activate();
+        f.submit('A', 'original-A');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, raw) => {
+            const params = raw as Record<string, unknown>;
+            if (method === 'thread/queue/list') return { data: f.native.queue } as never;
+            if (method === 'thread/queue/update') {
+                f.native.queue[0].input = params.input;
+                return { queuedSubmission: f.native.queue[0] } as never;
+            }
+            if (method === 'thread/read') return { thread: structuredClone(f.native.thread) } as never;
+            throw new Error(`Unexpected ${method}`);
+        });
+        f.submit('B', 'original-B');
+        await vi.waitFor(() => expect(f.native.queue[0].input).toEqual([{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }]));
+        const batchItem = { id: 'user-batch', type: 'userMessage',
+            clientUserMessageId: f.native.queue[0].clientUserMessageId, content: f.native.queue[0].input };
+        // The native client id of a queued batch is synthetic; the hub rows are
+        // keyed by the original member ids.
+        expect(f.native.queue[0].clientUserMessageId).toMatch(/^hapi-batch-/);
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'inProgress', items: [batchItem] }
+        ];
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'two', item: batchItem });
+        await vi.waitFor(() => expect(f.metadata().conversationHistoryPoints?.['original-A']).toBe(true));
+        await expect(preview(f, { mode: 'latestCompleted' })).resolves.toEqual({
+            nativeTurnId: 'one', cutBeforeLocalId: 'original-A'
+        });
+        // The confirm must accept the same hub row once the batch turn completes.
+        f.native.thread.turns[1].status = 'completed';
+        const fork = f.rpc.get(RPC_METHODS.ForkConversation)!;
+        await expect(fork({ messageLocalId: 'original-A' })).resolves.toEqual({
+            nativeSessionId: 'child-thread', sessionId: 'child-session'
+        });
+        expect(create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ threadId: 'thread', beforeTurnId: 'two' }), f.root);
+    });
+});
+
+describe('pinned fork confirm', () => {
+    it('forks through the previewed turn while the source advances past it', async () => {
+        const initialSettings = vi.fn(async () => {});
+        const create = vi.fn<RootHost['create']>(async (_method, params) => {
+            expect(params).toMatchObject({ threadId: 'thread', lastTurnId: 'two' });
+            return { threadId: 'child', session: { sessionId: 'child-session' }, initialSettings,
+                readThread: async () => ({ turns: [{ id: 'one' }, { id: 'two' }] }) } as unknown as SharedCodexRoot;
+        });
+        const f = await fixture({ create });
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] },
+            { id: 'three', status: 'inProgress', items: [] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ lastTurnId: 'two' })).resolves.toEqual({
+            nativeSessionId: 'child', sessionId: 'child-session', completedTurnId: 'two'
+        });
+        expect(create).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects the confirm when the pinned turn left the native history', async () => {
+        const create = vi.fn<RootHost['create']>();
+        const f = await fixture({ create });
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ lastTurnId: 'gone' }))
+            .rejects.toThrow('no longer part of the native history');
+        expect(create).not.toHaveBeenCalled();
+    });
+
+    it('rejects the confirm when the pinned prefix is no longer complete', async () => {
+        const create = vi.fn<RootHost['create']>();
+        const f = await fixture({ create });
+        f.native.thread.turns = [
+            { id: 'one', status: 'unknown', items: [] },
+            { id: 'two', status: 'completed', items: [] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ lastTurnId: 'two' }))
+            .rejects.toThrow('no longer has a completed native history prefix');
+        expect(create).not.toHaveBeenCalled();
+    });
+
+    it('keeps latestCompleted rejections when the pin is absent', async () => {
+        const create = vi.fn<RootHost['create']>();
+        const f = await fixture({ create }); await f.root.activate();
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ latestCompleted: true })).rejects.toThrow('No completed');
         expect(create).not.toHaveBeenCalled();
     });
 });
@@ -844,3 +1369,26 @@ for (const queued of [false, true]) {
         expect(f.state().steeringActive).toBe(true);
     });
 }
+
+it('splits queued user messages across a settings-changing slash command', async () => {
+    const f = await fixture();
+    await f.root.activate();
+    // All three callbacks fire before the serial work queue reaches them: the
+    // batch key for 'done' must be computed when it enqueues (after /plan
+    // updated the settings), not when its callback arrived.
+    f.submit('hello', 'm1');
+    f.submit('/plan', 'cmd');
+    f.submit('done', 'm2');
+    await vi.waitFor(() => expect(f.native.queue.length).toBe(2));
+    const texts = f.native.queue.map(entry => {
+        const input = entry.input as Array<{ text?: string }> | { content?: Array<{ text?: string }> } | string;
+        const text = Array.isArray(input)
+            ? input.map(part => part.text ?? '').join('')
+            : typeof input === 'string' ? input : input.content?.map(part => part.text ?? '').join('') ?? '';
+        return text;
+    });
+    // 'done' must NOT merge into 'hello' across the collaboration-mode change.
+    expect(texts[0]).not.toContain('done');
+    expect(texts[0]).toContain('hello');
+    expect(texts[1]).toContain('done');
+});

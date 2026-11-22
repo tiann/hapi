@@ -1,0 +1,85 @@
+{
+  "flavor": "claude",
+  "argv": [
+    "claude",
+    "--hapi-starting-mode",
+    "remote",
+    "--started-by",
+    "runner",
+    "--hapi-session-id",
+    "a1111111-1111-4111-8111-111111111111"
+  ],
+  "env": {},
+  "hubScript": [
+    {
+      "sendUpdate": {
+        "t": "new-message",
+        "message": {
+          "id": "message-1",
+          "localId": "local-1",
+          "seq": 1,
+          "createdAt": 1,
+          "content": {
+            "role": "user",
+            "content": {
+              "type": "text",
+              "text": "hello"
+            }
+          }
+        }
+      },
+      "until": [
+        {
+          "event": "update-state",
+          "contains": "\"tool-1\":"
+        },
+        {
+          "event": "update-metadata",
+          "contains": "\"claudeSessionId\":",
+          "result": "success"
+        },
+        {
+          "event": "update-state",
+          "result": "success",
+          "count": 2
+        },
+        {
+          "event": "update-state",
+          "contains": "\"requests\":",
+          "result": "success"
+        }
+      ]
+    },
+    {
+      "rpc": "permission",
+      "params": {
+        "id": "tool-1",
+        "approved": false
+      },
+      "until": [
+        {
+          "event": "message",
+          "contains": "\"result\":\"denied\""
+        },
+        {
+          "event": "update-state",
+          "contains": "\"requests\":{}",
+          "result": "success",
+          "count": 4
+        }
+      ]
+    },
+    {
+      "signal": "SIGTERM",
+      "settledAlive": {
+        "effort": null,
+        "mode": "remote",
+        "model": null,
+        "permissionMode": "default",
+        "thinking": false
+      }
+    }
+  ],
+  "agentScript": "agent.jsonl",
+  "timeoutMs": 120000
+}

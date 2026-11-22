@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { NativeAppPromoButton, NativeAppPromoSheet } from '@/components/NativeAppPromo'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -48,7 +49,7 @@ import type { ComposerSendError } from '@/components/AssistantChat/HappyComposer
 import { ApiError } from '@/api/client'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { queryKeys } from '@/lib/query-keys'
-import { useToast } from '@/lib/toast-context'
+import { useAddToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { seedMessageWindowFromSession, syncTailMessages } from '@/lib/message-window-store'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
@@ -150,7 +151,7 @@ function SessionsPage() {
     const pathname = useLocation({ select: location => location.pathname })
     const matchRoute = useMatchRoute()
     const { t } = useTranslation()
-    const { addToast } = useToast()
+    const addToast = useAddToast()
     const { sessions, isLoading, error, refetch } = useSessions(api)
     const [initializedHub, setInitializedHub] = useState<string | null>(null)
     const { machines } = useMachines(api, true)
@@ -372,6 +373,11 @@ function SessionsPage() {
             ) : null}
 
             <div className={`${isSessionsIndex ? 'hidden split:flex' : 'flex'} relative min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
+                {isSessionsIndex ? (
+                    <div className="absolute right-3 top-[calc(env(safe-area-inset-top)+0.75rem)] z-10 hidden split:block">
+                        <NativeAppPromoButton />
+                    </div>
+                ) : null}
                 {!shouldShowSidebar ? (
                     <SidebarShowButton
                         showLabel={t('session.sidebar.show')}
@@ -383,6 +389,7 @@ function SessionsPage() {
                 </div>
             </div>
             </div>
+            <NativeAppPromoSheet enabled={isSessionsIndex} />
         </>
     )
 }
@@ -421,7 +428,7 @@ function SessionPage() {
     const goBack = useAppGoBack()
     const navigate = useNavigate()
     const queryClient = useQueryClient()
-    const { addToast } = useToast()
+    const addToast = useAddToast()
     const { sessionId } = useParams({ from: '/sessions/$sessionId' })
     const { outline, messageId, messageQuery, pendingRequestId } = useSearch({ from: '/sessions/$sessionId' })
     const {
@@ -449,6 +456,7 @@ function SessionPage() {
         messages,
         warning: messagesWarning,
         isSyncingTail: messagesSyncingTail,
+        isCatchingUpFromCache: messagesCatchingUpFromCache,
         isLoadingMore: messagesLoadingMore,
         hasMore: messagesHasMore,
         hasMoreNewer: messagesHasMoreNewer,
@@ -959,6 +967,7 @@ function SessionPage() {
             hasMoreMessages={messagesHasMore}
             hasMoreNewerMessages={messagesHasMoreNewer}
             isSyncingTail={messagesSyncingTail}
+            isCatchingUpFromCache={messagesCatchingUpFromCache}
             isLoadingMoreMessages={messagesLoadingMore}
             isSending={isSending}
             viewMode={messagesViewMode}

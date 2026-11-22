@@ -224,8 +224,9 @@ describe('local canonical tool updates through the publication journal', () => {
                 expect(await result).toBe('exit');
                 expect(messages).toHaveLength(3);
                 expect(messages.map((message) => message.type)).toEqual(['tool-call', 'tool-call', 'tool-call-result']);
-                expect(messages[0]).toMatchObject({ name: 'Write', callId: 'call-1', input: { content: '' } });
-                expect(messages[1]).toMatchObject({ name: 'Write', callId: 'call-1', input: { content: 'final\n' } });
+                // OpenCode's callID is unique only within its assistant message.
+                expect(messages[0]).toMatchObject({ name: 'Write', callId: 'call-1#msg-1', input: { content: '' } });
+                expect(messages[1]).toMatchObject({ name: 'Write', callId: 'call-1#msg-1', input: { content: 'final\n' } });
                 expect(metadata.conversationHistoryDiverged).not.toBe(true);
                 expect(metadata.opencodeHistoryCheckpoint?.localMessageIds).toEqual(['msg-1']);
                 expect(metadata.opencodeHistoryCheckpoint?.localPublicationPending).toBeUndefined();
@@ -235,4 +236,114 @@ describe('local canonical tool updates through the publication journal', () => {
             }
         }
     );
+});
+
+describe('local tool call ids reused by the model (shell:0 every step)', () => {
+    beforeEach(() => { vi.clearAllMocks(); native.wait = Promise.resolve(); });
+
+    it('keeps each step\'s shell:0 as its own call with its own result, and links permissions to it', async () => {
+        let releaseNative!: () => void;
+        native.wait = new Promise<void>((resolve) => { releaseNative = resolve; });
+        let handler: ((event: OpencodeHookEvent) => void) | undefined;
+        let metadata: Metadata = { path: '/tmp/project', host: 'fixture', opencodeHistoryCheckpoint: {
+            sessionId: 'native', messageIds: [], userMessageIds: [], localMessageIds: []
+        } };
+        let agentState: Record<string, any> = {};
+        const messages: Array<Record<string, unknown>> = [];
+        const session = {
+            path: '/tmp/project', sessionId: 'native', startedBy: 'terminal', startingMode: 'local',
+            runtimeGate: new OpenCodeRuntimeGate(),
+            client: {
+                sessionId: 'hub-fixture',
+                getMetadata: () => metadata,
+                rpcHandlerManager: { registerHandler: vi.fn() },
+                updateMetadata(update: (current: Metadata) => Metadata) { metadata = update(metadata); },
+                updateAgentState(update: (current: Record<string, any>) => Record<string, any>) { agentState = update(agentState); },
+                materialize: async () => true, flushMetadata: async () => true, flush: async () => true
+            },
+            queue: { size: () => 0, reset: vi.fn(), setOnMessage: vi.fn() },
+            addHookEventHandler(callback: typeof handler) { handler = callback; },
+            removeHookEventHandler: vi.fn(), onSessionFound: vi.fn(),
+            sendAgentMessage(message: Record<string, unknown>) { messages.push(message); },
+            sendSessionEvent: vi.fn(), recordLocalLaunchFailure: vi.fn()
+        };
+        const result = opencodeLocalLauncher(session as unknown as OpencodeSession, {
+            hookUrl: 'http://fixture/hook', hookServer: { token: 'fixture' } as unknown as OpencodeHookServer
+        });
+        try {
+            await vi.waitFor(() => expect(native.launched).toHaveBeenCalledOnce());
+            const shell = (messageID: string, command: string, status: 'running' | 'completed') => handler!({
+                event: 'message.part.updated', sessionId: 'native', payload: { part: {
+                    id: `part-${messageID}`, messageID, type: 'tool', tool: 'bash', callID: 'shell:0',
+                    state: { status, input: { command }, ...(status === 'completed' ? { output: command } : {}) }
+                } }
+            } as OpencodeHookEvent);
+            shell('msg-1', 'ls', 'running');
+            shell('msg-1', 'ls', 'completed');
+            shell('msg-2', 'pwd', 'running');
+            handler!({ event: 'permission.updated', sessionId: 'native', payload: {
+                id: 'per_1', type: 'bash', sessionID: 'native', messageID: 'msg-2', callID: 'shell:0', title: 'pwd', metadata: {}
+            } } as OpencodeHookEvent);
+            shell('msg-2', 'pwd', 'completed');
+            releaseNative();
+            expect(await result).toBe('exit');
+
+            const ids = (type: string) => messages.filter((message) => message.type === type).map((message) => message.callId);
+            expect(ids('tool-call')).toEqual(['shell:0#msg-1', 'shell:0#msg-2']);
+            expect(ids('tool-call-result')).toEqual(['shell:0#msg-1', 'shell:0#msg-2']);
+            expect(agentState.requests?.per_1).toMatchObject({ toolCallId: 'shell:0#msg-2' });
+        } finally {
+            releaseNative();
+            await result;
+        }
+    });
+
+    it('gives a hook event carrying both a part id and a callID the same id as the part event', async () => {
+        let releaseNative!: () => void;
+        native.wait = new Promise<void>((resolve) => { releaseNative = resolve; });
+        let handler: ((event: OpencodeHookEvent) => void) | undefined;
+        let metadata: Metadata = { path: '/tmp/project', host: 'fixture', opencodeHistoryCheckpoint: {
+            sessionId: 'native', messageIds: [], userMessageIds: [], localMessageIds: []
+        } };
+        const messages: Array<Record<string, unknown>> = [];
+        const session = {
+            path: '/tmp/project', sessionId: 'native', startedBy: 'terminal', startingMode: 'local',
+            runtimeGate: new OpenCodeRuntimeGate(),
+            client: {
+                sessionId: 'hub-fixture',
+                getMetadata: () => metadata,
+                rpcHandlerManager: { registerHandler: vi.fn() },
+                updateMetadata(update: (current: Metadata) => Metadata) { metadata = update(metadata); },
+                updateAgentState: vi.fn(),
+                materialize: async () => true, flushMetadata: async () => true, flush: async () => true
+            },
+            queue: { size: () => 0, reset: vi.fn(), setOnMessage: vi.fn() },
+            addHookEventHandler(callback: typeof handler) { handler = callback; },
+            removeHookEventHandler: vi.fn(), onSessionFound: vi.fn(),
+            sendAgentMessage(message: Record<string, unknown>) { messages.push(message); },
+            sendSessionEvent: vi.fn(), recordLocalLaunchFailure: vi.fn()
+        };
+        const result = opencodeLocalLauncher(session as unknown as OpencodeSession, {
+            hookUrl: 'http://fixture/hook', hookServer: { token: 'fixture' } as unknown as OpencodeHookServer
+        });
+        try {
+            await vi.waitFor(() => expect(native.launched).toHaveBeenCalledOnce());
+            handler!({ event: 'tool.execute.before', sessionId: 'native', payload: {
+                messageID: 'msg-1', tool: { name: 'bash', id: 'part_123', callID: 'shell:0', input: { command: 'ls' } }
+            } } as OpencodeHookEvent);
+            handler!({ event: 'message.part.updated', sessionId: 'native', payload: { part: {
+                id: 'part_123', messageID: 'msg-1', type: 'tool', tool: 'bash', callID: 'shell:0',
+                state: { status: 'completed', input: { command: 'ls' }, output: 'a' }
+            } } } as OpencodeHookEvent);
+            releaseNative();
+            expect(await result).toBe('exit');
+
+            const ids = new Set(messages.map((message) => message.callId));
+            expect([...ids]).toEqual(['shell:0#msg-1']);
+            expect(messages.filter((message) => message.type === 'tool-call-result')).toHaveLength(1);
+        } finally {
+            releaseNative();
+            await result;
+        }
+    });
 });

@@ -37,7 +37,10 @@ describe('AcpSdkBackend form elicitation', () => {
         });
         expect(handler).toHaveBeenCalledWith({
             sessionId: 'session-1',
-            toolCallId: 'call-1',
+            // The call's lifetime id, so the card shows on that call.
+            toolCallId: expect.stringMatching(/^call-1#[0-9a-f-]{36}$/),
+            // The first question of a call uses the call's id.
+            requestId: expect.stringMatching(/^call-1#[0-9a-f-]{36}$/),
             message: 'Questions',
             requestedSchema: formParams.requestedSchema
         });

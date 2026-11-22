@@ -45,6 +45,19 @@ for (const mobile of [false, true]) {
             if (screenshots) await page.screenshot({ path: join(screenshots, `${prefix}-new-response-complete.png`), fullPage: true })
         })
 
+        test('never renders a truncated footer, with summaries on or off', async ({ page }) => {
+            const text = page.getByTestId('summary-text').first()
+            await page.getByRole('button', { name: 'Truncate the footer' }).click()
+
+            await expect(text).toContainText('The test result has been inspected.')
+            await expect(text.getByTestId('notify-summary-footer')).toHaveCount(0)
+            await expect(text).not.toContainText('AGENT_NOTIFY_SUMMARY')
+
+            await page.getByRole('checkbox', { name: 'Show summaries' }).uncheck()
+            await expect(text).toContainText('The test result has been inspected.')
+            await expect(text).not.toContainText('AGENT_NOTIFY_SUMMARY')
+        })
+
         test('honors display changes and resumes streaming when completed text changes', async ({ page }) => {
             await page.getByRole('textbox', { name: 'Message' }).fill('Continue.')
             await page.getByRole('button', { name: 'Send', exact: true }).click()

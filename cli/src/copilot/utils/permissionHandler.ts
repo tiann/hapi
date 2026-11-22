@@ -3,6 +3,7 @@ import type { AgentBackend, PermissionRequest, PermissionResponse } from '@/agen
 import type { CopilotPermissionMode } from '@hapi/protocol/types';
 import { deriveToolInput, deriveToolName } from '@/agent/utils';
 import { logger } from '@/ui/logger';
+import { settleRequestsOfPreviousAgentProcess } from '@/modules/common/permission/settleStaleRequests';
 import {
     BasePermissionHandler,
     type AutoApprovalDecision,
@@ -73,6 +74,7 @@ export class CopilotPermissionHandler extends BasePermissionHandler<PermissionRe
         private readonly getPermissionMode: () => CopilotPermissionMode | undefined
     ) {
         super(session);
+        settleRequestsOfPreviousAgentProcess(this.backend, session);
         this.backend.onPermissionRequest((request) => this.handlePermissionRequest(request));
     }
 
@@ -117,6 +119,7 @@ export class CopilotPermissionHandler extends BasePermissionHandler<PermissionRe
                 ...currentState.completedRequests,
                 [request.id]: {
                     tool: toolName,
+                    toolCallId: request.toolCallId,
                     arguments: toolInput,
                     createdAt: Date.now(),
                     completedAt: Date.now(),
