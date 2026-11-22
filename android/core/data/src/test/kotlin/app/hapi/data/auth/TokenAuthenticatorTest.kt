@@ -42,6 +42,7 @@ class TokenAuthenticatorTest {
     private val jwt1 = fakeJwt(expSeconds = 4_000_000_000)
     private val jwt2 = fakeJwt(expSeconds = 4_100_000_000)
     private val accessToken = "base-token:default"
+    private val passkeySession = "passkey-session-1"
 
     private lateinit var hubUrl: String
 
@@ -235,6 +236,97 @@ class TokenAuthenticatorTest {
         val error = assertFailsWith<ApiError> { runBlocking { hub.api.getSessions() } }
         assertEquals(401, error.status)
         assertTrue(events.events.isEmpty(), "5xx exchange failures are transient, not terminal")
+    }
+
+    // ------------------------------------------------------- passkey session --
+
+    private fun startPasskeySession(jwt: String? = jwt1): HubSession {
+        store.set(HubCredentials(hubUrl = hubUrl, passkeySession = passkeySession, jwt = jwt))
+        return HubSession(server.url("/"), store, events).also { session = it }
+    }
+
+    @Test
+    fun `passkey-only credentials exchange the passkey session`() {
+        val hub = startPasskeySession()
+        server.enqueue(unauthorized())
+        server.enqueue(authOk(jwt2))
+        server.enqueue(sessionsOk())
+
+        runBlocking { hub.api.getSessions() }
+
+        server.takeRequest()
+        val auth = server.takeRequest()
+        assertEquals("/api/auth", auth.path)
+        val authBody = Json.parseToJsonElement(auth.body.readUtf8()).jsonObject
+        assertEquals(setOf("passkeySession"), authBody.keys, "no accessToken key on a passkey exchange")
+        assertEquals(passkeySession, authBody.getValue("passkeySession").jsonPrimitive.content)
+        assertEquals("Bearer $jwt2", server.takeRequest().getHeader("Authorization"))
+
+        val stored = store.get(hubUrl)
+        assertEquals(jwt2, stored?.jwt)
+        assertEquals(passkeySession, stored?.passkeySession, "the refresh credential survives the exchange")
+        assertNull(stored?.accessToken)
+    }
+
+    @Test
+    fun `access-token exchange sends only the access token`() {
+        store.set(HubCredentials(hubUrl, accessToken, jwt = "garbage"))
+        server.enqueue(authOk(jwt2))
+        val authenticator = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
+
+        runBlocking { authenticator.ensureFreshToken() }
+
+        val authBody = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        assertEquals(setOf("accessToken"), authBody.keys)
+    }
+
+    @Test
+    fun `invalid passkey session is terminal and never re-exchanged`() {
+        val hub = startPasskeySession()
+        val authCalls = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/api/auth" -> {
+                    authCalls.incrementAndGet()
+                    unauthorized("passkey_session_invalid")
+                }
+                else -> unauthorized()
+            }
+        }
+
+        val error = assertFailsWith<ApiError> { runBlocking { hub.api.getSessions() } }
+        assertEquals(401, error.status)
+        assertEquals(listOf(AuthTerminalReason.PASSKEY_SESSION_INVALID), events.reasons)
+
+        assertFailsWith<ApiError> { runBlocking { hub.api.getSessions() } }
+        assertEquals(1, authCalls.get(), "rejected passkey session must not be re-exchanged")
+        assertEquals(1, events.events.size)
+    }
+
+    @Test
+    fun `a new passkey sign-in clears the rejected-session block`() {
+        store.set(HubCredentials(hubUrl, passkeySession = "old-session", jwt = "garbage"))
+        server.enqueue(unauthorized("passkey_session_invalid"))
+        val authenticator = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
+        assertNull(runBlocking { authenticator.ensureFreshToken() })
+
+        store.set(HubCredentials(hubUrl, passkeySession = "new-session", jwt = "garbage"))
+        server.enqueue(authOk(jwt2))
+
+        assertEquals(jwt2, runBlocking { authenticator.ensureFreshToken() })
+        server.takeRequest()
+        val second = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        assertEquals("new-session", second.getValue("passkeySession").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `an entry without any durable secret reports MISSING_CREDENTIALS`() {
+        store.set(HubCredentials(hubUrl, jwt = "garbage"))
+        val authenticator = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
+
+        assertNull(runBlocking { authenticator.ensureFreshToken() })
+        assertEquals(listOf(AuthTerminalReason.MISSING_CREDENTIALS), events.reasons)
+        assertEquals(0, server.requestCount)
     }
 
     // ------------------------------------------------------- proactive refresh --

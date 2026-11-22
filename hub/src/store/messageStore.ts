@@ -2,11 +2,13 @@ import type { Database } from 'bun:sqlite'
 
 import { hasConversationMessageContent } from '@hapi/protocol/messages'
 import { decodeMessageContent } from './contentCodec'
+import { prepareCached } from './statementCache'
 
 import type { StoredMessage } from './types'
 import {
     addMessage,
     upsertToolCallMessage,
+    getLiveToolWork,
     syncNativeQueuedMessage,
     addImportedMessage,
     cancelQueuedMessage,
@@ -40,8 +42,11 @@ import {
     moveUninvokedMessages,
     copyMessageToSession as copyStoredMessageToSession,
     copyMessagesToSession as copyStoredMessagesToSession,
+    addMessageSweepingLiveSnapshots,
+    deleteLiveTextSnapshots,
     getAllMessages,
     getMessagesAfterSeq,
+    getMaxSeq,
     getMinSeq,
     getMessageSeqById,
     getMessageById,
@@ -52,6 +57,7 @@ import {
     type LocalMessageState,
     type MessagePosition,
     type UpsertToolCallResult,
+    type AddMessageSweepResult,
 } from './messages'
 import {
     hasPotentiallyIncompleteMessageContent,
@@ -75,9 +81,28 @@ export class MessageStore {
     addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {
         return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt)
     }
+    addMessageSweepingLiveSnapshots(
+        sessionId: string,
+        content: unknown,
+        localId?: string,
+        scheduledAt?: number | null,
+        createdAt?: number
+    ): AddMessageSweepResult {
+        return addMessageSweepingLiveSnapshots(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+
+    deleteLiveTextSnapshots(sessionId: string, streamId: string, keepMessageId?: string): number {
+        return deleteLiveTextSnapshots(this.db, sessionId, streamId, keepMessageId)
+    }
 
     upsertToolCallMessage(sessionId: string, content: unknown, callId: string, localId?: string, createdAt?: number): UpsertToolCallResult {
         return upsertToolCallMessage(this.db, sessionId, content, callId, localId, createdAt)
+    }
+
+    /** Whether the session tail still holds unsettled tool work (see
+     *  getLiveToolWork in messages.ts for the liveness contract). */
+    getLiveToolWork(sessionId: string): boolean {
+        return getLiveToolWork(this.db, sessionId)
     }
 
     syncNativeQueuedMessage(sessionId: string, localId: string, text: string): StoredMessage {
@@ -113,6 +138,10 @@ export class MessageStore {
 
     getMessagesAfterSeq(sessionId: string, afterSeq: number): StoredMessage[] {
         return getMessagesAfterSeq(this.db, sessionId, afterSeq)
+    }
+
+    getMaxSeq(sessionId: string): number {
+        return getMaxSeq(this.db, sessionId)
     }
 
     getMinSeq(sessionId: string): number | null {
@@ -194,16 +223,25 @@ export class MessageStore {
 
     // ponytail: scans through leading bookkeeping; index content if that prefix becomes costly.
     hasConversationContent(sessionId: string): boolean {
-        const query = this.db.prepare<{ content: string | Uint8Array }, [string]>(
-            'SELECT content FROM messages WHERE session_id = ? ORDER BY seq ASC'
+        const statement = prepareCached(
+            this.db,
+            'SELECT seq, content FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT 16'
         )
-        try {
-            for (const row of query.iterate(sessionId)) {
-                if (hasConversationMessageContent(decodeMessageContent(row.content))) return true
+        let afterSeq = -1
+        while (true) {
+            const rows = statement.all(sessionId, afterSeq) as Array<{ seq: number; content: string | Uint8Array }>
+            if (rows.length === 0) {
+                return false
             }
-            return false
-        } finally {
-            query.finalize()
+            for (const row of rows) {
+                if (hasConversationMessageContent(decodeMessageContent(row.content))) {
+                    return true
+                }
+            }
+            if (rows.length < 16) {
+                return false
+            }
+            afterSeq = rows[rows.length - 1]!.seq
         }
     }
 
@@ -293,8 +331,9 @@ export class MessageStore {
             localId?: string | null
             createdAt?: number
             invokedAt?: number | null
-        }> = []
+        }> = [],
+        upToSeq?: number
     ): { deleted: number; inserted: number; epoch: number } {
-        return truncateMessagesFromLocalId(this.db, sessionId, localId, replacement)
+        return truncateMessagesFromLocalId(this.db, sessionId, localId, replacement, upToSeq)
     }
 }

@@ -3,6 +3,7 @@ import { getTelegramWebApp, isTelegramEnvironment } from './useTelegram'
 import type { AuthSource } from './useAuth'
 
 const ACCESS_TOKEN_PREFIX = 'hapi_access_token::'
+const PASSKEY_SESSION_PREFIX = 'hapi_passkey_session::'
 
 function getTelegramInitData(): string | null {
     const tg = getTelegramWebApp()
@@ -29,6 +30,10 @@ function getTokenFromUrlParams(): string | null {
 
 function getAccessTokenKey(baseUrl: string): string {
     return `${ACCESS_TOKEN_PREFIX}${baseUrl}`
+}
+
+function getPasskeySessionKey(baseUrl: string): string {
+    return `${PASSKEY_SESSION_PREFIX}${baseUrl}`
 }
 
 function getStoredAccessToken(key: string): string | null {
@@ -60,6 +65,7 @@ export function useAuthSource(baseUrl: string): {
     isLoading: boolean
     isTelegram: boolean
     setAccessToken: (token: string) => void
+    setPasskeySession: (session: string) => void
     clearAuth: () => void
 } {
     const [authSource, setAuthSource] = useState<AuthSource | null>(null)
@@ -67,6 +73,7 @@ export function useAuthSource(baseUrl: string): {
     const [isTelegram, setIsTelegram] = useState(false)
     const retryCountRef = useRef(0)
     const accessTokenKey = useMemo(() => getAccessTokenKey(baseUrl), [baseUrl])
+    const passkeySessionKey = useMemo(() => getPasskeySessionKey(baseUrl), [baseUrl])
 
     // Initialize auth source on mount, with retry for delayed Telegram initData
     useEffect(() => {
@@ -102,6 +109,14 @@ export function useAuthSource(baseUrl: string): {
             return
         }
 
+        // Then a previous passkey sign-in (stores no CLI token in the browser)
+        const storedPasskeySession = getStoredAccessToken(passkeySessionKey)
+        if (storedPasskeySession) {
+            setAuthSource({ type: 'passkey', session: storedPasskeySession })
+            setIsLoading(false)
+            return
+        }
+
         // Check if we're in a Telegram environment before polling
         if (!isTelegramEnvironment()) {
             // Plain browser - show login prompt immediately
@@ -133,23 +148,34 @@ export function useAuthSource(baseUrl: string): {
         return () => {
             clearInterval(interval)
         }
-    }, [accessTokenKey])
+    }, [accessTokenKey, passkeySessionKey])
 
     const setAccessToken = useCallback((token: string) => {
         storeAccessToken(accessTokenKey, token)
+        clearStoredAccessToken(passkeySessionKey)
         setAuthSource({ type: 'accessToken', token })
-    }, [accessTokenKey])
+    }, [accessTokenKey, passkeySessionKey])
+
+    const setPasskeySession = useCallback((session: string) => {
+        // A stored access token would take precedence on the next load; drop it
+        // so a stale/rotated token cannot shadow the passkey session.
+        clearStoredAccessToken(accessTokenKey)
+        storeAccessToken(passkeySessionKey, session)
+        setAuthSource({ type: 'passkey', session })
+    }, [accessTokenKey, passkeySessionKey])
 
     const clearAuth = useCallback(() => {
         clearStoredAccessToken(accessTokenKey)
+        clearStoredAccessToken(passkeySessionKey)
         setAuthSource(null)
-    }, [accessTokenKey])
+    }, [accessTokenKey, passkeySessionKey])
 
     return {
         authSource,
         isLoading,
         isTelegram,
         setAccessToken,
+        setPasskeySession,
         clearAuth
     }
 }

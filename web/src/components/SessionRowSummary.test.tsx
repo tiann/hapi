@@ -5,6 +5,8 @@ import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
 import { followSessionTail, markSessionSeen, markSessionUnread } from '@/lib/sessionLastSeen'
+import { LOW_RATE_STRIPES_CLASS } from '@/hooks/useLowRateAnimation'
+import { LOW_RATE_TICK_MS } from '@/lib/lowRateTicker'
 import { SessionRowSummary } from './SessionRowSummary'
 
 afterEach(() => cleanup())
@@ -56,11 +58,15 @@ describe('SessionRowSummary background status', () => {
         localStorage.clear()
     })
 
-    it('keeps presence independent of the title-side activity spinner', () => {
+    it('shows background-only work as working: a labelled spinner and working presence', () => {
         const background = renderSummary(false).container
-        const backgroundBadge = background.querySelector('[data-testid="session-presence"]')
-        expect(backgroundBadge).toHaveClass('bg-blue-400', 'animate-pulse')
-        expect(background.querySelector('svg.animate-spin-slow')).toHaveClass('text-[var(--app-hint)]')
+        const backgroundBadge = background.querySelector('[data-testid="session-presence"]') as HTMLElement
+        // A background subagent is still work; a waiting badge or static dot reads as done.
+        expect(backgroundBadge).toHaveAttribute('data-presence', 'working')
+        const activity = background.querySelector('[data-testid="session-activity"]') as HTMLElement
+        expect(activity).toHaveAttribute('data-activity', 'background')
+        expect(activity).toHaveAttribute('aria-label', 'Background tasks running')
+        expect(background.querySelector('[data-testid="session-background"]')).toBeNull()
         cleanup()
 
         const thinking = render(
@@ -68,9 +74,13 @@ describe('SessionRowSummary background status', () => {
                 <SessionRowSummary session={makeSummary({ thinking: true, backgroundTaskCount: 0 })} />
             </I18nProvider>
         ).container
-        expect(thinking.querySelector('[data-testid="session-presence"]'))
-            .toHaveClass('bg-[var(--app-badge-success-text)]', 'animate-pulse')
-        expect(thinking.querySelector('[data-testid="session-presence"]')).toHaveAttribute('data-presence', 'working')
+        const thinkingBadge = thinking.querySelector('[data-testid="session-presence"]') as HTMLElement
+        expect(thinkingBadge).toHaveClass('bg-[var(--app-badge-success-text)]')
+        expect(thinkingBadge).toHaveAttribute('data-presence', 'working')
+        // The working badge pulses via the shared low-rate ticker, not CSS.
+        expect(thinkingBadge.style.opacity).toBe('1')
+        expect(thinking.querySelector('[data-testid="session-activity"]')).not.toBeNull()
+        expect(thinking.querySelector('[data-testid="session-background"]')).toBeNull()
         expect(screen.queryByText('Running', { exact: true })).not.toBeInTheDocument()
         cleanup()
 
@@ -81,7 +91,6 @@ describe('SessionRowSummary background status', () => {
         ).container
         const idleBadge = idle.querySelector('[data-testid="session-presence"]')
         expect(idleBadge).toHaveAttribute('data-presence', 'waiting')
-        expect(idleBadge).not.toHaveClass('animate-pulse')
         expect(idleBadge).toHaveClass('border-2', 'border-[var(--app-badge-success-text)]')
         expect(idleBadge).not.toHaveClass('bg-[var(--app-badge-success-text)]')
     })
@@ -130,7 +139,6 @@ describe('SessionRowSummary background status', () => {
         expect(faded).not.toBeNull()
         const badge = container.querySelector('[data-testid="session-presence"]')
         expect(badge).toHaveAttribute('data-presence', 'stopped')
-        expect(badge).not.toHaveClass('animate-pulse')
         expect(badge?.querySelector('svg')).not.toBeNull()
         // The mark must not be dimmed along with the title line.
         expect(faded!.contains(badge)).toBe(false)
@@ -250,11 +258,12 @@ describe('SessionRowSummary background status', () => {
         expect(dots).toHaveLength(1)
         expect(container.querySelector('[data-testid="session-unread"]')).toBeNull()
         expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
-        expect(container.querySelector('[data-testid="session-presence"]')).toHaveClass('animate-pulse')
+        // The working badge pulses via the shared low-rate ticker, not CSS.
+        expect(container.querySelector('[data-testid="session-presence"]')).toHaveAttribute('data-presence', 'working')
     })
 
-    it('shows unseen output from a running session', () => {
-        const session = makeSummary({ id: 'running-unread', backgroundTaskCount: 1, updatedAt: 2_000 })
+    it('shows unseen output with background-only work as a blue spinner', () => {
+        const session = makeSummary({ id: 'background-unread', backgroundTaskCount: 1, updatedAt: 2_000 })
         markSessionSeen(session.id, 1_000)
 
         const { container } = render(
@@ -264,7 +273,52 @@ describe('SessionRowSummary background status', () => {
         )
 
         expectRunningUnread()
-        expect(container.querySelector('[data-testid="session-presence"]')).toHaveClass('bg-blue-400', 'animate-pulse')
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
+        expect(container.querySelector('[data-testid="session-presence"]')).toHaveAttribute('data-presence', 'working')
+    })
+
+    it('shows a working spinner for hub-derived open tool work (autonomous rounds)', () => {
+        // thinking=false and no declared background tasks is exactly the
+        // autonomous-round shape the hub sweep covers: the transcript still
+        // holds an unsettled tool call, so the row must render working, not
+        // waiting.
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        thinking: false,
+                        backgroundTaskCount: 0,
+                        derivedToolWork: true,
+                    })}
+                />
+            </I18nProvider>
+        )
+
+        const badge = container.querySelector('[data-testid="session-presence"]')
+        expect(badge).toHaveAttribute('data-presence', 'working')
+        // The low-rate ticker drives the working pulse now; the static badge
+        // class is the visible contract (animate-pulse no longer exists).
+        expect(badge).toHaveClass('bg-[var(--app-badge-success-text)]')
+        expect(screen.getByTestId('session-activity')).toBeInTheDocument()
+        // Not the background-only dot: this is foreground-style work.
+        expect(screen.queryByTestId('session-background')).toBeNull()
+
+        // Without the derived flag the same shape stays waiting.
+        cleanup()
+        const idle = render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        thinking: false,
+                        backgroundTaskCount: 0,
+                        derivedToolWork: false,
+                    })}
+                />
+            </I18nProvider>
+        ).container
+        expect(idle.querySelector('[data-testid="session-presence"]')).toHaveAttribute('data-presence', 'waiting')
+        expect(idle.querySelector('[data-testid="session-presence"]')).not.toHaveClass('animate-pulse')
+        expect(idle.querySelector('[data-testid="session-activity"]')).toBeNull()
     })
 
     it('shows and clears the unread dot in standard session rows', () => {
@@ -350,9 +404,10 @@ describe('SessionRowSummary attached job progress', () => {
         // A job outliving its agent is the case where the two signals must say
         // different things at once: nothing holds this session in memory, and
         // the work is still running.
-        const badge = container.querySelector('[data-testid="session-presence"]')
+        const badge = container.querySelector('[data-testid="session-presence"]') as HTMLElement
         expect(badge).toHaveAttribute('data-presence', 'working')
-        expect(badge).toHaveClass('animate-pulse')
+        // Working badge + job dot still animate, now via the shared ticker.
+        expect(badge.style.opacity).toBe('1')
 
         const faded = container.querySelector('.opacity-50')
         expect(faded).not.toBeNull()
@@ -391,7 +446,7 @@ describe('SessionRowSummary attached job progress', () => {
         expect(bar).toHaveAttribute('role', 'progressbar')
         expect(bar).not.toHaveAttribute('aria-valuenow')
         // Soft drifting stripes on a track — not spinner-only, not empty, not fake inline %, not loud chunk marquee.
-        expect(bar.querySelector('.animate-attached-job-indeterminate')).not.toBeNull()
+        expect(bar.querySelector(`.${LOW_RATE_STRIPES_CLASS}`)).not.toBeNull()
         expect(bar.querySelector('.animate-attached-job-marquee')).toBeNull()
         expect(container.querySelector('[class*="w-1/3"]')).toBeNull()
         expect(container.querySelector('[style*="width"]')).toBeNull()
@@ -421,7 +476,7 @@ describe('SessionRowSummary attached job progress', () => {
         expect(screen.getByText(/running · 2m/)).toBeInTheDocument()
         const bar = screen.getByTestId('attached-job-progress-bar')
         expect(bar).toHaveAttribute('data-progress', 'indeterminate')
-        expect(bar.querySelector('.animate-attached-job-indeterminate')).not.toBeNull()
+        expect(bar.querySelector(`.${LOW_RATE_STRIPES_CLASS}`)).not.toBeNull()
         expect(bar).not.toHaveAttribute('aria-valuenow')
     })
 
@@ -487,7 +542,7 @@ describe('SessionRowSummary attached job progress', () => {
         const fill = container.querySelector('[style*="width"]') as HTMLElement | null
         expect(fill).not.toBeNull()
         expect(fill!.style.width).toBe('50%')
-        expect(bar.querySelector('.animate-attached-job-indeterminate')).toBeNull()
+        expect(bar.querySelector(`.${LOW_RATE_STRIPES_CLASS}`)).toBeNull()
     })
 })
 
@@ -498,7 +553,7 @@ describe('SessionRowSummary combined activity and unread indicator', () => {
         let session = makeSummary({ backgroundTaskCount: 0, thinking: true, contentRevision: 0 })
         const row = () => <I18nProvider><SessionRowSummary session={session} showDetailedStatus={showDetailedStatus} lastSeenVersion={session.contentRevision} /></I18nProvider>
         const view = render(row())
-        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('animate-spin-slow', 'text-[var(--app-hint)]')
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-[var(--app-hint)]')
         expect(screen.queryByTestId('session-unread')).toBeNull()
 
         session = { ...session, contentRevision: 2 }
@@ -517,6 +572,37 @@ describe('SessionRowSummary combined activity and unread indicator', () => {
         view.rerender(row())
         expect(screen.queryByTestId('session-unread')).toBeNull()
         expect(screen.queryByTestId('session-activity')).toBeNull()
+    })
+
+    it('spins for background-only work, grey when read and blue when unread, until the work ends', () => {
+        let session = makeSummary({ thinking: false, backgroundTaskCount: 1, contentRevision: 2 })
+        markSessionSeen(session.id, 2)
+        const row = () => <I18nProvider><SessionRowSummary session={session} lastSeenVersion={session.contentRevision} /></I18nProvider>
+        const view = render(row())
+        const spinner = () => screen.getByTestId('session-activity')
+        expect(spinner()).toHaveAttribute('data-activity', 'background')
+        expect(spinner().querySelector('svg')).toHaveClass('text-[var(--app-hint)]')
+        expect(screen.queryByTestId('session-unread')).toBeNull()
+        expect(screen.getByText('Background demo')).toHaveClass('font-normal')
+
+        // New output while a background subagent runs: the spinner turns blue,
+        // and the title keeps its weight so the row does not look finished.
+        session = { ...session, contentRevision: 3 }
+        view.rerender(row())
+        expect(spinner().querySelector('svg')).toHaveClass('text-blue-500')
+        expect(screen.queryByTestId('session-unread')).toBeNull()
+        expect(screen.getByText('Background demo')).toHaveClass('font-normal')
+
+        session = { ...session, thinking: true }
+        view.rerender(row())
+        expect(spinner()).toHaveAttribute('data-activity', 'foreground')
+
+        // Only once all work has ended does the at-rest unread look appear.
+        session = { ...session, thinking: false, backgroundTaskCount: 0 }
+        view.rerender(row())
+        expect(screen.queryByTestId('session-activity')).toBeNull()
+        expect(screen.getByTestId('session-unread')).toHaveClass('bg-[var(--app-fg)]')
+        expect(screen.getByText('Background demo')).toHaveClass('font-semibold')
     })
 
     it('returns to a grey spinner when running content is read, and keeps manual unread blue', () => {
@@ -585,6 +671,38 @@ describe('SessionRowSummary combined activity and unread indicator', () => {
         expect(container.querySelector('.opacity-50')!.contains(spinner)).toBe(false)
         expect(screen.queryByTestId('session-unread')).toBeNull()
     })
+
+    it('animates the running spinner and presence badge from the low-rate ticker', () => {
+        vi.useFakeTimers()
+        try {
+            const { container } = render(
+                <I18nProvider>
+                    <SessionRowSummary session={makeSummary({ thinking: true, backgroundTaskCount: 0 })} />
+                </I18nProvider>
+            )
+            const spinner = screen.getByTestId('session-activity').querySelector('svg') as SVGElement
+            const badge = container.querySelector('[data-testid="session-presence"]') as HTMLElement
+
+            // No CSS animation classes remain; motion is driven by the ticker.
+            expect(spinner).not.toHaveClass('animate-spin-slow')
+            expect(badge).not.toHaveClass('animate-pulse')
+
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS) })
+            expect(spinner.style.transform).toBe('rotate(22.5deg)')
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS) })
+            expect(spinner.style.transform).toBe('rotate(45deg)')
+
+            // Eight ticks total: the badge has breathed most of the way down
+            // (frame 8, phase 7/16 -> triangle 0.125 -> opacity 0.563).
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS * 6) })
+            expect(badge.style.opacity).toBe('0.563')
+            // Frame 9 drops to 0.5.
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS) })
+            expect(badge.style.opacity).toBe('0.5')
+        } finally {
+            vi.useRealTimers()
+        }
+    })
 })
 
 function expectUnread() {
@@ -606,6 +724,25 @@ describe('SessionRowSummary time label', () => {
 
     afterEach(() => {
         vi.useRealTimers()
+    })
+
+    it('shows a stopped session the stop time it is ordered by only where the list orders by it', () => {
+        vi.useFakeTimers()
+        const now = 1_800_000_000_000
+        vi.setSystemTime(now)
+        // Expired after a quiet spell: updatedAt is old, the stop time is recent.
+        const quiet = { updatedAt: now - 12 * 60 * 60_000, activeAt: now - 5 * 60_000, backgroundTaskCount: 0 }
+        const row = (active: boolean, showStoppedTime?: boolean) => (
+            <I18nProvider><SessionRowSummary session={makeSummary({ ...quiet, active })} showStoppedTime={showStoppedTime} /></I18nProvider>
+        )
+        const view = render(row(false, true))
+        expect(screen.getByText('5m ago')).toBeInTheDocument()
+
+        // Other callers (Active first off, mention tooltips) keep the activity time.
+        view.rerender(row(false))
+        expect(screen.getByText('12h ago')).toBeInTheDocument()
+        view.rerender(row(true, true))
+        expect(screen.getByText('12h ago')).toBeInTheDocument()
     })
 
     it('advances the relative time without a parent render', () => {
@@ -717,6 +854,73 @@ describe('SessionRowSummary model-error + attention', () => {
         )
 
         expect(screen.getByLabelText(/Model error/i)).toBeTruthy()
+    })
+
+    it('pings the model-error halo from the low-rate ticker', () => {
+        const summary = makeSummary({
+            id: 's-halo',
+            backgroundTaskCount: 0,
+            metadata: {
+                path: '/tmp/proj',
+                lastModelError: {
+                    eventId: 'evt-row-halo',
+                    kind: 'model_not_found',
+                    transient: false,
+                    rawSnippet: 'Unknown model',
+                    atTs: 1,
+                    priorAssistantClaimsDone: false,
+                },
+            },
+        })
+
+        vi.useFakeTimers()
+        try {
+            act(() => {
+                renderWithI18n(
+                    <SessionRowSummary
+                        session={summary}
+                        showDetailedStatus
+                        selected={false}
+                        nestedTooltips={false}
+                    />
+                )
+            })
+
+            const halo = screen.getByTestId('session-model-error-halo')
+            // Motion comes from the ticker, never a CSS animation that would
+            // force 60 Hz frames for the whole session list.
+            expect(halo).not.toHaveClass('animate-ping')
+
+            // Static until the first tick: a full-scale, fully opaque halo.
+            expect(halo.style.transform).toBe('scale(1)')
+            expect(halo.style.opacity).toBe('1')
+
+            // The halo's first tick starts the cycle at full scale, so the ping
+            // does not depend on how far the shared frame counter has advanced.
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS) })
+            expect(halo.style.transform).toBe('scale(1)')
+            expect(halo.style.opacity).toBe('1')
+
+            // The cue expands and fades: scale grows while opacity falls.
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS) })
+            expect(halo.style.transform).toBe('scale(1.125)')
+            expect(halo.style.opacity).toBe('0.875')
+
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS * 4) })
+            expect(halo.style.transform).toBe('scale(1.625)')
+            expect(halo.style.opacity).toBe('0.375')
+
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS * 2) })
+            expect(halo.style.transform).toBe('scale(1.875)')
+            expect(halo.style.opacity).toBe('0.125')
+
+            // A full 8-tick cycle (1 s at 8 Hz) later the ping restarts.
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS) })
+            expect(halo.style.transform).toBe('scale(1)')
+            expect(halo.style.opacity).toBe('1')
+        } finally {
+            vi.useRealTimers()
+        }
     })
 
     it('hides the model-error pulse after a successful bridge even if still thinking', () => {

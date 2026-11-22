@@ -1,0 +1,1 @@
+{"expectStdin":{"type":"user"},"emit":[{"type":"system","subtype":"init","session_id":"b2222222-2222-4222-8222-222222222222","tools":["Bash"],"slash_commands":["compact"]},{"type":"assistant","session_id":"b2222222-2222-4222-8222-222222222222","message":{"id":"msg-1","role":"assistant","model":"sonnet","content":[{"type":"text","text":"Recorded answer"}]}}]}

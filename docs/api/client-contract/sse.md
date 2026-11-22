@@ -1,3 +1,7 @@
+---
+description: "The HAPI hub server-sent events stream (GET /api/events): connection, event types and reconnection."
+---
+
 # SSE stream (`GET /api/events`)
 
 **Audience:** Implementers of native HAPI clients (iOS / Android). This page specifies the hub's server-sent-events stream: subscription model, framing, resume protocol, the `SyncEvent` union, and the versioned session-patch algorithm. Companion pages: [auth](./auth.md), [REST](./rest.md), [pagination](./pagination.md), [messages](./messages.md).
