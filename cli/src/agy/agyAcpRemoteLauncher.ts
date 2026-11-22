@@ -180,9 +180,11 @@ function asQuestionCard(message: AgentMessage): { message: AgentMessage; shownLa
 export class AgyAcpStartError extends Error {}
 
 // `answered` is null until agy answers: true for a success, false for an error. `after` is the request still
-// open when this one was dispatched, `next` the one dispatched while this one was open.
+// open when this one was dispatched, `next` the one dispatched while this one was open. `written` is set once
+// the request was written to agy.
 type AgyRequest = {
     answered: boolean | null;
+    written: boolean;
     after: AgyRequest | null;
     next: AgyRequest | null;
     confirm: () => void;
@@ -1104,7 +1106,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // Registered before any await so Stop can reach the turn while agy
         // restarts or switches settings.
         this.turn = turn;
-        turn.requests.push({ answered: null, after: null, next: null, confirm: () => turn.acknowledge() });
+        turn.requests.push({ answered: null, written: true, after: null, next: null, confirm: () => turn.acknowledge() });
         try {
             if (swarmBoardCommand) {
                 if (!this.acpSessionId && (this.backendLost || !this.backend || !this.backend.isTransportAlive())) {
@@ -1433,7 +1435,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         steerCounted = true;
         // The steer interrupts the latest request agy has not answered; agy answers that one once it takes the steer.
         const open = turn.requests.filter((entry) => entry.answered === null).pop() ?? null;
-        request = { answered: null, after: open, next: null, confirm: () => accept() };
+        request = { answered: null, written: false, after: open, next: null, confirm: () => accept() };
         if (open) open.next = request;
         turn.requests.push(request);
         turn.steerAnswers.push(steer.answered.then(() => {
@@ -1460,6 +1462,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
         try {
             await steer.dispatched;
+            request.written = true;
         } catch (error) {
             if (isAcpIndeterminateError(error)) {
                 markIndeterminate();
@@ -1502,11 +1505,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private answerRequest(turn: AgyTurn, request: AgyRequest, succeeded: boolean): void {
         request.answered = succeeded;
         const steer = request.next;
-        if (!succeeded || !steer || steer.answered === false || turn.promptEcho.echo) return;
+        if (!succeeded) {
+            // A refused request is no one's predecessor: its successor interrupts what the refused one did.
+            if (steer) steer.after = request.after;
+            if (request.after) request.after.next = steer;
+            return;
+        }
+        if (!steer?.written || steer.answered === false || turn.promptEcho.echo) return;
         if (this.turn !== turn || turn.aborted || this.backendLost) return;
         const chain: AgyRequest[] = [];
         for (let entry: AgyRequest | null = steer; entry; entry = entry.after) chain.unshift(entry);
-        for (const entry of chain) if (entry.answered !== false) entry.confirm();
+        for (const entry of chain) if (entry.answered !== false && entry.written) entry.confirm();
     }
 
     private handleUserEcho(text: string): void {

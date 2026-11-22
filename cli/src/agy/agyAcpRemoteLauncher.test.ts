@@ -135,6 +135,8 @@ class FakeAgyBackend {
     onCancel: (() => void) | null = null;
     readonly steerPrompts: PromptContent[][] = [];
     steerDispatchError: Error | null = null;
+    // A steer's write stays pending until this settles.
+    steerDispatchGate: Promise<void> | null = null;
     steerStartError: Error | null = null;
     steerCompletions: Array<{
         resolve: (stopReason: string | null) => void;
@@ -182,7 +184,9 @@ class FakeAgyBackend {
             },
             onUsage: options?.onUsage
         });
-        const dispatched = this.steerDispatchError ? Promise.reject(this.steerDispatchError) : Promise.resolve();
+        const dispatched = this.steerDispatchError
+            ? Promise.reject(this.steerDispatchError)
+            : (this.steerDispatchGate ?? Promise.resolve());
         void dispatched.catch(() => {});
         return { dispatched, answered, completed };
     }
@@ -2021,6 +2025,47 @@ describe('AgyAcpRemoteLauncher steer state matrix', () => {
             const consumed = client.emitMessagesConsumed.mock.calls.map(([ids]) => (ids as string[])[0]);
             expect(consumed.slice(-3)).toEqual(['first', 'steer-1', 'steer-2']);
             release();
+            queue.close();
+            backend.steerCompletions[1]!.resolve('end_turn');
+            await run;
+        });
+
+        it('does not confirm a steer whose write fails after the request it interrupted was answered', async () => {
+            const backend = new FakeAgyBackend();
+            let failWrite!: (error: Error) => void;
+            backend.steerDispatchGate = new Promise<void>((_resolve, reject) => { failWrite = reject; });
+            backend.steerDispatchGate.catch(() => {});
+            const { queue, client, run, release } = await heldTurn(backend);
+            queue.push('also lint', REVIEW, 'steer-1');
+            const steered = rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' });
+
+            // agy answers the prompt while the steer is still being written, then the write fails.
+            release();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            failWrite(new Error('write failed'));
+            expect(await steered).toEqual({ steered: false, error: 'Failed to steer into the active turn' });
+
+            await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-1'], 'queued'));
+            expect(consumedSteer(client, 'steer-1')).toBe(false);
+            queue.close();
+            await run;
+        });
+
+        it('confirms a steer sent while an earlier steer was open, at the prompt answer, when that earlier steer is refused', async () => {
+            const backend = new FakeAgyBackend();
+            const { queue, client, run, release } = await heldTurn(backend);
+            queue.push('also lint', REVIEW, 'steer-a');
+            queue.push('and format', REVIEW, 'steer-b');
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-a' });
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-b' });
+
+            // agy refuses A and takes B against the prompt, which it answers.
+            backend.steerCompletions[0]!.refuse(Object.assign(new Error("Can't add this prompt to session"), { code: -32603 }), 50);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            release();
+
+            await vi.waitFor(() => expect(consumedSteer(client, 'steer-b')).toBe(true));
+            expect(consumedSteer(client, 'steer-a')).toBe(false);
             queue.close();
             backend.steerCompletions[1]!.resolve('end_turn');
             await run;
