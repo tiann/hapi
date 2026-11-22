@@ -39,6 +39,8 @@ export type LocalImportRequestContext = {
     launch?: LocalImportLaunchConfig
     /** Extra metadata from the request body (Codex preferredPermissionMode). */
     requestMetadata?: Record<string, unknown>
+    /** Validated request cwd used ONLY on first import of a transcript without native workspace metadata. */
+    fallbackCwd?: string | null
 }
 
 const importLocks = new Map<string, Promise<unknown>>()
@@ -82,14 +84,18 @@ function buildImportMetadata(options: {
     machine: Machine
     existing: Record<string, unknown>
     requestMetadata?: Record<string, unknown>
+    fallbackCwd?: string | null
     importState?: Record<string, unknown>
 }): Metadata {
-    const { source, transcript, machine, existing, requestMetadata, importState } = options
+    const { source, transcript, machine, existing, requestMetadata, fallbackCwd, importState } = options
     const summaryText = transcript.lastUserMessage ?? transcript.title
+    const nativeCwd = typeof transcript.cwd === 'string' && transcript.cwd.trim() ? transcript.cwd.trim() : null
+    const existingPath = typeof existing.path === 'string' && existing.path.trim() ? existing.path : null
+    const fallbackPath = typeof fallbackCwd === 'string' && fallbackCwd.trim() ? fallbackCwd.trim() : null
     const metadata: Record<string, unknown> = {
         ...existing,
         ...requestMetadata,
-        path: transcript.cwd ?? (typeof existing.path === 'string' ? existing.path : dirname(transcript.file)),
+        path: nativeCwd ?? existingPath ?? fallbackPath ?? dirname(transcript.file),
         host: typeof existing.host === 'string' ? existing.host : (machine.metadata?.host ?? machine.id),
         os: typeof existing.os === 'string' ? existing.os : (machine.metadata?.platform ?? process.platform),
         // Preserve a HAPI-side rename; only a fresh import names the session.
@@ -269,6 +275,7 @@ export function runLocalImportSync(options: {
                     machine,
                     existing: metadata,
                     requestMetadata: request.requestMetadata,
+                    fallbackCwd: request.fallbackCwd,
                     importState: buildImportState(source, transcript, machine.id, 'importing', startedAt)
                 }))
             } catch {}
@@ -283,6 +290,7 @@ export function runLocalImportSync(options: {
                         machine,
                         existing: metadata,
                         requestMetadata: request.requestMetadata,
+                        fallbackCwd: request.fallbackCwd,
                         importState: buildImportState(source, transcript, machine.id, state, startedAt, outcome.error?.message)
                     }))
                     engine.handleRealtimeEvent({ type: 'session-updated', sessionId: touchedSessionId! })
@@ -305,7 +313,8 @@ export function runLocalImportSync(options: {
                 const existingPath = target ? storedMetadata(target).path : undefined
                 const hasExistingPath = typeof existingPath === 'string' && existingPath.trim().length > 0
                 const hasTranscriptCwd = typeof transcript.cwd === 'string' && transcript.cwd.trim().length > 0
-                if (!hasTranscriptCwd && !hasExistingPath) {
+                const hasFallbackCwd = typeof request.fallbackCwd === 'string' && request.fallbackCwd.trim().length > 0
+                if (!hasTranscriptCwd && !hasExistingPath && !hasFallbackCwd) {
                     return finishErrorState({
                         sessionId: transcript.id,
                         ...(target ? { hapiSessionId: target.id } : {}),
@@ -399,6 +408,7 @@ export function runLocalImportSync(options: {
                         machine,
                         existing: {},
                         requestMetadata: request.requestMetadata,
+                        fallbackCwd: request.fallbackCwd,
                         ...(source.importStateKey
                             ? { importState: buildImportState(source, transcript, machine.id, 'importing', startedAt) }
                             : {})
@@ -439,6 +449,7 @@ export function runLocalImportSync(options: {
                         machine,
                         existing: metadata,
                         requestMetadata: request.requestMetadata,
+                        fallbackCwd: request.fallbackCwd,
                         ...(source.importStateKey
                             ? { importState: buildImportState(source, transcript, machine.id, 'complete', startedAt) }
                             : {})
@@ -511,6 +522,7 @@ export function runLocalImportSync(options: {
                         machine,
                         existing: metadata,
                         requestMetadata: request.requestMetadata,
+                        fallbackCwd: request.fallbackCwd,
                         importState: buildImportState(source, transcript, machine.id, code === 'transcript_diverged' ? 'diverged' : 'failed', startedAt, message)
                     }))
                     engine.handleRealtimeEvent({ type: 'session-updated', sessionId: surviving.id })

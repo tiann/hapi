@@ -12,9 +12,9 @@ function toItem(session: AgyLocalSessionSummary | AgyLocalSessionWithMessages): 
 
 export const agyLocalSessionSource: CliLocalSessionSource = {
     flavor: 'agy',
-    list: async ({ cwd, sessionIds }) => {
+    list: async ({ sessionIds }) => {
         const sessions = sessionIds
-            ? await listLocalAgySessionsWithMessagesByIds(new Set(sessionIds), { fallbackCwd: cwd })
+            ? await listLocalAgySessionsWithMessagesByIds(new Set(sessionIds))
             : await listLocalAgySessionSummaries()
         return sessions.map((session) => toItem(session)) as Array<LocalTranscriptSummary | LocalTranscript>
     }

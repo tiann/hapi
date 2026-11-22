@@ -130,6 +130,21 @@ describe('ApiMachineClient ListLocalSessions wiring', () => {
             const agy = await callListLocalSessions(client, machine.id, { flavor: 'agy' }) as { success: boolean; sessions: Array<Record<string, unknown>> }
             expect(agy.success).toBe(true)
             expect(agy.sessions[0]).toMatchObject({ id: 'agy-wired', flavor: 'agy' })
+
+            const allowedWorkspace = mkdtempSync(join(tmpdir(), 'hapi-agy-allowed-root-'))
+            const scopedMachine = makeMachine('scoped-machine')
+            const scopedClient = new ApiMachineClient('cli-token', scopedMachine, [allowedWorkspace])
+            try {
+                const scopedAgy = await callListLocalSessions(scopedClient, scopedMachine.id, {
+                    flavor: 'agy',
+                    sessionIds: ['agy-wired'],
+                    cwd: allowedWorkspace
+                }) as { success: boolean; sessions: Array<Record<string, unknown>> }
+                expect(scopedAgy).toEqual({ success: true, sessions: [] })
+            } finally {
+                scopedClient.shutdown()
+                rmSync(allowedWorkspace, { recursive: true, force: true })
+            }
         } finally {
             client.shutdown()
             if (original.CODEX_HOME === undefined) delete process.env.CODEX_HOME

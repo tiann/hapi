@@ -45,7 +45,6 @@ export type AgyDatabaseOpener = (dbPath: string) => Promise<DatabaseLike | null>
 export type AgySessionStoreOptions = {
     appDataDir?: string
     brainDir?: string
-    fallbackCwd?: string | null
     limit?: number
     opener?: AgyDatabaseOpener
 }
@@ -546,6 +545,19 @@ export async function listLocalAgySessionSummaries(
     }
 }
 
+function selectStableCompleteAgySteps(steps: AgyTranscriptStep[]): {
+    steps: AgyTranscriptStep[]
+    hadMissingFullRows: boolean
+} {
+    for (let i = 0; i < steps.length; i += 1) {
+        const step = steps[i]!
+        if (Array.isArray(step.truncated_fields) && step.truncated_fields.length > 0) {
+            return { steps: steps.slice(0, i), hadMissingFullRows: true }
+        }
+    }
+    return { steps, hadMissingFullRows: false }
+}
+
 export async function listLocalAgySessionsWithMessagesByIds(
     sessionIds: Set<string>,
     options: AgySessionStoreOptions = {}
@@ -580,10 +592,6 @@ export async function listLocalAgySessionsWithMessagesByIds(
         }
     }
 
-    const fallbackCwd = typeof options.fallbackCwd === 'string' && options.fallbackCwd.trim()
-        ? options.fallbackCwd.trim()
-        : null
-
     const sessions: AgyLocalSessionWithMessages[] = []
     for (const sessionId of sessionIds) {
         const paths = agyTranscriptPaths(brainDir, sessionId)
@@ -593,8 +601,12 @@ export async function listLocalAgySessionsWithMessagesByIds(
 
         const row = rowsById.get(sessionId)
         const modifiedAt = parseAgyTimestampMs(row?.last_modified_time) ?? stats.mtimeMs
-        const steps = readAgyTranscriptStepsAfter(brainDir, sessionId, -1)
+        const allSteps = readAgyTranscriptStepsAfter(brainDir, sessionId, -1)
+        const { steps, hadMissingFullRows } = selectStableCompleteAgySteps(allSteps)
         const converted = convertAgyTranscriptStepsToMessages(sessionId, steps, modifiedAt)
+        if (hadMissingFullRows && converted.messages.length === 0) {
+            throw new Error('Antigravity full transcript is still flushing; please retry import shortly')
+        }
         const lastUserMessage = converted.lastUserMessage ?? formatSummaryPreview(row?.preview)
         const nativeCwd = parseAgyWorkspaceCwd(row?.workspace_uris)
 
@@ -607,7 +619,7 @@ export async function listLocalAgySessionsWithMessagesByIds(
                 sessionId
             }),
             lastUserMessage,
-            cwd: nativeCwd ?? fallbackCwd,
+            cwd: nativeCwd,
             file: paths.compactPath,
             modifiedAt,
             messageCount: converted.messages.length,

@@ -246,7 +246,7 @@ const results: Record<string, unknown> = {}
         ])
         results.fallback = {
             summaries: await listLocalAgySessionSummaries({ appDataDir: root }),
-            withMessages: await listLocalAgySessionsWithMessagesByIds(new Set(['conv-fallback']), { appDataDir: root, fallbackCwd: '/tmp/selected-project' })
+            withMessages: await listLocalAgySessionsWithMessagesByIds(new Set(['conv-fallback']), { appDataDir: root })
         }
 
         // 3. Append-only stability when action steps arrive lazily after a multi-call planner step
@@ -271,7 +271,7 @@ const results: Record<string, unknown> = {}
                 ]
             }
         ])
-        const beforeActions = (await listLocalAgySessionsWithMessagesByIds(new Set(['conv-late-action']), { appDataDir: root, fallbackCwd: '/tmp/selected-project' }))[0]!
+        const beforeActions = (await listLocalAgySessionsWithMessagesByIds(new Set(['conv-late-action']), { appDataDir: root }))[0]!
 
         writeTranscript(root, 'conv-late-action', [
             {
@@ -302,8 +302,99 @@ const results: Record<string, unknown> = {}
                 content: 'ENOENT: missing a.txt'
             }
         ])
-        const afterFirstAction = (await listLocalAgySessionsWithMessagesByIds(new Set(['conv-late-action']), { appDataDir: root, fallbackCwd: '/tmp/selected-project' }))[0]!
+        const afterFirstAction = (await listLocalAgySessionsWithMessagesByIds(new Set(['conv-late-action']), { appDataDir: root }))[0]!
         results.lateAction = { beforeActions, afterFirstAction }
+
+        // 4. Truncated compact rows wait for transcript_full.jsonl before import
+        writeTranscript(root, 'conv-trunc-prefix', [
+            {
+                step_index: 0,
+                source: 'USER_EXPLICIT',
+                type: 'USER_INPUT',
+                status: 'DONE',
+                created_at: '2026-11-22T03:00:00Z',
+                content: '<USER_REQUEST>\\nStart task\\n</USER_REQUEST>'
+            },
+            {
+                step_index: 1,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                created_at: '2026-11-22T03:00:01Z',
+                content: 'First complete answer'
+            },
+            {
+                step_index: 2,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                created_at: '2026-11-22T03:00:02Z',
+                truncated_fields: ['content'],
+                content: 'Clipped answer...'
+            }
+        ])
+        const beforeFull = (await listLocalAgySessionsWithMessagesByIds(new Set(['conv-trunc-prefix']), { appDataDir: root }))[0]!
+        writeTranscript(
+            root,
+            'conv-trunc-prefix',
+            [
+                {
+                    step_index: 0,
+                    source: 'USER_EXPLICIT',
+                    type: 'USER_INPUT',
+                    status: 'DONE',
+                    created_at: '2026-11-22T03:00:00Z',
+                    content: '<USER_REQUEST>\\nStart task\\n</USER_REQUEST>'
+                },
+                {
+                    step_index: 1,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    created_at: '2026-11-22T03:00:01Z',
+                    content: 'First complete answer'
+                },
+                {
+                    step_index: 2,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    created_at: '2026-11-22T03:00:02Z',
+                    truncated_fields: ['content'],
+                    content: 'Clipped answer...'
+                }
+            ],
+            [
+                {
+                    step_index: 2,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    created_at: '2026-11-22T03:00:02Z',
+                    content: 'Full unclipped second answer'
+                }
+            ]
+        )
+        const afterFull = (await listLocalAgySessionsWithMessagesByIds(new Set(['conv-trunc-prefix']), { appDataDir: root }))[0]!
+
+        writeTranscript(root, 'conv-trunc-head', [
+            {
+                step_index: 0,
+                source: 'USER_EXPLICIT',
+                type: 'USER_INPUT',
+                status: 'DONE',
+                created_at: '2026-11-22T04:00:00Z',
+                truncated_fields: ['content'],
+                content: '<USER_REQUEST>\\nClipped...'
+            }
+        ])
+        let headError: string | null = null
+        try {
+            await listLocalAgySessionsWithMessagesByIds(new Set(['conv-trunc-head']), { appDataDir: root })
+        } catch (err) {
+            headError = err instanceof Error ? err.message : String(err)
+        }
+        results.truncated = { beforeFull, afterFull, headError }
     } finally {
         rmSync(root, { recursive: true, force: true })
     }
@@ -341,6 +432,11 @@ function runBunSuite() {
         lateAction: {
             beforeActions: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
             afterFirstAction: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
+        }
+        truncated: {
+            beforeFull: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
+            afterFull: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
+            headError: string | null
         }
     }
 }
@@ -398,7 +494,7 @@ describe('agySessions', () => {
             title: 'Fallback question',
             messageCount: 2
         })
-        expect(output.fallback.withMessages[0]?.cwd).toBe('/tmp/selected-project')
+        expect(output.fallback.withMessages[0]?.cwd).toBeNull()
         expect(output.fallback.withMessages[0]?.messages).toHaveLength(2)
 
         const { beforeActions, afterFirstAction } = output.lateAction
@@ -421,5 +517,21 @@ describe('agySessions', () => {
                 }
             }
         })
+
+        const { beforeFull, afterFull, headError } = output.truncated
+        expect(beforeFull.messages).toHaveLength(2)
+        expect(afterFull.messages).toHaveLength(3)
+        expect(afterFull.messages.slice(0, 2)).toEqual(beforeFull.messages)
+        expect(afterFull.messages[2]).toMatchObject({
+            localId: 'agy:conv-trunc-prefix:step:2:text',
+            content: {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: { type: 'message', message: 'Full unclipped second answer' }
+                }
+            }
+        })
+        expect(headError).toContain('full transcript is still flushing')
     })
 })

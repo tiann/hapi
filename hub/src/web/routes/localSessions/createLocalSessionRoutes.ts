@@ -224,7 +224,7 @@ export function createLocalSessionRoutes(options: {
                     source,
                     transcript,
                     machine,
-                    request: { launch, requestMetadata }
+                    request: { launch, requestMetadata, fallbackCwd: cwd }
                 })
                 results.push({ ...outcome, [resultIdKey]: outcome.sessionId })
                 if (source.batch === 'stopOnFirstError' && outcome.error) break

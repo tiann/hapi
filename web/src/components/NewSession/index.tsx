@@ -1292,16 +1292,23 @@ export function NewSession(props: {
         model
     ])
 
+    const selectedAgyImportSession = useMemo(
+        () => agyImport.sessions.find((session) => session.id === selectedAgyImportSessionId) ?? null,
+        [agyImport.sessions, selectedAgyImportSessionId]
+    )
+    const isContinuingAgyImport = agent === 'agy' && Boolean(selectedAgyImportSession)
+    const effectiveSessionType = isContinuingAgyImport ? 'simple' : sessionType
+
     const currentDirectoryExists = trimmedDirectory ? pathExistence[trimmedDirectory] : undefined
     const directoryOutsideWorkspaceRoots = trimmedDirectory
         ? outsideWorkspaceRoots.has(trimmedDirectory)
         : false
     const needsDirectoryCreationWarning = !directoryOutsideWorkspaceRoots
-        && sessionType === 'simple'
+        && effectiveSessionType === 'simple'
         && trimmedDirectory !== ''
         && currentDirectoryExists === false
     const missingWorktreeDirectory = !directoryOutsideWorkspaceRoots
-        && sessionType === 'worktree'
+        && effectiveSessionType === 'worktree'
         && trimmedDirectory !== ''
         && currentDirectoryExists === false
     const directoryStatusMessage = directoryOutsideWorkspaceRoots
@@ -1881,10 +1888,6 @@ export function NewSession(props: {
         () => claudeImport.sessions.find((session) => session.id === selectedClaudeImportSessionId) ?? null,
         [claudeImport.sessions, selectedClaudeImportSessionId]
     )
-    const selectedAgyImportSession = useMemo(
-        () => agyImport.sessions.find((session) => session.id === selectedAgyImportSessionId) ?? null,
-        [agyImport.sessions, selectedAgyImportSessionId]
-    )
     // Pi history import reopens the native session as-is; the launch-only
     // model/effort controls would silently not apply, so hide them.
     const showPiLaunchConfig = agent !== 'pi' || !selectedPiImportSession
@@ -2095,13 +2098,13 @@ export function NewSession(props: {
             }
             const directoryExists = existsResult.exists[trimmedDirectory]
 
-            if (sessionType === 'worktree' && directoryExists === false) {
+            if (effectiveSessionType === 'worktree' && directoryExists === false) {
                 haptic.notification('error')
                 setError(t('session.directoryMissingWorktree'))
                 return
             }
 
-            if (sessionType === 'simple' && directoryExists === false && !directoryCreationConfirmed) {
+            if (effectiveSessionType === 'simple' && directoryExists === false && !directoryCreationConfirmed) {
                 setDirectoryCreationConfirmed(true)
                 return
             }
@@ -2433,7 +2436,7 @@ export function NewSession(props: {
                 directory={directory}
                 suggestions={suggestions}
                 selectedIndex={selectedIndex}
-                isDisabled={isFormDisabled}
+                isDisabled={isFormDisabled || Boolean(isContinuingAgyImport && selectedAgyImportSession?.cwd?.trim())}
                 recentPaths={recentPaths}
                 statusMessage={directoryStatusMessage}
                 statusTone={directoryStatusTone}
@@ -2445,14 +2448,16 @@ export function NewSession(props: {
                 onPathClick={handlePathClick}
                 onChooseFolder={props.onChooseFolder ? handleChooseFolderClick : undefined}
             />
-            <SessionTypeSelector
-                sessionType={sessionType}
-                worktreeName={worktreeName}
-                worktreeInputRef={worktreeInputRef}
-                isDisabled={isFormDisabled}
-                onSessionTypeChange={setSessionType}
-                onWorktreeNameChange={setWorktreeName}
-            />
+            {!isContinuingAgyImport ? (
+                <SessionTypeSelector
+                    sessionType={sessionType}
+                    worktreeName={worktreeName}
+                    worktreeInputRef={worktreeInputRef}
+                    isDisabled={isFormDisabled}
+                    onSessionTypeChange={setSessionType}
+                    onWorktreeNameChange={setWorktreeName}
+                />
+            ) : null}
             <AgentSelector
                 agent={agent}
                 agents={agentOptions}

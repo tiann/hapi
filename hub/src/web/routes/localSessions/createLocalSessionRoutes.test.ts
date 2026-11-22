@@ -414,6 +414,62 @@ describe('generic local session routes', () => {
         expect(second.results[0]).toMatchObject({ agySessionId: 'agy-grow', action: 'updated', appended: 1 })
     })
 
+    it('uses body cwd on first import of a transcript-only Antigravity session and preserves it on re-import from another directory', async () => {
+        const initial: LocalTranscript = {
+            flavor: 'agy',
+            id: 'agy-no-cwd',
+            title: 'Transcript-only session',
+            lastUserMessage: 'first prompt',
+            cwd: null,
+            file: '/tmp/.gemini/antigravity-cli/brain/agy-no-cwd/.system_generated/logs/transcript.jsonl',
+            modifiedAt: 10,
+            messages: [
+                { id: 'agy:agy-no-cwd:step:0:0', createdAt: 10, content: { role: 'user', content: { type: 'text', text: 'first prompt' }, meta: { sentFrom: 'cli' } }, anchor: 'step:0:0' }
+            ]
+        }
+        const grown: LocalTranscript = {
+            ...initial,
+            lastUserMessage: 'second prompt',
+            modifiedAt: 20,
+            messages: [
+                ...initial.messages,
+                { id: 'agy:agy-no-cwd:step:1:0', createdAt: 20, content: { role: 'user', content: { type: 'text', text: 'second prompt' }, meta: { sentFrom: 'cli' } }, anchor: 'step:1:0' }
+            ]
+        }
+        let current = initial
+        const store = new Store(':memory:')
+        stores.push(store)
+        const engine = {
+            getOnlineMachinesByNamespace: () => [machine()],
+            listLocalSessionsForMachine: async () => ({ success: true, sessions: [current] }),
+            recordSessionActivity: () => {},
+            handleRealtimeEvent: () => {},
+            applySessionConfig: async () => {}
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createLocalSessionRoutes({ store, getSyncEngine: () => engine, sources: [AGY_LOCAL_SESSION_SOURCE] }))
+
+        const first = await (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-no-cwd'], cwd: '/proj-a' })
+        })).json() as { results: Array<{ hapiSessionId?: string; action?: string }> }
+        expect(first.results[0]).toMatchObject({ action: 'created' })
+        const sessionId = first.results[0]!.hapiSessionId!
+        expect((store.sessions.getSessionByNamespace(sessionId, 'default')?.metadata as { path?: string }).path).toBe('/proj-a')
+
+        current = grown
+        const second = await (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-no-cwd'], cwd: '/proj-b' })
+        })).json() as { results: Array<{ hapiSessionId?: string; action?: string; appended?: number }> }
+        expect(second.results[0]).toMatchObject({ hapiSessionId: sessionId, action: 'updated', appended: 1 })
+        expect((store.sessions.getSessionByNamespace(sessionId, 'default')?.metadata as { path?: string }).path).toBe('/proj-a')
+    })
+
 })
 
 describe('fetchLocalTranscripts', () => {
