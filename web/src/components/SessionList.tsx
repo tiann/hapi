@@ -26,6 +26,7 @@ import { ProjectGroupRow } from '@/components/ProjectGroupRow'
 import { ArchiveIcon, CheckIcon, CopyIcon, InfoIcon, LoaderIcon, MarkAllReadIcon, PinOffIcon } from '@/components/icons'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
+import { safeCopyToClipboard } from '@/lib/clipboard'
 
 function PinnedSectionIcon(props: { className?: string }) {
     return (
@@ -669,10 +670,16 @@ function CopyPathButton({ path, className }: { path: string; className?: string 
 
     const handleClick = (e: React.MouseEvent) => {
         e.stopPropagation()
-        navigator.clipboard.writeText(path)
-        setCopied(true)
-        clearTimeout(timerRef.current)
-        timerRef.current = setTimeout(() => setCopied(false), 1500)
+        void safeCopyToClipboard(path).then(
+            () => {
+                setCopied(true)
+                clearTimeout(timerRef.current)
+                timerRef.current = setTimeout(() => setCopied(false), 1500)
+            },
+            () => {
+                // Copy is a convenience action; stay quiet when the browser blocks it.
+            }
+        )
     }
 
     useEffect(() => () => clearTimeout(timerRef.current), [])
