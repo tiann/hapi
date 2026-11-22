@@ -360,6 +360,7 @@ class SessionListViewModelTest {
         val first = viewModel.uiState.first { it.rows.size == 5 }.machineFilters
         assertEquals(listOf("a", "b", "z", "retired", UNKNOWN_MACHINE_ID), first.map { it.id })
         assertEquals(listOf("Devbox · a", "devbox · b"), first.take(2).map { it.label })
+        assertEquals(listOf("a · Devbox", "b · devbox"), first.take(2).map { it.folderLabel })
         assertTrue(first.first { it.id == "retired" }.unnamed)
         sessions.set(*sessions.backing.value.toTypedArray(), summary("z2", machineId = "z"), summary("z3", machineId = "z"))
         val updated = viewModel.uiState.first { it.rows.size == 7 }.machineFilters

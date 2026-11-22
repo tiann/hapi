@@ -124,6 +124,8 @@ data class MachineFilterUi(
     val label: String,
     val sessionCount: Int,
     val unnamed: Boolean = false,
+    /** Lead with the distinguishing ID in a single-line folder subtitle. */
+    val folderLabel: String? = null,
 )
 
 data class SessionListUiState(
@@ -571,6 +573,8 @@ class SessionListViewModel(
                     } ?: shortIds.getValue(id),
                     sessionCount = group.size,
                     unnamed = id !in names,
+                    folderLabel = names[id]?.takeIf { (nameCounts[it.lowercase(java.util.Locale.ROOT)] ?: 0) > 1 }
+                        ?.let { "${shortIds.getValue(id)} · $it" },
                 )
             }
             .sortedWith(compareBy<MachineFilterUi> {

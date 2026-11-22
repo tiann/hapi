@@ -341,7 +341,7 @@ private fun SessionRows(
     val sections = remember(remaining, grouped) {
         if (grouped) remaining.groupBy { row ->
             val meta = row.summary.metadata
-            val path = (meta?.worktree?.basePath ?: meta?.path)?.trim()?.takeIf { it.isNotEmpty() }
+            val path = (meta?.worktree?.basePath ?: meta?.path)?.takeIf { it.isNotBlank() }
             meta?.machineId to path
         } else emptyMap()
     }
@@ -386,7 +386,7 @@ private fun SessionRows(
                     Column(Modifier.weight(1f)) {
                         Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         first.machine?.let { machine ->
-                            Text(machineFilterLabel(machine), style = MaterialTheme.typography.labelMedium,
+                            Text(machine.folderLabel ?: machineFilterLabel(machine), style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
