@@ -386,7 +386,9 @@ private fun SessionRows(
                         contentDescription = null, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+                        // Labels already use the shortest distinguishing suffix. Let it wrap
+                        // instead of truncating the only part that distinguishes two folders.
+                        Text(title, style = MaterialTheme.typography.titleSmall)
                         first.machine?.let { machine ->
                             Text(machine.folderLabel ?: machineFilterLabel(machine), style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
