@@ -179,6 +179,15 @@ function asQuestionCard(message: AgentMessage): { message: AgentMessage; shownLa
 /** agy acp did not come up; the caller may fall back to another transport. */
 export class AgyAcpStartError extends Error {}
 
+// `answered` is null until agy answers: true for a success, false for an error. `after` is the request still
+// open when this one was dispatched, `next` the one dispatched while this one was open.
+type AgyRequest = {
+    answered: boolean | null;
+    after: AgyRequest | null;
+    next: AgyRequest | null;
+    confirm: () => void;
+};
+
 type AgyTurn = {
     modeHash: string;
     aborted: boolean;
@@ -225,10 +234,10 @@ type AgyTurn = {
     steersTaken: number;
     // agy's answers to the turn's requests, before HAPI drains late output.
     mainAnswered: Promise<void>;
-    answerMain: (succeeded?: boolean) => void;
+    answerMain: () => void;
     steerAnswers: Promise<void>[];
-    // Whether agy answered the request it holds open (the prompt, then the latest steer) with a success.
-    openRequest: Promise<boolean>;
+    // The requests agy may hold open: the prompt, then each steer, in dispatch order.
+    requests: AgyRequest[];
     // agy echoes the prompt first, and that echo may contain a steer's text.
     promptEcho: { text: string; echo: string; done: boolean };
     unechoedSteers: Array<{ text: string; echo: string; accept: () => void }>;
@@ -1046,10 +1055,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         let releaseSteerWait!: () => void;
         const steerWaitReleased = new Promise<void>((resolve) => { releaseSteerWait = resolve; });
         let acknowledged = false;
-        let settleMain!: (succeeded: boolean) => void;
-        const mainSucceeded = new Promise<boolean>((resolve) => { settleMain = resolve; });
-        const mainAnswered = mainSucceeded.then(() => {});
-        const answerMain = (succeeded = false) => settleMain(succeeded);
+        let answerMain!: () => void;
+        const mainAnswered = new Promise<void>((resolve) => { answerMain = resolve; });
         const restoreIfUserTurn = () => {
             if (!internalWakeup) this.restorePrompt(turn, message);
         };
@@ -1086,7 +1093,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             mainAnswered,
             answerMain,
             steerAnswers: [],
-            openRequest: mainSucceeded,
+            requests: [],
             promptEcho: { text: normalizeEcho(message), echo: '', done: false },
             unechoedSteers: [],
             answeredSteers: [],
@@ -1097,6 +1104,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // Registered before any await so Stop can reach the turn while agy
         // restarts or switches settings.
         this.turn = turn;
+        turn.requests.push({ answered: null, after: null, next: null, confirm: () => turn.acknowledge() });
         try {
             if (swarmBoardCommand) {
                 if (!this.acpSessionId && (this.backendLost || !this.backend || !this.backend.isTransportAlive())) {
@@ -1183,7 +1191,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         onSent: () => { turn.sentAt = Date.now(); },
                         onAnswered: (succeeded) => {
                             turn.answeredAt = Date.now();
-                            turn.answerMain(succeeded);
+                            turn.answerMain();
+                            this.answerRequest(turn, turn.requests[0]!, succeeded);
                         }
                     }
                 });
@@ -1347,12 +1356,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             session.client.emitSteerIndeterminate([localId]);
             return { steered: false, error: 'Steer state is indeterminate' };
         }
-        // A steer interrupts the request agy holds open; agy answers that request once it takes the steer.
-        const interrupted = turn.openRequest;
-        // agy 1.5.9+ echoes nothing; an agy that echoes does so at the start of the turn.
-        const echoless = !turn.promptEcho.echo;
-        let steerSucceeded: Promise<boolean> | null = null;
-        let refused = false;
+        let request!: AgyRequest;
         let resolved = false;
         let steerCounted = false;
         let forgetEcho = () => {};
@@ -1368,7 +1372,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (resolved) return;
             resolved = true;
             forgetEcho();
-            if (turn.openRequest === steerSucceeded) turn.openRequest = interrupted;
             if (steerCounted) {
                 steerCounted = false;
                 turn.steersTaken -= 1;
@@ -1409,7 +1412,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         // out, and a second one would read as another turn.
                         if (this.turn !== turn) return;
                         turn.usage = addAgyUsage(turn.usage, usage);
-                    }
+                    },
+                    onAnswered: (succeeded) => this.answerRequest(turn, request, succeeded)
                 }
             );
         } catch (error) {
@@ -1427,13 +1431,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         turn.steers.push(settled);
         turn.steersTaken += 1;
         steerCounted = true;
-        steerSucceeded = steer.succeeded;
-        turn.openRequest = steerSucceeded;
-        // A refused steer leaves the request it interrupted open, before late output is drained.
-        void steerSucceeded.then((succeeded) => {
-            refused = !succeeded;
-            if (refused && turn.openRequest === steerSucceeded) turn.openRequest = interrupted;
-        });
+        // The steer interrupts the latest request agy has not answered; agy answers that one once it takes the steer.
+        const open = turn.requests.filter((entry) => entry.answered === null).pop() ?? null;
+        request = { answered: null, after: open, next: null, confirm: () => accept() };
+        if (open) open.next = request;
+        turn.requests.push(request);
         turn.steerAnswers.push(steer.answered.then(() => {
             if (this.turn === turn) {
                 turn.answeredAt = Date.now();
@@ -1466,11 +1468,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             await restoreQueued();
             return { steered: false, error: 'Failed to steer into the active turn' };
         }
-        if (echoless) {
-            void interrupted.then((succeeded) => {
-                if (succeeded && !refused && this.turn === turn && !turn.aborted && !this.backendLost) accept();
-            });
-        }
 
         void steer.completed.then((stopReason) => {
             // Stop answers an open steer with `cancelled`; without the echo,
@@ -1495,6 +1492,21 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             void restoreQueued();
         });
         return { steered: true };
+    }
+
+    /**
+     * agy answered a request. A success also answers the steer that interrupted it, and agy 1.5.9+
+     * sends no echo to confirm that steer, so it is confirmed now (after the steers and the prompt
+     * before it); an agy that echoes is left to the echo.
+     */
+    private answerRequest(turn: AgyTurn, request: AgyRequest, succeeded: boolean): void {
+        request.answered = succeeded;
+        const steer = request.next;
+        if (!succeeded || !steer || steer.answered === false || turn.promptEcho.echo) return;
+        if (this.turn !== turn || turn.aborted || this.backendLost) return;
+        const chain: AgyRequest[] = [];
+        for (let entry: AgyRequest | null = steer; entry; entry = entry.after) chain.unshift(entry);
+        for (const entry of chain) if (entry.answered !== false) entry.confirm();
     }
 
     private handleUserEcho(text: string): void {

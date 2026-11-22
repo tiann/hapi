@@ -148,7 +148,10 @@ class FakeAgyBackend {
     beginSoftSteerPrompt(
         _sessionId: string,
         content: PromptContent[],
-        options?: { onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void }
+        options?: {
+            onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void
+            onAnswered?: (succeeded: boolean) => void
+        }
     ) {
         if (this.steerStartError) throw this.steerStartError;
         if (!this.processingMessage) throw new Error('No active ACP prompt to soft-steer into');
@@ -161,23 +164,27 @@ class FakeAgyBackend {
         let answer!: () => void;
         const answered = new Promise<void>((res) => { answer = res; });
         void completed.then(answer, answer);
-        let settleSucceeded!: (ok: boolean) => void;
-        const succeeded = new Promise<boolean>((res) => { settleSucceeded = res; });
-        void completed.then(() => settleSucceeded(true), () => settleSucceeded(false));
+        let reported = false;
+        const report = (ok: boolean) => {
+            if (reported) return;
+            reported = true;
+            options?.onAnswered?.(ok);
+        };
+        void completed.then(() => report(true), () => report(false));
         this.steerCompletions.push({
             resolve,
             reject,
             answer,
             // agy refuses at once; HAPI rejects `completed` only after draining late output.
             refuse: (error, drainMs) => {
-                settleSucceeded(false);
+                report(false);
                 setTimeout(() => reject(error), drainMs);
             },
             onUsage: options?.onUsage
         });
         const dispatched = this.steerDispatchError ? Promise.reject(this.steerDispatchError) : Promise.resolve();
         void dispatched.catch(() => {});
-        return { dispatched, answered, succeeded, completed };
+        return { dispatched, answered, completed };
     }
     abortSoftSteers(): void {
         this.abortSoftSteersCalls += 1;
@@ -1910,6 +1917,112 @@ describe('AgyAcpRemoteLauncher steer state matrix', () => {
             expect(consumedSteer(client, 'steer-2')).toBe(false);
             queue.close();
             backend.steerCompletions[2]!.resolve('end_turn');
+            await run;
+        });
+
+        it('does not confirm early a steer sent after agy answered the prompt, while its output drains', async () => {
+            const backend = new FakeAgyBackend();
+            backend.postResponseDrainMs = 300;
+            const { session, queue, client } = makeSession();
+            backend.promptScripts.push(async (onUpdate) => {
+                onUpdate({ type: 'tool_call', id: 't1', name: 'run_command', input: {}, status: 'in_progress' });
+            });
+            queue.push('run the tests', REVIEW, 'first');
+            const { run } = launch(session, [backend]);
+            await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            queue.push('also lint', REVIEW, 'steer-1');
+            expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' })).toEqual({ steered: true });
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(consumedSteer(client, 'steer-1')).toBe(false);
+
+            // agy refuses the steer after all: it goes back to the queue instead of showing as delivered.
+            backend.steerCompletions[0]!.refuse(Object.assign(new Error("Can't add this prompt to session"), { code: -32603 }), 0);
+            await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-1'], 'queued'));
+            expect(consumedSteer(client, 'steer-1')).toBe(false);
+            queue.close();
+            await run;
+        });
+
+        it('confirms a steer at the prompt answer after two overlapping steers were refused', async () => {
+            const backend = new FakeAgyBackend();
+            const { queue, client, run, release } = await heldTurn(backend);
+            for (const id of ['steer-1', 'steer-2', 'steer-3']) queue.push(`text ${id}`, REVIEW, id);
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' });
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-2' });
+            const refusal = () => Object.assign(new Error("Can't add this prompt to session"), { code: -32603 });
+            backend.steerCompletions[0]!.refuse(refusal(), 50);
+            backend.steerCompletions[1]!.refuse(refusal(), 50);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+
+            // The prompt is still the request agy holds open: the third steer interrupts it.
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-3' });
+            release();
+            await vi.waitFor(() => expect(consumedSteer(client, 'steer-3')).toBe(true));
+            expect(consumedSteer(client, 'steer-1')).toBe(false);
+            expect(consumedSteer(client, 'steer-2')).toBe(false);
+            queue.close();
+            backend.steerCompletions[2]!.resolve('end_turn');
+            await run;
+        });
+
+        it('acknowledges the prompt before it confirms the steer that interrupted it', async () => {
+            const backend = new FakeAgyBackend();
+            const { session, queue, client } = makeSession();
+            let release!: () => void;
+            backend.promptScripts.push(async () => {
+                await new Promise<void>((resolve) => { release = resolve; });
+            });
+            queue.push('run the tests', REVIEW, 'first');
+            const { run } = launch(session, [backend]);
+            await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+            queue.push('also lint', REVIEW, 'steer-1');
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' });
+
+            release();
+            await vi.waitFor(() => expect(consumedSteer(client, 'steer-1')).toBe(true));
+            const consumed = client.emitMessagesConsumed.mock.calls.map(([ids]) => (ids as string[])[0]);
+            expect(consumed.indexOf('first')).toBeGreaterThanOrEqual(0);
+            expect(consumed.indexOf('first')).toBeLessThan(consumed.indexOf('steer-1'));
+            queue.close();
+            backend.steerCompletions[0]!.resolve('end_turn');
+            await run;
+        });
+
+        it('leaves the echo in charge when the prompt echo arrives after the steer was sent', async () => {
+            const backend = new FakeAgyBackend();
+            const { queue, client, run, release } = await heldTurn(backend);
+            queue.push('also lint', REVIEW, 'steer-1');
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' });
+            backend.echo!('run the tests');
+
+            release();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            expect(consumedSteer(client, 'steer-1')).toBe(false);
+            backend.onCancel = () => backend.steerCompletions[0]!.resolve('cancelled');
+            await rpc(client, RPC_METHODS.Abort)();
+            await vi.waitFor(() => expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']));
+            expect(consumedSteer(client, 'steer-1')).toBe(false);
+            queue.close();
+            await run;
+        });
+
+        it('confirms earlier steers before a later one when agy answers them out of order', async () => {
+            const backend = new FakeAgyBackend();
+            const { queue, client, run, release } = await heldTurn(backend);
+            queue.push('also lint', REVIEW, 'steer-1');
+            queue.push('and format', REVIEW, 'steer-2');
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' });
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-2' });
+
+            // agy answers the first steer's request (which the second steer interrupted) before the prompt's.
+            backend.steerCompletions[0]!.resolve('end_turn');
+            await vi.waitFor(() => expect(consumedSteer(client, 'steer-2')).toBe(true));
+            const consumed = client.emitMessagesConsumed.mock.calls.map(([ids]) => (ids as string[])[0]);
+            expect(consumed.slice(-3)).toEqual(['first', 'steer-1', 'steer-2']);
+            release();
+            queue.close();
+            backend.steerCompletions[1]!.resolve('end_turn');
             await run;
         });
 

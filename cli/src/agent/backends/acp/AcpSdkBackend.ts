@@ -1018,12 +1018,12 @@ export class AcpSdkBackend implements AgentBackend {
         // Agents that answer each request with its own share (Antigravity)
         // need every response's usage to total the turn.
         onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void;
+        /** Called the moment the agent answers the request, before late output is drained. */
+        onAnswered?: (succeeded: boolean) => void;
     }): {
         dispatched: Promise<void>;
         /** Settles when the agent answers, before late output is drained. */
         answered: Promise<void>;
-        /** Like `answered`, but true only when the answer is a success, not an error. */
-        succeeded: Promise<boolean>;
         /** Resolves with the ACP stopReason (`cancelled` after session/cancel). */
         completed: Promise<string | null>;
     } {
@@ -1040,6 +1040,7 @@ export class AcpSdkBackend implements AgentBackend {
             sessionId,
             prompt: content
         }, { timeoutMs: Infinity, dispatchTimeoutMs: 20_000 });
+        void request.completed.then(() => options?.onAnswered?.(true), () => options?.onAnswered?.(false));
         const completed = (async () => {
             try {
                 const response = await request.completed;
@@ -1078,8 +1079,7 @@ export class AcpSdkBackend implements AgentBackend {
         });
 
         const answered = request.completed.then(() => {}, () => {});
-        const succeeded = request.completed.then(() => true, () => false);
-        return { dispatched: request.dispatched, answered, succeeded, completed };
+        return { dispatched: request.dispatched, answered, completed };
     }
 
     async respondToPermission(
