@@ -61,7 +61,7 @@ describe('PiPromptQueue.hasLocalId', () => {
     it('reports whether the FIFO still holds an entry', () => {
         const q = new PiPromptQueue()
         expect(q.hasLocalId('l1')).toBe(false)
-        q.enqueue({ kind: 'prompt', message: 'hi', images: [], outboundSequence: 1, localId: 'l1' })
+        q.enqueue({ message: 'hi', images: [], outboundSequence: 1, localId: 'l1' })
         expect(q.hasLocalId('l1')).toBe(true)
         expect(q.hasLocalId('l2')).toBe(false)
         expect(q.dequeue()).toBeDefined()
