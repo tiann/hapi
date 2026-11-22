@@ -165,7 +165,7 @@ function parseJsonlChunk(raw: string, out: AgyTranscriptStep[]): void {
  * Unchanged files cost a single `statSync` (0 bytes read); appended turns read
  * and parse only the newly written tail bytes.
  */
-function readCompleteJsonlSteps(filePath: string): AgyTranscriptStep[] {
+function readCompleteJsonlSteps(filePath: string, mode: 'incremental' | 'fresh' = 'incremental'): AgyTranscriptStep[] {
     let stat: ReturnType<typeof statSync>;
     try {
         stat = statSync(filePath);
@@ -178,7 +178,7 @@ function readCompleteJsonlSteps(filePath: string): AgyTranscriptStep[] {
         return [];
     }
 
-    const cached = jsonlFileCache.get(filePath);
+    const cached = mode === 'fresh' ? undefined : jsonlFileCache.get(filePath);
     if (cached && cached.ino === stat.ino && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
         return cached.steps;
     }
@@ -216,6 +216,8 @@ function readCompleteJsonlSteps(filePath: string): AgyTranscriptStep[] {
                 }
             }
         }
+
+        if (mode === 'fresh') return steps;
 
         let head = canAppend && cached ? cached.head : Buffer.alloc(0);
         if (head.length === 0 && parsedOffset > 0) {
@@ -262,11 +264,12 @@ export function readLatestAgyTranscriptStepIndex(brainDir: string, sessionId: st
 export function readAgyTranscriptStepsAfter(
     brainDir: string,
     sessionId: string,
-    afterStepIndex: number
+    afterStepIndex: number,
+    mode: 'incremental' | 'fresh' = 'incremental'
 ): AgyTranscriptStep[] {
     const paths = agyTranscriptPaths(brainDir, sessionId);
     if (!paths) return [];
-    const compactSteps = readCompleteJsonlSteps(paths.compactPath)
+    const compactSteps = readCompleteJsonlSteps(paths.compactPath, mode)
         .filter((step) => step.step_index > afterStepIndex);
     if (compactSteps.length === 0) return [];
 
@@ -275,7 +278,7 @@ export function readAgyTranscriptStepsAfter(
     );
     if (!needsFull) return compactSteps;
 
-    const fullSteps = readCompleteJsonlSteps(paths.fullPath);
+    const fullSteps = readCompleteJsonlSteps(paths.fullPath, mode);
     if (fullSteps.length === 0) return compactSteps;
     const fullByIndex = new Map<number, AgyTranscriptStep>();
     for (const step of fullSteps) {

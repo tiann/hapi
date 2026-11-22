@@ -173,7 +173,7 @@ const results: Record<string, unknown> = {}
                 step_index: 2,
                 source: 'MODEL',
                 type: 'GENERIC',
-                status: 'RUNNING',
+                status: 'DONE',
                 created_at: '2026-11-22T09:10:02Z',
                 content: 'Created At: 2026-11-22T09:10:02Z\\nCommand running in background.\\nTool is running as a background task with task id: conv-main/task-1'
             }
@@ -380,6 +380,18 @@ const results: Record<string, unknown> = {}
         )
         const afterFull = (await listLocalAgySessionsWithMessagesByIds(new Set(['conv-trunc-prefix']), { appDataDir: root }))[0]!
 
+        // Rewrite equal-length content past the cached file header, on the same inode.
+        const rewrite = (text: string) => writeTranscript(root, 'conv-rewrite', [
+            { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'p'.repeat(180) },
+            { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', content: text }
+        ])
+        rewrite('alpha')
+        const selected = new Set(['conv-rewrite'])
+        await listLocalAgySessionsWithMessagesByIds(selected, { appDataDir: root })
+        rewrite('bravo')
+        const reread = await listLocalAgySessionsWithMessagesByIds(selected, { appDataDir: root })
+        results.rewritten = reread[0]?.messages.at(-1)?.content.content.data?.message
+
         writeTranscript(root, 'conv-trunc-head', [
             {
                 step_index: 0,
@@ -439,8 +451,9 @@ function runBunSuite() {
             beforeActions: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
             afterFirstAction: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
         }
+        rewritten: string
         truncated: {
-            beforeFull: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
+            beforeFull: { importError?: string; messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
             afterFull: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
             headError: string | null
             emptyError: string | null
@@ -531,6 +544,8 @@ describe('agySessions', () => {
         })
 
         const { beforeFull, afterFull, headError, emptyError } = output.truncated
+        expect(output.rewritten).toBe('bravo')
+        expect(beforeFull.importError).toContain('still flushing')
         expect(beforeFull.messages).toHaveLength(2)
         expect(afterFull.messages).toHaveLength(3)
         expect(afterFull.messages.slice(0, 2)).toEqual(beforeFull.messages)

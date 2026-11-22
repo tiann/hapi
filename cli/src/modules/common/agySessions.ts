@@ -241,8 +241,9 @@ function buildActionStepToolResult(
     openBackgroundCommands: AgyOpenBackgroundCommand[]
 ): AgentMessage {
     const raw = stripAgyStepTimestamps(step.content ?? '')
-    if (pending.nativeName === 'run_command' && step.status === 'RUNNING') {
-        const backgroundTaskId = extractAgyBackgroundTaskId(step.content)
+    const backgroundTaskId = pending.nativeName === 'run_command' ? extractAgyBackgroundTaskId(raw) : undefined
+    if (pending.nativeName === 'run_command' && (step.status === 'RUNNING'
+        || (step.status === 'DONE' && backgroundTaskId && !raw.startsWith('Command exited with code ')))) {
         if (!backgroundTaskId || !openBackgroundCommands.some((entry) => entry.taskId === backgroundTaskId)) {
             openBackgroundCommands.push({
                 callId: pending.callId,
@@ -602,14 +603,15 @@ export async function listLocalAgySessionsWithMessagesByIds(
 
         const row = rowsById.get(sessionId)
         const modifiedAt = parseAgyTimestampMs(row?.last_modified_time) ?? stats.mtimeMs
-        const allSteps = readAgyTranscriptStepsAfter(brainDir, sessionId, -1)
+        const allSteps = readAgyTranscriptStepsAfter(brainDir, sessionId, -1, 'fresh')
         const { steps, hadMissingFullRows } = selectStableCompleteAgySteps(allSteps)
         const converted = convertAgyTranscriptStepsToMessages(sessionId, steps, modifiedAt)
-        const importError = converted.messages.length === 0
-            ? (hadMissingFullRows || allSteps.length === 0
-                ? 'Antigravity full transcript is still flushing; please retry import shortly'
-                : 'Antigravity session transcript contains no importable messages')
-            : undefined
+        let importError: string | undefined
+        if (hadMissingFullRows || allSteps.length === 0) {
+            importError = 'Antigravity full transcript is still flushing; please retry import shortly'
+        } else if (converted.messages.length === 0) {
+            importError = 'Antigravity session transcript contains no importable messages'
+        }
         const lastUserMessage = converted.lastUserMessage ?? formatSummaryPreview(row?.preview)
         const nativeCwd = parseAgyWorkspaceCwd(row?.workspace_uris)
 
