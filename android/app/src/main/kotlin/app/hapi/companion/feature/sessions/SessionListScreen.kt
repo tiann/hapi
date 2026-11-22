@@ -373,7 +373,6 @@ private fun SessionRows(
             item(key = key, contentType = "project") {
                 val first = members.first()
                 val title = folderLabels[machine]?.get(path) ?: stringResource(R.string.sessions_other_project)
-                val label = first.machine?.let { "$title · ${machineFilterLabel(it)}" } ?: title
                 val status = stringResource(if (expanded) R.string.sessions_folder_expanded else R.string.sessions_folder_collapsed)
                 Row(
                     Modifier.fillMaxWidth().clickable(role = androidx.compose.ui.semantics.Role.Button) {
@@ -384,8 +383,13 @@ private fun SessionRows(
                     Icon(painterResource(if (expanded) R.drawable.ic_sym_expand_more else R.drawable.ic_sym_chevron_right),
                         contentDescription = null, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Column(Modifier.weight(1f)) {
+                        Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        first.machine?.let { machine ->
+                            Text(machineFilterLabel(machine), style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
                     Text(members.size.toString(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }

@@ -135,6 +135,7 @@ class HomeScreenTest {
             when (row.id) {
                 "build" -> row.copy(metadata = row.metadata!!.copy(path = "$prefix/team-a/src/app"))
                 "fix" -> row.copy(metadata = row.metadata!!.copy(path = "$prefix/team-b/src/app"))
+                "research" -> row.copy(metadata = row.metadata!!.copy(path = "$prefix/team-a/src/app"))
                 else -> row
             }
         }
