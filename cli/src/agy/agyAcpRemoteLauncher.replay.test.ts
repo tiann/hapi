@@ -41,6 +41,9 @@ class ReplayTransport {
     private readonly steerReceived = new Promise<void>((resolve) => { this.steerArrived = resolve; });
     readonly methods: string[] = [];
 
+    /** `echo: false` plays agy 1.5.9+, which sends no `user_message_chunk`. */
+    constructor(private readonly echo = true) {}
+
     onNotification(handler: (method: string, params: unknown) => void): void {
         this.notify = handler;
     }
@@ -60,6 +63,8 @@ class ReplayTransport {
         for (const frame of updates) {
             await sleep(frame.t - at);
             at = frame.t;
+            const update = (frame.message.params as { update?: { sessionUpdate?: string } }).update;
+            if (!this.echo && update?.sessionUpdate === 'user_message_chunk') continue;
             this.notify('session/update', frame.message.params);
         }
         return at;
@@ -202,5 +207,53 @@ describe('AgyAcpRemoteLauncher replaying a recorded agy 1.5.2 steered turn', () 
         expect(summary.generation_output_tokens).toBe(44 + 14);
         expect(transport.methods.filter((method) => method === 'session/prompt')).toHaveLength(2);
         expect(transport.methods).not.toContain('session/cancel');
+    }, 20_000);
+
+    it('places the steer before the answer when agy sends no echo (agy 1.5.9+)', async () => {
+        const transport = new ReplayTransport(false);
+        vi.spyOn(AcpStdioTransport, 'create').mockResolvedValue(transport as unknown as AcpStdioTransport);
+        const queue = new MessageQueue2<AgyMode>((mode) => hashObject(mode));
+        const client = makeClient();
+        const session = new AgySession({
+            api: {} as never,
+            client: client as unknown as ApiSessionClient,
+            path: '/tmp/agy-project',
+            logPath: '/tmp/agy.log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            permissionMode: 'always-proceed'
+        });
+        const mode: AgyMode = { permissionMode: 'always-proceed' };
+        queue.push(mainPrompt, mode, 'first');
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => new AcpSdkBackend({ command: 'agy', args: ['acp'], flavor: 'agy' })
+        });
+        const run = launcher.launch();
+
+        await vi.waitFor(() => expect(client.sendAgentMessage).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'tool-call', callId: expect.stringMatching(/^call_1#/) })
+        ), { timeout: 5000 });
+        queue.push(steerText, mode, 'steer-1');
+        const steer = client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!;
+        expect(await steer({ localId: 'steer-1' })).toEqual({ steered: true });
+
+        // agy answers the interrupted request at once: that is when the steer is taken.
+        await vi.waitFor(() => expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-1'], { steered: true }));
+        expect(client.sendSessionEvent).not.toHaveBeenCalledWith({ type: 'ready' });
+        await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }), { timeout: 10_000 });
+        queue.close();
+        await run;
+
+        const order = (fn: { mock: { invocationCallOrder: number[] } }, index: number) => fn.mock.invocationCallOrder[index]!;
+        const sent = client.sendAgentMessage.mock.calls.map(([message]) => message as { type: string; message?: string });
+        const answerIndex = sent.findIndex((message) => message.type === 'message' && message.message?.includes('BANANA'));
+        const steerConsumed = client.emitMessagesConsumed.mock.calls.findIndex(([ids, opts]) =>
+            (ids as string[])[0] === 'steer-1' && (opts as { steered?: boolean } | undefined)?.steered === true);
+        expect(answerIndex).toBeGreaterThanOrEqual(0);
+        expect(order(client.emitMessagesConsumed, steerConsumed)).toBeLessThan(order(client.sendAgentMessage, answerIndex));
+        expect(client.emitMessagesConsumed.mock.calls.filter(([ids]) => (ids as string[])[0] === 'steer-1')).toHaveLength(1);
     }, 20_000);
 });

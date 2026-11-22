@@ -227,6 +227,8 @@ type AgyTurn = {
     mainAnswered: Promise<void>;
     answerMain: () => void;
     steerAnswers: Promise<void>[];
+    // The answer to the request agy holds open: the prompt, then the latest steer.
+    openRequest: Promise<void>;
     // agy echoes the prompt first, and that echo may contain a steer's text.
     promptEcho: { text: string; echo: string; done: boolean };
     unechoedSteers: Array<{ text: string; echo: string; accept: () => void }>;
@@ -1082,6 +1084,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             mainAnswered,
             answerMain,
             steerAnswers: [],
+            openRequest: mainAnswered,
             promptEcho: { text: normalizeEcho(message), echo: '', done: false },
             unechoedSteers: [],
             answeredSteers: [],
@@ -1342,6 +1345,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             session.client.emitSteerIndeterminate([localId]);
             return { steered: false, error: 'Steer state is indeterminate' };
         }
+        // A steer interrupts the request agy holds open; agy answers that request once it takes the steer.
+        const interrupted = turn.openRequest;
+        // agy 1.5.9+ echoes nothing: output without an echo of the prompt marks it.
+        const echoless = turn.sawActivity && !turn.promptEcho.echo;
+        let steerAnswered: Promise<void> | null = null;
         let resolved = false;
         let steerCounted = false;
         let forgetEcho = () => {};
@@ -1357,6 +1365,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (resolved) return;
             resolved = true;
             forgetEcho();
+            if (turn.openRequest === steerAnswered) turn.openRequest = interrupted;
             if (steerCounted) {
                 steerCounted = false;
                 turn.steersTaken -= 1;
@@ -1415,6 +1424,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         turn.steers.push(settled);
         turn.steersTaken += 1;
         steerCounted = true;
+        steerAnswered = steer.answered;
+        turn.openRequest = steerAnswered;
         turn.steerAnswers.push(steer.answered.then(() => {
             if (this.turn === turn) {
                 turn.answeredAt = Date.now();
@@ -1446,6 +1457,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             await restoreQueued();
             return { steered: false, error: 'Failed to steer into the active turn' };
+        }
+        if (echoless) {
+            void interrupted.then(() => {
+                if (this.turn === turn && !turn.aborted && !this.backendLost) accept();
+            });
         }
 
         void steer.completed.then((stopReason) => {
