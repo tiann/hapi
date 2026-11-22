@@ -239,6 +239,7 @@ function FixtureThread() {
     return (
         <AssistantRuntimeProvider runtime={runtime}>
             <div className="flex h-screen min-h-0 flex-col">
+                <div data-testid="probe-fork-calls" style={{ display: 'none' }} />
                 <HappyThread
                     api={fakeApi}
                     session={fakeSession}
@@ -246,7 +247,13 @@ function FixtureThread() {
                     metadata={fakeMetadata as never}
                     disabled={false}
                     onRefresh={noop}
-                    onForkConversation={async (localId) => { window.__probe.forkCalls.push(localId) }}
+                    onForkConversation={async (localId) => {
+                        window.__probe.forkCalls.push(localId)
+                        // Mirror the recorded call into the DOM so the spec can
+                        // assert it without polling page state.
+                        const probe = document.querySelector('[data-testid="probe-fork-calls"]')
+                        if (probe) probe.textContent = window.__probe.forkCalls.map((id) => `${id},`).join('')
+                    }}
                     isLatestCompletedBoundary={isLatestCompletedBoundary}
                     assistantForkPoints={assistantForkPoints}
                     onViewModeChange={setViewMode}

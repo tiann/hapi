@@ -1,4 +1,5 @@
 import type { ApiClient, ApiSessionClient } from '@/lib';
+import { SESSION_KEEP_ALIVE_INTERVAL_MS } from '@/api/keepAlive';
 import type { Metadata } from '@/api/types';
 import type { PiCommandSummary, PiThinkingLevel } from './types';
 import type { PiModelSummary } from '@hapi/protocol/apiTypes';
@@ -435,7 +436,7 @@ export class PiSession {
 
     startKeepAlive(): void {
         this.pushKeepAlive();
-        this.keepAliveInterval = setInterval(() => this.pushKeepAlive(), 2000);
+        this.keepAliveInterval = setInterval(() => this.pushKeepAlive(), SESSION_KEEP_ALIVE_INTERVAL_MS);
     }
 
     stopKeepAlive(): void {

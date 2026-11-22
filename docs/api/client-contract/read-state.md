@@ -1,3 +1,7 @@
+---
+description: "How HAPI tracks and syncs per-session read state and unread counts across clients."
+---
+
 # Session read state
 
 Sources: `shared/src/sessionReadState.ts`, `shared/src/messages.ts`,

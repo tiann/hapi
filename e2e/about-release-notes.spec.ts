@@ -16,6 +16,8 @@ test('renders localized release announcements on the mobile About page', async (
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto(fixture)
 
+    await expect(page.getByText('Native apps', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeVisible()
     await expect(page.getByText("What's New")).toBeVisible()
     await expect(page.locator('details')).toHaveCount(visibleReleaseNotes.length)
     const releaseSummary = page.locator('details').first().locator('p').first()

@@ -19,6 +19,8 @@ const removedGeminiCommand: CommandDefinition = {
 const commandMap = new Map<string, () => Promise<CommandDefinition>>([
     ['agy', async () => (await import('./agy')).agyCommand],
     ['auth', async () => (await import('./auth')).authCommand],
+    ['attach', async () => (await import('./attach')).attachCommand],
+    ['detach', async () => (await import('./attach')).detachCommand],
     ['claude', async () => (await import('./claude')).claudeCommand],
     ['connect', async () => (await import('./connect')).connectCommand],
     ['codex', async () => (await import('./codex')).codexCommand],
@@ -39,6 +41,7 @@ const commandMap = new Map<string, () => Promise<CommandDefinition>>([
     ['resume', async () => (await import('./resume')).resumeCommand],
     ['runner', async () => (await import('./runner')).runnerCommand],
     ['notify', async () => (await import('./notify')).notifyCommand],
+    ['link-pr', async () => (await import('./linkPr')).linkPrCommand],
     ['ping-peer', async () => (await import('./pingPeer')).pingPeerCommand],
     ['inspect-peer', async () => (await import('./inspectPeer')).inspectPeerCommand],
     ['spawn-peer', async () => (await import('./spawnPeer')).spawnPeerCommand],

@@ -4,6 +4,7 @@ import androidx.annotation.StringRes
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.ui.graphics.vector.ImageVector
 import app.hapi.companion.R
@@ -39,8 +40,8 @@ class SettingsHubEntry(
 /**
  * Declarative category list behind the settings hub. Mirrors the web's
  * `web/src/routes/settings/categories.ts` where the branch has content:
- * general (appearance/language/about) plus the owner-only usage and storage
- * dashboards. Display/Chat/Voice/Machines join here in later slices.
+ * general (appearance/language/about), passkeys, plus the owner-only usage
+ * and storage dashboards. Display/Chat/Voice/Machines join here in later slices.
  */
 object SettingsHubCatalog {
 
@@ -50,6 +51,14 @@ object SettingsHubCatalog {
             titleRes = R.string.settings_category_general,
             descriptionRes = R.string.settings_category_general_summary,
             icon = Icons.Default.Settings,
+        ),
+        // Namespace-scoped, not owner-only: every signed-in namespace manages
+        // its own passkeys (web twin: Settings → Passkeys).
+        SettingsHubEntry(
+            route = Routes.SETTINGS_PASSKEYS,
+            titleRes = R.string.settings_passkeys,
+            descriptionRes = R.string.settings_passkeys_summary,
+            icon = Icons.Default.Lock,
         ),
         SettingsHubEntry(
             route = Routes.SETTINGS_USAGE,

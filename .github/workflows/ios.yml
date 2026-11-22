@@ -31,7 +31,7 @@ jobs:
             - name: Run HapiKit package tests
               run: swift test --package-path ios/Packages/HapiKit
 
-    app-build:
+    ios-simulator:
         runs-on: xcode-27
         timeout-minutes: 120
         steps:
@@ -61,6 +61,24 @@ jobs:
                   -only-testing:HapiTests/SessionSplitPresentationTests
                   -only-testing:HapiTests/TranscriptTypographyTests
                   -only-testing:HapiTests/TranscriptGeometryTests
+            - name: Upload regression test results
+              if: ${{ always() }}
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ios-simulator-regression-test-results
+                  path: ${{ runner.temp }}/*.xcresult
+                  if-no-files-found: ignore
+                  retention-days: 7
+            - name: Verify localization catalog was not rewritten
+              run: git diff --exit-code -- ios/Hapi/Resources/Localizable.xcstrings
+
+    mac-catalyst:
+        runs-on: xcode-27
+        timeout-minutes: 120
+        steps:
+            - uses: actions/checkout@v4
+            - name: Show toolchain versions
+              run: xcodebuild -version
             - name: Build Hapi app for Mac Catalyst
               run: xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi -destination 'platform=macOS,variant=Mac Catalyst' CODE_SIGNING_ALLOWED=NO
             # Dynamic Type overrides do not scale Mac-idiom windows, so the
@@ -97,9 +115,22 @@ jobs:
               if: ${{ always() }}
               uses: actions/upload-artifact@v4
               with:
-                  name: ios-regression-test-results
+                  name: mac-catalyst-regression-test-results
                   path: ${{ runner.temp }}/*.xcresult
                   if-no-files-found: ignore
                   retention-days: 7
             - name: Verify localization catalog was not rewritten
               run: git diff --exit-code -- ios/Hapi/Resources/Localizable.xcstrings
+
+    # Preserve the existing check name and require both platform jobs to pass.
+    app-build:
+        needs: [ios-simulator, mac-catalyst]
+        if: ${{ always() }}
+        runs-on: ubuntu-latest
+        steps:
+            - name: Require both platform jobs to succeed
+              env:
+                  PLATFORM_JOBS: ${{ toJSON(needs) }}
+              run: |
+                  jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$PLATFORM_JOBS"
+                  jq -e 'length > 0 and all(.[]; .result == "success")' <<< "$PLATFORM_JOBS" > /dev/null
