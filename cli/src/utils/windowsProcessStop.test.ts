@@ -64,6 +64,16 @@ describe('Windows asynchronous tree stop', () => {
         vi.restoreAllMocks()
     })
 
+    it('reports a binding veto immediately instead of polling a still-live sibling', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+        const reports: import('./windowsProcessStop').WindowsStopReport[] = []
+        const operation = killProcessTreeByPid(100, false, report => reports.push(report), undefined, undefined, () => false)
+        await vi.advanceTimersByTimeAsync(1)
+        expect(reports).toEqual([expect.objectContaining({ confirmed: false, phase: 'binding-veto', snapshots: 2 })])
+        expect(await operation).toBe(false)
+        expect(kills).toEqual([])
+    })
+
     it('confirms all descendants without blocking the runner with per-PID shell probes', async () => {
         await expect(killProcessTreeByPid(100, true)).resolves.toBe(true)
         expect(kills.map(k => k.pid)).toEqual([100, 200])

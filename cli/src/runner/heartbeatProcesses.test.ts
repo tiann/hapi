@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
     windows: vi.fn(() => true), alive: vi.fn((_pid: number) => true), marker: vi.fn((_pid: number) => 'generation'), snapshot: vi.fn(),
 }));
 vi.mock('@/utils/process', () => ({ isWindows: mocks.windows, isProcessAlive: mocks.alive, getProcessStartMarker: mocks.marker }));
-vi.mock('./orphanReap', () => ({ listWindowsProcessesWithCommandLineAsync: mocks.snapshot }));
+vi.mock('@/utils/windowsProcessStop', () => ({ readWindowsProcessTable: mocks.snapshot }));
 import { observeHeartbeatProcesses } from './heartbeatProcesses';
 
 describe('heartbeat process observations', () => {
@@ -13,12 +13,12 @@ describe('heartbeat process observations', () => {
         mocks.windows.mockReturnValue(true);
         mocks.alive.mockReturnValue(true);
         mocks.marker.mockReturnValue('generation');
-        mocks.snapshot.mockResolvedValue([{ pid: 42, startMarker: 'generation' }]);
+        mocks.snapshot.mockResolvedValue(new Map([[42, { marker: 'generation' }]]));
     });
     afterEach(() => vi.restoreAllMocks());
 
     it('accepts a startup webhook while a 16-session Windows heartbeat is still querying processes', async () => {
-        let completeSnapshot!: (value: { pid: number; startMarker: string }[]) => void;
+        let completeSnapshot!: (value: Map<number, { marker: string | null }>) => void;
         mocks.snapshot.mockImplementation(() => new Promise(resolve => { completeSnapshot = resolve; }));
         let scanComplete = false;
         const server = createServer((_request, response) => { response.end('started'); });
@@ -31,7 +31,7 @@ describe('heartbeat process observations', () => {
             expect(await response.text()).toBe('started');
             expect(scanComplete).toBe(false);
         } finally {
-            completeSnapshot?.([{ pid: 42, startMarker: 'generation' }]);
+            completeSnapshot?.(new Map([[42, { marker: 'generation' }]]));
             await scan;
             server.closeAllConnections();
             await new Promise<void>(resolve => server.close(() => resolve()));
@@ -39,19 +39,20 @@ describe('heartbeat process observations', () => {
     });
 
     it('uses one Windows snapshot for any number of PIDs and distinguishes absence from unknown generation', async () => {
-        mocks.snapshot.mockResolvedValue([{ pid: 42, startMarker: 'generation' }, { pid: 43, startMarker: null }]);
+        mocks.snapshot.mockResolvedValue(new Map([[42, { marker: 'generation' }], [43, { marker: null }]]));
         const states = await observeHeartbeatProcesses([42, 43, 44, 42]);
         expect(states.get(42)).toEqual({ alive: true, startMarker: 'generation' });
         expect(states.get(43)).toEqual({ alive: true, startMarker: null });
         expect(states.get(44)).toEqual({ alive: false, startMarker: null });
         expect(mocks.snapshot).toHaveBeenCalledTimes(1);
+        expect(mocks.snapshot).toHaveBeenCalledWith(10_000, [42, 43, 44]);
         expect(mocks.alive).not.toHaveBeenCalled();
         expect(mocks.marker).not.toHaveBeenCalled();
     });
 
     it('rejects a failed Windows scan without falling back to blocking per-PID probes', async () => {
-        mocks.snapshot.mockRejectedValue(new Error('CIM unavailable'));
-        await expect(observeHeartbeatProcesses([42])).rejects.toThrow('CIM unavailable');
+        mocks.snapshot.mockResolvedValue(null);
+        await expect(observeHeartbeatProcesses([42])).rejects.toThrow('Windows heartbeat process snapshot failed');
         expect(mocks.alive).not.toHaveBeenCalled();
         expect(mocks.marker).not.toHaveBeenCalled();
     });

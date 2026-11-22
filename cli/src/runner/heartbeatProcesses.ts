@@ -1,5 +1,5 @@
 import { getProcessStartMarker, isProcessAlive, isWindows } from '@/utils/process';
-import { listWindowsProcessesWithCommandLineAsync } from './orphanReap';
+import { readWindowsProcessTable } from '@/utils/windowsProcessStop';
 
 export type HeartbeatProcessState = { alive: boolean; startMarker: string | null };
 
@@ -11,10 +11,11 @@ export async function observeHeartbeatProcesses(pids: Iterable<number>): Promise
     if (isWindows()) {
         // An invalid/failed snapshot must not fall back to the synchronous
         // per-PID probes that made startup webhooks miss their deadlines.
-        const processes = new Map((await listWindowsProcessesWithCommandLineAsync()).map(proc => [proc.pid, proc]));
+        const processes = await readWindowsProcessTable(10_000, [...candidates]);
+        if (!processes) throw new Error('Windows heartbeat process snapshot failed');
         for (const pid of candidates) {
             const proc = processes.get(pid);
-            states.set(pid, { alive: Boolean(proc), startMarker: proc?.startMarker ?? null });
+            states.set(pid, { alive: Boolean(proc), startMarker: proc?.marker ?? null });
         }
         return states;
     }

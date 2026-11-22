@@ -1336,8 +1336,6 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // owner is conservative; caching a negative result could hide a new live
       // owner after PID reuse. Binding files are reread on EVERY decision.
       const possiblyLiveGenerations = new Set<string>();
-      const runtimeGenerationKey = (record: Awaited<ReturnType<typeof readRuntimes>>[number]) =>
-        JSON.stringify([record.pid, record.marker, record.serverPid, record.serverMarker]);
       const readLiveRuntimesForStop = async () => {
         try {
           const scanStarted = Date.now();
@@ -1348,8 +1346,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           // A fresh, complete process snapshot keeps archive cost independent
           // of old registry entries. Per-record tasklist/CIM calls made three
           // reads of nine retired runtimes exceed the 30s StopSession RPC.
-          // Read the registry first, then snapshot; never reuse it across scans.
-          const live = await readStopRuntimeCandidates(records, sessionId);
+          // Reread registry ownership and reuse only positive generation matches.
+          const live = await readStopRuntimeCandidates(records, sessionId, possiblyLiveGenerations);
           logger.debug('[RUNNER RUN] Runtime stop scan', { sessionId, records: records.length, live: live.length, elapsedMs: Date.now() - scanStarted });
           return live;
         } catch (error) {

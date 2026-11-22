@@ -22,6 +22,16 @@ describe('stop runtime candidates', () => {
         expect(await readStopRuntimeCandidates(records, 'claude-session')).toEqual([]);
         expect(mocks.alive).not.toHaveBeenCalled();
     });
+    it('reuses exact positive generations, but retries negative and unknown matches', async () => {
+        const knownLive = new Set<string>();
+        const owner = records[0];
+        const other = { ...owner, id: 'other', pid: 43 };
+        mocks.snapshot.mockResolvedValueOnce(new Map([[42, { marker: owner.marker }], [43, { marker: null }]]));
+        expect(await readStopRuntimeCandidates([owner, other], 'target', knownLive)).toEqual([owner, other]);
+        mocks.snapshot.mockResolvedValueOnce(new Map());
+        expect(await readStopRuntimeCandidates([owner, other], 'target', knownLive)).toEqual([owner]);
+        expect(mocks.snapshot).toHaveBeenLastCalledWith(10_000, [43]);
+    });
     it('filters proven retired generations using one complete snapshot', async () => {
         mocks.snapshot.mockResolvedValue(new Map([[42, { parentPid: 0, marker: 'replacement', name: 'codex', commandLine: 'codex' }]]));
         expect(await readStopRuntimeCandidates(records, 'claude-session')).toEqual([]);

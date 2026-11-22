@@ -354,16 +354,17 @@ async function signalAndWaitWindowsRoot(pid: number, force: boolean, deadlineMs?
   if (!signalAllowed(deadlineMs)) return;
   if (force) {
     killProcessWindows(pid, true, deadlineMs);
-    await waitForProcessToDie(pid, true, deadlineMs);
+    await waitForProcessToDie(pid, true, deadlineMs, canSignal);
     return;
   }
   const softOk = killProcessWindows(pid, false, deadlineMs);
   if (!softOk && isProcessAlive(pid) && signalAllowed(deadlineMs)) {
+    if (canSignal && !canSignal()) return;
     killProcessWindows(pid, true, deadlineMs);
-    await waitForProcessToDie(pid, true, deadlineMs);
+    await waitForProcessToDie(pid, true, deadlineMs, canSignal);
     return;
   }
-  await waitForProcessToDie(pid, false, deadlineMs);
+  await waitForProcessToDie(pid, false, deadlineMs, canSignal);
 }
 
 export async function killProcess(pid: number, force: boolean = false, deadlineMs?: number,
@@ -386,8 +387,8 @@ export async function killProcess(pid: number, force: boolean = false, deadlineM
   try {
     if (!signalAllowed(deadlineMs)) return !isProcessAlive(n);
     process.kill(n, force ? 'SIGKILL' : 'SIGTERM');
-    await waitForProcessToDie(n, force, deadlineMs);
-    return deadlineMs === undefined || !isProcessAlive(n);
+    await waitForProcessToDie(n, force, deadlineMs, canSignal);
+    return (deadlineMs === undefined && !canSignal) || !isProcessAlive(n);
   } catch {
     return false;
   }

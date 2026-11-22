@@ -92,12 +92,16 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
     // process's performance origin. Cap budgets without comparing origins.
     const remaining = () => Math.max(0, Math.min(deadline - performance.now(),
         callerDeadlineMs === undefined ? Infinity : callerDeadlineMs - monotonicTimeMs()))
-    const signal = async (pid: number, hard: boolean, tree: boolean) => {
-        if (canSignal && !canSignal(pid === rootPid ? 'root' : 'descendant')) return null
+    const signal = async (pid: number, hard: boolean, tree: boolean): Promise<'vetoed' | 'sent' | 'failed'> => {
+        if (canSignal && !canSignal(pid === rootPid ? 'root' : 'descendant')) {
+            phase = 'binding-veto'
+            return 'vetoed'
+        }
         phase = 'signal'
-        return execute('taskkill', [
+        const output = await execute('taskkill', [
             ...(hard ? ['/F'] : []), ...(tree ? ['/T'] : []), '/PID', String(pid),
         ], Math.min(5_000, remaining()))
+        return output === null ? 'failed' : 'sent'
     }
     if (!remaining()) return finish(false)
     const initial = await readWindowsProcessTable(Math.min(15_000, remaining()))
@@ -142,8 +146,9 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
     refresh(current)
     const rootMarker = members.get(rootPid)
     if (unresolved.has(rootPid) && rootMarker && current.get(rootPid)?.marker === rootMarker) {
-        const softAccepted = await signal(rootPid, force, true)
-        if (!force && softAccepted !== null) {
+        const result = await signal(rootPid, force, true)
+        if (result === 'vetoed') return finish(false)
+        if (!force && result === 'sent') {
             const graceDeadline = performance.now() + Math.min(2_000, remaining())
             while (unresolved.size && performance.now() < graceDeadline) {
                 current = await snapshot()
@@ -186,7 +191,7 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
             if (!current) return finish(false)
             refresh(current)
             if (unresolved.has(rootPid) && current.get(rootPid)?.marker === rootMarker) {
-                await signal(rootPid, true, true)
+                if (await signal(rootPid, true, true) === 'vetoed') return finish(false)
             }
         }
     }
@@ -229,7 +234,8 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
         current = await snapshot()
         if (!current) return finish(false)
         refresh(current)
-        if (unresolved.has(pid) && current.get(pid)?.marker === expected) await signal(pid, true, true)
+        if (unresolved.has(pid) && current.get(pid)?.marker === expected
+            && await signal(pid, true, true) === 'vetoed') return finish(false)
         for (const child of unresolved.keys()) {
             if (!scheduled.has(child)) { scheduled.add(child); pendingSignals.push(child) }
         }
