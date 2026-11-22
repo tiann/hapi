@@ -3,7 +3,6 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { logger } from '@/ui/logger';
 import { runLocalRemoteSession } from '@/agent/loopBase';
 import { OpencodeSession } from './session';
-import { opencodeLocalLauncher } from './opencodeLocalLauncher';
 import { opencodeRemoteLauncher } from './opencodeRemoteLauncher';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import type { OpencodeMode, PermissionMode } from './types';
@@ -82,10 +81,10 @@ export async function opencodeLoop(opts: OpencodeLoopOptions): Promise<void> {
         // PR-review round found could let a /compact queued in that window
         // run anyway once local mode bounced straight back to remote to
         // drain a non-empty queue.
-        runLocal: (instance) => opencodeLocalLauncher(instance, {
-            hookServer: opts.hookServer,
-            hookUrl: opts.hookUrl
-        }),
+        runLocal: async (instance) => {
+            const { opencodeLocalLauncher } = await import('./opencodeLocalLauncher');
+            return opencodeLocalLauncher(instance, { hookServer: opts.hookServer, hookUrl: opts.hookUrl });
+        },
         runRemote: (instance) => opencodeRemoteLauncher(instance, {
             onModelRollback: opts.onModelRollback,
             onReasoningEffortRollback: opts.onReasoningEffortRollback,

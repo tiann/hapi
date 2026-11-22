@@ -113,7 +113,7 @@ describe('registerKillSessionHandler (tiann/hapi#914)', () => {
     })
 
     it('still works with the legacy `(cleanupAndExit: () => Promise<void>)` call shape', async () => {
-        // Back-compat: runAgentSession.ts passes a bare closure as the second
+        // Back-compat: some runners (e.g. runAgy.ts) pass a bare closure as the second
         // argument instead of a lifecycle object. The handler should not crash
         // when setArchiveReason is absent.
         const registry = makeRegistry()

@@ -46,7 +46,8 @@ When an agent starts process-shaped work that will keep running after the agent 
 
 Agent contract (idle agents cannot heartbeat — bare set + nohup freezes the bar):
 
-1. **Required for process-shaped work:** Shell `hapi job run <session-id> <key> --label … --progress unknown|fraction|until … -- <cmd>` (auto-heartbeat + exit status; `--progress` required). Use `"$HAPI_SESSION_ID"` only when it matches the operator chat row (`/sessions/<id>` in the web URL).
+0. **Default is not to attach.** Only for a process that must outlive this agent *and* that the operator would reopen the chat to ask about. Never for tests, builds, installs, typechecks, or anything that finishes in this turn.
+1. **For that process-shaped work:** Shell `hapi job run <session-id> <key> --label … --progress unknown|fraction|until … -- <cmd>` (auto-heartbeat + exit status; `--progress` required). Use `"$HAPI_SESSION_ID"` only when it matches the operator chat row (`/sessions/<id>` in the web URL). Pass `--wake-on-terminal` only when the operator asked to be woken.
 2. MCP `session_job` **refuses `action=set`**. Use it only for `update` / `clear` / `list` on a job the supervisor already created.
 3. Manual CLI `set` only with a self-heartbeating wrapper (`update` ≥~10m); never MCP set + nohup.
 4. Prefer honest `--remaining`+`--total` or `--done`/`--total` for a determinate fill; omit counts if unknown — list shows a subtle indeterminate striped bar (no %). Never invent a percent.

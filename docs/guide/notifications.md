@@ -1,3 +1,7 @@
+---
+description: "Get notified when HAPI sessions need input, request permission, fail or complete, via native push, Web Push, Telegram, ServerChan or voice."
+---
+
 # Notifications
 
 Get notified when sessions need input, request permissions, fail, or complete — via native app notifications, Telegram, Server酱 (ServerChan), Web Push, or voice.

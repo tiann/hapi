@@ -29,6 +29,9 @@ const AGY_PROBE_TIMEOUT_MS = DEFAULT_PROVIDER_PROBE_TIMEOUT_MS
 const CLAUDE_PROBE_TIMEOUT_MS = DEFAULT_PROVIDER_PROBE_TIMEOUT_MS
 const CLAUDE_INIT_REQ_ID = 'hapi-claude-quota-init'
 const CLAUDE_STATUS_REQ_ID = 'hapi-claude-quota-status'
+const CLAUDE_USAGE_REQ_ID = 'hapi-claude-quota-usage'
+// Plan windows read from the CLI `get_usage` control request, in display order.
+const CLAUDE_USAGE_WINDOW_KEYS = ['five_hour', 'seven_day'] as const
 
 type RecordValue = Record<string, unknown>
 
@@ -404,6 +407,21 @@ export function recordCodexRateLimitsUpdate(params: unknown, env: NodeJS.Process
     }
 }
 
+function describeClaudeRateLimitWindow(rateLimitType: string): { window: string; label: string } {
+    const lowerType = rateLimitType.toLowerCase()
+    const window = lowerType.includes('5h') || lowerType.includes('five_hour')
+        ? '5h'
+        : lowerType.includes('7d') || lowerType.includes('seven_day') || lowerType.includes('week')
+            ? 'weekly'
+            : rateLimitType
+    const label = window === '5h'
+        ? '5h window'
+        : window === 'weekly'
+            ? 'Weekly (7d)'
+            : `Limit (${rateLimitType})`
+    return { window, label }
+}
+
 export function recordClaudeRateLimitEvent(
     info: unknown,
     env: NodeJS.ProcessEnv = process.env,
@@ -440,17 +458,7 @@ export function recordClaudeRateLimitEvent(
         ? 100
         : clampPercent(effectiveUtilization <= 1 ? effectiveUtilization * 100 : effectiveUtilization)
     const remainingPercent = clampPercent(100 - usedPercent)
-    const lowerType = rateLimitType.toLowerCase()
-    const window = lowerType.includes('5h') || lowerType.includes('five_hour')
-        ? '5h'
-        : lowerType.includes('7d') || lowerType.includes('seven_day') || lowerType.includes('week')
-            ? 'weekly'
-            : rateLimitType
-    const label = window === '5h'
-        ? '5h window'
-        : window === 'weekly'
-            ? 'Weekly (7d)'
-            : `Limit (${rateLimitType})`
+    const { window, label } = describeClaudeRateLimitWindow(rateLimitType)
 
     const bucketRecord: LiveClaudeBucketRecord = {
         id: `claude-${rateLimitType}`,
@@ -822,29 +830,64 @@ export async function probeAgyQuota(env: NodeJS.ProcessEnv = process.env): Promi
 type ClaudeControlProbeResult = {
     account: RecordValue | null
     statusRows: Map<string, string>
+    /** `rate_limits` from the `get_usage` control response; absent when the CLI did not answer it. */
+    rateLimits?: RecordValue | null
+}
+
+/**
+ * Builds buckets from the `rate_limits` object of the Claude CLI `get_usage`
+ * control response (the data behind `/usage`). Utilization is a 0-100 percent.
+ */
+export function extractClaudeUsageBuckets(rateLimits: unknown): AgentQuotaBucket[] {
+    const record = asRecord(rateLimits)
+    if (!record) return []
+    const buckets: AgentQuotaBucket[] = []
+    for (const key of CLAUDE_USAGE_WINDOW_KEYS) {
+        const entry = asRecord(record[key])
+        const utilization = asFiniteNumber(entry?.utilization)
+        if (!entry || utilization === null) continue
+        const usedPercent = clampPercent(utilization)
+        const { window, label } = describeClaudeRateLimitWindow(key)
+        buckets.push({
+            id: `claude-${key}`,
+            label,
+            group: null,
+            window,
+            usedPercent,
+            remainingPercent: clampPercent(100 - usedPercent),
+            resetsAt: normalizeResetTimestampMs(entry.resets_at)
+        })
+    }
+    return buckets
 }
 
 export function parseClaudeQuotaControlLine(
     line: string,
     target: ClaudeControlProbeResult
-): { initDone: boolean; statusDone: boolean } {
+): { initDone: boolean; statusDone: boolean; usageDone: boolean } {
+    const none = { initDone: false, statusDone: false, usageDone: false }
     const trimmed = line.trim()
-    if (!trimmed.startsWith('{')) return { initDone: false, statusDone: false }
+    if (!trimmed.startsWith('{')) return none
     let parsed: unknown
     try {
         parsed = JSON.parse(trimmed)
     } catch {
-        return { initDone: false, statusDone: false }
+        return none
     }
     const message = asRecord(parsed)
-    if (message?.type !== 'control_response') return { initDone: false, statusDone: false }
+    if (message?.type !== 'control_response') return none
     const response = asRecord(message.response)
     const reqId = asNonEmptyString(response?.request_id)
     const inner = asRecord(response?.response)
 
     if (reqId === CLAUDE_INIT_REQ_ID) {
         target.account = asRecord(inner?.account)
-        return { initDone: true, statusDone: false }
+        return { ...none, initDone: true }
+    }
+    if (reqId === CLAUDE_USAGE_REQ_ID) {
+        // Older CLIs answer with an error response; treat that as "no usage data".
+        target.rateLimits = asRecord(inner?.rate_limits)
+        return { ...none, usageDone: true }
     }
     if (reqId === CLAUDE_STATUS_REQ_ID) {
         const sections = Array.isArray(inner?.sections) ? inner.sections : []
@@ -860,9 +903,9 @@ export function parseClaudeQuotaControlLine(
                 }
             }
         }
-        return { initDone: false, statusDone: true }
+        return { ...none, statusDone: true }
     }
-    return { initDone: false, statusDone: false }
+    return none
 }
 
 function runClaudeStatusProbe(executable: string, env: NodeJS.ProcessEnv): Promise<ClaudeControlProbeResult> {
@@ -891,6 +934,7 @@ function runClaudeStatusProbe(executable: string, env: NodeJS.ProcessEnv): Promi
         }
         let initDone = false
         let statusDone = false
+        let usageDone = false
         let stdoutBuffer = ''
         let stderr = ''
         let settled = false
@@ -928,7 +972,8 @@ function runClaudeStatusProbe(executable: string, env: NodeJS.ProcessEnv): Promi
                 const step = parseClaudeQuotaControlLine(line, result)
                 if (step.initDone) initDone = true
                 if (step.statusDone) statusDone = true
-                if (initDone && statusDone) {
+                if (step.usageDone) usageDone = true
+                if (initDone && statusDone && usageDone) {
                     finish(() => resolve(result))
                     return
                 }
@@ -953,6 +998,7 @@ function runClaudeStatusProbe(executable: string, env: NodeJS.ProcessEnv): Promi
         child.stdin?.write(
             `${JSON.stringify({ type: 'control_request', request_id: CLAUDE_INIT_REQ_ID, request: { subtype: 'initialize' } })}\n`
             + `${JSON.stringify({ type: 'control_request', request_id: CLAUDE_STATUS_REQ_ID, request: { subtype: 'get_status' } })}\n`
+            + `${JSON.stringify({ type: 'control_request', request_id: CLAUDE_USAGE_REQ_ID, request: { subtype: 'get_usage', skip_behaviors: true } })}\n`
         )
     })
 }
@@ -1104,7 +1150,13 @@ export async function probeClaudeQuota(env: NodeJS.ProcessEnv = process.env): Pr
             }
         }
 
-        const buckets = getActiveClaudeBuckets(env, allowedKeys)
+        // Prefer the CLI's on-demand usage read; keep live rate_limit_event windows it did not report.
+        const usageBuckets = extractClaudeUsageBuckets(probe.rateLimits)
+        const usageBucketIds = new Set(usageBuckets.map((bucket) => bucket.id))
+        const buckets = [
+            ...usageBuckets,
+            ...getActiveClaudeBuckets(env, allowedKeys).filter((bucket) => !usageBucketIds.has(bucket.id))
+        ]
 
         const isCustomProvider = Boolean(baseUrl) || (apiProvider !== null && apiProvider !== 'firstParty') || (!loginMethod && Boolean(authTokenSource))
         const accountLabel = email ?? baseUrl ?? organization ?? authTokenSource

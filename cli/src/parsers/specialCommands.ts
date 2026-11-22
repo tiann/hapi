@@ -24,6 +24,11 @@ export interface SpecialCommandResult {
     prompt?: string;
 }
 
+export function getClaudeNativeSlashCommand(message: string): string | undefined {
+    const command = /^\s*\/([a-z0-9:_-]+)(?=\s|$)/i.exec(message)?.[1];
+    return command === 'reset' || command === 'new' ? 'clear' : command;
+}
+
 /**
  * Parse /compact command
  * Matches messages starting with "/compact " or exactly "/compact"
