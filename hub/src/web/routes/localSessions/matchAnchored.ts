@@ -35,7 +35,7 @@ type AgentItemSummary =
     | { kind: 'message'; text: string; index: number }
     | { kind: 'reasoning'; text: string; index: number }
     | { kind: 'tool-call'; name: string; callId: string; input: unknown; index: number }
-    | { kind: 'tool-result'; callId: string; isBackgroundPlaceholder: boolean; index: number }
+    | { kind: 'tool-result'; callId: string; isBackgroundPlaceholder: boolean; stdout?: string; exitCode?: number; index: number }
 
 type TurnSummary = {
     userParts: UserPromptPart[]
@@ -185,7 +185,11 @@ function extractAgentItem(content: unknown, index: number): AgentItemSummary | n
     if (data.type === 'tool-call-result') {
         const callId = typeof data.callId === 'string' ? data.callId : ''
         const isBackgroundPlaceholder = isAgyBackgroundPlaceholderOutput(data.output)
-        return { kind: 'tool-result', callId, isBackgroundPlaceholder, index }
+        const output = asObj(data.output)
+        const text = typeof data.output === 'string' ? data.output : output?.stdout ?? output?.output
+        return { kind: 'tool-result', callId, isBackgroundPlaceholder, index,
+            stdout: typeof text === 'string' ? text.replace(/\r\n/g, '\n') : undefined,
+            exitCode: typeof output?.exit_code === 'number' ? output.exit_code : undefined }
     }
     return null
 }
@@ -346,7 +350,8 @@ function rewriteToolResultCallId(
 function agentItemsCompatible(
     liveItem: AgentItemSummary,
     sourceItem: AgentItemSummary,
-    callIdMap: ReadonlyMap<string, string>
+    callIdMap: ReadonlyMap<string, string>,
+    compareResults: boolean
 ): boolean {
     if (liveItem.kind !== sourceItem.kind) return false
     if (liveItem.kind === 'message' && sourceItem.kind === 'message') {
@@ -361,6 +366,10 @@ function agentItemsCompatible(
     }
     if (liveItem.kind === 'tool-result' && sourceItem.kind === 'tool-result') {
         if (liveItem.isBackgroundPlaceholder !== sourceItem.isBackgroundPlaceholder) return false
+        if (compareResults && !liveItem.isBackgroundPlaceholder) {
+            if (liveItem.exitCode !== undefined && sourceItem.exitCode !== undefined && liveItem.exitCode !== sourceItem.exitCode) return false
+            if (liveItem.stdout !== undefined && sourceItem.stdout !== undefined && liveItem.stdout !== sourceItem.stdout) return false
+        }
         if (sourceItem.callId && liveItem.callId) {
             const expectedLiveCallId = callIdMap.get(sourceItem.callId)
             if ((expectedLiveCallId ?? sourceItem.callId) !== liveItem.callId) {
@@ -376,7 +385,8 @@ function alignTurnAgentItems(
     liveTurn: TurnSummary,
     sourceTurn: TurnSummary,
     matchedSourceIndices: Set<number>,
-    callIdMap: Map<string, string>
+    callIdMap: Map<string, string>,
+    compareResults = false
 ): boolean {
     for (const idx of sourceTurn.nonSemanticIndices) {
         matchedSourceIndices.add(idx)
@@ -396,7 +406,7 @@ function alignTurnAgentItems(
             const candidate = sourceTurn.agentItems[sourceCursor]!
             sourceCursor += 1
             if (matchedSourceIndices.has(candidate.index)) continue
-            if (agentItemsCompatible(liveItem, candidate, callIdMap)) {
+            if (agentItemsCompatible(liveItem, candidate, callIdMap, compareResults)) {
                 matchedSourceIndices.add(candidate.index)
                 if (liveItem.kind === 'tool-call' && candidate.kind === 'tool-call' && candidate.callId && liveItem.callId) {
                     callIdMap.set(candidate.callId, liveItem.callId)
@@ -517,6 +527,7 @@ function reconcileLiveTurns(
     const allIndices = sourceTurns.map((_, i) => i)
     type Choice = { source: number; indices: Set<number>; ids: Map<string, string> }
     const choices: Choice[] = []
+    let compareResults = false
     let solution: Choice[] | undefined
     // Inconsistent repeated exchanges can have exponentially many partial alignments.
     // Fail closed once the search exceeds a linear allowance for this transcript.
@@ -549,7 +560,7 @@ function reconcileLiveTurns(
                 for (let j = choices.length - 1; prior === undefined && j >= 0; j--) prior = choices[j]!.ids.get(item.callId)
                 if (prior) ids.set(item.callId, prior)
             }
-            if (alignTurnAgentItems(live, candidate, indices, ids)) yield { source: i, indices, ids }
+            if (alignTurnAgentItems(live, candidate, indices, ids, compareResults)) yield { source: i, indices, ids }
         }
     }
     // A choice is ambiguous only when two complete ordered histories fit. Use
@@ -567,7 +578,16 @@ function reconcileLiveTurns(
         if (choices.length < liveTurns.length) {
             stack.push(matches(choices.length, next.value.source))
         } else {
-            if (solution) return null
+            if (solution) {
+                if (compareResults) return null
+                // Two complete histories fit. Retry with terminal result evidence,
+                // sharing the original work limit and preserving unique legacy matches.
+                compareResults = true
+                solution = undefined
+                choices.length = 0
+                stack.splice(0, stack.length, matches(0, -1))
+                continue
+            }
             solution = [...choices]
             choices.pop()
         }

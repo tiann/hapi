@@ -261,6 +261,27 @@ describe('Antigravity live continuation', () => {
         expect(matchAnchored({ transcript: transcript(rows), storedMessages: stored, importPrefix: PREFIX, cursor: null,
             reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: rows.slice(1, 3) })
     })
+    it.each([
+        [{ stdout: 'before', exit_code: 0 }, 'ok'],
+        [{ stdout: 'after', exit_code: 1 }, 'ok'],
+        [{ stdout: 'after', exit_code: 0 }, 'transcript_diverged'],
+        [{}, 'transcript_diverged']
+    ] as const)('compares repeated command results only when they supply distinguishing evidence (%j)', (other, status) => {
+        const initial = transcriptMessage(`${PREFIX}start`, 'start')
+        const call = (callId: string) => agent({ type: 'tool-call', name: 'Bash', callId, input: { command: 'check' } })
+        const result = (callId: string, output: unknown) => agent({ type: 'tool-call-result', callId, output })
+        const final = { stdout: 'after', exit_code: 0 }
+        const native = (id: string, output: unknown) => [transcriptMessage(`${PREFIX}${id}`, 'repeat'),
+            { ...transcriptMessage(`${PREFIX}${id}-call`, ''), content: call(id) },
+            { ...transcriptMessage(`${PREFIX}${id}-result`, ''), content: result(id, output) }]
+        const earlier = native('one', other)
+        const stored = [storedMessage(initial.id, 'start'), storedMessage('sent', 'repeat'),
+            { ...storedMessage('call', ''), content: call('acp') }, { ...storedMessage('reply', ''), content: result('acp', final) }]
+        const match = matchAnchored({ storedMessages: stored, transcript: transcript([initial, ...earlier, ...native('two', final)]),
+            importPrefix: PREFIX, cursor: null, reconcileLiveContinuation: true })
+        expect(match.status).toBe(status)
+        if (match.status === 'ok') expect(match.delta).toEqual(earlier)
+    })
     it('resolves a thousand repeated exchanges in order and excludes a never-acknowledged prompt', () => {
         const initial = transcriptMessage(`${PREFIX}start`, 'start')
         const reply = agent({ type: 'message', message: 'done' })
