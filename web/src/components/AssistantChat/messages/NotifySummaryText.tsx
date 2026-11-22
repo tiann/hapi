@@ -177,7 +177,13 @@ export const NotifySummaryText: TextMessagePartComponent = (props) => {
     }
 
     const display = splitNotifySummary(text)
-    if (!display) return withSearchSourceMarker(searchSource, <MarkdownText smooth={smooth} />)
+    if (!display) {
+        // No summary to show, but a near-miss footer still has to be hidden.
+        const stripped = stripNotifySummaryFooter(text)
+        if (stripped === text) return withSearchSourceMarker(searchSource, <MarkdownText smooth={smooth} />)
+        if (!stripped) return null
+        return withSearchSourceMarker(searchSource, <MarkdownRenderer content={stripped} />)
+    }
 
     const hasDisplayableSummary = Boolean(
         display.summary.summary?.trim()

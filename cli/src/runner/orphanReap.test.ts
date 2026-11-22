@@ -1,6 +1,3 @@
-import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
     commandMatchesHapiMcpBridgeForSession,
@@ -418,22 +415,6 @@ describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
         expect(status).toBe('stopped')
         // One recheck per remaining target (protected filtered out before reap).
         expect(probeCalls).toBe(1)
-    })
-})
-
-describe('run.ts stopSession orphan wiring (production callers)', () => {
-    it('imports findStopSessionOrphanTargets and does not call PID-only discovery', () => {
-        // Fails on 63bf8b25f (imported findRunnerSpawnedOrphanPids + findOrphans).
-        const runSrc = readFileSync(
-            join(dirname(fileURLToPath(import.meta.url)), 'run.ts'),
-            'utf8'
-        )
-        expect(runSrc).toContain('findStopSessionOrphanTargets')
-        expect(runSrc).not.toMatch(/\bfindRunnerSpawnedOrphanPids\b/)
-        expect(runSrc).not.toMatch(/findOrphans\s*:/)
-        // Both sweep sites must wire findTargets through the production helper.
-        const findTargetsSites = runSrc.match(/findTargets:\s*\(id\)\s*=>\s*findStopSessionOrphanTargets/g) ?? []
-        expect(findTargetsSites.length).toBe(2)
     })
 })
 

@@ -405,6 +405,57 @@ describe('reduceChatBlocks', () => {
         })
     })
 
+    it('renders reused agent tool call ids as separate cards via per-lifetime ids, next to legacy rows', () => {
+        // Some agents reuse `question:0` every turn. The CLI now stores each
+        // call lifetime as `<agent id>#<uuid>`; a session stored before that
+        // keeps its plain `question:0` row and request.
+        const questionCall = (messageId: string, callId: string, createdAt: number): NormalizedMessage => ({
+            id: messageId, localId: null, createdAt, role: 'agent', isSidechain: false,
+            content: [{
+                type: 'tool-call', id: callId, name: 'AskUserQuestion',
+                input: { questions: [{ question: 'Pick?', options: [{ label: 'A' }, { label: 'B' }] }] },
+                description: null, uuid: `u-${messageId}`, parentUUID: null
+            }]
+        })
+        const aborted = 'question:0#3f0e8b9a-1d2c-4e5f-8a9b-0c1d2e3f4a5b'
+        const reused = 'question:0#9b1c2d3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e'
+        const messages = [
+            userMessage('u1', 'first', 1_700_000_000_000),
+            questionCall('legacy', 'question:0', 1_700_000_000_100),
+            userMessage('u2', 'second', 1_700_000_000_200),
+            questionCall('aborted', aborted, 1_700_000_000_300),
+            userMessage('u3', 'third', 1_700_000_000_400),
+            questionCall('reused', reused, 1_700_000_000_500)
+        ]
+        const agentState = {
+            requests: {
+                [reused]: { tool: 'AskUserQuestion', toolCallId: reused, arguments: {}, createdAt: 1_700_000_000_510 }
+            },
+            completedRequests: {
+                'question:0': {
+                    tool: 'AskUserQuestion', arguments: {}, status: 'approved', decision: 'approved',
+                    answers: { 0: ['A'] }, createdAt: 1_700_000_000_110, completedAt: 1_700_000_000_150
+                },
+                [aborted]: {
+                    tool: 'AskUserQuestion', toolCallId: aborted, arguments: {}, status: 'canceled', decision: 'abort',
+                    createdAt: 1_700_000_000_310, completedAt: 1_700_000_000_350
+                }
+            }
+        } as unknown as AgentState
+
+        const render = () => reduceChatBlocks(messages, agentState).blocks.flatMap((block) => (
+            block.kind === 'tool-call' ? [{ id: block.id, permission: block.tool.permission }] : []
+        ))
+        const cards = render()
+
+        expect(cards.map((card) => card.id)).toEqual(['question:0', aborted, reused])
+        expect(cards[0].permission).toMatchObject({ id: 'question:0', status: 'approved', answers: { 0: ['A'] } })
+        expect(cards[1].permission).toMatchObject({ id: aborted, status: 'canceled' })
+        expect(cards[2].permission).toMatchObject({ id: reused, status: 'pending' })
+        // A reload reduces the same stored rows and state to the same cards.
+        expect(render()).toEqual(cards)
+    })
+
     it('does not pin a resolved request as a bottom card when its message is not in the window', () => {
         // agentState keeps completedRequests after an ask is answered. With no
         // tool_use message loaded for it, the permission-only synthesis used to

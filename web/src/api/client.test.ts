@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthProxyRedirectError } from './authProxy'
-import { ApiClient, ApiError } from './client'
+import { ApiClient, ApiError, apiErrorMessage } from './client'
 
 describe('ApiClient error mapping', () => {
     let originalFetch: typeof globalThis.fetch
@@ -10,6 +10,17 @@ describe('ApiClient error mapping', () => {
         originalFetch = globalThis.fetch
         fetchMock = vi.fn()
         globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    })
+
+    it('apiErrorMessage unwraps the hub error string and falls back cleanly', () => {
+        const body = '{"success":false,"error":"No online machine available for Pi history import"}'
+        const error = new ApiError(`HTTP 503 Service Unavailable: ${body}`, 503, 'No online machine available for Pi history import', body)
+        expect(apiErrorMessage(error, 'Failed to load local sessions')).toBe('No online machine available for Pi history import')
+        // No parseable body: the raw envelope must not leak; use the fallback.
+        expect(apiErrorMessage(new ApiError('HTTP 400 Bad Request: not json', 400), 'fallback')).toBe('fallback')
+        // Plain Errors keep their message; non-Errors use the fallback.
+        expect(apiErrorMessage(new Error('boom'), 'fallback')).toBe('boom')
+        expect(apiErrorMessage(undefined, 'fallback')).toBe('fallback')
     })
 
     it('passes an optional maxBytes bound to session file reads', async () => {
@@ -231,6 +242,16 @@ describe('ApiClient error mapping', () => {
         expect(result.status).toBe('success')
     })
 
+    it('loads the batch scratchlist session status', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ sessionIds: ['session-a', 'session-c'] }), { status: 200 })
+        )
+
+        const api = new ApiClient('test-token')
+        await expect(api.getScratchlistSessionIds()).resolves.toEqual(['session-a', 'session-c'])
+        expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/scratchlist-status')
+    })
+
     it('asks the machine to re-probe agy only when the caller forces a refresh', async () => {
         fetchMock.mockImplementation(() => Promise.resolve(
             new Response(JSON.stringify({ success: true, availableModels: [] }), { status: 200 })
@@ -243,6 +264,44 @@ describe('ApiClient error mapping', () => {
         expect(fetchMock.mock.calls[0][0]).toContain('/api/machines/machine-1/agy-models')
         expect(fetchMock.mock.calls[0][0]).not.toContain('refresh')
         expect(fetchMock.mock.calls[1][0]).toContain('/api/machines/machine-1/agy-models?refresh=true')
+    })
+
+    it('sends chunked upload init, raw binary chunk, finalize, and abort requests', async () => {
+        fetchMock
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, uploadId: 'u-1', chunkSize: 4 }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, receivedBytes: 4 }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, path: '/tmp/clip.mp4' }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        await expect(api.initChunkedUpload('session /?#', {
+            filename: 'clip.mp4',
+            size: 4,
+            mimeType: 'video/mp4'
+        })).resolves.toMatchObject({ success: true, uploadId: 'u-1' })
+
+        const blob = new Blob([new Uint8Array([1, 2, 3, 4])])
+        await expect(api.uploadFileChunk('session /?#', 'u / 1', 0, blob)).resolves.toEqual({
+            success: true,
+            receivedBytes: 4
+        })
+        await expect(api.finalizeChunkedUpload('session /?#', 'u / 1')).resolves.toEqual({
+            success: true,
+            path: '/tmp/clip.mp4'
+        })
+        await expect(api.abortChunkedUpload('session /?#', 'u / 1')).resolves.toEqual({ success: true })
+
+        expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/session%20%2F%3F%23/uploads')
+        expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' })
+
+        expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/sessions/session%20%2F%3F%23/uploads/u%20%2F%201/chunk?index=0')
+        const chunkInit = fetchMock.mock.calls[1]?.[1]
+        expect(chunkInit?.method).toBe('POST')
+        expect(chunkInit?.body).toBe(blob)
+        expect((chunkInit?.headers as Headers).get('content-type')).toBe('application/octet-stream')
+
+        expect(fetchMock.mock.calls[2]?.[0]).toBe('/api/sessions/session%20%2F%3F%23/uploads/u%20%2F%201/finalize')
+        expect(fetchMock.mock.calls[3]?.[0]).toBe('/api/sessions/session%20%2F%3F%23/uploads/u%20%2F%201/abort')
     })
 
     it('lists and imports Pi sessions through the selected machine', async () => {

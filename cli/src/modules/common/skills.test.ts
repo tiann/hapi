@@ -154,6 +154,18 @@ describe('listSkills', () => {
         expect(skills.map((skill) => skill.name)).toEqual(['dsh-project', 'dsh-user', 'shared'])
     })
 
+    it('lists Antigravity (agy) user and project skills across .gemini and .agent roots', async () => {
+        const repoRoot = join(sandboxDir, 'agy-repo')
+        await mkdir(join(repoRoot, '.git'), { recursive: true })
+        await writeSkill(join(homeDir, '.gemini', 'config', 'skills', 'agy-config-skill'), 'agy-config-skill', 'AGY config skill')
+        await writeSkill(join(homeDir, '.gemini', 'antigravity-cli', 'skills', 'agy-cli-skill'), 'agy-cli-skill', 'AGY CLI skill')
+        await writeSkill(join(repoRoot, '.agent', 'skills', 'agy-project-skill'), 'agy-project-skill', 'AGY project skill')
+
+        const skills = await listSkills(repoRoot, { flavor: 'agy' })
+
+        expect(skills.map((skill) => skill.name)).toEqual(['agy-cli-skill', 'agy-config-skill', 'agy-project-skill'])
+    })
+
     it('uses a configured DSH_HOME for DSH user skills', async () => {
         const dshHome = join(sandboxDir, 'custom-dsh')
         process.env.DSH_HOME = dshHome

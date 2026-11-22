@@ -159,6 +159,21 @@ The app supports multiple hubs with one active selection. See the
   an already-paired hub can be selected directly.
 - **Simulator:** use manual entry because `DataScannerViewController` is
   unavailable. Camera pairing is optional on physical devices too.
+- **Passkeys:** Settings → Hubs → Passkeys manages this namespace's credentials.
+  Web and App credentials share RP ID `auth.hapi.run`: a credential created in
+  either client signs in to the same Hub from both. Configure the Hub's
+  `HAPI_PUBLIC_URL` as its canonical HTTPS origin. Native sign-in is one
+  system sheet; see [Address-free Passkey sign-in](#address-free-passkey-sign-in).
+  A passkey session replaces the access token in secure per-Hub storage;
+  silent re-auth exchanges `{passkeySession}` and treats its 401 as terminal.
+  Registration also validates the Hub-bound user handle before system UI.
+  Ceremonies need a signed build with Associated Domains enabled and
+  `webcredentials:auth.hapi.run`, backed by
+  `https://auth.hapi.run/.well-known/apple-app-site-association` (source:
+  `web/passkey-site/.well-known/`). No association file is needed on a user's
+  Hub domain. `PasskeysTests`, `PasskeyAuthTests`, and `PasskeyHubBindingTests`
+  cover the wire flow and isolation rules. Discoverable-handle registration tests also run on non-Apple platforms;
+  opaque-handle SHA-256 validation fails closed without CryptoKit.
 - **Hubs:** Settings → Hubs switches between paired hubs and adds another.
 - **Sign out:** Settings → Hubs → Sign Out removes that hub's credentials and
   falls back to another paired hub or pairing. A rejected access token, or a freshly
@@ -758,3 +773,33 @@ TEST_RUNNER_HAPI_HOME_CAPTURE=/tmp/hapi-home-review \
 Unread state uses the hub’s [revision read-state contract](../docs/api/client-contract/read-state.md).
 Only a foreground transcript laid out at the latest tail acknowledges content.
 Local pending reads persist before the dot clears and retry when connectivity returns.
+
+### Address-free Passkey sign-in
+
+Pairing → **Sign in with a Passkey** runs one system ceremony; there is no
+options request and no discovery/confirm step:
+
+1. The app self-issues the challenge
+   `{"v":2,"operation":"login","channel":"native","iat":<epoch ms>,"nonce":<32 random bytes, base64url>}`
+   (`PasskeyAssertionRequest.nativeLogin(now:)`, mirroring
+   `createPasskeyNativeLoginChallenge` in `shared/src/passkey.ts`) and asks for
+   a resident credential on RP `auth.hapi.run` with user verification
+   required, no allow list, and no extensions.
+2. The selected credential's v2 user handle names the Hub (HTTPS implicit).
+3. `GET /health` on that Hub, then `POST /api/passkey/login/verify {response}`.
+   The Hub accepts the self-issued challenge once, within five minutes of
+   `iat` (one minute of clock skew), and verifies the assertion itself; the
+   handle is only a locator.
+
+A handle that does not name its Hub (long addresses use an opaque, hash-bound
+handle; the handle holds 46 ASCII authority bytes plus a 16-byte account tag)
+fails with `PairingFailure.passkeyHubAddressRequired` before any request, and
+the app opens manual passkey entry. With a typed Hub URL the order is
+`/health` first (no prompt for an unreachable Hub), then the ceremony; the
+handle must belong to that Hub (`PairingFailure.passkeyWrongHub` otherwise),
+then verify. The self-issued challenge is not Hub-bound, so an assertion is
+only ever posted to the Hub its handle names; credentials with pre-v2 handles
+cannot be matched and must be re-registered. Registration still uses Hub-issued, Hub-bound v1 challenges and
+validates the handle's Hub origin (or hash) before opening system UI. No
+central server is required; the credential must be available through the
+local/synced provider.

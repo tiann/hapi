@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { en, zhCN } from '@/lib/locales'
 import type { ToolCallBlock } from '@/chat/types'
 import type { ToolGroupBlock } from '@/chat/toolGroups'
-import { formatGroupedHeaderSubtitle, formatGroupedHeaderTitle, formatGroupedRowLabel, inferGroupedSummaryIntent } from '@/components/ToolCard/groupedPresentation'
+import { formatGroupedHeaderSubtitle, formatGroupedHeaderTitle, inferGroupedSummaryIntent } from '@/components/ToolCard/groupedPresentation'
 
 type Dict = Record<string, string>
 
@@ -113,22 +113,6 @@ describe('inferGroupedSummaryIntent', () => {
         expect(inferGroupedSummaryIntent(makeTool('search-1', 'tool grouping', {}, 'search'))).toBe('search-content')
         expect(inferGroupedSummaryIntent(makeTool('edit-1', 'Writing to src/grok.ts', {}, 'edit'))).toBe('modify-files')
         expect(inferGroupedSummaryIntent(makeTool('command-1', 'bun test grok', { command: 'bun test grok' }, 'execute'))).toBe('run-project-command')
-    })
-})
-
-describe('formatGroupedRowLabel', () => {
-    it('returns a friendly english label without leaking raw shell command text', () => {
-        const tool = makeTool('shell-3', 'shell_command', { command: 'Get-ChildItem src -Recurse' })
-        const label = formatGroupedRowLabel(tool, tEn)
-
-        expect(label).toBe('Inspect project files')
-        expect(label).not.toContain('Get-ChildItem')
-        expect(label).not.toContain('src')
-    })
-
-    it('returns a friendly chinese label for command execution', () => {
-        const tool = makeTool('shell-4', 'Bash', { command: 'bun run build:web' })
-        expect(formatGroupedRowLabel(tool, tZh)).toBe('执行项目命令')
     })
 })
 

@@ -5,6 +5,7 @@ import { isObject } from '@hapi/protocol';
 import type { OpencodePermissionMode } from '@hapi/protocol/types';
 import { deriveToolInput, deriveToolName } from '@/agent/utils';
 import { logger } from '@/ui/logger';
+import { settleRequestsOfPreviousAgentProcess } from '@/modules/common/permission/settleStaleRequests';
 import {
     buildQuestionContent,
     parseQuestionSchema,
@@ -100,6 +101,7 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
         private readonly getPermissionMode: () => OpencodePermissionMode | undefined
     ) {
         super(session);
+        settleRequestsOfPreviousAgentProcess(this.backend, session);
         this.backend.onPermissionRequest((request) => this.handlePermissionRequest(request));
         this.backend.onFormElicitation?.((request) => this.handleFormElicitation(request));
     }
@@ -121,7 +123,7 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
             return Promise.resolve({ action: 'cancel' });
         }
 
-        const id = request.toolCallId ?? `opencode-question-${randomUUID()}`;
+        const id = request.requestId ?? request.toolCallId ?? `opencode-question-${randomUUID()}`;
         // A new form with the same id replaces the old one; the old one can no longer be answered.
         this.pendingQuestions.get(id)?.settle({ action: 'cancel' });
 
@@ -206,6 +208,7 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
                 ...currentState.completedRequests,
                 [request.id]: {
                     tool: toolName,
+                    toolCallId: request.toolCallId,
                     arguments: toolInput,
                     createdAt: Date.now(),
                     completedAt: Date.now(),
@@ -234,6 +237,7 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
                 ...currentState.completedRequests,
                 [request.id]: {
                     tool: toolName,
+                    toolCallId: request.toolCallId,
                     arguments: toolInput,
                     createdAt: timestamp,
                     completedAt: timestamp,
