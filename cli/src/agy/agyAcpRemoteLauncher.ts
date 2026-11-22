@@ -1656,13 +1656,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             const match = turn.unechoedSteers
                 .filter((entry) => {
                     if (!entry.text || !entry.echo.includes(entry.text)) return false;
-                    // If a text-only steer's text is a strict prefix of another
-                    // pending steer (e.g. an image steer with the same caption),
+                    // If the echoed chunk is still part of a longer pending
+                    // steer (including a partial image caption),
                     // wait until that longer steer's image token is ruled out.
                     const isPrefixOfLongerPendingSteer = turn.unechoedSteers.some(
                         (other) => other !== entry
                             && other.text.length > entry.text.length
-                            && other.text.startsWith(`${entry.text} `)
+                            && other.echo.includes(entry.text)
                             && other.text.startsWith(other.echo)
                     );
                     return !isPrefixOfLongerPendingSteer;

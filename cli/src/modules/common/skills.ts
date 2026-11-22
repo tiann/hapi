@@ -236,7 +236,7 @@ async function listTopLevelSkillDirs(skillsRoot: string, options: { includeCodex
 
 async function readSkillFile(filePath: string): Promise<{ content: string; fileSize: number } | null> {
     try {
-        const file = await open(filePath, 'r');
+        const file = await open(filePath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
         try {
             const info = await file.stat();
             if (!info.isFile()) {
@@ -756,7 +756,7 @@ const MAX_AGY_MANIFEST_TARGETS = 256;
 type AgyManifestTraversalState = {
     expansions: number;
     jsonCache: Map<string, Record<string, unknown> | null>;
-    expansionCache: Map<string, { minDepth: number; targets: AgyManifestDirTarget[] }>;
+    expansionCache: Map<string, AgyManifestDirTarget[]>;
 };
 
 function createAgyManifestTraversalState(): AgyManifestTraversalState {
@@ -828,10 +828,11 @@ async function listAgyJsonManifestEntries(
         workspaceRoot ? resolve(workspaceRoot) : '',
         canonicalBoundary ?? '',
         inheritedFilters,
+        [...ancestors].sort(),
     ]);
     const cachedExpansion = state.expansionCache.get(cacheKey);
-    if (cachedExpansion && depth >= cachedExpansion.minDepth) {
-        return cachedExpansion.targets;
+    if (cachedExpansion) {
+        return cachedExpansion;
     }
     state.expansions += 1;
 
@@ -840,7 +841,7 @@ async function listAgyJsonManifestEntries(
 
     const raw = await readCachedAgyJsonObject(visitKey, state);
     if (!raw) {
-        state.expansionCache.set(cacheKey, { minDepth: 0, targets: [] });
+        state.expansionCache.set(cacheKey, []);
         return [];
     }
 
@@ -902,7 +903,7 @@ async function listAgyJsonManifestEntries(
         }
     }
 
-    state.expansionCache.set(cacheKey, { minDepth: depth, targets: results });
+    state.expansionCache.set(cacheKey, results);
     return results;
 }
 
@@ -1192,14 +1193,15 @@ async function discoverAgySkillDirs(workingDirectory?: string): Promise<AgySkill
     }
 
     // 3. Global user standard skills + global discovered plugins (independent manifest budget).
-    const globalManifestState = createAgyManifestTraversalState();
+    const discoveredPluginState = createAgyManifestTraversalState();
     for (const userRoot of getUserSkillsRoots('agy')) {
         pushDirs(await listTopLevelSkillDirs(userRoot));
     }
-    pushDirs(await listAgySkillDirsFromPluginsRoot(join(configDir, 'plugins'), overrides, [], true, undefined, globalManifestState));
-    pushDirs(await listAgySkillDirsFromPluginsRoot(join(home, '.gemini', 'antigravity-cli', 'plugins'), overrides, [], true, undefined, globalManifestState));
+    pushDirs(await listAgySkillDirsFromPluginsRoot(join(configDir, 'plugins'), overrides, [], true, undefined, discoveredPluginState));
+    pushDirs(await listAgySkillDirsFromPluginsRoot(join(home, '.gemini', 'antigravity-cli', 'plugins'), overrides, [], true, undefined, discoveredPluginState));
 
     // 4. Global declared skills.json and plugins.json manifests.
+    const globalManifestState = createAgyManifestTraversalState();
     const globalSkillTargets = await listAgyJsonManifestEntries(join(configDir, 'skills.json'), configDir, undefined, [], new Set(), 0, undefined, undefined, globalManifestState);
     for (const target of globalSkillTargets) {
         pushDirs(await listAgyFilteredSkillDirs(target.dir, target.filters));

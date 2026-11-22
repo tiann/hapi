@@ -2786,7 +2786,7 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
             await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
 
             const steerHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!;
-            queue.push('same caption', REVIEW, 'steer-text-only');
+            queue.push('caption', REVIEW, 'steer-text-only');
             queue.push(`@${uploaded1.path}\n\nsame caption`, {
                 ...REVIEW,
                 imageAttachments: [{ path: uploaded1.path, mimeType: 'image/png', filename: 'first.png' }]
