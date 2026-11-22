@@ -562,5 +562,53 @@ export const permissionCases: FixtureCase[] = [
                 }
             }
         }
-    }
+    },
+    (() => {
+        // Some agents reuse `question:0` every turn. The CLI keys
+        // each call lifetime as `<agent id>#<uuid>`; a session stored before
+        // that keeps the plain id. No client logic depends on the format.
+        const aborted = 'question:0#3f0e8b9a-1d2c-4e5f-8a9b-0c1d2e3f4a5b'
+        const reused = 'question:0#9b1c2d3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e'
+        const input = { questions: [{ question: 'Which color?', header: 'Color', multiSelect: false, options: [
+            { label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Cool' }
+        ] }] }
+        const user = (id: string, seq: number, text: string) => wireMessage({
+            id, seq, createdAt: T0 + seq * 1_000, content: { role: 'user', content: { type: 'text', text } }
+        })
+        const call = (id: string, seq: number, callId: string) => wireMessage({
+            id, seq, createdAt: T0 + seq * 1_000, content: {
+                role: 'agent', content: { type: 'codex', data: {
+                    type: 'tool-call', name: 'AskUserQuestion', callId, input, status: 'pending', nativeTitle: 'question'
+                } }
+            }
+        })
+        const request = (callId: string, seq: number) => ({
+            tool: 'AskUserQuestion', toolCallId: callId, arguments: input, createdAt: T0 + seq * 1_000 + 100
+        })
+        return {
+            name: 'permission-acp-reused-call-id-lifetimes',
+            description: 'An ACP agent reused question:0 three times: a legacy plain-id row answered before lifetime ids existed, an aborted lifetime and a pending reused lifetime. Each renders as its own card with its own permission; the pending one stays answerable.',
+            messages: [
+                user('acp-user-1', 1, 'First question.'),
+                call('acp-legacy', 2, 'question:0'),
+                user('acp-user-2', 3, 'Second question.'),
+                call('acp-aborted', 4, aborted),
+                user('acp-user-3', 5, 'Third question.'),
+                call('acp-reused', 6, reused)
+            ],
+            agentState: {
+                requests: { [reused]: request(reused, 6) },
+                completedRequests: {
+                    'question:0': {
+                        ...request('question:0', 2), completedAt: T0 + 2_500,
+                        status: 'approved', decision: 'approved', answers: { 0: ['Red'] }
+                    },
+                    [aborted]: {
+                        ...request(aborted, 4), completedAt: T0 + 4_500,
+                        status: 'canceled', decision: 'abort', reason: 'User aborted'
+                    }
+                }
+            }
+        } satisfies FixtureCase
+    })()
 ]

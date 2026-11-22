@@ -166,10 +166,10 @@ object ScheduleSend {
         val fireTime = Instant.ofEpochMilli(scheduledAt).atZone(zone)
         val currentYear = Instant.ofEpochMilli(now()).atZone(zone).year
         // Date section + hour cycle follow web Intl output per locale:
-        // ru "25 окт., 14:30", zh "10月25日 14:30", en "Oct 25, 2:30 PM".
+        // ru "25 окт., 14:30", zh/ja "10月25日 14:30", en "Oct 25, 2:30 PM".
         val dateAndTimePattern = when (locale.language) {
             "ru" -> "d MMM, HH:mm"
-            "zh" -> "M月d日 HH:mm"
+            "zh", "ja" -> "M月d日 HH:mm"
             else -> "MMM d, h:mm a"
         }
         val pattern = if (fireTime.year == currentYear) {
@@ -177,7 +177,7 @@ object ScheduleSend {
         } else {
             when (locale.language) {
                 "ru" -> "d MMM, yyyy, HH:mm"
-                "zh" -> "yyyy年M月d日 HH:mm"
+                "zh", "ja" -> "yyyy年M月d日 HH:mm"
                 else -> "MMM d, yyyy, h:mm a"
             }
         }

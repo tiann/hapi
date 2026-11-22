@@ -5,24 +5,21 @@ import {
 } from './sessionJobInstruction'
 
 describe('sessionJobInstruction', () => {
-    it('requires job run and forbids MCP set / fake percent', () => {
-        expect(SESSION_JOB_INSTRUCTION).toContain('session_job')
-        expect(SESSION_JOB_INSTRUCTION).toContain('ping_peer')
-        expect(SESSION_JOB_INSTRUCTION).toContain('hapi job run')
-        expect(SESSION_JOB_INSTRUCTION).toContain('idle agents cannot')
-        expect(SESSION_JOB_INSTRUCTION).toMatch(/action=set \(refused\)/)
-        expect(SESSION_JOB_INSTRUCTION).toContain('Never invent a fake percent')
-        expect(SESSION_JOB_INSTRUCTION).toContain('HAPI_SESSION_ID')
-        expect(SESSION_JOB_INSTRUCTION).toMatch(/operator chat URL uuid|URL uuid explicitly/i)
-        expect(SESSION_JOB_INSTRUCTION).toMatch(/action=list on start\/resume/i)
-        expect(SESSION_JOB_INSTRUCTION).toMatch(/before done\/archive/i)
-        expect(SESSION_JOB_INSTRUCTION).toMatch(/never ask the operator/i)
-        expect(SESSION_JOB_INSTRUCTION).toContain('--progress until')
+    it('defaults to not attaching and names short work as excluded', () => {
+        expect(SESSION_JOB_INSTRUCTION).toMatch(/default is NOT/)
+        expect(SESSION_JOB_INSTRUCTION).toMatch(/within this turn/)
+        expect(SESSION_JOB_INSTRUCTION).toMatch(/If unsure, do not attach/)
+        expect(SESSION_JOB_INSTRUCTION).not.toMatch(/REQUIRED|MUST|FORBIDDEN/)
+    })
 
-        expect(SESSION_JOB_INSTRUCTION).toMatch(/--progress unknown\|fraction\|until/)
-        expect(SESSION_JOB_INSTRUCTION).toMatch(/frozen 0\/N/)
-        expect(SESSION_JOB_INSTRUCTION).toMatch(/--progress until/)
-        expect(SESSION_JOB_INSTRUCTION).toMatch(/Exit≠semantic failure|Exit!=semantic failure/)
+    it('shows the run command and keeps wake opt-in', () => {
+        expect(SESSION_JOB_INSTRUCTION).toContain('hapi job run')
+        expect(SESSION_JOB_INSTRUCTION).toContain('hapi job --help')
+        expect(SESSION_JOB_INSTRUCTION).toMatch(/--wake-on-terminal unless the operator asked/)
+    })
+
+    it('stays small', () => {
+        expect(SESSION_JOB_INSTRUCTION.length).toBeLessThan(900)
     })
 
     it('appends after an existing prompt block', () => {

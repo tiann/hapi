@@ -1,3 +1,7 @@
+---
+description: "Install HAPI, start a hub with the built-in relay, and control your first coding agent session from your phone in a few minutes."
+---
+
 # Quick Start
 
 <Steps>
@@ -32,7 +36,7 @@ To start one directly, use `hapi claude`, `hapi codex`, or another
 
 ## Open the UI
 
-- **Web / PWA (free):** open the web URL shown in the terminal, or scan the web QR code. Enter your access token if prompted.
+- **Web / PWA (free):** open the web URL shown in the terminal, or scan the web QR code. Enter your access token if prompted. After that first sign-in you can add a passkey in Settings and use it instead of the token ([Authentication](./authentication.md)).
 - **Native iOS / Android (paid):** install HAPI from the [App Store](https://apps.apple.com/app/id6805699104) or [Google Play](https://play.google.com/store/apps/details?id=run.hapi.companion), then scan the companion QR or enter the HTTPS hub URL and access token. See [Native apps](./native-apps.md) for pairing.
 
 </Steps>

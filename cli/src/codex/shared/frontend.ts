@@ -11,6 +11,10 @@ import { runSharedRuntime, type RuntimeReady } from './runtime';
 
 export async function runtimeControl(runtime: CodexRuntimeRecord, method: string, sessionId: string): Promise<unknown> {
     if (!runtimeAlive(runtime)) throw new Error('Shared runtime is not alive');
+    if (runtime.kind === 'attached') {
+        const { attachedRuntimeControl } = await import('./attachedControl');
+        return attachedRuntimeControl(runtime, method, sessionId);
+    }
     const client = new CodexAppServerClient({ endpoint: runtime.endpoint, token: runtime.token });
     client.setServerRequestHandler(() => {});
     try { await initializeSharedClient(client); return await client.request(method, { sessionId }); }
@@ -18,6 +22,7 @@ export async function runtimeControl(runtime: CodexRuntimeRecord, method: string
 }
 
 export async function attachSharedSession(runtime: CodexRuntimeRecord, sessionId: string, args: string[] = [], signal?: AbortSignal): Promise<void> {
+    if (runtime.kind === 'attached') throw new Error('This is an external bridge, not an owned terminal runtime. Use hapi attach to manage it.');
     const session = await (await ApiClient.create()).getSession(sessionId);
     if (runtime.sessions[sessionId]?.namespace !== session.namespace) throw new Error('Shared runtime namespace mismatch');
     const { threadId } = z.object({ threadId: z.string() }).parse(await runtimeControl(runtime, 'hapi/attach', sessionId));
@@ -54,6 +59,7 @@ export async function runSharedCodex(raw: SharedLaunchOptions): Promise<void> {
     if (options.existingSessionId && !options.reservedSessionId) {
         const api = await ApiClient.create();
         const session = await api.getSession(options.existingSessionId);
+        if (session.metadata?.codexRuntime?.kind === 'attached') throw new Error('Use hapi attach for this external thread; owned resume is disabled');
         const runtime = await findRuntime(session.id);
         if (runtime) {
             if (options.startedBy === 'runner') throw new Error('Shared session is already running; attach instead of spawning another execution');

@@ -35,6 +35,7 @@ vi.mock('@assistant-ui/react', async (importOriginal) => {
 
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import type { ApiClient } from '@/api/client'
+import type { OlderLoadOutcome } from '@/lib/message-window-store'
 import { queryKeys } from '@/lib/query-keys'
 import type { Session } from '@/types/api'
 
@@ -1045,5 +1046,582 @@ describe('tail following survives layout-driven movement', () => {
 
         expect(viewport.scrollTop).toBe(832)
         expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+    })
+})
+
+type SwitchThreadProps = {
+    sessionId: string
+    isSyncingTail: boolean
+    hasMoreMessages: boolean
+    rawMessagesCount: number
+    messagesVersion: number
+    historyVersion: number
+    onLoadMore: (onBeforeApply?: (historyVersion: number) => boolean) => Promise<OlderLoadOutcome>
+    onViewModeChange: (mode: 'tail' | 'history') => void
+    keyBySession?: boolean
+}
+
+function createSwitchThreadRenderer(initialProps: SwitchThreadProps) {
+    const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } }
+    })
+    const api = {
+        getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
+    } as unknown as ApiClient
+    const buildElement = (props: SwitchThreadProps) => (
+        <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+                <HappyThread
+                    key={props.keyBySession ? props.sessionId : undefined}
+                    api={api}
+                    session={{ metadata: {} } as Session}
+                    sessionId={props.sessionId}
+                    metadata={null}
+                    disabled={false}
+                    onRefresh={vi.fn()}
+                    onViewModeChange={props.onViewModeChange}
+                    isSyncingTail={props.isSyncingTail}
+                    messagesWarning={null}
+                    hasMoreMessages={props.hasMoreMessages}
+                    isLoadingMoreMessages={false}
+                    onLoadMore={props.onLoadMore}
+                    onCancelLoadMore={vi.fn()}
+                    unseenCount={0}
+                    rawMessagesCount={props.rawMessagesCount}
+                    normalizedMessagesCount={props.rawMessagesCount}
+                    messagesVersion={props.messagesVersion}
+                    historyVersion={props.historyVersion}
+                    forceScrollToken={0}
+                    outlineOpen={false}
+                    outlineItems={[]}
+                    onOutlineOpenChange={vi.fn()}
+                />
+            </I18nProvider>
+        </QueryClientProvider>
+    )
+    const result = render(buildElement(initialProps))
+    const viewport = result.container.querySelector<HTMLElement>('.chat-scroll-y')
+    const sentinel = result.container.querySelector<HTMLElement>('.chat-scroll-content > [aria-hidden="true"]')
+    if (!viewport || !sentinel) {
+        throw new Error('Chat viewport or sentinel was not rendered')
+    }
+    return {
+        ...result,
+        viewport,
+        sentinel,
+        rerenderWith: (nextProps: SwitchThreadProps) => result.rerender(buildElement(nextProps))
+    }
+}
+
+describe('session switch tail anchoring', () => {
+    it('fills an uncovered initial tail immediately and keeps tail pinned through prepend and async resize', async () => {
+        let resolveLoadMore!: (outcome: OlderLoadOutcome) => void
+        let pendingOnBeforeApply: ((historyVersion: number) => boolean) | undefined
+        const onLoadMore = vi.fn((onBeforeApply?: (historyVersion: number) => boolean) => {
+            pendingOnBeforeApply = onBeforeApply
+            return new Promise<OlderLoadOutcome>((resolve) => {
+                resolveLoadMore = resolve
+            })
+        })
+        const onViewModeChange = vi.fn()
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+
+        const props: SwitchThreadProps = {
+            sessionId: 'session-uncovered',
+            isSyncingTail: false,
+            hasMoreMessages: true,
+            rawMessagesCount: 20,
+            messagesVersion: 1,
+            historyVersion: 0,
+            onLoadMore,
+            onViewModeChange,
+            keyBySession: true
+        }
+        const { viewport, sentinel, rerenderWith, queryByRole } = createSwitchThreadRenderer(props)
+        let scrollHeight = 320
+        const clientHeight = 530
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, get: () => scrollHeight },
+            clientHeight: { configurable: true, value: clientHeight }
+        })
+        vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: clientHeight } as DOMRect)
+        vi.spyOn(sentinel, 'getBoundingClientRect').mockImplementation(() => ({
+            top: -viewport.scrollTop,
+            bottom: 1 - viewport.scrollTop
+        } as DOMRect))
+
+        // Trigger initial layout resize once viewport geometry is measured; should start
+        // older coverage immediately without waiting 1,800ms.
+        act(() => {
+            resizeCallbacks.at(-1)?.()
+        })
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+
+        await act(async () => {
+            expect(pendingOnBeforeApply?.(1)).toBe(true)
+            resolveLoadMore({ kind: 'applied', historyVersion: 1, hasMore: true, addedRenderableCount: 20 })
+            await Promise.resolve()
+        })
+
+        scrollHeight = 2_400
+        searchTargetTestState.extras = { messagesVersion: 2, historyVersion: 1 }
+        act(() => {
+            rerenderWith({ ...props, messagesVersion: 2, historyVersion: 1 })
+        })
+        expect(viewport.scrollTop).toBe(1_870)
+
+        // Subsequent async height growth in the prepended older messages (markdown/code/images)
+        // must keep the viewport pinned to the newest tail.
+        scrollHeight = 2_900
+        fireEvent.scroll(viewport)
+        act(() => {
+            resizeCallbacks.at(-1)?.()
+            vi.advanceTimersByTime(3_000)
+        })
+
+        expect(viewport.scrollTop).toBe(2_370)
+        expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+        expect(queryByRole('button', { name: /scroll to bottom/i })).toBeNull()
+    })
+
+    it('does not trigger coverage loads while pinned at bottom within the 200px preload margin', () => {
+        const onLoadMore = vi.fn().mockResolvedValue({ kind: 'stopped', reason: 'exhausted' } satisfies OlderLoadOutcome)
+        const onViewModeChange = vi.fn()
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+
+        const props: SwitchThreadProps = {
+            sessionId: 'session-filled-margin',
+            isSyncingTail: false,
+            hasMoreMessages: true,
+            rawMessagesCount: 20,
+            messagesVersion: 1,
+            historyVersion: 0,
+            onLoadMore,
+            onViewModeChange,
+            keyBySession: true
+        }
+        const { viewport, sentinel, queryByRole } = createSwitchThreadRenderer(props)
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, value: 680 },
+            clientHeight: { configurable: true, value: 530 }
+        })
+        vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: 530 } as DOMRect)
+        vi.spyOn(sentinel, 'getBoundingClientRect').mockImplementation(() => ({
+            top: -viewport.scrollTop,
+            bottom: 1 - viewport.scrollTop
+        } as DOMRect))
+
+        act(() => {
+            viewport.scrollTop = 150
+            resizeCallbacks.at(-1)?.()
+            vi.advanceTimersByTime(3_000)
+        })
+
+        expect(onLoadMore).not.toHaveBeenCalled()
+        expect(viewport.scrollTop).toBe(150)
+        expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+        expect(queryByRole('button', { name: /scroll to bottom/i })).toBeNull()
+
+        fireEvent.wheel(viewport, { deltaY: -100 })
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+    })
+
+    it('waits for assistant-ui runtime extras to catch up before arming initial tail settling', () => {
+        const onLoadMore = vi.fn().mockResolvedValue({ kind: 'stopped', reason: 'exhausted' } satisfies OlderLoadOutcome)
+        const onViewModeChange = vi.fn()
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+
+        const propsA: SwitchThreadProps = {
+            sessionId: 'session-deferred-a',
+            isSyncingTail: false,
+            hasMoreMessages: false,
+            rawMessagesCount: 5,
+            messagesVersion: 1,
+            historyVersion: 0,
+            onLoadMore,
+            onViewModeChange
+        }
+        const { viewport, rerenderWith } = createSwitchThreadRenderer(propsA)
+        let scrollHeight = 530
+        const clientHeight = 530
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, get: () => scrollHeight },
+            clientHeight: { configurable: true, value: clientHeight }
+        })
+        act(() => {
+            vi.advanceTimersByTime(2_000)
+        })
+        expect(viewport.scrollTop).toBe(0)
+
+        // Session switches and messagesVersion increments to 2, while assistant-ui
+        // still renders stale DOM (extras.messagesVersion === 1).
+        const propsB: SwitchThreadProps = {
+            ...propsA,
+            sessionId: 'session-deferred-b',
+            rawMessagesCount: 20,
+            messagesVersion: 2
+        }
+        act(() => {
+            rerenderWith(propsB)
+            vi.advanceTimersByTime(2_000)
+        })
+
+        // One passive effect later, assistant-ui applies messagesVersion 2 and
+        // mounts the taller transcript. Initial settling must now scroll to the bottom.
+        scrollHeight = 1_600
+        searchTargetTestState.extras = { messagesVersion: 2, historyVersion: 0 }
+        act(() => {
+            rerenderWith(propsB)
+        })
+        expect(viewport.scrollTop).toBe(1_070)
+
+        act(() => {
+            vi.advanceTimersByTime(2_000)
+        })
+        expect(viewport.scrollTop).toBe(1_070)
+        expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+    })
+
+    it('re-pins non-explicit scroll movement during isSyncingTail while preserving explicit upward scrolls', () => {
+        const onLoadMore = vi.fn().mockResolvedValue({ kind: 'stopped', reason: 'exhausted' } satisfies OlderLoadOutcome)
+        const onViewModeChangeA = vi.fn()
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+
+        const propsA: SwitchThreadProps = {
+            sessionId: 'session-cached-nonexplicit',
+            isSyncingTail: true,
+            hasMoreMessages: false,
+            rawMessagesCount: 20,
+            messagesVersion: 1,
+            historyVersion: 0,
+            onLoadMore,
+            onViewModeChange: onViewModeChangeA,
+            keyBySession: true
+        }
+        const first = createSwitchThreadRenderer(propsA)
+        Object.defineProperties(first.viewport, {
+            scrollHeight: { configurable: true, value: 1_232 },
+            clientHeight: { configurable: true, value: 530 }
+        })
+        first.viewport.scrollTop = 702
+        fireEvent.scroll(first.viewport)
+
+        first.viewport.scrollTop = 520
+        fireEvent.scroll(first.viewport)
+        expect(first.viewport.scrollTop).toBe(702)
+        expect(onViewModeChangeA).not.toHaveBeenCalledWith('history')
+        expect(first.queryByRole('button', { name: /scroll to bottom/i })).toBeNull()
+
+        cleanup()
+        const onViewModeChangeB = vi.fn()
+        const propsB: SwitchThreadProps = {
+            ...propsA,
+            sessionId: 'session-cached-explicit',
+            onViewModeChange: onViewModeChangeB
+        }
+        const second = createSwitchThreadRenderer(propsB)
+        Object.defineProperties(second.viewport, {
+            scrollHeight: { configurable: true, value: 1_232 },
+            clientHeight: { configurable: true, value: 530 }
+        })
+        vi.spyOn(second.viewport, 'getBoundingClientRect').mockReturnValue({
+            left: 0,
+            top: 0,
+            right: 320,
+            bottom: 530
+        } as DOMRect)
+        second.viewport.scrollTop = 702
+        fireEvent.scroll(second.viewport)
+
+        const pointerDown = new Event('pointerdown', { bubbles: true })
+        Object.defineProperty(pointerDown, 'button', { value: 0 })
+        fireEvent(second.viewport, pointerDown)
+        second.viewport.scrollTop = 450
+        fireEvent.scroll(second.viewport)
+        fireEvent.pointerUp(window)
+
+        expect(second.viewport.scrollTop).toBe(450)
+        expect(onViewModeChangeB).toHaveBeenLastCalledWith('history')
+
+        onViewModeChangeB.mockClear()
+        searchTargetTestState.extras = { messagesVersion: 2, historyVersion: 0 }
+        act(() => {
+            second.rerenderWith({
+                ...propsB,
+                isSyncingTail: false,
+                messagesVersion: 2
+            })
+            vi.advanceTimersByTime(2_000)
+        })
+
+        expect(second.viewport.scrollTop).toBe(450)
+        expect(onViewModeChangeB).not.toHaveBeenCalledWith('tail')
+    })
+
+    it('preserves the bottom edge of the first card when an older prepend merges into and grows it', async () => {
+        let resolveLoadMore!: (outcome: OlderLoadOutcome) => void
+        let pendingOnBeforeApply: ((historyVersion: number) => boolean) | undefined
+        const onLoadMore = vi.fn((onBeforeApply?: (historyVersion: number) => boolean) => {
+            pendingOnBeforeApply = onBeforeApply
+            return new Promise<OlderLoadOutcome>((resolve) => {
+                resolveLoadMore = resolve
+            })
+        })
+        const onViewModeChange = vi.fn()
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+        searchTargetTestState.renderMessages = () => (
+            <div id="hapi-message-tool-group:tg-1">merged tools</div>
+        )
+
+        const props: SwitchThreadProps = {
+            sessionId: 'session-card-growth',
+            isSyncingTail: false,
+            hasMoreMessages: true,
+            rawMessagesCount: 20,
+            messagesVersion: 1,
+            historyVersion: 0,
+            onLoadMore,
+            onViewModeChange,
+            keyBySession: true
+        }
+        const { container, viewport, sentinel, rerenderWith } = createSwitchThreadRenderer(props)
+        let scrollHeight = 2_000
+        const clientHeight = 530
+        let cardDocTop = 12
+        let cardHeight = 120
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, get: () => scrollHeight },
+            clientHeight: { configurable: true, value: clientHeight }
+        })
+        vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue({
+            left: 0,
+            top: 0,
+            right: 320,
+            bottom: clientHeight
+        } as DOMRect)
+        vi.spyOn(sentinel, 'getBoundingClientRect').mockImplementation(() => ({
+            top: -viewport.scrollTop,
+            bottom: 1 - viewport.scrollTop
+        } as DOMRect))
+        const card = container.querySelector<HTMLElement>('#hapi-message-tool-group\\:tg-1')!
+        vi.spyOn(card, 'getBoundingClientRect').mockImplementation(() => ({
+            top: cardDocTop - viewport.scrollTop,
+            bottom: cardDocTop + cardHeight - viewport.scrollTop,
+            height: cardHeight
+        } as DOMRect))
+
+        act(() => {
+            vi.advanceTimersByTime(3_000)
+        })
+        expect(viewport.scrollTop).toBe(1_470)
+
+        fireEvent.pointerDown(viewport, { button: 0, clientX: 200, clientY: 200 })
+        viewport.scrollTop = 0
+        fireEvent.scroll(viewport)
+        fireEvent.pointerUp(window)
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+
+        await act(async () => {
+            expect(pendingOnBeforeApply?.(1)).toBe(true)
+            resolveLoadMore({ kind: 'applied', historyVersion: 1, hasMore: true, addedRenderableCount: 50 })
+            await Promise.resolve()
+        })
+
+        // Prepended rows push the first card down by 900px AND merge older tools
+        // into the top of the card, growing its height from 120px to 420px.
+        scrollHeight = 3_200
+        cardDocTop = 912
+        cardHeight = 420
+        searchTargetTestState.extras = { messagesVersion: 2, historyVersion: 1 }
+        act(() => {
+            rerenderWith({ ...props, messagesVersion: 2, historyVersion: 1 })
+        })
+
+        // Bottom edge was at 132px; after prepending it must stay at 132px
+        // (scrollTop = 912 + 420 - 132 = 1200) rather than aligning the new top
+        // (scrollTop = 900) and jumping 300px upward.
+        expect(viewport.scrollTop).toBe(1_200)
+    })
+
+    it('defers automatic coverage loads until runtime extras commit initial tail messages', () => {
+        const onLoadMore = vi.fn().mockResolvedValue({ kind: 'stopped', reason: 'exhausted' } satisfies OlderLoadOutcome)
+        const onViewModeChange = vi.fn()
+        searchTargetTestState.extras = { messagesVersion: 0, historyVersion: 0 }
+
+        const initialProps: SwitchThreadProps = {
+            sessionId: 'session-pre-runtime-commit',
+            isSyncingTail: true,
+            hasMoreMessages: false,
+            rawMessagesCount: 0,
+            messagesVersion: 0,
+            historyVersion: 0,
+            onLoadMore,
+            onViewModeChange,
+            keyBySession: true
+        }
+        const { viewport, sentinel, rerenderWith } = createSwitchThreadRenderer(initialProps)
+        let scrollHeight = 600
+        const clientHeight = 600
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, get: () => scrollHeight },
+            clientHeight: { configurable: true, value: clientHeight }
+        })
+        vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: clientHeight } as DOMRect)
+        vi.spyOn(sentinel, 'getBoundingClientRect').mockImplementation(() => ({
+            top: -viewport.scrollTop,
+            bottom: 1 - viewport.scrollTop
+        } as DOMRect))
+
+        // Tail sync finishes with 20 messages (messagesVersion = 1), while
+        // assistant-ui still renders stale empty DOM (extras.messagesVersion = 0).
+        const loadedProps: SwitchThreadProps = {
+            ...initialProps,
+            isSyncingTail: false,
+            hasMoreMessages: true,
+            rawMessagesCount: 20,
+            messagesVersion: 1
+        }
+        act(() => {
+            rerenderWith(loadedProps)
+            resizeCallbacks.at(-1)?.()
+            vi.advanceTimersByTime(2_000)
+        })
+        expect(onLoadMore).not.toHaveBeenCalled()
+
+        // Once runtime extras commit the initial page (overflow = 120px < 200px),
+        // HappyThread pins to the bottom and must not trigger a coverage prepend.
+        scrollHeight = 720
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+        act(() => {
+            rerenderWith(loadedProps)
+            resizeCallbacks.at(-1)?.()
+            vi.advanceTimersByTime(3_000)
+        })
+        expect(viewport.scrollTop).toBe(120)
+        expect(onLoadMore).not.toHaveBeenCalled()
+    })
+
+    it('preserves tail following after an upward wheel on a short exhausted conversation when streaming grows content', () => {
+        const onLoadMore = vi.fn().mockResolvedValue({ kind: 'stopped', reason: 'exhausted' } satisfies OlderLoadOutcome)
+        const onViewModeChange = vi.fn()
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+
+        const initialProps: SwitchThreadProps = {
+            sessionId: 'session-short-exhausted-wheel',
+            isSyncingTail: false,
+            hasMoreMessages: false,
+            rawMessagesCount: 2,
+            messagesVersion: 1,
+            historyVersion: 0,
+            onLoadMore,
+            onViewModeChange,
+            keyBySession: true
+        }
+        const { viewport, sentinel, rerenderWith, queryByRole } = createSwitchThreadRenderer(initialProps)
+        let scrollHeight = 300
+        const clientHeight = 530
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, get: () => scrollHeight },
+            clientHeight: { configurable: true, value: clientHeight }
+        })
+        vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: clientHeight } as DOMRect)
+        vi.spyOn(sentinel, 'getBoundingClientRect').mockImplementation(() => ({
+            top: -viewport.scrollTop,
+            bottom: 1 - viewport.scrollTop
+        } as DOMRect))
+
+        act(() => {
+            vi.advanceTimersByTime(2_000)
+        })
+
+        // Upward wheel on a short, exhausted conversation cannot scroll or load
+        // older history; it must not silently break tail-following.
+        fireEvent.wheel(viewport, { deltaY: -120 })
+        expect(onLoadMore).not.toHaveBeenCalled()
+        expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+
+        // Subsequent streaming output grows beyond the viewport; HappyThread must
+        // stay pinned to the bottom without rendering a jump-to-bottom button.
+        scrollHeight = 1_200
+        searchTargetTestState.extras = { messagesVersion: 2, historyVersion: 0 }
+        act(() => {
+            rerenderWith({
+                ...initialProps,
+                messagesVersion: 2
+            })
+            resizeCallbacks.at(-1)?.()
+        })
+
+        expect(viewport.scrollTop).toBe(670)
+        expect(queryByRole('button', { name: /scroll to bottom/i })).toBeNull()
+    })
+})
+
+describe('cached re-entry tail-sync indicator', () => {
+    function renderCatchUpThread(options: { isCatchingUpFromCache: boolean; rawMessagesCount: number }) {
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        return render(
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <HappyThread
+                        api={{ getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false }) } as unknown as ApiClient}
+                        session={{ metadata: {} } as Session}
+                        sessionId="catch-up-session"
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={vi.fn()}
+                        onViewModeChange={vi.fn()}
+                        isSyncingTail={options.isCatchingUpFromCache}
+                        isCatchingUpFromCache={options.isCatchingUpFromCache}
+                        messagesWarning={null}
+                        hasMoreMessages={false}
+                        isLoadingMoreMessages={false}
+                        onLoadMore={vi.fn().mockResolvedValue({ status: 'exhausted' })}
+                        onCancelLoadMore={vi.fn()}
+                        unseenCount={0}
+                        rawMessagesCount={options.rawMessagesCount}
+                        normalizedMessagesCount={options.rawMessagesCount}
+                        messagesVersion={1}
+                        historyVersion={0}
+                        forceScrollToken={0}
+                        outlineOpen={false}
+                        outlineItems={[]}
+                        onOutlineOpenChange={vi.fn()}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+    }
+
+    const queryIndicator = (container: HTMLElement) =>
+        container.querySelector<HTMLElement>('[data-testid="tail-sync-status"]')
+
+    it('shows the fetching-latest pill over stale cached rows during re-entry', () => {
+        const { container } = renderCatchUpThread({ isCatchingUpFromCache: true, rawMessagesCount: 3 })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        const pill = queryIndicator(container)
+        expect(pill).not.toBeNull()
+        expect(pill?.getAttribute('role')).toBe('status')
+        expect((pill?.textContent ?? '').trim().length).toBeGreaterThan(0)
+    })
+
+    it('hides the pill once the catch-up fetch settles', () => {
+        const { container } = renderCatchUpThread({ isCatchingUpFromCache: false, rawMessagesCount: 3 })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        expect(queryIndicator(container)).toBeNull()
+    })
+
+    it('never shows the pill for an empty window (the skeleton covers it)', () => {
+        const { container } = renderCatchUpThread({ isCatchingUpFromCache: true, rawMessagesCount: 0 })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        expect(queryIndicator(container)).toBeNull()
     })
 })

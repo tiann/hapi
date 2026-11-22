@@ -1,4 +1,5 @@
 import { ApiClient, ApiSessionClient } from '@/lib';
+import { SESSION_KEEP_ALIVE_INTERVAL_MS } from '@/api/keepAlive';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type {
     Metadata,
@@ -81,7 +82,7 @@ export class AgentSessionBase<Mode> {
         this.client.keepAlive(this.thinking, this.mode, this.getKeepAliveRuntime());
         this.keepAliveInterval = setInterval(() => {
             this.client.keepAlive(this.thinking, this.mode, this.getKeepAliveRuntime());
-        }, 2000);
+        }, SESSION_KEEP_ALIVE_INTERVAL_MS);
 
     }
 
