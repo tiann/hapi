@@ -5264,6 +5264,163 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await h.finish();
         });
 
+        it('never turns a stopped command into a background task, whichever phase the Stop landed in', async () => {
+            const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+            const abort = (h: ReturnType<typeof startLive>) => h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            const promptCount = (h: ReturnType<typeof startLive>) => h.requests.filter((r) => r === 'session/prompt').length;
+            const mode = { permissionMode: 'always-proceed' as const, model: 'gemini-3.8-flash-high' };
+            type Phase = { name: string; run: (acp: string, id: string) => Promise<ReturnType<typeof startLive>> };
+            const phases: Phase[] = [
+                {
+                    name: 'idle wakeup',
+                    run: async (acp, id) => {
+                        const h = startLive(acp, () => { turnRows(acp); });
+                        h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+                        await h.ready();
+                        h.client.sendSessionEvent.mockClear();
+                        h.notify(bgCall(id, 'sleep 9'));
+                        h.append(bgRows(2, 'sleep 9', `${acp}/task-7`, false));
+                        await sleep(60);
+                        await abort(h);
+                        return h;
+                    }
+                },
+                {
+                    name: 'prompt configuration',
+                    run: async (acp, id) => {
+                        let release = () => {};
+                        const gate = new Promise<void>((resolve) => { release = resolve; });
+                        const h = startLive(acp, () => { turnRows(acp); }, {}, null, (m) => (m === 'session/set_model' ? gate : undefined));
+                        h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+                        await h.ready();
+                        h.client.sendSessionEvent.mockClear();
+                        h.notify(bgCall(id, 'sleep 9'));
+                        h.queue.push('next', mode, 'm2');
+                        await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
+                        await abort(h);
+                        release();
+                        return h;
+                    }
+                },
+                {
+                    name: 'pre-prompt quiet wait',
+                    run: async (acp, id) => {
+                        const h = startLive(acp, () => { turnRows(acp); }, {}, null, (m) => {
+                            if (m !== 'session/set_model') return;
+                            h.notify({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '' } });
+                            setTimeout(() => { void abort(h); }, 6);
+                        });
+                        h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+                        await h.ready();
+                        h.client.sendSessionEvent.mockClear();
+                        h.notify(bgCall(id, 'sleep 9'));
+                        h.queue.push('next', mode, 'm2');
+                        return h;
+                    }
+                },
+                {
+                    name: 'normal prompt turn after the handler swap',
+                    run: async (acp, id) => {
+                        let release = () => {};
+                        const gate = new Promise<void>((resolve) => { release = resolve; });
+                        const h = startLive(acp, async (n, notify) => {
+                            if (n === 1) { turnRows(acp); return; }
+                            notify(bgCall(id, 'sleep 9'));
+                            await gate;
+                            return 'cancelled';
+                        });
+                        h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+                        await h.ready();
+                        h.client.sendSessionEvent.mockClear();
+                        h.queue.push('next', { permissionMode: 'always-proceed' }, 'm2');
+                        await vi.waitFor(() => expect(promptCount(h)).toBe(2));
+                        await abort(h);
+                        release();
+                        return h;
+                    }
+                },
+                {
+                    name: 'reattached internal wakeup turn',
+                    run: async (acp, id) => {
+                        let release = () => {};
+                        const gate = new Promise<void>((resolve) => { release = resolve; });
+                        const h = startLive(acp, async (n, notify) => {
+                            if (n === 1) { turnRows(acp); return; }
+                            notify(bgCall(id, 'sleep 9'));
+                            await gate;
+                            return 'cancelled';
+                        }, { reactiveToolParkMs: 40 });
+                        h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+                        await h.ready();
+                        h.client.sendSessionEvent.mockClear();
+                        await sleep(40);
+                        // A wakeup that parks on a tool: the launcher reattaches an internal prompt.
+                        h.append([
+                            { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>timer</SYSTEM_MESSAGE>' },
+                            { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 9"' } }] }
+                        ]);
+                        await vi.waitFor(() => expect(promptCount(h)).toBe(2));
+                        await abort(h);
+                        release();
+                        return h;
+                    }
+                }
+            ];
+            for (const [i, phase] of phases.entries()) {
+                const id = `call-phase-${i}`;
+                const h = await phase.run(`conv-live-stop-phase-${i}`, id);
+                await h.ready();
+                h.client.sendSessionEvent.mockClear();
+                const before = promptCount(h);
+                // An already-seen call reports in-progress again after ready.
+                h.notify(bgCall(id, 'sleep 9'));
+                await sleep(40);
+                h.queue.push('again', { permissionMode: 'always-proceed' }, 'm9');
+                await vi.waitFor(() => expect(promptCount(h)).toBe(before + 1), { timeout: 3000 });
+                await h.ready();
+                const sent = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+                expect.soft(sent.filter((m) => m.callId?.startsWith(`${id}#`) && m.type === 'tool-call-result'), phase.name).toHaveLength(0);
+                expect.soft(h.bgEntries().filter((e) => e.callId.startsWith(`${id}#`)), phase.name).toHaveLength(0);
+                await h.finish();
+            }
+        });
+
+        it('suppresses a repeated terminal update of a task the transcript already settled', async () => {
+            const acp = 'conv-live-settled-twice';
+            turnRows(acp);
+            const h = startLive(acp, (_n, notify) => {
+                notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } });
+                h.append([
+                    { step_index: 6, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                    { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'ok' }
+                ]);
+            }, {}, acp);
+            await vi.waitFor(() => expect(h.requests).toContain('session/resume'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`));
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.synthetic)).toBe(true));
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            await new Promise((r) => setTimeout(r, 40));
+            h.append([
+                { step_index: 8, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-7" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDONE\n</SYSTEM_MESSAGE>` },
+                { step_index: 9, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'FINISHED:DONE' }
+            ]);
+            const sent = () => h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            await vi.waitFor(() => expect(sent().filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('agy-wakeup-'))).toHaveLength(1));
+            await h.ready();
+            // The same terminal update arrives twice after the card ended.
+            const done = { output: 'Command exited with code 0.\n\nCommand output:\nDONE', exit_code: 0 };
+            h.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'task-7', status: 'completed', rawOutput: done });
+            h.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'task-7', status: 'completed', rawOutput: done });
+            await new Promise((r) => setTimeout(r, 1200));
+            expect(sent().filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('task-7#'))).toHaveLength(0);
+            await h.finish();
+        });
+
         it('does not retain a late result of a settled task against another open transcript command', async () => {
             const acp = 'conv-live-settled-first';
             turnRows(acp);

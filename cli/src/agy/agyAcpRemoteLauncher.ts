@@ -1252,7 +1252,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         } finally {
             if (turn.aborted) {
                 // The stopped activity ends here: discard its late starts before ready.
-                if (this.discardingStoppedStarts) await this.discardStoppedWakeup();
+                if (this.usesLiveWakeupRendering()) await this.discardStoppedWakeup(turn);
                 this.syncTranscriptCursor();
             }
             this.questionLabels.clear();
@@ -1370,34 +1370,34 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /** Stop: drop what the stopped wakeup left open, and remember its commands so a late start of one is dropped. */
-    private async discardStoppedWakeup(): Promise<void> {
+    private async discardStoppedWakeup(abortedTurn: AgyTurn | null = null): Promise<void> {
         await this.backend?.flushPendingMessageBuffers();
-        const turn = this.handlerOwnerTurn;
+        const owner = this.handlerOwnerTurn;
         this.handlerOwnerTurn = null;
         this.discardingStoppedStarts = false;
-        if (!turn) return;
-        for (const id of [...turn.commandCallIds, ...turn.openCommands, ...turn.deferredLiveCommandCalls.keys()]) {
-            this.rememberStoppedWakeupCall(parseToolCallLifetimeId(id) ?? id);
+        for (const turn of new Set([owner, abortedTurn])) {
+            if (!turn) continue;
+            for (const id of [...turn.commandCallIds, ...turn.openCommands, ...turn.deferredLiveCommandCalls.keys()]) {
+                this.rememberStoppedWakeupCall(parseToolCallLifetimeId(id) ?? id);
+            }
+            turn.deferredLiveCommandCalls.clear();
+            turn.openCommands.clear();
         }
-        turn.deferredLiveCommandCalls.clear();
-        turn.openCommands.clear();
     }
 
     private noteSettledFromTranscript(taskId: string | undefined): void {
-        if (!taskId) return;
+        if (!taskId || this.settledFromTranscript.includes(taskId)) return;
         this.settledFromTranscript.push(taskId);
         if (this.settledFromTranscript.length > 8) this.settledFromTranscript.shift();
     }
 
     /** A result-only ACP update that names a command whose card the transcript already ended. */
-    private consumeSettledFromTranscript(message: Extract<AgentMessage, { type: 'tool_result' }>): boolean {
+    private isSettledFromTranscript(message: Extract<AgentMessage, { type: 'tool_result' }>): boolean {
         const agentId = parseToolCallLifetimeId(message.id) ?? message.id;
-        const idx = this.settledFromTranscript.findIndex(
+        // Kept until evicted: agy task ids are unique per session and a terminal update can repeat.
+        return this.settledFromTranscript.some(
             (taskId) => agentId === taskId || agentId === taskId.slice(taskId.lastIndexOf('/') + 1)
         );
-        if (idx < 0) return false;
-        this.settledFromTranscript.splice(idx, 1);
-        return true;
     }
 
     private usesLiveWakeupRendering(): boolean {
@@ -1753,7 +1753,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             if (deferredCall || !this.nativeToolNames.has(message.id)) {
                 // A result that names a task the transcript already settled is that task's duplicate.
-                if (!deferredCall && this.consumeSettledFromTranscript(message)) {
+                if (!deferredCall && this.isSettledFromTranscript(message)) {
                     return { message, suppressForward: true, skipTracking: true };
                 }
                 const nativeArgs = deferredCall?.nativeArgs
@@ -1808,16 +1808,21 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
                 return;
             default: {
-                if (this.turn !== turn && this.usesLiveWakeupRendering()) {
-                    if (this.handlerOwnerTurn !== turn) {
+                if (this.usesLiveWakeupRendering()) {
+                    const idle = this.turn !== turn;
+                    if (idle && this.handlerOwnerTurn !== turn) {
                         this.handlerOwnerTurn = turn;
-                        turn.openCommands.clear(); // a cancelled prompt's command is not this wakeup's
+                        // Only this wakeup's commands count: not a finished or cancelled prompt's own.
+                        turn.openCommands.clear();
+                        turn.commandCallIds.length = 0;
+                        turn.commandArrivalOrder.length = 0;
                     }
-                    const isStart = message.type === 'tool_call' && message.nativeName === 'run_command';
-                    if (isStart) {
+                    if (message.type === 'tool_call' && message.nativeName === 'run_command') {
                         const agentId = parseToolCallLifetimeId(message.id) ?? message.id;
-                        if (this.discardingStoppedStarts) this.rememberStoppedWakeupCall(agentId);
-                        if (this.discardingStoppedStarts || this.stoppedWakeupCallIds.has(agentId)) return;
+                        // A start while a Stop is being drained (the stopped wakeup, or the aborted turn itself) is recorded and dropped.
+                        const stopping = idle ? this.discardingStoppedStarts : turn.aborted;
+                        if (stopping) this.rememberStoppedWakeupCall(agentId);
+                        if (stopping || (idle && this.stoppedWakeupCallIds.has(agentId))) return;
                     }
                 }
                 turn.sawActivity = true;
