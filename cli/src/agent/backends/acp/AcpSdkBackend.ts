@@ -13,7 +13,7 @@ import {
     type ToolCallScope
 } from './toolCallLifetimes';
 import { defaultToolCallLifetimeStore, type ToolCallLifetimeStore } from './toolCallLifetimeStore';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 /** Why the backend is bumping/clearing hub thinking — launchers filter chatter here (#1553). */
 export type AgentActivitySource =
@@ -119,7 +119,8 @@ type AcpInitializeResult = {
 };
 
 export function formatAcpImageEchoToken(mimeType: string, data: string): string {
-    return `[acp-image:${mimeType}:${data.length}:${data.slice(0, 64)}:${data.slice(-64)}]`;
+    const digest = createHash('sha256').update(data).digest('hex');
+    return `[acp-image:${mimeType}:${data.length}:${digest}]`;
 }
 
 function userMessageChunkText(update: unknown): string | null {

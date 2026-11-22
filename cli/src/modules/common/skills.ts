@@ -751,11 +751,12 @@ async function resolveAgyManifestPath(
 }
 
 const MAX_AGY_MANIFEST_EXPANSIONS = 64;
+const MAX_AGY_MANIFEST_TARGETS = 256;
 
 type AgyManifestTraversalState = {
     expansions: number;
     jsonCache: Map<string, Record<string, unknown> | null>;
-    expansionCache: Map<string, AgyManifestDirTarget[]>;
+    expansionCache: Map<string, { minDepth: number; targets: AgyManifestDirTarget[] }>;
 };
 
 function createAgyManifestTraversalState(): AgyManifestTraversalState {
@@ -764,6 +765,24 @@ function createAgyManifestTraversalState(): AgyManifestTraversalState {
         jsonCache: new Map(),
         expansionCache: new Map(),
     };
+}
+
+function appendUniqueAgyTargets(
+    results: AgyManifestDirTarget[],
+    seenTargets: Set<string>,
+    incoming: readonly AgyManifestDirTarget[]
+): void {
+    for (const target of incoming) {
+        if (results.length >= MAX_AGY_MANIFEST_TARGETS) break;
+        const targetKey = JSON.stringify([
+            resolve(target.dir),
+            target.canonicalBoundary ?? '',
+            target.filters,
+        ]);
+        if (seenTargets.has(targetKey)) continue;
+        seenTargets.add(targetKey);
+        results.push(target);
+    }
 }
 
 async function readCachedAgyJsonObject(
@@ -811,8 +830,8 @@ async function listAgyJsonManifestEntries(
         inheritedFilters,
     ]);
     const cachedExpansion = state.expansionCache.get(cacheKey);
-    if (cachedExpansion) {
-        return cachedExpansion;
+    if (cachedExpansion && depth >= cachedExpansion.minDepth) {
+        return cachedExpansion.targets;
     }
     state.expansions += 1;
 
@@ -821,7 +840,7 @@ async function listAgyJsonManifestEntries(
 
     const raw = await readCachedAgyJsonObject(visitKey, state);
     if (!raw) {
-        state.expansionCache.set(cacheKey, []);
+        state.expansionCache.set(cacheKey, { minDepth: 0, targets: [] });
         return [];
     }
 
@@ -831,8 +850,10 @@ async function listAgyJsonManifestEntries(
         : inheritedFilters;
 
     const results: AgyManifestDirTarget[] = [];
+    const seenTargets = new Set<string>();
     if (Array.isArray(raw.entries)) {
         for (const item of raw.entries) {
+            if (results.length >= MAX_AGY_MANIFEST_TARGETS) break;
             if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
             const entry = item as Record<string, unknown>;
             if (typeof entry.path !== 'string' || entry.path.trim().length === 0) continue;
@@ -841,17 +862,18 @@ async function listAgyJsonManifestEntries(
                 continue;
             }
             const entryFilter = parseAgyNameFilter(entry);
-            results.push({
+            appendUniqueAgyTargets(results, seenTargets, [{
                 dir,
                 filters: entryFilter ? [...baseFilters, entryFilter] : baseFilters,
                 ...(canonicalBoundary ? { canonicalBoundary } : {}),
-            });
+            }]);
         }
     }
 
     if (Array.isArray(raw.inherits)) {
+        const seenChildEdges = new Set<string>();
         for (const item of raw.inherits) {
-            if (state.expansions >= MAX_AGY_MANIFEST_EXPANSIONS) break;
+            if (state.expansions >= MAX_AGY_MANIFEST_EXPANSIONS || results.length >= MAX_AGY_MANIFEST_TARGETS) break;
             if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
             const inh = item as Record<string, unknown>;
             if (typeof inh.path !== 'string' || inh.path.trim().length === 0) continue;
@@ -862,6 +884,9 @@ async function listAgyJsonManifestEntries(
             const inhFilter = parseAgyNameFilter(inh);
             const nextFilters = inhFilter ? [...baseFilters, inhFilter] : baseFilters;
             const staysInWorkspace = workspaceRoot !== undefined && isPathWithinRoot(inheritedPath, workspaceRoot);
+            const edgeKey = JSON.stringify([resolve(inheritedPath), staysInWorkspace, nextFilters]);
+            if (seenChildEdges.has(edgeKey)) continue;
+            seenChildEdges.add(edgeKey);
             const nested = await listAgyJsonManifestEntries(
                 inheritedPath,
                 staysInWorkspace ? workspaceRoot : dirname(inheritedPath),
@@ -873,25 +898,12 @@ async function listAgyJsonManifestEntries(
                 canonicalBoundary,
                 state
             );
-            results.push(...nested);
+            appendUniqueAgyTargets(results, seenTargets, nested);
         }
     }
 
-    const dedupedResults: AgyManifestDirTarget[] = [];
-    const seenTargets = new Set<string>();
-    for (const target of results) {
-        const targetKey = JSON.stringify([
-            resolve(target.dir),
-            target.canonicalBoundary ?? '',
-            target.filters,
-        ]);
-        if (seenTargets.has(targetKey)) continue;
-        seenTargets.add(targetKey);
-        dedupedResults.push(target);
-    }
-
-    state.expansionCache.set(cacheKey, dedupedResults);
-    return dedupedResults;
+    state.expansionCache.set(cacheKey, { minDepth: depth, targets: results });
+    return results;
 }
 
 async function filterAgyCanonicalDirs(dirs: string[], canonicalBoundary?: string): Promise<string[]> {
@@ -1179,21 +1191,22 @@ async function discoverAgySkillDirs(workingDirectory?: string): Promise<AgySkill
         }
     }
 
-    // 3. Global user standard skills + global discovered plugins.
+    // 3. Global user standard skills + global discovered plugins (independent manifest budget).
+    const globalManifestState = createAgyManifestTraversalState();
     for (const userRoot of getUserSkillsRoots('agy')) {
         pushDirs(await listTopLevelSkillDirs(userRoot));
     }
-    pushDirs(await listAgySkillDirsFromPluginsRoot(join(configDir, 'plugins'), overrides, [], true, undefined, manifestState));
-    pushDirs(await listAgySkillDirsFromPluginsRoot(join(home, '.gemini', 'antigravity-cli', 'plugins'), overrides, [], true, undefined, manifestState));
+    pushDirs(await listAgySkillDirsFromPluginsRoot(join(configDir, 'plugins'), overrides, [], true, undefined, globalManifestState));
+    pushDirs(await listAgySkillDirsFromPluginsRoot(join(home, '.gemini', 'antigravity-cli', 'plugins'), overrides, [], true, undefined, globalManifestState));
 
     // 4. Global declared skills.json and plugins.json manifests.
-    const globalSkillTargets = await listAgyJsonManifestEntries(join(configDir, 'skills.json'), configDir, undefined, [], new Set(), 0, undefined, undefined, manifestState);
+    const globalSkillTargets = await listAgyJsonManifestEntries(join(configDir, 'skills.json'), configDir, undefined, [], new Set(), 0, undefined, undefined, globalManifestState);
     for (const target of globalSkillTargets) {
         pushDirs(await listAgyFilteredSkillDirs(target.dir, target.filters));
     }
-    const globalPluginTargets = await listAgyJsonManifestEntries(join(configDir, 'plugins.json'), configDir, undefined, [], new Set(), 0, undefined, undefined, manifestState);
+    const globalPluginTargets = await listAgyJsonManifestEntries(join(configDir, 'plugins.json'), configDir, undefined, [], new Set(), 0, undefined, undefined, globalManifestState);
     for (const target of globalPluginTargets) {
-        pushDirs(await listAgyPluginDirsFromManifestTarget(target, overrides, manifestState));
+        pushDirs(await listAgyPluginDirsFromManifestTarget(target, overrides, globalManifestState));
     }
 
     return orderedDirs;

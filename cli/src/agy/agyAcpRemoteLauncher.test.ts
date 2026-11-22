@@ -2741,11 +2741,13 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
         }
     });
 
-    it('distinguishes two identically captioned image steers by image identity when echoed out of order before Stop', async () => {
+    it('distinguishes two identically captioned image steers that differ only in the middle of the payload and does not prematurely consume a text-only steer with the same caption', async () => {
         const { session, queue, client } = makeSession();
         registerUploadHandlers(client.rpcHandlerManager as never);
-        const pngBytes1 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x01]);
-        const pngBytes2 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x02]);
+        const prefix = Buffer.alloc(96, 0x41);
+        const suffix = Buffer.alloc(96, 0x5a);
+        const pngBytes1 = Buffer.concat([prefix, Buffer.from('MIDDLE_PAYLOAD_ONE_1111'), suffix]);
+        const pngBytes2 = Buffer.concat([prefix, Buffer.from('MIDDLE_PAYLOAD_TWO_2222'), suffix]);
         try {
             const uploadHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.UploadFile)!;
             const uploaded1 = await uploadHandler({
@@ -2784,6 +2786,7 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
             await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
 
             const steerHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!;
+            queue.push('same caption', REVIEW, 'steer-text-only');
             queue.push(`@${uploaded1.path}\n\nsame caption`, {
                 ...REVIEW,
                 imageAttachments: [{ path: uploaded1.path, mimeType: 'image/png', filename: 'first.png' }]
@@ -2793,13 +2796,16 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
                 imageAttachments: [{ path: uploaded2.path, mimeType: 'image/png', filename: 'second.png' }]
             }, 'steer-captioned-2');
 
+            await expect(steerHandler({ localId: 'steer-text-only' })).resolves.toEqual({ steered: true });
             await expect(steerHandler({ localId: 'steer-captioned-1' })).resolves.toEqual({ steered: true });
             await expect(steerHandler({ localId: 'steer-captioned-2' })).resolves.toEqual({ steered: true });
 
-            // agy echoes the SECOND captioned image steer first, then the user presses Stop before the first steer is echoed.
+            // agy echoes the SECOND captioned image steer's caption and image block before the user presses Stop.
             backend.echo!('same caption');
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-text-only'], { steered: true });
             backend.echo!(formatAcpImageEchoToken('image/png', pngBytes2.toString('base64')));
             expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-captioned-2'], { steered: true });
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-text-only'], { steered: true });
             expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-captioned-1'], { steered: true });
 
             await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
@@ -2807,6 +2813,7 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
             queue.close();
             await run;
 
+            expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-text-only']);
             expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-captioned-1']);
             expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-captioned-2']);
         } finally {

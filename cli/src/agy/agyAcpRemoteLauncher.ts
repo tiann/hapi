@@ -1654,7 +1654,19 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
         for (;;) {
             const match = turn.unechoedSteers
-                .filter((entry) => entry.text && entry.echo.includes(entry.text))
+                .filter((entry) => {
+                    if (!entry.text || !entry.echo.includes(entry.text)) return false;
+                    // If a text-only steer's text is a strict prefix of another
+                    // pending steer (e.g. an image steer with the same caption),
+                    // wait until that longer steer's image token is ruled out.
+                    const isPrefixOfLongerPendingSteer = turn.unechoedSteers.some(
+                        (other) => other !== entry
+                            && other.text.length > entry.text.length
+                            && other.text.startsWith(`${entry.text} `)
+                            && other.text.startsWith(other.echo)
+                    );
+                    return !isPrefixOfLongerPendingSteer;
+                })
                 .sort((a, b) => b.text.length - a.text.length)[0];
             if (!match) return;
             for (const entry of turn.unechoedSteers) {

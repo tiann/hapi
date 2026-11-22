@@ -809,4 +809,57 @@ describe('listSkills', () => {
         expect(names).toContain('nested-plugin-skill')
         expect(names).toContain('dag-leaf-skill')
     })
+
+    it('re-expands a shared manifest when reached at a shallower depth and preserves user manifest budget when workspace exhausts its expansion cap', async () => {
+        const repoDir = join(sandboxDir, 'budget-and-depth-repo')
+        await mkdir(join(repoDir, '.git'), { recursive: true })
+        await mkdir(join(repoDir, '.agents'), { recursive: true })
+        await mkdir(join(repoDir, 'manifests'), { recursive: true })
+
+        await writeSkill(join(repoDir, 'pool', 'shallow-reachable-skill'), 'shallow-reachable-skill', 'Skill behind shared manifest')
+        await writeFile(join(repoDir, 'manifests', 'shared-leaf.json'), JSON.stringify({
+            entries: [{ path: 'pool', include_only: ['shallow-reachable-skill'] }],
+        }))
+        await writeFile(join(repoDir, 'manifests', 'shared.json'), JSON.stringify({
+            inherits: [{ path: 'manifests/shared-leaf.json' }],
+        }))
+
+        // Deep chain `d1` .. `d15` reaches `shared.json` at depth 16 (where its child `shared-leaf.json` at depth 17 is skipped)
+        for (let d = 15; d >= 1; d -= 1) {
+            const nextPath = d === 15 ? 'manifests/shared.json' : `manifests/d${d + 1}.json`
+            await writeFile(join(repoDir, 'manifests', `d${d}.json`), JSON.stringify({
+                inherits: [{ path: nextPath }],
+            }))
+        }
+
+        // Also create 70 distinct extra workspace manifests to exhaust the 64-expansion workspace budget
+        const extraInherits: Array<{ path: string }> = []
+        for (let i = 0; i < 70; i += 1) {
+            const p = `manifests/extra-${i}.json`
+            await writeFile(join(repoDir, p), JSON.stringify({ entries: [] }))
+            extraInherits.push({ path: p })
+        }
+
+        // Root visits deep branch `d1.json` FIRST, then `shared.json` directly at depth 1, then exhausts the workspace budget
+        await writeFile(join(repoDir, '.agents', 'skills.json'), JSON.stringify({
+            inherits: [
+                { path: 'manifests/d1.json' },
+                { path: 'manifests/shared.json' },
+                ...extraInherits,
+            ],
+        }))
+
+        // User global skills.json must still resolve with its own independent budget
+        const userConfigDir = join(homeDir, '.gemini', 'config')
+        await mkdir(userConfigDir, { recursive: true })
+        await writeSkill(join(sandboxDir, 'user-pool', 'user-budget-skill'), 'user-budget-skill', 'User manifest skill after workspace budget exhaustion')
+        await writeFile(join(userConfigDir, 'skills.json'), JSON.stringify({
+            entries: [{ path: join(sandboxDir, 'user-pool'), include_only: ['user-budget-skill'] }],
+        }))
+
+        const skills = await listSkills(repoDir, { flavor: 'agy' })
+        const names = skills.map((s) => s.name)
+        expect(names).toContain('shallow-reachable-skill')
+        expect(names).toContain('user-budget-skill')
+    })
 })
