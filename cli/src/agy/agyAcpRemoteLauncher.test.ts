@@ -2786,12 +2786,13 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
             await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
 
             const steerHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!;
+            const caption = 'x'.repeat(64 * 1024 - 12) + ' same caption';
             queue.push('caption', REVIEW, 'steer-text-only');
-            queue.push(`@${uploaded1.path}\n\nsame caption`, {
+            queue.push(`@${uploaded1.path}\n\n${caption}`, {
                 ...REVIEW,
                 imageAttachments: [{ path: uploaded1.path, mimeType: 'image/png', filename: 'first.png' }]
             }, 'steer-captioned-1');
-            queue.push(`@${uploaded2.path}\n\nsame caption`, {
+            queue.push(`@${uploaded2.path}\n\n${caption}`, {
                 ...REVIEW,
                 imageAttachments: [{ path: uploaded2.path, mimeType: 'image/png', filename: 'second.png' }]
             }, 'steer-captioned-2');
@@ -2801,7 +2802,7 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
             await expect(steerHandler({ localId: 'steer-captioned-2' })).resolves.toEqual({ steered: true });
 
             // agy echoes the SECOND captioned image steer's caption and image block before the user presses Stop.
-            backend.echo!('same caption');
+            backend.echo!(caption);
             expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-text-only'], { steered: true });
             backend.echo!(formatAcpImageEchoToken('image/png', pngBytes2.toString('base64')));
             expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-captioned-2'], { steered: true });

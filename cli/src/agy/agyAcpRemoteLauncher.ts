@@ -1649,8 +1649,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // text echoed since it was sent, and the longest match wins when one
         // steer's text contains another's. One chunk may echo several steers,
         // so a match only uses up its own text.
+        const windowSize = turn.unechoedSteers.reduce((size, entry) => Math.max(size, entry.text.length), ECHO_BUFFER_LIMIT);
         for (const entry of turn.unechoedSteers) {
-            entry.echo = normalizeEcho(`${entry.echo} ${text}`).slice(-ECHO_BUFFER_LIMIT);
+            entry.echo = normalizeEcho(`${entry.echo} ${text}`).slice(-windowSize);
         }
         for (;;) {
             const match = turn.unechoedSteers
