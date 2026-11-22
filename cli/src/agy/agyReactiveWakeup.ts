@@ -615,7 +615,12 @@ export function matchAgyBackgroundTaskId(
     excludeTaskIds: ReadonlySet<string>,
     reservedOrdinals?: ReadonlySet<number>
 ): string | undefined {
-    if (preferredOrdinal !== undefined && preferredOrdinal >= 0 && preferredOrdinal < records.length) {
+    if (
+        preferredOrdinal !== undefined
+        && preferredOrdinal >= 0
+        && preferredOrdinal < records.length
+        && !(reservedOrdinals?.has(preferredOrdinal))
+    ) {
         const direct = records[preferredOrdinal]!;
         const cmdCompatible = !commandLine || !direct.commandLine || direct.commandLine === commandLine;
         if (cmdCompatible) {
@@ -705,7 +710,13 @@ export function resolveAgyBackgroundTaskIds(
         }
         const reservedOrdinals = new Set<number>(entry.reservedOrdinals ?? []);
         for (const sibling of openBackgroundCommands) {
-            if (sibling === entry || sibling.afterStepIndex !== entry.afterStepIndex || sibling.ordinalInTurn === undefined) {
+            if (
+                sibling === entry
+                || sibling.taskId
+                || sibling.afterStepIndex !== entry.afterStepIndex
+                || sibling.ordinalInTurn === undefined
+                || sibling.ordinalInTurn === entry.ordinalInTurn
+            ) {
                 continue;
             }
             reservedOrdinals.add(sibling.ordinalInTurn);
@@ -873,8 +884,11 @@ export function parseCompletedBackgroundTasks(
     if (!systemMessageContent) return [];
     const normalized = systemMessageContent.replace(/\r\n/g, '\n');
     const escapedSession = sessionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const nextTaskBoundary = `(?:\\n+Log: file:\\/\\/\\/[^\\n]*)?(?:\\n+\\[Message\\] timestamp=\\S+ sender=\\S+(?:\\s+priority=\\S+)?(?:\\s+content=|\\n+)|\\n+)Task id "${escapedSession}\\/task-\\d+" finished with result:`;
+    const nextNonTaskMessageBoundary = `\\n+Log: file:\\/\\/\\/[^\\n]*\\n+\\[Message\\] timestamp=\\S+ sender=\\S+(?:\\s+priority=\\S+)?(?:\\s+content=|\\n)`;
+    const endFrameBoundary = `(?:\\n+Log: file:\\/\\/\\/[^\\n]*)?\\s*<\\/SYSTEM_MESSAGE>`;
     const pattern = new RegExp(
-        `Task id "(${escapedSession}\\/task-\\d+)" finished with result:\\n([\\s\\S]*?)(?=(?:\\n+Log: file:\\/\\/\\/[^\\n]*)?(?:\\n+\\[Message\\] timestamp=\\S+ sender=\\S+(?:\\s+priority=\\S+)?(?:\\s+content=|\\n+Task id "${escapedSession}\\/task-\\d+" finished with result:)|\\n+Task id "${escapedSession}\\/task-\\d+" finished with result:|\\s*<\\/SYSTEM_MESSAGE>))`,
+        `Task id "(${escapedSession}\\/task-\\d+)" finished with result:\\n([\\s\\S]*?)(?=${nextTaskBoundary}|${nextNonTaskMessageBoundary}|${endFrameBoundary})`,
         'g'
     );
     const results: AgyCompletedBackgroundTask[] = [];

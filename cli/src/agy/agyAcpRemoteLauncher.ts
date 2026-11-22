@@ -51,7 +51,8 @@ import {
     settleCompletedBackgroundCommandsFromTranscript,
     type AgyCompletedBackgroundTask,
     type AgyOpenBackgroundCommand,
-    type AgyReactiveTimingConfig
+    type AgyReactiveTimingConfig,
+    type AgyTranscriptStep
 } from './agyReactiveWakeup';
 import type { AgyMode, PermissionMode } from './types';
 import { createAgyAcpBackend } from './utils/agyAcpBackend';
@@ -287,6 +288,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     // wakeup replay over the same unadvanced transcript slice skips re-creating
     // their `tool_call` / `tool_result` cards.
     private readonly settledReplayTaskIds = new Set<string>();
+    // `SYSTEM_MESSAGE` step_index values whose compact row was truncated at timeout
+    // or turn end and await `transcript_full.jsonl` on the same step_index.
+    private readonly deferredTruncatedSystemSteps = new Set<number>();
     // The hub's background-task indicator state: the commands agy left
     // running, keyed by ACP call id, mirrored to the hub as a full
     // system/background_tasks_changed snapshot on every membership change.
@@ -493,6 +497,43 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         return nextCursor;
     }
 
+    private recordDeferredTruncatedSystemSteps(steps: AgyTranscriptStep[]): void {
+        if (this.backgroundCommands.length === 0) return;
+        for (const step of steps) {
+            if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE' && isAgyStepContentTruncated(step)) {
+                this.deferredTruncatedSystemSteps.add(step.step_index);
+            }
+        }
+    }
+
+    private reconcileDeferredTruncatedSystemSteps(): void {
+        if (!this.acpSessionId || this.deferredTruncatedSystemSteps.size === 0) return;
+        if (this.backgroundCommands.length === 0) {
+            this.deferredTruncatedSystemSteps.clear();
+            return;
+        }
+        const minDeferred = Math.min(...this.deferredTruncatedSystemSteps);
+        const steps = readAgyTranscriptStepsAfter(this.brainDir, this.acpSessionId, Math.max(-1, minDeferred - 1));
+        let resolvedAny = false;
+        let maxResolvedStep = -1;
+        for (const step of steps) {
+            if (!this.deferredTruncatedSystemSteps.has(step.step_index)) continue;
+            if (isAgyStepContentTruncated(step)) continue;
+            this.deferredTruncatedSystemSteps.delete(step.step_index);
+            resolvedAny = true;
+            if (step.step_index > maxResolvedStep) maxResolvedStep = step.step_index;
+        }
+        if (resolvedAny) {
+            const limit = this.pausedWakeupStepIndex !== null
+                ? Math.max(this.pausedWakeupStepIndex, maxResolvedStep)
+                : Math.max(this.lastTranscriptStepIndex, maxResolvedStep);
+            this.settleTranscriptBackgroundCommands(limit, this.pausedWakeupStepIndex !== null);
+            if (this.backgroundCommands.length === 0) {
+                this.deferredTruncatedSystemSteps.clear();
+            }
+        }
+    }
+
     private hasPendingReactiveWakeup(): boolean {
         const acpSessionId = this.acpSessionId;
         if (!acpSessionId || this.backendLost || !this.backend?.isTransportAlive()) return false;
@@ -500,6 +541,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             this.reconcileRetainedAmbiguousCompletions(null);
         }
         this.advanceCursorFromLastTurnState();
+        this.reconcileDeferredTruncatedSystemSteps();
         const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, this.lastTranscriptStepIndex);
         if (steps.length === 0) return false;
         if (!steps.some((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')) {
@@ -588,7 +630,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const checkWakeup = (verifyIdentity = false) => {
             if (wakeupTriggered || waitController.signal.aborted || this.shouldExit || queue.size() > 0) return;
             tryAttachWatcher(verifyIdentity);
-            armPoll(watchRef.current ? 30_000 : this.reactivePollMs);
+            armPoll(watchRef.current && this.deferredTruncatedSystemSteps.size === 0 ? 30_000 : this.reactivePollMs);
             if (this.hasPendingReactiveWakeup()) {
                 wakeupTriggered = true;
                 waitController.abort();
@@ -757,6 +799,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (inspection.state === 'completed') {
                     this.pausedWakeupStepIndex = null;
                     this.lastTranscriptStepIndex = Math.max(this.lastTranscriptStepIndex, inspection.latestStepIndex);
+                    for (const deferredStep of [...this.deferredTruncatedSystemSteps]) {
+                        if (deferredStep <= this.lastTranscriptStepIndex) {
+                            this.deferredTruncatedSystemSteps.delete(deferredStep);
+                        }
+                    }
                     const wakeupFirstStepIndex = inspection.steps[0]?.step_index;
                     resolveAgyBackgroundTaskIds(
                         this.brainDir,
@@ -823,6 +870,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     this.pausedWakeupStepIndex = inspection.latestStepIndex;
                     this.reconcileRetainedAmbiguousCompletions(null);
                     this.settleTranscriptBackgroundCommands(inspection.latestStepIndex, true);
+                    this.recordDeferredTruncatedSystemSteps(inspection.steps);
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
                         session.sendSessionEvent({ type: 'ready' });
@@ -958,6 +1006,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 acpSessionId = await backend.newSession({ cwd: session.path, mcpServers: [] });
                 this.backgroundCommands.length = 0;
                 this.settledReplayTaskIds.clear();
+                this.deferredTruncatedSystemSteps.clear();
                 this.retainedAmbiguousCompletions.length = 0;
                 this.nativeToolNames.clear();
                 this.syntheticCallAliases.clear();
@@ -1314,6 +1363,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             ? readAgyTranscriptStepsAfter(this.brainDir, this.acpSessionId, turnStartStepIndex)
             : [];
         const records = extractAgyBackgroundCommandRecords(turnSteps);
+        if (openIds.length > 0 && this.acpSessionId && this.backgroundCommands.some((entry) => !entry.taskId)) {
+            resolveAgyBackgroundTaskIds(this.brainDir, this.acpSessionId, this.backgroundCommands, turnStartStepIndex);
+        }
         const claimedTaskIds = new Set<string>(
             this.backgroundCommands
                 .map((entry) => entry.taskId)
@@ -1343,17 +1395,31 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         let retiredAny = false;
         for (let idx = 0; idx < openIds.length; idx += 1) {
             const id = openIds[idx]!;
+            const existing = this.backgroundCommands.find((entry) => entry.callId === id);
+            const isPriorCall = existing !== undefined || turn.priorBackgroundCallIds.has(id);
             const callOrdinal = turn.commandCallIds.indexOf(id);
-            const ordinalInTurn = callOrdinal >= 0 ? callOrdinal : idx;
+            const ordinalInTurn = !isPriorCall && callOrdinal >= 0 ? callOrdinal : undefined;
             const commandLine = turn.bgCommandLines.get(id);
-            const reservedOrdinals = new Set<number>(finishedOrdinals);
-            for (let otherIdx = 0; otherIdx < openIds.length; otherIdx += 1) {
-                if (otherIdx === idx) continue;
-                const otherOrdinal = turn.commandCallIds.indexOf(openIds[otherIdx]!);
-                reservedOrdinals.add(otherOrdinal >= 0 ? otherOrdinal : otherIdx);
+            let taskId = existing?.taskId;
+            if (!isPriorCall) {
+                const reservedOrdinals = new Set<number>(finishedOrdinals);
+                for (let otherIdx = 0; otherIdx < openIds.length; otherIdx += 1) {
+                    if (otherIdx === idx) continue;
+                    const otherId = openIds[otherIdx]!;
+                    if (
+                        turn.priorBackgroundCallIds.has(otherId)
+                        || this.backgroundCommands.some((entry) => entry.callId === otherId)
+                    ) {
+                        continue;
+                    }
+                    const otherOrdinal = turn.commandCallIds.indexOf(otherId);
+                    if (otherOrdinal >= 0) {
+                        reservedOrdinals.add(otherOrdinal);
+                    }
+                }
+                taskId = matchAgyBackgroundTaskId(records, ordinalInTurn, commandLine, claimedTaskIds, reservedOrdinals);
+                if (taskId) claimedTaskIds.add(taskId);
             }
-            const taskId = matchAgyBackgroundTaskId(records, ordinalInTurn, commandLine, claimedTaskIds, reservedOrdinals);
-            if (taskId) claimedTaskIds.add(taskId);
 
             const completed = taskId ? completedByTaskId.get(taskId) : undefined;
             const killed = !completed && (
@@ -1380,20 +1446,16 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 continue;
             }
 
-            const existing = this.backgroundCommands.find((entry) => entry.callId === id);
             if (!existing) {
                 this.backgroundCommands.push({
                     callId: id,
                     afterStepIndex: turnStartStepIndex,
-                    ordinalInTurn,
+                    ...(ordinalInTurn !== undefined ? { ordinalInTurn } : {}),
                     ...(finishedOrdinals.length > 0 ? { reservedOrdinals: [...finishedOrdinals] } : {}),
                     ...(commandLine !== undefined ? { commandLine } : {}),
                     ...(taskId ? { taskId } : {})
                 });
             } else {
-                if (finishedOrdinals.length > 0 && !existing.reservedOrdinals) {
-                    existing.reservedOrdinals = [...finishedOrdinals];
-                }
                 if (taskId && !existing.taskId) {
                     existing.taskId = taskId;
                 }
@@ -1418,6 +1480,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 registeredAny = true;
             }
         }
+        this.recordDeferredTruncatedSystemSteps(ownedTurnSteps);
         // The background-task indicator mirrors these cards: emit the updated
         // snapshot if we added running background commands or retired any that
         // already settled within the turn.
@@ -2182,6 +2245,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (hadTurn || this.shouldExit) {
             this.backgroundCommands.length = 0;
             this.settledReplayTaskIds.clear();
+            this.deferredTruncatedSystemSteps.clear();
             this.retainedAmbiguousCompletions.length = 0;
             this.syntheticCallAliases.clear();
         } else {
@@ -2224,6 +2288,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.settledReplayTaskIds.clear();
+        this.deferredTruncatedSystemSteps.clear();
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
         this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, async () => ({
             steered: false,
