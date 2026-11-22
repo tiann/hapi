@@ -13,11 +13,9 @@ import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import { extractErrorInfo } from '@/utils/errorUtils'
 import type { CommandDefinition } from './types'
 import type { ClaudePermissionMode } from '@hapi/protocol/types'
-import { ApiClient } from '@/api/api'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { parseClaudeResumeArgs, resolveClaudeResume } from '@/claude/resumeIdentity'
 import { claudeCheckSession } from '@/claude/utils/claudeCheckSession'
-import { prepareLocalResume, selectResumableSession } from './resume'
 
 /**
  * Terminal `hapi claude --resume/--continue`: when HAPI already owns the
@@ -31,6 +29,8 @@ async function applyClaudeResumeIdentity(options: StartOptions, machineId: strin
     const parsed = parseClaudeResumeArgs(options.claudeArgs ?? [])
     if (!parsed.request) return
 
+    const { ApiClient } = await import('@/api/api')
+    const { prepareLocalResume, selectResumableSession } = await import('./resume')
     const api = await ApiClient.create()
     const workingDirectory = options.workingDirectory ?? getInvokedCwd()
     const resolution = await resolveClaudeResume(parsed.request, {
@@ -71,6 +71,45 @@ async function applyClaudeResumeIdentity(options: StartOptions, machineId: strin
     if (options.effort === undefined && target.effort) {
         options.effort = target.effort
     }
+}
+
+/**
+ * Extract an explicit user `--resume-session-at` boundary for a terminal launch
+ * (without `--fork-session`), keeping it out of `claudeArgs` so launchers apply
+ * it once on startup without conflating it with stale internal arguments.
+ */
+function extractStartupResumeSessionAt(args: readonly string[]): {
+    boundary?: string
+    remainingArgs: string[]
+} {
+    const separator = args.indexOf('--')
+    const flagArgs = separator === -1 ? args : args.slice(0, separator)
+    const passthroughTail = separator === -1 ? [] : args.slice(separator)
+    if (flagArgs.includes('--fork-session')) {
+        return { remainingArgs: [...args] }
+    }
+
+    let boundary: string | undefined
+    const remainingArgs: string[] = []
+    for (let i = 0; i < flagArgs.length; i++) {
+        const arg = flagArgs[i]!
+        if (arg === '--resume-session-at' || arg.startsWith('--resume-session-at=')) {
+            const value = arg.startsWith('--resume-session-at=')
+                ? arg.slice('--resume-session-at='.length)
+                : flagArgs[i + 1]
+            if (!arg.startsWith('--resume-session-at=')) {
+                i++
+            }
+            if (!value || value.startsWith('-')) {
+                throw new Error('Missing --resume-session-at value')
+            }
+            boundary = value
+            continue
+        }
+        remainingArgs.push(arg)
+    }
+
+    return { boundary, remainingArgs: [...remainingArgs, ...passthroughTail] }
 }
 
 export const claudeCommand: CommandDefinition = {
@@ -149,7 +188,17 @@ export const claudeCommand: CommandDefinition = {
         }
 
         if (unknownArgs.length > 0) {
-            options.claudeArgs = [...(options.claudeArgs || []), ...unknownArgs]
+            if (options.startedBy !== 'runner') {
+                const { boundary, remainingArgs } = extractStartupResumeSessionAt(unknownArgs)
+                if (boundary) {
+                    options.startupResumeSessionAt = boundary
+                }
+                if (remainingArgs.length > 0) {
+                    options.claudeArgs = [...(options.claudeArgs || []), ...remainingArgs]
+                }
+            } else {
+                options.claudeArgs = [...(options.claudeArgs || []), ...unknownArgs]
+            }
         }
 
         await initializeToken()

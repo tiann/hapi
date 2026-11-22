@@ -1,3 +1,7 @@
+---
+description: "Find and organize HAPI sessions: presence badges, project grouping, search by details or message text, sort and filter, unread handling and row actions."
+---
+
 # Session list
 
 HAPI's Web session list combines live session state, project grouping, search,
@@ -35,15 +39,31 @@ ordering key. It is different from `activeAt`: `activeAt` is the CLI connection 
 clock and does not, by itself, move a session in the list. A connected session
 can therefore be idle; see [active is transport liveness, not agent health](../api/client-contract/sse.md#active-is-transport-liveness-not-agent-health).
 
-When enabled in **Settings → Display**, the optional in-progress layout moves
-active sessions into Working, Pending, Active, and Idle sections. Global and
-project pins remain distinct from these sections. This optional layout still
-moves rows between sections as their status changes, but orders rows within
-each section by user input rather than ongoing output.
+**Settings → Display → Pin in-progress sessions** controls an **In progress**
+section shown above the project folders (global pins stay above it):
+
+- **Off** keeps every session in its project folder.
+- **Long-running jobs** (the default) lifts sessions with a running
+  [session job](./session-jobs.md) meter.
+- **Working & pending** also lifts sessions whose agent is working or waiting
+  on you.
+
+Connected-but-idle sessions stay in their project folders in every mode. Rows
+move into and out of the section as their status changes, but are ordered by
+user input rather than ongoing output. **Active sessions only** in the same
+settings group hides inactive sessions, except the open session and sessions
+with a running long-running job.
+
+A session counts as working while it has open tool calls, even between agent
+rounds. Autonomous loops that keep running tools therefore show as working
+rather than as waiting for input.
 
 ## Text search
 
-The search field on the Web session list searches session metadata, including:
+The search field has two scopes. The icon at its left edge switches between
+them.
+
+**Session details** (the default) searches session metadata, including:
 
 - the displayed title (name, summary, path, or ID fallback);
 - worktree labels and paths;
@@ -51,7 +71,18 @@ The search field on the Web session list searches session metadata, including:
 - agent flavor and machine label; and
 - the session ID.
 
-Plain-text matching is case-insensitive and supports partial substrings. A
+A **Default / Exclude** menu beside the field applies to this scope:
+**Exclude** inverts the match and shows only sessions that do *not* match the
+query.
+
+**Message text** searches the messages inside every session (at least 2
+characters). Matching sessions are listed with a snippet of the matching
+message; opening a result jumps to that message. Very long messages are
+truncated for indexing, so the list notes when results may be incomplete. The
+status and **Unread only** filters still apply. Inside a chat, the same
+message-text search is available for the current session.
+
+In the session-details scope, plain-text matching is case-insensitive and supports partial substrings. A
 multi-word query uses AND semantics: every term must match at least one
 searchable field. Queries containing `*` or `?` use wildcard matching, where
 `*` matches any sequence and `?` matches one character.
@@ -73,23 +104,39 @@ matching rows.
 
 - **Sort and filter** in the list toolbar holds the rarely changed view
   choices: sort by last message (the default) or date created; **Active
-  first** (on by default); and show all sessions, active only, or archived
-  only. The currently open session stays visible. Choices are remembered
-  locally, and a dot on the button marks a non-default view.
+  first** (on by default); show all sessions, active only, or archived only;
+  and **Unread only**. The currently open session stays visible. Choices are
+  remembered locally, and a dot on the button marks a non-default view.
 - **Machine** filters can be applied when more than one machine is present:
   chips under the toolbar on wide screens, a filter button in the toolbar on
   narrow ones. The selection is remembered locally in the browser and falls
   back to All when that machine is no longer available.
-- **Unread** sessions need no filter. A collapsed project still lists its
-  unread sessions under its header, and the preview limit never hides one.
-  The toolbar shows **Mark all as read** with the unread count while any
-  session is unread.
+- **Keep unread sessions visible** (Settings → Display, on by default): a
+  collapsed project still lists its unread sessions under its header, and the
+  preview limit never hides one. Turn it off to fold collapsed projects
+  completely. The toolbar shows **Mark all as read** with the unread count
+  while any session is unread.
 - **Session preview limit** controls how many rows are initially visible within
   each project group. Unread sessions, sessions with pending requests, and the
   selected session can remain visible; a project can reveal more rows in
   batches.
-- **Session-list status** controls whether rows show the standard or detailed
-  attention/status presentation.
+- **Session list status hints** chooses Basic (runtime state) or Extended
+  (also permission, input, background-task, new-activity and scheduled-message
+  hints).
+
+## Row and group actions
+
+- **Session rows.** Hover a row (desktop) to archive it or unpin it directly.
+  The row menu also offers rename, global or project pin, and **Open in
+  separate window**.
+- **Status indicators.** The agent icon carries the presence badge. A spinner
+  beside the title combines running activity with unread state; an unread
+  session at rest shows a dot.
+- **Titles.** Agents name sessions automatically and may update the title as
+  work progresses. In the **Rename** dialog, the padlock locks a title so
+  agent activity cannot change it; tap it again to unlock.
+- **Project groups.** Right-click (or long-press) a project header to copy its
+  path, start a new session in that directory, or archive all of its sessions.
 
 Empty, inactive session stubs without conversation, an agent identity, or an
 explicit title signal are not shown in the normal sidebar. Duplicate rows

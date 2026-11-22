@@ -389,6 +389,7 @@ export function query(config: {
             continue: continueConversation,
             resume,
             forkSession,
+            resumeSessionAt,
             model,
             effort,
             fallbackModel,
@@ -423,6 +424,7 @@ export function query(config: {
     if (continueConversation) args.push('--continue')
     if (resume) args.push('--resume', resume)
     if (forkSession) args.push('--fork-session')
+    if (resumeSessionAt) args.push('--resume-session-at', resumeSessionAt)
     args.push(...additionalArgs)
     if (settingsPath) args.push('--settings', settingsPath)
     if (allowedTools.length > 0) args.push('--allowedTools', allowedTools.join(','))

@@ -40,14 +40,13 @@ export function buildJobTerminalWakePrompt(job: JobWakeSnapshot): string {
     const lines = [
         `[hapi job] Attached job "${job.key}" (${job.label}) reached status=${job.status}.`,
         `Detail: ${detail}`,
-        'Verify the outcome and continue the next batch if appropriate.',
     ]
     if (job.runId) {
         lines.splice(2, 0, `runId: ${job.runId}`)
     }
     const prescription = job.wakePrompt?.trim()
     if (prescription) {
-        lines.push('', 'Prescription:', prescription)
+        lines.push('', prescription)
     }
     return lines.join('\n')
 }
