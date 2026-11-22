@@ -1,0 +1,12 @@
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; form-action https:; frame-ancestors 'none'; base-uri 'none'; object-src 'none'
+  Referrer-Policy: strict-origin
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Cache-Control: no-store
+  Strict-Transport-Security: max-age=31536000
+
+/.well-known/apple-app-site-association
+  Content-Type: application/json
+/.well-known/assetlinks.json
+  Content-Type: application/json

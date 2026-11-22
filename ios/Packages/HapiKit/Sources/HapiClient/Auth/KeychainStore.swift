@@ -3,25 +3,100 @@ import Foundation
 import Security
 #endif
 
+/// The durable secret a paired hub is authenticated with, exchanged for a JWT
+/// via `POST /api/auth` (`docs/api/client-contract/auth.md`).
+public enum HubAuthCredential: Equatable, Sendable {
+    /// Pairing secret (`CLI_API_TOKEN[:namespace]`), sent as `{accessToken}`.
+    case accessToken(String)
+    /// Refresh credential from `POST /api/passkey/login/verify`, sent as
+    /// `{passkeySession}`.
+    case passkeySession(String)
+
+    /// Body of the `POST /api/auth` exchange for this credential.
+    public var exchangeBody: [String: String] {
+        switch self {
+        case .accessToken(let token): ["accessToken": token]
+        case .passkeySession(let session): ["passkeySession": session]
+        }
+    }
+
+    var isEmpty: Bool {
+        switch self {
+        case .accessToken(let value), .passkeySession(let value): value.isEmpty
+        }
+    }
+}
+
 /// The per-hub credential record (`docs/api/client-contract/auth.md`).
 ///
-/// The access token is the durable secret; the JWT is a 4-hour cache
-/// persisted only to save one `/api/auth` round-trip at cold start.
+/// The credential (access token or passkey session) is the durable secret;
+/// the JWT is a 4-hour cache persisted only to save one `/api/auth`
+/// round-trip at cold start. Exactly one credential kind is stored, encoded
+/// as an `accessToken` or `passkeySession` field.
 public struct HubCredentials: Codable, Equatable, Sendable {
     /// Normalized hub origin (see ``HubURLNormalization``); also the storage key.
     public var hubUrl: String
-    /// Long-lived pairing secret, passed verbatim to `POST /api/auth`.
-    public var accessToken: String
+    /// Secret exchanged by the silent re-auth loop.
+    public var credential: HubAuthCredential
     /// Last issued JWT, if any.
     public var jwt: String?
     /// When `jwt` was obtained, epoch ms.
     public var jwtObtainedAt: Int?
 
-    public init(hubUrl: String, accessToken: String, jwt: String? = nil, jwtObtainedAt: Int? = nil) {
+    public init(hubUrl: String, credential: HubAuthCredential, jwt: String? = nil, jwtObtainedAt: Int? = nil) {
         self.hubUrl = hubUrl
-        self.accessToken = accessToken
+        self.credential = credential
         self.jwt = jwt
         self.jwtObtainedAt = jwtObtainedAt
+    }
+
+    /// Access-token record (QR / manual / deep-link pairing).
+    public init(hubUrl: String, accessToken: String, jwt: String? = nil, jwtObtainedAt: Int? = nil) {
+        self.init(hubUrl: hubUrl, credential: .accessToken(accessToken), jwt: jwt, jwtObtainedAt: jwtObtainedAt)
+    }
+
+    /// Long-lived pairing secret, when the hub was paired by access token.
+    public var accessToken: String? {
+        if case .accessToken(let token) = credential { return token }
+        return nil
+    }
+
+    /// Passkey refresh credential, when the hub was signed in by passkey.
+    public var passkeySession: String? {
+        if case .passkeySession(let session) = credential { return session }
+        return nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case hubUrl, accessToken, passkeySession, jwt, jwtObtainedAt
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        hubUrl = try container.decode(String.self, forKey: .hubUrl)
+        if let token = try container.decodeIfPresent(String.self, forKey: .accessToken) {
+            credential = .accessToken(token)
+        } else if let session = try container.decodeIfPresent(String.self, forKey: .passkeySession) {
+            credential = .passkeySession(session)
+        } else {
+            throw DecodingError.keyNotFound(CodingKeys.accessToken, DecodingError.Context(
+                codingPath: container.codingPath,
+                debugDescription: "Credential record has neither accessToken nor passkeySession"
+            ))
+        }
+        jwt = try container.decodeIfPresent(String.self, forKey: .jwt)
+        jwtObtainedAt = try container.decodeIfPresent(Int.self, forKey: .jwtObtainedAt)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(hubUrl, forKey: .hubUrl)
+        switch credential {
+        case .accessToken(let token): try container.encode(token, forKey: .accessToken)
+        case .passkeySession(let session): try container.encode(session, forKey: .passkeySession)
+        }
+        try container.encodeIfPresent(jwt, forKey: .jwt)
+        try container.encodeIfPresent(jwtObtainedAt, forKey: .jwtObtainedAt)
     }
 }
 

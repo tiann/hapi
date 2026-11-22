@@ -152,7 +152,7 @@ describe('AgyAcpRemoteLauncher replaying a recorded agy 1.5.2 steered turn', () 
 
         // Steer once agy reports the running tool call.
         await vi.waitFor(() => expect(client.sendAgentMessage).toHaveBeenCalledWith(
-            expect.objectContaining({ type: 'tool-call', callId: 'call_1' })
+            expect.objectContaining({ type: 'tool-call', callId: expect.stringMatching(/^call_1#/) })
         ), { timeout: 5000 });
         queue.push(steerText, mode, 'steer-1');
         const steer = client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!;

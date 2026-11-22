@@ -126,6 +126,18 @@ describe('bootstrapExistingSession', () => {
         delete process.env[HAPI_SESSION_ID_ENV]
     })
 
+    it.each([false, true])('refuses unsafe attached session bootstrap before creating a socket (diverged=%s)', async diverged => {
+        const session = createSession();
+        const codexRuntime = { kind: 'attached', bindingId: '11111111-1111-4111-8111-111111111111', state: 'detached' } as const;
+        session.metadata = { ...session.metadata!, codexRuntime, conversationHistoryDiverged: diverged };
+        getSessionMock.mockResolvedValue(session);
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' });
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' });
+        await expect(bootstrapExistingSession({ sessionId: session.id, flavor: 'codex', workingDirectory: '/tmp/project',
+            ...(diverged ? { metadataOverrides: { codexRuntime } } : {}) })).rejects.toThrow(diverged ? 'history changed' : 'hapi attach');
+        expect(sessionSyncClientMock).not.toHaveBeenCalled();
+    });
+
     it('refuses local Codex resume of a CLI-archived source with a pending fork before creating a socket or changing metadata', async () => {
         const session = createSession()
         session.metadata = { ...session.metadata!, lifecycleState: 'archived', archivedBy: 'cli',
@@ -378,6 +390,125 @@ describe('bootstrapExistingSession', () => {
                 conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
             })
         )
+    })
+
+    it('preserves a pending claudeRewind intent when reactivating a session', async () => {
+        const session = createSession()
+        session.metadata = {
+            ...session.metadata!,
+            claudeSessionId: 'claude-thread-1',
+            claudeRewind: {
+                targetLocalId: 'local-2',
+                truncateFromLocalId: 'local-2',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['prompt-uuid-2']
+            }
+        }
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true)
+        }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'claude',
+            workingDirectory: '/tmp/project'
+        })
+
+        // The durable rewind intent must survive the reopen: runClaude's
+        // reconcilePendingRewind() reads it right after bootstrap and re-arms
+        // the native boundary. Dropping it here resumes the un-rewound JSONL
+        // tail while the hub transcript stays truncated - permanent drift.
+        const updateHandler = sessionClient.updateMetadata.mock.calls[0][0]
+        expect(updateHandler(session.metadata)).toEqual(expect.objectContaining({
+            claudeSessionId: 'claude-thread-1',
+            claudeRewind: {
+                targetLocalId: 'local-2',
+                truncateFromLocalId: 'local-2',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['prompt-uuid-2']
+            }
+        }))
+    })
+
+    it('preserves externalRefs when bootstrap rebuild omits them', async () => {
+        const session = createSession()
+        const existingMetadata = session.metadata
+        if (!existingMetadata) throw new Error('expected test session metadata')
+        const externalRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1160,
+            url: 'https://github.com/tiann/hapi/pull/1160',
+            role: 'primary' as const
+        }]
+        session.metadata = {
+            ...existingMetadata,
+            externalRefs
+        }
+        const sessionClient = { updateMetadata: vi.fn() }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const result = await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            workingDirectory: '/tmp/project'
+        })
+
+        expect(result.metadata.externalRefs).toEqual(externalRefs)
+        const updateHandler = sessionClient.updateMetadata.mock.calls[0][0]
+        expect(updateHandler(session.metadata).externalRefs).toEqual(externalRefs)
+    })
+
+    it('lets metadataOverrides replace or clear externalRefs on bootstrap', async () => {
+        const session = createSession()
+        const existingMetadata = session.metadata
+        if (!existingMetadata) throw new Error('expected test session metadata')
+        session.metadata = {
+            ...existingMetadata,
+            externalRefs: [{
+                kind: 'github_pr',
+                repo: 'tiann/hapi',
+                number: 1160,
+                url: 'https://github.com/tiann/hapi/pull/1160',
+                role: 'primary'
+            }]
+        }
+        const replacement = [{
+            kind: 'github_pr' as const,
+            repo: 'owner/other',
+            number: 9,
+            url: 'https://github.com/owner/other/pull/9',
+            role: 'primary' as const
+        }]
+        const sessionClient = { updateMetadata: vi.fn() }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const replaced = await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            workingDirectory: '/tmp/project',
+            metadataOverrides: { externalRefs: replacement }
+        })
+        expect(replaced.metadata.externalRefs).toEqual(replacement)
+
+        const cleared = await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            workingDirectory: '/tmp/project',
+            metadataOverrides: { externalRefs: [] }
+        })
+        expect(cleared.metadata.externalRefs).toEqual([])
     })
 
     it('clears stale history capabilities before reporting a Codex session as started', async () => {
