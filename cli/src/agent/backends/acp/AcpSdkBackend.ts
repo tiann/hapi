@@ -824,7 +824,7 @@ export class AcpSdkBackend implements AgentBackend {
             shouldSend?: () => boolean
             // prompt() waits for earlier output before it sends and for late output
             // after the answer; callers timing the agent itself need both moments.
-            timing?: { onSent?: () => void; onAnswered?: () => void }
+            timing?: { onSent?: () => void; onAnswered?: (succeeded: boolean) => void }
         }
     ): Promise<boolean> {
         if (!this.transport) {
@@ -869,6 +869,7 @@ export class AcpSdkBackend implements AgentBackend {
             // during complex tasks, tool-heavy operations, or slow model responses
             this.promptRequestInFlight = true;
             let response: unknown;
+            let succeeded = false;
             try {
                 const request = this.transport.sendRequest('session/prompt', {
                     sessionId,
@@ -876,9 +877,10 @@ export class AcpSdkBackend implements AgentBackend {
                 }, { timeoutMs: Infinity });
                 options?.timing?.onSent?.();
                 response = await request;
+                succeeded = true;
             } finally {
                 this.promptRequestInFlight = false;
-                options?.timing?.onAnswered?.();
+                options?.timing?.onAnswered?.(succeeded);
             }
 
             stopReason = isObject(response) ? asString(response.stopReason) : null;
@@ -1020,6 +1022,8 @@ export class AcpSdkBackend implements AgentBackend {
         dispatched: Promise<void>;
         /** Settles when the agent answers, before late output is drained. */
         answered: Promise<void>;
+        /** Like `answered`, but true only when the answer is a success, not an error. */
+        succeeded: Promise<boolean>;
         /** Resolves with the ACP stopReason (`cancelled` after session/cancel). */
         completed: Promise<string | null>;
     } {
@@ -1074,7 +1078,8 @@ export class AcpSdkBackend implements AgentBackend {
         });
 
         const answered = request.completed.then(() => {}, () => {});
-        return { dispatched: request.dispatched, answered, completed };
+        const succeeded = request.completed.then(() => true, () => false);
+        return { dispatched: request.dispatched, answered, succeeded, completed };
     }
 
     async respondToPermission(

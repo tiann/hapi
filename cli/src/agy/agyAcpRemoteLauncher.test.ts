@@ -95,7 +95,7 @@ class FakeAgyBackend {
         onUpdate: (message: AgentMessage) => void,
         options?: {
             shouldSend?: () => boolean
-            timing?: { onSent?: () => void; onAnswered?: () => void }
+            timing?: { onSent?: () => void; onAnswered?: (succeeded: boolean) => void }
         }
     ): Promise<void> {
         const timing = options?.timing;
@@ -108,6 +108,7 @@ class FakeAgyBackend {
         this.prompts.push(content);
         this.promptInFlight = true;
         timing?.onSent?.();
+        let succeeded = false;
         try {
             const script = this.promptScripts.shift();
             if (script) {
@@ -116,9 +117,10 @@ class FakeAgyBackend {
                 onUpdate({ type: 'text', text: 'answer' });
                 onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
             }
+            succeeded = true;
         } finally {
             this.promptInFlight = false;
-            timing?.onAnswered?.();
+            timing?.onAnswered?.(succeeded);
         }
         if (this.postResponseDrainMs) {
             this.draining = true;
@@ -158,10 +160,11 @@ class FakeAgyBackend {
         let answer!: () => void;
         const answered = new Promise<void>((res) => { answer = res; });
         void completed.then(answer, answer);
+        const succeeded = completed.then(() => true, () => false);
         this.steerCompletions.push({ resolve, reject, answer, onUsage: options?.onUsage });
         const dispatched = this.steerDispatchError ? Promise.reject(this.steerDispatchError) : Promise.resolve();
         void dispatched.catch(() => {});
-        return { dispatched, answered, completed };
+        return { dispatched, answered, succeeded, completed };
     }
     abortSoftSteers(): void {
         this.abortSoftSteersCalls += 1;
@@ -1801,6 +1804,54 @@ describe('AgyAcpRemoteLauncher steer state matrix', () => {
             await vi.waitFor(() => expect(consumedSteer(client, 'steer-2')).toBe(true));
             queue.close();
             backend.steerCompletions[1]!.resolve('end_turn');
+            await run;
+        });
+
+        it('confirms neither of two overlapping steers when agy refuses the first', async () => {
+            const backend = new FakeAgyBackend();
+            const { queue, client, run, release } = await heldTurn(backend);
+            queue.push('also lint', REVIEW, 'steer-1');
+            queue.push('and format', REVIEW, 'steer-2');
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' });
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-2' });
+
+            // A question opened: agy refuses both prompts.
+            const refusal = () => Object.assign(new Error("Can't add this prompt to session"), { code: -32603 });
+            backend.steerCompletions[0]!.reject(refusal());
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(consumedSteer(client, 'steer-2')).toBe(false);
+            backend.steerCompletions[1]!.reject(refusal());
+
+            await vi.waitFor(() => {
+                expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-1'], 'queued');
+                expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-2'], 'queued');
+            });
+            expect(consumedSteer(client, 'steer-1')).toBe(false);
+            expect(consumedSteer(client, 'steer-2')).toBe(false);
+            release();
+            queue.close();
+            await run;
+        });
+
+        it('does not confirm a steer when the prompt it interrupted ends in an error', async () => {
+            const backend = new FakeAgyBackend();
+            const { session, queue, client } = makeSession();
+            let fail!: () => void;
+            backend.promptScripts.push(async (onUpdate) => {
+                onUpdate({ type: 'tool_call', id: 't1', name: 'run_command', input: {}, status: 'in_progress' });
+                await new Promise<void>((_resolve, reject) => { fail = () => reject(new Error('agy failed')); });
+            });
+            queue.push('run the tests', REVIEW, 'first');
+            const { run } = launch(session, [backend]);
+            await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+            queue.push('also lint', REVIEW, 'steer-1');
+            await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' });
+
+            fail();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            expect(consumedSteer(client, 'steer-1')).toBe(false);
+            queue.close();
+            backend.steerCompletions[0]!.resolve('end_turn');
             await run;
         });
 

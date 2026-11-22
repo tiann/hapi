@@ -225,10 +225,10 @@ type AgyTurn = {
     steersTaken: number;
     // agy's answers to the turn's requests, before HAPI drains late output.
     mainAnswered: Promise<void>;
-    answerMain: () => void;
+    answerMain: (succeeded?: boolean) => void;
     steerAnswers: Promise<void>[];
-    // The answer to the request agy holds open: the prompt, then the latest steer.
-    openRequest: Promise<void>;
+    // Whether agy answered the request it holds open (the prompt, then the latest steer) with a success.
+    openRequest: Promise<boolean>;
     // agy echoes the prompt first, and that echo may contain a steer's text.
     promptEcho: { text: string; echo: string; done: boolean };
     unechoedSteers: Array<{ text: string; echo: string; accept: () => void }>;
@@ -1046,8 +1046,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         let releaseSteerWait!: () => void;
         const steerWaitReleased = new Promise<void>((resolve) => { releaseSteerWait = resolve; });
         let acknowledged = false;
-        let answerMain!: () => void;
-        const mainAnswered = new Promise<void>((resolve) => { answerMain = resolve; });
+        let settleMain!: (succeeded: boolean) => void;
+        const mainSucceeded = new Promise<boolean>((resolve) => { settleMain = resolve; });
+        const mainAnswered = mainSucceeded.then(() => {});
+        const answerMain = (succeeded = false) => settleMain(succeeded);
         const restoreIfUserTurn = () => {
             if (!internalWakeup) this.restorePrompt(turn, message);
         };
@@ -1084,7 +1086,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             mainAnswered,
             answerMain,
             steerAnswers: [],
-            openRequest: mainAnswered,
+            openRequest: mainSucceeded,
             promptEcho: { text: normalizeEcho(message), echo: '', done: false },
             unechoedSteers: [],
             answeredSteers: [],
@@ -1179,9 +1181,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 await backend.prompt(acpSessionId, prompt, (update) => this.handleTurnUpdate(turn, update), {
                     timing: {
                         onSent: () => { turn.sentAt = Date.now(); },
-                        onAnswered: () => {
+                        onAnswered: (succeeded) => {
                             turn.answeredAt = Date.now();
-                            turn.answerMain();
+                            turn.answerMain(succeeded);
                         }
                     }
                 });
@@ -1349,7 +1351,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const interrupted = turn.openRequest;
         // agy 1.5.9+ echoes nothing: output without an echo of the prompt marks it.
         const echoless = turn.sawActivity && !turn.promptEcho.echo;
-        let steerAnswered: Promise<void> | null = null;
+        let steerSucceeded: Promise<boolean> | null = null;
         let resolved = false;
         let steerCounted = false;
         let forgetEcho = () => {};
@@ -1365,7 +1367,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (resolved) return;
             resolved = true;
             forgetEcho();
-            if (turn.openRequest === steerAnswered) turn.openRequest = interrupted;
+            if (turn.openRequest === steerSucceeded) turn.openRequest = interrupted;
             if (steerCounted) {
                 steerCounted = false;
                 turn.steersTaken -= 1;
@@ -1424,8 +1426,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         turn.steers.push(settled);
         turn.steersTaken += 1;
         steerCounted = true;
-        steerAnswered = steer.answered;
-        turn.openRequest = steerAnswered;
+        steerSucceeded = steer.succeeded;
+        turn.openRequest = steerSucceeded;
         turn.steerAnswers.push(steer.answered.then(() => {
             if (this.turn === turn) {
                 turn.answeredAt = Date.now();
@@ -1459,8 +1461,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             return { steered: false, error: 'Failed to steer into the active turn' };
         }
         if (echoless) {
-            void interrupted.then(() => {
-                if (this.turn === turn && !turn.aborted && !this.backendLost) accept();
+            void interrupted.then((succeeded) => {
+                if (succeeded && this.turn === turn && !turn.aborted && !this.backendLost) accept();
             });
         }
 
