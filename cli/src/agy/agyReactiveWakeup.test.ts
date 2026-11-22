@@ -6683,6 +6683,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         queue.push('run again', { permissionMode: 'always-proceed' }, 'm2');
         await vi.waitFor(() => expect(readyCount()).toBe(4));
 
+        await client.rpcHandlerManager.handlers.get('abort')!();
         await vi.waitFor(() => expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
             type: 'tool-call-result', callId: 'call-fresh-same-output'
         })));

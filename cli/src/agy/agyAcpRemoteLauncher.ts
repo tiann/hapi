@@ -31,6 +31,7 @@ import {
     AGY_WAKEUP_CONTINUE_PROMPT,
     addAgyUsage,
     advanceAgyTurnTranscriptCursor,
+    agyTerminalPlannerEndIndex,
     agyTranscriptPaths,
     buildAgyBackgroundCompletionToolResult,
     buildAgyBackgroundKilledToolResult,
@@ -1798,9 +1799,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                             // An older wakeup completion may already be inside this window.
                             const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, item.turnStartStepIndex);
                             const userIndex = steps.findIndex(step => step.source === 'USER_EXPLICIT' && step.type === 'USER_INPUT');
-                            const responseRecorded = userIndex >= 0 && steps.slice(userIndex + 1).some(step =>
-                                step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE'
-                                && !step.tool_calls?.length && item.streamedTexts?.has(step.content?.trim() ?? '')
+                            const responseRecorded = userIndex >= 0 && steps.some((step, index) => index > userIndex
+                                && agyTerminalPlannerEndIndex(steps, index) !== null
+                                && (Boolean(step.tool_calls?.length) || item.streamedTexts?.has(step.content?.trim() ?? ''))
                             );
                             if (!responseRecorded && Date.now() - item.turnEndedAt < this.reactiveTimings.maxIdleMs) continue;
                             if (!responseRecorded) {
@@ -2386,7 +2387,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             for (const entry of this.backgroundCommands) {
                 entry.dismissedFromIndicator = true;
             }
-            this.retainedAmbiguousCompletions.length = 0;
             this.syntheticCallAliases.clear();
         }
         this.abortController.abort();

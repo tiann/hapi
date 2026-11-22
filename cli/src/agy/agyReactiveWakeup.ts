@@ -548,6 +548,17 @@ function killedTaskFromToolCall(
     return taskId.length > 0 ? taskId : undefined;
 }
 
+export function agyTerminalPlannerEndIndex(steps: AgyTranscriptStep[], index: number): number | null {
+    const step = steps[index]!;
+    if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE' || step.status !== 'DONE') return null;
+    const calls = step.tool_calls ?? [];
+    if (!calls.length) return index;
+    if (!calls.some(call => AGY_TURN_TERMINATING_TOOLS.has(call.name))) return null;
+    const { actionSteps, nextIndex } = collectPlannerActionSteps(steps, index, calls.length);
+    return actionSteps.length === calls.length && calls.every((call, i) => isCompletedOrBackgroundedBatchAction(call, actionSteps[i]!))
+        ? nextIndex : null;
+}
+
 /** Extracts `TaskId` values from completed `manage_task(Action="kill")` calls in `steps`. */
 export function extractKilledBackgroundTasks(steps: AgyTranscriptStep[]): Set<string> {
     const killed = new Set<string>();
@@ -754,26 +765,6 @@ export function advanceAgyTurnTranscriptCursor(
         && step.status === 'DONE'
         && (!Array.isArray(step.tool_calls) || step.tool_calls.length === 0);
 
-    const terminalTurnEndIndex = (plannerIdx: number): number | null => {
-        const step = stepsAfterStart[plannerIdx]!;
-        if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE' || step.status !== 'DONE') {
-            return null;
-        }
-        const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
-        if (toolCalls.length === 0) return plannerIdx;
-        if (!toolCalls.some((call) => AGY_TURN_TERMINATING_TOOLS.has(call.name))) {
-            return null;
-        }
-        const endIdx = plannerIdx + toolCalls.length;
-        if (endIdx >= stepsAfterStart.length) return null;
-        for (let k = plannerIdx + 1; k <= endIdx; k += 1) {
-            const call = toolCalls[k - plannerIdx - 1]!;
-            const action = stepsAfterStart[k]!;
-            if (!isCompletedOrBackgroundedBatchAction(call, action)) return null;
-        }
-        return endIdx;
-    };
-
     let lastUserInputIdx = -1;
     for (let i = 0; i < stepsAfterStart.length; i += 1) {
         const step = stepsAfterStart[i]!;
@@ -824,7 +815,7 @@ export function advanceAgyTurnTranscriptCursor(
                         }
                         probeTexts.set(text, available - 1);
                     }
-                    const endIdx = terminalTurnEndIndex(j);
+                    const endIdx = agyTerminalPlannerEndIndex(stepsAfterStart, j);
                     if (endIdx !== null) {
                         terminalIdx = endIdx;
                         break;
@@ -848,7 +839,7 @@ export function advanceAgyTurnTranscriptCursor(
             if (isTerminalPlanner(step)) {
                 sawTerminalPlanner = true;
             } else {
-                const endIdx = terminalTurnEndIndex(i);
+                const endIdx = agyTerminalPlannerEndIndex(stepsAfterStart, i);
                 if (endIdx !== null) pendingTerminalActionIdx = endIdx;
             }
         }
@@ -1049,13 +1040,14 @@ export function inspectSyntheticBackgroundCommandMatch(
             .map((entry) => entry.stepIndex)
             .filter((idx): idx is number => idx !== undefined)
     );
-    const actionsByStep = new Map(recentSteps.map(step => [step.step_index, step]));
     const freshActions: Array<AgyTranscriptStep | undefined> = [];
-    for (const step of recentSteps) {
+    for (const [plannerIndex, step] of recentSteps.entries()) {
         if (step.step_index <= turnStartStepIndex) continue;
         if (candidateStepIndexes.has(step.step_index)) continue;
         if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') continue;
-        (step.tool_calls ?? []).forEach((call, index) => {
+        const calls = step.tool_calls ?? [];
+        const { actionSteps } = collectPlannerActionSteps(recentSteps, plannerIndex, calls.length);
+        calls.forEach((call, index) => {
             if (call.name !== 'run_command') return;
             const args = decodeAgyTranscriptArgs(call.args);
             const plannedCmd = typeof args.CommandLine === 'string' ? args.CommandLine : undefined;
@@ -1068,7 +1060,7 @@ export function inspectSyntheticBackgroundCommandMatch(
                     if (args[key] !== undefined && args[key] !== val) return;
                 }
             }
-            freshActions.push(actionsByStep.get(step.step_index + index + 1));
+            freshActions.push(actionSteps[index]);
         });
     }
 
@@ -1076,7 +1068,7 @@ export function inspectSyntheticBackgroundCommandMatch(
     // both commands have identical arguments. Until the result arrives, defer.
     if (freshActions.length && (completedCandidates.length === 0 || freshActions.some(action => {
         if (!action || action.type !== 'RUN_COMMAND' || action.status !== 'DONE' || !action.content || isAgyStepContentTruncated(action)) return true;
-        const fresh = normalizeAgyCommandBody(action.content);
+        const fresh = normalizeAgyCommandBody(stripAgyStepTimestamps(action.content));
         return (liveResult?.stdout !== undefined && fresh.stdout === liveResult.stdout
             && (liveResult.exitCode === undefined || fresh.exitCode === liveResult.exitCode));
     }))) {
