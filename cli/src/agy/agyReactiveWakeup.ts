@@ -884,11 +884,13 @@ export function parseCompletedBackgroundTasks(
     if (!systemMessageContent) return [];
     const normalized = systemMessageContent.replace(/\r\n/g, '\n');
     const escapedSession = sessionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const nextTaskBoundary = `(?:\\n+Log: file:\\/\\/\\/[^\\n]*)?(?:\\n+\\[Message\\] timestamp=\\S+ sender=\\S+(?:\\s+priority=\\S+)?(?:\\s+content=|\\n+)|\\n+)Task id "${escapedSession}\\/task-\\d+" finished with result:`;
-    const nextNonTaskMessageBoundary = `\\n+Log: file:\\/\\/\\/[^\\n]*\\n+\\[Message\\] timestamp=\\S+ sender=\\S+(?:\\s+priority=\\S+)?(?:\\s+content=|\\n)`;
+    const messageHeader = `\\[Message\\] timestamp=\\S+ sender=\\S+(?:\\s+priority=\\S+)?(?:\\s+content=|\\n+)`;
+    const taskStartPrefix = `(?:<SYSTEM_MESSAGE>\\s*(?:${messageHeader})?|(?:\\n+Log: file:\\/\\/\\/[^\\n]*)?\\n+${messageHeader}|\\n+Log: file:\\/\\/\\/[^\\n]*\\n+)`;
+    const nextTaskBoundary = `(?:(?:\\n+Log: file:\\/\\/\\/[^\\n]*)?\\n+${messageHeader}|\\n+Log: file:\\/\\/\\/[^\\n]*\\n+)Task id "${escapedSession}\\/task-\\d+" finished with result:`;
+    const nextNonTaskMessageBoundary = `\\n+Log: file:\\/\\/\\/[^\\n]*\\n+${messageHeader}`;
     const endFrameBoundary = `(?:\\n+Log: file:\\/\\/\\/[^\\n]*)?\\s*<\\/SYSTEM_MESSAGE>`;
     const pattern = new RegExp(
-        `Task id "(${escapedSession}\\/task-\\d+)" finished with result:\\n([\\s\\S]*?)(?=${nextTaskBoundary}|${nextNonTaskMessageBoundary}|${endFrameBoundary})`,
+        `${taskStartPrefix}Task id "(${escapedSession}\\/task-\\d+)" finished with result:\\n([\\s\\S]*?)(?=${nextTaskBoundary}|${nextNonTaskMessageBoundary}|${endFrameBoundary})`,
         'g'
     );
     const results: AgyCompletedBackgroundTask[] = [];

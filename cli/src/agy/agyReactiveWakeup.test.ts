@@ -6264,4 +6264,289 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             }
         ]);
     });
+
+    it('ignores bare Task id finished headers printed inside another task stdout without message framing', () => {
+        const sessionId = 'conv-bare-header-in-stdout';
+        const content = [
+            '<SYSTEM_MESSAGE>',
+            '[Message] timestamp=2026-11-22T07:00:00Z sender=worker priority=HIGH',
+            `Task id "${sessionId}/task-1" finished with result:`,
+            'Command exited with code 0.',
+            '',
+            'Command output:',
+            'BEFORE_FAKE_HEADER',
+            `Task id "${sessionId}/task-2" finished with result:`,
+            'Command exited with code 0.',
+            '',
+            'Command output:',
+            'FAKE_TASK2_OUTPUT',
+            'AFTER_FAKE_HEADER',
+            'Log: file:///D:/logs/task-1.log',
+            '</SYSTEM_MESSAGE>'
+        ].join('\n');
+
+        expect(parseCompletedBackgroundTasks(content, sessionId)).toEqual([
+            {
+                taskId: `${sessionId}/task-1`,
+                body: [
+                    'Command exited with code 0.',
+                    '',
+                    'Command output:',
+                    'BEFORE_FAKE_HEADER',
+                    `Task id "${sessionId}/task-2" finished with result:`,
+                    'Command exited with code 0.',
+                    '',
+                    'Command output:',
+                    'FAKE_TASK2_OUTPUT',
+                    'AFTER_FAKE_HEADER'
+                ].join('\n'),
+                exitCode: 0
+            }
+        ]);
+    });
+
+    it('settles a truncated SYSTEM_MESSAGE after a completed wakeup once transcript_full.jsonl flushes the full row', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+        const acp = backend.sessionIdToCreate;
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-bg-post-complete-full',
+                name: 'Bash',
+                title: 'sleep 5 && echo FULL_AFTER_COMPLETE',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 5 && echo FULL_AFTER_COMPLETE' }
+            });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, acp, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run' },
+                {
+                    step_index: 1,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 5 && echo FULL_AFTER_COMPLETE"' } }]
+                },
+                {
+                    step_index: 2,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${acp}/task-1`
+                }
+            ]);
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 40,
+            reactiveMaxIdleMs: 120
+        });
+        const runPromise = launcher.launch();
+
+        const readyCount = () => client.sendSessionEvent.mock.calls
+            .filter(([event]) => event.type === 'ready').length;
+        queue.push('run', { permissionMode: 'always-proceed' }, 'm1');
+        await vi.waitFor(() => expect(readyCount()).toBe(1));
+
+        client.sendAgentMessage.mockClear();
+        client.sendClaudeSessionMessage.mockClear();
+
+        // Wakeup completes (step 4 PLANNER_RESPONSE arrives) while step 3 SYSTEM_MESSAGE is still truncated.
+        const { compactPath, fullPath } = agyTranscriptPaths(tempBrainDir, acp)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>\nTask id "... [truncated]',
+                    truncated_fields: ['content']
+                }),
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Background job finished.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => expect(readyCount()).toBe(2));
+
+        // Now transcript_full.jsonl flushes the full row for step 3 without any new step_index.
+        appendFileSync(
+            fullPath,
+            `${JSON.stringify({
+                step_index: 3,
+                source: 'SYSTEM',
+                type: 'SYSTEM_MESSAGE',
+                status: 'DONE',
+                content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nFULL_AFTER_COMPLETE\n</SYSTEM_MESSAGE>`
+            })}\n`,
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            const messages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+            expect(messages).toContainEqual(expect.objectContaining({
+                type: 'tool-call-result',
+                callId: 'call-bg-post-complete-full',
+                is_error: false,
+                output: { stdout: 'FULL_AFTER_COMPLETE', exit_code: 0 }
+            }));
+        });
+
+        await vi.waitFor(() => {
+            const snapshots = client.sendClaudeSessionMessage.mock.calls
+                .map(([msg]) => msg as { type?: string; subtype?: string; tasks?: Array<{ task_id?: string }> })
+                .filter((msg) => msg.type === 'system' && msg.subtype === 'background_tasks_changed');
+            expect(snapshots[snapshots.length - 1]?.tasks).toEqual([]);
+        });
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('suppresses duplicate Bash card and tool-call-result when ACP replays a timeout-settled synthetic wakeup command on the next prompt', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+        const acp = backend.sessionIdToCreate;
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Started timer.' } as unknown as AgentMessage);
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, acp, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start timer' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Started timer.' }
+            ]);
+        });
+
+        // Next user prompt replays the timeout-settled synthetic command over live ACP under a native call id.
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'live-replay-synth-1',
+                name: 'Bash',
+                title: 'sleep 5 && echo SYNTH_TIMEOUT_OK',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 5 && echo SYNTH_TIMEOUT_OK' }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'live-replay-synth-1',
+                status: 'completed',
+                output: { stdout: 'SYNTH_TIMEOUT_OK', exit_code: 0 }
+            });
+            onUpdate({ type: 'text', text: 'Done follow-up.' } as unknown as AgentMessage);
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, acp)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({ step_index: 7, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'follow up' }),
+                    JSON.stringify({ step_index: 8, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Done follow-up.' })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 40,
+            reactiveMaxIdleMs: 90
+        });
+        const runPromise = launcher.launch();
+
+        const readyCount = () => client.sendSessionEvent.mock.calls
+            .filter(([event]) => event.type === 'ready').length;
+        queue.push('start timer', { permissionMode: 'always-proceed' }, 'm1');
+        await vi.waitFor(() => expect(readyCount()).toBe(1));
+
+        // Wakeup 1 completes and creates synthetic command `agy-wakeup-${acp}-3-0` (`task-1`).
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, acp)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>Timer fired</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 5 && echo SYNTH_TIMEOUT_OK"' } }]
+                }),
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${acp}/task-1`
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Background command started.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => expect(readyCount()).toBe(2));
+
+        // Wakeup 2 times out without a final PLANNER_RESPONSE, settling `agy-wakeup-${acp}-3-0` from transcript.
+        appendFileSync(
+            compactPath,
+            `${JSON.stringify({
+                step_index: 6,
+                source: 'SYSTEM',
+                type: 'SYSTEM_MESSAGE',
+                status: 'DONE',
+                content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSYNTH_TIMEOUT_OK\n</SYSTEM_MESSAGE>`
+            })}\n`,
+            'utf8'
+        );
+
+        await vi.waitFor(() => expect(readyCount()).toBe(3));
+
+        client.sendAgentMessage.mockClear();
+
+        // User sends a follow-up prompt whose ACP stream replays `live-replay-synth-1`.
+        queue.push('follow up', { permissionMode: 'always-proceed' }, 'm2');
+        await vi.waitFor(() => expect(readyCount()).toBe(4));
+
+        const turn2Messages = client.sendAgentMessage.mock.calls.map(([msg]) => msg as {
+            type?: string;
+            callId?: string;
+        });
+        expect(turn2Messages.filter((m) => m.type === 'tool-call')).toEqual([]);
+        expect(turn2Messages.filter((m) => m.type === 'tool-call-result')).toEqual([]);
+
+        queue.close();
+        await runPromise;
+    });
 });

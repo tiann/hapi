@@ -284,6 +284,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }> = [];
     // Background `run_command` entries awaiting completion across turns.
     private readonly backgroundCommands: AgyOpenBackgroundCommand[] = [];
+    // Synthetic wakeup `run_command` entries settled from `transcript.jsonl`
+    // while `agy acp`'s cursor was not yet advanced (e.g. `timed_out`), kept
+    // until cursor sync or prompt replay so live ACP replay aliases to the
+    // original `agy-wakeup-*` card instead of opening a duplicate card.
+    private readonly settledSyntheticCommands: AgyOpenBackgroundCommand[] = [];
     // Wakeup task IDs already settled during `timed_out`, so a later completed
     // wakeup replay over the same unadvanced transcript slice skips re-creating
     // their `tool_call` / `tool_result` cards.
@@ -498,10 +503,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private recordDeferredTruncatedSystemSteps(steps: AgyTranscriptStep[]): void {
-        if (this.backgroundCommands.length === 0) return;
+        if (this.backgroundCommands.length === 0) {
+            this.deferredTruncatedSystemSteps.clear();
+            return;
+        }
         for (const step of steps) {
-            if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE' && isAgyStepContentTruncated(step)) {
-                this.deferredTruncatedSystemSteps.add(step.step_index);
+            if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
+                if (isAgyStepContentTruncated(step)) {
+                    this.deferredTruncatedSystemSteps.add(step.step_index);
+                } else {
+                    this.deferredTruncatedSystemSteps.delete(step.step_index);
+                }
             }
         }
     }
@@ -702,6 +714,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             });
             const reported = backend.getSessionModelsMetadata(acpSessionId)?.currentModelId ?? null;
             if (reported) this.currentModelId = reported;
+            if (this.retainedAmbiguousCompletions.length === 0) {
+                this.settledSyntheticCommands.length = 0;
+            }
         } catch (error) {
             logger.debug('[agy-acp] session/resume cursor sync failed', error);
             if (isAcpIndeterminateError(error)) {
@@ -799,11 +814,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (inspection.state === 'completed') {
                     this.pausedWakeupStepIndex = null;
                     this.lastTranscriptStepIndex = Math.max(this.lastTranscriptStepIndex, inspection.latestStepIndex);
-                    for (const deferredStep of [...this.deferredTruncatedSystemSteps]) {
-                        if (deferredStep <= this.lastTranscriptStepIndex) {
-                            this.deferredTruncatedSystemSteps.delete(deferredStep);
-                        }
-                    }
                     const wakeupFirstStepIndex = inspection.steps[0]?.step_index;
                     resolveAgyBackgroundTaskIds(
                         this.brainDir,
@@ -819,6 +829,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         this.backgroundCommands,
                         this.settledReplayTaskIds
                     );
+                    this.recordDeferredTruncatedSystemSteps(inspection.steps);
                     if (this.settledReplayTaskIds.size > 0) {
                         const killedInSlice = extractKilledBackgroundTasks(inspection.steps);
                         for (const step of inspection.steps) {
@@ -840,7 +851,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                             }
                         }
                     }
-                    if (!this.backgroundCommands.some((entry) => entry.synthetic)) {
+                    if (!this.backgroundCommands.some((entry) => entry.synthetic) && this.settledSyntheticCommands.length === 0) {
                         this.retainedAmbiguousCompletions.length = 0;
                     }
                     await this.advanceBackendCursor();
@@ -1005,6 +1016,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (!acpSessionId) {
                 acpSessionId = await backend.newSession({ cwd: session.path, mcpServers: [] });
                 this.backgroundCommands.length = 0;
+                this.settledSyntheticCommands.length = 0;
                 this.settledReplayTaskIds.clear();
                 this.deferredTruncatedSystemSteps.clear();
                 this.retainedAmbiguousCompletions.length = 0;
@@ -1311,6 +1323,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (!turn.aborted && !this.backendLost) {
                 this.reconcileRetainedAmbiguousCompletions(turn);
                 this.settleTranscriptBackgroundCommands(this.lastTranscriptStepIndex);
+                if (this.retainedAmbiguousCompletions.length === 0) {
+                    this.settledSyntheticCommands.length = 0;
+                }
             }
         } finally {
             if (turn.aborted) this.syncTranscriptCursor();
@@ -1738,7 +1753,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 const match = inspectSyntheticBackgroundCommandMatch(
                     this.brainDir,
                     acpSessionId,
-                    this.backgroundCommands,
+                    [...this.backgroundCommands, ...this.settledSyntheticCommands],
                     item.turnStartStepIndex,
                     {
                         liveCallId: item.resultMessage.id,
@@ -1752,6 +1767,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     idx -= 1;
                     progressed = true;
                     if (turn) turn.corroboratedSyntheticMatches += 1;
+                    const settledIdx = this.settledSyntheticCommands.findIndex(
+                        (entry) => entry.callId === match.entry.callId
+                    );
+                    if (settledIdx >= 0) {
+                        this.settledSyntheticCommands.splice(settledIdx, 1);
+                        continue;
+                    }
                     this.nativeToolNames.set(match.entry.callId, 'run_command');
                     const effectiveResult: AgentMessage = { ...item.resultMessage, id: match.entry.callId };
                     if (turn) {
@@ -1788,8 +1810,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     ): { message: AgentMessage; suppressForward: boolean; skipTracking?: boolean } {
         if ((message.type === 'tool_call' || message.type === 'tool_result') && this.syntheticCallAliases.has(message.id)) {
             const syntheticId = this.syntheticCallAliases.get(message.id)!;
+            const settledIdx = this.settledSyntheticCommands.findIndex((entry) => entry.callId === syntheticId);
             if (message.type === 'tool_result') {
                 this.syntheticCallAliases.delete(message.id);
+                if (settledIdx >= 0) {
+                    this.settledSyntheticCommands.splice(settledIdx, 1);
+                }
+            }
+            if (settledIdx >= 0) {
+                return { message: { ...message, id: syntheticId }, suppressForward: true, skipTracking: true };
             }
             return { message: { ...message, id: syntheticId }, suppressForward: message.type === 'tool_call' };
         }
@@ -1809,10 +1838,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             const nativeArgs = message.nativeArgs && typeof message.nativeArgs === 'object' && !Array.isArray(message.nativeArgs)
                 ? (message.nativeArgs as Record<string, unknown>)
                 : undefined;
+            const aliasedCallIds = new Set(this.syntheticCallAliases.values());
             const match = inspectSyntheticBackgroundCommandMatch(
                 this.brainDir,
                 acpSessionId,
-                this.backgroundCommands,
+                [
+                    ...this.backgroundCommands,
+                    ...this.settledSyntheticCommands.filter((entry) => !aliasedCallIds.has(entry.callId))
+                ],
                 turn.turnStartStepIndex,
                 { liveCallId: message.id, nativeArgs, callStatus: message.status }
             );
@@ -1821,7 +1854,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 turn.commandArrivalOrder = turn.commandArrivalOrder.filter((id) => id !== message.id);
                 turn.corroboratedSyntheticMatches += 1;
                 this.syntheticCallAliases.set(message.id, match.entry.callId);
-                return { message: { ...message, id: match.entry.callId }, suppressForward: true };
+                const isAlreadySettled = this.settledSyntheticCommands.some(
+                    (entry) => entry.callId === match.entry.callId
+                );
+                return {
+                    message: { ...message, id: match.entry.callId },
+                    suppressForward: true,
+                    ...(isAlreadySettled ? { skipTracking: true } : {})
+                };
             }
             if (match.kind === 'ambiguous') {
                 turn.deferredLiveCommandCalls.set(message.id, message);
@@ -1844,7 +1884,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 const match = inspectSyntheticBackgroundCommandMatch(
                     this.brainDir,
                     acpSessionId,
-                    this.backgroundCommands,
+                    [...this.backgroundCommands, ...this.settledSyntheticCommands],
                     turn.turnStartStepIndex,
                     {
                         liveCallId: message.id,
@@ -1855,6 +1895,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 );
                 if (match.kind === 'matched') {
                     turn.corroboratedSyntheticMatches += 1;
+                    const settledIdx = this.settledSyntheticCommands.findIndex(
+                        (entry) => entry.callId === match.entry.callId
+                    );
+                    if (settledIdx >= 0) {
+                        this.settledSyntheticCommands.splice(settledIdx, 1);
+                        return { message: { ...message, id: match.entry.callId }, suppressForward: true, skipTracking: true };
+                    }
                     this.nativeToolNames.set(match.entry.callId, 'run_command');
                     return { message: { ...message, id: match.entry.callId }, suppressForward: false };
                 }
@@ -2044,6 +2091,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const acpSessionId = this.acpSessionId;
         if (!acpSessionId || this.backgroundCommands.length === 0) return;
 
+        const syntheticByCallId = new Map(
+            this.backgroundCommands
+                .filter((entry) => entry.synthetic)
+                .map((entry) => [entry.callId, entry] as const)
+        );
         const settled = settleCompletedBackgroundCommandsFromTranscript(
             this.brainDir,
             acpSessionId,
@@ -2055,6 +2107,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         for (const item of settled) {
             if (recordReplayDedup && item.taskId) {
                 this.settledReplayTaskIds.add(item.taskId);
+            }
+            const syntheticEntry = syntheticByCallId.get(item.callId);
+            if (
+                recordReplayDedup
+                && syntheticEntry
+                && !this.settledSyntheticCommands.some((entry) => entry.callId === syntheticEntry.callId)
+            ) {
+                this.settledSyntheticCommands.push(syntheticEntry);
             }
             if (item.toolResult) {
                 if (!this.nativeToolNames.has(item.callId)) {
@@ -2244,6 +2304,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.clearBackgroundTasksSnapshot();
         if (hadTurn || this.shouldExit) {
             this.backgroundCommands.length = 0;
+            this.settledSyntheticCommands.length = 0;
             this.settledReplayTaskIds.clear();
             this.deferredTruncatedSystemSteps.clear();
             this.retainedAmbiguousCompletions.length = 0;
@@ -2287,6 +2348,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     protected async cleanup(): Promise<void> {
+        this.settledSyntheticCommands.length = 0;
         this.settledReplayTaskIds.clear();
         this.deferredTruncatedSystemSteps.clear();
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
