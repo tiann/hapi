@@ -4136,6 +4136,25 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         });
     });
 
+    it('defers a replay until the newer same-command action is readable', () => {
+        const sessionId = 'conv-delayed-action';
+        const taskId = `${sessionId}/task-1`;
+        const entry = { callId: 'old', synthetic: true, taskId, stepIndex: 0, commandLine: 'pwd' };
+        const rows = [
+            { step_index: 1, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE',
+                content: `<SYSTEM_MESSAGE>\nTask id "${taskId}" finished with result:\nCommand exited with code 0.\n\nCommand output:\nOLD\n</SYSTEM_MESSAGE>` },
+            { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE',
+                tool_calls: [{ name: 'run_command', args: { CommandLine: '"pwd"' } }] }
+        ];
+        const inspect = () => inspectSyntheticBackgroundCommandMatch(tempBrainDir, sessionId, [entry], 2,
+            { commandLine: 'pwd', resultOutput: { stdout: 'OLD', exit_code: 0 } });
+        writeTranscript(tempBrainDir, sessionId, rows);
+        expect(inspect().kind).toBe('ambiguous');
+        writeTranscript(tempBrainDir, sessionId, [...rows,
+            { step_index: 4, source: 'MODEL', type: 'RUN_COMMAND', status: 'DONE', content: 'NEW' }]);
+        expect(inspect()).toEqual({ kind: 'matched', entry });
+    });
+
     it('matches lifetime-suffixed liveCallId values against both synthetic and non-synthetic entries', () => {
         const sessionId = 'conv-lifetime';
         const fullTaskId = `${sessionId}/task-12`;

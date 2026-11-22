@@ -447,13 +447,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (latest > prevCursor) {
             this.lastTranscriptStepIndex = latest;
             if (prevCursor >= 0 && this.backgroundCommands.length > 0) {
-                this.settleTranscriptBackgroundCommands(latest, retainReplay);
-            }
-            if (prevCursor >= 0 && this.backgroundCommands.length > 0) {
+                // A full row arriving between these reads is either settled below or queued for retry.
                 this.recordDeferredTruncatedSystemSteps(
                     readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, prevCursor)
                         .filter((step) => step.step_index <= latest)
                 );
+                this.settleTranscriptBackgroundCommands(latest, retainReplay);
             }
         }
         this.pausedWakeupStepIndex = null;

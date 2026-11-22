@@ -1066,8 +1066,12 @@ export function inspectSyntheticBackgroundCommandMatch(
 
     // A different persisted output distinguishes an older replay even when
     // both commands have identical arguments. Until the result arrives, defer.
+    if (completedCandidates.length && freshActions.some(action => !action || action.type !== 'RUN_COMMAND'
+        || action.status !== 'DONE' || !action.content || isAgyStepContentTruncated(action))) {
+        return { kind: 'ambiguous' };
+    }
     if (freshActions.length && (completedCandidates.length === 0 || freshActions.some(action => {
-        if (!action || action.type !== 'RUN_COMMAND' || action.status !== 'DONE' || !action.content || isAgyStepContentTruncated(action)) return true;
+        if (!action?.content) return false;
         const fresh = normalizeAgyCommandBody(stripAgyStepTimestamps(action.content));
         return (liveResult?.stdout !== undefined && fresh.stdout === liveResult.stdout
             && (liveResult.exitCode === undefined || fresh.exitCode === liveResult.exitCode));
