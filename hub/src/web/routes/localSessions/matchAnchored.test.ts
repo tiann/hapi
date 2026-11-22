@@ -194,3 +194,34 @@ describe('anchored match: R4/R5 without a cursor', () => {
         expect(result).toEqual({ status: 'ok', delta: [] })
     })
 })
+
+describe('Antigravity live continuation', () => {
+    function agent(data: Record<string, unknown>) {
+        return { role: 'agent', content: { type: 'codex', data }, meta: { sentFrom: 'cli' } } as const
+    }
+
+    it('imports a late answer to an imported prompt across a local board exchange and a native follow-up', () => {
+        const initial = transcriptMessage(`${PREFIX}start`, 'initial question')
+        const late = { ...transcriptMessage(`${PREFIX}late`, ''), content: agent({ type: 'message', message: 'late answer' }) }
+        const live = transcriptMessage(`${PREFIX}live`, 'continue')
+        const board = agent({ type: 'message', message: '### Swarm Board' })
+        const stored = [storedMessage(initial.id, 'initial question'), storedMessage('board-command', '/swarm board'),
+            { ...storedMessage('board-response', ''), content: board }, storedMessage('live-prompt', 'continue')]
+        expect(matchAnchored({ storedMessages: stored, transcript: transcript([initial, late, live]),
+            importPrefix: PREFIX, cursor: null, reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: [late] })
+    })
+
+    it('pairs a background placeholder after a live reply with its native result before the reply', () => {
+        const initial = transcriptMessage(`${PREFIX}start`, 'initial')
+        const prompt = transcriptMessage(`${PREFIX}run`, 'run')
+        const call = (callId: string) => agent({ type: 'tool-call', name: 'Bash', callId })
+        const result = (callId: string) => agent({ type: 'tool-call-result', callId,
+            output: { stdout: 'Running in the background. The result appears when agy reports it.' } })
+        const answer = agent({ type: 'message', message: 'Started' })
+        const native = [call('native'), result('native'), answer].map((content, i) => ({ ...transcriptMessage(`${PREFIX}${i}`, ''), content }))
+        const live = [call('acp'), answer, result('acp')].map((content, i) => ({ ...storedMessage(`live-${i}`, ''), content }))
+        expect(matchAnchored({ storedMessages: [storedMessage(initial.id, 'initial'), storedMessage('prompt', 'run'), ...live],
+            transcript: transcript([initial, prompt, ...native]), importPrefix: PREFIX, cursor: null,
+            reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: [] })
+    })
+})

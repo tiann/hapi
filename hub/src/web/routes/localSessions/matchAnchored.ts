@@ -164,7 +164,8 @@ function extractAgentItem(content: unknown, index: number): AgentItemSummary | n
 }
 
 function groupIntoTurns(
-    messages: ReadonlyArray<{ content: unknown; invokedAt?: number | null }>
+    messages: ReadonlyArray<{ content: unknown; invokedAt?: number | null }>,
+    batchAdjacentUsers = true
 ): TurnSummary[] | null {
     const turns: TurnSummary[] = []
     let current: {
@@ -181,7 +182,7 @@ function groupIntoTurns(
         const userPart = extractUserPromptPart(msg)
         if (userPart !== null) {
             const lastUserPart = current?.userParts[current.userParts.length - 1]
-            const canBatchWithCurrent = current !== null
+            const canBatchWithCurrent = batchAdjacentUsers && current !== null
                 && !current.hasAgentContent
                 && (
                     lastUserPart?.batchKey === null
@@ -344,7 +345,6 @@ function agentItemsCompatible(
 function alignTurnAgentItems(
     liveTurn: TurnSummary,
     sourceTurn: TurnSummary,
-    requireFullConsumption: boolean,
     matchedSourceIndices: Set<number>,
     callIdMap: Map<string, string>
 ): boolean {
@@ -353,10 +353,19 @@ function alignTurnAgentItems(
     }
     let sourceCursor = 0
     for (const liveItem of liveTurn.agentItems) {
+        if (liveItem.kind === 'tool-result' && liveItem.isBackgroundPlaceholder) {
+            const placeholder = sourceTurn.agentItems.find(item => item.kind === 'tool-result'
+                && item.isBackgroundPlaceholder && !matchedSourceIndices.has(item.index)
+                && (callIdMap.get(item.callId) ?? item.callId) === liveItem.callId)
+            if (!placeholder) return false
+            matchedSourceIndices.add(placeholder.index)
+            continue
+        }
         let matched = false
         while (sourceCursor < sourceTurn.agentItems.length) {
             const candidate = sourceTurn.agentItems[sourceCursor]!
             sourceCursor += 1
+            if (matchedSourceIndices.has(candidate.index)) continue
             if (agentItemsCompatible(liveItem, candidate, callIdMap)) {
                 matchedSourceIndices.add(candidate.index)
                 if (liveItem.kind === 'tool-call' && candidate.kind === 'tool-call' && candidate.callId && liveItem.callId) {
@@ -369,9 +378,6 @@ function alignTurnAgentItems(
         if (!matched) {
             return false
         }
-    }
-    if (requireFullConsumption && matchedSourceIndices.size < (sourceTurn.endIndex - sourceTurn.startIndex + 1)) {
-        return false
     }
     return true
 }
@@ -407,21 +413,25 @@ function reconcileLiveTurns(
         seq?: number
     }>,
     sourceSlice: readonly LocalTranscriptMessage[],
-    requireFullConsumption: boolean,
-    callIdMap: Map<string, string> = new Map()
+    importedIds: ReadonlySet<string>,
+    callIdMap: Map<string, string>
 ): LocalTranscriptMessage[] | null {
     const deliveredLive = filterDeliveredLiveMessages(liveMessages)
-    if (deliveredLive.length === 0) {
-        return requireFullConsumption
-            ? (sourceSlice.length === 0 ? [] : null)
-            : sourceSlice.map((msg) => rewriteToolResultCallId(msg, callIdMap))
-    }
     const rawLiveTurns = groupIntoTurns(deliveredLive)
-    const sourceTurns = groupIntoTurns(sourceSlice)
-    if (!rawLiveTurns || !sourceTurns || rawLiveTurns.length === 0) return null
-
-    const liveTurns = [...rawLiveTurns]
+    const nativeTurns = groupIntoTurns(sourceSlice, false)
+    if (!rawLiveTurns || !nativeTurns) return null
+    const liveTurns = rawLiveTurns.filter(turn => !(
+        turn.userParts.length === 1 && /^\/swarm\s+board(?:\s+(?:--channel(?:=|\s+)|#)[a-zA-Z0-9_-]+)?$/i.test(turn.userParts[0]!.formatted)
+        && turn.agentItems.length === 1 && (turn.assistantText.startsWith('### Swarm Board')
+            || turn.assistantText.startsWith('No active swarm board for this session yet.'))
+    ))
+    // Imported user rows still delimit native turns. Their late assistant rows
+    // belong in the delta even when the user has already continued in HAPI.
+    const sourceTurns = nativeTurns.filter(turn => !importedIds.has(sourceSlice[turn.startIndex]!.id))
     const matchedSourceIndices = new Set<number>()
+    for (let i = 0; i < sourceSlice.length; i++) {
+        if (importedIds.has(sourceSlice[i]!.id)) matchedSourceIndices.add(i)
+    }
     let sIdx = 0
     for (let lIdx = 0; lIdx < liveTurns.length; lIdx += 1) {
         if (sIdx >= sourceTurns.length) return null
@@ -444,23 +454,15 @@ function reconcileLiveTurns(
             liveTurn = firstTurn
             liveTurns.splice(lIdx, 1, firstTurn, restTurn)
         }
-        if (liveTurn.assistantText && sourceTurn.assistantText && liveTurn.assistantText !== sourceTurn.assistantText) {
-            return null
-        }
         if (!alignTurnAgentItems(
             liveTurn,
             sourceTurn,
-            requireFullConsumption,
             matchedSourceIndices,
             callIdMap
         )) {
             return null
         }
         sIdx += 1
-    }
-
-    if (requireFullConsumption && (sIdx !== sourceTurns.length || matchedSourceIndices.size !== sourceSlice.length)) {
-        return null
     }
 
     const unconsumed: LocalTranscriptMessage[] = []
@@ -565,8 +567,7 @@ export function matchAnchored(options: {
             }
         }
         const allLiveMessages = storedMessages.filter((message) => !message.localId?.startsWith(importPrefix))
-        const allNativeMessages = sourceMessages.filter((message) => !importedLocalIds.has(message.id))
-        const unconsumed = reconcileLiveTurns(allLiveMessages, allNativeMessages, false, callIdMap)
+        const unconsumed = reconcileLiveTurns(allLiveMessages, sourceMessages, importedLocalIds, callIdMap)
         if (unconsumed === null) {
             return {
                 status: 'transcript_diverged',
