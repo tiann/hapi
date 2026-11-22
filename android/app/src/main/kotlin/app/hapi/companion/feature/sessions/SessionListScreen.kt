@@ -390,8 +390,8 @@ private fun SessionRows(
                         // instead of truncating the only part that distinguishes two folders.
                         Text(title, style = MaterialTheme.typography.titleSmall)
                         first.machine?.let { machine ->
-                            Text(machine.folderLabel ?: machineFilterLabel(machine), style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(machineFilterLabel(machine), style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     Text(members.size.toString(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
