@@ -947,3 +947,15 @@ describe('MessageQueue2', () => {
         expect(batch3?.mode.type).toBe('B');
     });
 });
+
+describe('hasLocalId', () => {
+    it('reflects queue membership without mutating it', () => {
+        const q = new MessageQueue2<{ text: string }>(() => 'h')
+        q.push('a', { text: 'a' }, 'la')
+        expect(q.hasLocalId('la')).toBe(true)
+        expect(q.hasLocalId('lb')).toBe(false)
+        expect(q.hasLocalId('')).toBe(false)
+        q.cancelByLocalId('la')
+        expect(q.hasLocalId('la')).toBe(false)
+    })
+})

@@ -553,7 +553,12 @@ export async function runOpencode(opts: {
     // link, including the one holding this localId.
     session.onBeforeReuseLocalId(async (localId) => {
         await userMessageChain;
-        return !preparingLocalIds.has(localId);
+        if (preparingLocalIds.has(localId)) return false;
+        // An earlier forced retry already moved this prompt into the queue (or
+        // it is held behind a queued clear); a second admission would duplicate
+        // or reorder it. The first copy stays.
+        return !messageQueue.hasLocalId(localId)
+            && !heldDuringClear.some((held) => held.localId === localId);
     });
 
     registerSessionConfigRpc<PermissionMode>({

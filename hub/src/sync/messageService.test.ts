@@ -2249,7 +2249,7 @@ describe('MessageService deliverQueuedMessageNow', () => {
             .toEqual({ status: 'delivered', localId: 'stranded-q' })
         expect(calls).toBe(2)
         // The row stays queued; invocation is stamped later via messages-consumed.
-        expect(store.messages.lookupQueuedMessage(session.id, 'stranded-q').status).toBe('queued')
+        expect(store.messages.lookupQueuedMessage(session.id, 'stranded-q').status).toBe('dispatching')
         store.close()
     })
 
@@ -2264,7 +2264,7 @@ describe('MessageService deliverQueuedMessageNow', () => {
         }), makePublisher() as unknown as EventPublisher)
         expect(await service.deliverQueuedMessageNow(session.id, 'held-q'))
             .toEqual({ status: 'delivered', localId: 'held-q' })
-        expect(store.messages.lookupQueuedMessage(session.id, 'held-q').status).toBe('queued')
+        expect(store.messages.lookupQueuedMessage(session.id, 'held-q').status).toBe('dispatching')
         store.close()
     })
 
@@ -2329,7 +2329,7 @@ describe('MessageService deliverQueuedMessageNow', () => {
         store.close()
     })
 
-    it('defers cancel while a deliver-now probe is in flight for the same row', async () => {
+    it('waits for an in-flight deliver-now and resolves the cancel against the final state', async () => {
         const store = makeStore()
         const session = makeSession(store, 'deliver-cancel-race')
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'race' } }, 'cr-q')
@@ -2345,14 +2345,18 @@ describe('MessageService deliverQueuedMessageNow', () => {
             ack(null, [{ removed: false, accepted: true }])
         }), makePublisher() as unknown as EventPublisher)
         const delivering = service.deliverQueuedMessageNow(session.id, 'cr-q')
-        // The cancel lands while the deliver-now probe is pending: it defers
-        // instead of racing the probe, and can be retried afterwards.
-        expect(await service.cancelQueuedMessage(session.id, 'cr-q'))
-            .toEqual({ status: 'busy', localId: 'cr-q' })
-        // The deferral never touches the row: still queued, untouched state.
-        expect(store.messages.lookupQueuedMessage(session.id, 'cr-q').status).toBe('queued')
+        // The cancel arrives mid-probe and WAITS for the delivery to settle
+        // instead of returning a deferral the caller must retry.
+        const cancelling = service.cancelQueuedMessage(session.id, 'cr-q')
         release()
         expect(await delivering).toEqual({ status: 'delivered', localId: 'cr-q' })
+        // Admission stamped the row dispatching; the waited cancel then probes
+        // it and reports the in-flight semantics (busy keeps the row for the
+        // consumption ack or a later explicit resolution).
+        const cancelOutcome = await cancelling
+        expect(['busy', 'cancelled']).toContain(cancelOutcome.status)
+        // Probe could not prove CLI removal -> durable unknown, not deletion.
+        expect(store.messages.lookupQueuedMessage(session.id, 'cr-q').status).toBe('indeterminate')
         store.close()
     })
 
@@ -2720,39 +2724,36 @@ describe('MessageService deliverQueuedMessageNow', () => {
         store.close()
     })
 
-    it('replays a deferred cancel once a delivery fails, and not after it succeeds', async () => {
+    it('a cancel that waited through a failed delivery lands on the queued row', async () => {
         const store = makeStore()
         const session = makeSession(store, 'deliver-deferred-cancel')
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'defer' } }, 'dc-q')
         let release: () => void = () => {}
         const gate = new Promise<void>(resolve => { release = resolve })
         let calls = 0
-        let acceptRetry = false
         const service = new MessageService(store, makeIo(ack => {
             calls += 1
             if (calls === 1) {
                 void gate.then(() => ack(null, [{ removed: false }]))
                 return
             }
-            ack(null, [{ removed: false, accepted: acceptRetry }])
+            ack(null, [{ removed: false, accepted: false }])
         }), makePublisher() as unknown as EventPublisher)
         const delivering = service.deliverQueuedMessageNow(session.id, 'dc-q')
-        // Cancel defers (busy) and records the intent.
-        expect(await service.cancelQueuedMessage(session.id, 'dc-q'))
-            .toEqual({ status: 'busy', localId: 'dc-q' })
-        // Failure path: retry refused -> deferred cancel replays -> row cancels.
-        acceptRetry = false
+        const cancelling = service.cancelQueuedMessage(session.id, 'dc-q')
         release()
         expect(await delivering).toEqual({ status: 'unavailable', localId: 'dc-q' })
-        await new Promise(resolve => setTimeout(resolve, 20))
-        // The replayed cancel could not prove CLI removal (no flavor queue in
-        // this harness), so the row moved to the explicit-resolution state
-        // instead of being deleted outright.
+        // The row stayed queued after the refused emit; the waited cancel now
+        // probes it. Without a flavor queue in this harness the probe reads
+        // not-found, so the row moves to the explicit-resolution state and the
+        // response reports busy — the FINAL outcome reaches the caller.
+        const outcome = await cancelling
+        expect(outcome.status).toBe('busy')
         expect(store.messages.lookupQueuedMessage(session.id, 'dc-q').status).toBe('indeterminate')
         store.close()
     })
 
-    it('does not replay a deferred cancel after a successful delivery', async () => {
+    it('a cancel that waited through a successful delivery probes the admitted copy', async () => {
         const store = makeStore()
         const session = makeSession(store, 'deliver-deferred-keep')
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'keep' } }, 'dk-q')
@@ -2768,15 +2769,17 @@ describe('MessageService deliverQueuedMessageNow', () => {
             ack(null, [{ removed: false, accepted: true }])
         }), makePublisher() as unknown as EventPublisher)
         const delivering = service.deliverQueuedMessageNow(session.id, 'dk-q')
-        expect(await service.cancelQueuedMessage(session.id, 'dk-q'))
-            .toEqual({ status: 'busy', localId: 'dk-q' })
+        const cancelling = service.cancelQueuedMessage(session.id, 'dk-q')
         release()
         expect(await delivering).toEqual({ status: 'delivered', localId: 'dk-q' })
-        await new Promise(resolve => setTimeout(resolve, 20))
-        // The admitted copy stays in flight; invocation is still owned by the
-        // normal consumption ack. No extra cancel probe went out.
-        expect(calls).toBe(2)
-        expect(store.messages.lookupQueuedMessage(session.id, 'dk-q').status).toBe('queued')
+        // The row is dispatching (admitted, consumption pending); the waited
+        // cancel probes the CLI copy and reports in-flight semantics — never
+        // deleting the in-flight prompt outright.
+        const outcome = await cancelling
+        expect(['busy', 'cancelled']).toContain(outcome.status)
+        // Probe could not prove CLI removal -> durable unknown, not deletion.
+        expect(store.messages.lookupQueuedMessage(session.id, 'dk-q').status).toBe('indeterminate')
+        expect(calls).toBe(3)
         store.close()
     })
 
@@ -2804,8 +2807,27 @@ describe('MessageService deliverQueuedMessageNow', () => {
         expect(calls).toBe(1)
         release()
         expect(await delivering).toEqual({ status: 'delivered', localId: 'rr-q' })
-        // After the window closes, replay paths see the row again.
-        expect(service.replayImmediateQueuedMessages(session.id)).toBe(1)
+        // After admission the row is dispatching — replay paths keep skipping
+        // it until the consumption ack settles it.
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(0)
+        store.close()
+    })
+
+    it('lets FIFO recovery pass a queued bare /status row', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-status-pass', { path: '/tmp/x', flavor: 'opencode' }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/status' } }, 'st-q')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'the prompt' } }, 'prompt-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, calls === 1 ? [{ removed: false }] : [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        // /status is a runner-handled query that never occupies the FIFO, so
+        // the prompt behind it is still the first recoverable row.
+        expect(await service.deliverQueuedMessageNow(session.id, 'prompt-q'))
+            .toEqual({ status: 'delivered', localId: 'prompt-q' })
+        expect(calls).toBe(2)
         store.close()
     })
 

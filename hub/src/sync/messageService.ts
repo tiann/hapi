@@ -236,8 +236,8 @@ export class MessageService {
     private readonly activeCancels = new Set<string>()
     /** Ack budget for the forced retry emit: must cover the CLI's preparation reuse gate. */
     private static readonly FORCED_RETRY_ACK_TIMEOUT_MS = 5000
-    /** Cancels deferred by the deliver-now mutex, replayed once delivery settles. */
-    private readonly deferredCancels = new Map<string, { sessionId: string; messageId: string }>()
+    /** In-flight deliver-now promises, keyed by (session:localId); a racing cancel awaits them. */
+    private readonly inFlightDeliverNow = new Map<string, Promise<unknown>>()
 
     constructor(
         private readonly store: Store,
@@ -596,7 +596,10 @@ export class MessageService {
             options.afterSeq,
             options.now,
             options.limit
-        )
+        ).filter((message) => !this.activeDeliverNow.has(`${sessionId}:${message.localId}`))
+        // Rows reserved by an in-flight deliver-now are excluded: the forced
+        // copy owns delivery until it settles, and a reconnect backfill would
+        // hand the runner a second copy it has not deduped.
         return stored.map((message) => ({
             id: message.id,
             seq: message.seq,
@@ -625,11 +628,19 @@ export class MessageService {
         const coordinationCancellable = ['queued', 'dispatching', 'indeterminate'].includes(coordinationLookup.status)
         if (coordinationLocalId && coordinationCancellable) {
             const key = `${sessionId}:${coordinationLocalId}`
+            const inFlight = this.inFlightDeliverNow.get(key)
+            if (inFlight !== undefined) {
+                // A deliver-now owns the row right now. Wait for it (bounded)
+                // so this cancel resolves against the FINAL row state and the
+                // caller — e.g. an Edit that cancels before resending — gets
+                // the real outcome instead of a deferral it must retry.
+                await Promise.race([
+                    inFlight,
+                    new Promise<void>(resolve => { const t = setTimeout(resolve, 7000); t.unref?.() })
+                ]).catch(() => {})
+            }
             if (this.activeDeliverNow.has(key)) {
-                // Deferred, not dropped: once the delivery settles, the
-                // intent replays automatically (a no-op if the row was
-                // delivered and consumed meanwhile).
-                this.deferredCancels.set(key, { sessionId, messageId })
+                // Still in flight past the cap: refuse rather than race it.
                 return { status: 'busy', localId: coordinationLocalId }
             }
             this.activeCancels.add(key)
@@ -1001,8 +1012,36 @@ export class MessageService {
             return { status: 'busy', localId: lookup.localId }
         }
         this.activeDeliverNow.add(deliverKey)
-        let deliveryAdmitted = false
+        // Register the in-flight promise BEFORE running: a cancel racing this
+        // delivery awaits it (bounded) and then resolves against the final
+        // row state instead of a deferral.
+        const admit = this.deliverQueuedMessageNowAdmit(sessionId, messageId)
+        this.inFlightDeliverNow.set(deliverKey, admit)
         try {
+            return await admit
+        } finally {
+            this.activeDeliverNow.delete(deliverKey)
+            this.inFlightDeliverNow.delete(deliverKey)
+        }
+    }
+
+    private async deliverQueuedMessageNowAdmit(
+        sessionId: string,
+        messageId: string
+    ): Promise<DeliverQueuedMessageNowResult> {
+        // Fresh lookup: the shell only reserved the key; the row must still be
+        // deliverable at admission time.
+        const lookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+        if (lookup.status === 'absent') return { status: 'not-found' }
+        if (lookup.status === 'invoked') {
+            return { status: 'invoked', message: toDecryptedMessage(lookup.message) }
+        }
+        if (!lookup.localId) return { status: 'not-found' }
+        if (lookup.status !== 'queued') {
+            return { status: 'unavailable', localId: lookup.localId }
+        }
+        try {
+
             const roomName = `session:${sessionId}`
             const cliCount = this.io.of('/cli').adapter.rooms.get(roomName)?.size ?? 0
             if (this.store.isOpenCodeClearDeliveryGated(sessionId) || cliCount !== 1) {
@@ -1031,7 +1070,15 @@ export class MessageService {
                 if (targetRow !== undefined && (isSpecialRow(targetRow, /^\s*\/clear(?:\s|$)/i) || isSpecialRow(targetRow, /^\s*\/compact(?:\s|$)/i))) {
                     return true
                 }
-                const boundaryRows = queuedRows.filter((row) => row.scheduledAt == null || row.scheduledAt <= Date.now())
+                // Bare /status is a runner-handled query that never occupies
+                // the FIFO; it must not block FIFO recovery behind it.
+                const isStatusRow = (row: { content: unknown }) => {
+                    const content = row.content as { role?: unknown; content?: { type?: unknown; text?: unknown } } | null
+                    return content?.role === 'user' && content.content?.type === 'text'
+                        && /^\s*\/status(?:\s|$)/i.test(String(content.content.text ?? ''))
+                }
+                const boundaryRows = queuedRows.filter((row) => (row.scheduledAt == null || row.scheduledAt <= Date.now())
+                    && !isStatusRow(row))
                 if (boundaryRows.some((row) => isSpecialRow(row, /^\s*\/clear(?:\s|$)/i))) {
                     return true
                 }
@@ -1131,29 +1178,15 @@ export class MessageService {
                 void this.requestCliCancelAck(sessionId, lookup.localId, messageId, 500)
                 return { status: 'unavailable', localId: lookup.localId }
             }
-            deliveryAdmitted = true
+            // Admission stamps the row dispatching: until the CLI's
+            // messages-consumed ack lands, a second Send-now, the reconnect
+            // backfill, and the scheduled tick all see a non-queued row and
+            // refuse — the admitted copy is the only one in flight.
+            this.store.messages.setMessagesDeliveryState(sessionId, [message.localId], 'dispatching')
             return { status: 'delivered', localId: message.localId }
+        
         } finally {
-            this.activeDeliverNow.delete(deliverKey)
-            const deferred = this.deferredCancels.get(deliverKey)
-            if (deferred && !deliveryAdmitted) {
-                this.deferredCancels.delete(deliverKey)
-                // Replay only when delivery did NOT admit the copy: the row is
-                // still queued and the user's cancel lands. After a successful
-                // admission the prompt is in flight — cancelling then would
-                // kill the delivery the user just requested; invocation is
-                // still governed by the normal messages-consumed ack.
-                queueMicrotask(() => {
-                    // The final outcome reaches every client (including an
-                    // Edit that received the busy deferral) through the inner
-                    // cancel's SSE events: message-cancelled or
-                    // messages-indeterminate. Failures must not surface as
-                    // unhandled rejections.
-                    this.cancelQueuedMessage(deferred.sessionId, deferred.messageId).catch(() => {})
-                })
-            } else if (deferred) {
-                this.deferredCancels.delete(deliverKey)
-            }
+            // Reservation release lives in the shell.
         }
     }
 
@@ -1475,6 +1508,11 @@ export class MessageService {
                 continue
             }
             const localId = msg.localId
+            if (typeof localId === 'string' && this.activeDeliverNow.has(`${msg.sessionId}:${localId}`)) {
+                // Reserved by an in-flight deliver-now; the forced copy owns
+                // delivery until it settles.
+                continue
+            }
             if (typeof localId === 'string' && !this.scheduledMatureNotifiedLocalIds.has(localId)) {
                 this.scheduledMatureNotifiedLocalIds.add(localId)
                 maturedSessionIds.add(msg.sessionId)

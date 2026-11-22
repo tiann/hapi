@@ -1259,7 +1259,11 @@ export async function runPi(opts: {
     // every in-flight link, including the one holding this localId.
     apiSession.onBeforeReuseLocalId(async (localId) => {
         await preparationChain;
-        return !preparingLocalIds.has(localId);
+        if (preparingLocalIds.has(localId)) return false;
+        // An earlier forced retry already shepherded this prompt through
+        // preparation into the FIFO; admitting a second copy would duplicate
+        // the turn. The reuse is unnecessary — keep the first copy.
+        return !promptQueue.hasLocalId(localId);
     });
 
     // --- Abort handler ---
