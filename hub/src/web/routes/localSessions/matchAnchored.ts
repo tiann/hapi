@@ -503,6 +503,15 @@ function reconcileLiveTurns(
         sIdx += 1
     }
 
+    // The final possible prompt for each live turn bounds every complete alignment.
+    const latestSource: number[] = []
+    let latest = sourceTurns.length - 1
+    for (let i = liveTurns.length - 1; i >= 0; i--) {
+        while (latest >= 0 && !userPromptsMatch(liveTurns[i]!, sourceTurns[latest]!)) latest--
+        if (latest < 0) return null
+        latestSource[i] = latest--
+    }
+    const allIndices = sourceTurns.map((_, i) => i)
     type Choice = { source: number; indices: Set<number>; ids: Map<string, string> }
     const choices: Choice[] = []
     let solution: Choice[] | undefined
@@ -514,11 +523,19 @@ function reconcileLiveTurns(
         const part = live.userParts[0]!
         const candidates = live.userParts.length === 1
             ? part.formatted === part.raw ? indicesByPrompt.get(part.raw) ?? []
-                : new Set([...(indicesByPrompt.get(part.raw) ?? []), ...(indicesByPrompt.get(part.formatted) ?? [])])
-            : sourceTurns.keys()
-        for (const i of candidates) {
+                : [...new Set([...(indicesByPrompt.get(part.raw) ?? []), ...(indicesByPrompt.get(part.formatted) ?? [])])].sort((a, b) => a - b)
+            : allIndices
+        let lo = 0
+        let hi = candidates.length
+        while (lo < hi) {
+            const mid = Math.floor((lo + hi) / 2)
+            if (candidates[mid]! <= after) lo = mid + 1
+            else hi = mid
+        }
+        for (let position = lo; position < candidates.length; position++) {
+            const i = candidates[position]!
+            if (i > latestSource[liveIndex]!) break
             if (--remainingComparisons < 0) return
-            if (i <= after || sourceTurns.length - i < liveTurns.length - liveIndex) continue
             const candidate = sourceTurns[i]!
             if (!userPromptsMatch(live, candidate)) continue
             const indices = new Set(candidate.agentItems.map(item => item.index).filter(index => matchedSourceIndices.has(index)))

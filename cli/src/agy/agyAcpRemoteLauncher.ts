@@ -52,7 +52,7 @@ import {
     agyQuestionContent,
     parseAgyQuestionForm,
     questionCardInput,
-    questionCardInputFromToolCall
+    asQuestionCard
 } from './agyQuestion';
 
 export { addAgyUsage };
@@ -163,17 +163,6 @@ function normalizeEcho(text: string): string {
 export function isAgyQuestionRequest(request: PermissionRequest): boolean {
     const input = request.rawInput as { questions?: unknown } | undefined;
     return Array.isArray(input?.questions) || /\bask_question\b/.test(request.title ?? '');
-}
-
-/** agy's ask_question tool call (titled "Run ask_question"), as the question card. */
-function asQuestionCard(message: AgentMessage): { message: AgentMessage; shownLabels: string[][] | null } {
-    if (message.type !== 'tool_call' || !/\bask_question\b/.test(message.name)) return { message, shownLabels: null };
-    const input = questionCardInputFromToolCall(message.input);
-    if (!input) return { message, shownLabels: null };
-    return {
-        message: { ...message, name: QUESTION_TOOL_NAME, input },
-        shownLabels: input.questions.map((question) => question.options.map((option) => option.label))
-    };
 }
 
 /** agy acp did not come up; the caller may fall back to another transport. */

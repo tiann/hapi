@@ -250,12 +250,13 @@ describe('Antigravity live continuation', () => {
         expect(matchAnchored({ transcript: transcript(rows), storedMessages: stored, importPrefix: PREFIX, cursor: null,
             reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: rows.slice(1, 3) })
     })
-    it('resolves two repeated exchanges in order and excludes a never-acknowledged prompt', () => {
+    it('resolves a thousand repeated exchanges in order and excludes a never-acknowledged prompt', () => {
         const initial = transcriptMessage(`${PREFIX}start`, 'start')
         const reply = agent({ type: 'message', message: 'done' })
-        const rows = [initial, ...[1, 2].flatMap(i => [transcriptMessage(`${PREFIX}p${i}`, 'repeat'),
+        const repetitions = Array.from({ length: 1000 }, (_, i) => i)
+        const rows = [initial, ...repetitions.flatMap(i => [transcriptMessage(`${PREFIX}p${i}`, 'repeat'),
             { ...transcriptMessage(`${PREFIX}r${i}`, ''), content: reply }]), transcriptMessage(`${PREFIX}tail`, 'native only')]
-        const stored = [storedMessage(initial.id, 'start'), ...[1, 2].flatMap(i => [storedMessage(`p${i}`, 'repeat'),
+        const stored = [storedMessage(initial.id, 'start'), ...repetitions.flatMap(i => [storedMessage(`p${i}`, 'repeat'),
             { ...storedMessage(`r${i}`, ''), content: reply }]), { ...storedMessage('pending', 'unsent'), invokedAt: null }]
         expect(matchAnchored({ transcript: transcript(rows), storedMessages: stored, importPrefix: PREFIX, cursor: null,
             reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: rows.slice(-1) })

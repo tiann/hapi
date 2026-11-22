@@ -164,7 +164,10 @@ const results: Record<string, unknown> = {}
                 status: 'DONE',
                 created_at: '2026-11-22T09:10:04Z',
                 content: '<SYSTEM_MESSAGE>Task id "conv-main/task-1" finished with result:\\nCommand exited with code 0.\\n\\nCommand output:\\nhi\\n</SYSTEM_MESSAGE>'
-            }
+            },
+            { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE',
+                tool_calls: [{ name: 'ask_question', args: { questions: JSON.stringify([{ question: 'Which?', options: ['A', 'B'] }]) } }] },
+            { step_index: 6, source: 'MODEL', type: 'ASK_QUESTION', status: 'DONE', content: 'A' }
         ], [
             {
                 step_index: 2,
@@ -493,6 +496,10 @@ describe('agySessions', () => {
             data: { type: 'tool-call-result', callId: 'agy-wakeup-conv-main-1-0', output: { stdout: 'hi', exit_code: 0 }, is_error: false }
         })
 
+        expect(payloads).toContainEqual(expect.objectContaining({
+            localId: 'agy:conv-main:step:5:call:0',
+            data: expect.objectContaining({ type: 'tool-call', name: 'AskUserQuestion' })
+        }))
         expect(output.fallback.summaries).toHaveLength(1)
         expect(output.fallback.summaries[0]).toMatchObject({
             id: 'conv-fallback',

@@ -1,3 +1,4 @@
+import { asQuestionCard } from '@/agy/agyQuestion'
 import { existsSync, statSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -206,7 +207,7 @@ function toAgyAgentContent(
     if (canonical.type === 'tool_call') {
         const mapped = mapAgyToolCall(canonical)
         toolNativeNames.set(mapped.id, canonical.nativeName ?? canonical.name)
-        normalized = mapped
+        normalized = asQuestionCard(mapped).message
     } else if (canonical.type === 'tool_result') {
         normalized = mapAgyToolResult(canonical, toolNativeNames.get(canonical.id))
     } else if (canonical.type === 'reasoning') {
