@@ -2740,4 +2740,77 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
             await cleanupUploadDir(client.sessionId);
         }
     });
+
+    it('distinguishes two identically captioned image steers by image identity when echoed out of order before Stop', async () => {
+        const { session, queue, client } = makeSession();
+        registerUploadHandlers(client.rpcHandlerManager as never);
+        const pngBytes1 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x01]);
+        const pngBytes2 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x02]);
+        try {
+            const uploadHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.UploadFile)!;
+            const uploaded1 = await uploadHandler({
+                sessionId: client.sessionId,
+                filename: 'first.png',
+                content: pngBytes1.toString('base64'),
+                mimeType: 'image/png'
+            }) as { success: boolean; path: string };
+            const uploaded2 = await uploadHandler({
+                sessionId: client.sessionId,
+                filename: 'second.png',
+                content: pngBytes2.toString('base64'),
+                mimeType: 'image/png'
+            }) as { success: boolean; path: string };
+            expect(uploaded1.success).toBe(true);
+            expect(uploaded2.success).toBe(true);
+
+            const backend = new FakeAgyBackend();
+            backend.supportsImages = true;
+            let releaseMain!: () => void;
+            backend.onCancel = () => {
+                for (const sc of backend.steerCompletions) {
+                    sc.resolve('cancelled');
+                }
+                releaseMain?.();
+            };
+            backend.promptScripts.push(async (onUpdate) => {
+                backend.echo!('start turn');
+                onUpdate({ type: 'tool_call', id: 't-main', name: 'run_command', input: {}, status: 'in_progress' });
+                await new Promise<void>((resolve) => { releaseMain = resolve; });
+                onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+            });
+
+            queue.push('start turn', REVIEW, 'turn-1');
+            const { run } = launch(session, [backend]);
+            await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+
+            const steerHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!;
+            queue.push(`@${uploaded1.path}\n\nsame caption`, {
+                ...REVIEW,
+                imageAttachments: [{ path: uploaded1.path, mimeType: 'image/png', filename: 'first.png' }]
+            }, 'steer-captioned-1');
+            queue.push(`@${uploaded2.path}\n\nsame caption`, {
+                ...REVIEW,
+                imageAttachments: [{ path: uploaded2.path, mimeType: 'image/png', filename: 'second.png' }]
+            }, 'steer-captioned-2');
+
+            await expect(steerHandler({ localId: 'steer-captioned-1' })).resolves.toEqual({ steered: true });
+            await expect(steerHandler({ localId: 'steer-captioned-2' })).resolves.toEqual({ steered: true });
+
+            // agy echoes the SECOND captioned image steer first, then the user presses Stop before the first steer is echoed.
+            backend.echo!('same caption');
+            backend.echo!(formatAcpImageEchoToken('image/png', pngBytes2.toString('base64')));
+            expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-captioned-2'], { steered: true });
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-captioned-1'], { steered: true });
+
+            await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+            queue.close();
+            await run;
+
+            expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-captioned-1']);
+            expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-captioned-2']);
+        } finally {
+            await cleanupUploadDir(client.sessionId);
+        }
+    });
 });

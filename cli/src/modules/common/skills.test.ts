@@ -753,6 +753,35 @@ describe('listSkills', () => {
         await writeSkill(join(pluginDir, 'skills', 'kept-plugin-skill'), 'kept-plugin-skill', 'Kept conventional plugin skill')
         await writeSkill(join(pluginDir, 'skills', 'excluded-plugin-skill'), 'excluded-plugin-skill', 'Excluded conventional plugin skill')
 
+        const nestedPluginDir = join(repoDir, 'plugin-catalog', 'category', 'nested-plugin')
+        await mkdir(nestedPluginDir, { recursive: true })
+        await writeFile(join(nestedPluginDir, 'plugin.json'), JSON.stringify({ name: 'nested-plugin' }))
+        await writeSkill(join(nestedPluginDir, 'skills', 'nested-plugin-skill'), 'nested-plugin-skill', 'Skill from explicitly selected nested plugin')
+        await writeFile(join(repoDir, '.agents', 'plugins.json'), JSON.stringify({
+            entries: [
+                {
+                    path: 'plugin-catalog',
+                    include_only: ['category/nested-plugin'],
+                },
+            ],
+        }))
+
+        // Multi-level diamond inheritance DAG (`level-0` .. `level-14` each inheriting the next twice)
+        await mkdir(join(repoDir, 'manifests'), { recursive: true })
+        await writeSkill(join(repoDir, 'pool', 'dag-leaf-skill'), 'dag-leaf-skill', 'Leaf skill reached via diamond DAG')
+        await writeFile(join(repoDir, 'manifests', 'leaf.json'), JSON.stringify({
+            entries: [{ path: 'pool', include_only: ['dag-leaf-skill'] }],
+        }))
+        for (let i = 14; i >= 0; i -= 1) {
+            const target = i === 14 ? 'manifests/leaf.json' : `manifests/level-${i + 1}.json`
+            await writeFile(join(repoDir, 'manifests', `level-${i}.json`), JSON.stringify({
+                inherits: [
+                    { path: target },
+                    { path: target },
+                ],
+            }))
+        }
+
         await writeFile(join(repoDir, '.agents', 'skills.json'), JSON.stringify({
             entries: [
                 {
@@ -761,6 +790,7 @@ describe('listSkills', () => {
                     exclude: ['(a+)+d'],
                 },
             ],
+            inherits: [{ path: 'manifests/level-0.json' }],
         }))
 
         const startedAt = Date.now()
@@ -776,5 +806,7 @@ describe('listSkills', () => {
         expect(names).toContain('direct-plugin-skill')
         expect(names).toContain('kept-plugin-skill')
         expect(names).not.toContain('excluded-plugin-skill')
+        expect(names).toContain('nested-plugin-skill')
+        expect(names).toContain('dag-leaf-skill')
     })
 })

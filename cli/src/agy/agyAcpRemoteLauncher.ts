@@ -252,14 +252,11 @@ function agyTurnConfigKey(mode: AgyMode): string {
 }
 
 function promptTextForEcho(prompt: PromptContent[]): string {
-    const text = prompt
-        .filter((block): block is Extract<PromptContent, { type: 'text' }> => block.type === 'text')
-        .map((block) => block.text)
-        .join('\n\n');
-    if (text.trim().length > 0) return text;
     return prompt
-        .filter((block): block is Extract<PromptContent, { type: 'image' }> => block.type === 'image')
-        .map((block) => formatAcpImageEchoToken(block.mimeType, block.data))
+        .map((block) => block.type === 'text'
+            ? block.text
+            : formatAcpImageEchoToken(block.mimeType, block.data))
+        .filter((part) => part.trim().length > 0)
         .join(' ');
 }
 
