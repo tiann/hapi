@@ -171,10 +171,11 @@ export class Store {
         sessionId: string,
         localIds: string[],
         invokedAt: number,
-        namespace: string
+        namespace: string,
+        options?: { reorderEpoch?: boolean }
     ): number {
         return this.db.transaction(() => {
-            const changes = this.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
+            const changes = this.messages.markMessagesInvoked(sessionId, localIds, invokedAt, options)
             if (changes > 0) {
                 this.sessions.touchSessionUpdatedAt(sessionId, invokedAt, namespace)
             }

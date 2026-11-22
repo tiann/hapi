@@ -477,7 +477,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         onSessionReady?.(data)
     })
 
-    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean }) => {
+    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean; anchor?: { toolCallId?: unknown } }) => {
         if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {
             return
         }
@@ -490,14 +490,26 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             emitAccessError('session', data.sid, sessionAccess.reason)
             return
         }
-        const invokedAt = Date.now()
+        // A steer that names its anchor tool call goes right after it, on the
+        // hub's own clock; without an anchor, or when it is gone, it is stamped now.
+        const anchorId = typeof data.anchor?.toolCallId === 'string' ? data.anchor.toolCallId : null
+        let anchorAt: number | null = null
+        if (anchorId) {
+            try {
+                anchorAt = store.messages.findToolCallPositionAt(data.sid, anchorId)
+            } catch (err) {
+                console.error('findToolCallPositionAt failed', err)
+            }
+        }
+        const invokedAt = anchorAt !== null ? anchorAt + 1 : Date.now()
         let sessionUpdatedAt: number
         try {
             sessionUpdatedAt = store.recordMessagesConsumed(
                 data.sid,
                 localIds,
                 invokedAt,
-                sessionAccess.value.namespace
+                sessionAccess.value.namespace,
+                anchorAt !== null ? { reorderEpoch: true } : undefined
             )
         } catch (err) {
             console.error('recordMessagesConsumed failed', err)

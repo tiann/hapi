@@ -797,4 +797,47 @@ it.each([
         expect((updatedBody.message.content as { content: { data: Record<string, unknown> } }).content.data.status).toBe('in_progress')
         store.close()
     })
+
+    describe('messages-consumed anchor', () => {
+        function setup() {
+            const store = new Store(':memory:')
+            const session = store.sessions.getOrCreateSession('anchor', {}, null, 'default')
+            const socket = new FakeSocket()
+            const events: SyncEvent[] = []
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+                onWebappEvent: event => events.push(event)
+            })
+            const t0 = Date.now() - 60_000
+            // tool call 1 at t0, tool call 2 at t0 + 20 s, then the queued steer.
+            socket.trigger('message', { sid: session.id, message: toolCallContent('call-1', { status: 'running' }), createdAt: t0 })
+            socket.trigger('message', { sid: session.id, message: toolCallContent('call-2', { status: 'running' }), createdAt: t0 + 20_000 })
+            socket.trigger('message', { sid: session.id, localId: 'steer-1', message: { role: 'user', content: { type: 'text', text: 'stop' } } })
+            const consumed = () => events.filter(event => event.type === 'messages-consumed') as Array<Extract<SyncEvent, { type: 'messages-consumed' }>>
+            const invokedAtOf = () => store.messages.getAllMessages(session.id).find(m => m.localId === 'steer-1')?.invokedAt
+            return { store, session, socket, events, t0, consumed, invokedAtOf }
+        }
+
+        it('stamps a steer just after its anchor tool call and bumps the message epoch', () => {
+            const { store, session, socket, t0, consumed, invokedAtOf } = setup()
+            const epochBefore = store.messages.getMessageEpoch(session.id)
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['steer-1'], steered: true, anchor: { toolCallId: 'call-1' } })
+            expect(invokedAtOf()).toBe(t0 + 1)
+            expect(consumed()[0]?.invokedAt).toBe(t0 + 1)
+            expect(store.messages.getMessageEpoch(session.id)).toBeGreaterThan(epochBefore)
+            store.close()
+        })
+
+        it('stamps now when the anchor is missing or not found', () => {
+            for (const anchor of [undefined, { toolCallId: 'gone' }, { toolCallId: 42 }]) {
+                const { store, session, socket, consumed, invokedAtOf } = setup()
+                const before = Date.now()
+                socket.trigger('messages-consumed', { sid: session.id, localIds: ['steer-1'], steered: true, ...(anchor ? { anchor } : {}) })
+                const stamped = invokedAtOf()
+                expect(stamped ?? 0).toBeGreaterThanOrEqual(before)
+                expect(consumed()[0]?.invokedAt).toBe(stamped ?? -1)
+                store.close()
+            }
+        })
+    })
 })

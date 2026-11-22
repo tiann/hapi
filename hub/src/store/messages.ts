@@ -1598,10 +1598,12 @@ export function markMessagesInvoked(
     db: Database,
     sessionId: string,
     localIds: string[],
-    invokedAt: number
+    invokedAt: number,
+    options: { reorderEpoch?: boolean } = {}
 ): number {
     if (localIds.length === 0) return 0
     return runInTransaction(db, () => {
+        const previousHead = options.reorderEpoch ? getNewestMessagePosition(db, sessionId) : null
         const placeholders = localIds.map(() => '?').join(', ')
         const changes = prepareCached(db,
             `UPDATE messages
@@ -1611,6 +1613,9 @@ export function markMessagesInvoked(
                AND invoked_at IS NULL`
         ).run(invokedAt, sessionId, ...localIds).changes
         if (changes > 0) {
+            // An anchored steer can land before the newest row; clients holding
+            // the old order need to reload.
+            if (previousHead && invokedAt < previousHead.at) bumpMessageEpoch(db, sessionId)
             const rows = prepareCached(db, `
                 SELECT id, session_id, content, created_at, seq, invoked_at
                 FROM messages
@@ -1630,6 +1635,25 @@ export function markMessagesInvoked(
         return changes
     })
 }
+/**
+ * Position time of the stored `tool-call` row for one ACP callId, or null.
+ * The tool call sits near the session tail while its turn runs, so the scan
+ * is bounded like the live-row lookup.
+ */
+export function findToolCallPositionAt(db: Database, sessionId: string, callId: string): number | null {
+    const rows = prepareCached(db, `
+        SELECT content, COALESCE(invoked_at, created_at) AS position_at
+        FROM messages
+        WHERE session_id = ?
+        ORDER BY seq DESC
+        LIMIT ?
+    `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<{ content: string; position_at: number }>
+    for (const row of rows) {
+        if (getToolCallId(decodeMessageContent(row.content)) === callId) return row.position_at
+    }
+    return null
+}
+
 /** Move an uninvoked steer through its durable delivery states. */
 export function setMessagesDeliveryState(
     db: Database,

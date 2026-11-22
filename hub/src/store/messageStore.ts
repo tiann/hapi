@@ -33,6 +33,7 @@ import {
     minFutureScheduledAtBySessionIds,
     countMessages,
     markMessagesInvoked,
+    findToolCallPositionAt,
     markMessagesIndeterminate,
     markDispatchingMessagesIndeterminate,
     setMessagesDeliveryState,
@@ -291,8 +292,12 @@ export class MessageStore {
         return claimIndeterminateMessage(this.db, sessionId, messageId)
     }
 
-    markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): number {
-        return markMessagesInvoked(this.db, sessionId, localIds, invokedAt)
+    findToolCallPositionAt(sessionId: string, callId: string): number | null {
+        return findToolCallPositionAt(this.db, sessionId, callId)
+    }
+
+    markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number, options?: { reorderEpoch?: boolean }): number {
+        return markMessagesInvoked(this.db, sessionId, localIds, invokedAt, options)
     }
 
     markDispatchingMessagesIndeterminate(sessionId: string): string[] {

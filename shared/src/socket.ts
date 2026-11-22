@@ -286,7 +286,14 @@ export interface ClientToServerEvents {
         processStartMarker?: string
         time: number
     }) => void
-    'messages-consumed': (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean }) => void
+    'messages-consumed': (data: {
+        sid: string
+        localIds: string[]
+        clearQueuedThinkingGrace?: boolean
+        steered?: boolean
+        /** Where a mid-turn steer entered the turn: the hub stamps it just after this tool call. */
+        anchor?: { toolCallId: string }
+    }) => void
     'messages-indeterminate': (data: { sid: string; localIds: string[] }) => void
     /** Native shared-engine queue projection. null = positively acknowledged removal. */
     'native-queue-message': (data: { sid: string; localId: string; text: string | null }) => void
