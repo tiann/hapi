@@ -32,14 +32,21 @@ import {
     addAgyUsage,
     advanceAgyTurnTranscriptCursor,
     agyTranscriptPaths,
+    buildAgyBackgroundCompletionToolResult,
     convertAgyReactiveSteps,
     defaultAgyBrainDir,
-    extractAgyBackgroundTaskIds,
+    extractAgyBackgroundCommandRecords,
+    extractKilledBackgroundTasks,
     inspectAgyReactiveSteps,
     inspectSyntheticBackgroundCommandMatch,
+    matchAgyBackgroundTaskId,
+    matchesBackgroundTaskId,
+    parseCompletedBackgroundTasks,
     readAgyTranscriptStepsAfter,
     readLatestAgyTranscriptStepIndex,
     resolveAgyBackgroundTaskIds,
+    settleCompletedBackgroundCommandsFromTranscript,
+    type AgyCompletedBackgroundTask,
     type AgyOpenBackgroundCommand,
     type AgyReactiveTimingConfig
 } from './agyReactiveWakeup';
@@ -194,6 +201,9 @@ type AgyTurn = {
     // Display text per open run_command (the command line agy was given), for
     // the hub's background-task indicator.
     bgTaskDescriptions: Map<string, string>;
+    // Exact `nativeArgs.CommandLine` per open run_command (absent if not provided),
+    // used to disambiguate transcript task matching when command ordinals shift.
+    bgCommandLines: Map<string, string>;
     // All `run_command` call IDs seen in this turn in arrival order, kept even
     // if an earlier command completes during a steer so call ordinals stay 1:1
     // with transcript `PLANNER_RESPONSE.tool_calls` entries.
@@ -742,6 +752,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         wakeupFirstStepIndex !== undefined ? wakeupFirstStepIndex - 1 : undefined
                     );
                     this.reconcileRetainedAmbiguousCompletions(null);
+                    const priorCallIds = new Set(this.backgroundCommands.map((entry) => entry.callId));
                     const converted = convertAgyReactiveSteps(
                         acpSessionId,
                         inspection.steps,
@@ -754,7 +765,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     for (const msg of converted.messages) {
                         this.forwardAgentMessage(this.showQuestionCard(msg));
                     }
-                    this.registerTranscriptBackgroundTasks();
+                    this.registerTranscriptBackgroundTasks(priorCallIds);
                     this.retireSettledBackgroundTasks();
                     if (converted.usage) {
                         const wakeupNumTurns = inspection.steps.filter((step) =>
@@ -775,6 +786,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     // Pause idle polling without advancing completion cursors so
                     // late output under the same `SYSTEM_MESSAGE` still wakes HAPI.
                     this.pausedWakeupStepIndex = inspection.latestStepIndex;
+                    this.reconcileRetainedAmbiguousCompletions(null);
+                    this.settleTranscriptBackgroundCommands(inspection.latestStepIndex);
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
                         session.sendSessionEvent({ type: 'ready' });
@@ -912,6 +925,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.retainedAmbiguousCompletions.length = 0;
                 this.nativeToolNames.clear();
                 this.syntheticCallAliases.clear();
+                this.clearBackgroundTasksSnapshot();
             }
             if (this.acpSessionId !== acpSessionId) {
                 this.lastTranscriptStepIndex = -1;
@@ -1058,6 +1072,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             generation: new GenerationClock(),
             openCommands: new Set(),
             bgTaskDescriptions: new Map(),
+            bgCommandLines: new Map(),
             commandCallIds: [],
             commandArrivalOrder: [],
             priorBackgroundCallIds: new Set(this.backgroundCommands.map((entry) => entry.callId)),
@@ -1208,6 +1223,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.syncTurnTranscriptCursor(turn, turnStartStepIndex, internalWakeup ? commandWindowAfterStepIndex : undefined);
             }
             this.closeBackgroundCommands(turn, commandWindowAfterStepIndex);
+            if (!turn.aborted && !this.backendLost) {
+                this.reconcileRetainedAmbiguousCompletions(turn);
+                this.settleTranscriptBackgroundCommands(this.lastTranscriptStepIndex);
+            }
         } finally {
             if (turn.aborted) this.syncTranscriptCursor();
             this.questionLabels.clear();
@@ -1258,38 +1277,98 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const turnSteps = openIds.length > 0 && this.acpSessionId
             ? readAgyTranscriptStepsAfter(this.brainDir, this.acpSessionId, turnStartStepIndex)
             : [];
-        const taskIds = extractAgyBackgroundTaskIds(turnSteps);
+        const records = extractAgyBackgroundCommandRecords(turnSteps);
+        const claimedTaskIds = new Set<string>(
+            this.backgroundCommands
+                .map((entry) => entry.taskId)
+                .filter((taskId): taskId is string => Boolean(taskId))
+        );
+        const completedByTaskId = new Map<string, AgyCompletedBackgroundTask>();
+        if (this.acpSessionId) {
+            for (const step of turnSteps) {
+                if (step.source !== 'SYSTEM' || step.type !== 'SYSTEM_MESSAGE') continue;
+                for (const parsed of parseCompletedBackgroundTasks(step.content, this.acpSessionId)) {
+                    completedByTaskId.set(parsed.taskId, parsed);
+                }
+            }
+        }
+        const killedTaskIds = extractKilledBackgroundTasks(turnSteps);
+
+        let registeredAny = false;
+        let retiredAny = false;
         for (let idx = 0; idx < openIds.length; idx += 1) {
             const id = openIds[idx]!;
             const callOrdinal = turn.commandCallIds.indexOf(id);
             const ordinalInTurn = callOrdinal >= 0 ? callOrdinal : idx;
-            const taskId = taskIds[ordinalInTurn];
+            const commandLine = turn.bgCommandLines.get(id);
+            const taskId = matchAgyBackgroundTaskId(records, ordinalInTurn, commandLine, claimedTaskIds);
+            if (taskId) claimedTaskIds.add(taskId);
+
+            const completed = taskId ? completedByTaskId.get(taskId) : undefined;
+            const killed = !completed && (
+                killedTaskIds.has(id)
+                || (taskId !== undefined && [...killedTaskIds].some((killedId) => matchesBackgroundTaskId(killedId, taskId)))
+            );
+
+            if (completed || killed) {
+                const bgIdx = this.backgroundCommands.findIndex((entry) => entry.callId === id);
+                if (bgIdx >= 0) this.backgroundCommands.splice(bgIdx, 1);
+                if (this.activeBgTasks.delete(id)) retiredAny = true;
+                if (!this.nativeToolNames.has(id)) {
+                    this.nativeToolNames.set(id, 'run_command');
+                }
+                if (completed) {
+                    this.forwardAgentMessage(
+                        this.showQuestionCard(buildAgyBackgroundCompletionToolResult(id, completed))
+                    );
+                } else {
+                    this.forwardAgentMessage(
+                        this.showQuestionCard({
+                            type: 'tool_result',
+                            id,
+                            status: 'completed',
+                            output: { output: 'Background task stopped.' }
+                        })
+                    );
+                }
+                continue;
+            }
+
             const existing = this.backgroundCommands.find((entry) => entry.callId === id);
             if (!existing) {
                 this.backgroundCommands.push({
                     callId: id,
                     afterStepIndex: turnStartStepIndex,
                     ordinalInTurn,
+                    ...(commandLine !== undefined ? { commandLine } : {}),
                     ...(taskId ? { taskId } : {})
                 });
-            } else if (taskId && !existing.taskId) {
-                existing.taskId = taskId;
+            } else {
+                if (taskId && !existing.taskId) {
+                    existing.taskId = taskId;
+                }
+                if (commandLine !== undefined && !existing.commandLine) {
+                    existing.commandLine = commandLine;
+                }
             }
             const placeholder = convertAgentMessage(
                 { type: 'tool_result', id, output: AGY_BACKGROUND_COMMAND_RESULT, status: 'completed' },
                 this.currentModelId
             );
             if (placeholder) this.session.sendAgentMessage(placeholder);
-        }
-        // The background-task indicator mirrors these cards: register every
-        // command agy left open at end_turn so the hub shows it running until
-        // its real result lands.
-        for (const id of openIds) {
+
             const description = turn.bgTaskDescriptions.get(id);
-            if (description !== undefined) this.activeBgTasks.set(id, description);
+            if (description !== undefined) {
+                this.activeBgTasks.set(id, description);
+                registeredAny = true;
+            }
         }
-        if (openIds.length > 0) this.emitBackgroundTasksSnapshot();
+        // The background-task indicator mirrors these cards: emit the updated
+        // snapshot if we added running background commands or retired any that
+        // already settled within the turn.
+        if (registeredAny || retiredAny) this.emitBackgroundTasksSnapshot();
         turn.openCommands.clear();
+        turn.bgCommandLines.clear();
     }
 
     private async waitForSteers(turn: AgyTurn): Promise<void> {
@@ -1778,8 +1857,16 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (message.type === 'tool_call' && message.nativeName === 'run_command' && message.status === 'in_progress') {
             turn.openCommands.add(message.id);
             turn.bgTaskDescriptions.set(message.id, backgroundTaskDescription(message));
+            const rawCommandLine = message.nativeArgs && typeof message.nativeArgs === 'object'
+                && !Array.isArray(message.nativeArgs)
+                ? (message.nativeArgs as { CommandLine?: unknown }).CommandLine
+                : undefined;
+            if (typeof rawCommandLine === 'string' && rawCommandLine.trim().length > 0) {
+                turn.bgCommandLines.set(message.id, rawCommandLine);
+            }
         } else if (message.status !== 'in_progress') {
             turn.openCommands.delete(message.id);
+            turn.bgCommandLines.delete(message.id);
             const bgIdx = this.backgroundCommands.findIndex((entry) => entry.callId === message.id);
             if (bgIdx >= 0) this.backgroundCommands.splice(bgIdx, 1);
             this.noteBackgroundTaskSettled(message.id);
@@ -1830,15 +1917,45 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
+     * Settles any open background commands whose completion `SYSTEM_MESSAGE` or
+     * `manage_task` kill already landed in `transcript.jsonl` up to `maxStepIndex`
+     * without an accompanying live ACP update (for instance after `parked_on_tool`
+     * reattach, user preemption, or `timed_out`).
+     */
+    private settleTranscriptBackgroundCommands(maxStepIndex?: number): void {
+        const acpSessionId = this.acpSessionId;
+        if (!acpSessionId || this.backgroundCommands.length === 0) return;
+
+        const settled = settleCompletedBackgroundCommandsFromTranscript(
+            this.brainDir,
+            acpSessionId,
+            this.backgroundCommands,
+            maxStepIndex
+        );
+        if (settled.length === 0) return;
+
+        for (const item of settled) {
+            if (item.toolResult) {
+                if (!this.nativeToolNames.has(item.callId)) {
+                    this.nativeToolNames.set(item.callId, 'run_command');
+                }
+                this.forwardAgentMessage(this.showQuestionCard(item.toolResult));
+            }
+        }
+        this.retireSettledBackgroundTasks();
+    }
+
+    /**
      * Registers background commands the transcript shows as still running but
      * the indicator does not know yet: a completed reactive wakeup can start
      * another background command while no ACP turn is open, so
      * closeBackgroundCommands never sees it. Mirrors that registration — the
      * command line as the description — and emits the complete snapshot.
      */
-    private registerTranscriptBackgroundTasks(): void {
+    private registerTranscriptBackgroundTasks(excludedCallIds?: ReadonlySet<string>): void {
         let changed = false;
         for (const entry of this.backgroundCommands) {
+            if (excludedCallIds?.has(entry.callId)) continue;
             if (this.activeBgTasks.has(entry.callId)) continue;
             const description = typeof entry.commandLine === 'string' && entry.commandLine.trim().length > 0
                 ? entry.commandLine
@@ -2003,6 +2120,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const hadTurn = this.turn !== null || this.reactiveWakeupAbort !== null;
         await this.cancelActiveTurn();
         this.clearBackgroundTasksSnapshot();
+        this.backgroundCommands.length = 0;
+        this.retainedAmbiguousCompletions.length = 0;
+        this.syntheticCallAliases.clear();
         this.abortController.abort();
         this.abortController = new AbortController();
         if (hadTurn) {
