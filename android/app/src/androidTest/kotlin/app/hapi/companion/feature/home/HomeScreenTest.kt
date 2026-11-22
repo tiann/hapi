@@ -131,11 +131,19 @@ class HomeScreenTest {
 
     @Test fun manualFolderCollapseHidesOnlyItsOwnRowsAndSurvivesARefresh() {
         mount()
+        capture("projects-expanded")
         val folder = compose.onNode(hasClickAction() and hasText("repo/api", substring = true) and hasStateDescription(label(R.string.sessions_folder_expanded)))
         folder.performClick()
         compose.onNodeWithText("Build API").assertDoesNotExist()
         compose.onNodeWithText("Fix Android").assertIsDisplayed()
+        capture("project-folded")
         sessions.sessions.value = sessions.sessions.value.map { it.copy(contentRevision = 10) }
+        compose.waitUntil(10_000) { viewModel.uiState.value.rows.all { it.summary.contentRevision == 10L } }
+        compose.runOnIdle { viewModel.setSearchQuery("unmatched-folder-query") }
+        compose.waitUntil(10_000) { viewModel.uiState.value.rows.isEmpty() }
+        compose.onNodeWithText("unmatched-folder-query", substring = true).assertExists()
+        compose.runOnIdle { viewModel.setSearchQuery("") }
+        compose.waitUntil(10_000) { viewModel.uiState.value.rows.size == 3 }
         compose.onNodeWithText("Build API").assertDoesNotExist()
         compose.onNode(hasClickAction() and hasStateDescription(label(R.string.sessions_folder_collapsed))).performClick()
         compose.onNodeWithText("Build API").assertIsDisplayed()

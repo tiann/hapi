@@ -143,6 +143,7 @@ fun SessionListScreen(
     onNewSession: (() -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
+    var closed by rememberSaveable(viewModel) { mutableStateOf(arrayListOf<String>()) }
     val snackbarHostState = remember { SnackbarHostState() }
     var sheetRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var renameRow by remember { mutableStateOf<SessionRowUi?>(null) }
@@ -230,7 +231,8 @@ fun SessionListScreen(
                     SessionRows(
                         rows = state.rows,
                         grouped = state.grouped && !state.isSearching,
-                        scopeKey = viewModel,
+                        closed = closed,
+                        onToggleFolder = { key -> closed = ArrayList(if (key in closed) closed - key else closed + key) },
                         onOpen = { sessionId ->
                             viewModel.onSessionOpened(sessionId)
                             onOpenSession(sessionId)
@@ -324,7 +326,8 @@ fun SessionListScreen(
 private fun SessionRows(
     rows: List<SessionRowUi>,
     grouped: Boolean = true,
-    scopeKey: Any? = null,
+    closed: List<String> = emptyList(),
+    onToggleFolder: (String) -> Unit = {},
     onOpen: (String) -> Unit,
     onLongPress: (SessionRowUi) -> Unit,
     onSwipePin: (SessionRowUi) -> Unit = {},
@@ -332,7 +335,6 @@ private fun SessionRows(
 ) {
     // Leave search results in their original relevance order. Switching back
     // restores the folded folders rather than hiding matches during a search.
-    var closed by rememberSaveable(scopeKey) { mutableStateOf(arrayListOf<String>()) }
     val (pinned, remaining) = remember(rows, grouped) {
         rows.partition { it.summary.globalPinned == true || (!grouped && it.summary.pinned == true) }
     }
@@ -342,6 +344,10 @@ private fun SessionRows(
             val path = (meta?.worktree?.basePath ?: meta?.path)?.trim()?.takeIf { it.isNotEmpty() }
             meta?.machineId to path
         } else emptyMap()
+    }
+    val collidingLabels = remember(sections) {
+        sections.values.map { group -> group.first().let { it.summary.metadata?.machineId to SessionListViewModel.projectLabel(it.summary) } }
+            .groupingBy { it }.eachCount().filterValues { it > 1 }.keys
     }
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         if (pinned.isNotEmpty()) {
@@ -365,13 +371,17 @@ private fun SessionRows(
             val expanded = key !in closed
             item(key = key, contentType = "project") {
                 val first = members.first()
-                val title = if (path == null) stringResource(R.string.sessions_other_project)
-                    else SessionListViewModel.projectLabel(first.summary) ?: path
+                val compact = SessionListViewModel.projectLabel(first.summary)
+                val title = when {
+                    path == null -> stringResource(R.string.sessions_other_project)
+                    machine to compact in collidingLabels -> path
+                    else -> compact ?: path
+                }
                 val label = first.machine?.let { "$title · ${machineFilterLabel(it)}" } ?: title
                 val status = stringResource(if (expanded) R.string.sessions_folder_expanded else R.string.sessions_folder_collapsed)
                 Row(
                     Modifier.fillMaxWidth().clickable(role = androidx.compose.ui.semantics.Role.Button) {
-                        closed = ArrayList(if (expanded) closed + key else closed - key)
+                        onToggleFolder(key)
                     }.semantics { stateDescription = status }.padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
