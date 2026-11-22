@@ -4714,7 +4714,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             const ready = () => vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
             const bgEntries = () => (launcher as unknown as { backgroundCommands: Array<{ callId: string; taskId?: string; synthetic?: boolean }> }).backgroundCommands;
             const finish = async () => { queue.close(); await run; Object.assign(ctor, saved); };
-            return { notify, append, texts, ready, bgEntries, finish, queue, client, requests };
+            return { notify, append, texts, ready, bgEntries, finish, queue, client, requests, backend };
         }
         const turnRows = (acp: string) => writeTranscript(tempBrainDir, acp, [
             { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
@@ -5383,6 +5383,96 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 expect.soft(h.bgEntries().filter((e) => e.callId.startsWith(`${id}#`)), phase.name).toHaveLength(0);
                 await h.finish();
             }
+        });
+
+        it('retires the commands of a stopped reattached wakeup, including the ones promoted at the reattach', async () => {
+            const acp = 'conv-live-reattach-stop';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, async (n) => {
+                if (n === 1) { turnRows(acp); return undefined; }
+                await gate;
+                return 'cancelled';
+            }, { reactiveToolParkMs: 40 });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            await new Promise((r) => setTimeout(r, 40));
+            // The wakeup runs command A, then parks on a tool: the launcher reattaches an internal prompt.
+            h.notify(bgCall('call-l1-a', 'sleep 9'));
+            h.append([
+                { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>timer</SYSTEM_MESSAGE>' },
+                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 7"' } }] }
+            ]);
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.callId.startsWith('call-l1-a#'))).toBe(true));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            await h.ready();
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-l1-a#'))).toBe(false);
+            await h.finish();
+        });
+
+        it('clears the discard state when a forced restart removed the handler before the stopped turn ended', async () => {
+            const acp = 'conv-live-forced-restart';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, async (n) => {
+                if (n === 1) { turnRows(acp); return undefined; }
+                if (n === 2) { await gate; return 'cancelled'; }
+                return undefined;
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed' }, 'm2');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            (h.backend as unknown as { messageHandler: unknown }).messageHandler = null; // a forced restart drops the message handler
+            release();
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('again', { permissionMode: 'always-proceed' }, 'm3');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(3));
+            await h.ready();
+            await new Promise((r) => setTimeout(r, 100));
+            // A later wakeup's command must register normally.
+            h.notify(bgCall('call-after-restart', 'sleep 7'));
+            h.append(bgRows(2, 'sleep 7', `${acp}/task-9`));
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.callId.startsWith('call-after-restart#'))).toBe(true));
+            await h.finish();
+        });
+
+        it('rejects a repeated update of a stopped call while the next prompt is active', async () => {
+            const acp = 'conv-live-stopped-next-prompt';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            let release3 = () => {};
+            const gate3 = new Promise<void>((resolve) => { release3 = resolve; });
+            const h = startLive(acp, async (n, notify) => {
+                if (n === 1) { turnRows(acp); return; }
+                if (n === 2) { notify(bgCall('call-l3', 'sleep 9')); await gate; return 'cancelled'; }
+                await gate3;
+                return undefined;
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed' }, 'm2');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('again', { permissionMode: 'always-proceed' }, 'm3');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(3));
+            // The stopped call reports in-progress while the new prompt owns the handler.
+            h.notify(bgCall('call-l3', 'sleep 9'));
+            await new Promise((r) => setTimeout(r, 40));
+            release3();
+            await h.ready();
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-l3#'))).toBe(false);
+            await h.finish();
         });
 
         it('suppresses a repeated terminal update of a task the transcript already settled', async () => {

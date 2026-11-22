@@ -709,7 +709,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
                 if (abortController.signal.aborted) {
                     // Stop: nothing the wakeup left open may become a background task.
-                    if (this.usesLiveWakeupRendering()) await this.discardStoppedWakeup();
+                    await this.discardStoppedWakeup();
                     this.syncTranscriptCursor();
                     if (!this.usesLiveWakeupRendering()) await this.advanceBackendCursor();
                     session.onThinkingChange(false);
@@ -1001,6 +1001,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const previous = this.backend;
         this.backend = null;
         this.handlerOwnerTurn = null;
+        this.discardingStoppedStarts = false;
         if (previous) await this.retireBackend(previous);
         await this.startBackend(this.acpSessionId);
     }
@@ -1192,6 +1193,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         .find((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')
                     : undefined;
                 if (live) {
+                    // A reattached wakeup is the same wakeup: its commands count as this turn's, so a Stop retires them too.
+                    if (internalWakeup && this.handlerOwnerTurn) turn.commandCallIds.push(...this.handlerOwnerTurn.commandCallIds);
                     await (turn.aborted ? this.discardStoppedWakeup() : this.settleLiveWakeup());
                 }
                 if (firstWakeupStep) {
@@ -1252,7 +1255,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         } finally {
             if (turn.aborted) {
                 // The stopped activity ends here: discard its late starts before ready.
-                if (this.usesLiveWakeupRendering()) await this.discardStoppedWakeup(turn);
+                await this.discardStoppedWakeup(turn);
                 this.syncTranscriptCursor();
             }
             this.questionLabels.clear();
@@ -1375,11 +1378,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const owner = this.handlerOwnerTurn;
         this.handlerOwnerTurn = null;
         this.discardingStoppedStarts = false;
+        // Without a live handler (never live, or the process was restarted) there is nothing more to retire.
+        if (!this.usesLiveWakeupRendering()) return;
         for (const turn of new Set([owner, abortedTurn])) {
             if (!turn) continue;
-            for (const id of [...turn.commandCallIds, ...turn.openCommands, ...turn.deferredLiveCommandCalls.keys()]) {
+            for (const id of [...turn.commandCallIds, ...turn.deferredLiveCommandCalls.keys()]) {
                 this.rememberStoppedWakeupCall(parseToolCallLifetimeId(id) ?? id);
+                const tracked = this.backgroundCommands.findIndex((entry) => entry.callId === id);
+                if (tracked >= 0) this.backgroundCommands.splice(tracked, 1);
+                this.noteBackgroundTaskSettled(id);
             }
+            for (const id of turn.openCommands) this.rememberStoppedWakeupCall(parseToolCallLifetimeId(id) ?? id);
             turn.deferredLiveCommandCalls.clear();
             turn.openCommands.clear();
         }
@@ -1822,7 +1831,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         // A start while a Stop is being drained (the stopped wakeup, or the aborted turn itself) is recorded and dropped.
                         const stopping = idle ? this.discardingStoppedStarts : turn.aborted;
                         if (stopping) this.rememberStoppedWakeupCall(agentId);
-                        if (stopping || (idle && this.stoppedWakeupCallIds.has(agentId))) return;
+                        if (stopping || this.stoppedWakeupCallIds.has(agentId)) return;
                     }
                 }
                 turn.sawActivity = true;
