@@ -3,6 +3,7 @@ import type { PrChipDisplayProfile } from '@hapi/protocol'
 import { Hono } from 'hono'
 import { getConfiguration, type ConfigSource } from '../../configuration'
 import { loadPrChipDisplayProfile } from '../../config/prChipDisplay'
+import { readTelemetryLevelState } from '../../config/telemetryLevel'
 import type { WebAppEnv } from '../middleware/auth'
 
 export type GithubPrAwarenessState = {
@@ -10,10 +11,19 @@ export type GithubPrAwarenessState = {
     source: ConfigSource
 }
 
+export type TelemetryFeatureState = {
+    /** Capability bit: old hubs omit it and web SDKs self-disable. */
+    enabled: boolean
+    level: number
+    source: 'env' | 'file' | 'default'
+}
+
 export type FeaturesRouteDeps = {
     getGithubPrAwareness: () => GithubPrAwarenessState
     setGithubPrAwareness: (enabled: boolean) => Promise<void>
     getPrChipDisplay: () => PrChipDisplayProfile
+    /** Optional so lighter test harnesses can omit it (defaults to L1). */
+    getTelemetry?: () => Promise<TelemetryFeatureState>
 }
 
 function defaultDeps(): FeaturesRouteDeps {
@@ -28,23 +38,40 @@ function defaultDeps(): FeaturesRouteDeps {
         setGithubPrAwareness: async (enabled: boolean) => {
             await getConfiguration().setGithubPrAwareness(enabled)
         },
-        getPrChipDisplay: () => loadPrChipDisplayProfile(getConfiguration().dataDir)
+        getPrChipDisplay: () => loadPrChipDisplayProfile(getConfiguration().dataDir),
+        getTelemetry: async () => {
+            const state = await readTelemetryLevelState(getConfiguration().dataDir)
+            return { enabled: true, level: state.level, source: state.source }
+        }
     }
 }
 
 const OWNER_ONLY_ERROR = 'Feature settings are only available to the hub owner'
 
+/** Telemetry leg with total tolerance: omitted dep or config hiccup → the
+ * opt-in default (0 = off) — never silently upgrade sharing on a read error. */
+async function resolveTelemetry(deps: FeaturesRouteDeps): Promise<TelemetryFeatureState> {
+    try {
+        return (await deps.getTelemetry?.()) ?? { enabled: true, level: 0, source: 'default' }
+    } catch {
+        return { enabled: true, level: 0, source: 'default' }
+    }
+}
+
 export function createFeaturesRoutes(deps: FeaturesRouteDeps = defaultDeps()): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
-    app.get('/features', (c) => {
+    app.get('/features', async (c) => {
         const githubPrAwareness = deps.getGithubPrAwareness()
+        const telemetry = await resolveTelemetry(deps)
         return c.json({
             githubPrAwareness: {
                 enabled: githubPrAwareness.enabled,
                 source: githubPrAwareness.source
             },
-            prChipDisplay: deps.getPrChipDisplay()
+            prChipDisplay: deps.getPrChipDisplay(),
+            telemetry: telemetry.enabled,
+            telemetryLevel: telemetry.level
         })
     })
 
@@ -79,12 +106,15 @@ export function createFeaturesRoutes(deps: FeaturesRouteDeps = defaultDeps()): H
         }
 
         const next = deps.getGithubPrAwareness()
+        const telemetry = await resolveTelemetry(deps)
         return c.json({
             githubPrAwareness: {
                 enabled: next.enabled,
                 source: next.source
             },
-            prChipDisplay: deps.getPrChipDisplay()
+            prChipDisplay: deps.getPrChipDisplay(),
+            telemetry: telemetry.enabled,
+            telemetryLevel: telemetry.level
         })
     })
 

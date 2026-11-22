@@ -87,6 +87,10 @@ export const HubSettingsResponseSchema = z.object({
     /** Show compact AGENT_NOTIFY_SUMMARY in chat (default off / hide). */
     sessionSummaryInChat: z.boolean(),
     autoBridgeTransientModelErrors: z.boolean(),
+    /** Developer-mode telemetry level. 0 = off (DEFAULT, opt-in only) — users must explicitly enable sharing. */
+    telemetryLevel: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]),
+    /** Where the effective level came from: env pin / settings.json / built-in default. */
+    telemetryLevelSource: z.enum(['env', 'file', 'default']),
     peerSpawnDefaults: ResolvedPeerSpawnDefaultsSchema
 })
 
@@ -97,6 +101,8 @@ export const UpdateHubSettingsRequestSchema = z
         sessionSummaryContract: z.boolean().optional(),
         sessionSummaryInChat: z.boolean().optional(),
         autoBridgeTransientModelErrors: z.boolean().optional(),
+        /** Developer-mode telemetry level (0 off / 1 metadata / 2 detailed / 3 debug, default 0). */
+        telemetryLevel: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
         peerSpawnDefaults: PeerSpawnDefaultsSchema.optional()
     })
     .refine(
@@ -104,6 +110,7 @@ export const UpdateHubSettingsRequestSchema = z
             data.sessionSummaryContract !== undefined
             || data.sessionSummaryInChat !== undefined
             || data.autoBridgeTransientModelErrors !== undefined
+            || data.telemetryLevel !== undefined
             || data.peerSpawnDefaults !== undefined,
         { message: 'At least one hub setting field is required' }
     )

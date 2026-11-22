@@ -149,6 +149,30 @@ export default function SettingsGeneralPage() {
             ) : null}
             {isOwner ? (
                 <SettingsSection
+                    title={t('settings.general.developerMode.title')}
+                    description={t('settings.general.developerMode.description')}
+                >
+                    {hubSettingsQuery.data ? (
+                        <SettingsSwitch
+                            label={t('settings.general.developerMode.telemetry')}
+                            description={hubSettingsQuery.data.telemetryLevelSource === 'env'
+                                ? t('settings.general.developerMode.envPinned')
+                                : t('settings.general.developerMode.telemetry.desc')}
+                            checked={hubSettingsQuery.data.telemetryLevel > 0}
+                            disabled={hubSettingsMutation.isPending
+                                || hubSettingsQuery.data.telemetryLevelSource === 'env'}
+                            onChange={(checked) => {
+                                if (hubSettingsMutation.isPending) return
+                                // Opt-in switch: on → L1 (metadata), off → 0.
+                                // L2/L3 stay reachable via the API for debugging.
+                                hubSettingsMutation.mutate({ telemetryLevel: checked ? 1 : 0 })
+                            }}
+                        />
+                    ) : null}
+                </SettingsSection>
+            ) : null}
+            {isOwner ? (
+                <SettingsSection
                     title={t('settings.general.agents.title')}
                     description={t('settings.general.agents.description')}
                 >

@@ -31,6 +31,7 @@
         "./usage": "./src/usage.ts",
         "./usageQuery": "./src/usageQuery.ts",
         "./settingsFileLock": "./src/settingsFileLock.ts",
+        "./telemetry": "./src/telemetry.ts",
         "./agentCliSpawnLease": "./src/agentCliSpawnLease.ts"
     },
     "sideEffects": false,

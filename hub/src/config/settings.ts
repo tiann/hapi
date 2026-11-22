@@ -65,6 +65,14 @@ export interface Settings {
      * ELEVENLABS_MAX_DURATION_SECONDS still wins when set at process start.
      */
     elevenLabsMaxDurationSeconds?: number
+    /**
+     * Detailed-logging level 0-3 (0 off / 1 metadata default / 2 detail+
+     * sampling / 3 full debug with 24h auto-fallback). Research report
+     * 2026-11-20; env HAPI_TELEMETRY_LEVEL hard-overrides at read time.
+     */
+    telemetryLevel?: 0 | 1 | 2 | 3
+    /** Internal: when telemetryLevel last changed (L3 auto-fallback clock). */
+    telemetryLevelChangedAt?: number
 }
 
 export function getSettingsFile(dataDir: string): string {

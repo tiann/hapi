@@ -12,6 +12,10 @@ import { useSSE } from '@/hooks/useSSE'
 import { useDelayedFlag } from '@/hooks/useDelayedFlag'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useReconnectingState } from '@/hooks/useReconnectingState'
+import { noteSseDisconnected } from '@/lib/sseTelemetryObserver'
+import { collectWindowInventory } from '@/lib/message-window-store'
+import { recordSessionEntry } from '@/chat/sessionVisitTelemetry'
+import { telemetryClient } from '@/lib/telemetryClient'
 import { useSyncingState } from '@/hooks/useSyncingState'
 import { pushNotificationsDisabled, usePushNotifications } from '@/hooks/usePushNotifications'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
@@ -118,6 +122,17 @@ function AppInner() {
         const handleServiceWorkerMessage = (event: MessageEvent<unknown>) => {
             const href = getNotificationClickHref(event.data, window.location.origin)
             if (!href) return
+            // Observation only (session_open entry): a SW notification click
+            // that lands on a session page classifies the open as deep-link.
+            try {
+                const match = new URL(href, window.location.origin).pathname.match(/^\/(?:[^/]+\/)?sessions\/([^/?#]+)/)
+                const targetSessionId = match?.[1]
+                if (targetSessionId) {
+                    recordSessionEntry(decodeURIComponent(targetSessionId), 'deep-link')
+                }
+            } catch {
+                // fail-silent
+            }
             const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`
             if (currentHref !== href) {
                 router.history.push(href)
@@ -313,6 +328,12 @@ function AppInner() {
     }, [api, queryClient, selectedSessionId, startSync, endSync, reportSseConnect])
 
     const handleSseDisconnect = useCallback((reason: string) => {
+        // Observation only (sse_anomaly disconnect + storm window, diag).
+        try {
+            noteSseDisconnected('global', reason, document.hidden)
+        } catch {
+            // fail-silent
+        }
         // Only show reconnecting banner if we've already connected once
         if (!isFirstConnectRef.current) {
             reportSseDisconnect(reason)
@@ -357,6 +378,17 @@ function AppInner() {
             console.error('Failed to reconcile queued state after SSE connect:', error)
         })
     }, [api, selectedSessionId])
+
+    // Observation only (sse_anomaly disconnect + storm for the session-scoped
+    // connection): telemetry has no banner/error side effects, so unlike the
+    // global handler above it does not participate in reconnecting state.
+    const handleSessionSseDisconnect = useCallback((reason: string) => {
+        try {
+            noteSseDisconnected('full', reason, document.hidden)
+        } catch {
+            // fail-silent
+        }
+    }, [])
 
     const translateIncomingToast = useCallback((title: string, body: string): { title: string; body: string } => {
         const normalizedTitle = title.trim()
@@ -446,6 +478,7 @@ function AppInner() {
         subscription: sessionEventSubscription ?? undefined,
         scope: 'full',
         onConnect: handleSessionSseConnect,
+        onDisconnect: handleSessionSseDisconnect,
         onEvent: handleSseEvent
     })
 
@@ -460,6 +493,41 @@ function AppInner() {
         subscriptionId: sessionSubscriptionId,
         enabled: sseEnabled && Boolean(sessionEventSubscription)
     })
+
+    // Observation only (client_window_inventory, ux): snapshot the
+    // message-window cache on a 30-minute cadence plus each local-midnight
+    // rollover, so day buckets line up with server-side daily rollups.
+    // Windows are capped at the schema's 128 entries inside the collector.
+    useEffect(() => {
+        const emit = () => {
+            try {
+                telemetryClient.capture('ux', 'client_window_inventory', collectWindowInventory())
+            } catch {
+                // fail-silent
+            }
+        }
+        const msUntilNextMidnight = () => {
+            const now = new Date()
+            const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0)
+            return Math.max(1_000, next.getTime() - now.getTime())
+        }
+        const interval = window.setInterval(emit, 30 * 60 * 1000)
+        let midnightTimer: number | null = null
+        const scheduleMidnight = () => {
+            midnightTimer = window.setTimeout(() => {
+                midnightTimer = null
+                emit()
+                scheduleMidnight()
+            }, msUntilNextMidnight())
+        }
+        scheduleMidnight()
+        return () => {
+            window.clearInterval(interval)
+            if (midnightTimer !== null) {
+                window.clearTimeout(midnightTimer)
+            }
+        }
+    }, [])
 
     // Loading auth source
     if (isAuthSourceLoading) {

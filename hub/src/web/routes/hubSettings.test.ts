@@ -42,6 +42,8 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 0,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -58,6 +60,8 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: true,
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 0,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
@@ -66,6 +70,8 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: true,
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 0,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -84,6 +90,8 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: true,
             sessionSummaryInChat: true,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 0,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -100,6 +108,8 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: true,
+            telemetryLevel: 0,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -122,6 +132,8 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 0,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: {
                 agent: 'cursor',
                 permissionMode: 'yolo',
@@ -163,6 +175,8 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 0,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: {
                 agent: 'codex',
                 permissionMode: 'default',
@@ -236,6 +250,8 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: true,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 0,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
@@ -257,7 +273,71 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: true,
             sessionSummaryInChat: true,
             autoBridgeTransientModelErrors: true,
+            telemetryLevel: 0,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
+    })
+
+    it('opts into developer mode via a single-field telemetryLevel patch', async () => {
+        const { app } = await createApp()
+        const put = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ telemetryLevel: 2 })
+        })
+        expect(put.status).toBe(200)
+        const body = await put.json() as { telemetryLevel?: number; telemetryLevelSource?: string }
+        expect(body.telemetryLevel).toBe(2)
+        expect(body.telemetryLevelSource).toBe('file')
+        const get = await app.request('/api/hub-settings')
+        expect(((await get.json()) as { telemetryLevel?: number }).telemetryLevel).toBe(2)
+    })
+
+    it('refuses a telemetryLevel write while the env pin holds', async () => {
+        process.env.HAPI_TELEMETRY_LEVEL = '1'
+        try {
+            const { app } = await createApp()
+            const put = await app.request('/api/hub-settings', {
+                method: 'PUT',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ telemetryLevel: 2 })
+            })
+            expect(put.status).toBe(409)
+            expect(((await put.json()) as { code?: string }).code).toBe('telemetry_level_pinned_by_env')
+        } finally {
+            delete process.env.HAPI_TELEMETRY_LEVEL
+        }
+    })
+
+    it('keeps telemetryLevel inside the one-field-per-request discipline', async () => {
+        const { app } = await createApp()
+        const put = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ telemetryLevel: 1, sessionSummaryContract: true })
+        })
+        expect(put.status).toBe(400)
+        expect(((await put.json()) as { error?: string }).error).toBe('Update one hub setting per request')
+    })
+
+    it('rejects out-of-range levels via the shared schema', async () => {
+        const { app } = await createApp()
+        const put = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ telemetryLevel: 9 })
+        })
+        expect(put.status).toBe(400)
+    })
+
+    it('keeps the telemetryLevel patch owner-only', async () => {
+        const { app } = await createApp('tenant')
+        const put = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ telemetryLevel: 1 })
+        })
+        expect(put.status).toBe(403)
     })
 })

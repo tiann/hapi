@@ -12,6 +12,8 @@ import {
 import { usePlatform } from '@/hooks/usePlatform'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { getRetryDeliveryMode } from '@/lib/messageDelivery'
+import { telemetryClient } from '@/lib/telemetryClient'
+import { noteSendSettled } from '@/chat/turnLatency'
 
 type SendMessageInput = {
     sessionId: string
@@ -28,6 +30,12 @@ export type SendMessageAcceptance = {
 }
 
 type BlockedReason = 'no-api' | 'no-session' | 'pending'
+
+/** A POST that never settles would leave the optimistic row spinning
+ * forever (wedged proxy, dead runner mid-request). Flip the visual state
+ * to failed after this long so the retry affordance appears; a late
+ * settlement still overwrites via onSuccess/onError as usual. */
+const SEND_WATCHDOG_MS = 10_000
 
 /**
  * Information about a send that the underlying mutation rejected.
@@ -221,18 +229,63 @@ export function useSendMessage(
         onMutate: async (input) => {
             const successStatus = isSessionThinkingRef.current ? 'queued' as const : 'sent' as const
             appendOptimisticMessage(input.sessionId, createOptimisticMessage(input, 'sending'))
-            return { successStatus }
+            // Observation only (send_stall): reuses this exact state machine —
+            // no second timer. The box records whether the watchdog already
+            // fired so a late settlement reports as late-success/late-error.
+            const watchdogFired = { current: false }
+            const watchdog = setTimeout(() => {
+                // Still pending: surface a retry affordance instead of an
+                // endless spinner. Purely visual — the mutation keeps running,
+                // and any eventual onSuccess/onError transition overwrites
+                // this status (or removes the row) as usual.
+                updateMessageStatus(input.sessionId, input.localId, 'failed')
+                watchdogFired.current = true
+                try {
+                    telemetryClient.capture('diag', 'send_stall', {
+                        pendingMs: SEND_WATCHDOG_MS,
+                        outcome: 'timeout-marked'
+                    }, { sessionId: input.sessionId, severity: 'warn' })
+                } catch {
+                    // fail-silent
+                }
+            }, SEND_WATCHDOG_MS)
+            return { successStatus, watchdog, watchdogFired }
         },
         onSuccess: (_, input, context) => {
+            clearTimeout(context?.watchdog)
             updateMessageStatus(
                 input.sessionId,
                 input.localId,
                 context?.successStatus ?? 'sent'
             )
             haptic.notification('success')
+            if (context?.watchdogFired.current) {
+                try {
+                    telemetryClient.capture('diag', 'send_stall', {
+                        pendingMs: SEND_WATCHDOG_MS,
+                        outcome: 'late-success'
+                    }, { sessionId: input.sessionId })
+                } catch {
+                    // fail-silent
+                }
+            }
+            // Observation (turn_latency): the send POST settled — arm the
+            // first-agent-event clock for this session's turn.
+            noteSendSettled(input.sessionId)
             options?.onSuccess?.(input.sessionId)
         },
-        onError: (error, input) => {
+        onError: (error, input, context) => {
+            clearTimeout(context?.watchdog)
+            if (context?.watchdogFired.current) {
+                try {
+                    telemetryClient.capture('diag', 'send_stall', {
+                        pendingMs: SEND_WATCHDOG_MS,
+                        outcome: 'late-error'
+                    }, { sessionId: input.sessionId })
+                } catch {
+                    // fail-silent
+                }
+            }
             // Attachment sends keep the legacy failed-bubble UX: the
             // composer-restore path can only re-seat text + scheduledAt,
             // not the uploaded attachment metadata.  Removing the row
