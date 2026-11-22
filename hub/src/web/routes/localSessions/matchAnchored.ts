@@ -107,15 +107,24 @@ function filterDeliveredLiveMessages(
         const data = event?.type === 'event' ? asObj(event.data) : null
         if (data?.type === 'abort-restore' && typeof data.text === 'string') {
             // Status events can intervene between the queued prompt and its restore.
+            const batch: UserPromptPart[] = []
+            const indices = new Set<number>()
+            const restored = normalizeComparableText(data.text)
             for (let i = delivered.length - 1; i >= 0; i--) {
                 const candidate = delivered[i]!
                 const part = extractUserPromptPart(candidate)
-                if (part) {
-                    const restored = normalizeComparableText(data.text)
-                    if (part.raw === restored || part.formatted === restored) delivered.splice(i, 1)
+                if (!part) {
+                    if (extractAgentItem(candidate.content, i)) break
+                    continue
+                }
+                if (batch.length && batch[0]!.batchKey !== part.batchKey) break
+                batch.unshift(part)
+                indices.add(i)
+                if (matchUserPartsToPrompt(batch, restored)) {
+                    for (const index of indices) delivered.splice(index, 1)
                     break
                 }
-                if (extractAgentItem(candidate.content, i)) break
+                if (Math.min(part.raw.length, part.formatted.length) > restored.length) break
             }
             continue
         }
@@ -468,7 +477,7 @@ function reconcileLiveTurns(
     for (let lIdx = 0; lIdx < liveTurns.length; lIdx += 1) {
         if (sIdx >= sourceTurns.length) return null
         let liveTurn = liveTurns[lIdx]!
-        const sourceTurn = sourceTurns[sIdx]!
+        let sourceTurn = sourceTurns[sIdx]!
         if (!userPromptsMatch(liveTurn, sourceTurn)) {
             // If two adjacent user rows had no invokedAt or shared a timestamp
             // before the first turn produced agent output, try splitting the
@@ -481,10 +490,17 @@ function reconcileLiveTurns(
                     break
                 }
             }
-            if (splitPrefix === 0) return null
-            const [firstTurn, restTurn] = splitTurnUserPrefix(liveTurn, splitPrefix)
-            liveTurn = firstTurn
-            liveTurns.splice(lIdx, 1, firstTurn, restTurn)
+            if (splitPrefix) {
+                const [firstTurn, restTurn] = splitTurnUserPrefix(liveTurn, splitPrefix)
+                liveTurn = firstTurn
+                liveTurns.splice(lIdx, 1, firstTurn, restTurn)
+            } else {
+                // Import native-only exchanges between established live turns.
+                const candidates = sourceTurns.slice(sIdx + 1).filter(turn => userPromptsMatch(liveTurn, turn))
+                if (candidates.length !== 1) return null
+                sourceTurn = candidates[0]!
+                sIdx = sourceTurns.indexOf(sourceTurn, sIdx + 1)
+            }
         }
         if (!alignTurnAgentItems(
             liveTurn,

@@ -228,7 +228,7 @@ function makeClient() {
         emitMessagesConsumed: vi.fn(),
         emitSteerIndeterminate: vi.fn(),
         setSteerDeliveryState: vi.fn(async () => true),
-        getMetadata: vi.fn(() => null),
+        getMetadata: vi.fn((): ReturnType<ApiSessionClient['getMetadata']> => null),
         keepAlive: vi.fn(),
         emitSessionReady: vi.fn()
     };
@@ -367,6 +367,18 @@ describe('AgyAcpRemoteLauncher', () => {
         } finally {
             readTitle.mockRestore();
         }
+    });
+
+    it('preserves an imported native ID when the runner cannot resume it', async () => {
+        const { session, queue, client } = makeSession('imported-id');
+        client.getMetadata.mockReturnValue({ path: '/project', host: 'machine', agyImportedAt: 1 });
+        const backend = new FakeAgyBackend();
+        backend.resumeError = new Error('native conversation unavailable');
+        queue.close();
+        await expect(launch(session, [backend]).run).rejects.toThrow();
+        expect(backend.calls).not.toContain('newSession');
+        expect(client.emitSessionReady).not.toHaveBeenCalled();
+        expect(session.sessionId).toBe('imported-id');
     });
 
     it('starts a new conversation when resume fails and says so', async () => {

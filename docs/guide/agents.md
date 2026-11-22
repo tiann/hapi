@@ -44,7 +44,7 @@ Steer, effort and history controls apply to sessions under remote control. The w
 | Kimi | — | ✓ | — | — | — |
 | OpenCode | ✓ | ✓ (reasoning effort) | Probed (OpenCode v2) | — | ✓ |
 | DeepSeek Harness | — | — | — | — | — |
-| Antigravity | ✓ (ACP sessions) | ✓ | — | — | — |
+| Antigravity | ✓ (ACP sessions) | ✓ | — | — | ✓ |
 | Pi | ✓ | ✓ | Probed | — | ✓ |
 
 - **Steer** delivers a queued message into the running turn instead of waiting for it to end. See [Composer](./composer.md).

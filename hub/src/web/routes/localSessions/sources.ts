@@ -93,7 +93,7 @@ export type HubLocalSessionSource = {
     /** Codex request flag yolo -> metadata.preferredPermissionMode. */
     requestMetadata?: (body: Record<string, unknown>) => Record<string, unknown>
     /** Optional hub-owned timestamp used to label imported sessions. */
-    importTimestampKey?: 'codexImportedAt'
+    importTimestampKey?: 'codexImportedAt' | 'agyImportedAt'
 }
 
 /** True when the machine advertises the source's required capability. */
@@ -237,6 +237,7 @@ export const CLAUDE_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
 export const AGY_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     flavor: 'agy',
     displayName: 'Antigravity',
+    importTimestampKey: 'agyImportedAt',
     routeBase: 'agy',
     nativeIdKeys: ['agySessionId'],
     match: { strategy: 'anchored', reconcileLiveContinuation: true },

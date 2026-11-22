@@ -5493,6 +5493,13 @@ export class SyncEngine {
             return { type: 'error', message: 'Pi resume requires an upgraded runner', code: 'resume_failed' }
         }
 
+        const requiresAgyNativeReady = flavor === 'agy' && resumeToken !== undefined && metadata.agyImportedAt != null
+        if (requiresAgyNativeReady) {
+            if (!targetMachine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.AgyImportedResume)) {
+                return { type: 'error', message: 'Update the runner to resume imported Antigravity conversations', code: 'resume_failed' }
+            }
+            this.sessionReadyIds.delete(access.sessionId)
+        }
         const requiresPiNativeReady = flavor === 'pi' && resumeToken !== undefined
         if (requiresPiNativeReady) {
             if (this.isPiResumeBlocked(access.sessionId)) {
@@ -5700,8 +5707,12 @@ export class SyncEngine {
                 return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
             }
 
+            if (requiresAgyNativeReady && spawnResult.sessionId !== access.sessionId) {
+                return { type: 'error', message: 'Antigravity did not reopen the imported session', code: 'resume_failed' }
+            }
             const needsReadyBeforeSuccess = resumedStartingMode === 'pty'
                 || requiresPiNativeReady
+                || requiresAgyNativeReady
                 || (
                     spawnResult.sessionId !== access.sessionId
                     && flavor === 'cursor'
@@ -5778,6 +5789,9 @@ export class SyncEngine {
                                 rollbackSafe: false,
                             }
                         }
+                    }
+                    if (requiresAgyNativeReady) {
+                        return { type: 'error', message: 'Antigravity could not confirm native resume. Retry reopening the imported conversation.', code: 'resume_failed' }
                     }
                     const message = flavor === 'pi'
                         ? readyResult === 'ended'

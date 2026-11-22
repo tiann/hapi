@@ -228,11 +228,18 @@ describe('Antigravity live continuation', () => {
         const initial = transcriptMessage(`${PREFIX}start`, 'start')
         const wakeup = agent({ type: 'message', message: 'timer finished' })
         const native = [initial, { ...transcriptMessage(`${PREFIX}wake`, ''), content: wakeup }, transcriptMessage(`${PREFIX}next`, 'next')]
-        const restored = { role: 'agent', content: { type: 'event', data: { type: 'abort-restore', text: 'cancelled' } } }
+        const restored = { role: 'agent', content: { type: 'event', data: { type: 'abort-restore', text: 'cancelled\nqueued' } } }
         const stored = [storedMessage(initial.id, 'start'), { ...storedMessage('wake', ''), content: wakeup },
-            storedMessage('cancel', 'cancelled'), { ...storedMessage('restore', ''), content: restored }, storedMessage('next', 'next')]
+            storedMessage('cancel', 'cancelled'), storedMessage('queued', 'queued'), { ...storedMessage('restore', ''), content: restored }, storedMessage('next', 'next')]
         expect(matchAnchored({ storedMessages: stored, transcript: transcript(native), importPrefix: PREFIX,
             cursor: null, reconcileLiveContinuation: true })).toEqual({ status: 'ok', delta: [] })
+    })
+    it('appends an intervening native-only turn once', () => {
+        const rows = ['initial', 'first', 'native only', 'second'].map(text => transcriptMessage(`${PREFIX}${text}`, text))
+        const stored = [storedMessage(rows[0]!.id, 'initial'), storedMessage('one', 'first'), storedMessage('two', 'second')]
+        const options = { transcript: transcript(rows), importPrefix: PREFIX, cursor: null, reconcileLiveContinuation: true }
+        expect(matchAnchored({ ...options, storedMessages: stored })).toEqual({ status: 'ok', delta: [rows[2]] })
+        expect(matchAnchored({ ...options, storedMessages: [...stored, storedMessage(rows[2]!.id, 'native only')] })).toEqual({ status: 'ok', delta: [] })
     })
 
 })
