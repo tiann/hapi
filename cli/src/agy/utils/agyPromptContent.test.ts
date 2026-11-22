@@ -148,4 +148,57 @@ describe('buildAgyPromptContent', () => {
         expect(prompt).toEqual([{ type: 'text', text: 'look' }]);
         expect(notices).toEqual(['Could not attach image shot.png: invalid upload path']);
     });
+
+    it('strips encoded @imagePath refs from queued text while keeping captions, non-image refs, and unreadable @imagePath refs', async () => {
+        const pngPath = join(uploadDir, 'shot 1.png');
+        await writeFile(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+        const captioned = await buildAgyPromptContent(
+            fakeBackend(true),
+            `@${pngPath} @/uploads/notes.txt\n\ncheck this`,
+            [{ path: pngPath, mimeType: 'image/png', filename: 'shot 1.png' }],
+            { sessionId: 'session-1', onNotice: () => {} }
+        );
+        expect(captioned).toEqual([
+            { type: 'text', text: '@/uploads/notes.txt\n\ncheck this' },
+            { type: 'image', data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64'), mimeType: 'image/png' }
+        ]);
+
+        const imageOnly = await buildAgyPromptContent(
+            fakeBackend(true),
+            `@${pngPath}`,
+            [{ path: pngPath, mimeType: 'image/png', filename: 'shot 1.png' }],
+            { sessionId: 'session-1', onNotice: () => {} }
+        );
+        expect(imageOnly).toEqual([
+            { type: 'image', data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64'), mimeType: 'image/png' }
+        ]);
+
+        authState.withinUploadDir = false;
+        const unreadableFallback = await buildAgyPromptContent(
+            fakeBackend(true),
+            `@${pngPath}`,
+            [{ path: pngPath, mimeType: 'image/png', filename: 'shot 1.png' }],
+            { sessionId: 'session-1', onNotice: () => {} }
+        );
+        expect(unreadableFallback).toEqual([{ type: 'text', text: `@${pngPath}` }]);
+    });
+
+    it('avoids duplicating @path when !supportsImagePrompts() receives queued attachment text', async () => {
+        const prompt = await buildAgyPromptContent(
+            fakeBackend(false),
+            '@/uploads/a.png @/uploads/notes.txt\n\nhello',
+            [{ path: '/uploads/a.png', mimeType: 'image/png' }],
+            { sessionId: 'session-1', onNotice: () => {} }
+        );
+        expect(prompt).toEqual([{ type: 'text', text: '@/uploads/a.png @/uploads/notes.txt\n\nhello' }]);
+
+        const imageOnly = await buildAgyPromptContent(
+            fakeBackend(false),
+            '@/uploads/a.png',
+            [{ path: '/uploads/a.png', mimeType: 'image/png' }],
+            { sessionId: 'session-1', onNotice: () => {} }
+        );
+        expect(imageOnly).toEqual([{ type: 'text', text: '@/uploads/a.png' }]);
+    });
 });

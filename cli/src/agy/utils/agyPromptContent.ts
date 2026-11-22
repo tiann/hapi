@@ -59,10 +59,75 @@ export function formatAgyUserMessage(
     return text ? `${refs}\n\n${text}` : refs;
 }
 
+function splitAttachmentHeader(text: string): { header: string; body: string; hasSeparator: boolean } {
+    const sepIdx = text.indexOf('\n\n');
+    if (sepIdx < 0) {
+        return { header: text, body: '', hasSeparator: false };
+    }
+    return {
+        header: text.slice(0, sepIdx),
+        body: text.slice(sepIdx + 2),
+        hasSeparator: true
+    };
+}
+
+function findHeaderTokenIndex(header: string, token: string): number {
+    if (!token) return -1;
+    let fromIndex = 0;
+    while (fromIndex <= header.length) {
+        const idx = header.indexOf(token, fromIndex);
+        if (idx < 0) return -1;
+        const end = idx + token.length;
+        const leftOk = idx === 0 || header[idx - 1] === ' ';
+        const rightOk = end === header.length || header[end] === ' ';
+        if (leftOk && rightOk) return idx;
+        fromIndex = idx + 1;
+    }
+    return -1;
+}
+
+function removeTokenFromHeader(header: string, token: string): string {
+    const idx = findHeaderTokenIndex(header, token);
+    if (idx < 0) return header;
+    const before = header.slice(0, idx);
+    const after = header.slice(idx + token.length);
+    if (before.endsWith(' ') && after.startsWith(' ')) {
+        return `${before.slice(0, -1)}${after}`;
+    }
+    if (before.endsWith(' ')) {
+        return `${before.slice(0, -1)}${after}`;
+    }
+    if (after.startsWith(' ')) {
+        return `${before}${after.slice(1)}`;
+    }
+    return `${before}${after}`;
+}
+
+/**
+ * Removes `@path` tokens for images that were encoded into ACP image blocks,
+ * preserving non-image `@path` tokens, failed image `@path` tokens, and body text.
+ */
+function stripAttachedImageRefs(text: string, attachedPaths: readonly string[]): string {
+    if (attachedPaths.length === 0 || !text) return text;
+    const { header, body, hasSeparator } = splitAttachmentHeader(text);
+    let remainingHeader = header;
+    for (const path of attachedPaths) {
+        remainingHeader = removeTokenFromHeader(remainingHeader, `@${path}`);
+    }
+    remainingHeader = remainingHeader.trim();
+    if (!hasSeparator) {
+        return remainingHeader;
+    }
+    if (!remainingHeader) return body;
+    if (!body) return remainingHeader;
+    return `${remainingHeader}\n\n${body}`;
+}
+
 /**
  * Builds ACP `PromptContent[]` blocks for an Antigravity turn, attaching inline
- * base64 images when `backend.supportsImagePrompts()` is true or falling back
- * to `@path` text references when unavailable.
+ * base64 images when `backend.supportsImagePrompts()` is true (stripping only
+ * those successfully encoded `@path` tokens from the text header) or preserving
+ * `@path` text references when unavailable or unreadable.
  */
 export async function buildAgyPromptContent(
     backend: Pick<AcpSdkBackend, 'supportsImagePrompts'>,
@@ -80,11 +145,23 @@ export async function buildAgyPromptContent(
     const supportsImages = typeof backend.supportsImagePrompts === 'function'
         && backend.supportsImagePrompts();
     if (!supportsImages) {
-        const refs = images.map((image) => `@${image.path}`).join(' ');
-        return [{ type: 'text', text: text ? `${refs}\n\n${text}` : refs }];
+        const { header, body, hasSeparator } = splitAttachmentHeader(text);
+        const missingRefs = images
+            .filter((image) => findHeaderTokenIndex(header, `@${image.path}`) < 0)
+            .map((image) => `@${image.path}`);
+        if (missingRefs.length === 0) {
+            return [{ type: 'text', text }];
+        }
+        const missingStr = missingRefs.join(' ');
+        if (hasSeparator) {
+            const nextHeader = header ? `${missingStr} ${header}` : missingStr;
+            return [{ type: 'text', text: body ? `${nextHeader}\n\n${body}` : nextHeader }];
+        }
+        return [{ type: 'text', text: text ? `${missingStr}\n\n${text}` : missingStr }];
     }
 
-    const prompt: PromptContent[] = [{ type: 'text', text }];
+    const imageBlocks: PromptContent[] = [];
+    const attachedPaths: string[] = [];
     let totalImageBytes = 0;
     for (const image of images) {
         try {
@@ -98,15 +175,23 @@ export async function buildAgyPromptContent(
                     isAuthorizedUploadFile(image.path, opts.sessionId, identity)
             );
             totalImageBytes += data.length;
-            prompt.push({
+            imageBlocks.push({
                 type: 'image',
                 data: data.toString('base64'),
                 mimeType: normalizeImageMimeType(image.mimeType)
             });
+            attachedPaths.push(image.path);
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error);
             opts.onNotice(`Could not attach image ${image.filename ?? image.path}: ${detail}`);
         }
     }
+
+    const remainingText = stripAttachedImageRefs(text, attachedPaths);
+    const prompt: PromptContent[] = [];
+    if (remainingText.length > 0 || imageBlocks.length === 0) {
+        prompt.push({ type: 'text', text: remainingText });
+    }
+    prompt.push(...imageBlocks);
     return prompt;
 }

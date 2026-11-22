@@ -2606,4 +2606,79 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
         await launch(session, [backend]).run;
         expect(backend.prompts).toEqual([[{ type: 'text', text: '@/uploads/shot.png\n\ndescribe this' }]]);
     });
+
+    it('steers image follow-ups onto text turns and text follow-ups onto image turns when config matches', async () => {
+        const backend = new FakeAgyBackend();
+        backend.supportsImages = false;
+        const { session, queue, client } = makeSession();
+        let releaseTextTurn!: () => void;
+        let releaseImageTurn!: () => void;
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'tool_call', id: 't-text', name: 'run_command', input: {}, status: 'in_progress' });
+            await new Promise<void>((resolve) => { releaseTextTurn = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'tool_call', id: 't-img', name: 'run_command', input: {}, status: 'in_progress' });
+            await new Promise<void>((resolve) => { releaseImageTurn = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('initial text turn', REVIEW, 'turn-text');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+
+        const steerHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!;
+        queue.push('@/uploads/follow.png\n\ncheck this image', {
+            ...REVIEW,
+            imageAttachments: [{ path: '/uploads/follow.png', mimeType: 'image/png', filename: 'follow.png' }]
+        }, 'steer-img');
+        await expect(steerHandler({ localId: 'steer-img' })).resolves.toEqual({ steered: true });
+        releaseTextTurn();
+        backend.steerCompletions[0]!.resolve('end_turn');
+        await vi.waitFor(() => expect(sessionEvents(client).filter((e) => (e as { type?: string }).type === 'ready')).toHaveLength(1));
+
+        queue.push('@/uploads/start.png', {
+            ...REVIEW,
+            imageAttachments: [{ path: '/uploads/start.png', mimeType: 'image/png', filename: 'start.png' }]
+        }, 'turn-img');
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
+
+        queue.push('plain text steer', REVIEW, 'steer-text');
+        await expect(steerHandler({ localId: 'steer-text' })).resolves.toEqual({ steered: true });
+        releaseImageTurn();
+        backend.steerCompletions[1]!.resolve('end_turn');
+        await vi.waitFor(() => expect(sessionEvents(client).filter((e) => (e as { type?: string }).type === 'ready')).toHaveLength(2));
+
+        queue.close();
+        await run;
+    });
+
+    it('restores original @path draft when Stop cancels an image-only turn before answer', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.supportsImages = false;
+        let cancelled!: () => void;
+        backend.onCancel = () => cancelled?.();
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo!('@/uploads/only.png');
+            await new Promise<void>((resolve) => { cancelled = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+        });
+
+        queue.push('@/uploads/only.png', {
+            ...REVIEW,
+            imageAttachments: [{ path: '/uploads/only.png', mimeType: 'image/png', filename: 'only.png' }]
+        }, 'img-abort');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+
+        expect(sessionEvents(client)).toContainEqual({ type: 'abort-restore', text: '@/uploads/only.png' });
+    });
 });

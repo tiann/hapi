@@ -592,4 +592,73 @@ describe('listSkills', () => {
         })
         await expect(resolveSkill('huge')).rejects.toThrow('Skill is too large to load')
     })
+
+    it('rejects oversized agy manifests (>256 KiB)', async () => {
+        const projectDir = join(sandboxDir, 'oversized-proj')
+        await mkdir(join(projectDir, '.agents'), { recursive: true })
+        await writeSkill(join(sandboxDir, 'outside-skills', 'ok'), 'ok', 'Should not load')
+        await writeFile(
+            join(projectDir, '.agents', 'skills.json'),
+            JSON.stringify({
+                entries: [{ path: join(sandboxDir, 'outside-skills') }],
+                padding: 'x'.repeat(260 * 1024),
+            })
+        )
+
+        const skills = await listSkills(projectDir, { flavor: 'agy' })
+        expect(skills.some((skill) => skill.name === 'ok')).toBe(false)
+    })
+
+    it('resolves workspace-relative agy manifest paths from projectDir before falling back to repoRoot', async () => {
+        const repoDir = join(sandboxDir, 'repo')
+        const subDir = join(repoDir, 'packages', 'app')
+        await mkdir(join(repoDir, '.git'), { recursive: true })
+        await mkdir(join(subDir, '.agents', 'shared', 'dot-only'), { recursive: true })
+        await writeSkill(join(subDir, '.agents', 'shared', 'dot-only'), 'dot-only', 'Inside .agents')
+        await writeSkill(join(subDir, 'shared', 'workspace-skill'), 'workspace-skill', 'Workspace relative')
+        await writeSkill(join(repoDir, 'repo-only', 'repo-fallback-skill'), 'repo-fallback-skill', 'Repo root fallback')
+        await writeFile(
+            join(subDir, '.agents', 'skills.json'),
+            JSON.stringify({
+                entries: [
+                    { path: 'shared' },
+                    { path: 'repo-only' },
+                ],
+            })
+        )
+
+        const skills = await listSkills(subDir, { flavor: 'agy' })
+        const names = skills.map((s) => s.name)
+        expect(names).toContain('workspace-skill')
+        expect(names).toContain('repo-fallback-skill')
+        expect(names).not.toContain('dot-only')
+    })
+
+    it('applies branch-specific filters when two branches inherit the same shared agy manifest', async () => {
+        const projectDir = join(sandboxDir, 'diamond-proj')
+        await mkdir(join(projectDir, '.agents'), { recursive: true })
+        await writeSkill(join(projectDir, 'shared-pool', 'alpha'), 'alpha', 'Alpha skill')
+        await writeSkill(join(projectDir, 'shared-pool', 'beta'), 'beta', 'Beta skill')
+        await writeSkill(join(projectDir, 'shared-pool', 'gamma'), 'gamma', 'Gamma skill')
+
+        await writeFile(
+            join(projectDir, 'shared.json'),
+            JSON.stringify({ entries: [{ path: 'shared-pool' }] })
+        )
+        await writeFile(
+            join(projectDir, '.agents', 'skills.json'),
+            JSON.stringify({
+                inherits: [
+                    { path: 'shared.json', include_only: ['alpha'] },
+                    { path: 'shared.json', include_only: ['beta'] },
+                ],
+            })
+        )
+
+        const skills = await listSkills(projectDir, { flavor: 'agy' })
+        const names = skills.map((s) => s.name)
+        expect(names).toContain('alpha')
+        expect(names).toContain('beta')
+        expect(names).not.toContain('gamma')
+    })
 })

@@ -10,13 +10,14 @@ import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFacto
 import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createModeChangeHandler, createRunnerLifecycle } from '@/agent/runnerLifecycle';
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc';
+import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import type { SessionEffort, SessionModel } from '@/api/types';
 import { splitAgyModelSelection } from '@hapi/protocol';
 import { listAgyModels } from '@/modules/common/agyModels';
 import { parseAgySwarmBoardCommand } from './agySwarmBoard';
 import { normalizeAgyModelSelection } from './utils/agyModelSelection';
-import { agyImageAttachmentsFor, formatAgyUserMessage } from './utils/agyPromptContent';
+import { agyImageAttachmentsFor } from './utils/agyPromptContent';
 
 export async function runAgy(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -157,7 +158,7 @@ export async function runAgy(opts: {
         await initialized;
 
         session.onUserMessage((message, localId) => {
-            const formattedText = formatAgyUserMessage(message.content.text, message.content.attachments);
+            const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
             // Snapshot config when buffered/new messages enter the queue, so a
             // later model or effort switch cannot change an already queued turn.
             const mode: AgyMode = {

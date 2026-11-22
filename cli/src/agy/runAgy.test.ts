@@ -208,4 +208,40 @@ describe('runAgy model and effort config', () => {
         })
         await runAgy({ model: 'gemini-4-argon-medium', workingDirectory: '/tmp' })
     })
+
+    it('keeps @path refs in queued message text for stream-json/restore while carrying inline imageAttachments in mode', async () => {
+        mocks.loop.mockImplementation(async ({ messageQueue }: { messageQueue: MessageQueue2<AgyMode> }) => {
+            const send = mocks.onUserMessage.mock.calls[0]![0]
+            send({
+                content: {
+                    text: 'check screenshot',
+                    attachments: [
+                        { id: '1', filename: 'shot.png', mimeType: 'image/png', size: 12, path: '/uploads/shot.png' },
+                        { id: '2', filename: 'notes.txt', mimeType: 'text/plain', size: 8, path: '/uploads/notes.txt' }
+                    ]
+                }
+            }, 'm-captioned')
+            send({
+                content: {
+                    text: '',
+                    attachments: [
+                        { id: '3', filename: 'only.webp', mimeType: 'image/webp', size: 20, path: '/uploads/only.webp' }
+                    ]
+                }
+            }, 'm-image-only')
+
+            const first = await messageQueue.waitForMessagesAndGetAsString()
+            expect(first?.message).toBe('@/uploads/shot.png @/uploads/notes.txt\n\ncheck screenshot')
+            expect(first?.mode.imageAttachments).toEqual([
+                { path: '/uploads/shot.png', mimeType: 'image/png', filename: 'shot.png' }
+            ])
+
+            const second = await messageQueue.waitForMessagesAndGetAsString()
+            expect(second?.message).toBe('@/uploads/only.webp')
+            expect(second?.mode.imageAttachments).toEqual([
+                { path: '/uploads/only.webp', mimeType: 'image/webp', filename: 'only.webp' }
+            ])
+        })
+        await runAgy({ model: 'gemini-4-argon-medium', workingDirectory: '/tmp' })
+    })
 })

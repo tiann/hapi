@@ -1,5 +1,6 @@
+import { constants } from 'fs';
 import { access, open, readdir, readFile, stat } from 'fs/promises';
-import { basename, dirname, isAbsolute, join, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import { homedir } from 'os';
 import { parse as parseYaml } from 'yaml';
 
@@ -13,6 +14,7 @@ export interface ResolvedSkill extends SkillSummary {
 }
 
 export const MAX_SKILL_FILE_BYTES = 128 * 1024;
+const MAX_AGY_MANIFEST_BYTES = 256 * 1024;
 
 export interface ListSkillsRequest {
     flavor?: string;
@@ -334,14 +336,34 @@ type AgyManifestDirTarget = {
 };
 
 async function readJsonObject(filePath: string): Promise<Record<string, unknown> | null> {
+    let handle;
     try {
-        const parsed = JSON.parse(await readFile(filePath, 'utf-8')) as unknown;
+        handle = await open(filePath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+        const stats = await handle.stat();
+        if (!stats.isFile() || stats.size > MAX_AGY_MANIFEST_BYTES) {
+            return null;
+        }
+        const chunks: Buffer[] = [];
+        let totalBytes = 0;
+        const buf = Buffer.allocUnsafe(Math.min(Math.max(stats.size, 1), 65536));
+        while (totalBytes <= MAX_AGY_MANIFEST_BYTES) {
+            const { bytesRead } = await handle.read(buf, 0, buf.length, totalBytes);
+            if (bytesRead === 0) break;
+            totalBytes += bytesRead;
+            if (totalBytes > MAX_AGY_MANIFEST_BYTES) {
+                return null;
+            }
+            chunks.push(Buffer.from(buf.subarray(0, bytesRead)));
+        }
+        const parsed = JSON.parse(Buffer.concat(chunks, totalBytes).toString('utf-8')) as unknown;
         if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
             return parsed as Record<string, unknown>;
         }
         return null;
     } catch {
         return null;
+    } finally {
+        await handle?.close().catch(() => {});
     }
 }
 
@@ -427,8 +449,8 @@ async function isAgyPluginEnabled(
 
 async function resolveAgyManifestPath(
     rawPath: string,
-    baseDir: string,
-    repoRoot?: string
+    primaryRoot: string,
+    fallbackRoot?: string
 ): Promise<string> {
     const trimmed = rawPath.trim();
     const home = getHomeDirectory();
@@ -441,29 +463,36 @@ async function resolveAgyManifestPath(
     if (isAbsolute(expanded)) {
         return resolve(expanded);
     }
-    const againstBase = resolve(baseDir, expanded);
-    if (!repoRoot || await pathExists(againstBase)) {
-        return againstBase;
+    const againstPrimary = resolve(primaryRoot, expanded);
+    if (!fallbackRoot || fallbackRoot === primaryRoot || await pathExists(againstPrimary)) {
+        return againstPrimary;
     }
-    return resolve(repoRoot, expanded);
+    return resolve(fallbackRoot, expanded);
+}
+
+function isPathWithinRoot(targetPath: string, rootDir: string): boolean {
+    const rel = relative(resolve(rootDir), resolve(targetPath));
+    return rel === '' || (!/^\.\.(?:[\\/]|$)/.test(rel) && !isAbsolute(rel));
 }
 
 async function listAgyJsonManifestEntries(
     manifestPath: string,
-    baseDir: string,
-    repoRoot: string | undefined,
+    primaryRoot: string,
+    fallbackRoot: string | undefined,
     inheritedFilters: AgyNameFilter[] = [],
-    visited: Set<string> = new Set(),
-    depth = 0
+    ancestors: ReadonlySet<string> = new Set(),
+    depth = 0,
+    workspaceRoot?: string
 ): Promise<AgyManifestDirTarget[]> {
     if (depth > MAX_AGY_MANIFEST_DEPTH) {
         return [];
     }
     const normalizedPath = resolve(manifestPath);
-    if (visited.has(normalizedPath)) {
+    if (ancestors.has(normalizedPath)) {
         return [];
     }
-    visited.add(normalizedPath);
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(normalizedPath);
 
     const raw = await readJsonObject(normalizedPath);
     if (!raw) {
@@ -481,7 +510,7 @@ async function listAgyJsonManifestEntries(
             if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
             const entry = item as Record<string, unknown>;
             if (typeof entry.path !== 'string' || entry.path.trim().length === 0) continue;
-            const dir = await resolveAgyManifestPath(entry.path, baseDir, repoRoot);
+            const dir = await resolveAgyManifestPath(entry.path, primaryRoot, fallbackRoot);
             const entryFilter = parseAgyNameFilter(entry);
             results.push({
                 dir,
@@ -495,16 +524,18 @@ async function listAgyJsonManifestEntries(
             if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
             const inh = item as Record<string, unknown>;
             if (typeof inh.path !== 'string' || inh.path.trim().length === 0) continue;
-            const inheritedPath = await resolveAgyManifestPath(inh.path, baseDir, repoRoot);
+            const inheritedPath = await resolveAgyManifestPath(inh.path, primaryRoot, fallbackRoot);
             const inhFilter = parseAgyNameFilter(inh);
             const nextFilters = inhFilter ? [...baseFilters, inhFilter] : baseFilters;
+            const staysInWorkspace = workspaceRoot !== undefined && isPathWithinRoot(inheritedPath, workspaceRoot);
             const nested = await listAgyJsonManifestEntries(
                 inheritedPath,
-                dirname(inheritedPath),
-                repoRoot,
+                staysInWorkspace ? workspaceRoot : dirname(inheritedPath),
+                staysInWorkspace ? fallbackRoot : undefined,
                 nextFilters,
-                visited,
-                depth + 1
+                nextAncestors,
+                depth + 1,
+                staysInWorkspace ? workspaceRoot : undefined
             );
             results.push(...nested);
         }
@@ -591,11 +622,27 @@ async function discoverAgySkillDirs(workingDirectory?: string): Promise<string[]
     for (const projectDir of projectDirs) {
         for (const dotDir of AGY_PROJECT_DOT_DIRS) {
             const dotRoot = join(projectDir, dotDir);
-            const skillTargets = await listAgyJsonManifestEntries(join(dotRoot, 'skills.json'), dotRoot, repoRoot);
+            const skillTargets = await listAgyJsonManifestEntries(
+                join(dotRoot, 'skills.json'),
+                projectDir,
+                repoRoot,
+                [],
+                new Set(),
+                0,
+                projectDir
+            );
             for (const target of skillTargets) {
                 orderedDirs.push(...await listAgyFilteredSkillDirs(target.dir, target.filters));
             }
-            const pluginTargets = await listAgyJsonManifestEntries(join(dotRoot, 'plugins.json'), dotRoot, repoRoot);
+            const pluginTargets = await listAgyJsonManifestEntries(
+                join(dotRoot, 'plugins.json'),
+                projectDir,
+                repoRoot,
+                [],
+                new Set(),
+                0,
+                projectDir
+            );
             for (const target of pluginTargets) {
                 orderedDirs.push(...await listAgyPluginDirsFromManifestTarget(target, overrides));
             }

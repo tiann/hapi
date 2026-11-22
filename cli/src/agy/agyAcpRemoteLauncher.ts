@@ -6,6 +6,7 @@ import { RPC_METHODS, splitAgyModelSelection } from '@hapi/protocol';
 import type { PermissionMode as ProtocolPermissionMode } from '@hapi/protocol/types';
 import { getBuiltinSlashCommands, mergeSlashCommands } from '@hapi/protocol/slashCommands';
 import { logger } from '@/ui/logger';
+import { hashObject } from '@/utils/deterministicJson';
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { GenerationClock } from '@/agent/generationClock';
@@ -241,8 +242,25 @@ function asQuestionCard(message: AgentMessage): { message: AgentMessage; shownLa
 /** agy acp did not come up; the caller may fall back to another transport. */
 export class AgyAcpStartError extends Error {}
 
+/** Hashes turn settings used for steer compatibility, ignoring per-message attachments. */
+function agyTurnConfigKey(mode: AgyMode): string {
+    return hashObject({
+        permissionMode: mode.permissionMode,
+        model: mode.model,
+        effort: mode.effort
+    });
+}
+
+function promptTextForEcho(prompt: PromptContent[]): string {
+    return prompt
+        .filter((block): block is Extract<PromptContent, { type: 'text' }> => block.type === 'text')
+        .map((block) => block.text)
+        .join('\n\n');
+}
+
 type AgyTurn = {
     modeHash: string;
+    steerConfigKey: string;
     aborted: boolean;
     stopReason: string | null;
     sentAt: number | null;
@@ -1154,6 +1172,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         };
         const turn: AgyTurn = {
             modeHash,
+            steerConfigKey: agyTurnConfigKey(mode),
             aborted: false,
             stopReason: null,
             sentAt: null,
@@ -1277,6 +1296,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     this.messageBuffer.addMessage(notice, 'status');
                 }
             });
+            turn.promptEcho.text = normalizeEcho(promptTextForEcho(prompt));
             if (turn.aborted) {
                 restoreIfUserTurn();
                 return;
@@ -1443,7 +1463,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             session.queue.restoreReservation(taken);
             return { steered: false, error: 'Control commands cannot be steered' };
         }
-        if (taken.item.modeHash !== turn.modeHash) {
+        if (agyTurnConfigKey(taken.item.mode) !== turn.steerConfigKey) {
             session.queue.restoreReservation(taken);
             return { steered: false, error: 'Queued message mode differs from the active turn' };
         }
@@ -1568,7 +1588,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         forgetEcho = () => {
             turn.unechoedSteers = turn.unechoedSteers.filter((entry) => entry.accept !== accept);
         };
-        turn.unechoedSteers.push({ text: normalizeEcho(taken.item.message), echo: '', accept });
+        turn.unechoedSteers.push({ text: normalizeEcho(promptTextForEcho(steerPrompt)), echo: '', accept });
         turn.abandonSteers.push(markIndeterminate);
 
         try {
