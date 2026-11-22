@@ -1,3 +1,7 @@
+---
+description: "Answers to common questions about installing, securing, connecting and troubleshooting HAPI."
+---
+
 # FAQ
 
 ## General
@@ -58,6 +62,8 @@ The `CLI_API_TOKEN` is a shared secret that authenticates:
 - Telegram account binding
 
 It's auto-generated on first hub start and saved to `~/.hapi/settings.json`.
+
+After signing in once with the token, you can add **passkeys** (Face ID, Touch ID, Windows Hello, or a security key) in Settings and use them to sign in to the web app and native apps. Passkeys are bound to the token that was current when you added them: rotating `CLI_API_TOKEN` disables every existing passkey, so sign in with the new token and add them again. See [Authentication](./authentication.md).
 
 ### Do you support multiple accounts?
 
@@ -150,8 +156,9 @@ The auto-generated token is 256-bit (cryptographically secure). For external acc
 
 ### Can others access my HAPI instance?
 
-Only if they have your access token. For additional security:
+Only if they have your access token or one of the passkeys registered on your hub. For additional security:
 - Use a strong, unique token
+- Remove passkeys you no longer use in Settings; rotate the token to revoke all of them at once
 - Always use HTTPS for external access
 - Consider Tailscale for private networking
 

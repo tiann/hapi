@@ -80,10 +80,15 @@ export async function runCursor(opts: {
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let currentModel = opts.model;
 
+    let shuttingDown = false;
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'cursor',
-        stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive()
+        stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive(),
+        onBeforeClose: () => {
+            shuttingDown = true;
+            return sessionWrapperRef.current?.kill().catch((error) => logger.debug('[cursor] Launcher kill failed', error));
+        }
     });
 
     lifecycle.registerProcessHandlers();
@@ -220,7 +225,7 @@ export async function runCursor(opts: {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${formatFailureReason(localFailure.message)}`);
             lifecycle.setSessionEndReason('error');
-        } else if (!crashed) {
+        } else if (!crashed && !shuttingDown) {
             lifecycle.setSessionEndReason('completed');
         }
         await lifecycle.cleanupAndExit();

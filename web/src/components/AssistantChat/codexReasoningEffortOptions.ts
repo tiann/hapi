@@ -47,7 +47,10 @@ function buildDynamicReasoningEffortOptions(
     currentEffort: string | null,
     dynamicOptions: ComposerReasoningEffortSourceOption[]
 ): CodexComposerReasoningEffortOption[] {
-    const optionValues = new Set(dynamicOptions.map((option) => option.value))
+    const filteredOptions = dynamicOptions.filter(
+        (option) => normalizeCodexComposerReasoningEffort(option.value) !== null
+    )
+    const optionValues = new Set(filteredOptions.map((option) => option.value))
     const options: CodexComposerReasoningEffortOption[] = [
         { value: null, label: 'Default' }
     ]
@@ -59,7 +62,7 @@ function buildDynamicReasoningEffortOptions(
         })
     }
 
-    options.push(...dynamicOptions.map((option) => ({
+    options.push(...filteredOptions.map((option) => ({
         value: option.value,
         label: option.name ?? formatCodexReasoningEffortLabel(option.value)
     })))

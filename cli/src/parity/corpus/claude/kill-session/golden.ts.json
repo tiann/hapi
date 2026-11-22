@@ -1,0 +1,857 @@
+{
+  "methods": {
+    "1": [
+      "<uuid:1>:abort",
+      "<uuid:1>:bash",
+      "<uuid:1>:deleteUpload",
+      "<uuid:1>:difftastic",
+      "<uuid:1>:fork-conversation",
+      "<uuid:1>:getDirectoryTree",
+      "<uuid:1>:git-diff-file",
+      "<uuid:1>:git-diff-numstat",
+      "<uuid:1>:git-status",
+      "<uuid:1>:handoff-local",
+      "<uuid:1>:killSession",
+      "<uuid:1>:listAgyModels",
+      "<uuid:1>:listClaudeModels",
+      "<uuid:1>:listCodexModels",
+      "<uuid:1>:listCopilotModelsForCwd",
+      "<uuid:1>:listCursorModels",
+      "<uuid:1>:listDirectory",
+      "<uuid:1>:listGrokModelsForCwd",
+      "<uuid:1>:listKimiModelsForCwd",
+      "<uuid:1>:listOpencodeModelVariants",
+      "<uuid:1>:listOpencodeModelsForCwd",
+      "<uuid:1>:listPiModelsForMachine",
+      "<uuid:1>:listSkills",
+      "<uuid:1>:listSlashCommands",
+      "<uuid:1>:permission",
+      "<uuid:1>:readFile",
+      "<uuid:1>:readGeneratedImage",
+      "<uuid:1>:rewind-conversation",
+      "<uuid:1>:ripgrep",
+      "<uuid:1>:set-session-config",
+      "<uuid:1>:statFiles",
+      "<uuid:1>:steer-queued-message",
+      "<uuid:1>:switch",
+      "<uuid:1>:uploadAbort",
+      "<uuid:1>:uploadChunk",
+      "<uuid:1>:uploadFile",
+      "<uuid:1>:uploadFinalize",
+      "<uuid:1>:uploadInit",
+      "<uuid:1>:writeFile"
+    ]
+  },
+  "alive": {
+    "1": {
+      "first": {
+        "sid": "<uuid:1>",
+        "thinking": false
+      },
+      "last": {
+        "effort": null,
+        "mode": "remote",
+        "model": null,
+        "permissionMode": "default",
+        "sid": "<uuid:1>",
+        "thinking": false
+      }
+    }
+  },
+  "channels": {
+    "0/auth": [
+      {
+        "event": "auth",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "clientType": "session-scoped",
+            "sessionId": "<uuid:1>",
+            "token": "parity-token"
+          }
+        ]
+      }
+    ],
+    "0/http": [
+      {
+        "event": "POST /cli/machines",
+        "connection": 0,
+        "ackRequested": false,
+        "args": [
+          {
+            "authorization": "Bearer parity-token",
+            "body": {
+              "id": "parity-machine",
+              "metadata": {
+                "happyCliVersion": "<version>",
+                "happyHomeDir": "<tmp>/hapi",
+                "happyLibDir": "<lib>",
+                "homeDir": "<tmp>",
+                "host": "parity",
+                "platform": "linux"
+              },
+              "runnerState": null
+            },
+            "query": {}
+          }
+        ]
+      },
+      {
+        "event": "POST /cli/sessions",
+        "connection": 0,
+        "ackRequested": false,
+        "args": [
+          {
+            "authorization": "Bearer parity-token",
+            "body": {
+              "adopt": true,
+              "agentState": {},
+              "id": "<uuid:1>",
+              "metadata": {
+                "capabilities": {
+                  "terminal": true
+                },
+                "flavor": "claude",
+                "happyHomeDir": "<tmp>/hapi",
+                "happyLibDir": "<lib>",
+                "happyToolsDir": "<tools>",
+                "homeDir": "<tmp>",
+                "host": "parity",
+                "hostPid": "<pid>",
+                "hostStartMarker": "<marker>",
+                "lifecycleState": "running",
+                "lifecycleStateSince": "<ts>",
+                "machineId": "parity-machine",
+                "os": "linux",
+                "path": "<tmp>/project",
+                "startedBy": "runner",
+                "startedFromRunner": true,
+                "version": "<version>"
+              },
+              "tag": "<uuid:2>"
+            },
+            "query": {}
+          }
+        ]
+      },
+      {
+        "event": "POST /session-started",
+        "connection": 0,
+        "ackRequested": false,
+        "args": [
+          {
+            "metadata": {
+              "capabilities": {
+                "terminal": true
+              },
+              "flavor": "claude",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "version": "<version>"
+            },
+            "sessionId": "<uuid:1>"
+          }
+        ]
+      }
+    ],
+    "0/update-metadata": [
+      {
+        "event": "update-metadata",
+        "connection": 1,
+        "ack": [
+          {
+            "metadata": {
+              "capabilities": {
+                "terminal": true
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "version": "<version>"
+            },
+            "result": "success",
+            "version": 3
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "expectedVersion": 2,
+            "metadata": {
+              "capabilities": {
+                "terminal": true
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "version": "<version>"
+            },
+            "sid": "<uuid:1>"
+          }
+        ]
+      },
+      {
+        "event": "update-metadata",
+        "connection": 1,
+        "ack": [
+          {
+            "metadata": {
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "version": "<version>"
+            },
+            "result": "success",
+            "version": 4
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "expectedVersion": 3,
+            "metadata": {
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "version": "<version>"
+            },
+            "sid": "<uuid:1>"
+          }
+        ]
+      },
+      {
+        "event": "update-metadata",
+        "connection": 1,
+        "ack": [
+          {
+            "metadata": {
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "startingMode": "remote",
+              "version": "<version>"
+            },
+            "result": "success",
+            "version": 5
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "expectedVersion": 4,
+            "metadata": {
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "startingMode": "remote",
+              "version": "<version>"
+            },
+            "sid": "<uuid:1>"
+          }
+        ]
+      },
+      {
+        "event": "update-metadata",
+        "connection": 1,
+        "ack": [
+          {
+            "metadata": {
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "slashCommands": [
+                "compact"
+              ],
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "startingMode": "remote",
+              "tools": [
+                "Bash"
+              ],
+              "version": "<version>"
+            },
+            "result": "success",
+            "version": 6
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "expectedVersion": 5,
+            "metadata": {
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "slashCommands": [
+                "compact"
+              ],
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "startingMode": "remote",
+              "tools": [
+                "Bash"
+              ],
+              "version": "<version>"
+            },
+            "sid": "<uuid:1>"
+          }
+        ]
+      }
+    ],
+    "0/update-state": [
+      {
+        "event": "update-state",
+        "connection": 1,
+        "ack": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote"
+            },
+            "result": "success",
+            "version": 3
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote"
+            },
+            "expectedVersion": 2,
+            "sid": "<uuid:1>"
+          }
+        ]
+      }
+    ],
+    "1/others": [
+      {
+        "event": "rpc-ack",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "error": "Session machine does not match shutdown target"
+          }
+        ]
+      }
+    ],
+    "1/step": [
+      {
+        "event": "step",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "expectAck": {
+              "error": "Session machine does not match shutdown target"
+            },
+            "params": {
+              "expectedMachineId": "other-machine"
+            },
+            "rpc": "killSession"
+          }
+        ]
+      }
+    ],
+    "2/others": [
+      {
+        "event": "rpc-ack",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "error": "Session process generation does not match shutdown target"
+          }
+        ]
+      }
+    ],
+    "2/step": [
+      {
+        "event": "step",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "expectAck": {
+              "error": "Session process generation does not match shutdown target"
+            },
+            "params": {
+              "expectedPid": 1
+            },
+            "rpc": "killSession"
+          }
+        ]
+      }
+    ],
+    "3/others": [
+      {
+        "event": "rpc-ack",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "error": "Session shutdown preparation lease is invalid or expired"
+          }
+        ]
+      }
+    ],
+    "3/step": [
+      {
+        "event": "step",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "expectAck": {
+              "error": "Session shutdown preparation lease is invalid or expired"
+            },
+            "params": {
+              "expectedPid": "$pid",
+              "expectedProcessStartMarker": "$marker",
+              "preparationLease": {
+                "expiresAt": 1,
+                "id": "parity-lease"
+              },
+              "prepareOnly": true
+            },
+            "rpc": "killSession"
+          }
+        ]
+      }
+    ],
+    "4/others": [
+      {
+        "event": "rpc-ack",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "message": "Session shutdown prepared",
+            "pid": "<pid>",
+            "preparationLease": {
+              "expiresAt": "<lease-expiry>",
+              "id": "parity-lease"
+            },
+            "processStartMarker": "<marker>",
+            "success": true
+          }
+        ]
+      }
+    ],
+    "4/step": [
+      {
+        "event": "step",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "expectAck": {
+              "message": "Session shutdown prepared",
+              "success": true
+            },
+            "params": {
+              "expectedPid": "$pid",
+              "expectedProcessStartMarker": "$marker",
+              "preparationLease": {
+                "expiresAt": "$leaseExpiry",
+                "id": "parity-lease"
+              },
+              "prepareOnly": true
+            },
+            "rpc": "killSession"
+          }
+        ]
+      }
+    ],
+    "5/lifecycle": [
+      {
+        "event": "session-end",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "reason": "terminated",
+            "sid": "<uuid:1>",
+            "time": "<ts>"
+          }
+        ]
+      }
+    ],
+    "5/others": [
+      {
+        "event": "rpc-ack",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "message": "Killing hapi CLI process",
+            "pid": "<pid>",
+            "processStartMarker": "<marker>",
+            "success": true
+          }
+        ]
+      },
+      {
+        "event": "ping",
+        "connection": 1,
+        "ack": [],
+        "ackRequested": true,
+        "args": [],
+        "flush": {
+          "archived": true,
+          "pendingWrites": 0,
+          "sessionEnded": true
+        }
+      }
+    ],
+    "5/step": [
+      {
+        "event": "step",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "expectAck": {
+              "success": true
+            },
+            "params": {
+              "expectedPid": "$pid",
+              "expectedProcessStartMarker": "$marker"
+            },
+            "rpc": "killSession",
+            "settledAlive": {
+              "effort": null,
+              "mode": "remote",
+              "model": null,
+              "permissionMode": "default",
+              "thinking": false
+            }
+          }
+        ]
+      }
+    ],
+    "5/update-metadata": [
+      {
+        "event": "update-metadata",
+        "connection": 1,
+        "ack": [
+          {
+            "metadata": {
+              "archiveReason": "User terminated",
+              "archivedBy": "cli",
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "archived",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "slashCommands": [
+                "compact"
+              ],
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "startingMode": "remote",
+              "tools": [
+                "Bash"
+              ],
+              "version": "<version>"
+            },
+            "result": "success",
+            "version": 7
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "expectedVersion": 6,
+            "metadata": {
+              "archiveReason": "User terminated",
+              "archivedBy": "cli",
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "archived",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "slashCommands": [
+                "compact"
+              ],
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "startingMode": "remote",
+              "tools": [
+                "Bash"
+              ],
+              "version": "<version>"
+            },
+            "sid": "<uuid:1>"
+          }
+        ]
+      }
+    ]
+  },
+  "agent": [
+    {
+      "argv": [
+        "--version"
+      ],
+      "completed": 0,
+      "env": {
+        "CLAUDE_CODE_ENTRYPOINT": "sdk-ts",
+        "CLI_API_TOKEN": "parity-token",
+        "DEV": "false",
+        "HAPI_API_URL": "<hub>",
+        "HAPI_CLAUDE_PATH": "<lib>/src/parity/fakes/fake-claude.ts",
+        "HAPI_CLI_EXECUTABLE": "<lib>/bin/hapi.cjs",
+        "HAPI_HOME": "<tmp>/hapi",
+        "HAPI_HOSTNAME": "parity",
+        "HAPI_RUNNER_HTTP_TIMEOUT": "120000",
+        "HAPI_SESSION_ID": "<uuid:1>",
+        "HOME": "<tmp>",
+        "LC_ALL": "C",
+        "NO_PROXY": "localhost,127.0.0.1,::1",
+        "PARITY_AGENT_SCRIPT": "<lib>/src/parity/corpus/claude/kill-session/agent.jsonl",
+        "PARITY_OUT": "<tmp>",
+        "PATH": "<path>",
+        "TMPDIR": "<tmp>",
+        "TZ": "UTC",
+        "no_proxy": "localhost,127.0.0.1,::1"
+      },
+      "stdin": []
+    },
+    {
+      "argv": [
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--max-turns",
+        "1",
+        "--allowedTools",
+        "Bash(echo)",
+        "--permission-mode",
+        "default",
+        "--print",
+        "hello"
+      ],
+      "completed": 0,
+      "env": {
+        "CLAUDE_CODE_ENTRYPOINT": "sdk-ts",
+        "CLI_API_TOKEN": "parity-token",
+        "DEV": "false",
+        "HAPI_API_URL": "<hub>",
+        "HAPI_CLAUDE_PATH": "<lib>/src/parity/fakes/fake-claude.ts",
+        "HAPI_CLI_EXECUTABLE": "<lib>/bin/hapi.cjs",
+        "HAPI_HOME": "<tmp>/hapi",
+        "HAPI_HOSTNAME": "parity",
+        "HAPI_RUNNER_HTTP_TIMEOUT": "120000",
+        "HAPI_SESSION_ID": "<uuid:1>",
+        "HOME": "<tmp>",
+        "LC_ALL": "C",
+        "NO_PROXY": "localhost,127.0.0.1,::1",
+        "PARITY_AGENT_SCRIPT": "<lib>/src/parity/corpus/claude/kill-session/agent.jsonl",
+        "PARITY_OUT": "<tmp>",
+        "PATH": "<path>",
+        "TMPDIR": "<tmp>",
+        "TZ": "UTC",
+        "no_proxy": "localhost,127.0.0.1,::1"
+      },
+      "stdin": []
+    }
+  ],
+  "decoded": []
+}

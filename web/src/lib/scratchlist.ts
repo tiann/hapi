@@ -184,17 +184,6 @@ export function persistScratchlist(sessionId: string, entries: ScratchlistEntry[
     writeScratchlist(sessionId, entries)
 }
 
-export function clearScratchlist(sessionId: string): void {
-    if (!sessionId) return
-    const storage = getLocalStorage()
-    if (!storage) return
-    try {
-        storage.removeItem(getStorageKey(sessionId))
-    } catch {
-        // Non-fatal.
-    }
-}
-
 /**
  * Confirm-on-delete threshold. Trivial entries delete instantly; longer
  * notes deserve a confirmation prompt so a stray click doesn't lose work.

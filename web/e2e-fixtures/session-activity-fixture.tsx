@@ -31,6 +31,7 @@ const initialSessions = [
         pendingRequests: [{ id: 'permission-request', kind: 'permission', tool: 'Bash', since: Date.now() }],
     }),
     makeSession('background', 'Background work · unread output', { backgroundTaskCount: 1, contentRevision: 2 }),
+    makeSession('background-read', 'Background work · all output read', { backgroundTaskCount: 1 }),
 ]
 
 function Fixture() {

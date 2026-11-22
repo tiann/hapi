@@ -1,11 +1,12 @@
 ---
 title: Privacy Policy
 aside: false
+description: "What data HAPI, the relay, the passkey page and the native apps collect and where it is stored."
 ---
 
 # Privacy Policy
 
-**Effective date: September 12, 2026** · Applies to the HAPI mobile companion apps (Android and iOS) and the self-hosted HAPI hub.
+**Effective date: November 18, 2026** · Applies to the HAPI mobile companion apps (Android and iOS) and the self-hosted HAPI hub.
 
 ::: tip The short version
 HAPI is self-hosted software. Your app connects to a hub **you** operate; the HAPI project does not run a central account or application backend that receives your conversations or source code. Optional features can send data to services you or the app enable — notably the HAPI push relay, Firebase Cloud Messaging, Apple Push Notification service, voice-transcription providers, and the coding-agent/model providers configured on your machine. The HAPI push relay processes device and connection metadata to deliver encrypted notifications, prevent abuse, and diagnose delivery failures. HAPI contains no advertising or tracking SDKs and no product analytics.
@@ -15,7 +16,7 @@ In this policy, “we” means the maintainers and publisher of the HAPI project
 
 ## Data stored on your device
 
-- Paired hub addresses and access credentials. Credentials are kept in platform-protected app storage.
+- Paired hub addresses and access credentials (access tokens, and passkey sign-in sessions if you use passkeys). Credentials are kept in platform-protected app storage.
 - Preferences and app state, such as theme, language, notification choices, drafts, recent paths, and a random device identifier used for push registration.
 - Cached hub data, including session/message snapshots and generated images, for performance and limited offline display.
 - Files, photos, and audio you explicitly select or record while preparing an attachment or dictation request. Camera and dictation scratch files use temporary cache storage and are normally deleted after ingestion or cancellation.
@@ -37,6 +38,14 @@ Dictation audio is uploaded when you stop recording for transcription. The
 transcript is inserted into the draft for you to review and send.
 
 Your hub, coding agents, plugins, and command-line tools may send prompts, source code, files, audio, or other content to services you configure, such as AI model or transcription providers. Those services process data under their own terms and privacy policies. HAPI does not choose or control your self-hosted configuration.
+
+## Passkeys
+
+Passkeys are optional. If you add one, the private key is created and kept by your device's platform authenticator or password manager (for example iCloud Keychain, Google Password Manager, Windows Hello, or a hardware security key) and may sync across your devices according to that provider's settings and policies. The passkey's account label and user handle include your hub's address so the system sheet can show which hub it belongs to; your passkey provider stores that label with the credential. Neither your hub nor the HAPI project receives the private key.
+
+Your hub stores the credential's public key, credential ID, signature counter, transports, optional name, namespace, creation and last-use times, and a keyed fingerprint of the access token that was current at registration. Rotating the access token disables those passkeys; deleting a passkey in Settings removes its record from the hub.
+
+All HAPI passkeys use the shared relying party `auth.hapi.run`. Native apps call the platform passkey API directly. The web app opens a static page hosted by the HAPI project on `https://auth.hapi.run` to run the browser passkey ceremony; that page runs in your browser, loads no third-party scripts or analytics, and sends the result directly to the hub address shown on the page. Its hosting provider may keep standard request logs (such as IP address, time, and user agent) under its own configuration. Passkey assertions, hub tokens, and session data are not sent to a HAPI project server.
 
 ## Push notifications
 

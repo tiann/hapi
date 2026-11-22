@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { getPermissionModesForFlavor } from '@hapi/protocol/modes'
 import {
-    findCodexCustomPromptExpansion,
-    findUnsupportedCodexBuiltinSlashCommand,
     getBuiltinSlashCommands,
     mergeSlashCommands
 } from './codexSlashCommands'
@@ -75,41 +73,4 @@ describe('mergeSlashCommands', () => {
         ])
     })
 
-})
-
-describe('findCodexCustomPromptExpansion', () => {
-    it('expands exact custom codex prompt commands', () => {
-        expect(findCodexCustomPromptExpansion('  /clear  ', [
-            { name: 'clear', source: 'builtin' },
-            { name: 'clear', source: 'project', content: 'custom clear prompt' }
-        ])).toBe('custom clear prompt')
-    })
-
-    it('ignores built-ins and commands with arguments', () => {
-        const commands = [
-            { name: 'compact', source: 'project', content: 'custom compact prompt' }
-        ] as const
-
-        expect(findCodexCustomPromptExpansion('/compact now', commands)).toBeNull()
-        expect(findCodexCustomPromptExpansion('/clear', [
-            { name: 'clear', source: 'builtin' }
-        ])).toBeNull()
-    })
-})
-
-describe('findUnsupportedCodexBuiltinSlashCommand', () => {
-    it('detects unsupported codex built-ins', () => {
-        expect(findUnsupportedCodexBuiltinSlashCommand('  /diff ', [])).toBe('diff')
-    })
-
-    it('ignores regular messages and unknown commands', () => {
-        expect(findUnsupportedCodexBuiltinSlashCommand('show me status', [])).toBeNull()
-        expect(findUnsupportedCodexBuiltinSlashCommand('/custom-status', [])).toBeNull()
-    })
-
-    it('does not block custom commands that override the same name', () => {
-        expect(findUnsupportedCodexBuiltinSlashCommand('/status', [
-            { name: 'status', source: 'project', content: 'project status prompt' }
-        ])).toBeNull()
-    })
 })
