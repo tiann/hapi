@@ -594,6 +594,7 @@ describe('generic local session routes', () => {
             { role: 'user', content: { type: 'text', text: 'queued second prompt' }, meta: { sentFrom: 'web' } },
             'web-live-uuid-2'
         )
+        store.messages.markMessagesInvoked(hapiId, ['web-live-uuid-1', 'web-live-uuid-2'], 20)
         store.messages.addMessage(
             hapiId,
             {
@@ -601,7 +602,9 @@ describe('generic local session routes', () => {
                 content: { type: 'codex', data: { type: 'message', message: 'Live answer from agy' } },
                 meta: { sentFrom: 'cli' }
             },
-            undefined
+            undefined,
+            undefined,
+            21
         )
         store.messages.addMessage(
             hapiId,
@@ -618,7 +621,9 @@ describe('generic local session routes', () => {
                 },
                 meta: { sentFrom: 'cli' }
             },
-            undefined
+            undefined,
+            undefined,
+            21
         )
         store.messages.addMessage(
             hapiId,
@@ -629,12 +634,14 @@ describe('generic local session routes', () => {
                     data: {
                         type: 'tool-call-result',
                         callId: 'live-call-1',
-                        output: 'Running in the background. The result appears when agy reports it.'
+                        output: { stdout: 'Running in the background. The result appears when agy reports it.' }
                     }
                 },
                 meta: { sentFrom: 'cli' }
             },
-            undefined
+            undefined,
+            undefined,
+            22
         )
         store.messages.addMessage(
             hapiId,
@@ -643,7 +650,9 @@ describe('generic local session routes', () => {
                 content: { type: 'event', data: { type: 'round-summary', summary: { provider: 'agy' } } },
                 meta: { sentFrom: 'cli' }
             },
-            undefined
+            undefined,
+            undefined,
+            23
         )
 
         // Native transcript now includes that combined formatted live turn.
@@ -702,7 +711,7 @@ describe('generic local session routes', () => {
                             data: {
                                 type: 'tool-call-result',
                                 callId: 'agy-wakeup-agy-continued-3-0',
-                                output: 'Running in the background. The result appears when agy reports it.'
+                                output: { stdout: 'Running in the background. The result appears when agy reports it.' }
                             }
                         },
                         meta: { sentFrom: 'cli' }
@@ -723,7 +732,8 @@ describe('generic local session routes', () => {
             appended: 0
         })
 
-        // A late native background tool completion arrives in the transcript without a new user prompt.
+        // A late native background tool completion arrives in the transcript without a new user prompt,
+        // and its callId must be rewritten from `agy-wakeup-agy-continued-3-0` to `live-call-1`!
         agyContinued = {
             ...agyContinued,
             messages: [
@@ -756,6 +766,148 @@ describe('generic local session routes', () => {
             hapiSessionId: hapiId,
             action: 'updated',
             appended: 1
+        })
+        const storedAfterLateResult = store.messages.getAllMessages(hapiId)
+        const importedLateResult = storedAfterLateResult.find((m) => m.localId === 'agy:agy-continued:step:5:0')
+        expect(importedLateResult?.content).toMatchObject({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'tool-call-result',
+                    callId: 'live-call-1',
+                    output: { stdout: 'done', exit_code: 0 }
+                }
+            }
+        })
+
+        // Re-importing again with the rewritten callId already stored must report unchanged!
+        const reimportAfterLateResultAgain = await (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-continued'], cwd: '/work' })
+        })).json() as { success: boolean; results: Array<{ hapiSessionId?: string; action?: string; appended?: number }> }
+        expect(reimportAfterLateResultAgain.success).toBe(true)
+        expect(reimportAfterLateResultAgain.results[0]).toMatchObject({
+            hapiSessionId: hapiId,
+            action: 'unchanged',
+            appended: 0
+        })
+
+        // Two user prompts queued in HAPI before the first turn produces output, delivered in two separate turns,
+        // where a native background completion also lands before a matched assistant text in the second turn!
+        store.messages.addMessage(
+            hapiId,
+            { role: 'user', content: { type: 'text', text: 'turn A prompt' }, meta: { sentFrom: 'web' } },
+            'web-live-turn-a'
+        )
+        store.messages.addMessage(
+            hapiId,
+            { role: 'user', content: { type: 'text', text: 'turn B prompt' }, meta: { sentFrom: 'web' } },
+            'web-live-turn-b'
+        )
+        store.messages.markMessagesInvoked(hapiId, ['web-live-turn-a'], 26)
+        store.messages.addMessage(
+            hapiId,
+            {
+                role: 'agent',
+                content: { type: 'codex', data: { type: 'message', message: 'Turn A answer' } },
+                meta: { sentFrom: 'cli' }
+            },
+            undefined,
+            undefined,
+            27
+        )
+        store.messages.markMessagesInvoked(hapiId, ['web-live-turn-b'], 28)
+        store.messages.addMessage(
+            hapiId,
+            {
+                role: 'agent',
+                content: { type: 'codex', data: { type: 'message', message: 'Turn B answer' } },
+                meta: { sentFrom: 'cli' }
+            },
+            undefined,
+            undefined,
+            29
+        )
+
+        agyContinued = {
+            ...agyContinued,
+            messages: [
+                ...agyContinued.messages,
+                {
+                    id: 'agy:agy-continued:step:6:user',
+                    createdAt: 26,
+                    content: { role: 'user', content: { type: 'text', text: 'turn A prompt' }, meta: { sentFrom: 'cli' } },
+                    anchor: 'step:6:user'
+                },
+                {
+                    id: 'agy:agy-continued:step:7:text',
+                    createdAt: 27,
+                    content: {
+                        role: 'agent',
+                        content: { type: 'codex', data: { type: 'message', message: 'Turn A answer' } },
+                        meta: { sentFrom: 'cli' }
+                    },
+                    anchor: 'step:7:text'
+                },
+                {
+                    id: 'agy:agy-continued:step:8:user',
+                    createdAt: 28,
+                    content: { role: 'user', content: { type: 'text', text: 'turn B prompt' }, meta: { sentFrom: 'cli' } },
+                    anchor: 'step:8:user'
+                },
+                {
+                    id: 'agy:agy-continued:step:9:0',
+                    createdAt: 28,
+                    content: {
+                        role: 'agent',
+                        content: {
+                            type: 'codex',
+                            data: {
+                                type: 'tool-call-result',
+                                callId: 'agy-wakeup-agy-continued-3-0',
+                                output: { stdout: 'preceding native completion', exit_code: 0 }
+                            }
+                        },
+                        meta: { sentFrom: 'cli' }
+                    },
+                    anchor: 'step:9:0'
+                },
+                {
+                    id: 'agy:agy-continued:step:10:text',
+                    createdAt: 29,
+                    content: {
+                        role: 'agent',
+                        content: { type: 'codex', data: { type: 'message', message: 'Turn B answer' } },
+                        meta: { sentFrom: 'cli' }
+                    },
+                    anchor: 'step:10:text'
+                }
+            ]
+        }
+
+        const reimportPrecedingResult = await (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-continued'], cwd: '/work' })
+        })).json() as { success: boolean; results: Array<{ hapiSessionId?: string; action?: string; appended?: number }> }
+        expect(reimportPrecedingResult.success).toBe(true)
+        expect(reimportPrecedingResult.results[0]).toMatchObject({
+            hapiSessionId: hapiId,
+            action: 'updated',
+            appended: 1
+        })
+        const importedPrecedingResult = store.messages.getAllMessages(hapiId)
+            .find((m) => m.localId === 'agy:agy-continued:step:9:0')
+        expect(importedPrecedingResult?.content).toMatchObject({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'tool-call-result',
+                    callId: 'live-call-1',
+                    output: { stdout: 'preceding native completion', exit_code: 0 }
+                }
+            }
         })
 
         // External CLI appends one more turn after the HAPI turn.

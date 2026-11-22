@@ -28,18 +28,21 @@ const AGY_BACKGROUND_PLACEHOLDER = 'Running in the background. The result appear
 type UserPromptPart = {
     raw: string
     formatted: string
+    batchKey: number | null
 }
 
 type AgentItemSummary =
     | { kind: 'message'; text: string; index: number }
     | { kind: 'reasoning'; text: string; index: number }
-    | { kind: 'tool-call'; name: string; index: number }
-    | { kind: 'tool-result'; isBackgroundPlaceholder: boolean; index: number }
+    | { kind: 'tool-call'; name: string; callId: string; index: number }
+    | { kind: 'tool-result'; callId: string; isBackgroundPlaceholder: boolean; index: number }
 
 type TurnSummary = {
     userParts: UserPromptPart[]
     assistantText: string
     agentItems: AgentItemSummary[]
+    nonSemanticIndices: number[]
+    startIndex: number
     endIndex: number
 }
 
@@ -49,8 +52,60 @@ function asObj(value: unknown): Record<string, unknown> | null {
         : null
 }
 
-function extractUserPromptPart(content: unknown): UserPromptPart | null {
-    const rec = asObj(content)
+function isUndeliveredQueuedUserMessage(msg: {
+    content: unknown
+    localId?: string | null
+    invokedAt?: number | null
+    scheduledAt?: number | null
+    deliveryState?: string
+}): boolean {
+    if (msg.deliveryState === 'indeterminate') return true
+    if (msg.scheduledAt != null && msg.invokedAt == null) return true
+    return false
+}
+
+function filterDeliveredLiveMessages(
+    messages: ReadonlyArray<{
+        content: unknown
+        localId?: string | null
+        invokedAt?: number | null
+        scheduledAt?: number | null
+        deliveryState?: string
+        createdAt?: number
+        seq?: number
+    }>
+): Array<{
+    content: unknown
+    localId?: string | null
+    invokedAt?: number | null
+    scheduledAt?: number | null
+    deliveryState?: string
+    createdAt?: number
+    seq?: number
+}> {
+    const anyUserInvoked = messages.some((msg) => {
+        const rec = asObj(msg.content)
+        return rec?.role === 'user' && Boolean(msg.localId) && typeof msg.invokedAt === 'number'
+    })
+    const filtered = messages.filter((msg) => {
+        const rec = asObj(msg.content)
+        if (rec?.role !== 'user') return true
+        if (isUndeliveredQueuedUserMessage(msg)) return false
+        if (anyUserInvoked && msg.localId && msg.invokedAt == null) return false
+        return true
+    })
+    return [...filtered].sort((a, b) => {
+        const posA = a.invokedAt ?? a.createdAt ?? 0
+        const posB = b.invokedAt ?? b.createdAt ?? 0
+        if (posA !== posB) return posA - posB
+        return (a.seq ?? 0) - (b.seq ?? 0)
+    })
+}
+
+function extractUserPromptPart(
+    msg: { content: unknown; invokedAt?: number | null }
+): UserPromptPart | null {
+    const rec = asObj(msg.content)
     if (rec?.role !== 'user') return null
     const body = asObj(rec.content)
     if (body?.type !== 'text' || typeof body.text !== 'string') return null
@@ -69,7 +124,18 @@ function extractUserPromptPart(content: unknown): UserPromptPart | null {
             ? `${refs.join(' ')}\n\n${body.text}`
             : refs.join(' ')
     const formatted = normalizeComparableText(formattedRaw)
-    return { raw, formatted }
+    return {
+        raw,
+        formatted,
+        batchKey: typeof msg.invokedAt === 'number' ? msg.invokedAt : null
+    }
+}
+
+function isAgyBackgroundPlaceholderOutput(output: unknown): boolean {
+    if (output === AGY_BACKGROUND_PLACEHOLDER) return true
+    const obj = asObj(output)
+    if (!obj) return false
+    return obj.stdout === AGY_BACKGROUND_PLACEHOLDER || obj.output === AGY_BACKGROUND_PLACEHOLDER
 }
 
 function extractAgentItem(content: unknown, index: number): AgentItemSummary | null {
@@ -86,30 +152,45 @@ function extractAgentItem(content: unknown, index: number): AgentItemSummary | n
         return { kind: 'reasoning', text: normalizeComparableText(data.message), index }
     }
     if (data.type === 'tool-call' && typeof data.name === 'string') {
-        return { kind: 'tool-call', name: data.name, index }
+        const callId = typeof data.callId === 'string' ? data.callId : ''
+        return { kind: 'tool-call', name: data.name, callId, index }
     }
     if (data.type === 'tool-call-result') {
-        const isBackgroundPlaceholder = data.output === AGY_BACKGROUND_PLACEHOLDER
-        return { kind: 'tool-result', isBackgroundPlaceholder, index }
+        const callId = typeof data.callId === 'string' ? data.callId : ''
+        const isBackgroundPlaceholder = isAgyBackgroundPlaceholderOutput(data.output)
+        return { kind: 'tool-result', callId, isBackgroundPlaceholder, index }
     }
     return null
 }
 
-function groupIntoTurns(messages: ReadonlyArray<{ content: unknown }>): TurnSummary[] | null {
+function groupIntoTurns(
+    messages: ReadonlyArray<{ content: unknown; invokedAt?: number | null }>
+): TurnSummary[] | null {
     const turns: TurnSummary[] = []
     let current: {
         userParts: UserPromptPart[]
         assistantParts: string[]
         agentItems: AgentItemSummary[]
+        nonSemanticIndices: number[]
         hasAgentContent: boolean
+        startIndex: number
         endIndex: number
     } | null = null
     for (let i = 0; i < messages.length; i += 1) {
         const msg = messages[i]!
-        const userPart = extractUserPromptPart(msg.content)
+        const userPart = extractUserPromptPart(msg)
         if (userPart !== null) {
-            if (current && !current.hasAgentContent) {
+            const lastUserPart = current?.userParts[current.userParts.length - 1]
+            const canBatchWithCurrent = current !== null
+                && !current.hasAgentContent
+                && (
+                    lastUserPart?.batchKey === null
+                    || userPart.batchKey === null
+                    || lastUserPart?.batchKey === userPart.batchKey
+                )
+            if (current && canBatchWithCurrent) {
                 current.userParts.push(userPart)
+                current.nonSemanticIndices.push(i)
                 current.endIndex = i
                 continue
             }
@@ -118,6 +199,8 @@ function groupIntoTurns(messages: ReadonlyArray<{ content: unknown }>): TurnSumm
                     userParts: current.userParts,
                     assistantText: normalizeComparableText(current.assistantParts.join('\n')),
                     agentItems: current.agentItems,
+                    nonSemanticIndices: current.nonSemanticIndices,
+                    startIndex: current.startIndex,
                     endIndex: current.endIndex
                 })
             }
@@ -125,7 +208,9 @@ function groupIntoTurns(messages: ReadonlyArray<{ content: unknown }>): TurnSumm
                 userParts: [userPart],
                 assistantParts: [],
                 agentItems: [],
+                nonSemanticIndices: [i],
                 hasAgentContent: false,
+                startIndex: i,
                 endIndex: i
             }
             continue
@@ -141,6 +226,8 @@ function groupIntoTurns(messages: ReadonlyArray<{ content: unknown }>): TurnSumm
             if (item.kind === 'message' && item.text) {
                 current.assistantParts.push(item.text)
             }
+        } else {
+            current.nonSemanticIndices.push(i)
         }
     }
     if (current) {
@@ -148,40 +235,89 @@ function groupIntoTurns(messages: ReadonlyArray<{ content: unknown }>): TurnSumm
             userParts: current.userParts,
             assistantText: normalizeComparableText(current.assistantParts.join('\n')),
             agentItems: current.agentItems,
+            nonSemanticIndices: current.nonSemanticIndices,
+            startIndex: current.startIndex,
             endIndex: current.endIndex
         })
     }
     return turns
 }
 
-function buildUserPromptCandidates(parts: readonly UserPromptPart[]): Set<string> {
-    const candidates = new Set<string>()
-    if (parts.length === 0) return candidates
-    const recurse = (index: number, acc: string[]) => {
-        if (index === parts.length) {
-            candidates.add(normalizeComparableText(acc.join('\n')))
-            return
+function matchUserPartsToPrompt(parts: readonly UserPromptPart[], targetText: string): boolean {
+    if (parts.length === 0) return false
+    let offsets = new Set<number>([0])
+    for (let i = 0; i < parts.length; i += 1) {
+        const part = parts[i]!
+        const isLast = i === parts.length - 1
+        const nextOffsets = new Set<number>()
+        const variants = part.formatted === part.raw ? [part.raw] : [part.raw, part.formatted]
+        for (const offset of offsets) {
+            for (const variant of variants) {
+                if (!targetText.startsWith(variant, offset)) continue
+                const afterPart = offset + variant.length
+                if (isLast) {
+                    if (afterPart === targetText.length) {
+                        nextOffsets.add(afterPart)
+                    }
+                } else if (targetText[afterPart] === '\n') {
+                    nextOffsets.add(afterPart + 1)
+                }
+            }
         }
-        const part = parts[index]!
-        recurse(index + 1, [...acc, part.raw])
-        if (part.formatted !== part.raw) {
-            recurse(index + 1, [...acc, part.formatted])
-        }
+        if (nextOffsets.size === 0) return false
+        offsets = nextOffsets
     }
-    recurse(0, [])
-    return candidates
+    return offsets.has(targetText.length)
 }
 
 function userPromptsMatch(liveTurn: TurnSummary, sourceTurn: TurnSummary): boolean {
-    const liveCandidates = buildUserPromptCandidates(liveTurn.userParts)
-    const sourceCandidates = buildUserPromptCandidates(sourceTurn.userParts)
-    for (const candidate of liveCandidates) {
-        if (sourceCandidates.has(candidate)) return true
-    }
-    return false
+    if (sourceTurn.userParts.length !== 1) return false
+    const sourcePrompt = sourceTurn.userParts[0]!.raw
+    return matchUserPartsToPrompt(liveTurn.userParts, sourcePrompt)
 }
 
-function agentItemsCompatible(liveItem: AgentItemSummary, sourceItem: AgentItemSummary): boolean {
+function rewriteToolResultCallIdContent(
+    content: unknown,
+    callIdMap: ReadonlyMap<string, string>
+): unknown {
+    if (callIdMap.size === 0) return content
+    const rec = asObj(content)
+    if (rec?.role !== 'agent') return content
+    const body = asObj(rec.content)
+    if (body?.type !== 'codex') return content
+    const data = asObj(body.data)
+    if (!data || data.type !== 'tool-call-result' || typeof data.callId !== 'string') return content
+    const mappedCallId = callIdMap.get(data.callId)
+    if (!mappedCallId || mappedCallId === data.callId) return content
+    return {
+        ...rec,
+        content: {
+            ...body,
+            data: {
+                ...data,
+                callId: mappedCallId
+            }
+        }
+    }
+}
+
+function rewriteToolResultCallId(
+    message: LocalTranscriptMessage,
+    callIdMap: ReadonlyMap<string, string>
+): LocalTranscriptMessage {
+    const rewritten = rewriteToolResultCallIdContent(message.content, callIdMap)
+    if (rewritten === message.content) return message
+    return {
+        ...message,
+        content: rewritten as LocalTranscriptMessage['content']
+    }
+}
+
+function agentItemsCompatible(
+    liveItem: AgentItemSummary,
+    sourceItem: AgentItemSummary,
+    callIdMap: ReadonlyMap<string, string>
+): boolean {
     if (liveItem.kind !== sourceItem.kind) return false
     if (liveItem.kind === 'message' && sourceItem.kind === 'message') {
         return liveItem.text === sourceItem.text
@@ -193,7 +329,14 @@ function agentItemsCompatible(liveItem: AgentItemSummary, sourceItem: AgentItemS
         return liveItem.name === sourceItem.name
     }
     if (liveItem.kind === 'tool-result' && sourceItem.kind === 'tool-result') {
-        return liveItem.isBackgroundPlaceholder === sourceItem.isBackgroundPlaceholder
+        if (liveItem.isBackgroundPlaceholder !== sourceItem.isBackgroundPlaceholder) return false
+        if (sourceItem.callId && liveItem.callId) {
+            const expectedLiveCallId = callIdMap.get(sourceItem.callId)
+            if ((expectedLiveCallId ?? sourceItem.callId) !== liveItem.callId) {
+                return false
+            }
+        }
+        return true
     }
     return false
 }
@@ -201,69 +344,131 @@ function agentItemsCompatible(liveItem: AgentItemSummary, sourceItem: AgentItemS
 function alignTurnAgentItems(
     liveTurn: TurnSummary,
     sourceTurn: TurnSummary,
-    requireFullConsumption: boolean
-): number | null {
-    let sourceCursor = 0
-    let lastMatchedIndex = sourceTurn.endIndex - sourceTurn.agentItems.length
-    for (const item of sourceTurn.agentItems) {
-        lastMatchedIndex = Math.min(lastMatchedIndex, item.index - 1)
+    requireFullConsumption: boolean,
+    matchedSourceIndices: Set<number>,
+    callIdMap: Map<string, string>
+): boolean {
+    for (const idx of sourceTurn.nonSemanticIndices) {
+        matchedSourceIndices.add(idx)
     }
+    let sourceCursor = 0
     for (const liveItem of liveTurn.agentItems) {
         let matched = false
         while (sourceCursor < sourceTurn.agentItems.length) {
             const candidate = sourceTurn.agentItems[sourceCursor]!
             sourceCursor += 1
-            if (agentItemsCompatible(liveItem, candidate)) {
-                lastMatchedIndex = candidate.index
+            if (agentItemsCompatible(liveItem, candidate, callIdMap)) {
+                matchedSourceIndices.add(candidate.index)
+                if (liveItem.kind === 'tool-call' && candidate.kind === 'tool-call' && candidate.callId && liveItem.callId) {
+                    callIdMap.set(candidate.callId, liveItem.callId)
+                }
                 matched = true
                 break
             }
         }
         if (!matched) {
-            return null
+            return false
         }
     }
-    if (requireFullConsumption && sourceCursor < sourceTurn.agentItems.length) {
-        return null
+    if (requireFullConsumption && matchedSourceIndices.size < (sourceTurn.endIndex - sourceTurn.startIndex + 1)) {
+        return false
     }
-    if (sourceCursor === sourceTurn.agentItems.length) {
-        return sourceTurn.endIndex + 1
-    }
-    return lastMatchedIndex + 1
+    return true
+}
+
+function splitTurnUserPrefix(
+    liveTurn: TurnSummary,
+    partCount: number
+): [TurnSummary, TurnSummary] {
+    return [
+        {
+            userParts: liveTurn.userParts.slice(0, partCount),
+            assistantText: '',
+            agentItems: [],
+            nonSemanticIndices: [],
+            startIndex: liveTurn.startIndex,
+            endIndex: liveTurn.startIndex
+        },
+        {
+            ...liveTurn,
+            userParts: liveTurn.userParts.slice(partCount)
+        }
+    ]
 }
 
 function reconcileLiveTurns(
-    liveMessages: ReadonlyArray<{ content: unknown }>,
+    liveMessages: ReadonlyArray<{
+        content: unknown
+        localId?: string | null
+        invokedAt?: number | null
+        scheduledAt?: number | null
+        deliveryState?: string
+        createdAt?: number
+        seq?: number
+    }>,
     sourceSlice: readonly LocalTranscriptMessage[],
-    requireFullConsumption: boolean
-): number | null {
-    if (liveMessages.length === 0) {
-        return requireFullConsumption ? (sourceSlice.length === 0 ? 0 : null) : 0
+    requireFullConsumption: boolean,
+    callIdMap: Map<string, string> = new Map()
+): LocalTranscriptMessage[] | null {
+    const deliveredLive = filterDeliveredLiveMessages(liveMessages)
+    if (deliveredLive.length === 0) {
+        return requireFullConsumption
+            ? (sourceSlice.length === 0 ? [] : null)
+            : sourceSlice.map((msg) => rewriteToolResultCallId(msg, callIdMap))
     }
-    const liveTurns = groupIntoTurns(liveMessages)
+    const rawLiveTurns = groupIntoTurns(deliveredLive)
     const sourceTurns = groupIntoTurns(sourceSlice)
-    if (!liveTurns || !sourceTurns || liveTurns.length === 0) return null
-    if (requireFullConsumption ? sourceTurns.length !== liveTurns.length : sourceTurns.length < liveTurns.length) {
-        return null
-    }
-    let consumed = 0
-    for (let i = 0; i < liveTurns.length; i += 1) {
-        const liveTurn = liveTurns[i]!
-        const sourceTurn = sourceTurns[i]!
-        if (!userPromptsMatch(liveTurn, sourceTurn)) return null
+    if (!rawLiveTurns || !sourceTurns || rawLiveTurns.length === 0) return null
+
+    const liveTurns = [...rawLiveTurns]
+    const matchedSourceIndices = new Set<number>()
+    let sIdx = 0
+    for (let lIdx = 0; lIdx < liveTurns.length; lIdx += 1) {
+        if (sIdx >= sourceTurns.length) return null
+        let liveTurn = liveTurns[lIdx]!
+        const sourceTurn = sourceTurns[sIdx]!
+        if (!userPromptsMatch(liveTurn, sourceTurn)) {
+            // If two adjacent user rows had no invokedAt or shared a timestamp
+            // before the first turn produced agent output, try splitting the
+            // prefix that matches `sourceTurn` when `sourceTurn` had no agent
+            // messages of its own or when the remaining parts belong to the next turn.
+            let splitPrefix = 0
+            for (let k = 1; k < liveTurn.userParts.length; k += 1) {
+                if (matchUserPartsToPrompt(liveTurn.userParts.slice(0, k), sourceTurn.userParts[0]?.raw ?? '')) {
+                    splitPrefix = k
+                    break
+                }
+            }
+            if (splitPrefix === 0) return null
+            const [firstTurn, restTurn] = splitTurnUserPrefix(liveTurn, splitPrefix)
+            liveTurn = firstTurn
+            liveTurns.splice(lIdx, 1, firstTurn, restTurn)
+        }
         if (liveTurn.assistantText && sourceTurn.assistantText && liveTurn.assistantText !== sourceTurn.assistantText) {
             return null
         }
-        const isLastLiveTurn = i === liveTurns.length - 1
-        const turnConsumed = alignTurnAgentItems(
+        if (!alignTurnAgentItems(
             liveTurn,
             sourceTurn,
-            requireFullConsumption || !isLastLiveTurn
-        )
-        if (turnConsumed === null) return null
-        consumed = turnConsumed
+            requireFullConsumption,
+            matchedSourceIndices,
+            callIdMap
+        )) {
+            return null
+        }
+        sIdx += 1
     }
-    return consumed
+
+    if (requireFullConsumption && (sIdx !== sourceTurns.length || matchedSourceIndices.size !== sourceSlice.length)) {
+        return null
+    }
+
+    const unconsumed: LocalTranscriptMessage[] = []
+    for (let i = 0; i < sourceSlice.length; i += 1) {
+        if (matchedSourceIndices.has(i)) continue
+        unconsumed.push(rewriteToolResultCallId(sourceSlice[i]!, callIdMap))
+    }
+    return unconsumed
 }
 
 export function matchAnchored(options: {
@@ -347,36 +552,56 @@ export function matchAnchored(options: {
                     message: `Local transcript changed or dropped imported entry ${stored.localId}`
                 }
             }
-            if (!sameContent(sourceContentById.get(stored.localId!), stored.content)) {
+            priorStoredIndex = storedIndex
+            priorSourceIndex = sourceIndex
+        }
+        const callIdMap = new Map<string, string>()
+        const importedLocalIds = new Set(imported.map((imp) => imp.localId!))
+        const firstImportedSourceIndex = sourceIndexById.get(imported[0]!.localId!) ?? 0
+        if (firstImportedSourceIndex > 0) {
+            return {
+                status: 'transcript_diverged',
+                message: `Local transcript changed or dropped imported entry ${imported[0]!.localId}`
+            }
+        }
+        const allLiveMessages = storedMessages.filter((message) => !message.localId?.startsWith(importPrefix))
+        const allNativeMessages = sourceMessages.filter((message) => !importedLocalIds.has(message.id))
+        const unconsumed = reconcileLiveTurns(allLiveMessages, allNativeMessages, false, callIdMap)
+        if (unconsumed === null) {
+            return {
+                status: 'transcript_diverged',
+                message: 'The HAPI session continued past the imported history; re-importing would duplicate or reorder messages'
+            }
+        }
+        for (const stored of imported) {
+            const sourceContent = rewriteToolResultCallIdContent(
+                sourceContentById.get(stored.localId!),
+                callIdMap
+            )
+            if (!sameContent(sourceContent, stored.content)) {
                 return {
                     status: 'transcript_diverged',
                     message: `Local transcript changed or dropped imported entry ${stored.localId}`
                 }
             }
-            const liveGap = storedMessages.slice(priorStoredIndex + 1, storedIndex)
-            const sourceGap = sourceMessages.slice(priorSourceIndex + 1, sourceIndex)
-            if (reconcileLiveTurns(liveGap, sourceGap, true) === null) {
-                return {
-                    status: 'transcript_diverged',
-                    message: 'The HAPI session continued past the imported history; re-importing would duplicate or reorder messages'
+        }
+        const lastImportedSourceIndex = sourceIndexById.get(imported[imported.length - 1]!.localId!) ?? -1
+        for (const msg of unconsumed) {
+            const sIdx = sourceIndexById.get(msg.id) ?? -1
+            if (sIdx < lastImportedSourceIndex) {
+                const rec = asObj(msg.content)
+                const body = rec?.role === 'agent' ? asObj(rec.content) : null
+                const data = body?.type === 'codex' ? asObj(body.data) : null
+                const isLateCompletionForLiveCall = data?.type === 'tool-call-result'
+                if (!isLateCompletionForLiveCall) {
+                    return {
+                        status: 'transcript_diverged',
+                        message: 'The HAPI session continued past the imported history; re-importing would duplicate or reorder messages'
+                    }
                 }
             }
-            priorStoredIndex = storedIndex
-            priorSourceIndex = sourceIndex
         }
-        const trailingLive = storedMessages.slice(priorStoredIndex + 1)
-        const remainingSource = sourceMessages.slice(priorSourceIndex + 1)
-        if (trailingLive.length > 0 && remainingSource.length > 0) {
-            const consumed = reconcileLiveTurns(trailingLive, remainingSource, false)
-            if (consumed === null) {
-                return {
-                    status: 'transcript_diverged',
-                    message: 'The HAPI session continued past the imported history; re-importing would duplicate or reorder messages'
-                }
-            }
-            return { status: 'ok', delta: remainingSource.slice(consumed) }
-        }
-        return { status: 'ok', delta: remainingSource }
+        return { status: 'ok', delta: unconsumed }
     }
 
     // No cursor: the imported prefix must align exactly with the head of the
