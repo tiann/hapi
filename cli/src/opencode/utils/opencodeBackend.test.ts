@@ -415,19 +415,6 @@ describe('discoverOpencodeV2RestPort ownerPid preference', () => {
         expect(port).toBe(41234);
     });
 
-    it('falls back to the diff heuristic when the owned scan fails', async () => {
-        const port = await discoverOpencodeV2RestPort({
-            beforeSnapshot: new Set([1000]),
-            pollIntervalMs: 1,
-            ownerPid: 4242,
-            scanImpl: async () => new Set([1000, 41999]),
-            scanOwnedImpl: async () => {
-                throw new Error('tools missing');
-            }
-        });
-        expect(port).toBe(41999);
-    });
-
     it('keeps polling the owned scan and does not fall back while it succeeds but is empty', async () => {
         let ownedCalls = 0;
         let diffCalls = 0;

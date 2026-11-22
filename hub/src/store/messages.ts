@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 
-import { hasUnreadMessageContent, getLiveReasoningStreamId, getToolCallId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
+import { hasUnreadMessageContent, getLiveReasoningStreamId, getReasoningStreamId, getTextLiveStreamId, getTextStreamId, getToolCallId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 
 import type { StoredMessage } from './types'
@@ -105,6 +105,7 @@ export function addImportedMessage(
         if (previousHead && stampedAt < previousHead.at) bumpMessageEpoch(db, sessionId)
         const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to create imported message')
+        invalidateLiveTail(db, sessionId)
         return { message: toStoredMessage(row), inserted: true }
     })()
 }
@@ -216,6 +217,7 @@ export function addMessage(
         if (previousHead && positionAt < previousHead.at) bumpMessageEpoch(db, sessionId)
         const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to create message')
+        updateLiveTailAfterAppend(db, sessionId, row.id, row.seq, canonicalContent)
         return toStoredMessage(row)
     })()
 }
@@ -291,6 +293,173 @@ function isUserMessageRow(value: unknown): boolean {
     return record?.role === 'user'
 }
 
+type TailRowMeta = {
+    id: string
+    seq: number
+    reasoningStreamId: string | null
+    toolCallId: string | null
+    toolResultCallId: string | null
+    isUser: boolean
+}
+
+type SessionLiveTail = {
+    headId: string | null
+    headSeq: number
+    tailRows: TailRowMeta[]
+    liveToolCalls: Map<string, string>
+    reasoningSnapshots: Map<string, Set<string>>
+}
+
+const liveTailByDb = new WeakMap<Database, Map<string, SessionLiveTail>>()
+
+function getCurrentTailHead(db: Database, sessionId: string): { id: string | null; seq: number } {
+    const row = prepareCached(db,
+        'SELECT id, seq FROM messages WHERE session_id = ? ORDER BY seq DESC LIMIT 1'
+    ).get(sessionId) as { id: string; seq: number } | undefined
+    return row ? { id: row.id, seq: row.seq } : { id: null, seq: 0 }
+}
+
+function invalidateLiveTail(db: Database, sessionId: string): void {
+    liveTailByDb.get(db)?.delete(sessionId)
+}
+
+function classifyTailRow(id: string, seq: number, decoded: unknown): TailRowMeta {
+    const reasoningStreamId = getLiveReasoningStreamId(decoded)
+    const callId = getToolCallId(decoded)
+    const resultCallId = callId ? null : toolCallResultCallId(decoded)
+    const isUser = !callId && !resultCallId && isUserMessageRow(decoded)
+    return { id, seq, reasoningStreamId, toolCallId: callId, toolResultCallId: resultCallId, isUser }
+}
+
+function rebuildTailIndexes(entry: SessionLiveTail): void {
+    entry.liveToolCalls.clear()
+    entry.reasoningSnapshots.clear()
+    const closedCallIds = new Set<string>()
+    let toolCallScanStopped = false
+    const total = entry.tailRows.length
+    for (let i = total - 1; i >= 0; i -= 1) {
+        const row = entry.tailRows[i]!
+        const distFromHead = total - 1 - i
+        if (distFromHead < REASONING_SNAPSHOT_LOOKBACK && row.reasoningStreamId) {
+            let ids = entry.reasoningSnapshots.get(row.reasoningStreamId)
+            if (!ids) {
+                ids = new Set()
+                entry.reasoningSnapshots.set(row.reasoningStreamId, ids)
+            }
+            ids.add(row.id)
+        }
+        if (!toolCallScanStopped && distFromHead < TOOL_CALL_UPSERT_LOOKBACK) {
+            if (row.toolCallId) {
+                if (!closedCallIds.has(row.toolCallId) && !entry.liveToolCalls.has(row.toolCallId)) {
+                    entry.liveToolCalls.set(row.toolCallId, row.id)
+                }
+            } else if (row.toolResultCallId) {
+                closedCallIds.add(row.toolResultCallId)
+            } else if (row.isUser) {
+                toolCallScanStopped = true
+            }
+        }
+    }
+}
+
+function warmLiveTail(db: Database, sessionId: string, head: { id: string | null; seq: number }): SessionLiveTail {
+    let sessions = liveTailByDb.get(db)
+    if (!sessions) {
+        sessions = new Map()
+        liveTailByDb.set(db, sessions)
+    }
+
+    const lookback = Math.max(TOOL_CALL_UPSERT_LOOKBACK, REASONING_SNAPSHOT_LOOKBACK)
+    const rows = prepareCached(db, `
+        SELECT id, seq, content FROM messages
+        WHERE session_id = ?
+        ORDER BY seq DESC
+        LIMIT ?
+    `).all(sessionId, lookback) as Array<Pick<DbMessageRow, 'id' | 'seq' | 'content'>>
+
+    const tailRowsAsc: TailRowMeta[] = []
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+        const row = rows[i]!
+        tailRowsAsc.push(classifyTailRow(row.id, row.seq, decodeMessageContent(row.content)))
+    }
+
+    const entry: SessionLiveTail = {
+        headId: head.id,
+        headSeq: head.seq,
+        tailRows: tailRowsAsc,
+        liveToolCalls: new Map(),
+        reasoningSnapshots: new Map()
+    }
+    rebuildTailIndexes(entry)
+    sessions.set(sessionId, entry)
+    return entry
+}
+
+function getOrWarmLiveTail(db: Database, sessionId: string): SessionLiveTail {
+    const head = getCurrentTailHead(db, sessionId)
+    const cached = liveTailByDb.get(db)?.get(sessionId)
+    if (cached && cached.headId === head.id && cached.headSeq === head.seq) {
+        return cached
+    }
+    return warmLiveTail(db, sessionId, head)
+}
+
+function updateLiveTailAfterAppend(
+    db: Database,
+    sessionId: string,
+    id: string,
+    seq: number,
+    content: unknown
+): void {
+    const entry = liveTailByDb.get(db)?.get(sessionId)
+    if (!entry) return
+    if (seq <= entry.headSeq) {
+        invalidateLiveTail(db, sessionId)
+        return
+    }
+    entry.headId = id
+    entry.headSeq = seq
+
+    const meta = classifyTailRow(id, seq, content)
+    if (meta.reasoningStreamId) {
+        let ids = entry.reasoningSnapshots.get(meta.reasoningStreamId)
+        if (!ids) {
+            ids = new Set()
+            entry.reasoningSnapshots.set(meta.reasoningStreamId, ids)
+        }
+        ids.add(id)
+    }
+
+    if (meta.toolCallId) {
+        entry.liveToolCalls.set(meta.toolCallId, id)
+    } else if (meta.toolResultCallId) {
+        entry.liveToolCalls.delete(meta.toolResultCallId)
+    } else if (meta.isUser) {
+        entry.liveToolCalls.clear()
+    }
+
+    entry.tailRows.push(meta)
+    if (entry.tailRows.length > REASONING_SNAPSHOT_LOOKBACK) {
+        const exitedReasoning = entry.tailRows[entry.tailRows.length - 1 - REASONING_SNAPSHOT_LOOKBACK]
+        if (exitedReasoning?.reasoningStreamId) {
+            const set = entry.reasoningSnapshots.get(exitedReasoning.reasoningStreamId)
+            if (set) {
+                set.delete(exitedReasoning.id)
+                if (set.size === 0) {
+                    entry.reasoningSnapshots.delete(exitedReasoning.reasoningStreamId)
+                }
+            }
+        }
+    }
+    const maxLookback = Math.max(TOOL_CALL_UPSERT_LOOKBACK, REASONING_SNAPSHOT_LOOKBACK)
+    if (entry.tailRows.length > maxLookback) {
+        const evicted = entry.tailRows.shift()
+        if (evicted?.toolCallId && entry.liveToolCalls.get(evicted.toolCallId) === evicted.id) {
+            entry.liveToolCalls.delete(evicted.toolCallId)
+        }
+    }
+}
+
 /** Merge an incoming tool-call snapshot into the stored one.
  *
  *  A non-null new value wins for the payload fields the CLI updates
@@ -326,22 +495,164 @@ function mergeToolCallContent(stored: unknown, incoming: unknown): unknown {
  *  message row: both mean the call has completed or a new turn started, so an
  *  incoming message with that callId is a NEW call, not an update. */
 function findLiveToolCallRow(db: Database, sessionId: string, callId: string): DbMessageRow | null {
+    const tail = getOrWarmLiveTail(db, sessionId)
+    const rowId = tail.liveToolCalls.get(callId)
+    if (!rowId) return null
+    const full = prepareCached(db, 'SELECT * FROM messages WHERE id = ? AND session_id = ?').get(rowId, sessionId) as DbMessageRow | undefined
+    if (!full) {
+        invalidateLiveTail(db, sessionId)
+        return null
+    }
+    return full
+}
+
+/** The `data` record of a Claude-SDK passthrough row
+ *  (`{ role: 'agent', content: { type: 'output', data } }`), or null. */
+function claudeOutputData(value: unknown): Record<string, unknown> | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return null
+    if (record.content.type !== 'output') return null
+    return isRecord(record.content.data) ? record.content.data : null
+}
+
+/** Claude passthrough rows the chat never renders (meta / compact summaries /
+ *  subagent sidechains). Their tool traffic has no settlement contract in the
+ *  main thread, so the liveness sweep must ignore them on both sides. */
+function isHiddenClaudeOutput(data: Record<string, unknown>): boolean {
+    return data.isMeta === true || data.isCompactSummary === true || data.isSidechain === true
+}
+
+/** The `message.content` block array of a Claude passthrough row, or null. */
+function claudeMessageBlocks(data: Record<string, unknown>): unknown[] | null {
+    const message = isRecord(data.message) ? data.message : null
+    return Array.isArray(message?.content) ? message.content : null
+}
+
+/** Collect `tool_result` tool_use_ids from a Claude user passthrough row.
+ *  Returns whether the row carried any tool_result at all — a user row
+ *  without one is a human prompt, which starts a new turn. */
+function collectClaudeToolResultIds(data: Record<string, unknown>, into: Set<string>): boolean {
+    const blocks = claudeMessageBlocks(data)
+    if (!blocks) return false
+    let found = false
+    for (const block of blocks) {
+        if (!isRecord(block) || block.type !== 'tool_result') continue
+        if (typeof block.tool_use_id === 'string' && block.tool_use_id.length > 0) {
+            into.add(block.tool_use_id)
+            found = true
+        }
+    }
+    return found
+}
+
+/** Whether a Claude assistant passthrough row holds a `tool_use` block whose
+ *  result has not settled yet (work the agent is still waiting on). */
+function claudeAssistantHasOpenToolUse(data: Record<string, unknown>, settledToolUseIds: Set<string>): boolean {
+    const blocks = claudeMessageBlocks(data)
+    if (!blocks) return false
+    for (const block of blocks) {
+        if (!isRecord(block) || block.type !== 'tool_use') continue
+        if (typeof block.id === 'string' && block.id.length > 0 && !settledToolUseIds.has(block.id)) {
+            return true
+        }
+    }
+    return false
+}
+
+/** Whether a stored ACP `tool-call` row already reports a terminal status.
+ *  Flavors that settle a call through its status (instead of a separate
+ *  `tool-call-result` row) must not read as open work. */
+function isTerminalToolCallRow(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (!record || !isRecord(record.content) || record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'tool-call') return false
+    return toolCallStatusRank(data.status) === TOOL_CALL_STATUS_RANK.completed
+}
+
+/** Whether the session tail still holds tool work that started but never
+ *  settled — the transcript-derived "the agent is demonstrably working"
+ *  signal for the hub's work-scoped liveness sweep.
+ *
+ *  Scans the same bounded tail window as `findLiveToolCallRow` and shares its
+ *  liveness contract (which the toolCallRowCache also keys on): a settled
+ *  call is closed by a later result row, and every live call of the session
+ *  is closed by a later human turn. Walking newest-first:
+ *
+ *  - ACP flavors: an unsettled, non-terminal `tool-call` row means open work.
+ *  - Claude passthrough: an assistant `tool_use` block with no later user
+ *    `tool_result` for its id means open work. Tool-result carriers do NOT
+ *    close the turn (the agent loop continues through them); a user row with
+ *    no tool_result is a human prompt and does.
+ *
+ *  Anything older than the window reads as no work — the same err-closed
+ *  bias the upsert scan uses for ancient rows. */
+export function getLiveToolWork(db: Database, sessionId: string): boolean {
     const rows = prepareCached(db, `
         SELECT id, content FROM messages
         WHERE session_id = ?
         ORDER BY seq DESC
         LIMIT ?
     `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
+
+    const settledAcpCallIds = new Set<string>()
+    const settledClaudeToolUseIds = new Set<string>()
     for (const row of rows) {
         const decoded = decodeMessageContent(row.content)
-        if (getToolCallId(decoded) === callId) {
-            const full = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(row.id) as DbMessageRow | undefined
-            return full ?? null
+        // A human turn (web prompt, native user row) starts a new round and
+        // closes every tool call older than it — stop, nothing is open.
+        if (isUserMessageRow(decoded)) return false
+
+        const claudeData = claudeOutputData(decoded)
+        if (claudeData !== null) {
+            if (isHiddenClaudeOutput(claudeData)) continue
+            if (claudeData.type === 'user') {
+                if (!collectClaudeToolResultIds(claudeData, settledClaudeToolUseIds)) return false
+                continue
+            }
+            if (claudeData.type === 'result') {
+                // Turn-end marker: everything newer was walked already, so the
+                // calls of this finished turn are settled. Idle sessions end
+                // here, which keeps the sweep's every-tick scan to one row.
+                return false
+            }
+            if (claudeData.type === 'assistant'
+                && claudeAssistantHasOpenToolUse(claudeData, settledClaudeToolUseIds)) {
+                return true
+            }
+            continue
         }
-        if (toolCallResultCallId(decoded) === callId) return null
-        if (isUserMessageRow(decoded)) return null
+
+        const resultCallId = toolCallResultCallId(decoded)
+        if (resultCallId !== null) {
+            settledAcpCallIds.add(resultCallId)
+            continue
+        }
+        const callId = getToolCallId(decoded)
+        if (callId !== null && !settledAcpCallIds.has(callId) && !isTerminalToolCallRow(decoded)) {
+            return true
+        }
     }
-    return null
+    return false
+}
+
+/** Merge an incoming tool-call snapshot into a known live row. Shared by the
+ *  cache-hit path and the tail-scan path so both produce identical rows. */
+function mergeIntoToolCallRow(db: Database, existing: DbMessageRow, content: unknown): UpsertToolCallResult {
+    const storedContent = decodeMessageContent(existing.content)
+    const mergedContent = truncateOversizedMessageContent(mergeToolCallContent(storedContent, content))
+    // A re-emitted tick that changes nothing must not rewrite the row:
+    // only observable content changes touch the database.
+    if (isDeepStrictEqual(mergedContent, storedContent)) {
+        return { message: toStoredMessage(existing), updated: true }
+    }
+    const encoded = encodeMessageContent(mergedContent)
+    // Same in-place content swap as the queued-message edit path
+    // (syncNativeQueuedMessage): no new seq, no content_revision bump.
+    prepareCached(db, 'UPDATE messages SET content = ? WHERE id = ?').run(encoded, existing.id)
+    const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(existing.id) as DbMessageRow | undefined
+    if (!row) throw new Error('Failed to update tool-call message')
+    return { message: toStoredMessage(row), updated: true }
 }
 
 /** Store one ACP `tool-call` agent message, updating the call's existing row
@@ -681,6 +992,90 @@ export function deleteLiveReasoningSnapshots(
     streamId: string,
     keepMessageId?: string
 ): number {
+    if (db.inTransaction) {
+        invalidateLiveTail(db, sessionId)
+        const rows = prepareCached(db, `
+            SELECT id, content FROM messages
+            WHERE session_id = ?
+            ORDER BY seq DESC
+            LIMIT ?
+        `).all(sessionId, REASONING_SNAPSHOT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
+
+        const staleIds = rows
+            .filter((row) => row.id !== keepMessageId
+                && getLiveReasoningStreamId(decodeMessageContent(row.content)) === streamId)
+            .map((row) => row.id)
+        if (staleIds.length === 0) return 0
+
+        const placeholders = staleIds.map(() => '?').join(', ')
+        const result = prepareCached(db,
+            `DELETE FROM messages WHERE session_id = ? AND id IN (${placeholders})`
+        ).run(sessionId, ...staleIds)
+        return Number(result.changes)
+    }
+
+    const tail = getOrWarmLiveTail(db, sessionId)
+    const streamIds = tail.reasoningSnapshots.get(streamId)
+    if (!streamIds || streamIds.size === 0) return 0
+
+    const staleIds = Array.from(streamIds).filter((id) => id !== keepMessageId)
+    if (staleIds.length === 0) return 0
+
+    const placeholders = staleIds.map(() => '?').join(', ')
+    const result = prepareCached(db,
+        `DELETE FROM messages WHERE session_id = ? AND id IN (${placeholders})`
+    ).run(sessionId, ...staleIds)
+
+    const staleSet = new Set(staleIds)
+    tail.tailRows = tail.tailRows.filter((row) => !staleSet.has(row.id))
+    const lookback = Math.max(TOOL_CALL_UPSERT_LOOKBACK, REASONING_SNAPSHOT_LOOKBACK)
+    if (tail.tailRows.length < lookback) {
+        const oldestSeq = tail.tailRows[0]?.seq ?? (tail.headSeq + 1)
+        if (oldestSeq > 1) {
+            const olderRows = prepareCached(db, `
+                SELECT id, seq, content FROM messages
+                WHERE session_id = ? AND seq < ?
+                ORDER BY seq DESC
+                LIMIT ?
+            `).all(sessionId, oldestSeq, lookback - tail.tailRows.length) as Array<Pick<DbMessageRow, 'id' | 'seq' | 'content'>>
+            if (olderRows.length > 0) {
+                const prefix: TailRowMeta[] = []
+                for (let i = olderRows.length - 1; i >= 0; i -= 1) {
+                    const row = olderRows[i]!
+                    prefix.push(classifyTailRow(row.id, row.seq, decodeMessageContent(row.content)))
+                }
+                tail.tailRows = [...prefix, ...tail.tailRows]
+            }
+        }
+    }
+    rebuildTailIndexes(tail)
+    if (tail.headId && staleSet.has(tail.headId)) {
+        invalidateLiveTail(db, sessionId)
+    }
+    return Number(result.changes)
+}
+
+/** Drop the replaceable live snapshots of one text stream.
+ *
+ *  Mirrors the reasoning sweep: the CLI re-sends an open text segment as a
+ *  growing `live` snapshot under a stable id on every typing pause, and the
+ *  boundary flush re-sends the full text under the same id without the live
+ *  marker. Without this sweep every pause >1s left a stale prefix row in the
+ *  transcript forever. Plain text messages (no stream id) never match.
+ *
+ *  This is only called from inside addMessageSweepingLiveSnapshots's
+ *  transaction, so it takes the transactional path everywhere: invalidate the
+ *  live-tail cache (its indexed ids are about to be deleted) and scan the
+ *  same bounded lookback window the reasoning sweep uses. */
+export function deleteLiveTextSnapshots(
+    db: Database,
+    sessionId: string,
+    streamId: string,
+    keepMessageId?: string
+): number {
+    if (db.inTransaction) {
+        invalidateLiveTail(db, sessionId)
+    }
     const rows = prepareCached(db, `
         SELECT id, content FROM messages
         WHERE session_id = ?
@@ -690,7 +1085,7 @@ export function deleteLiveReasoningSnapshots(
 
     const staleIds = rows
         .filter((row) => row.id !== keepMessageId
-            && getLiveReasoningStreamId(decodeMessageContent(row.content)) === streamId)
+            && getTextLiveStreamId(decodeMessageContent(row.content)) === streamId)
         .map((row) => row.id)
     if (staleIds.length === 0) return 0
 
@@ -699,6 +1094,47 @@ export function deleteLiveReasoningSnapshots(
         `DELETE FROM messages WHERE session_id = ? AND id IN (${placeholders})`
     ).run(sessionId, ...staleIds)
     return Number(result.changes)
+}
+
+export type AddMessageSweepResult = {
+    message: StoredMessage
+    /** Discriminates against UpsertToolCallResult at the call site. */
+    updated: false
+    /** Replaceable live snapshot rows retired by the same transaction. */
+    sweptSnapshots: number
+}
+
+/** Store a message and retire the live snapshots its streams supersede, in
+ *  one transaction (INSERT first, then DELETE).
+ *
+ *  The CLI streams reasoning and text as growing `live` snapshots under a
+ *  stable id; every stored stream message makes the earlier snapshots of
+ *  that same id dead weight, and the settled message that closes the stream
+ *  is never live so it always survives. Doing both statements in a single
+ *  transaction is strictly crash-safer than the previous two-commit sequence
+ *  (insert, then sweep): a crash now rolls back both, so the stream cannot
+ *  lose its newest row either. */
+export function addMessageSweepingLiveSnapshots(
+    db: Database,
+    sessionId: string,
+    content: unknown,
+    localId?: string,
+    scheduledAt?: number | null,
+    createdAt?: number
+): AddMessageSweepResult {
+    return db.transaction(() => {
+        const message = addMessage(db, sessionId, content, localId, scheduledAt, createdAt)
+        let sweptSnapshots = 0
+        const reasoningStreamId = getReasoningStreamId(content)
+        if (reasoningStreamId !== null) {
+            sweptSnapshots += deleteLiveReasoningSnapshots(db, sessionId, reasoningStreamId, message.id)
+        }
+        const textStreamId = getTextStreamId(content)
+        if (textStreamId !== null) {
+            sweptSnapshots += deleteLiveTextSnapshots(db, sessionId, textStreamId, message.id)
+        }
+        return { message, updated: false as const, sweptSnapshots }
+    })()
 }
 
 /** Paginate messages by COALESCE(invoked_at, created_at) DESC, seq DESC.
@@ -788,6 +1224,7 @@ export function getMessageEpoch(db: Database, sessionId: string): number {
 }
 
 export function bumpMessageEpoch(db: Database, sessionId: string): number {
+    invalidateLiveTail(db, sessionId)
     prepareCached(db, `
         INSERT INTO message_epochs (session_id, epoch)
         VALUES (?, 1)
@@ -1528,7 +1965,10 @@ export function truncateMessagesFromLocalId(
         localId?: string | null
         createdAt?: number
         invokedAt?: number | null
-    }> = []
+    }> = [],
+    // Rows created after the rewind was dispatched have a higher seq and
+    // must survive a delayed or recovery cut.
+    upToSeq: number = Number.MAX_SAFE_INTEGER
 ): { deleted: number; inserted: number; epoch: number } {
     return db.transaction(() => {
         const target = prepareCached(db, `
@@ -1545,19 +1985,21 @@ export function truncateMessagesFromLocalId(
         const deletedRows = prepareCached(db, `
             SELECT id FROM messages
             WHERE session_id = ?
+              AND seq <= ?
               AND (
                 COALESCE(invoked_at, created_at) > ?
                 OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
               )
-        `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<{ id: string }>
+        `).all(sessionId, upToSeq, target.position_at, target.position_at, target.seq) as Array<{ id: string }>
         const deleted = prepareCached(db, `
             DELETE FROM messages
             WHERE session_id = ?
+              AND seq <= ?
               AND (
                 COALESCE(invoked_at, created_at) > ?
                 OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
               )
-        `).run(sessionId, target.position_at, target.position_at, target.seq)
+        `).run(sessionId, upToSeq, target.position_at, target.position_at, target.seq)
         invalidateMessageContentSearchInjectedTurnCache(db, [sessionId])
         for (const row of deletedRows) removeMessageContentSearchIndex(db, row.id)
 

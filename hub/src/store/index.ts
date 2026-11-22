@@ -15,6 +15,7 @@ import { SessionJobsStore } from './sessionJobsStore'
 import { SessionRedirectStore } from './sessionRedirectStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
+import { PASSKEY_CREDENTIALS_TABLE_SQL, PasskeyStore } from './passkeyStore'
 import { TurnStore } from './turnStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
@@ -49,6 +50,8 @@ export { ScratchlistStore } from './scratchlistStore'
 export { SessionJobsStore } from './sessionJobsStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
+export { PasskeyStore } from './passkeyStore'
+export type { StoredPasskeyCredential } from './passkeyStore'
 export { TurnStore } from './turnStore'
 export type { SessionTurn, SessionTurnEndReason, SessionTurnTrigger } from './turns'
 export { UsageStore } from './usageStore'
@@ -60,7 +63,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 36
+const SCHEMA_VERSION: number = 37
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -80,7 +83,8 @@ const REQUIRED_TABLES = [
     'event_links',
     'session_turns',
     'migration_state',
-    'session_redirects'
+    'session_redirects',
+    'passkey_credentials'
 ] as const
 
 export class Store {
@@ -92,6 +96,7 @@ export class Store {
     readonly machines: MachineStore
     readonly messages: MessageStore
     readonly users: UserStore
+    readonly passkeys: PasskeyStore
     readonly push: PushStore
     readonly fcm: FcmStore
     readonly scratchlist: ScratchlistStore
@@ -150,6 +155,7 @@ export class Store {
         this.machines = new MachineStore(this.db)
         this.messages = new MessageStore(this.db)
         this.users = new UserStore(this.db)
+        this.passkeys = new PasskeyStore(this.db)
         this.push = new PushStore(this.db)
         this.fcm = new FcmStore(this.db)
         this.scratchlist = new ScratchlistStore(this.db)
@@ -392,7 +398,8 @@ export class Store {
             // upstream session_turns at v27→v28; last_user_message_at at v28→v29;
             // upstream read-state at v29→v30;
             // #1404 session_jobs at v31→v32 (after upstream FTS v30→v31); run_id fence at v32→v33;
-            // #1489 wake-on-terminal at v33→v34; session_redirects at v34→v35
+            // #1489 wake-on-terminal at v33→v34; session_redirects at v34→v35;
+            // passkey_credentials at v35→v36
             // (jobs remapped again after upstream took 28/29/30).
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
@@ -409,6 +416,7 @@ export class Store {
             33: () => this.migrateFromV33ToV34(),
             34: () => this.migrateFromV34ToV35(),
             35: () => this.migrateFromV35ToV36(),
+            36: () => this.migrateFromV36ToV37(),
         })
 
         if (currentVersion === 0) {
@@ -453,6 +461,7 @@ export class Store {
             this.migrateFromV33ToV34()
             this.migrateFromV34ToV35()
             this.migrateFromV35ToV36()
+            this.migrateFromV36ToV37()
             this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
@@ -647,6 +656,8 @@ export class Store {
             );
             CREATE INDEX IF NOT EXISTS idx_session_redirects_namespace_new
                 ON session_redirects(namespace, new_id);
+
+            ${PASSKEY_CREDENTIALS_TABLE_SQL}
 
             CREATE TABLE IF NOT EXISTS usage_events (
                 session_id TEXT NOT NULL,
@@ -1406,8 +1417,11 @@ export class Store {
                 ON session_redirects(namespace, new_id);
         `)
     }
-    /** v35→v36: add structured-task source positions and durable backfill state. */
-    private migrateFromV35ToV36(): void {
+    /** v36→v37: add structured-task source positions and durable backfill state. */
+    private migrateFromV36ToV37(): void {
+        // Both upstream and earlier PR builds used v36 for their own changes.
+        // The passkey table creation is idempotent for both layouts.
+        this.migrateFromV35ToV36()
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS migration_state (
                 migration_id TEXT PRIMARY KEY,
@@ -1425,6 +1439,12 @@ export class Store {
             }
         }
     }
+
+    /** v35→v36: WebAuthn credentials that can be exchanged for a web JWT. */
+    private migrateFromV35ToV36(): void {
+        this.db.exec(PASSKEY_CREDENTIALS_TABLE_SQL)
+    }
+
     private ensureUsageScanParserVersion(): void {
         const columns = this.db.prepare('PRAGMA table_info(usage_scan_state)').all() as Array<{ name: string }>
         if (columns.length === 0) return

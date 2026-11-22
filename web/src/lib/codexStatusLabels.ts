@@ -41,11 +41,3 @@ export function shouldShowReasoningStatusLabel(
     // Pi and AGY models may have no effort at all; only show a real level.
     return supportsEffort(agentFlavor) && Boolean(reasoningEffort?.trim())
 }
-
-/** Codex-only aliases retained for tool-card and thread call sites. */
-export const formatCompactCodexReasoningLabel = formatCompactReasoningLabel
-export const formatCodexReasoningLabel = formatReasoningLabel
-
-export function shouldShowCodexReasoningLabel(agentFlavor: string | null | undefined): boolean {
-    return agentFlavor === 'codex' || agentFlavor === 'opencode'
-}

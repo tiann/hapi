@@ -24,11 +24,18 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
                     ...(resumable ? { path: '/synthetic/project', codexSessionId: 'synthetic-thread' } : {}),
                 },
                 model: null, modelReasoningEffort: null, effort: null,
+                todos: [
+                    { id: '1', content: '已完成示例', status: 'completed', priority: 'medium' },
+                    { id: '2', content: '验证会话任务', status: 'in_progress', priority: 'medium' },
+                    { id: '3', content: '检查历史记录', status: 'pending', priority: 'medium' },
+                ],
             }
             await page.route(url => url.pathname.startsWith('/api/'), async route => {
                 const path = new URL(route.request().url()).pathname
                 if (path === '/api/auth') {
                     await route.fulfill({ json: { token: 'synthetic-jwt', user: { id: 1, username: 'fixture' } } })
+                } else if (path === '/api/features') {
+                    await route.fulfill({ json: { githubPrAwareness: { enabled: false, envPinned: false } } })
                 } else if (path === '/api/sessions') {
                     await route.fulfill({ json: { sessions: [session] } })
                 } else if (path === `/api/sessions/${session.id}`) {
@@ -58,6 +65,14 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
                 ? '此会话已停止。发送消息即可恢复。'
                 : '此会话已停止，无法恢复。', { exact: true })
             await expect(notice).toBeVisible()
+            const collapsedTop = await notice.evaluate((el) => el.getBoundingClientRect().top)
+            const tasks = page.locator('summary').filter({ hasText: '任务 · 1/3' })
+            await expect(tasks).toBeVisible()
+            await tasks.click()
+            await expect(page.getByText('验证会话任务')).toBeVisible()
+            await expect(page.getByText('检查历史记录')).toBeVisible()
+            await expect(page.getByText('已完成示例')).toHaveCount(0)
+            expect(await notice.evaluate((el) => el.getBoundingClientRect().top)).toBeCloseTo(collapsedTop, 0)
             await page.screenshot({ path: testInfo.outputPath('inactive-notice.png'), fullPage: true })
             await expect(notice).toHaveCSS('text-align', 'center')
             const geometry = await notice.evaluate(element => {

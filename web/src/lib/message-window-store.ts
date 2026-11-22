@@ -45,6 +45,15 @@ export type MessageWindowState = {
     newestSeq: number | null
     epoch: number | null
     isSyncingTail: boolean
+    /**
+     * Cached re-entry in progress: the window was restored from the
+     * persisted cache and the authoritative latest-page fetch is still in
+     * flight. True only between activation and the first tail sync landing
+     * (never during visibility tickers or reconnect resyncs), so consumers
+     * can surface a "fetching latest messages" affordance over the stale
+     * rows instead of silently swapping them for fresh ones.
+     */
+    preferLatestOnActivation: boolean
     isLoadingMore: boolean
     warning: string | null
     viewMode: MessageViewMode
@@ -96,7 +105,6 @@ type InternalState = MessageWindowState & {
     contextNewestAt: number | null
     contextNewestSeq: number | null
     requiresLatestReset: boolean
-    preferLatestOnActivation: boolean
     // A gap resume asked for an authoritative latest page applied as an
     // upsert: rows the window holds are replaced by id, but already-loaded
     // history outside the latest page and the oldest cursor survive the
@@ -128,11 +136,13 @@ type TailSyncController = {
 }
 
 const states = new Map<string, InternalState>()
+const sessionAccessOrder = new Map<string, true>()
 const listeners = new Map<string, Set<() => void>>()
 const tailSyncControllers = new Map<string, TailSyncController>()
 const messageWindowTargetLocks = new Set<string>()
 const appliedRewindLocalIds = new Map<string, Set<string>>()
 
+export const MAX_RETAINED_INACTIVE_WINDOWS = 12
 const NOTIFY_THROTTLE_MS = 150
 const PERSIST_THROTTLE_MS = 200
 const STORAGE_KEY_PREFIX = 'hapi:message-window:v2:'
@@ -142,6 +152,7 @@ let notifyRafId: ReturnType<typeof requestAnimationFrame> | null = null
 let notifyTimerId: ReturnType<typeof setTimeout> | null = null
 let persistTimerId: ReturnType<typeof setTimeout> | null = null
 let lastNotifyAt = 0
+let nextGenerationFloor = 0
 
 function requestNotifyFrame(): void {
     if (notifyRafId !== null) {
@@ -238,12 +249,17 @@ function persistState(sessionId: string, state: InternalState): void {
             requiresLatestReset: state.requiresLatestReset
         }
         sessionStorage.setItem(getStorageKey(sessionId), JSON.stringify(persisted))
+        pruneExcessPersistedWindows()
     } catch {
     }
 }
 
 function clearPersistedState(sessionId: string): void {
     pendingPersistSessionIds.delete(sessionId)
+    if (pendingPersistSessionIds.size === 0 && persistTimerId !== null) {
+        clearTimeout(persistTimerId)
+        persistTimerId = null
+    }
     if (!isSessionStorageAvailable()) {
         return
     }
@@ -251,6 +267,145 @@ function clearPersistedState(sessionId: string): void {
         sessionStorage.removeItem(getStorageKey(sessionId))
     } catch {
     }
+}
+
+function touchSessionAccess(sessionId: string): void {
+    sessionAccessOrder.delete(sessionId)
+    sessionAccessOrder.set(sessionId, true)
+}
+
+function hasProtectedMessages(messages: ReadonlyArray<{
+    status?: unknown
+    deliveryPending?: unknown
+    deliveryState?: unknown
+}>): boolean {
+    return messages.some((message) =>
+        message.status === 'sending'
+        || message.status === 'failed'
+        || message.deliveryPending === true
+        || message.deliveryState === 'indeterminate'
+    )
+}
+
+function hasProtectedPersistedWindow(key: string): boolean {
+    try {
+        const raw = sessionStorage.getItem(key)
+        if (!raw) {
+            return false
+        }
+        const parsed = JSON.parse(raw) as {
+            messages?: unknown
+            requiresLatestReset?: unknown
+        }
+        if (!parsed || typeof parsed !== 'object') {
+            return false
+        }
+        if (parsed.requiresLatestReset === true) {
+            return true
+        }
+        return Array.isArray(parsed.messages) && hasProtectedMessages(parsed.messages)
+    } catch {
+        return false
+    }
+}
+
+function isEvictableInactiveWindow(sessionId: string, state: InternalState): boolean {
+    if ((listeners.get(sessionId)?.size ?? 0) > 0) {
+        return false
+    }
+    if (state.isSyncingTail || state.isLoadingMore || state.requiresLatestReset || state.pendingGapRecovery) {
+        return false
+    }
+    if (tailSyncControllers.get(sessionId)?.running) {
+        return false
+    }
+    if (messageWindowTargetLocks.has(sessionId)) {
+        return false
+    }
+    return !hasProtectedMessages(state.messages)
+}
+
+function pruneExcessPersistedWindows(): void {
+    if (!isSessionStorageAvailable()) {
+        return
+    }
+    try {
+        if (typeof sessionStorage.length !== 'number' || typeof sessionStorage.key !== 'function') {
+            return
+        }
+        let inactiveCount = 0
+        const candidateKeys: string[] = []
+        for (let i = 0; i < sessionStorage.length; i += 1) {
+            const key = sessionStorage.key(i)
+            if (!key || !key.startsWith(STORAGE_KEY_PREFIX)) {
+                continue
+            }
+            const id = key.slice(STORAGE_KEY_PREFIX.length)
+            if ((listeners.get(id)?.size ?? 0) > 0) {
+                continue
+            }
+            inactiveCount += 1
+            if (!states.has(id)) {
+                candidateKeys.push(key)
+            }
+        }
+        let excess = inactiveCount - MAX_RETAINED_INACTIVE_WINDOWS
+        if (excess <= 0 || candidateKeys.length === 0) {
+            return
+        }
+        for (const key of candidateKeys) {
+            if (excess <= 0) {
+                break
+            }
+            if (hasProtectedPersistedWindow(key)) {
+                continue
+            }
+            sessionStorage.removeItem(key)
+            excess -= 1
+        }
+    } catch {
+    }
+}
+
+function evictExcessInactiveWindows(protectedSessionId?: string): void {
+    let inactiveCount = 0
+    for (const sessionId of states.keys()) {
+        if ((listeners.get(sessionId)?.size ?? 0) === 0) {
+            inactiveCount += 1
+        }
+    }
+    if (inactiveCount <= MAX_RETAINED_INACTIVE_WINDOWS) {
+        return
+    }
+    for (const candidateId of [...sessionAccessOrder.keys()]) {
+        if (inactiveCount <= MAX_RETAINED_INACTIVE_WINDOWS) {
+            break
+        }
+        if (candidateId === protectedSessionId) {
+            continue
+        }
+        const state = states.get(candidateId)
+        if (!state) {
+            sessionAccessOrder.delete(candidateId)
+            continue
+        }
+        if (!isEvictableInactiveWindow(candidateId, state)) {
+            continue
+        }
+        nextGenerationFloor = Math.max(
+            nextGenerationFloor,
+            state.syncGeneration + 1,
+            state.olderGeneration + 1
+        )
+        states.delete(candidateId)
+        tailSyncControllers.delete(candidateId)
+        appliedRewindLocalIds.delete(candidateId)
+        pendingNotifySessionIds.delete(candidateId)
+        sessionAccessOrder.delete(candidateId)
+        clearPersistedState(candidateId)
+        inactiveCount -= 1
+    }
+    pruneExcessPersistedWindows()
 }
 
 function flushPersistedStates(): void {
@@ -302,8 +457,8 @@ function createState(sessionId: string): InternalState {
         requiresLatestReset: false,
         preferLatestOnActivation: false,
         pendingGapRecovery: false,
-        syncGeneration: 0,
-        olderGeneration: 0
+        syncGeneration: nextGenerationFloor,
+        olderGeneration: nextGenerationFloor
     }
 }
 
@@ -366,12 +521,14 @@ function hydrateState(sessionId: string): InternalState | null {
 }
 
 function getState(sessionId: string): InternalState {
+    touchSessionAccess(sessionId)
     const existing = states.get(sessionId)
     if (existing) {
         return existing
     }
     const created = hydrateState(sessionId) ?? createState(sessionId)
     states.set(sessionId, created)
+    evictExcessInactiveWindows(sessionId)
     return created
 }
 
@@ -384,6 +541,7 @@ function notifyImmediate(sessionId: string): void {
 }
 
 function setState(sessionId: string, next: InternalState, immediate = false): void {
+    touchSessionAccess(sessionId)
     states.set(sessionId, next)
     // A latest-reset state still contains the previous server snapshot. Do not
     // persist that stale window while the authoritative replacement is in
@@ -398,6 +556,7 @@ function setState(sessionId: string, next: InternalState, immediate = false): vo
     } else {
         scheduleNotify(sessionId)
     }
+    evictExcessInactiveWindows(sessionId)
 }
 
 function updateState(
@@ -1393,6 +1552,7 @@ export function setMessageWindowTargetLock(sessionId: string, locked: boolean): 
         return
     }
     messageWindowTargetLocks.delete(sessionId)
+    evictExcessInactiveWindows()
 }
 
 /**
@@ -1858,6 +2018,7 @@ export function getMessageWindowState(sessionId: string): MessageWindowState {
 }
 
 export function subscribeMessageWindow(sessionId: string, listener: () => void): () => void {
+    touchSessionAccess(sessionId)
     const subscribers = listeners.get(sessionId) ?? new Set()
     subscribers.add(listener)
     listeners.set(sessionId, subscribers)
@@ -1867,6 +2028,8 @@ export function subscribeMessageWindow(sessionId: string, listener: () => void):
         current.delete(listener)
         if (current.size === 0) {
             listeners.delete(sessionId)
+            touchSessionAccess(sessionId)
+            evictExcessInactiveWindows(sessionId)
         }
     }
 }
@@ -1874,14 +2037,17 @@ export function subscribeMessageWindow(sessionId: string, listener: () => void):
 export function clearMessageWindow(sessionId: string): void {
     messageWindowTargetLocks.delete(sessionId)
     tailSyncControllers.delete(sessionId)
-    clearPersistedState(sessionId)
     const previous = states.get(sessionId)
-    if (!previous) return
+    if (!previous) {
+        clearPersistedState(sessionId)
+        return
+    }
     setState(sessionId, {
         ...createState(sessionId),
         syncGeneration: previous.syncGeneration + 1,
         olderGeneration: previous.olderGeneration + 1
     }, true)
+    clearPersistedState(sessionId)
 }
 
 function markMessageWindowForLatestReset(sessionId: string, messages: DecryptedMessage[]): void {

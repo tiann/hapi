@@ -4,7 +4,7 @@ import { isLiveLifecycleState } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { useTranslation } from '@/lib/use-translation'
-import { useToast } from '@/lib/toast-context'
+import { useAddToast } from '@/lib/toast-context'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import { queryKeys } from '@/lib/query-keys'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -38,7 +38,7 @@ export function ProjectGroupRow(props: {
     const { directory, displayName, api, onClick, onNewSession } = props
     const { t } = useTranslation()
     const { haptic } = usePlatform()
-    const { addToast } = useToast()
+    const addToast = useAddToast()
     const queryClient = useQueryClient()
     const [menuPoint, setMenuPoint] = useState<{ x: number; y: number } | null>(null)
     const [confirmOpen, setConfirmOpen] = useState(false)

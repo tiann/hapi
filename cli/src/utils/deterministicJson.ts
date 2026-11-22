@@ -154,37 +154,3 @@ export function hashObject(
     const jsonString = deterministicStringify(obj, options);
     return createHash('sha256').update(jsonString).digest(encoding);
 }
-
-/**
- * Compare two objects for deep equality using deterministic stringification
- * 
- * @param a First object
- * @param b Second object
- * @param options Stringification options
- * @returns True if objects are deeply equal
- */
-export function deepEqual(
-    a: any,
-    b: any,
-    options?: DeterministicJsonOptions
-): boolean {
-    try {
-        return deterministicStringify(a, options) === deterministicStringify(b, options);
-    } catch {
-        return false;
-    }
-}
-
-/**
- * Create a stable hash key for an object suitable for use as a Map key
- * 
- * @param obj Object to create key for
- * @param options Stringification options
- * @returns Stable string key
- */
-export function objectKey(
-    obj: any,
-    options?: DeterministicJsonOptions
-): string {
-    return hashObject(obj, options, 'base64url');
-}

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="strict-origin">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; form-action https:; base-uri 'none'; object-src 'none'">
+    <title>HAPI Passkey</title>
+    <link rel="stylesheet" href="/style.css">
+    <script type="module" src="/main.js"></script>
+</head>
+<body>
+    <main>
+        <p>HAPI · Secure sign-in</p>
+        <h1>HAPI Passkey</h1>
+        <p id="hub"></p>
+        <p id="status" role="status">Checking authentication request…</p>
+        <button id="continue" disabled>Continue with passkey</button>
+        <button id="cancel" disabled>Cancel</button>
+        <p>Your Hub verifies the passkey. This site does not store your account or receive your session tokens.</p>
+    </main>
+</body>
+</html>

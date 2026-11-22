@@ -217,6 +217,12 @@ async function buildTarget(projectRoot: string, target: string, outdir: string, 
         'build',
         '--compile',
         '--no-compile-autoload-dotenv',
+        // Smaller idle footprint per wrapper process: split lazily imported
+        // modules so they are only loaded on demand, and precompile bytecode.
+        '--splitting',
+        '--minify',
+        '--bytecode',
+        '--format=esm',
         `--feature=${featureFlag}`,
         `--target=${target}`,
         `--outfile=${outfile}`,

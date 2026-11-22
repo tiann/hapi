@@ -120,6 +120,11 @@ export type FormElicitationRequest = {
     sessionId: string;
     /** Tool call that triggered the form, when the agent links one. */
     toolCallId?: string;
+    /**
+     * Id for this question's request, set with toolCallId. The first request
+     * of a call uses the call id; a later one gets its own id.
+     */
+    requestId?: string;
     message: string;
     /** JSON-Schema-like object schema; shape is owned by the agent. */
     requestedSchema: unknown;
@@ -177,6 +182,12 @@ export interface AgentBackend {
      * on abort and disconnect.
      */
     onFormElicitation?(handler: (request: FormElicitationRequest) => Promise<FormElicitationResponse>): void;
+    /**
+     * Whether the agent still waits for an answer to `requestId`. Backends
+     * that know it let permission writers settle requests stored by an agent
+     * process that no longer exists.
+     */
+    hasLiveRequest?(requestId: string): boolean;
     disconnect(): Promise<void>;
 }
 

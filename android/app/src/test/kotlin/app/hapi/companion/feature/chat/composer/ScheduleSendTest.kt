@@ -271,6 +271,10 @@ class ScheduleSendTest {
             ScheduleSend.formatScheduledTime(fire, ZoneOffset.UTC, Locale.SIMPLIFIED_CHINESE, now = { now }),
         )
         assertEquals(
+            "10月25日 14:30",
+            ScheduleSend.formatScheduledTime(fire, ZoneOffset.UTC, Locale.JAPAN, now = { now }),
+        )
+        assertEquals(
             "25 окт., 2027, 14:30",
             ScheduleSend.formatScheduledTime(
                 Instant.parse("2027-10-25T14:30:00Z").toEpochMilli(),

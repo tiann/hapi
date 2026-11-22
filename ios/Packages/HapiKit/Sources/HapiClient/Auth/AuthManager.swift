@@ -21,14 +21,15 @@ public enum AuthError: Error, Equatable, Sendable {
 ///
 /// Contract (`docs/api/client-contract/auth.md`):
 /// - JWTs expire after 4 h, so 401s are routine: re-exchange the stored
-///   access token via `POST /api/auth {accessToken}` and let the caller
-///   retry exactly once.
+///   credential via `POST /api/auth` (`{accessToken}` or `{passkeySession}`,
+///   see ``HubAuthCredential``) and let the caller retry exactly once.
 /// - Refreshes are **single-flight**: concurrent callers share one in-flight
 ///   exchange instead of racing N of them.
 /// - Refresh is proactive when `exp` is within ``proactiveRefreshWindow``,
 ///   so long-lived work (SSE reconnects) rarely sees a stale token.
 /// - A 401 from `/api/auth` itself is terminal (`authFailed`): the access
-///   token was rotated or revoked, and the UI must offer re-pairing.
+///   token was rotated or revoked, or the passkey session is no longer
+///   valid, and the UI must offer re-pairing / passkey sign-in.
 ///
 /// The HTTP performer and clock are injectable for tests.
 public actor AuthManager {
@@ -186,11 +187,11 @@ public actor AuthManager {
 
     private func performRefresh() async throws -> String {
         let stored = try? credentialStore.credentials(forHub: storageKey)
-        guard let credentials = stored, !credentials.accessToken.isEmpty else {
+        guard let credentials = stored, !credentials.credential.isEmpty else {
             throw AuthError.notPaired
         }
         do {
-            let request = try makeAuthRequest(accessToken: credentials.accessToken)
+            let request = try makeAuthRequest(credential: credentials.credential)
             let (data, response) = try await performer.perform(request)
             switch response.statusCode {
             case 200:
@@ -198,7 +199,9 @@ public actor AuthManager {
                 adopt(token: auth.token, credentials: credentials)
                 return auth.token
             case 401:
-                // "Invalid access token" — rotated or revoked. Terminal.
+                // "Invalid access token" (rotated or revoked) or
+                // "passkey_session_invalid" (passkey deleted, token rotated,
+                // session expired). Terminal either way.
                 authFailed = true
                 throw AuthError.reauthenticationRequired
             default:
@@ -212,15 +215,12 @@ public actor AuthManager {
         }
     }
 
-    private func makeAuthRequest(accessToken: String) throws -> URLRequest {
-        struct AuthRequestBody: Encodable {
-            let accessToken: String
-        }
+    private func makeAuthRequest(credential: HubAuthCredential) throws -> URLRequest {
         let url = try HubRequestURL.make(baseURL: baseURL, path: "/api/auth", query: [])
         var request = URLRequest(url: url)
         request.httpMethod = HTTPMethod.post.rawValue
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try HapiJSON.encoder.encode(AuthRequestBody(accessToken: accessToken))
+        request.httpBody = try HapiJSON.encoder.encode(credential.exchangeBody)
         return request
     }
 
