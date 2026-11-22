@@ -18,6 +18,7 @@ import {
 } from '@/lib/codexStatusLabels'
 import * as Popover from '@radix-ui/react-popover'
 import { isFastServiceTier } from './codexFastMode'
+import { AgentQuotaStatus } from './AgentQuotaStatus'
 import { useTranslation } from '@/lib/use-translation'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { ContextDetailsDialog } from './ContextDetailsDialog'
@@ -268,6 +269,8 @@ function addLegacyClaudeLists(args: {
 
 export function StatusBar(props: {
     active: boolean
+    /** Session machine; enables the plan-quota readout next to the context meter. */
+    machineId?: string | null
     thinking: boolean
     agentState: AgentState | null | undefined
     backgroundTaskCount?: number
@@ -572,6 +575,9 @@ export function StatusBar(props: {
                             </Popover.Content>
                         </Popover.Portal>
                     </Popover.Root>
+                ) : null}
+                {props.machineId ? (
+                    <AgentQuotaStatus machineId={props.machineId} agentFlavor={props.agentFlavor} />
                 ) : null}
             </div>
 

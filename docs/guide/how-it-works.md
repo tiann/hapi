@@ -1,3 +1,7 @@
+---
+description: "HAPI architecture: the CLI wraps coding agents, a self-hosted hub syncs sessions, and web and native clients control them over REST, SSE and an encrypted relay."
+---
+
 # How it Works
 
 HAPI connects coding agents, a self-hosted hub, and web/native clients for remote control.
@@ -36,7 +40,7 @@ hapi runner start # Run background service for remote session spawning
 hapi ping-peer --list  # Active peers with machine and cwd (prefer MCP list_peers in-session)
 ```
 
-MCP peer tools (same hub/namespace as the session): `list_peers` (find active peers), `inspect_peer` (read), `ping_peer` (message), `spawn_peer` (create with a required remit); with `waitForReply`, `ping_peer` and `spawn_peer` post the peer's reply back when its turn ends. `ping_peer` refuses inactive sessions unless `wake: true` (CLI `--wake`), so finished or unrelated peers are not relaunched; agents are told to message only peers tied to their task and never broadcast. These work from runner-spawned sessions even when the hub is on another host - see [Installation → Split hub + remote runner](./installation.md#split-hub-remote-runner-peer-discovery). Never treat machine-spawn HTTP 200 as a working peer. In-session `spawn_peer` auto-stamps a durable Parent `[title](/sessions/<uuid>)` chip onto the remit (UUID is identity; titles are decoration). Runners that must keep agents out of other sessions' contexts can hide all four with `HAPI_DISABLE_PEER_TOOLS=1` - see [Installation → Disabling peer tools](./installation.md#disabling-peer-tools-on-a-runner).
+MCP peer tools let an agent find, read, message, and spawn other sessions on the same hub and namespace: `list_peers`, `inspect_peer`, `ping_peer`, and `spawn_peer`. Runners can hide them with `HAPI_DISABLE_PEER_TOOLS=1`. See [Peer sessions](./peer-sessions.md).
 
 ### HAPI Hub
 
@@ -155,10 +159,11 @@ Real-time bidirectional communication for:
 ### External Access: Tunnel
 
 For remote access outside your local network:
-- **Built-in relay** (`hapi hub --relay`) - Managed tunwg tunnel (WireGuard + TLS), no third-party account required
-- **Cloudflare Tunnel** (recommended) - Free, secure, reliable
+- **Built-in relay** (`hapi hub --relay`, recommended) - Managed tunwg tunnel (WireGuard + TLS), no third-party account required
+- **Your own tunnel or reverse proxy** - Cloudflare Tunnel, ngrok, or an HTTPS reverse proxy in front of the hub
 - **Tailscale** - Mesh VPN for private networks
-- **ngrok** - Quick setup for testing
+
+See [Installation → Hub setup](./installation.md#hub-setup) for details.
 
 ## Seamless Handoff
 

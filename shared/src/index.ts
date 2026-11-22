@@ -2,7 +2,12 @@ export * from './peerSpawnDefaults'
 export * from './scratchlistAttachments'
 export * from './workGraph'
 export * from './apiTypes'
+export * from './forkBoundary'
+export * from './codexTranscript'
 export * from './cursorCliSku'
+export * from './externalRefs'
+export * from './projectRegistry'
+export * from './prChipDisplay'
 export * from './messages'
 export * from './buildInfo'
 export * from './conversationHistory'
@@ -48,3 +53,5 @@ export type {
     AttachedJobStatus
 } from './schemas'
 export type * from './types'
+
+export * from './passkey'

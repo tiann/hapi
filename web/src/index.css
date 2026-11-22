@@ -479,9 +479,20 @@ html:has(.chat-scroll-y) #root {
     }
 }
 
-/* Row quick action (archive): replaces the time/progress cluster on hover,
-   and on keyboard focus (not a click or tap) so it stays reachable without a
-   mouse. Touch devices keep the long-press menu instead. */
+/* Row quick actions (unpin, archive): replace the time/progress cluster on
+   hover, and on keyboard focus (not a click or tap) so they stay reachable
+   without a mouse. Touch devices keep the long-press menu instead.
+   Reserve the visible action group width (1 button = 2rem from row edge / 1.5rem
+   after pr-2; 2 buttons = 3.875rem from row edge / 3.375rem after pr-2) so short
+   timestamps like "刚刚" never let the action buttons overlap title/indicators. */
+.session-list-row[data-quick-action-count="1"] {
+    --session-row-action-reserve: 1.5rem;
+    --session-row-action-span: 2rem;
+}
+.session-list-row[data-quick-action-count="2"] {
+    --session-row-action-reserve: 3.375rem;
+    --session-row-action-span: 3.875rem;
+}
 .session-row-quick-action {
     display: none;
 }
@@ -492,6 +503,11 @@ html:has(.chat-scroll-y) #root {
 .session-list-row:has(:focus-visible) .session-row-trailing,
 .session-list-row[data-quick-action-pending] .session-row-trailing {
     visibility: hidden;
+    min-width: var(--session-row-action-reserve, 0px);
+}
+.session-list-row:has(:focus-visible) .session-row-header,
+.session-list-row[data-quick-action-pending] .session-row-header {
+    grid-template-columns: minmax(min(9rem, calc(100% - var(--session-row-action-span, 0px))), 1fr) minmax(0, max-content);
 }
 @media (hover: hover) and (pointer: fine) {
     .session-list-row:hover .session-row-quick-action {
@@ -499,6 +515,10 @@ html:has(.chat-scroll-y) #root {
     }
     .session-list-row:hover .session-row-trailing {
         visibility: hidden;
+        min-width: var(--session-row-action-reserve, 0px);
+    }
+    .session-list-row:hover .session-row-header {
+        grid-template-columns: minmax(min(9rem, calc(100% - var(--session-row-action-span, 0px))), 1fr) minmax(0, max-content);
     }
 }
 
@@ -552,6 +572,28 @@ html:has(.chat-scroll-y) #root {
 /* Match fixed sidebar controls to the space reserved for the left scrollbar. */
 .session-list-scrollbar-offset {
     padding-left: 8px;
+}
+
+/*
+ * Open-session position mark on the left scrollbar gutter.
+ * Visual-only: a tiny hover target for the native title tooltip, not a jump
+ * button — the scrollbar beside it stays the seek surface. Sits in the
+ * outer 3px of the 10px rail so it never hides under the thumb (left 3px, 4px
+ * wide). Sibling of the scroll container inside the relative session-list
+ * shell, so `top` maps onto the visible rail.
+ */
+.session-list-open-tick {
+    position: absolute;
+    left: 0;
+    z-index: 10;
+    width: 3px;
+    height: 6px;
+    margin-top: -3px;
+    pointer-events: auto;
+    border-radius: 1px;
+    background: var(--app-link);
+    opacity: 0.9;
+    box-shadow: 0 0 0 1px var(--app-bg);
 }
 
 /* Desktop sidebar: use custom width from CSS variable.
@@ -868,10 +910,6 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
   animation: spin 1s linear infinite;
 }
 
-.animate-spin-slow {
-  animation: spin 2s linear infinite;
-}
-
 /* New messages indicator bounce animation */
 @keyframes bounce-in {
   0% {
@@ -898,21 +936,7 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
  * drift slowly. Quiet contrast + slow background-position, not a loud chunk
  * marquee and not a frozen empty track.
  */
-/*
- * Seamless loop: shift must equal one background-size tile (was -12px on an
- * 8px tile → visible jump every cycle). For -45° stripes, move both axes by
- * one tile so the diagonal phase matches at the loop boundary.
- */
-@keyframes attached-job-indeterminate-stripes {
-  from {
-    background-position: 0 0;
-  }
-  to {
-    background-position: 8px 8px;
-  }
-}
-
-.animate-attached-job-indeterminate {
+.attached-job-stripes {
   position: absolute;
   inset: 0;
   border-radius: inherit;
@@ -926,13 +950,12 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
     transparent 66%
   );
   background-size: 8px 8px;
-  animation: attached-job-indeterminate-stripes 5s linear infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .animate-attached-job-indeterminate {
-    animation: none;
-  }
+  /*
+   * No animation here: the shared low-rate ticker writes `background-position`
+   * (tile/40 px per tick — one 8px tile per 5 s, both axes so the -45° diagonal
+   * phase matches at the loop boundary). Keeping this static means the page
+   * produces no 60 Hz frames while the stripes still drift.
+   */
 }
 
 /* ReactQueryDevtools button - move to middle-right to avoid blocking UI */

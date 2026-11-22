@@ -1,3 +1,7 @@
+---
+description: "Overview of the client API contract that native HAPI clients (iOS, Android and others) implement against a hub."
+---
+
 # Native client contract
 
 **Audience:** Implementers of native HAPI clients — the iOS app (`ios/`), the Android app (`android/`), and any other non-web client that talks to a hub's client API. These pages are the primary spec for that work: every claim is grounded in hub/web source, and each section names its source file so implementers (human or AI agent) can verify against code.

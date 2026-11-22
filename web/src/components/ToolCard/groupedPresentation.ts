@@ -232,8 +232,3 @@ export function formatGroupedHeaderSubtitle(block: ToolGroupBlock, t: Translator
 
     return parts.length > 0 ? parts.join(' · ') : null
 }
-
-export function formatGroupedRowLabel(tool: ToolCallBlock, t: Translator): string {
-    if (isCodexExplorationTool(tool)) return t('toolGroup.codex.explored')
-    return getIntentLabel(inferGroupedSummaryIntent(tool), t)
-}

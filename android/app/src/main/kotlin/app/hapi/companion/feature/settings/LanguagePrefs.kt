@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
 /**
- * App language choice. [ENGLISH]/[SIMPLIFIED_CHINESE]/[RUSSIAN] mirror the
+ * App language choice. [ENGLISH]/[SIMPLIFIED_CHINESE]/[RUSSIAN]/[JAPANESE] mirror the
  * web's `Locale` (`'en' | 'zh-Hans'` plus the fork's `'ru'`); [SYSTEM] is the
  * Android-only default — follow the device language (empty per-app locale
  * list).
@@ -26,7 +26,8 @@ enum class AppLanguage(val storageKey: String, val localeTags: String) {
     SYSTEM("system", ""),
     ENGLISH("en", "en"),
     SIMPLIFIED_CHINESE("zh-Hans", "zh-Hans"),
-    RUSSIAN("ru", "ru");
+    RUSSIAN("ru", "ru"),
+    JAPANESE("ja", "ja");
 
     companion object {
         fun fromStorageKey(raw: String?): AppLanguage =
