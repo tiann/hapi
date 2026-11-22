@@ -81,6 +81,11 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             // close the session on session/cancel — use this to arm their
             // detector for that cancel.
             onCancelIssued?: () => void
+            // Optional per-request auto-approval override evaluated when `requiresUser` is false.
+            resolveAutoApproval?: (
+                request: PermissionRequest,
+                mode: PermissionMode | undefined
+            ) => AutoApprovalDecision | null
         } = {}
     ) {
         super(session)
@@ -95,13 +100,17 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             rawInput: request.rawInput
         })
         const toolInput = deriveToolInput(request)
+        const mode = this.getPermissionMode()
         const autoDecision = this.options.requiresUser?.(request)
             ? null
-            : this.resolveAutoApprovalDecision(
-                this.getPermissionMode(),
-                toolName,
-                request.toolCallId,
-                this.options.autoApprovalRules
+            : (
+                this.options.resolveAutoApproval?.(request, mode)
+                ?? this.resolveAutoApprovalDecision(
+                    mode,
+                    toolName,
+                    request.toolCallId,
+                    this.options.autoApprovalRules
+                )
             )
         if (autoDecision) {
             const decision = this.options.autoApproveOnce && autoDecision === 'approved_for_session'

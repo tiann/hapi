@@ -3,16 +3,19 @@ import { randomUUID } from 'node:crypto';
 import type { RawJSONLines } from '@/claude/types';
 import { statSync, watch, type BigIntStats, type FSWatcher } from 'node:fs';
 import { RPC_METHODS, splitAgyModelSelection } from '@hapi/protocol';
+import type { PermissionMode as ProtocolPermissionMode } from '@hapi/protocol/types';
 import { getBuiltinSlashCommands, mergeSlashCommands } from '@hapi/protocol/slashCommands';
 import { logger } from '@/ui/logger';
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { GenerationClock } from '@/agent/generationClock';
-import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
-import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PromptContent } from '@/agent/types';
+import { createAcpSessionTitleSync, registerAcpSessionTitleSync, type AcpSessionTitleController } from '@/agent/acpSessionTitle';
+import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, McpServerStdio, PermissionRequest, PromptContent } from '@/agent/types';
 import type { AcpAvailableCommand, AcpSdkBackend } from '@/agent/backends/acp';
 import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport';
+import { buildHapiMcpBridge, type HapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionHandler';
+import type { AutoApprovalDecision } from '@/modules/common/permission/BasePermissionHandler';
 import {
     listSlashCommands,
     type ListSlashCommandsResponse,
@@ -45,6 +48,8 @@ import {
 } from './agyReactiveWakeup';
 import type { AgyMode, PermissionMode } from './types';
 import { createAgyAcpBackend } from './utils/agyAcpBackend';
+import { buildAgyPromptContent } from './utils/agyPromptContent';
+import { getAgySystemPromptAppend } from './utils/systemPrompt';
 import { applyAgySessionTitleFallback } from './agySessionTitle';
 import { readAgyConversationTitle } from './agyNativeTitle';
 import {
@@ -165,6 +170,68 @@ export function isAgyQuestionRequest(request: PermissionRequest): boolean {
     return Array.isArray(input?.questions) || /\bask_question\b/.test(request.title ?? '');
 }
 
+const AGY_SAFE_HAPI_MCP_TOOLS = new Set([
+    'change_title',
+    'skill_lookup',
+    'list_peers',
+    'session_job'
+]);
+
+const AGY_SAFE_DIRECT_HAPI_MCP_NAMES = new Set(
+    [...AGY_SAFE_HAPI_MCP_TOOLS].map((tool) => `mcp__hapi__${tool}`)
+);
+
+function toAcpMcpServers(config: Record<string, { command: string; args: string[] }>): McpServerStdio[] {
+    return Object.entries(config).map(([name, entry]) => ({
+        name,
+        command: entry.command,
+        args: entry.args,
+        env: []
+    }));
+}
+
+/**
+ * Auto-approves only verified safe HAPI MCP tools on the `hapi` server while
+ * never matching free-text `run_command` titles or mutating/peer tools
+ * (`ping_peer`, `inspect_peer`, `spawn_peer`, `link_pr`, `display_*`).
+ */
+export function resolveAgyHapiMcpAutoApproval(
+    request: PermissionRequest,
+    _mode: ProtocolPermissionMode | undefined,
+    nativeName?: string
+): AutoApprovalDecision | null {
+    if (request.kind === 'execute') return null;
+    const rawInput = request.rawInput && typeof request.rawInput === 'object' && !Array.isArray(request.rawInput)
+        ? (request.rawInput as Record<string, unknown>)
+        : null;
+    if (rawInput && typeof rawInput.CommandLine === 'string') return null;
+
+    const normalizedNative = typeof nativeName === 'string' ? nativeName.trim().toLowerCase() : undefined;
+    if (normalizedNative && normalizedNative !== 'call_mcp_tool' && !AGY_SAFE_DIRECT_HAPI_MCP_NAMES.has(normalizedNative)) {
+        return null;
+    }
+
+    if (rawInput && typeof rawInput.ServerName === 'string' && typeof rawInput.ToolName === 'string') {
+        const server = rawInput.ServerName.trim().toLowerCase();
+        const tool = rawInput.ToolName.trim().toLowerCase();
+        if (server === 'hapi' && AGY_SAFE_HAPI_MCP_TOOLS.has(tool)) {
+            return 'approved';
+        }
+        return null;
+    }
+
+    if (normalizedNative && AGY_SAFE_DIRECT_HAPI_MCP_NAMES.has(normalizedNative)) {
+        return 'approved';
+    }
+    if (!normalizedNative && typeof request.title === 'string') {
+        const title = request.title.trim().toLowerCase();
+        if (AGY_SAFE_DIRECT_HAPI_MCP_NAMES.has(title)) {
+            return 'approved';
+        }
+    }
+    return null;
+}
+
 /** agy's ask_question tool call (titled "Run ask_question"), as the question card. */
 function asQuestionCard(message: AgentMessage): { message: AgentMessage; shownLabels: string[][] | null } {
     if (message.type !== 'tool_call' || !/\bask_question\b/.test(message.name)) return { message, shownLabels: null };
@@ -244,12 +311,16 @@ type AgyTurn = {
 export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: AgySession;
     private readonly createBackend: () => AcpSdkBackend;
+    private readonly buildMcpBridge: typeof buildHapiMcpBridge;
     private readonly steerCancelGraceMs: number;
     private readonly cancelHardStopMs: number;
     private readonly killSettleMs: number;
     private readonly brainDir: string;
     private readonly reactivePollMs: number;
     private readonly reactiveTimings: AgyReactiveTimingConfig;
+    private happyServer: HapiMcpBridge['server'] | null = null;
+    private acpMcpServers: McpServerStdio[] = [];
+    private titleSync: AcpSessionTitleController | null = null;
     private turnSettled: Promise<void> | null = null;
     // Option labels each question card showed, by agy tool call id.
     private readonly questionLabels = new Map<string, string[][]>();
@@ -308,6 +379,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     constructor(session: AgySession, opts: {
         createBackend?: () => AcpSdkBackend;
+        buildMcpBridge?: typeof buildHapiMcpBridge;
         steerCancelGraceMs?: number;
         cancelHardStopMs?: number;
         killSettleMs?: number;
@@ -321,6 +393,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
         this.createBackend = opts.createBackend ?? createAgyAcpBackend;
+        this.buildMcpBridge = opts.buildMcpBridge ?? buildHapiMcpBridge;
         this.steerCancelGraceMs = opts.steerCancelGraceMs ?? STEER_CANCEL_GRACE_MS;
         this.cancelHardStopMs = opts.cancelHardStopMs ?? CANCEL_HARD_STOP_MS;
         this.killSettleMs = opts.killSettleMs ?? KILL_SETTLE_MS;
@@ -365,6 +438,16 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             RPC_METHODS.ListSlashCommands,
             async () => await this.handleListSlashCommands()
         );
+        const titleSync = createAcpSessionTitleSync(session.client);
+        this.titleSync = titleSync;
+        const { server: happyServer, mcpServers } = await this.buildMcpBridge(session.client, {
+            onChangeTitle: () => titleSync.markManualTitle(),
+            workingDirectory: session.path,
+            skillLookup: { workingDirectory: session.path, flavor: 'agy' }
+        });
+        this.happyServer = happyServer;
+        this.acpMcpServers = toAcpMcpServers(mcpServers);
+        if (this.shouldExit) return;
         try {
             await this.startBackend(session.sessionId);
         } catch (error) {
@@ -619,6 +702,19 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         });
     }
 
+    private sessionMetaForBackend(backend: AcpSdkBackend): Record<string, unknown> | undefined {
+        if (backend.supportsAntigravitySystemPromptAppend?.() !== true) {
+            return undefined;
+        }
+        return {
+            antigravity: {
+                systemPrompt: {
+                    append: getAgySystemPromptAppend()
+                }
+            }
+        };
+    }
+
     /**
      * Advances `agy acp`'s internal `SkipHistory` cursor via `session/resume`
      * after HAPI emits a completed reactive wakeup from `transcript.jsonl`,
@@ -630,10 +726,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (!backend || !acpSessionId || this.backendLost || !backend.isTransportAlive()) return;
         if (!backend.supportsSessionResume()) return;
         try {
+            const meta = this.sessionMetaForBackend(backend);
             await backend.resumeSession({
                 sessionId: acpSessionId,
                 cwd: this.session.path,
-                mcpServers: []
+                mcpServers: this.acpMcpServers,
+                ...(meta ? { meta } : {})
             });
             const reported = backend.getSessionModelsMetadata(acpSessionId)?.currentModelId ?? null;
             if (reported) this.currentModelId = reported;
@@ -873,7 +971,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.backend = backend;
         this.backendLost = false;
         try {
-            const titleSync = createAcpSessionTitleSync(session.client);
+            const titleSync = this.titleSync ?? createAcpSessionTitleSync(session.client);
+            this.titleSync = titleSync;
             registerAcpSessionTitleSync(backend, session.client, titleSync);
             backend.setAvailableCommandsUpdateListener?.((_sessionId, commands) => {
                 this.recordAvailableCommands(commands);
@@ -887,6 +986,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
             await backend.initialize();
 
+            const sessionMeta = this.sessionMetaForBackend(backend);
             let acpSessionId: string | null = null;
             if (resumeSessionId) {
                 try {
@@ -896,7 +996,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     acpSessionId = await backend.resumeSession({
                         sessionId: resumeSessionId,
                         cwd: session.path,
-                        mcpServers: []
+                        mcpServers: this.acpMcpServers,
+                        ...(sessionMeta ? { meta: sessionMeta } : {})
                     });
                 } catch (error) {
                     logger.warn('[agy-acp] resume failed, starting a new conversation', error);
@@ -907,7 +1008,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
             }
             if (!acpSessionId) {
-                acpSessionId = await backend.newSession({ cwd: session.path, mcpServers: [] });
+                acpSessionId = await backend.newSession({
+                    cwd: session.path,
+                    mcpServers: this.acpMcpServers,
+                    ...(sessionMeta ? { meta: sessionMeta } : {})
+                });
                 this.backgroundCommands.length = 0;
                 this.retainedAmbiguousCompletions.length = 0;
                 this.nativeToolNames.clear();
@@ -942,12 +1047,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 backend,
                 () => this.turnPermissionMode ?? (session.getPermissionMode() as PermissionMode | undefined),
                 {
-                    // agy titles run_command requests with the command line and
-                    // gets no HAPI MCP tools, so the tool-name hints could only
-                    // match command text.
-                    autoApprovalRules: { alwaysToolNameHints: [], alwaysToolIdHints: [] },
+                    // agy titles run_command requests with the command line, so
+                    // generic tool-name hints could match command text; only verified
+                    // safe HAPI MCP tools auto-approve outside always-proceed.
+                    autoApprovalRules: { alwaysToolNameHints: [], alwaysToolIdHints: [], exactToolNames: [] },
                     autoApproveOnce: true,
                     requiresUser: isAgyQuestionRequest,
+                    resolveAutoApproval: (request, mode) =>
+                        resolveAgyHapiMcpAutoApproval(request, mode, this.nativeToolNames.get(request.toolCallId)),
                     onUserWait: () => {
                         const turn = this.turn;
                         if (!turn) return () => {};
@@ -1167,10 +1274,20 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     entry.maxStepIndex = commandWindowAfterStepIndex;
                 }
             }
+            const prompt: PromptContent[] = await buildAgyPromptContent(backend, message, mode.imageAttachments, {
+                sessionId: session.client.sessionId,
+                onNotice: (notice) => {
+                    session.sendSessionEvent({ type: 'message', message: notice });
+                    this.messageBuffer.addMessage(notice, 'status');
+                }
+            });
+            if (turn.aborted) {
+                restoreIfUserTurn();
+                return;
+            }
             if (!internalWakeup) {
                 this.messageBuffer.addMessage(message, 'user');
             }
-            const prompt: PromptContent[] = [{ type: 'text', text: message }];
             session.client.updateAgentState((state) => ({ ...state, steeringActive: true }));
             try {
                 await backend.prompt(acpSessionId, prompt, (update) => this.handleTurnUpdate(turn, update), {
@@ -1386,11 +1503,32 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             return { steered: false, error: 'Antigravity is waiting for your approval or answer; respond to it, then steer' };
         }
 
+        const steerPrompt: PromptContent[] = await buildAgyPromptContent(
+            backend,
+            taken.item.message,
+            taken.item.mode.imageAttachments,
+            {
+                sessionId: session.client.sessionId,
+                onNotice: (notice) => {
+                    session.sendSessionEvent({ type: 'message', message: notice });
+                    this.messageBuffer.addMessage(notice, 'status');
+                }
+            }
+        );
+        if (this.turn !== turn || this.backend !== backend || turn.aborted) {
+            await restoreQueued();
+            return { steered: false, error: 'Active turn changed' };
+        }
+        if (this.permissionHandler?.hasPendingRequests()) {
+            await restoreQueued();
+            return { steered: false, error: 'Antigravity is waiting for your approval or answer; respond to it, then steer' };
+        }
+
         let steer: ReturnType<AcpSdkBackend['beginSoftSteerPrompt']>;
         try {
             steer = backend.beginSoftSteerPrompt(
                 acpSessionId,
-                [{ type: 'text', text: taken.item.message }],
+                steerPrompt,
                 {
                     onUsage: (usage) => {
                         // Answered after its turn ended: the turn's summary is already
@@ -2045,6 +2183,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const backend = this.backend;
         this.backend = null;
         await backend?.disconnect();
+        const happyServer = this.happyServer;
+        this.happyServer = null;
+        happyServer?.stop();
         logger.debug('[agy-acp] cleanup done');
     }
 }

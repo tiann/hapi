@@ -114,6 +114,7 @@ type AcpInitializeResult = {
         loadSession?: boolean;
         promptCapabilities?: unknown;
         sessionCapabilities?: Record<string, unknown>;
+        _meta?: Record<string, unknown>;
     };
 };
 
@@ -374,6 +375,9 @@ export class AcpSdkBackend implements AgentBackend {
                     promptCapabilities: response.agentCapabilities.promptCapabilities,
                     sessionCapabilities: isObject(response.agentCapabilities.sessionCapabilities)
                         ? response.agentCapabilities.sessionCapabilities
+                        : undefined,
+                    _meta: isObject(response.agentCapabilities._meta)
+                        ? response.agentCapabilities._meta
                         : undefined
                 }
                 : undefined
@@ -424,6 +428,14 @@ export class AcpSdkBackend implements AgentBackend {
     supportsImagePrompts(): boolean {
         const promptCapabilities = this.initializeResult?.agentCapabilities?.promptCapabilities;
         return isObject(promptCapabilities) && promptCapabilities.image === true;
+    }
+
+    /** Whether Antigravity ACP advertises `_meta.antigravity.systemPrompt.append`. */
+    supportsAntigravitySystemPromptAppend(): boolean {
+        const meta = this.initializeResult?.agentCapabilities?._meta;
+        const antigravity = isObject(meta) && isObject(meta.antigravity) ? meta.antigravity : null;
+        const systemPrompt = antigravity && isObject(antigravity.systemPrompt) ? antigravity.systemPrompt : null;
+        return systemPrompt?.append === true;
     }
 
     getSessionConfigOptions(sessionId: string): AcpConfigOptionDescriptor[] | undefined {
@@ -483,7 +495,8 @@ export class AcpSdkBackend implements AgentBackend {
         const response = await withRetry(
             () => this.transport!.sendRequest('session/new', {
                 cwd: config.cwd,
-                mcpServers: config.mcpServers
+                mcpServers: config.mcpServers,
+                ...(config.meta ? { _meta: config.meta } : {})
             }),
             {
                 ...AcpSdkBackend.INIT_RETRY_OPTIONS,
@@ -512,7 +525,8 @@ export class AcpSdkBackend implements AgentBackend {
             () => this.transport!.sendRequest('session/load', {
                 sessionId: config.sessionId,
                 cwd: config.cwd,
-                mcpServers: config.mcpServers
+                mcpServers: config.mcpServers,
+                ...(config.meta ? { _meta: config.meta } : {})
             }),
             {
                 ...AcpSdkBackend.INIT_RETRY_OPTIONS,
@@ -543,7 +557,8 @@ export class AcpSdkBackend implements AgentBackend {
             () => this.transport!.sendRequest('session/resume', {
                 sessionId: config.sessionId,
                 cwd: config.cwd,
-                mcpServers: config.mcpServers
+                mcpServers: config.mcpServers,
+                ...(config.meta ? { _meta: config.meta } : {})
             }),
             {
                 ...AcpSdkBackend.INIT_RETRY_OPTIONS,

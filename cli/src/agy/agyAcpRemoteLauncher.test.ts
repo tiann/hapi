@@ -18,9 +18,34 @@ import {
     addAgyUsage,
     agyAcpModeForPermission,
     agyRoundSummary,
-    resolveAgyAcpModelId
+    resolveAgyAcpModelId,
+    resolveAgyHapiMcpAutoApproval
 } from './agyAcpRemoteLauncher';
 import { generationTimeMs } from '@/agent/generationClock';
+
+const mcpBridgeHarness = vi.hoisted(() => ({
+    calls: [] as Array<{ client: unknown; options: unknown }>,
+    stop: vi.fn(),
+    mcpServers: {
+        hapi: {
+            command: 'hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:0/mcp']
+        }
+    } as Record<string, { command: string; args: string[] }>
+}));
+
+vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
+    buildHapiMcpBridge: vi.fn(async (client: unknown, options: unknown) => {
+        mcpBridgeHarness.calls.push({ client, options });
+        return {
+            server: {
+                url: 'http://127.0.0.1:0/mcp',
+                stop: mcpBridgeHarness.stop
+            },
+            mcpServers: mcpBridgeHarness.mcpServers
+        };
+    })
+}));
 
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
@@ -33,12 +58,16 @@ class FakeAgyBackend {
     readonly setModeCalls: string[] = [];
     readonly setModelCalls: string[] = [];
     readonly resumeCalls: string[] = [];
+    readonly newSessionConfigs: Array<{ cwd: string; mcpServers: unknown[]; meta?: Record<string, unknown> }> = [];
+    readonly resumeSessionConfigs: Array<{ sessionId: string; cwd: string; mcpServers: unknown[]; meta?: Record<string, unknown> }> = [];
     readonly cancelCalls: string[] = [];
     currentModelId = 'gemini-4-argon-medium';
     resumeError: Error | null = null;
     setModelError: Error | null = null;
     promptScripts: PromptScript[] = [];
     disconnected = false;
+    supportsSystemPromptAppend = false;
+    supportsImages = false;
 
     initializeGate: Promise<void> | null = null;
     async initialize(): Promise<void> {
@@ -52,14 +81,22 @@ class FakeAgyBackend {
     supportsSessionResume(): boolean {
         return true;
     }
+    supportsAntigravitySystemPromptAppend(): boolean {
+        return this.supportsSystemPromptAppend;
+    }
+    supportsImagePrompts(): boolean {
+        return this.supportsImages;
+    }
     newSessionError: Error | null = null;
-    async newSession(): Promise<string> {
+    async newSession(config: { cwd: string; mcpServers: unknown[]; meta?: Record<string, unknown> }): Promise<string> {
         this.calls.push('newSession');
+        this.newSessionConfigs.push(config);
         if (this.newSessionError) throw this.newSessionError;
         return 'agy-conv-new';
     }
-    async resumeSession(config: { sessionId: string }): Promise<string> {
+    async resumeSession(config: { sessionId: string; cwd: string; mcpServers: unknown[]; meta?: Record<string, unknown> }): Promise<string> {
         this.resumeCalls.push(config.sessionId);
+        this.resumeSessionConfigs.push(config);
         if (this.resumeError) throw this.resumeError;
         return config.sessionId;
     }
@@ -166,8 +203,11 @@ class FakeAgyBackend {
     abortSoftSteers(): void {
         this.abortSoftSteersCalls += 1;
     }
+    sessionInfoUpdateListener: ((update: { title?: string }) => void) | null = null;
     async refreshSessionInfo(): Promise<void> {}
-    setSessionInfoUpdateListener(): void {}
+    setSessionInfoUpdateListener(listener: ((update: { title?: string }) => void) | null): void {
+        this.sessionInfoUpdateListener = listener;
+    }
     availableCommands: Array<{ name: string; description?: string }> = [];
     availableCommandsListener: ((sessionId: string | null, commands: Array<{ name: string; description?: string }>) => void) | null = null;
     getAvailableCommands(): Array<{ name: string; description?: string }> {
@@ -2383,5 +2423,181 @@ describe('AgyAcpRemoteLauncher questions (agy ask_question)', () => {
         } finally {
             rmSync(brainDir, { recursive: true, force: true });
         }
+    });
+});
+
+describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-approval, and inline images', () => {
+    beforeEach(() => {
+        mcpBridgeHarness.calls.length = 0;
+        mcpBridgeHarness.stop.mockClear();
+    });
+
+    it('wires buildHapiMcpBridge with agy skillLookup, passes mcpServers across new/resume/relaunch, protects manual titles, and stops bridge on cleanup', async () => {
+        const { session, queue, client } = makeSession();
+        const backend1 = new FakeAgyBackend();
+        backend1.supportsSystemPromptAppend = true;
+        backend1.promptScripts.push(async () => {
+            backend1.alive = false;
+            throw new Error('acp crashed');
+        });
+        const backend2 = new FakeAgyBackend();
+        backend2.supportsSystemPromptAppend = true;
+
+        const { run } = launch(session, [backend1, backend2]);
+        await vi.waitFor(() => expect(client.emitSessionReady).toHaveBeenCalledOnce());
+
+        expect(mcpBridgeHarness.calls).toHaveLength(1);
+        expect(mcpBridgeHarness.calls[0]?.options).toMatchObject({
+            workingDirectory: '/tmp/agy-project',
+            skillLookup: { workingDirectory: '/tmp/agy-project', flavor: 'agy' }
+        });
+
+        const expectedMcpServers = [{
+            name: 'hapi',
+            command: 'hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:0/mcp'],
+            env: []
+        }];
+        expect(backend1.newSessionConfigs[0]?.mcpServers).toEqual(expectedMcpServers);
+        const firstMeta = backend1.newSessionConfigs[0]?.meta as { antigravity?: { systemPrompt?: { append?: string } } };
+        expect(firstMeta?.antigravity?.systemPrompt?.append).toContain('change_title');
+        expect(firstMeta?.antigravity?.systemPrompt?.append).toContain('skill_lookup');
+
+        // Calling onChangeTitle locks manual title so native ACP updates cannot overwrite it.
+        const bridgeOpts = mcpBridgeHarness.calls[0]?.options as { onChangeTitle?: (title: string) => void };
+        bridgeOpts.onChangeTitle?.('Custom HAPI title');
+        backend1.sessionInfoUpdateListener?.({ title: 'Native overwritten title' });
+        expect(client.sendClaudeSessionMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'summary',
+            summary: 'Native overwritten title'
+        }));
+
+        // Turn 1 crashes backend1 so Turn 2 relaunches backend2 with resumeSession.
+        queue.push('crash turn', REVIEW, 'msg-1');
+        await vi.waitFor(() => expect(backend1.prompts).toHaveLength(1));
+        await vi.waitFor(() => expect(backend1.alive).toBe(false));
+
+        // Relaunch reuses the same bridge and forwards mcpServers + meta on resumeSession.
+        queue.push('after crash', REVIEW, 'msg-2');
+        await vi.waitFor(() => expect(backend2.resumeSessionConfigs).toHaveLength(1));
+        expect(backend2.resumeSessionConfigs[0]).toMatchObject({
+            sessionId: 'agy-conv-new',
+            cwd: '/tmp/agy-project',
+            mcpServers: expectedMcpServers,
+            meta: expect.objectContaining({
+                antigravity: { systemPrompt: { append: expect.stringContaining('change_title') } }
+            })
+        });
+
+        queue.close();
+        await run;
+        expect(mcpBridgeHarness.stop).toHaveBeenCalledTimes(1);
+    });
+
+    it('omits _meta when supportsAntigravitySystemPromptAppend is false and stops happyServer if startBackend fails', async () => {
+        const { session, queue } = makeSession();
+        const broken = new FakeAgyBackend();
+        broken.newSessionError = new Error('session/new failed');
+
+        await expect(launch(session, [broken]).run).rejects.toThrow('session/new failed');
+        expect(broken.newSessionConfigs[0]?.meta).toBeUndefined();
+        expect(mcpBridgeHarness.stop).toHaveBeenCalledTimes(1);
+        queue.close();
+    });
+
+    it('auto-approves only verified safe HAPI MCP tools in request-review while gating sensitive peer/mutation/shell tools', async () => {
+        const mkMcpReq = (id: string, serverName: string, toolName: string): PermissionRequest => ({
+            id,
+            sessionId: 'agy-conv-new',
+            toolCallId: `call_${id}`,
+            title: `MCP ${serverName}:${toolName}`,
+            kind: 'other',
+            rawInput: { ServerName: serverName, ToolName: toolName, Arguments: {} },
+            options: [
+                { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+                { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+            ]
+        });
+
+        expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('1', 'hapi', 'change_title'), 'request-review')).toBe('approved');
+        expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('2', 'hapi', 'skill_lookup'), 'request-review')).toBe('approved');
+        expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('3', 'hapi', 'list_peers'), 'request-review')).toBe('approved');
+        expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('4', 'hapi', 'session_job'), 'request-review')).toBe('approved');
+        expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('5', 'hapi', 'ping_peer'), 'request-review')).toBeNull();
+        expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('6', 'hapi', 'inspect_peer'), 'request-review')).toBeNull();
+        expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('7', 'hapi', 'spawn_peer'), 'request-review')).toBeNull();
+        expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('8', 'hapi', 'link_pr'), 'request-review')).toBeNull();
+        expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('9', 'hapi', 'display_image'), 'request-review')).toBeNull();
+        expect(resolveAgyHapiMcpAutoApproval(mkMcpReq('10', 'other', 'change_title'), 'request-review')).toBeNull();
+        expect(resolveAgyHapiMcpAutoApproval({
+            id: 'cmd',
+            sessionId: 'agy-conv-new',
+            toolCallId: 'call_cmd',
+            title: 'mcp__hapi__skill_lookup change_title session_job',
+            kind: 'execute',
+            rawInput: { CommandLine: 'echo mcp__hapi__skill_lookup' },
+            options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+        }, 'request-review')).toBeNull();
+
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call_safe_title',
+                name: 'Call change_title',
+                status: 'pending',
+                input: {},
+                nativeName: 'call_mcp_tool',
+                nativeArgs: { ServerName: 'hapi', ToolName: 'change_title', Arguments: { title: 'Test' } }
+            });
+            backend.permissionHandler!(mkMcpReq('p-safe', 'hapi', 'change_title'));
+            backend.permissionHandler!(mkMcpReq('p-peer', 'hapi', 'spawn_peer'));
+            backend.permissionHandler!(mkMcpReq('p-foreign', 'other', 'change_title'));
+            backend.permissionHandler!({
+                id: 'p-cmd',
+                sessionId: 'agy-conv-new',
+                toolCallId: 'call_cmd',
+                title: 'mcp__hapi__skill_lookup',
+                kind: 'execute',
+                rawInput: { CommandLine: 'echo mcp__hapi__skill_lookup' },
+                options: [
+                    { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+                    { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+                ]
+            });
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        });
+
+        queue.push('test permissions', REVIEW, 'a');
+        queue.close();
+        await launch(session, [backend]).run;
+
+        expect(backend.permissionResponses.filter((r) => (r as { outcome: string }).outcome === 'selected')).toEqual([
+            { outcome: 'selected', optionId: 'allow' }
+        ]);
+        const reqCalls = client.updateAgentState.mock.calls.flatMap(([fn]) => {
+            const state = (fn as (s: object) => { requests?: Record<string, unknown> })({});
+            return Object.keys(state.requests ?? {});
+        });
+        expect(reqCalls).toContain('p-peer');
+        expect(reqCalls).toContain('p-foreign');
+        expect(reqCalls).toContain('p-cmd');
+        expect(reqCalls).not.toContain('p-safe');
+    });
+
+    it('falls back to @path text when queued imageAttachments arrive and supportsImagePrompts is false', async () => {
+        const { session, queue } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.supportsImages = false;
+
+        queue.push('describe this', {
+            permissionMode: 'request-review',
+            imageAttachments: [{ path: '/uploads/shot.png', mimeType: 'image/png', filename: 'shot.png' }]
+        }, 'img-1');
+        queue.close();
+
+        await launch(session, [backend]).run;
+        expect(backend.prompts).toEqual([[{ type: 'text', text: '@/uploads/shot.png\n\ndescribe this' }]]);
     });
 });

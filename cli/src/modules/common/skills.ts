@@ -1,5 +1,5 @@
 import { access, open, readdir, readFile, stat } from 'fs/promises';
-import { basename, dirname, join, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, resolve } from 'path';
 import { homedir } from 'os';
 import { parse as parseYaml } from 'yaml';
 
@@ -139,9 +139,9 @@ async function isDirectory(path: string): Promise<boolean> {
     return await stat(path).then((info) => info.isDirectory()).catch(() => false);
 }
 
-async function listProjectSkillsRoots(workingDirectory?: string, flavor?: string): Promise<string[]> {
+async function listAncestorProjectDirs(workingDirectory?: string): Promise<{ dirs: string[]; repoRoot?: string }> {
     if (!workingDirectory) {
-        return [];
+        return { dirs: [] };
     }
 
     const resolvedWorkingDirectory = resolve(workingDirectory);
@@ -150,17 +150,22 @@ async function listProjectSkillsRoots(workingDirectory?: string, flavor?: string
 
     while (true) {
         if (await pathExists(join(currentDirectory, '.git'))) {
-            return directories.flatMap((directory) => getProjectSkillsRoots(directory, flavor));
+            return { dirs: directories, repoRoot: currentDirectory };
         }
 
         const parentDirectory = dirname(currentDirectory);
         if (parentDirectory === currentDirectory) {
-            return getProjectSkillsRoots(resolvedWorkingDirectory, flavor);
+            return { dirs: [resolvedWorkingDirectory] };
         }
 
         currentDirectory = parentDirectory;
         directories.push(currentDirectory);
     }
+}
+
+async function listProjectSkillsRoots(workingDirectory?: string, flavor?: string): Promise<string[]> {
+    const { dirs } = await listAncestorProjectDirs(workingDirectory);
+    return dirs.flatMap((directory) => getProjectSkillsRoots(directory, flavor));
 }
 
 function parseFrontmatter(fileContent: string): { frontmatter?: Record<string, unknown>; body: string } {
@@ -308,34 +313,352 @@ async function listPluginCacheSkillsRoots(flavor?: string): Promise<string[]> {
         .map((installPath) => join(installPath, 'skills'));
 }
 
+const AGY_PROJECT_DOT_DIRS = ['.agents', '.agent', '_agents', '_agent'] as const;
+const AGY_PLUGIN_MANIFEST_REL_PATHS = [
+    'plugin.json',
+    join('.antigravity-plugin', 'plugin.json'),
+    join('.gemini-plugin', 'plugin.json'),
+    join('.claude-plugin', 'plugin.json'),
+    'gemini-extension.json',
+] as const;
+const MAX_AGY_MANIFEST_DEPTH = 16;
+
+type AgyNameFilter = {
+    includeOnly?: string[];
+    exclude?: string[];
+};
+
+type AgyManifestDirTarget = {
+    dir: string;
+    filters: AgyNameFilter[];
+};
+
+async function readJsonObject(filePath: string): Promise<Record<string, unknown> | null> {
+    try {
+        const parsed = JSON.parse(await readFile(filePath, 'utf-8')) as unknown;
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            return parsed as Record<string, unknown>;
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+function readStringArray(value: unknown): string[] | undefined {
+    if (!Array.isArray(value)) return undefined;
+    const items = value
+        .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        .map((item) => item.trim());
+    return items.length > 0 ? items : undefined;
+}
+
+function parseAgyNameFilter(obj: Record<string, unknown>): AgyNameFilter | null {
+    const includeOnly = readStringArray(obj.include_only);
+    const exclude = readStringArray(obj.exclude);
+    if (!includeOnly && !exclude) return null;
+    return {
+        ...(includeOnly ? { includeOnly } : {}),
+        ...(exclude ? { exclude } : {}),
+    };
+}
+
+function matchesAgyPattern(name: string, pattern: string): boolean {
+    try {
+        return new RegExp(`^(?:${pattern})$`).test(name);
+    } catch {
+        return name === pattern;
+    }
+}
+
+function passesAgyFilters(name: string, filters: AgyNameFilter[]): boolean {
+    for (const filter of filters) {
+        if (filter.includeOnly && filter.includeOnly.length > 0) {
+            if (!filter.includeOnly.some((pattern) => matchesAgyPattern(name, pattern))) {
+                return false;
+            }
+        }
+        if (filter.exclude && filter.exclude.length > 0) {
+            if (filter.exclude.some((pattern) => matchesAgyPattern(name, pattern))) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+async function readAgyPluginOverrides(configDir: string): Promise<Record<string, boolean>> {
+    const config = await readJsonObject(join(configDir, 'config.json'));
+    const rawPlugins = config?.plugins;
+    if (rawPlugins === null || typeof rawPlugins !== 'object' || Array.isArray(rawPlugins)) {
+        return {};
+    }
+    const overrides: Record<string, boolean> = {};
+    for (const [name, entry] of Object.entries(rawPlugins)) {
+        if (entry !== null && typeof entry === 'object' && !Array.isArray(entry)) {
+            const enabled = (entry as { enabled?: unknown }).enabled;
+            if (typeof enabled === 'boolean') {
+                overrides[name] = enabled;
+            }
+        }
+    }
+    return overrides;
+}
+
+async function hasAgyPluginManifest(pluginDir: string): Promise<boolean> {
+    const checks = await Promise.all(AGY_PLUGIN_MANIFEST_REL_PATHS.map((rel) => pathExists(join(pluginDir, rel))));
+    return checks.some(Boolean);
+}
+
+async function isAgyPluginEnabled(
+    pluginDir: string,
+    dirName: string,
+    overrides: Record<string, boolean>
+): Promise<boolean> {
+    if (Object.prototype.hasOwnProperty.call(overrides, dirName)) {
+        return overrides[dirName]!;
+    }
+    const manifest = await readJsonObject(join(pluginDir, 'plugin.json'));
+    if (manifest?.disabled === true) {
+        return false;
+    }
+    return true;
+}
+
+async function resolveAgyManifestPath(
+    rawPath: string,
+    baseDir: string,
+    repoRoot?: string
+): Promise<string> {
+    const trimmed = rawPath.trim();
+    const home = getHomeDirectory();
+    let expanded = trimmed;
+    if (expanded === '~') {
+        expanded = home;
+    } else if (expanded.startsWith('~/') || expanded.startsWith('~\\')) {
+        expanded = join(home, expanded.slice(2));
+    }
+    if (isAbsolute(expanded)) {
+        return resolve(expanded);
+    }
+    const againstBase = resolve(baseDir, expanded);
+    if (!repoRoot || await pathExists(againstBase)) {
+        return againstBase;
+    }
+    return resolve(repoRoot, expanded);
+}
+
+async function listAgyJsonManifestEntries(
+    manifestPath: string,
+    baseDir: string,
+    repoRoot: string | undefined,
+    inheritedFilters: AgyNameFilter[] = [],
+    visited: Set<string> = new Set(),
+    depth = 0
+): Promise<AgyManifestDirTarget[]> {
+    if (depth > MAX_AGY_MANIFEST_DEPTH) {
+        return [];
+    }
+    const normalizedPath = resolve(manifestPath);
+    if (visited.has(normalizedPath)) {
+        return [];
+    }
+    visited.add(normalizedPath);
+
+    const raw = await readJsonObject(normalizedPath);
+    if (!raw) {
+        return [];
+    }
+
+    const topExclude = readStringArray(raw.exclude);
+    const baseFilters = topExclude
+        ? [...inheritedFilters, { exclude: topExclude }]
+        : inheritedFilters;
+
+    const results: AgyManifestDirTarget[] = [];
+    if (Array.isArray(raw.entries)) {
+        for (const item of raw.entries) {
+            if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
+            const entry = item as Record<string, unknown>;
+            if (typeof entry.path !== 'string' || entry.path.trim().length === 0) continue;
+            const dir = await resolveAgyManifestPath(entry.path, baseDir, repoRoot);
+            const entryFilter = parseAgyNameFilter(entry);
+            results.push({
+                dir,
+                filters: entryFilter ? [...baseFilters, entryFilter] : baseFilters,
+            });
+        }
+    }
+
+    if (Array.isArray(raw.inherits)) {
+        for (const item of raw.inherits) {
+            if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
+            const inh = item as Record<string, unknown>;
+            if (typeof inh.path !== 'string' || inh.path.trim().length === 0) continue;
+            const inheritedPath = await resolveAgyManifestPath(inh.path, baseDir, repoRoot);
+            const inhFilter = parseAgyNameFilter(inh);
+            const nextFilters = inhFilter ? [...baseFilters, inhFilter] : baseFilters;
+            const nested = await listAgyJsonManifestEntries(
+                inheritedPath,
+                dirname(inheritedPath),
+                repoRoot,
+                nextFilters,
+                visited,
+                depth + 1
+            );
+            results.push(...nested);
+        }
+    }
+
+    return results;
+}
+
+async function listAgyFilteredSkillDirs(skillsRoot: string, filters: AgyNameFilter[]): Promise<string[]> {
+    const dirs = await listTopLevelSkillDirs(skillsRoot);
+    return filters.length === 0
+        ? dirs
+        : dirs.filter((dir) => passesAgyFilters(basename(dir), filters));
+}
+
+async function listAgySkillDirsFromPluginsRoot(
+    pluginsRoot: string,
+    overrides: Record<string, boolean>,
+    filters: AgyNameFilter[],
+    requireManifest: boolean
+): Promise<string[]> {
+    const pluginDirs = await listTopLevelSkillDirs(pluginsRoot);
+    const result: string[] = [];
+    for (const pluginDir of pluginDirs) {
+        const dirName = basename(pluginDir);
+        if (!passesAgyFilters(dirName, filters)) {
+            continue;
+        }
+        if (requireManifest && !await hasAgyPluginManifest(pluginDir)) {
+            continue;
+        }
+        if (!await isAgyPluginEnabled(pluginDir, dirName, overrides)) {
+            continue;
+        }
+        result.push(...await listTopLevelSkillDirs(join(pluginDir, 'skills')));
+    }
+    return result;
+}
+
+async function listAgyPluginDirsFromManifestTarget(
+    target: AgyManifestDirTarget,
+    overrides: Record<string, boolean>
+): Promise<string[]> {
+    const results = await listAgySkillDirsFromPluginsRoot(target.dir, overrides, target.filters, false);
+    const dirName = basename(target.dir);
+    if (
+        passesAgyFilters(dirName, target.filters)
+        && await hasAgyPluginManifest(target.dir)
+        && await isAgyPluginEnabled(target.dir, dirName, overrides)
+    ) {
+        results.push(...await listTopLevelSkillDirs(join(target.dir, 'skills')));
+    }
+    return results;
+}
+
+async function discoverAgySkillDirs(workingDirectory?: string): Promise<string[]> {
+    const home = getHomeDirectory();
+    const configDir = getAgentConfigDir('agy');
+    const [overrides, { dirs: projectDirs, repoRoot }] = await Promise.all([
+        readAgyPluginOverrides(configDir),
+        listAncestorProjectDirs(workingDirectory),
+    ]);
+
+    const orderedDirs: string[] = [];
+
+    // 1. Project standard skills + project discovered plugins (closest ancestor first).
+    for (const projectDir of projectDirs) {
+        for (const root of getProjectSkillsRoots(projectDir, 'agy')) {
+            orderedDirs.push(...await listTopLevelSkillDirs(root));
+        }
+        for (const dotDir of AGY_PROJECT_DOT_DIRS) {
+            orderedDirs.push(
+                ...await listAgySkillDirsFromPluginsRoot(
+                    join(projectDir, dotDir, 'plugins'),
+                    overrides,
+                    [],
+                    true
+                )
+            );
+        }
+    }
+
+    // 2. Project declared skills.json and plugins.json manifests.
+    for (const projectDir of projectDirs) {
+        for (const dotDir of AGY_PROJECT_DOT_DIRS) {
+            const dotRoot = join(projectDir, dotDir);
+            const skillTargets = await listAgyJsonManifestEntries(join(dotRoot, 'skills.json'), dotRoot, repoRoot);
+            for (const target of skillTargets) {
+                orderedDirs.push(...await listAgyFilteredSkillDirs(target.dir, target.filters));
+            }
+            const pluginTargets = await listAgyJsonManifestEntries(join(dotRoot, 'plugins.json'), dotRoot, repoRoot);
+            for (const target of pluginTargets) {
+                orderedDirs.push(...await listAgyPluginDirsFromManifestTarget(target, overrides));
+            }
+        }
+    }
+
+    // 3. Global user standard skills + global discovered plugins.
+    for (const userRoot of getUserSkillsRoots('agy')) {
+        orderedDirs.push(...await listTopLevelSkillDirs(userRoot));
+    }
+    orderedDirs.push(
+        ...await listAgySkillDirsFromPluginsRoot(join(configDir, 'plugins'), overrides, [], true),
+        ...await listAgySkillDirsFromPluginsRoot(join(home, '.gemini', 'antigravity-cli', 'plugins'), overrides, [], true)
+    );
+
+    // 4. Global declared skills.json and plugins.json manifests.
+    const globalSkillTargets = await listAgyJsonManifestEntries(join(configDir, 'skills.json'), configDir, undefined);
+    for (const target of globalSkillTargets) {
+        orderedDirs.push(...await listAgyFilteredSkillDirs(target.dir, target.filters));
+    }
+    const globalPluginTargets = await listAgyJsonManifestEntries(join(configDir, 'plugins.json'), configDir, undefined);
+    for (const target of globalPluginTargets) {
+        orderedDirs.push(...await listAgyPluginDirsFromManifestTarget(target, overrides));
+    }
+
+    return orderedDirs;
+}
+
 async function discoverSkills(workingDirectory?: string, options: { flavor?: string } = {}): Promise<DiscoveredSkill[]> {
     const flavor = normalizeFlavor(options.flavor);
-    const projectRoots = await listProjectSkillsRoots(workingDirectory, flavor);
-    const userRoots = getUserSkillsRoots(flavor);
-    const pluginRoots = await listPluginCacheSkillsRoots(flavor);
-    const adminRoot = getAdminSkillsRoot();
-    const includeAdminRoots = flavor === 'codex';
-    const [projectSkillDirs, userSkillDirs, pluginSkillDirs, adminSkillDirs] = await Promise.all([
-        Promise.all(projectRoots.map(async (root) => await listTopLevelSkillDirs(root, { includeCodexSystem: shouldIncludeCodexSystem(root, flavor) }))).then((dirs) => dirs.flat()),
-        Promise.all(userRoots.map(async (root) => await listTopLevelSkillDirs(root, { includeCodexSystem: shouldIncludeCodexSystem(root, flavor) }))).then((dirs) => dirs.flat()),
-        Promise.all(pluginRoots.map(async (root) => await listTopLevelSkillDirs(root, { includeCodexSystem: false }))).then((dirs) => dirs.flat()),
-        includeAdminRoots ? listTopLevelSkillDirs(adminRoot, { includeCodexSystem: true }) : [],
-    ]);
+    let candidateSkills: DiscoveredSkill[];
+    if (flavor === 'agy') {
+        const orderedDirs = await discoverAgySkillDirs(workingDirectory);
+        candidateSkills = await readSkillsFromDirs(orderedDirs);
+    } else {
+        const projectRoots = await listProjectSkillsRoots(workingDirectory, flavor);
+        const userRoots = getUserSkillsRoots(flavor);
+        const pluginRoots = await listPluginCacheSkillsRoots(flavor);
+        const adminRoot = getAdminSkillsRoot();
+        const includeAdminRoots = flavor === 'codex';
+        const [projectSkillDirs, userSkillDirs, pluginSkillDirs, adminSkillDirs] = await Promise.all([
+            Promise.all(projectRoots.map(async (root) => await listTopLevelSkillDirs(root, { includeCodexSystem: shouldIncludeCodexSystem(root, flavor) }))).then((dirs) => dirs.flat()),
+            Promise.all(userRoots.map(async (root) => await listTopLevelSkillDirs(root, { includeCodexSystem: shouldIncludeCodexSystem(root, flavor) }))).then((dirs) => dirs.flat()),
+            Promise.all(pluginRoots.map(async (root) => await listTopLevelSkillDirs(root, { includeCodexSystem: false }))).then((dirs) => dirs.flat()),
+            includeAdminRoots ? listTopLevelSkillDirs(adminRoot, { includeCodexSystem: true }) : [],
+        ]);
 
-    const [projectSkills, userSkills, pluginSkills, adminSkills] = await Promise.all([
-        readSkillsFromDirs(projectSkillDirs),
-        readSkillsFromDirs(userSkillDirs),
-        readSkillsFromDirs(pluginSkillDirs),
-        readSkillsFromDirs(adminSkillDirs),
-    ]);
+        const [projectSkills, userSkills, pluginSkills, adminSkills] = await Promise.all([
+            readSkillsFromDirs(projectSkillDirs),
+            readSkillsFromDirs(userSkillDirs),
+            readSkillsFromDirs(pluginSkillDirs),
+            readSkillsFromDirs(adminSkillDirs),
+        ]);
+        candidateSkills = [
+            ...projectSkills,
+            ...userSkills,
+            ...pluginSkills,
+            ...adminSkills,
+        ];
+    }
 
     const dedupedSkills = new Map<string, DiscoveredSkill>();
-    for (const skill of [
-        ...projectSkills,
-        ...userSkills,
-        ...pluginSkills,
-        ...adminSkills,
-    ]) {
+    for (const skill of candidateSkills) {
         if (!dedupedSkills.has(skill.name)) {
             dedupedSkills.set(skill.name, skill);
         }

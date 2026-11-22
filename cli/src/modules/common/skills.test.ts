@@ -166,6 +166,111 @@ describe('listSkills', () => {
         expect(skills.map((skill) => skill.name)).toEqual(['agy-cli-skill', 'agy-config-skill', 'agy-project-skill'])
     })
 
+    it('discovers Antigravity plugins and honors disabled flags and ~/.gemini/config/config.json overrides', async () => {
+        const repoRoot = join(sandboxDir, 'agy-plugin-repo')
+        await mkdir(join(repoRoot, '.git'), { recursive: true })
+
+        // Project native plugin (enabled by default)
+        const nativePlugin = join(repoRoot, '.agents', 'plugins', 'team-kit')
+        await mkdir(nativePlugin, { recursive: true })
+        await writeFile(join(nativePlugin, 'plugin.json'), JSON.stringify({ name: 'team-kit' }))
+        await writeSkill(join(nativePlugin, 'skills', 'plugin-alpha'), 'plugin-alpha', 'Native plugin skill')
+
+        // Antigravity-layout plugin disabled by default in plugin.json, re-enabled by config.json
+        const reenabledPlugin = join(repoRoot, '.agent', 'plugins', 'reenabled-kit')
+        await mkdir(join(reenabledPlugin, '.antigravity-plugin'), { recursive: true })
+        await writeFile(join(reenabledPlugin, 'plugin.json'), JSON.stringify({ name: 'reenabled-kit', disabled: true }))
+        await writeFile(join(reenabledPlugin, '.antigravity-plugin', 'plugin.json'), JSON.stringify({ name: 'reenabled-kit' }))
+        await writeSkill(join(reenabledPlugin, 'skills', 'plugin-beta'), 'plugin-beta', 'Re-enabled skill')
+
+        // Disabled via config.json override and via default disabled: true without override
+        const disabledByConfig = join(homeDir, '.gemini', 'config', 'plugins', 'noisy-kit')
+        await mkdir(disabledByConfig, { recursive: true })
+        await writeFile(join(disabledByConfig, 'plugin.json'), JSON.stringify({ name: 'noisy-kit' }))
+        await writeSkill(join(disabledByConfig, 'skills', 'noisy-skill'), 'noisy-skill', 'Should stay hidden')
+
+        const disabledByManifest = join(homeDir, '.gemini', 'antigravity-cli', 'plugins', 'off-kit')
+        await mkdir(disabledByManifest, { recursive: true })
+        await writeFile(join(disabledByManifest, 'plugin.json'), JSON.stringify({ name: 'off-kit', disabled: true }))
+        await writeSkill(join(disabledByManifest, 'skills', 'off-skill'), 'off-skill', 'Disabled by manifest')
+
+        await mkdir(join(homeDir, '.gemini', 'config'), { recursive: true })
+        await writeFile(join(homeDir, '.gemini', 'config', 'config.json'), JSON.stringify({
+            plugins: {
+                'reenabled-kit': { enabled: true },
+                'noisy-kit': { enabled: false }
+            }
+        }))
+
+        const skills = await listSkills(repoRoot, { flavor: 'agy' })
+        expect(skills.map((skill) => skill.name)).toEqual(['plugin-alpha', 'plugin-beta'])
+        await expect(resolveSkill('plugin-alpha', repoRoot, { flavor: 'agy' })).resolves.toEqual({
+            name: 'plugin-alpha',
+            description: 'Native plugin skill',
+            body: '# plugin-alpha'
+        })
+    })
+
+    it('loads Antigravity skills.json and plugins.json manifests with inherits, filters, cycles, and precedence', async () => {
+        const repoRoot = join(sandboxDir, 'agy-manifest-repo')
+        const nestedCwd = join(repoRoot, 'apps', 'web')
+        await mkdir(join(repoRoot, '.git'), { recursive: true })
+        await mkdir(nestedCwd, { recursive: true })
+        await mkdir(join(repoRoot, '.agents'), { recursive: true })
+        await mkdir(join(homeDir, '.gemini', 'config'), { recursive: true })
+
+        await writeSkill(join(repoRoot, '.agents', 'skills', 'alpha'), 'alpha', 'Project standard wins')
+        await writeSkill(join(repoRoot, 'tools', 'team-skills', 'alpha'), 'alpha', 'Team manifest loses')
+        await writeSkill(join(repoRoot, 'tools', 'team-skills', 'shared-tool'), 'shared-tool', 'Shared workspace skill')
+        await writeSkill(join(repoRoot, 'tools', 'team-skills', 'exp-beta'), 'exp-beta', 'Should be excluded by regex')
+
+        const sharedSkillsRoot = join(sandboxDir, 'shared-pool', 'skills')
+        await writeSkill(join(sharedSkillsRoot, 'lint-helper'), 'lint-helper', 'Inherited lint helper')
+        await writeSkill(join(sharedSkillsRoot, 'skip-me'), 'skip-me', 'Excluded inherited skill')
+        await writeSkill(join(homeDir, 'home-skills', 'til-skill'), 'til-skill', 'Home relative skill')
+
+        const cycleA = join(sandboxDir, 'cycle-a.json')
+        const cycleB = join(sandboxDir, 'cycle-b.json')
+        await writeFile(cycleA, JSON.stringify({
+            entries: [{ path: sharedSkillsRoot, include_only: ['lint-helper', '[unclosed-regex'] }],
+            inherits: [{ path: cycleB }]
+        }))
+        await writeFile(cycleB, JSON.stringify({
+            inherits: [{ path: cycleA }]
+        }))
+
+        await writeFile(join(repoRoot, '.agents', 'skills.json'), JSON.stringify({
+            entries: [{ path: 'tools/team-skills', exclude: ['exp-.*'] }],
+            inherits: [{ path: cycleA, exclude: ['skip-me'] }]
+        }))
+        await writeFile(join(homeDir, '.gemini', 'config', 'skills.json'), JSON.stringify({
+            entries: [{ path: '~/home-skills' }]
+        }))
+
+        const manifestPluginsRoot = join(sandboxDir, 'extra-plugins')
+        await mkdir(join(manifestPluginsRoot, 'ext-kit'), { recursive: true })
+        await writeFile(join(manifestPluginsRoot, 'ext-kit', 'plugin.json'), JSON.stringify({ name: 'ext-kit' }))
+        await writeSkill(join(manifestPluginsRoot, 'ext-kit', 'skills', 'ext-skill'), 'ext-skill', 'Plugin manifest skill')
+        await writeFile(join(homeDir, '.gemini', 'config', 'plugins.json'), JSON.stringify({
+            entries: [{ path: manifestPluginsRoot, include_only: ['ext-kit'] }]
+        }))
+
+        const skills = await listSkills(nestedCwd, { flavor: 'agy' })
+        expect(skills.map((skill) => skill.name)).toEqual([
+            'alpha',
+            'ext-skill',
+            'lint-helper',
+            'shared-tool',
+            'til-skill'
+        ])
+        expect(skills.find((s) => s.name === 'alpha')?.description).toBe('Project standard wins')
+        await expect(resolveSkill('ext-skill', nestedCwd, { flavor: 'agy' })).resolves.toEqual({
+            name: 'ext-skill',
+            description: 'Plugin manifest skill',
+            body: '# ext-skill'
+        })
+    })
+
     it('uses a configured DSH_HOME for DSH user skills', async () => {
         const dshHome = join(sandboxDir, 'custom-dsh')
         process.env.DSH_HOME = dshHome
