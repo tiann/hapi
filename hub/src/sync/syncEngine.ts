@@ -5001,6 +5001,7 @@ export class SyncEngine {
                     updatedAt: session?.updatedAt ?? 0,
                     name: session?.metadata?.name,
                     summary: session?.metadata?.summary?.text,
+                    promptTitle: session?.metadata?.promptTitle,
                     firstUserMessage: this.resolveFirstUserMessage(target.sessionId)
                 }
             })
