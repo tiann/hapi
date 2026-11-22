@@ -1126,6 +1126,23 @@ describe('MarkdownTable', () => {
         expect(table.getAttribute('data-hapi-table-wrap')).toBe('true')
     })
 
+    it('captures live geometry before the viewer detaches during renderer loading', async () => {
+        const table = document.createElement('table')
+        table.innerHTML = '<tr><td>Visible data</td></tr>'
+        document.body.append(table)
+        vi.spyOn(table, 'getBoundingClientRect').mockImplementation(() => ({
+            width: table.isConnected ? 300 : 0, height: table.isConnected ? 100 : 0,
+        } as DOMRect))
+        html2canvas.mockResolvedValue({
+            toBlob: (callback: BlobCallback) => callback(new Blob(['png'], { type: 'image/png' })),
+        })
+        const exporting = renderTableAsImage(table)
+        table.remove()
+        await expect(exporting).resolves.toBeInstanceOf(Blob)
+        expect(html2canvas).toHaveBeenCalledWith(expect.any(HTMLTableElement), expect.objectContaining({ width: 300, height: 100 }))
+        expect(document.querySelector('[data-hapi-table-image-render="true"]')).toBeNull()
+    })
+
     it('stitches bounded tiles from one snapshot even if the live table changes', async () => {
         const table = document.createElement('table')
         table.innerHTML = '<tr><td>HAPI</td></tr>'

@@ -787,7 +787,6 @@ function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 export async function renderTableAsImage(table: HTMLTableElement): Promise<Blob> {
     if (typeof document === 'undefined') throw new Error('Cannot render a table outside the browser')
 
-    const { default: html2canvas } = await import('html2canvas-pro')
     const tableRect = table.getBoundingClientRect()
     const tableWidth = Math.max(table.scrollWidth, Math.ceil(tableRect.width), 1)
     const tableHeight = getTableExportHeight(table)
@@ -807,32 +806,28 @@ export async function renderTableAsImage(table: HTMLTableElement): Promise<Blob>
         windowHeight: Math.max(document.documentElement.clientHeight, tableHeight),
     }
 
-    if (rasterPixels <= MAX_TABLE_EXPORT_TILE_PIXELS) {
-        const imageTable = createStaticTableImageClone(table, tableWidth, tableHeight)
-        try {
+    // Capture the clicked view before lazy loading the renderer: the user
+    // can close or reflow the table while that first import is pending.
+    const imageTable = createStaticTableImageClone(table, tableWidth, tableHeight)
+    const viewportHeight = document.documentElement.clientHeight
+    try {
+        const { default: html2canvas } = await import('html2canvas-pro')
+        if (rasterPixels <= MAX_TABLE_EXPORT_TILE_PIXELS) {
             const canvas = await html2canvas(imageTable.table, {
                 ...renderOptions,
                 width: tableWidth,
                 height: tableHeight,
             })
             return canvasToPngBlob(canvas)
-        } finally {
-            imageTable.cleanup()
         }
-    }
 
-    const outputCanvas = document.createElement('canvas')
-    outputCanvas.width = Math.max(1, Math.ceil(tableWidth * scale))
-    outputCanvas.height = Math.max(1, Math.ceil(tableHeight * scale))
-    const outputContext = outputCanvas.getContext('2d')
-    if (!outputContext) throw new Error('Failed to create table image canvas')
+        const outputCanvas = document.createElement('canvas')
+        outputCanvas.width = Math.max(1, Math.ceil(tableWidth * scale))
+        outputCanvas.height = Math.max(1, Math.ceil(tableHeight * scale))
+        const outputContext = outputCanvas.getContext('2d')
+        if (!outputContext) throw new Error('Failed to create table image canvas')
 
-    const tileHeight = getTableExportTileHeight(tableWidth, scale)
-    const viewportHeight = document.documentElement.clientHeight
-    // Freeze the DOM, computed styles and geometry once. Wrapping, resizing
-    // or closing the viewer between tiles must not change the captured rows.
-    const imageTable = createStaticTableImageClone(table, tableWidth, tableHeight)
-    try {
+        const tileHeight = getTableExportTileHeight(tableWidth, scale)
         imageTable.wrapper.style.overflow = 'hidden'
         for (let tileTop = 0; tileTop < tableHeight; tileTop += tileHeight) {
             const currentTileHeight = Math.min(tileHeight, tableHeight - tileTop)
