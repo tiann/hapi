@@ -236,4 +236,55 @@ describe('TitleSuggestionService', () => {
             status: 429
         })
     })
+
+    it('pages past a newest window full of tool output to reach the conversation', async () => {
+        const { store, sessionId } = makeStore()
+        store.messages.addMessage(sessionId, {
+            role: 'user',
+            content: { type: 'text', text: 'Summarize the quarterly report' }
+        })
+        store.messages.addMessage(sessionId, {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', message: 'The report covers three regions.' } }
+        })
+        for (let index = 0; index < 250; index += 1) {
+            store.messages.addMessage(sessionId, {
+                role: 'agent',
+                content: { type: 'codex', data: { type: 'tool-call', name: 'shell', input: { command: `step-${index}` } } }
+            })
+        }
+
+        let prompt = ''
+        const service = new TitleSuggestionService(store, {
+            provider: {
+                suggest: async (value) => {
+                    prompt = value
+                    return 'Quarterly report summary'
+                }
+            }
+        })
+
+        await expect(service.suggestTitle(sessionId)).resolves.toBe('Quarterly report summary')
+        expect(prompt).toContain('Summarize the quarterly report')
+        expect(prompt).toContain('The report covers three regions.')
+    })
+
+    it('still reports empty when the entire history is non-conversational', async () => {
+        const { store, sessionId } = makeStore()
+        for (let index = 0; index < 250; index += 1) {
+            store.messages.addMessage(sessionId, {
+                role: 'agent',
+                content: { type: 'codex', data: { type: 'tool-call', name: 'shell', input: {} } }
+            })
+        }
+
+        const service = new TitleSuggestionService(store, {
+            provider: { suggest: async () => 'Should not be reached' }
+        })
+
+        await expect(service.suggestTitle(sessionId)).rejects.toMatchObject({
+            code: 'empty',
+            status: 422
+        })
+    })
 })
