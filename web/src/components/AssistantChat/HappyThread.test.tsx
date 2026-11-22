@@ -10,7 +10,6 @@ import {
     getPullToLoadState,
     getScrollIntent,
     getScrollToBottomButtonVisibility,
-    hasAppliedHistoryVersion,
     isNestedScrollEvent,
     locateOutlineTargetMessage,
     prependMissingUserSnapshot,
@@ -469,11 +468,6 @@ describe('scroll anchor helpers', () => {
         expect(viewport.scrollTop).toBe(250)
 
         viewport.remove()
-    })
-
-    it('waits until assistant-ui has applied the loaded history version', () => {
-        expect(hasAppliedHistoryVersion(4, 4)).toBe(false)
-        expect(hasAppliedHistoryVersion(4, 5)).toBe(true)
     })
 })
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, mock } from 'bun:test'
+import { gunzipSync } from 'node:zlib'
 import { Hono } from 'hono'
 import type { SyncEngine } from '../../sync/syncEngine'
 import { createConfiguration, getConfiguration } from '../../configuration'
@@ -18,10 +19,14 @@ function authHeaders() {
     }
 }
 
+// Actions runners under a full hub suite occasionally exceed bun's default 5s
+// hook budget during createConfiguration (seen as an unnamed
+// beforeEach/afterEach timeout). Give setup headroom — tiann/hapi#2514.
 beforeAll(async () => {
     const config = await createConfiguration()
     config._setCliApiToken('test-token', 'env', false)
-})
+    await config.setGithubPrAwareness(true)
+}, 30_000)
 
 describe('cli shutdown preparation', () => {
     function fixture(machineId = 'machine-1') {
@@ -355,6 +360,48 @@ describe('cli lazy session creation', () => {
         )
     })
 
+    it('rejects session create with invalid metadata.externalRefs when awareness is enabled', async () => {
+        const getOrCreateSession = mock(() => ({ id: sessionId }))
+        const app = createApp({
+            getOrCreateSession
+        } as never)
+
+        const response = await app.request('/cli/sessions', {
+            method: 'POST',
+            headers: {
+                ...authHeaders(),
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                id: sessionId,
+                tag: 'lazy-tag',
+                metadata: {
+                    path: '/tmp/project',
+                    externalRefs: [
+                        {
+                            kind: 'github_pr',
+                            repo: 'tiann/hapi',
+                            number: 1,
+                            url: 'https://github.com/tiann/hapi/pull/1',
+                            role: 'primary'
+                        },
+                        {
+                            kind: 'github_pr',
+                            repo: 'tiann/hapi',
+                            number: 2,
+                            url: 'https://github.com/tiann/hapi/pull/2',
+                            role: 'primary'
+                        }
+                    ]
+                }
+            })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({ error: 'Invalid metadata.externalRefs' })
+        expect(getOrCreateSession).not.toHaveBeenCalled()
+    })
+
     it('rejects an embedded machine owned by another namespace', async () => {
         const getOrCreateMachine = mock(() => ({ id: 'machine-1' }))
         const getOrCreateSession = mock(() => ({ id: sessionId }))
@@ -407,10 +454,23 @@ describe('cli lazy session creation', () => {
     })
 })
 
+describe('cli features and external-refs read', () => {
+    it('returns githubPrAwareness for CLI token auth', async () => {
+        const app = createApp({} as never)
+        const response = await app.request('/cli/features', { headers: authHeaders() })
+        expect(response.status).toBe(200)
+        const body = await response.json() as { githubPrAwareness: { enabled: boolean; source: string } }
+        expect(body.githubPrAwareness).toMatchObject({
+            enabled: expect.any(Boolean),
+            source: expect.any(String)
+        })
+    })
+})
+
 describe('cli autoBridgeTransientModelErrors namespace gate', () => {
     afterEach(async () => {
         await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, false)
-    })
+    }, 30_000)
 
     it('returns hub auto-bridge only for the default namespace', async () => {
         await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, true)
@@ -462,5 +522,53 @@ describe('cli autoBridgeTransientModelErrors namespace gate', () => {
         expect(tenantGet.status).toBe(200)
         const tenantGetBody = await tenantGet.json() as { autoBridgeTransientModelErrors?: boolean }
         expect(tenantGetBody.autoBridgeTransientModelErrors).toBe(false)
+    })
+})
+
+describe('cli HTTP gzip compression', () => {
+    it('compresses large /cli responses with gzip and honors q=0 refusal', async () => {
+        const sessionId = '33333333-3333-4333-8333-333333333333'
+        const messages = Array.from({ length: 40 }, (_, index) => ({
+            id: `msg-${index + 1}`,
+            sessionId,
+            seq: index + 1,
+            localId: `local-${index + 1}`,
+            createdAt: 1_700_000_000_000 + index,
+            invokedAt: 1_700_000_000_000 + index,
+            content: { role: 'assistant', content: { type: 'text', text: `Repeated backfill payload line ${index} `.repeat(6) } }
+        }))
+        const app = createApp({
+            resolveSessionAccess: () => ({
+                ok: true,
+                session: { id: sessionId },
+                sessionId
+            }),
+            getDeliverableMessagesAfter: () => messages
+        } as never)
+
+        const gzipRes = await app.request(`/cli/sessions/${sessionId}/messages?afterSeq=0`, {
+            headers: {
+                ...authHeaders(),
+                'accept-encoding': 'gzip'
+            }
+        })
+        expect(gzipRes.status).toBe(200)
+        expect(gzipRes.headers.get('content-encoding')).toBe('gzip')
+        expect(gzipRes.headers.get('vary')).toContain('Accept-Encoding')
+        const compressedBytes = new Uint8Array(await gzipRes.arrayBuffer())
+        const decompressed = gunzipSync(compressedBytes).toString('utf8')
+        expect(JSON.parse(decompressed)).toEqual({ messages })
+        expect(compressedBytes.byteLength).toBeLessThan(Buffer.byteLength(decompressed, 'utf8') / 2)
+
+        const refusedRes = await app.request(`/cli/sessions/${sessionId}/messages?afterSeq=0`, {
+            headers: {
+                ...authHeaders(),
+                'accept-encoding': 'gzip;q=0'
+            }
+        })
+        expect(refusedRes.status).toBe(200)
+        expect(refusedRes.headers.get('content-encoding')).toBeNull()
+        expect(refusedRes.headers.get('vary')).toContain('Accept-Encoding')
+        expect(await refusedRes.json()).toEqual({ messages })
     })
 })

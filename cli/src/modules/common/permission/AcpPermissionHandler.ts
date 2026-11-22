@@ -3,6 +3,7 @@ import type { AgentBackend, PermissionRequest, PermissionResponse } from '@/agen
 import type { PermissionMode } from '@hapi/protocol/types'
 import { deriveToolInput, deriveToolName } from '@/agent/utils'
 import { logger } from '@/ui/logger'
+import { settleRequestsOfPreviousAgentProcess } from '@/modules/common/permission/settleStaleRequests'
 import {
     BasePermissionHandler,
     type AutoApprovalDecision,
@@ -83,6 +84,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         } = {}
     ) {
         super(session)
+        settleRequestsOfPreviousAgentProcess(this.backend, session)
         this.backend.onPermissionRequest((request) => this.handlePermissionRequest(request))
     }
 
@@ -133,6 +135,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
                 ...currentState.completedRequests,
                 [request.id]: {
                     tool: toolName,
+                    toolCallId: request.toolCallId,
                     arguments: toolInput,
                     createdAt: timestamp,
                     completedAt: timestamp,
@@ -147,12 +150,12 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
      * A question the agent asks the user, shown as `toolName` with `input`.
      * Never answered automatically, whatever the permission mode.
      */
-    askUser(id: string, toolName: string, input: unknown): Promise<UserAnswer> {
+    askUser(id: string, toolName: string, input: unknown, toolCallId?: string): Promise<UserAnswer> {
         return new Promise((resolve) => {
             this.userQuestions.set(id, resolve)
             this.usedIds.add(id)
             this.startUserWait(id)
-            this.addPendingRequest(id, toolName, input, { resolve: () => {}, reject: () => {} })
+            this.addPendingRequest(id, toolName, input, { resolve: () => {}, reject: () => {} }, toolCallId)
         })
     }
 

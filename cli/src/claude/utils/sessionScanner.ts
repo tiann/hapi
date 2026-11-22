@@ -1,9 +1,10 @@
 import { RawJSONLines, RawJSONLinesSchema } from "../types";
-import { basename, dirname, join } from "node:path";
-import { open, readdir, readFile, stat } from "node:fs/promises";
+import { basename, dirname } from "node:path";
+import { open, stat } from "node:fs/promises";
 import { logger } from "@/ui/logger";
-import { getClaudeProjectsDir, getProjectPath } from "./path";
+import { getProjectPath } from "./path";
 import { BaseSessionScanner, SessionFileScanEntry, SessionFileScanResult, SessionFileScanStats } from "@/modules/common/session/BaseSessionScanner";
+import { findClaudeSessionFile, listClaudeSubagentFiles, readSubagentParentToolUseId } from "./transcriptEntry";
 
 /**
  * Known internal Claude Code event types that should be silently skipped.
@@ -175,61 +176,28 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     // the session enters or leaves a git worktree, so look for it by session id
     // across all project dirs once the known path is gone.
     private async resolveSessionFile(sessionId: string): Promise<string> {
-        const known = this.sessionFiles.get(sessionId) ?? join(this.projectDir, `${sessionId}.jsonl`);
-        if (await isFile(known)) {
-            return known;
-        }
-        const projectsDir = getClaudeProjectsDir();
-        let newest: { path: string; mtimeMs: number } | null = null;
-        for (const dir of await readdir(projectsDir).catch(() => [])) {
-            const candidate = join(projectsDir, dir, `${sessionId}.jsonl`);
-            const mtimeMs = await stat(candidate).then((s) => s.mtimeMs, () => null);
-            if (mtimeMs !== null && (!newest || mtimeMs > newest.mtimeMs)) {
-                newest = { path: candidate, mtimeMs };
+        return findClaudeSessionFile(sessionId, {
+            projectDir: this.projectDir,
+            sessionFiles: this.sessionFiles,
+            onFileMoved: (newPath, knownPath) => {
+                // Re-read the moved file from the top; processed event keys drop what was already sent.
+                this.setCursor(newPath, 0);
+                this.pruneWatchers(this.getWatchedFiles().filter((file) => file !== knownPath));
             }
-        }
-        if (!newest || newest.path === known) {
-            return known;
-        }
-        logger.debug(`[SESSION_SCANNER] Session ${sessionId} transcript moved to ${newest.path}`);
-        this.sessionFiles.set(sessionId, newest.path);
-        // Re-read the moved file from the top; processed event keys drop what was already sent.
-        this.setCursor(newest.path, 0);
-        this.pruneWatchers(this.getWatchedFiles().filter((file) => file !== known));
-        return newest.path;
+        });
     }
 
     // Claude Code 2.x writes each subagent to <session>/subagents/agent-*.jsonl
     // instead of the main session log.
     private async subagentFilePaths(sessionFile: string): Promise<string[]> {
-        const dir = join(sessionFile.slice(0, -'.jsonl'.length), 'subagents');
-        try {
-            return (await readdir(dir))
-                .filter((name) => name.startsWith('agent-') && name.endsWith('.jsonl'))
-                .map((name) => join(dir, name));
-        } catch {
-            return [];
-        }
+        return listClaudeSubagentFiles(sessionFile);
     }
 
     // The transcript lines carry no parent tool_use id; the sibling meta.json
     // records it as `toolUseId`. Without it the web tracer can only fall back
     // to matching the subagent prompt against the Agent tool input.
     private async subagentParentToolUseId(filePath: string): Promise<string | undefined> {
-        const cached = this.subagentParents.get(filePath);
-        if (cached) {
-            return cached;
-        }
-        try {
-            const meta = JSON.parse(await readFile(filePath.slice(0, -'.jsonl'.length) + '.meta.json', 'utf-8'));
-            if (typeof meta?.toolUseId === 'string') {
-                this.subagentParents.set(filePath, meta.toolUseId);
-                return meta.toolUseId;
-            }
-        } catch {
-            // meta.json not written yet
-        }
-        return undefined;
+        return readSubagentParentToolUseId(filePath, this.subagentParents);
     }
 }
 
@@ -367,10 +335,6 @@ export async function readSessionLog(filePath: string, startByte: number): Promi
         }
     }
     return { events: messages, nextCursor };
-}
-
-async function isFile(filePath: string): Promise<boolean> {
-    return stat(filePath).then((s) => s.isFile(), () => false);
 }
 
 function isSubagentFile(filePath: string): boolean {

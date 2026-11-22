@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deterministicStringify, hashObject, deepEqual, objectKey } from './deterministicJson';
+import { deterministicStringify, hashObject } from './deterministicJson';
 
 describe('deterministicStringify', () => {
     it('should produce consistent output for objects with different key orders', () => {
@@ -123,50 +123,5 @@ describe('hashObject', () => {
         expect(hex).toMatch(/^[a-f0-9]{64}$/);
         expect(base64).toMatch(/^[A-Za-z0-9+/]+=*$/);
         expect(base64url).toMatch(/^[A-Za-z0-9_-]+$/);
-    });
-});
-
-describe('deepEqual', () => {
-    it('should return true for deeply equal objects', () => {
-        const obj1 = { a: 1, b: { c: 2 } };
-        const obj2 = { b: { c: 2 }, a: 1 };
-
-        expect(deepEqual(obj1, obj2)).toBe(true);
-    });
-
-    it('should return false for different objects', () => {
-        const obj1 = { a: 1 };
-        const obj2 = { a: 2 };
-
-        expect(deepEqual(obj1, obj2)).toBe(false);
-    });
-
-    it('should handle arrays', () => {
-        expect(deepEqual([1, 2, 3], [1, 2, 3])).toBe(true);
-        expect(deepEqual([1, 2, 3], [3, 2, 1])).toBe(false);
-        expect(deepEqual([1, 2, 3], [3, 2, 1], { sortArrays: true })).toBe(true);
-    });
-});
-
-describe('objectKey', () => {
-    it('should produce stable keys for objects', () => {
-        const obj1 = { b: 2, a: 1 };
-        const obj2 = { a: 1, b: 2 };
-
-        const key1 = objectKey(obj1);
-        const key2 = objectKey(obj2);
-
-        expect(key1).toBe(key2);
-        expect(key1).toMatch(/^[A-Za-z0-9_-]+$/); // base64url
-    });
-
-    it('should be suitable for Map keys', () => {
-        const map = new Map<string, any>();
-
-        const obj1 = { data: 'test', id: 1 };
-        const obj2 = { id: 1, data: 'test' };
-
-        map.set(objectKey(obj1), 'value1');
-        expect(map.get(objectKey(obj2))).toBe('value1');
     });
 });
