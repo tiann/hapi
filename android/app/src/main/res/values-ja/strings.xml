@@ -818,4 +818,8 @@
     <string name="passkey_enter_hub">Hub のアドレスを手動で入力</string>
     <string name="passkey_hub_address_required">このパスキーには Hub のアドレスが含まれていません。アドレスを入力してから、パスキーで続行してください。</string>
     <string name="passkey_error_wrong_hub">このパスキーは別の Hub のものです。この Hub 用のパスキーを選ぶか、アドレスを確認してください。</string>
+    <string name="sessions_grouped">プロジェクトフォルダでグループ化</string>
+    <string name="sessions_other_project">その他</string>
+    <string name="sessions_folder_expanded">展開中</string>
+    <string name="sessions_folder_collapsed">折りたたみ中</string>
 </resources>

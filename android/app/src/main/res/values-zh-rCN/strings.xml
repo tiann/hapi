@@ -818,4 +818,8 @@
     <string name="passkey_enter_hub">手动输入 Hub 地址</string>
     <string name="passkey_hub_address_required">此通行密钥未包含 Hub 地址。请输入地址，然后使用通行密钥继续。</string>
     <string name="passkey_error_wrong_hub">此通行密钥属于其他 Hub。请选择此 Hub 的通行密钥，或检查地址。</string>
+    <string name="sessions_grouped">按项目目录分组</string>
+    <string name="sessions_other_project">其他</string>
+    <string name="sessions_folder_expanded">已展开</string>
+    <string name="sessions_folder_collapsed">已收起</string>
 </resources>

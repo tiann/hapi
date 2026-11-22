@@ -129,6 +129,18 @@ class HomeScreenTest {
         }
     }
 
+    @Test fun manualFolderCollapseHidesOnlyItsOwnRowsAndSurvivesARefresh() {
+        mount()
+        val folder = compose.onNode(hasClickAction() and hasText("repo/api", substring = true) and hasStateDescription(label(R.string.sessions_folder_expanded)))
+        folder.performClick()
+        compose.onNodeWithText("Build API").assertDoesNotExist()
+        compose.onNodeWithText("Fix Android").assertIsDisplayed()
+        sessions.sessions.value = sessions.sessions.value.map { it.copy(contentRevision = 10) }
+        compose.onNodeWithText("Build API").assertDoesNotExist()
+        compose.onNode(hasClickAction() and hasStateDescription(label(R.string.sessions_folder_collapsed))).performClick()
+        compose.onNodeWithText("Build API").assertIsDisplayed()
+    }
+
     private fun label(id: Int) = context.getString(id)
     private fun openFilters() = compose.onNodeWithContentDescription(label(R.string.sessions_filters)).performClick()
     // Send a real Back event: dispatching straight to the activity skips the

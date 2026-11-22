@@ -832,4 +832,8 @@
     <string name="passkey_enter_hub">Ввести адрес хаба вручную</string>
     <string name="passkey_hub_address_required">В этом ключе доступа нет адреса хаба. Введите адрес и продолжите с ключом доступа.</string>
     <string name="passkey_error_wrong_hub">Этот ключ доступа принадлежит другому хабу. Выберите ключ для этого хаба или проверьте адрес.</string>
+    <string name="sessions_grouped">Группировать по папке проекта</string>
+    <string name="sessions_other_project">Прочее</string>
+    <string name="sessions_folder_expanded">Развёрнуто</string>
+    <string name="sessions_folder_collapsed">Свёрнуто</string>
 </resources>

@@ -69,6 +69,9 @@ data class SessionRowUi(
 val SessionSummary.runningAttachedJob: AttachedJob?
     get() = attachedJob?.takeIf { it.isRunning }
 
+private val SessionSummary.hasUnarchivedJob: Boolean
+    get() = runningAttachedJob != null && metadata?.lifecycleState != "archived"
+
 /**
  * The agent icon's presence badge (web `SessionRowSummary`, #2296). Every
  * state has its own mark, so none is shown by the absence of one: solid and
@@ -88,7 +91,7 @@ enum class SessionPresence {
         /** Same precedence as web: background-only before an attached job. */
         fun of(summary: SessionSummary): SessionPresence = when {
             summary.active && !summary.thinking && summary.backgroundTaskCount > 0 -> Background
-            (summary.active && summary.thinking) || summary.runningAttachedJob != null -> Working
+            (summary.active && summary.thinking) || summary.hasUnarchivedJob -> Working
             summary.active -> Waiting
             else -> Stopped
         }
@@ -106,7 +109,7 @@ enum class SessionListStatus {
     Archived;
 
     fun includes(summary: SessionSummary): Boolean {
-        val live = summary.active || summary.runningAttachedJob != null
+        val live = summary.active || summary.hasUnarchivedJob
         return when (this) {
             All -> true
             Active -> live
@@ -145,6 +148,7 @@ data class SessionListUiState(
      * the uncustomized order so the toolbar dot never flashes before prefs load.
      */
     val order: SessionListOrder = SessionListOrder.Default,
+    val grouped: Boolean = true,
     /**
      * Local epoch-days that carry any session activity — the picker's
      * activity hint, derived before any list filtering (web
@@ -167,7 +171,7 @@ data class SessionListUiState(
         get() = activeMachineFilter != null || dateRange != null || statusFilter != SessionListStatus.All || unreadOnly
 
     /** Filters or a non-default order: the toolbar button carries a dot (web). */
-    val isCustomized: Boolean get() = hasActiveFilters || !order.isDefault
+    val isCustomized: Boolean get() = hasActiveFilters || !order.isDefault || !grouped
     val isSearching: Boolean get() = searchQuery.isNotBlank()
 }
 
@@ -273,7 +277,8 @@ class SessionListViewModel(
             connectionStatus,
         ) { chrome, refreshedAt, status -> chrome.copy(lastRefreshedAt = refreshedAt, connectionStatus = status) },
         orderStore.order,
-    ) { (sessions, machines, lastSeen), inputs, chrome, order ->
+        orderStore.grouped,
+    ) { (sessions, machines, lastSeen), inputs, chrome, order, grouped ->
         buildUiState(
             sessions = sessions,
             machines = machines,
@@ -288,7 +293,7 @@ class SessionListViewModel(
             statusFilter = inputs.statusFilter,
             unreadOnly = inputs.unreadOnly,
             order = order,
-        ).copy(lastRefreshedAt = chrome.lastRefreshedAt, connectionStatus = chrome.connectionStatus)
+        ).copy(grouped = grouped, lastRefreshedAt = chrome.lastRefreshedAt, connectionStatus = chrome.connectionStatus)
     }.stateIn(
         scope = scope,
         started = SharingStarted.Eagerly,
@@ -399,6 +404,10 @@ class SessionListViewModel(
     }
 
     /** Persisted sort key (app-wide). */
+    fun setGrouped(enabled: Boolean) {
+        scope.launch { orderStore.setGrouped(enabled) }
+    }
+
     fun setSort(sort: SessionListSort) {
         scope.launch { orderStore.setSort(sort) }
     }

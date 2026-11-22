@@ -63,6 +63,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -228,6 +229,8 @@ fun SessionListScreen(
                 } else {
                     SessionRows(
                         rows = state.rows,
+                        grouped = state.grouped && !state.isSearching,
+                        scopeKey = viewModel,
                         onOpen = { sessionId ->
                             viewModel.onSessionOpened(sessionId)
                             onOpenSession(sessionId)
@@ -320,30 +323,67 @@ fun SessionListScreen(
 @Composable
 private fun SessionRows(
     rows: List<SessionRowUi>,
+    grouped: Boolean = true,
+    scopeKey: Any? = null,
     onOpen: (String) -> Unit,
     onLongPress: (SessionRowUi) -> Unit,
     onSwipePin: (SessionRowUi) -> Unit = {},
     onSwipeEnd: (SessionRowUi) -> Unit = {},
 ) {
-    // The sort contract puts globalPinned/pinned rows first; the boundary
-    // index is where the pinned section ends.
-    val pinnedCount = rows.takeWhile {
-        it.summary.globalPinned == true || it.summary.pinned == true
-    }.size
-
+    // Leave search results in their original relevance order. Switching back
+    // restores the folded folders rather than hiding matches during a search.
+    var closed by rememberSaveable(scopeKey) { mutableStateOf(arrayListOf<String>()) }
+    val (pinned, remaining) = remember(rows, grouped) {
+        rows.partition { it.summary.globalPinned == true || (!grouped && it.summary.pinned == true) }
+    }
+    val sections = remember(remaining, grouped) {
+        if (grouped) remaining.groupBy { row ->
+            val meta = row.summary.metadata
+            val path = (meta?.worktree?.basePath ?: meta?.path)?.trim()?.takeIf { it.isNotEmpty() }
+            meta?.machineId to path
+        } else emptyMap()
+    }
     LazyColumn(modifier = Modifier.fillMaxSize()) {
-        if (pinnedCount > 0) {
+        if (pinned.isNotEmpty()) {
             item(key = "header-pinned") { SectionHeader(stringResource(R.string.sessions_section_pinned)) }
         }
-        items(rows.take(pinnedCount), key = { it.id }) { row ->
-            SwipeableSessionRow(row, onOpen, onLongPress, onSwipePin, onSwipeEnd)
+        fun androidx.compose.foundation.lazy.LazyListScope.sessionRows(items: List<SessionRowUi>) {
+            items(items, key = { "session:${it.id}" }) { row ->
+                SwipeableSessionRow(row, onOpen, onLongPress, onSwipePin, onSwipeEnd)
+            }
         }
-        if (pinnedCount in 1 until rows.size) {
-            // "Recent", not "Sessions": the top bar title already says so.
-            item(key = "header-recent") { SectionHeader(stringResource(R.string.sessions_section_recent)) }
+        sessionRows(pinned)
+        if (!grouped) {
+            if (pinned.isNotEmpty() && remaining.isNotEmpty()) {
+                item(key = "header-recent") { SectionHeader(stringResource(R.string.sessions_section_recent)) }
+            }
+            sessionRows(remaining)
         }
-        items(rows.drop(pinnedCount), key = { it.id }) { row ->
-            SwipeableSessionRow(row, onOpen, onLongPress, onSwipePin, onSwipeEnd)
+        sections.forEach { (project, members) ->
+            val (machine, path) = project
+            val key = "folder:${machine?.length ?: -1}:${machine.orEmpty()}:${path?.length ?: -1}:${path.orEmpty()}"
+            val expanded = key !in closed
+            item(key = key, contentType = "project") {
+                val first = members.first()
+                val title = if (path == null) stringResource(R.string.sessions_other_project)
+                    else SessionListViewModel.projectLabel(first.summary) ?: path
+                val label = first.machine?.let { "$title · ${machineFilterLabel(it)}" } ?: title
+                val status = stringResource(if (expanded) R.string.sessions_folder_expanded else R.string.sessions_folder_collapsed)
+                Row(
+                    Modifier.fillMaxWidth().clickable(role = androidx.compose.ui.semantics.Role.Button) {
+                        closed = ArrayList(if (expanded) closed + key else closed - key)
+                    }.semantics { stateDescription = status }.padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(painterResource(if (expanded) R.drawable.ic_sym_expand_more else R.drawable.ic_sym_chevron_right),
+                        contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(members.size.toString(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (expanded) sessionRows(members)
         }
     }
 }
