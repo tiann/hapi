@@ -246,8 +246,64 @@ const results: Record<string, unknown> = {}
         ])
         results.fallback = {
             summaries: await listLocalAgySessionSummaries({ appDataDir: root }),
-            withMessages: await listLocalAgySessionsWithMessagesByIds(new Set(['conv-fallback']), { appDataDir: root })
+            withMessages: await listLocalAgySessionsWithMessagesByIds(new Set(['conv-fallback']), { appDataDir: root, fallbackCwd: '/tmp/selected-project' })
         }
+
+        // 3. Append-only stability when action steps arrive lazily after a multi-call planner step
+        writeTranscript(root, 'conv-late-action', [
+            {
+                step_index: 0,
+                source: 'USER_EXPLICIT',
+                type: 'USER_INPUT',
+                status: 'DONE',
+                created_at: '2026-11-22T02:00:00Z',
+                content: '<USER_REQUEST>\\nRead two files\\n</USER_REQUEST>'
+            },
+            {
+                step_index: 1,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                created_at: '2026-11-22T02:00:01Z',
+                tool_calls: [
+                    { name: 'read_file', args: { Path: JSON.stringify('/tmp/a.txt') } },
+                    { name: 'read_file', args: { Path: JSON.stringify('/tmp/b.txt') } }
+                ]
+            }
+        ])
+        const beforeActions = (await listLocalAgySessionsWithMessagesByIds(new Set(['conv-late-action']), { appDataDir: root, fallbackCwd: '/tmp/selected-project' }))[0]!
+
+        writeTranscript(root, 'conv-late-action', [
+            {
+                step_index: 0,
+                source: 'USER_EXPLICIT',
+                type: 'USER_INPUT',
+                status: 'DONE',
+                created_at: '2026-11-22T02:00:00Z',
+                content: '<USER_REQUEST>\\nRead two files\\n</USER_REQUEST>'
+            },
+            {
+                step_index: 1,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                created_at: '2026-11-22T02:00:01Z',
+                tool_calls: [
+                    { name: 'read_file', args: { Path: JSON.stringify('/tmp/a.txt') } },
+                    { name: 'read_file', args: { Path: JSON.stringify('/tmp/b.txt') } }
+                ]
+            },
+            {
+                step_index: 2,
+                source: 'MODEL',
+                type: 'GENERIC',
+                status: 'ERROR',
+                created_at: '2026-11-22T02:00:02Z',
+                content: 'ENOENT: missing a.txt'
+            }
+        ])
+        const afterFirstAction = (await listLocalAgySessionsWithMessagesByIds(new Set(['conv-late-action']), { appDataDir: root, fallbackCwd: '/tmp/selected-project' }))[0]!
+        results.lateAction = { beforeActions, afterFirstAction }
     } finally {
         rmSync(root, { recursive: true, force: true })
     }
@@ -280,7 +336,11 @@ function runBunSuite() {
         }
         fallback: {
             summaries: Array<{ id: string; title: string; messageCount?: number }>
-            withMessages: Array<{ id: string; messages: Array<{ localId: string; content: Record<string, unknown> }> }>
+            withMessages: Array<{ id: string; cwd?: string | null; messages: Array<{ localId: string; content: Record<string, unknown> }> }>
+        }
+        lateAction: {
+            beforeActions: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
+            afterFirstAction: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
         }
     }
 }
@@ -305,26 +365,26 @@ describe('agySessions', () => {
             .map((m) => m.content.content.text)
         expect(userTexts).toEqual(['Run tests cleanly'])
 
-        // Step 1 should produce deterministic reasoning + message + Bash tool call + placeholder tool result,
-        // and step 4 should emit the completed background tool result with matching callId.
+        // Step 1 produces planner reasoning/text/call IDs, step 2 owns its placeholder tool result,
+        // and step 4 owns the completed background tool result with matching callId.
         const payloads = session.messages
             .filter((m) => m.content.role === 'agent')
             .map((m) => ({ localId: m.localId, data: m.content.content.data! }))
 
         expect(payloads[0]).toMatchObject({
-            localId: 'agy:conv-main:step:1:0',
-            data: { type: 'reasoning', message: 'Planning check', id: 'agy:conv-main:step:1:0' }
+            localId: 'agy:conv-main:step:1:reasoning',
+            data: { type: 'reasoning', message: 'Planning check', id: 'agy:conv-main:step:1:reasoning' }
         })
         expect(payloads[1]).toMatchObject({
-            localId: 'agy:conv-main:step:1:1',
+            localId: 'agy:conv-main:step:1:text',
             data: { type: 'message', message: 'Checking now' }
         })
         expect(payloads[2]).toMatchObject({
-            localId: 'agy:conv-main:step:1:2',
+            localId: 'agy:conv-main:step:1:call:0',
             data: { type: 'tool-call', name: 'Bash', callId: 'agy-wakeup-conv-main-1-0', input: { command: 'echo hi', cwd: '/tmp/my repo' } }
         })
         expect(payloads[3]).toMatchObject({
-            localId: 'agy:conv-main:step:1:3',
+            localId: 'agy:conv-main:step:2:0',
             data: { type: 'tool-call-result', callId: 'agy-wakeup-conv-main-1-0' }
         })
         expect(payloads[4]).toMatchObject({
@@ -338,6 +398,28 @@ describe('agySessions', () => {
             title: 'Fallback question',
             messageCount: 2
         })
+        expect(output.fallback.withMessages[0]?.cwd).toBe('/tmp/selected-project')
         expect(output.fallback.withMessages[0]?.messages).toHaveLength(2)
+
+        const { beforeActions, afterFirstAction } = output.lateAction
+        expect(beforeActions.messages).toHaveLength(3)
+        expect(afterFirstAction.messages).toHaveLength(4)
+        expect(afterFirstAction.messages.slice(0, 3)).toEqual(beforeActions.messages)
+        expect(afterFirstAction.messages[3]).toMatchObject({
+            localId: 'agy:conv-late-action:step:2:0',
+            anchor: 'step:2:0',
+            content: {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call-result',
+                        callId: 'agy-wakeup-conv-late-action-1-0',
+                        output: 'ENOENT: missing a.txt',
+                        is_error: true
+                    }
+                }
+            }
+        })
     })
 })

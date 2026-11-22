@@ -18,9 +18,11 @@ import {
     type AgyTranscriptStep,
     agyTranscriptPaths,
     convertAgyReactiveSteps,
+    decodeAgyTranscriptArgs,
+    extractAgyBackgroundTaskId,
     readAgyTranscriptStepsAfter
 } from '@/agy/agyReactiveWakeup'
-import { mapAgyToolCall, mapAgyToolResult } from '@/agy/agyToolCards'
+import { AGY_BACKGROUND_COMMAND_RESULT, mapAgyToolCall, mapAgyToolResult } from '@/agy/agyToolCards'
 
 const DEFAULT_AGY_SESSION_SCAN_LIMIT = 200
 const LAST_USER_MESSAGE_MAX_LENGTH = 140
@@ -43,6 +45,7 @@ export type AgyDatabaseOpener = (dbPath: string) => Promise<DatabaseLike | null>
 export type AgySessionStoreOptions = {
     appDataDir?: string
     brainDir?: string
+    fallbackCwd?: string | null
     limit?: number
     opener?: AgyDatabaseOpener
 }
@@ -196,7 +199,7 @@ function formatSummaryPreview(rawPreview: string | null | undefined): string | n
 function toAgyAgentContent(
     sessionId: string,
     stepIndex: number,
-    subIdx: number,
+    suffix: string | number,
     canonical: AgentMessage,
     toolNativeNames: Map<string, string>
 ): AgyImportedMessageContent | null {
@@ -212,7 +215,7 @@ function toAgyAgentContent(
         // which would break anchored re-import content equality checks.
         normalized = {
             ...canonical,
-            id: canonical.id ?? `agy:${sessionId}:step:${stepIndex}:${subIdx}`
+            id: canonical.id ?? `agy:${sessionId}:step:${stepIndex}:${suffix}`
         }
     }
 
@@ -228,6 +231,55 @@ function toAgyAgentContent(
     }
 }
 
+function stripAgyStepTimestamps(content: string): string {
+    return content.replace(/^(?:Created At: [^\n]*\n(?:Completed At: [^\n]*\n)?)+/, '')
+}
+
+function buildActionStepToolResult(
+    pending: { callId: string; nativeName: string },
+    step: AgyTranscriptStep,
+    openBackgroundCommands: AgyOpenBackgroundCommand[]
+): AgentMessage {
+    const raw = stripAgyStepTimestamps(step.content ?? '')
+    if (pending.nativeName === 'run_command' && step.status === 'RUNNING') {
+        const backgroundTaskId = extractAgyBackgroundTaskId(step.content)
+        if (!backgroundTaskId || !openBackgroundCommands.some((entry) => entry.taskId === backgroundTaskId)) {
+            openBackgroundCommands.push({
+                callId: pending.callId,
+                stepIndex: step.step_index,
+                synthetic: true,
+                ...(backgroundTaskId ? { taskId: backgroundTaskId } : {})
+            })
+        }
+        return {
+            type: 'tool_result',
+            id: pending.callId,
+            output: AGY_BACKGROUND_COMMAND_RESULT,
+            status: 'completed'
+        }
+    }
+    if (pending.nativeName === 'run_command') {
+        const exitMatch = raw.match(/^Command exited with code (-?\d+)\./)
+        const exitCode = exitMatch ? Number(exitMatch[1]) : undefined
+        const failed = step.status === 'ERROR' || (exitCode !== undefined && exitCode !== 0)
+        return {
+            type: 'tool_result',
+            id: pending.callId,
+            output: {
+                output: raw,
+                ...(exitCode !== undefined ? { exit_code: exitCode } : {})
+            },
+            status: failed ? 'failed' : 'completed'
+        }
+    }
+    return {
+        type: 'tool_result',
+        id: pending.callId,
+        output: raw,
+        status: step.status === 'ERROR' ? 'failed' : 'completed'
+    }
+}
+
 export function convertAgyTranscriptStepsToMessages(
     sessionId: string,
     steps: AgyTranscriptStep[],
@@ -240,14 +292,15 @@ export function convertAgyTranscriptStepsToMessages(
     const messages: AgyImportedMessage[] = []
     const openBackgroundCommands: AgyOpenBackgroundCommand[] = []
     const toolNativeNames = new Map<string, string>()
+    const pendingActionCalls: Array<{ callId: string; nativeName: string }> = []
     let firstUserMessage: string | null = null
     let lastUserMessage: string | null = null
 
-    for (let i = 0; i < steps.length; i += 1) {
-        const step = steps[i]!
+    for (const step of steps) {
         const createdAt = parseAgyTimestampMs(step.created_at) ?? fallbackTimestampMs
 
         if (step.type === 'USER_INPUT' && step.source !== 'SYSTEM') {
+            pendingActionCalls.length = 0
             const text = extractAgyUserInputText(step.content)
             if (!text) continue
             if (firstUserMessage === null) firstUserMessage = text
@@ -283,35 +336,99 @@ export function convertAgyTranscriptStepsToMessages(
         }
 
         if (step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE') {
-            const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : []
-            const slice: AgyTranscriptStep[] = [step]
-            let cursor = i + 1
-            let actionCount = 0
-            while (
-                cursor < steps.length
-                && actionCount < toolCalls.length
-                && steps[cursor]!.source === 'MODEL'
-                && steps[cursor]!.type !== 'PLANNER_RESPONSE'
-            ) {
-                slice.push(steps[cursor]!)
-                cursor += 1
-                actionCount += 1
-            }
-            i = cursor - 1
+            // Emit planner outputs with step-local IDs independent of future
+            // action rows so late-flushed results only append at their own step.
+            pendingActionCalls.length = 0
 
-            const { messages: convertedSlice } = convertAgyReactiveSteps(sessionId, slice, openBackgroundCommands)
-            let subIdx = 0
-            for (const item of convertedSlice) {
-                const payload = toAgyAgentContent(sessionId, step.step_index, subIdx, item, toolNativeNames)
-                if (!payload) continue
-                messages.push({
-                    localId: `agy:${sessionId}:step:${step.step_index}:${subIdx}`,
-                    anchor: `step:${step.step_index}:${subIdx}`,
-                    createdAt,
-                    content: payload
-                })
-                subIdx += 1
+            const thinking = step.thinking?.trim()
+            if (thinking) {
+                const payload = toAgyAgentContent(
+                    sessionId,
+                    step.step_index,
+                    'reasoning',
+                    { type: 'reasoning', text: thinking },
+                    toolNativeNames
+                )
+                if (payload) {
+                    messages.push({
+                        localId: `agy:${sessionId}:step:${step.step_index}:reasoning`,
+                        anchor: `step:${step.step_index}:reasoning`,
+                        createdAt,
+                        content: payload
+                    })
+                }
             }
+
+            const text = step.content?.trim()
+            if (text) {
+                const payload = toAgyAgentContent(
+                    sessionId,
+                    step.step_index,
+                    'text',
+                    { type: 'text', text: step.content! },
+                    toolNativeNames
+                )
+                if (payload) {
+                    messages.push({
+                        localId: `agy:${sessionId}:step:${step.step_index}:text`,
+                        anchor: `step:${step.step_index}:text`,
+                        createdAt,
+                        content: payload
+                    })
+                }
+            }
+
+            const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : []
+            for (let callIdx = 0; callIdx < toolCalls.length; callIdx += 1) {
+                const call = toolCalls[callIdx]!
+                const callId = `agy-wakeup-${sessionId}-${step.step_index}-${callIdx}`
+                const decodedArgs = decodeAgyTranscriptArgs(call.args)
+                const payload = toAgyAgentContent(
+                    sessionId,
+                    step.step_index,
+                    `call:${callIdx}`,
+                    {
+                        type: 'tool_call',
+                        id: callId,
+                        name: call.name,
+                        input: decodedArgs,
+                        status: 'completed',
+                        title: call.name,
+                        nativeName: call.name,
+                        nativeArgs: decodedArgs
+                    },
+                    toolNativeNames
+                )
+                if (payload) {
+                    messages.push({
+                        localId: `agy:${sessionId}:step:${step.step_index}:call:${callIdx}`,
+                        anchor: `step:${step.step_index}:call:${callIdx}`,
+                        createdAt,
+                        content: payload
+                    })
+                }
+                pendingActionCalls.push({ callId, nativeName: call.name })
+            }
+            continue
+        }
+
+        if (step.source === 'MODEL') {
+            const pending = pendingActionCalls.shift()
+            if (!pending) continue
+            const payload = toAgyAgentContent(
+                sessionId,
+                step.step_index,
+                0,
+                buildActionStepToolResult(pending, step, openBackgroundCommands),
+                toolNativeNames
+            )
+            if (!payload) continue
+            messages.push({
+                localId: `agy:${sessionId}:step:${step.step_index}:0`,
+                anchor: `step:${step.step_index}:0`,
+                createdAt,
+                content: payload
+            })
         }
     }
 
@@ -463,6 +580,10 @@ export async function listLocalAgySessionsWithMessagesByIds(
         }
     }
 
+    const fallbackCwd = typeof options.fallbackCwd === 'string' && options.fallbackCwd.trim()
+        ? options.fallbackCwd.trim()
+        : null
+
     const sessions: AgyLocalSessionWithMessages[] = []
     for (const sessionId of sessionIds) {
         const paths = agyTranscriptPaths(brainDir, sessionId)
@@ -475,6 +596,7 @@ export async function listLocalAgySessionsWithMessagesByIds(
         const steps = readAgyTranscriptStepsAfter(brainDir, sessionId, -1)
         const converted = convertAgyTranscriptStepsToMessages(sessionId, steps, modifiedAt)
         const lastUserMessage = converted.lastUserMessage ?? formatSummaryPreview(row?.preview)
+        const nativeCwd = parseAgyWorkspaceCwd(row?.workspace_uris)
 
         sessions.push({
             id: sessionId,
@@ -485,7 +607,7 @@ export async function listLocalAgySessionsWithMessagesByIds(
                 sessionId
             }),
             lastUserMessage,
-            cwd: parseAgyWorkspaceCwd(row?.workspace_uris),
+            cwd: nativeCwd ?? fallbackCwd,
             file: paths.compactPath,
             modifiedAt,
             messageCount: converted.messages.length,

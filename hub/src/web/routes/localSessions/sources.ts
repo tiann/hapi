@@ -58,6 +58,8 @@ export type HubLocalSessionSource = {
         | { strategy: 'contentPrefix'; compareKey?: (content: unknown) => string | null }
     /** Lifecycle stamped on create. */
     lifecycleOnCreate: 'archived' | 'imported'
+    /** When true, refuse importing without a validated workspace path (never fall back to dirname(file)). */
+    requireWorkingDirectory?: boolean
     /** Multi-import loop policy. */
     batch: 'continue' | 'stopOnFirstError'
     /** Flavor-only import progress metadata key (Pi). */
@@ -237,6 +239,7 @@ export const AGY_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     nativeIdKeys: ['agySessionId'],
     match: { strategy: 'anchored' },
     lifecycleOnCreate: 'archived',
+    requireWorkingDirectory: true,
     batch: 'continue',
     importLimit: 200,
     requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport

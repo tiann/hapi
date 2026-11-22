@@ -569,7 +569,7 @@ export class ApiClient {
         return await this.request<AgyLocalSessionsResponse>(`/api/agy/sessions${query}`)
     }
 
-    async importAgySessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; permissionMode?: PermissionMode }): Promise<AgyImportSessionsResponse> {
+    async importAgySessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; effort?: string | null; permissionMode?: PermissionMode }): Promise<AgyImportSessionsResponse> {
         return await this.request<AgyImportSessionsResponse>('/api/agy/import-sessions', {
             method: 'POST',
             body: JSON.stringify(payload)

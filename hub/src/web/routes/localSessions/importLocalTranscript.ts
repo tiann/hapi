@@ -301,6 +301,22 @@ export function runLocalImportSync(options: {
                 target = current
             }
 
+            if (source.requireWorkingDirectory) {
+                const existingPath = target ? storedMetadata(target).path : undefined
+                const hasExistingPath = typeof existingPath === 'string' && existingPath.trim().length > 0
+                const hasTranscriptCwd = typeof transcript.cwd === 'string' && transcript.cwd.trim().length > 0
+                if (!hasTranscriptCwd && !hasExistingPath) {
+                    return finishErrorState({
+                        sessionId: transcript.id,
+                        ...(target ? { hapiSessionId: target.id } : {}),
+                        error: {
+                            code: 'missing_cwd',
+                            message: `A working directory is required to import a ${source.displayName} session without a recorded workspace`
+                        }
+                    }, 'failed')
+                }
+            }
+
             // --- match ----------------------------------------------------
             let delta: LocalTranscript['messages']
             if (source.match.strategy === 'contentPrefix') {

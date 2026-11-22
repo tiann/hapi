@@ -1483,8 +1483,11 @@ describe('NewSession launch preferences', () => {
 
     it('imports the selected AGY history with the chosen launch settings before reopening it', async () => {
         savePreferredAgent('agy')
-        mocks.agyModels = [{ modelId: 'gemini-3-pro', name: 'Gemini 3 Pro' }]
-        savePreferredLaunchSettings('machine-1', 'agy', { model: 'gemini-3-pro', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
+        mocks.agyModels = [
+            { modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' },
+            { modelId: 'gemini-3.6-flash-high', name: 'Gemini 3.6 Flash (High)' }
+        ]
+        savePreferredLaunchSettings('machine-1', 'agy', { model: 'gemini-3.6-flash-high', cursorSelectedBase: 'auto', effort: 'high', modelReasoningEffort: 'default' })
         const calls: string[] = []
         const agyApi = {
             getAgySessions: vi.fn().mockResolvedValue({
@@ -1536,7 +1539,8 @@ describe('NewSession launch preferences', () => {
             sessionIds: ['agy-native-1'],
             cwd: 'C:\\repo',
             machineId: 'machine-1',
-            model: 'gemini-3-pro',
+            model: 'gemini-3.6-flash',
+            effort: 'high',
             permissionMode: 'plan'
         })
         expect(calls).toEqual(['import', 'reopen'])

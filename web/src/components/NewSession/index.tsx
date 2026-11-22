@@ -2286,6 +2286,7 @@ export function NewSession(props: {
                     cwd: selectedAgyImportSession.cwd ?? trimmedDirectory,
                     machineId: agyImport.machineId ?? machineId,
                     model: resolvedModel ?? null,
+                    effort: resolvedEffort ?? null,
                     permissionMode: nativePermissionMode
                 })
                 const imported = result.results.find((item) => item.agySessionId === selectedAgyImportSession.id)

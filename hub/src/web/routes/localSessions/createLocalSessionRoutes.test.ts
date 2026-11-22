@@ -297,17 +297,121 @@ describe('generic local session routes', () => {
 
         const importRes = await app.request('/api/agy/import-sessions', {
             method: 'POST',
-            body: JSON.stringify({ sessionIds: ['agy-1'], model: 'gemini-3-pro', permissionMode: 'request-review' })
+            body: JSON.stringify({ sessionIds: ['agy-1'], model: 'gemini-3-pro', effort: 'high', permissionMode: 'request-review' })
         })
         expect(importRes.status).toBe(200)
         const importBody = await importRes.json() as { success: boolean; results: Array<Record<string, unknown>> }
         expect(importBody.success).toBe(true)
         expect(importBody.results[0]).toMatchObject({ agySessionId: 'agy-1', action: 'created', appended: 1 })
-        expect(appliedConfigs).toEqual([{ model: 'gemini-3-pro', permissionMode: 'request-review' }])
+        expect(appliedConfigs).toEqual([{ model: 'gemini-3-pro', effort: 'high', permissionMode: 'request-review' }])
 
         const secondListRes = await app.request('/api/agy/sessions')
         const secondListBody = await secondListRes.json() as { sessions: Array<Record<string, unknown>> }
         expect(secondListBody.sessions[0]).toMatchObject({ id: 'agy-1', hapiSessionId: importBody.results[0]!.hapiSessionId })
+    })
+
+    it('refuses transcript-only Antigravity imports without a working directory instead of saving .system_generated/logs', async () => {
+        const agySummary: LocalTranscriptSummary = {
+            flavor: 'agy',
+            id: 'agy-no-cwd',
+            title: 'No workspace session',
+            lastUserMessage: 'hi',
+            cwd: null,
+            file: '/tmp/.gemini/antigravity-cli/brain/agy-no-cwd/.system_generated/logs/transcript.jsonl',
+            modifiedAt: 10
+        }
+        const agyTranscript: LocalTranscript = {
+            ...agySummary,
+            messages: [{
+                id: 'agy:agy-no-cwd:step:0:0',
+                createdAt: 10,
+                content: { role: 'user', content: { type: 'text', text: 'hi' }, meta: { sentFrom: 'cli' } },
+                anchor: 'step:0:0'
+            }]
+        }
+        const { app, store } = harness({
+            sources: [AGY_LOCAL_SESSION_SOURCE],
+            summaries: [agySummary],
+            transcripts: [agyTranscript]
+        })
+        stores.push(store)
+
+        const res = await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-no-cwd'] })
+        })
+        expect(res.status).toBe(200)
+        const body = await res.json() as { success: boolean; results: Array<{ error?: { code: string } }> }
+        expect(body.success).toBe(false)
+        expect(body.results[0]?.error?.code).toBe('missing_cwd')
+        expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(0)
+    })
+
+    it('appends late action steps onto an already-imported Antigravity session without divergence', async () => {
+        const baseSummary: LocalTranscriptSummary = {
+            flavor: 'agy',
+            id: 'agy-grow',
+            title: 'Growing session',
+            lastUserMessage: 'run checks',
+            cwd: '/tmp/agy-project',
+            file: '/tmp/.gemini/antigravity-cli/brain/agy-grow/.system_generated/logs/transcript.jsonl',
+            modifiedAt: 10
+        }
+        const plannerCall0 = {
+            id: 'agy:agy-grow:step:1:call:0',
+            createdAt: 11,
+            content: { role: 'agent', content: { type: 'codex', data: { type: 'tool-call', name: 'Read', callId: 'c0', input: { file_path: 'a.ts' }, status: 'completed' } }, meta: { sentFrom: 'cli' } },
+            anchor: 'step:1:call:0'
+        } as const
+        const plannerCall1 = {
+            id: 'agy:agy-grow:step:1:call:1',
+            createdAt: 11,
+            content: { role: 'agent', content: { type: 'codex', data: { type: 'tool-call', name: 'Read', callId: 'c1', input: { file_path: 'b.ts' }, status: 'completed' } }, meta: { sentFrom: 'cli' } },
+            anchor: 'step:1:call:1'
+        } as const
+        const initial: LocalTranscript = { ...baseSummary, messages: [plannerCall0, plannerCall1] }
+        const grown: LocalTranscript = {
+            ...baseSummary,
+            messages: [
+                plannerCall0,
+                plannerCall1,
+                {
+                    id: 'agy:agy-grow:step:2:0',
+                    createdAt: 12,
+                    content: { role: 'agent', content: { type: 'codex', data: { type: 'tool-call-result', callId: 'c0', output: 'file A', is_error: false } }, meta: { sentFrom: 'cli' } },
+                    anchor: 'step:2:0'
+                }
+            ]
+        }
+        let current = initial
+        const store = new Store(':memory:')
+        stores.push(store)
+        const engine = {
+            getOnlineMachinesByNamespace: () => [machine()],
+            listLocalSessionsForMachine: async () => ({ success: true, sessions: [current] }),
+            recordSessionActivity: () => {},
+            handleRealtimeEvent: () => {},
+            applySessionConfig: async () => {}
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createLocalSessionRoutes({ store, getSyncEngine: () => engine, sources: [AGY_LOCAL_SESSION_SOURCE] }))
+
+        const first = await (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-grow'] })
+        })).json() as { results: Array<Record<string, unknown>> }
+        expect(first.results[0]).toMatchObject({ action: 'created', appended: 2 })
+
+        current = grown
+        const second = await (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-grow'] })
+        })).json() as { results: Array<Record<string, unknown>> }
+        expect(second.results[0]).toMatchObject({ agySessionId: 'agy-grow', action: 'updated', appended: 1 })
     })
 
 })
