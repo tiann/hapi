@@ -6564,7 +6564,8 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             ]);
         });
 
-        // Follow-up prompt plans and executes a brand-new `run_command` with identical args, stdout, and exit code.
+        // Follow-up prompt plans and executes a brand-new `run_command` with identical args, stdout, and exit code,
+        // and another tool_result arrives BEFORE the planner row is flushed to transcript.jsonl!
         backend.promptScripts.push(async (onUpdate) => {
             onUpdate({
                 type: 'tool_call',
@@ -6581,6 +6582,22 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 id: 'call-fresh-same-output',
                 status: 'completed',
                 output: { stdout: 'SYNTH_TIMEOUT_OK', exit_code: 0 }
+            });
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-other-read',
+                name: 'Read',
+                title: 'read_file',
+                status: 'completed',
+                input: {},
+                nativeName: 'read_file',
+                nativeArgs: { Path: '/tmp/a.txt' }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'call-other-read',
+                status: 'completed',
+                output: 'file contents'
             });
             onUpdate({ type: 'text', text: 'Ran command again.' } as unknown as AgentMessage);
             onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
@@ -6817,12 +6834,22 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         await runPromise;
     });
 
-    it('retains prior background command correlation after stopping an active follow-up turn so a later wakeup settles the original Bash card', async () => {
+    it('retains prior background command correlation after stopping an active follow-up turn and settles completions written before or after Stop', async () => {
         const backend = new WakeupTestBackend();
         const { session, queue, client } = makeHarness('always-proceed');
         const acp = backend.sessionIdToCreate;
 
         backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-bg-before-stop',
+                name: 'Bash',
+                title: 'sleep 5 && echo BEFORE_STOP_OK',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 5 && echo BEFORE_STOP_OK' }
+            });
             onUpdate({
                 type: 'tool_call',
                 id: 'call-bg-survives-stop',
@@ -6841,7 +6868,10 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                     source: 'MODEL',
                     type: 'PLANNER_RESPONSE',
                     status: 'DONE',
-                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 10 && echo SURVIVED_STOP_OK"' } }]
+                    tool_calls: [
+                        { name: 'run_command', args: { CommandLine: '"sleep 5 && echo BEFORE_STOP_OK"' } },
+                        { name: 'run_command', args: { CommandLine: '"sleep 10 && echo SURVIVED_STOP_OK"' } }
+                    ]
                 },
                 {
                     step_index: 2,
@@ -6849,6 +6879,13 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                     type: 'RUN_COMMAND',
                     status: 'RUNNING',
                     content: `Tool is running as a background task with task id: ${acp}/task-1`
+                },
+                {
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${acp}/task-2`
                 }
             ]);
         });
@@ -6877,6 +6914,21 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         queue.push('turn 2', { permissionMode: 'always-proceed' }, 'm2');
         await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
 
+        client.sendAgentMessage.mockClear();
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, acp)!;
+        // Write `task-1`'s completion BEFORE the cancelled prompt returns!
+        appendFileSync(
+            compactPath,
+            `${JSON.stringify({
+                step_index: 4,
+                source: 'SYSTEM',
+                type: 'SYSTEM_MESSAGE',
+                status: 'DONE',
+                content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nBEFORE_STOP_OK\n</SYSTEM_MESSAGE>`
+            })}\n`,
+            'utf8'
+        );
+
         // Stop the active Turn 2!
         const abortHandler = client.rpcHandlerManager.handlers.get('abort')!;
         const abortPromise = abortHandler();
@@ -6884,23 +6936,31 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         await abortPromise;
         await vi.waitFor(() => expect(readyCount()).toBe(2));
 
+        // Verify `call-bg-before-stop` (`task-1`) updated immediately during Stop without another turn!
+        const messagesAfterStop = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(messagesAfterStop).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'call-bg-before-stop',
+            is_error: false,
+            output: { stdout: 'BEFORE_STOP_OK', exit_code: 0 }
+        }));
+
         client.sendAgentMessage.mockClear();
         client.sendClaudeSessionMessage.mockClear();
 
-        // Now `task-1` from Turn 1 finishes in a transcript wakeup and must update `call-bg-survives-stop`!
-        const { compactPath } = agyTranscriptPaths(tempBrainDir, acp)!;
+        // Now `task-2` from Turn 1 finishes in a transcript wakeup and must update `call-bg-survives-stop`!
         appendFileSync(
             compactPath,
             [
                 JSON.stringify({
-                    step_index: 3,
+                    step_index: 5,
                     source: 'SYSTEM',
                     type: 'SYSTEM_MESSAGE',
                     status: 'DONE',
-                    content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSURVIVED_STOP_OK\n</SYSTEM_MESSAGE>`
+                    content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-2" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSURVIVED_STOP_OK\n</SYSTEM_MESSAGE>`
                 }),
                 JSON.stringify({
-                    step_index: 4,
+                    step_index: 6,
                     source: 'MODEL',
                     type: 'PLANNER_RESPONSE',
                     status: 'DONE',

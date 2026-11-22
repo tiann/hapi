@@ -444,6 +444,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (latest > prevCursor) {
             this.lastTranscriptStepIndex = latest;
             if (prevCursor >= 0 && this.backgroundCommands.length > 0) {
+                this.settleTranscriptBackgroundCommands(latest);
+            }
+            if (prevCursor >= 0 && this.backgroundCommands.length > 0) {
                 this.recordDeferredTruncatedSystemSteps(
                     readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, prevCursor)
                         .filter((step) => step.step_index <= latest)
@@ -1327,13 +1330,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // ends only when every open request has settled. Steers sent
             // during this wait extend it.
             await this.waitForSteers(turn);
-            this.flushDeferredLiveCommandCalls(turn);
+            this.flushDeferredLiveCommandCalls(turn, true);
             if (!turn.aborted && !this.backendLost) {
                 this.syncTurnTranscriptCursor(turn, turnStartStepIndex, internalWakeup ? commandWindowAfterStepIndex : undefined);
             }
             this.closeBackgroundCommands(turn, commandWindowAfterStepIndex);
             if (!turn.aborted && !this.backendLost) {
-                this.reconcileRetainedAmbiguousCompletions(turn);
+                this.reconcileRetainedAmbiguousCompletions(turn, true);
                 this.settleTranscriptBackgroundCommands(this.lastTranscriptStepIndex);
                 if (this.retainedAmbiguousCompletions.length === 0) {
                     this.settledSyntheticCommands.length = 0;
@@ -1742,7 +1745,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.forwardAgentMessage(this.showQuestionCard(callMessage));
     }
 
-    private flushDeferredLiveCommandCalls(turn: AgyTurn): void {
+    private flushDeferredLiveCommandCalls(turn: AgyTurn, allowSettledReplaySuppression = false): void {
         if (turn.deferredLiveCommandCalls.size > 0) {
             const pending = [...turn.deferredLiveCommandCalls.values()];
             turn.deferredLiveCommandCalls.clear();
@@ -1750,10 +1753,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.emitDeferredLiveCommandCall(turn, callMessage);
             }
         }
-        this.reconcileRetainedAmbiguousCompletions(turn);
+        this.reconcileRetainedAmbiguousCompletions(turn, allowSettledReplaySuppression);
     }
 
-    private reconcileRetainedAmbiguousCompletions(turn: AgyTurn | null): void {
+    private reconcileRetainedAmbiguousCompletions(
+        turn: AgyTurn | null,
+        allowSettledReplaySuppression = false
+    ): void {
         const acpSessionId = this.acpSessionId;
         if (!acpSessionId || this.retainedAmbiguousCompletions.length === 0) return;
 
@@ -1775,17 +1781,46 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                 );
                 if (match.kind === 'matched') {
-                    this.retainedAmbiguousCompletions.splice(idx, 1);
-                    idx -= 1;
-                    progressed = true;
-                    if (turn) turn.corroboratedSyntheticMatches += 1;
                     const settledIdx = this.settledSyntheticCommands.findIndex(
                         (entry) => entry.callId === match.entry.callId
                     );
                     if (settledIdx >= 0) {
+                        const exactTaskMatch = match.entry.taskId !== undefined
+                            && matchesBackgroundTaskId(item.resultMessage.id, match.entry.taskId);
+                        if (!exactTaskMatch) {
+                            if (!allowSettledReplaySuppression) {
+                                continue;
+                            }
+                            const turnHasSteps = readLatestAgyTranscriptStepIndex(this.brainDir, acpSessionId)
+                                > item.turnStartStepIndex;
+                            if (!turnHasSteps) {
+                                this.retainedAmbiguousCompletions.splice(idx, 1);
+                                idx -= 1;
+                                progressed = true;
+                                if (item.callMessage && turn) {
+                                    this.emitDeferredLiveCommandCall(turn, item.callMessage);
+                                } else if (item.callMessage) {
+                                    this.forwardAgentMessage(this.showQuestionCard(item.callMessage));
+                                }
+                                if (turn) {
+                                    turn.generation.observe(item.resultMessage);
+                                    this.trackOpenCommand(turn, item.resultMessage, false);
+                                }
+                                this.forwardAgentMessage(this.showQuestionCard(item.resultMessage));
+                                continue;
+                            }
+                        }
+                        this.retainedAmbiguousCompletions.splice(idx, 1);
+                        idx -= 1;
+                        progressed = true;
+                        if (turn) turn.corroboratedSyntheticMatches += 1;
                         this.settledSyntheticCommands.splice(settledIdx, 1);
                         continue;
                     }
+                    this.retainedAmbiguousCompletions.splice(idx, 1);
+                    idx -= 1;
+                    progressed = true;
+                    if (turn) turn.corroboratedSyntheticMatches += 1;
                     this.nativeToolNames.set(match.entry.callId, 'run_command');
                     const effectiveResult: AgentMessage = { ...item.resultMessage, id: match.entry.callId };
                     if (turn) {
