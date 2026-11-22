@@ -908,6 +908,14 @@ describe('bucketRunningSessions', () => {
         expect(buckets.pending).toHaveLength(0)
     })
 
+    it('keeps an archived session in Archived even if its job is still reporting', () => {
+        const archived = { ...withJob, metadata: { path: '/p', lifecycleState: 'archived' } }
+        expect(bucketRunningSessions([archived], 'jobs').jobs).toEqual([])
+        expect(bucketRunningSessions([archived], 'all').jobs).toEqual([])
+        expect(filterSessionsForListStatus([archived], 'active')).toEqual([])
+        expect(filterSessionsForListStatus([archived], 'archived')).toEqual([archived])
+    })
+
     it('puts running attachedJob into jobs under mode jobs', () => {
         const buckets = bucketRunningSessions([withJob, quiet], 'jobs')
         expect(buckets.jobs.map((s) => s.id)).toEqual(['job-1'])

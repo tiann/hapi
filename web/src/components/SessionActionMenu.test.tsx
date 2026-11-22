@@ -44,6 +44,13 @@ beforeEach(() => {
     platformState.isTelegram = false
 })
 
+it('offers archive on a disconnected live lifecycle without hiding inactive-row actions', () => {
+    const { props } = renderMenu({ sessionActive: false, canArchive: true })
+    expect(screen.getByRole('menuitem', { name: 'Reopen' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }))
+    expect(props.onArchive).toHaveBeenCalledOnce()
+})
+
 describe('SessionActionMenu - Pin action', () => {
     it('renders project and global pin actions', () => {
         const onSetPinMode = vi.fn()

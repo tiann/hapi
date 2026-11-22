@@ -1087,7 +1087,7 @@ export default {
   'settings.display.pinInProgressMode.jobs': '長時間ジョブ',
   'settings.display.pinInProgressMode.all': '作業中と保留中',
   'settings.display.keepUnreadSessionsVisible': '未読セッションを表示したままにする',
-  'settings.display.keepUnreadSessionsVisible.desc': '折りたたまれたプロジェクトでも、ヘッダーの下に未読セッションを一覧表示し、セッションのプレビュー上限で未読の行が隠れることはありません。オフにすると、折りたたまれたプロジェクトは完全に折りたたまれ、プレビュー上限は未読の行にも適用されます。',
+  'settings.display.keepUnreadSessionsVisible.desc': '自動で折りたたまれたプロジェクトには未読セッションを表示します。手動で閉じるとすべての行が隠れます。オンの間はプレビュー件数にかかわらず未読を表示します。',
   'settings.display.appBadge': 'タスクバーの未読バッジ',
   'settings.notifications.title': '通知',
   'settings.notifications.push': 'このデバイスでのプッシュ通知',

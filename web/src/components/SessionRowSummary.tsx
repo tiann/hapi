@@ -221,7 +221,7 @@ export function SessionRowSummary(props: {
     const derivedWork = s.derivedToolWork === true
     const isRunning = s.active && s.thinking
     const isBackgroundOnly = s.active && !s.thinking && (s.backgroundTaskCount ?? 0) > 0
-    const presence: 'working' | 'waiting' | 'stopped' = isRunning || attachedJob || derivedWork || isBackgroundOnly
+    const presence: 'working' | 'waiting' | 'stopped' = isRunning || (attachedJob && s.metadata?.lifecycleState !== 'archived') || derivedWork || isBackgroundOnly
         ? 'working'
         : s.active
             ? 'waiting'

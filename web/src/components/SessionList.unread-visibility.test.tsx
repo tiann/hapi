@@ -76,7 +76,7 @@ describe('SessionList unread visibility', () => {
         localStorage.clear()
     })
 
-    it('keeps unread rows of a collapsed project visible and folds the read ones', () => {
+    it('peeks unread rows until the operator explicitly closes the project', () => {
         seedReads({ read: 1000, unread: 1000 })
         renderSessionList([
             makeSession({ id: 'read', updatedAt: 1000, metadata: { path: '/work/quiet', name: 'Read row' } }),
@@ -94,7 +94,12 @@ describe('SessionList unread visibility', () => {
         expect(screen.getByRole('button', { name: /Unread row/ })).toBe(unreadRow)
 
         fireEvent.click(screen.getByTitle('/work/quiet'))
-        expect(screen.getByRole('button', { name: /Unread row/ })).toBe(unreadRow)
+        const panel = unreadRow.closest('.collapsible-panel')!
+        expect(panel).not.toHaveAttribute('data-open')
+        fireEvent.transitionEnd(panel)
+        expect(screen.queryByRole('button', { name: /Unread row/ })).toBeNull()
+        fireEvent.click(screen.getByTitle('/work/quiet'))
+        expect(screen.getByRole('button', { name: /Unread row/ })).toBeInTheDocument()
     })
 
     it('shows nothing under a collapsed project once everything is read', () => {

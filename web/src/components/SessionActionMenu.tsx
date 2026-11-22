@@ -22,6 +22,7 @@ type SessionActionMenuProps = {
     sessionId: string
     sessionTitle: string
     sessionActive: boolean
+    canArchive?: boolean
     onRename: () => void
     onLinkPr?: () => void
     /** When linked, shown at the top of the long-press / more menu. */
@@ -207,6 +208,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         sessionId,
         sessionTitle,
         sessionActive,
+        canArchive = sessionActive,
         onRename,
         onLinkPr,
         linkedPr,
@@ -490,7 +492,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     </button>
                 ) : null}
 
-                {sessionActive ? (
+                {canArchive ? (
                     <button
                         type="button"
                         role="menuitem"
@@ -500,7 +502,8 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                         <ArchiveIcon className="h-[18px] w-[18px] text-red-500" />
                         {t('session.action.archive')}
                     </button>
-                ) : (
+                ) : null}
+                {!sessionActive && (
                     <>
                         {onReopen || reopenDisabledReason || reopenHint ? (
                             <HoverTooltip

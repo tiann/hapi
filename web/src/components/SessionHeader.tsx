@@ -1,3 +1,4 @@
+import { isLiveLifecycleState } from '@hapi/protocol/sessionLifecycle'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { NativeAppPromoButton } from '@/components/NativeAppPromo'
 import { useIsMutating, useQueryClient } from '@tanstack/react-query'
@@ -597,6 +598,7 @@ export function SessionHeader(props: {
                 sessionId={session.id}
                 sessionTitle={title}
                 sessionActive={session.active}
+                canArchive={session.active || isLiveLifecycleState(session.metadata?.lifecycleState)}
                 sessionPinned={Boolean(session.pinned)}
                 sessionGlobalPinned={Boolean(session.globalPinned)}
                 onRename={() => setRenameOpen(true)}

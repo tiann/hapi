@@ -1158,7 +1158,7 @@ export default {
   'settings.display.pinInProgressMode.jobs': 'Long-running jobs',
   'settings.display.pinInProgressMode.all': 'Working & pending',
   'settings.display.keepUnreadSessionsVisible': 'Keep unread sessions visible',
-  'settings.display.keepUnreadSessionsVisible.desc': 'Collapsed projects list their unread sessions under the header, and the session preview limit never hides unread rows. Off folds collapsed projects completely and applies the preview limit to unread rows too.',
+  'settings.display.keepUnreadSessionsVisible.desc': 'Automatically folded projects show unread sessions; manually closing a project hides every row. When on, preview limits also keep unread sessions visible.',
   'settings.display.appBadge': 'Taskbar unread badge',
   'settings.notifications.title': 'Notifications',
   'settings.notifications.push': 'Push notifications on this device',

@@ -991,7 +991,7 @@ export default {
   'settings.display.pinInProgressMode.jobs': 'Долгие задачи',
   'settings.display.pinInProgressMode.all': 'Работа и ожидание',
   'settings.display.keepUnreadSessionsVisible': 'Не скрывать непрочитанные сессии',
-  'settings.display.keepUnreadSessionsVisible.desc': 'Свёрнутые проекты показывают свои непрочитанные сессии под заголовком, а лимит предпросмотра сессий не скрывает непрочитанные строки. Выключено — свёрнутые проекты сворачиваются полностью, и лимит предпросмотра действует и на непрочитанные.',
+  'settings.display.keepUnreadSessionsVisible.desc': 'Автоматически свёрнутые проекты показывают непрочитанные сессии. Если свернуть проект вручную, все строки будут скрыты. При включённой настройке лимит предпросмотра не скрывает непрочитанные.',
   'settings.display.appBadge': 'Значок непрочитанного на панели задач',
   'settings.notifications.title': 'Уведомления',
   'settings.notifications.push': 'Push-уведомления на этом устройстве',

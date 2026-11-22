@@ -1,3 +1,4 @@
+import { isLiveLifecycleState } from '@hapi/protocol/sessionLifecycle'
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import * as Popover from '@radix-ui/react-popover'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
@@ -1614,7 +1615,8 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const archiveNeedsConfirmation = s.thinking || s.pendingRequestsCount > 0 || (s.backgroundTaskCount ?? 0) > 0
     // The row can turn inactive before the archive request settles (the hub
     // still confirms cleanup); keep the spinner until it does.
-    const showQuickArchive = s.active || quickArchivePending
+    const canArchive = s.active || isLiveLifecycleState(s.metadata?.lifecycleState)
+    const showQuickArchive = canArchive || quickArchivePending
     const quickActionCount = (showQuickUnpin ? 1 : 0) + (showQuickArchive ? 1 : 0)
     const hasQuickAction = quickActionCount > 0
     const handleQuickArchive = async () => {
@@ -1816,6 +1818,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 sessionId={s.id}
                 sessionTitle={sessionName}
                 sessionActive={s.active}
+                canArchive={canArchive}
                 sessionPinned={Boolean(s.pinned)}
                 sessionGlobalPinned={Boolean(s.globalPinned)}
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
@@ -2612,10 +2615,9 @@ export function SessionList(props: {
     const [runningSectionCollapsed, setRunningSectionCollapsed] = useState(false)
     const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false)
     const autoExpandedSelectedSessionKeyRef = useRef<string | null>(null)
+    const groupOverrides = isFiltering ? filterCollapseOverrides : collapseOverrides
     const isGroupCollapsed = (group: SessionGroup): boolean => {
-        const override = isFiltering
-            ? filterCollapseOverrides.get(group.key)
-            : collapseOverrides.get(group.key)
+        const override = groupOverrides.get(group.key)
         if (override !== undefined) return override
         // Keep matching groups open by default while filtering. Explicit
         // header clicks use a temporary override for the active filter.
@@ -2878,11 +2880,12 @@ export function SessionList(props: {
     const renderDirectoryGroup = (group: SessionGroup) => {
         const isCollapsed = isGroupCollapsed(group)
         const visibleGroupSessions = getVisibleGroupSessions(group)
-        // A collapsed group still shows its unread rows, so new output in a
+        // An automatically collapsed group can still show its unread rows in a
         // quiet project is never folded out of sight. Each row folds on its
         // own instead of moving to a separate list, so toggling the group
         // never remounts (and re-animates) the rows that stay visible.
-        const isRowOpen = (s: SessionSummary) => !isCollapsed || (keepUnreadSessionsVisible && isSessionUnread(s))
+        const peekUnread = keepUnreadSessionsVisible && groupOverrides.get(group.key) !== true
+        const isRowOpen = (s: SessionSummary) => !isCollapsed || (peekUnread && isSessionUnread(s))
         const anyRowOpen = visibleGroupSessions.some(isRowOpen)
         const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
         const currentLimit = Math.min(
@@ -3054,6 +3057,7 @@ export function SessionList(props: {
         if (targetGroup) {
             const collapsed = isGroupCollapsed(targetGroup)
             const peekingUnread = collapsed
+                && groupOverrides.get(targetGroup.key) !== true
                 && keepUnreadSessionsVisible
                 && targetGroup.sessions.some((session) => session.id === target.sessionId && isSessionUnread(session))
             let expanding = false
