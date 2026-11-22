@@ -216,7 +216,7 @@ export class MachineCache {
             && healthDisplayChanged(previousHealth, machine.health)
         const shouldBroadcast = (!wasActive && machine.active)
             || healthChanged
-            || (now - lastBroadcastAt > 10_000)
+            || (now - lastBroadcastAt > 60_000)
         if (shouldBroadcast) {
             this.lastBroadcastAtByMachineId.set(machine.id, now)
             this.publisher.emit({ type: 'machine-updated', machineId: machine.id, data: machine })

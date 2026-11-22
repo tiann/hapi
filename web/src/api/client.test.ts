@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthProxyRedirectError } from './authProxy'
-import { ApiClient, ApiError } from './client'
+import { ApiClient, ApiError, apiErrorMessage } from './client'
 
 describe('ApiClient error mapping', () => {
     let originalFetch: typeof globalThis.fetch
@@ -10,6 +10,17 @@ describe('ApiClient error mapping', () => {
         originalFetch = globalThis.fetch
         fetchMock = vi.fn()
         globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    })
+
+    it('apiErrorMessage unwraps the hub error string and falls back cleanly', () => {
+        const body = '{"success":false,"error":"No online machine available for Pi history import"}'
+        const error = new ApiError(`HTTP 503 Service Unavailable: ${body}`, 503, 'No online machine available for Pi history import', body)
+        expect(apiErrorMessage(error, 'Failed to load local sessions')).toBe('No online machine available for Pi history import')
+        // No parseable body: the raw envelope must not leak; use the fallback.
+        expect(apiErrorMessage(new ApiError('HTTP 400 Bad Request: not json', 400), 'fallback')).toBe('fallback')
+        // Plain Errors keep their message; non-Errors use the fallback.
+        expect(apiErrorMessage(new Error('boom'), 'fallback')).toBe('boom')
+        expect(apiErrorMessage(undefined, 'fallback')).toBe('fallback')
     })
 
     it('passes an optional maxBytes bound to session file reads', async () => {
@@ -197,6 +208,16 @@ describe('ApiClient error mapping', () => {
             capabilities: { titleSuggestion: true }
         })
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/health')
+    })
+
+    it('loads the batch scratchlist session status', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ sessionIds: ['session-a', 'session-c'] }), { status: 200 })
+        )
+
+        const api = new ApiClient('test-token')
+        await expect(api.getScratchlistSessionIds()).resolves.toEqual(['session-a', 'session-c'])
+        expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/scratchlist-status')
     })
 
     it('asks the machine to re-probe agy only when the caller forces a refresh', async () => {

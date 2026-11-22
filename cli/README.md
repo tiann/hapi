@@ -29,6 +29,8 @@ Choose a supported coding agent from your terminal and control its sessions remo
 - `hapi claude` - Start a Claude Code session (passes through Claude CLI flags).
 - `hapi codex` - Start Codex mode. See `src/codex/runCodex.ts`.
 - `hapi codex resume <native-thread-id>` - Resume a Codex conversation by its native thread ID. For a HAPI session ID, use `hapi resume <id>`.
+- `hapi attach <native-thread-id> --socket /absolute/private/engine.sock` - Experimental macOS foreground bridge to an already-loaded external Codex thread. Independent of owned `hapi codex`; no server launch, native config injection or automatic Runner discovery. `--list` lists eligible loaded threads; `--new-view` explicitly replaces a history-rewrite-frozen projection.
+- `hapi detach <hapi-session-id>` - Disconnect an attached worker only; leave the external server, turn and native queue intact. See [external bridge limits and acceptance status](../docs/guide/codex-shared-sessions.md#experimental-external-desktop-bridge-macos).
 - `hapi cursor` - Start Cursor Agent mode. See `src/cursor/runCursor.ts`.
   Supports `hapi cursor resume <chatId>`, `hapi cursor --continue`, `--mode plan|ask`, `--yolo`, `--model`.
   Local and remote modes supported; new remote sessions use `agent acp`. Pre-ACP sessions retain the legacy `agent -p` stream-json resume path.
@@ -443,8 +445,12 @@ The pushed tag triggers `.github/workflows/release.yml`, which builds all binari
 runs `bun run --cwd cli publish-npm`, and creates the GitHub Release. npm publishing
 uses [Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC), so no npm
 token is involved; each `@twsxtd/hapi*` package must list `tiann/hapi` /
-`release.yml` as its trusted publisher on npmjs.com. Packages already on npm are
-skipped, so a failed release can be retried by re-running the workflow.
+`release.yml` as its trusted publisher on npmjs.com. The main npm package is
+published only once every platform version is visible in the public npm registry.
+The visibility check waits up to 30 minutes by default; set the repository Actions
+variable `NPM_PUBLISH_WAIT_TIMEOUT_SECONDS` to override it. If it times out, wait
+until the listed versions are visible and re-run the same workflow. Already
+published packages are skipped.
 
 `setup-bun` reads the build version from the root `package.json`'s `packageManager`.
 Keep local release builds on that version too. Bun 1.4.0 produces invalid

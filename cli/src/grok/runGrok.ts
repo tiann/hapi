@@ -62,10 +62,15 @@ export async function runGrok(opts: {
     const queue = new MessageQueue2<GrokMode>((mode) => hashObject(mode))
     const sessionRef: { current: GrokSession | null } = { current: null }
 
+    let shuttingDown = false
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'grok',
-        stopKeepAlive: () => sessionRef.current?.stopKeepAlive()
+        stopKeepAlive: () => sessionRef.current?.stopKeepAlive(),
+        onBeforeClose: () => {
+            shuttingDown = true
+            return sessionRef.current?.kill().catch((error) => logger.debug('[grok] Launcher kill failed', error))
+        }
     })
     lifecycle.registerProcessHandlers()
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session)
@@ -154,7 +159,7 @@ export async function runGrok(opts: {
             lifecycle.setExitCode(1)
             lifecycle.setArchiveReason(`Local launch failed: ${localFailure.message.slice(0, 200)}`)
             lifecycle.setSessionEndReason('error')
-        } else if (!crashed) {
+        } else if (!crashed && !shuttingDown) {
             lifecycle.setSessionEndReason('completed')
         }
         await lifecycle.cleanupAndExit()

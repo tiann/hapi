@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState } from '@/api/types';
 import type { AgentMessage } from '@/agent/types';
-import type { AcpSdkBackend } from '@/agent/backends/acp';
+import { AcpSdkBackend } from '@/agent/backends/acp';
 import { clearGeneratedImages, getGeneratedImage } from '@/modules/common/generatedImages';
 import { CursorExtensionAdapter } from './cursorExtensionAdapter';
 
@@ -25,7 +25,10 @@ function createHarness(options?: { onCreatePlanAccepted?: () => void }) {
     const backend = {
         registerExtensionRequestHandler(method: string, handler: ExtensionHandler) {
             handlers.set(method, handler);
-        }
+        },
+        // Lifetime mapping is covered against the real backend below.
+        resolveToolCallLifetimeId: (agentToolCallId: string) => agentToolCallId,
+        allocateToolCallRequestId: (lifetimeId: string) => lifetimeId
     } as unknown as AcpSdkBackend;
 
     const adapter = new CursorExtensionAdapter(
@@ -414,4 +417,56 @@ describe('CursorExtensionAdapter', () => {
             'p-cancel': { status: 'canceled', decision: 'abort' }
         });
     });
+});
+
+describe('CursorExtensionAdapter with the ACP backend', () => {
+    // The suite above pins Date.now; the backend's quiet windows need a real clock.
+    beforeEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('keys extension requests and task cards by the lifetime id of the ACP tool call', async () => {
+        const backend = new AcpSdkBackend({ command: 'cursor-agent', flavor: 'cursor' });
+        const handlers = new Map<string, ExtensionHandler>();
+        let agentState: AgentState = { requests: {}, completedRequests: {} };
+        const extensionMessages: AgentMessage[] = [];
+        // Capture the handlers instead of wiring them to a transport.
+        backend.registerExtensionRequestHandler = (method, handler) => {
+            handlers.set(method, handler as ExtensionHandler);
+        };
+        new CursorExtensionAdapter(
+            { updateAgentState: (update: (state: AgentState) => AgentState) => { agentState = update(agentState); } } as unknown as ApiSessionClient,
+            backend,
+            (message) => extensionMessages.push(message)
+        );
+        const internal = backend as unknown as {
+            handleNotification: (method: string, params: unknown) => void;
+            transport: unknown;
+        };
+        internal.transport = {
+            sendRequest: async () => {
+                internal.handleNotification('session/update', {
+                    sessionId: 'session-1',
+                    update: { sessionUpdate: 'tool_call', toolCallId: 'call-ask', title: 'Ask question', kind: 'other', status: 'pending', rawInput: { q: 1 } }
+                });
+                void handlers.get('cursor/ask_question')!({ toolCallId: 'call-ask', questions: [] }, null);
+                return { stopReason: 'end_turn' };
+            },
+            sendNotification: () => {},
+            close: async () => {}
+        };
+        const promptMessages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'ask me' }], (message) => promptMessages.push(message));
+
+        const callId = promptMessages.find((message) => message.type === 'tool_call')?.id;
+        expect(callId).toMatch(/^call-ask#/);
+        expect(Object.keys(agentState.requests ?? {})).toEqual([callId]);
+        expect(agentState.requests?.[callId!]).toMatchObject({ toolCallId: callId });
+
+        await handlers.get('cursor/task')!({ toolCallId: 'task-a', status: 'running' }, null);
+        await handlers.get('cursor/task')!({ toolCallId: 'task-a', status: 'completed' }, null);
+        const taskIds = extensionMessages.flatMap((message) => (message.type === 'tool_call' || message.type === 'tool_result' ? [message.id] : []));
+        expect(new Set(taskIds).size).toBe(1);
+        expect(taskIds[0]).toMatch(/^task-a#/);
+    }, 20_000);
 });

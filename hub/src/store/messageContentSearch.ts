@@ -5,10 +5,12 @@ import {
     extractInjectedTurnUuid,
     extractMessageRenderKey,
     extractSearchableMessageText,
+    getLiveReasoningStreamId,
     isLiveStreamSnapshot,
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
 import { decodeMessageContent } from './contentCodec'
+import { prepareCached } from './statementCache'
 
 export const MESSAGE_CONTENT_SEARCH_TABLE = 'message_content_search'
 // Bind scoped session IDs as one JSON value instead of expanding them into
@@ -478,7 +480,7 @@ function ensureMessageContentSearchTable(db: Database): void {
 
 export function removeMessageContentSearchIndex(db: Database, messageId: string): void {
     ensureMessageContentSearchTable(db)
-    const lookups = db.prepare(`
+    const lookups = prepareCached(db, `
         SELECT search_rowid
         FROM ${MESSAGE_CONTENT_SEARCH_LOOKUP_TABLE}
         WHERE target_message_id = ? OR message_id = ?
@@ -489,13 +491,13 @@ export function removeMessageContentSearchIndex(db: Database, messageId: string)
 }
 
 function removeMessageContentSearchRow(db: Database, searchRowId: number): void {
-    db.prepare(`DELETE FROM ${MESSAGE_CONTENT_SEARCH_SHORT_TABLE} WHERE search_rowid = ?`).run(searchRowId)
-    db.prepare(`DELETE FROM ${MESSAGE_CONTENT_SEARCH_TABLE} WHERE rowid = ?`).run(searchRowId)
-    db.prepare(`DELETE FROM ${MESSAGE_CONTENT_SEARCH_LOOKUP_TABLE} WHERE search_rowid = ?`).run(searchRowId)
+    prepareCached(db, `DELETE FROM ${MESSAGE_CONTENT_SEARCH_SHORT_TABLE} WHERE search_rowid = ?`).run(searchRowId)
+    prepareCached(db, `DELETE FROM ${MESSAGE_CONTENT_SEARCH_TABLE} WHERE rowid = ?`).run(searchRowId)
+    prepareCached(db, `DELETE FROM ${MESSAGE_CONTENT_SEARCH_LOOKUP_TABLE} WHERE search_rowid = ?`).run(searchRowId)
 }
 
 function removeMessageContentSearchIndexByKey(db: Database, searchKey: string): void {
-    const lookup = db.prepare(`
+    const lookup = prepareCached(db, `
         SELECT search_rowid
         FROM ${MESSAGE_CONTENT_SEARCH_LOOKUP_TABLE}
         WHERE message_id = ?
@@ -518,7 +520,7 @@ function insertMessageContentSearchIndex(
 ): void {
     const bounded = boundSearchableTextWithMetadata(message.text)
     const shortIndex = getShortSearchIndexData(bounded.text)
-    db.prepare(`
+    prepareCached(db, `
         INSERT INTO ${MESSAGE_CONTENT_SEARCH_LOOKUP_TABLE} (
             message_id, target_message_id, is_truncated, short_index_truncated
         ) VALUES (?, ?, ?, ?)
@@ -528,13 +530,13 @@ function insertMessageContentSearchIndex(
         message.truncated === true || bounded.truncated ? 1 : 0,
         shortIndex.truncated ? 1 : 0
     )
-    const lookup = db.prepare(`
+    const lookup = prepareCached(db, `
         SELECT search_rowid
         FROM ${MESSAGE_CONTENT_SEARCH_LOOKUP_TABLE}
         WHERE message_id = ?
     `).get(message.id) as DbSearchLookupRow | undefined
     if (!lookup) throw new Error('Failed to create message content search lookup')
-    db.prepare(`
+    prepareCached(db, `
         INSERT INTO ${MESSAGE_CONTENT_SEARCH_TABLE} (
             rowid, searchable_text, message_id, session_id, seq, created_at, role
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -547,7 +549,7 @@ function insertMessageContentSearchIndex(
         message.createdAt,
         message.role
     )
-    const insertShortGrams = db.prepare(`
+    const insertShortGrams = prepareCached(db, `
         INSERT OR IGNORE INTO ${MESSAGE_CONTENT_SEARCH_SHORT_TABLE} (gram, search_rowid)
         SELECT value, ? FROM json_each(?)
     `)
@@ -558,10 +560,10 @@ function insertMessageContentSearchIndex(
 }
 
 export function indexMessageContent(db: Database, message: IndexableMessage): void {
-    // Pi emits cumulative live snapshots every 250 ms. They are deliberately
-    // not indexed; the explicit terminal snapshot carries the same render key
-    // and is indexed once when the stream finishes.
-    if (isLiveStreamSnapshot(message.content)) return
+    // Pi emits cumulative live snapshots and reasoning streams emit replaceable
+    // live snapshots every few hundred ms. They are ephemeral and skipped from FTS;
+    // the explicit terminal snapshot carries the settled text and is indexed once.
+    if (isLiveStreamSnapshot(message.content) || getLiveReasoningStreamId(message.content) !== null) return
     rememberInjectedTurnUuid(db, message.sessionId, message.content)
     ensureMessageContentSearchTable(db)
     const renderKey = extractMessageRenderKey(message.content)

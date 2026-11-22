@@ -11,9 +11,13 @@ import {
     extractNotifySummary,
     getAgyTaskLogId,
     getLiveReasoningStreamId,
+    getTextLiveStreamId,
+    getTextSnapshotStreamId,
+    getTextStreamId,
     getReasoningStreamId,
     getToolCallId,
     isRedundantGoalStatusEventContent,
+    detectNotifySummaryNearMiss,
     splitNotifySummary,
     stripAgyEchoedTaskResult,
     stripNotifySummaryFooter,
@@ -699,11 +703,96 @@ describe('stripNotifySummaryFooter', () => {
         expect(stripNotifySummaryFooter(`Done.\n${FOOTER}\n\n`)).toBe('Done.')
     })
 
-    test('leaves malformed or truncated footers untouched', () => {
-        const truncated = 'Done.\nAGENT_NOTIFY_SUMMARY {"summary":'
-        const bogus = 'Done.\nAGENT_NOTIFY_SUMMARY {bogus}'
-        expect(stripNotifySummaryFooter(truncated)).toBe(truncated)
-        expect(stripNotifySummaryFooter(bogus)).toBe(bogus)
+    test('strips a truncated footer so the raw machine line never reaches the reader', () => {
+        // Observed in the wild: the closing brace is missing after truncation.
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok')).toBe('Done.')
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY {bogus}')).toBe('Done.')
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY not-json')).toBe('Done.')
+    })
+
+    test('strips a half-streamed footer as it is being written', () => {
+        expect(stripNotifySummaryFooter('Working.\nAGENT_NOTIFY_SUMMARY {"ver')).toBe('Working.')
+    })
+
+    test('keeps a whitespace-delimited mention of the token even when its JSON is broken', () => {
+        const mention = 'The contract looks like Example: AGENT_NOTIFY_SUMMARY {"summary":'
+        expect(stripNotifySummaryFooter(mention)).toBe(mention)
+    })
+
+    test('keeps a footer example written in an inline-code span', () => {
+        const inlineCode = 'Use `AGENT_NOTIFY_SUMMARY {"status":"done"}` at the end.'
+        const bareSpan = 'Use `AGENT_NOTIFY_SUMMARY {"status":"done"}`'
+        const gluedInsideSpan = 'The shape is `Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`'
+        expect(stripNotifySummaryFooter(inlineCode)).toBe(inlineCode)
+        expect(stripNotifySummaryFooter(bareSpan)).toBe(bareSpan)
+        expect(stripNotifySummaryFooter(gluedInsideSpan)).toBe(gluedInsideSpan)
+    })
+
+    test('keeps a footer example in quoted prose', () => {
+        const quoted = 'It said "AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.'
+        const parenthesised = 'The footer (AGENT_NOTIFY_SUMMARY {"status":"done"}) goes last.'
+        expect(stripNotifySummaryFooter(quoted)).toBe(quoted)
+        expect(stripNotifySummaryFooter(parenthesised)).toBe(parenthesised)
+    })
+
+    test('keeps a quoted example that has glued prose inside the quotes', () => {
+        // Quoting is a span, not the one character before the token: the char
+        // before the token here is ordinary prose punctuation.
+        const quotedGlue = 'The agent wrote "Done.AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.'
+        const parenthesisedGlue = `('Done.AGENT_NOTIFY_SUMMARY {"status":"done"}')`
+        const bracketed = 'See [Done.AGENT_NOTIFY_SUMMARY {"status":"done"}] above.'
+        expect(stripNotifySummaryFooter(quotedGlue)).toBe(quotedGlue)
+        expect(stripNotifySummaryFooter(parenthesisedGlue)).toBe(parenthesisedGlue)
+        expect(stripNotifySummaryFooter(bracketed)).toBe(bracketed)
+    })
+
+    test('keeps an example in a multi-backtick code span', () => {
+        // Markdown closes a span with a run of the same length, so a literal
+        // backtick inside a ``...`` span is content, not a delimiter.
+        const doubled = 'Use ``Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`` at the end.'
+        const withLiteralTick = 'Use ``a ` b.AGENT_NOTIFY_SUMMARY {"status":"done"}`` at the end.'
+        const tripled = 'Use ```Done.AGENT_NOTIFY_SUMMARY {"status":"done"}``` at the end.'
+        expect(stripNotifySummaryFooter(doubled)).toBe(doubled)
+        expect(stripNotifySummaryFooter(withLiteralTick)).toBe(withLiteralTick)
+        expect(stripNotifySummaryFooter(tripled)).toBe(tripled)
+    })
+
+    test('keeps a near-miss footer that shares its line with prose', () => {
+        // A partial payload has no object end to measure, so the only signal
+        // left is that the line opens with prose - and prose is the thing we
+        // must not delete. The status is lost either way; this decides only
+        // whether one odd line stays on screen.
+        const quotedPartial = 'Use `AGENT_NOTIFY_SUMMARY {"summary":` to reproduce the failure.'
+        const quotedNonObject = 'Use `AGENT_NOTIFY_SUMMARY not-json` to reproduce the failure.'
+        const quotedGluedPartial = 'It wrote "Done.AGENT_NOTIFY_SUMMARY {"summary":" and stopped.'
+        const gluedTruncation = 'Ownership session pinged.AGENT_NOTIFY_SUMMARY {"summary":'
+        // The reason this is decided by the line and not by the payload: an
+        // open string swallows whatever follows it, so the payload of this
+        // example is byte-for-byte the shape of a real truncation
+        // (`"summary":"ok`). No payload-shape test can separate the two.
+        const quotedOpenString = 'Use `AGENT_NOTIFY_SUMMARY {"summary":"` to reproduce the failure.'
+        expect(stripNotifySummaryFooter(quotedPartial)).toBe(quotedPartial)
+        expect(stripNotifySummaryFooter(quotedNonObject)).toBe(quotedNonObject)
+        expect(stripNotifySummaryFooter(quotedGluedPartial)).toBe(quotedGluedPartial)
+        expect(stripNotifySummaryFooter(gluedTruncation)).toBe(gluedTruncation)
+        expect(stripNotifySummaryFooter(quotedOpenString)).toBe(quotedOpenString)
+    })
+
+    test('still strips a near miss that owns its line, indented or not', () => {
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY {"summary":')).toBe('Done.')
+        expect(stripNotifySummaryFooter('Done.\n    AGENT_NOTIFY_SUMMARY {"summary":')).toBe('Done.')
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY not-json')).toBe('Done.')
+    })
+
+    test('still strips a VALID footer glued to prose - it is its own evidence', () => {
+        expect(stripNotifySummaryFooter('Ownership session pinged.AGENT_NOTIFY_SUMMARY {"summary":"ok"}')).toBe(
+            'Ownership session pinged.'
+        )
+    })
+
+    test('keeps the bare token with no payload', () => {
+        const bare = 'Done.\nAGENT_NOTIFY_SUMMARY'
+        expect(stripNotifySummaryFooter(bare)).toBe(bare)
     })
 
     test('leaves mid-body mentions and non-final footers untouched', () => {
@@ -715,6 +804,118 @@ describe('stripNotifySummaryFooter', () => {
 
     test('returns empty string when the message is only a footer', () => {
         expect(stripNotifySummaryFooter(FOOTER)).toBe('')
+    })
+})
+
+describe('detectNotifySummaryNearMiss', () => {
+    test('returns null for non-string and empty input', () => {
+        expect(detectNotifySummaryNearMiss(null)).toBeNull()
+        expect(detectNotifySummaryNearMiss(undefined)).toBeNull()
+        expect(detectNotifySummaryNearMiss(42)).toBeNull()
+        expect(detectNotifySummaryNearMiss('')).toBeNull()
+        expect(detectNotifySummaryNearMiss('   \n\n  ')).toBeNull()
+    })
+
+    test('reports a truncated footer as unterminated JSON', () => {
+        const near = detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok')
+        expect(near?.reason).toBe('unterminated-json')
+        expect(near?.payloadLength).toBe('{"status":"done","summary":"ok'.length)
+    })
+
+    test('reports a complete object followed by prose on the same line', () => {
+        const near = detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {"status":"done"} and one more thing')
+        expect(near?.reason).toBe('trailing-content')
+    })
+
+    test('reports balanced braces that do not parse', () => {
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {bogus}')?.reason).toBe('invalid-json')
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {"a":1,}')?.reason).toBe('invalid-json')
+    })
+
+    test('reports a payload that is not an object', () => {
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY [1,2]')?.reason).toBe('not-an-object')
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY not-json')?.reason).toBe('not-an-object')
+    })
+
+    test('does not confuse a brace inside a string value for the end of the object', () => {
+        expect(
+            detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {"summary":"a } brace","status":"done"')?.reason
+        ).toBe('unterminated-json')
+    })
+
+    test('returns null for a well-formed footer', () => {
+        expect(detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok"}')).toBeNull()
+        expect(
+            detectNotifySummaryNearMiss('Done.AGENT_NOTIFY_SUMMARY {"summary":"mentions AGENT_NOTIFY_SUMMARY here"}')
+        ).toBeNull()
+    })
+
+    test('returns null for a whitespace-delimited prose mention, however broken', () => {
+        expect(detectNotifySummaryNearMiss('The shape is AGENT_NOTIFY_SUMMARY {...}')).toBeNull()
+        expect(detectNotifySummaryNearMiss('Example: AGENT_NOTIFY_SUMMARY {"summary":')).toBeNull()
+    })
+
+    test('classifies every quoting style of example as trailing content', () => {
+        // Not null: a stray-text emitter is worth logging. Not stripped
+        // either - see the stripNotifySummaryFooter suite. One rule covers
+        // every quoting style because an example closes its delimiter *after*
+        // the payload, which is exactly what trailing content means.
+        for (const example of [
+            'Use `AGENT_NOTIFY_SUMMARY {"status":"done"}` at the end.',
+            'It said "AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.',
+            'The shape is `Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`',
+            'The agent wrote "Done.AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.',
+            `('Done.AGENT_NOTIFY_SUMMARY {"status":"done"}')`,
+            'See [Done.AGENT_NOTIFY_SUMMARY {"status":"done"}] above.',
+            'Use ``Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`` at the end.',
+            'Use ``a ` b.AGENT_NOTIFY_SUMMARY {"status":"done"}`` at the end.'
+        ]) {
+            expect(detectNotifySummaryNearMiss(example)?.reason).toBe('trailing-content')
+            expect(stripNotifySummaryFooter(example)).toBe(example)
+        }
+    })
+
+    test('still reports a genuine glued footer after an earlier inline-code span', () => {
+        expect(detectNotifySummaryNearMiss('Ran `bun test`.AGENT_NOTIFY_SUMMARY {"status":')?.reason).toBe(
+            'unterminated-json'
+        )
+        expect(detectNotifySummaryNearMiss('He said "hello".AGENT_NOTIFY_SUMMARY {"status":')?.reason).toBe(
+            'unterminated-json'
+        )
+        expect(detectNotifySummaryNearMiss(`I didn't finish.AGENT_NOTIFY_SUMMARY {"status":`)?.reason).toBe(
+            'unterminated-json'
+        )
+    })
+
+    test('marks a near miss sharing its line with prose as kept, not removed', () => {
+        const quotedPartial = detectNotifySummaryNearMiss(
+            'Use `AGENT_NOTIFY_SUMMARY {"summary":` to reproduce the failure.'
+        )
+        expect(quotedPartial?.reason).toBe('unterminated-json')
+        expect(quotedPartial?.removedFromDisplay).toBe(false)
+
+        const owned = detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY {"summary":')
+        expect(owned?.reason).toBe('unterminated-json')
+        expect(owned?.removedFromDisplay).toBe(true)
+    })
+
+    test('returns null for a bare token with no payload', () => {
+        expect(detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY')).toBeNull()
+        expect(detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY   ')).toBeNull()
+    })
+
+    test('returns null when the broken footer is not the last non-empty line', () => {
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {"summary":\nOh, one more thing.')).toBeNull()
+    })
+
+    test('returns null for ordinary prose', () => {
+        expect(detectNotifySummaryNearMiss('Plain assistant prose.')).toBeNull()
+    })
+
+    test('a near miss still yields no summary and no split', () => {
+        const truncated = 'Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok'
+        expect(extractNotifySummary(truncated)).toBeNull()
+        expect(splitNotifySummary(truncated)).toBeNull()
     })
 })
 
@@ -873,5 +1074,70 @@ describe('hasConversationMessageContent', () => {
         { role: 'agent', content: { type: 'codex', data: { type: 'error', message: 'Launch failed' } } },
     ])('rejects bookkeeping and empty content: %j', (content) => {
         expect(hasConversationMessageContent(content)).toBe(false)
+    })
+})
+
+describe('text stream identity', () => {
+    function textContent(overrides: Record<string, unknown> = {}) {
+        return {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'message', message: 'answer', id: 'text-stream-1', ...overrides }
+            }
+        }
+    }
+
+    test('reads the stream id from a live snapshot', () => {
+        const live = textContent({ streamSnapshot: true, live: true })
+        expect(getTextStreamId(live)).toBe('text-stream-1')
+        expect(getTextLiveStreamId(live)).toBe('text-stream-1')
+        expect(getTextSnapshotStreamId(live)).toBe('text-stream-1')
+    })
+
+    test('treats a settled text message as part of the stream but not as live', () => {
+        const settled = textContent({ streamSnapshot: true })
+        expect(getTextStreamId(settled)).toBe('text-stream-1')
+        expect(getTextLiveStreamId(settled)).toBeNull()
+        expect(getTextSnapshotStreamId(settled)).toBe('text-stream-1')
+    })
+
+    test('a snapshot-marked row without the live marker still groups by stream (backfill shape)', () => {
+        // Rows written before the hub learned to sweep text streams: the wire
+        // carried streamSnapshot but never live, so only the snapshot reader
+        // can recognise them as members of a stream.
+        const legacy = textContent({ streamSnapshot: true })
+        expect(getTextSnapshotStreamId(legacy)).toBe('text-stream-1')
+        expect(getTextLiveStreamId(legacy)).toBeNull()
+    })
+
+    test('an id-less text message never reads as a stream', () => {
+        const plain = { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'answer' } } }
+        expect(getTextStreamId(plain)).toBeNull()
+        expect(getTextLiveStreamId(plain)).toBeNull()
+        expect(getTextSnapshotStreamId(plain)).toBeNull()
+    })
+
+    test('an id-bearing text message without the snapshot marker is not a backfill candidate', () => {
+        const noMarker = textContent()
+        expect(getTextStreamId(noMarker)).toBe('text-stream-1')
+        expect(getTextSnapshotStreamId(noMarker)).toBeNull()
+    })
+
+    test('does not treat a non-boolean live marker as live', () => {
+        expect(getTextLiveStreamId(textContent({ streamSnapshot: true, live: 'yes' }))).toBeNull()
+    })
+
+    test.each([
+        ['a user-role envelope', { role: 'user', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'hi', id: 's', streamSnapshot: true } } }],
+        ['a different payload type', { role: 'agent', content: { type: 'event', data: { type: 'message', message: 'hi', id: 's', streamSnapshot: true } } }],
+        ['a different data type', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'reasoning', message: 'hi', id: 's', streamSnapshot: true } } }],
+        ['a blank id', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'hi', id: '   ', streamSnapshot: true } } }],
+        ['a non-string id', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'hi', id: 7, streamSnapshot: true } } }],
+        ['a non-object value', 'text']
+    ])('returns null for %s', (_label, value) => {
+        expect(getTextStreamId(value)).toBeNull()
+        expect(getTextLiveStreamId(value)).toBeNull()
+        expect(getTextSnapshotStreamId(value)).toBeNull()
     })
 })

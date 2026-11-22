@@ -35,6 +35,8 @@ import type { EnhancedMode } from './loop';
 type ChildOptions = {
     exitCode?: number | null;
     stderr?: string;
+    /** Hold the close event; the test closes the child via closeChild(). */
+    hold?: boolean;
 };
 
 function makeChild(opts: ChildOptions = {}) {
@@ -45,6 +47,15 @@ function makeChild(opts: ChildOptions = {}) {
         stderr,
         on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
             if (event === 'close') {
+                if (opts.hold) {
+                    child.closeChild = (code: number | null, stderrText?: string) => {
+                        if (stderrText) {
+                            stderr.emit('data', Buffer.from(stderrText));
+                        }
+                        handler(code, null);
+                    };
+                    return;
+                }
                 setImmediate(() => {
                     if (opts.stderr) {
                         // emit synchronously so runAgentProcess captures it before
@@ -55,6 +66,7 @@ function makeChild(opts: ChildOptions = {}) {
                 });
             }
         }),
+        closeChild: undefined as ((code: number | null, stderrText?: string) => void) | undefined,
         emitStdout(line: string) {
             stdout.write(`${line}\n`);
         }
@@ -63,8 +75,14 @@ function makeChild(opts: ChildOptions = {}) {
 }
 
 function makeClient() {
+    const handlers = new Map<string, (payload?: unknown) => Promise<unknown>>();
     return {
-        rpcHandlerManager: { registerHandler: vi.fn() },
+        rpcHandlerManager: {
+            handlers,
+            registerHandler: vi.fn((method: string, handler: (payload?: unknown) => Promise<unknown>) => {
+                handlers.set(method, handler);
+            })
+        },
         updateMetadata: vi.fn((handler: (m: Record<string, unknown>) => Record<string, unknown>) => {
             handler({ path: '/tmp', host: 'h', flavor: 'cursor' });
         }),
@@ -322,5 +340,129 @@ describe('cursorLegacyRemoteLauncher', () => {
         const drop = banners.find((m: string) => m.includes('5 times in a row'));
         expect(drop).toBeDefined();
         expect(drop).toContain('Dropping the queued message');
+    });
+
+    it('keeps the queued row and the loop alive when a plain Stop lands mid-turn', async () => {
+        const child1 = makeChild({ hold: true });
+        spawnMock.mockReturnValueOnce(child1);
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        queue.push('first', { permissionMode: 'default' }, 'first');
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        const reset = vi.spyOn(queue, 'reset');
+
+        const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+        const launchPromise = cursorLegacyRemoteLauncher(session);
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+
+        // A second row queues behind the in-flight turn, then a plain Stop
+        // lands: the teardown aborts the controller, which resolves the
+        // in-flight agent run (exitCode null) without touching the queue.
+        queue.push('pending', { permissionMode: 'default' }, 'pending');
+        const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
+        await abort();
+
+        // Plain Stop preserves the pending queue: no reset, row intact.
+        expect(reset).not.toHaveBeenCalled();
+        expect(queue.pendingLocalIds()).toEqual(['pending']);
+
+        // The loop drains the preserved row once the Stop settles.
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(2));
+        const secondArgs = spawnMock.mock.calls[1]?.[1] as string[];
+        const pIdx = secondArgs.indexOf('-p');
+        expect(secondArgs[pIdx + 1]).toBe('pending');
+
+        queue.close();
+        await launchPromise;
+        expect(queue.pendingLocalIds()).toEqual([]);
+    });
+
+    it.each(['switch', 'exit'] as const)('resets the queue exactly once on terminal %s', async (reason) => {
+        const child1 = makeChild({ hold: true });
+        spawnMock.mockReturnValueOnce(child1);
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        queue.push('first', { permissionMode: 'default' }, 'first');
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        const reset = vi.spyOn(queue, 'reset');
+
+        const { RemoteLauncherBase } = await import('@/modules/common/remote/RemoteLauncherBase');
+        let terminalHandlers!: import('@/modules/common/remote/RemoteLauncherBase').RemoteLauncherTerminalHandlers;
+        const setupSpy = vi.spyOn(RemoteLauncherBase.prototype as unknown as {
+            setupTerminal: (handlers: import('@/modules/common/remote/RemoteLauncherBase').RemoteLauncherTerminalHandlers) => void;
+        }, 'setupTerminal').mockImplementation(handlers => { terminalHandlers = handlers; });
+
+        const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+        const launchPromise = cursorLegacyRemoteLauncher(session);
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+
+        queue.push('pending', { permissionMode: 'default' }, 'pending');
+        if (reason === 'switch') {
+            await (client.rpcHandlerManager.handlers.get('switch')! as () => Promise<void>)();
+        } else {
+            await terminalHandlers.onExit();
+        }
+
+        // Terminal cleanup resets the queued rows exactly once; no further
+        // dispatch happens after it.
+        expect(reset).toHaveBeenCalledTimes(1);
+        expect(reset).toHaveBeenCalledWith();
+        expect(queue.pendingLocalIds()).toEqual([]);
+        expect(spawnMock).toHaveBeenCalledTimes(1);
+        expect(await launchPromise).toBe(reason);
+        setupSpy.mockRestore();
+    });
+
+    it('preserves a not-yet-dequeued row when a plain Stop lands during the dequeue wait', async () => {
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        const reset = vi.spyOn(queue, 'reset');
+
+        // Park only the loop's FIRST dequeue wait so the Stop lands while the row
+        // is still queued (never dequeued, never hub-ACKed); later waits pass
+        // straight through.
+        let releaseWait!: () => void;
+        let parkEntered: (() => void) | undefined;
+        const parkGate = new Promise<void>(resolve => { parkEntered = resolve; });
+        let waitCalls = 0;
+        const waitSpy = vi.spyOn(queue, 'waitForMessagesAndGetAsString')
+            .mockImplementation(async (signal?: AbortSignal) => {
+                waitCalls += 1;
+                if (waitCalls === 1) {
+                    parkEntered?.();
+                    parkEntered = undefined;
+                    await new Promise<void>(resolve => { releaseWait = resolve; });
+                }
+                return MessageQueue2.prototype.waitForMessagesAndGetAsString.call(queue, signal);
+            });
+
+        const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+        try {
+            const launchPromise = cursorLegacyRemoteLauncher(session);
+            await parkGate;
+
+            const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
+            const stopped = abort();
+            releaseWait();
+            await stopped;
+
+            // Plain Stop: no reset; the row survives and dispatches after the
+            // Stop settles.
+            expect(reset).not.toHaveBeenCalled();
+            queue.push('first', { permissionMode: 'default' }, 'first');
+            await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+            const args = spawnMock.mock.calls[0]?.[1] as string[];
+            const pIdx = args.indexOf('-p');
+            expect(args[pIdx + 1]).toBe('first');
+
+            queue.close();
+            expect(await launchPromise).toBeDefined();
+            expect(queue.pendingLocalIds()).toEqual([]);
+        } finally {
+            waitSpy.mockRestore();
+        }
     });
 });
