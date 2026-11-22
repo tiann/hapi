@@ -2958,6 +2958,20 @@ export function HappyThread(props: {
 
     const scrollToConversationStart = useCallback(async (): Promise<boolean> => {
         if (navigationInFlightRef.current) return false
+        const currentViewport = viewportRef.current
+        // A short, fully loaded conversation is already at both ends. There
+        // is no scroll event to restore tail follow if we enter history mode.
+        if (!hasMoreMessagesRef.current && currentViewport
+            && currentViewport.scrollTop <= 1
+            && currentViewport.scrollHeight - currentViewport.clientHeight <= 1) {
+            clearPromptNavigationFeedback()
+            if (conversationStartStatusTimerRef.current !== null) {
+                window.clearTimeout(conversationStartStatusTimerRef.current)
+            }
+            setConversationStartStatus('success')
+            conversationStartStatusTimerRef.current = window.setTimeout(() => setConversationStartStatus('idle'), 1400)
+            return true
+        }
         const runId = navigationRunRef.current
         const isCancelled = () => navigationRunRef.current !== runId
         navigationInFlightRef.current = true

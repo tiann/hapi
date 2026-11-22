@@ -81,3 +81,19 @@ for (const device of [
         })
     })
 }
+
+test('keeps following new output after jumping to the already-visible start of a short chat', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartShort=1')
+    const chat = page.locator('.chat-scroll-y')
+    await expect(page.getByText('First short reply', { exact: true })).toBeInViewport()
+    const measureBottom = () => chat.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)
+    expect(await measureBottom()).toBeLessThanOrEqual(1)
+    await page.getByText('First short reply', { exact: true }).hover()
+    await page.getByRole('button', { name: 'Jump to conversation start' }).click({ timeout: 5_000 })
+    await expect(page.getByText('Reached conversation start', { exact: true })).toBeVisible()
+    await page.evaluate(() => window.__probe.appendReply())
+    await expect.poll(() => chat.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(100)
+    await expect.poll(measureBottom).toBeLessThanOrEqual(3)
+    await expect(page.getByText('New reply line 25', { exact: true })).toBeInViewport()
+})

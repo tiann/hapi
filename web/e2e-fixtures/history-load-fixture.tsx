@@ -15,7 +15,7 @@ import { isQueuedForInvocation } from '../src/lib/messages'
 import { useHappyRuntime } from '../src/lib/assistant-runtime'
 import { HappyThread } from '../src/components/AssistantChat/HappyThread'
 import type { ChatBlock } from '../src/chat/types'
-import { getMessageWindowState } from '../src/lib/message-window-store'
+import { getMessageWindowState, ingestIncomingMessages } from '../src/lib/message-window-store'
 import { buildConversationOutline } from '../src/chat/outline'
 
 // Drives the real message-window store + chat pipeline + HappyThread against a
@@ -31,6 +31,7 @@ const SWITCH_TOTAL_MESSAGES = 220
 const BASE_AT = 1_700_000_000_000
 
 type Probe = {
+    appendReply: () => void
     requests: { sessionId?: string; direction: string; beforeSeq: number | null; limit: number | undefined; at: number }[]
     loadMore: () => Promise<unknown>
     refetch: () => Promise<void>
@@ -59,6 +60,12 @@ let releaseBeforeResponse = () => {}
 let currentActiveSessionId = SESSION_ID
 
 window.__probe = {
+    appendReply: () => ingestIncomingMessages(SESSION_ID, Array.from({ length: 25 }, (_, index) =>
+        createFixtureMessage(3 + index, {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', message: `New reply line ${index + 1}\n\nFollow-up content.` } },
+        }),
+    )),
     requests: [],
     loadMore: async () => {},
     refetch: async () => {},
@@ -246,7 +253,10 @@ const sessionMessagesById: Record<string, DecryptedMessage[]> = sessionSwitch
     }
     : {}
 
-const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (_, index) => {
+const allMessages: DecryptedMessage[] = fixtureParams.has('jumpStartShort') ? [
+    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Short chat prompt' } }),
+    createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'First short reply' } } }),
+] : Array.from({ length: TOTAL_MESSAGES }, (_, index) => {
     const seq = index + 1
     const filtered = filteredOlder && seq <= TOTAL_MESSAGES - 200
     return {
