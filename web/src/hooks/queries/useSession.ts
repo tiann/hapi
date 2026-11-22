@@ -1,8 +1,9 @@
 import { mergeReadState } from '@hapi/protocol'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
-import type { Session } from '@/types/api'
+import type { Session, SessionsResponse } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { sessionSeedFromSummary } from '@/lib/sessionSeed'
 
 export function isSessionNotFoundError(error: unknown): boolean {
     return error instanceof Error
@@ -31,6 +32,24 @@ export function useSession(api: ApiClient | null, sessionId: string | null): {
     const resolvedSessionId = sessionId ?? 'unknown'
     const query = useQuery({
         queryKey: queryKeys.session(resolvedSessionId),
+        // Zero-RTT first open: when the sessions list cache already holds a
+        // (slim) row for this id, seed the detail cache from it so SessionChat
+        // renders immediately instead of gating first paint on the detail GET
+        // (~350-450ms on high-RTT links). `initialDataUpdatedAt: 0` marks the
+        // seed infinitely stale, so the real GET still fires on mount and
+        // react-query overwrites the seed when it lands; SSE patches keep
+        // flowing during the window (the seed carries the version watermarks
+        // the patch gates compare against). Deep links to ids that are not in
+        // the list get no seed and keep the old loading gate.
+        initialData: () => {
+            if (!api || !sessionId) {
+                return undefined
+            }
+            const row = queryClient.getQueryData<SessionsResponse>(queryKeys.sessions)
+                ?.sessions.find(summary => summary.id === sessionId)
+            return row ? { session: sessionSeedFromSummary(row) } : undefined
+        },
+        initialDataUpdatedAt: 0,
         queryFn: async () => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
