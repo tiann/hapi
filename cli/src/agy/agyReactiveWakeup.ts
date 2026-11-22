@@ -1044,8 +1044,14 @@ export function inspectSyntheticBackgroundCommandMatch(
         (entry) => entry.taskId === undefined || !completedTasks.has(entry.taskId)
     );
 
+    const candidateStepIndexes = new Set(
+        candidates
+            .map((entry) => entry.stepIndex)
+            .filter((idx): idx is number => idx !== undefined)
+    );
     const turnPlannedCompatibleCommand = recentSteps.some((step) => {
         if (step.step_index <= turnStartStepIndex) return false;
+        if (candidateStepIndexes.has(step.step_index)) return false;
         if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') return false;
         return (step.tool_calls ?? []).some((call) => {
             if (call.name !== 'run_command') return false;
@@ -1064,14 +1070,17 @@ export function inspectSyntheticBackgroundCommandMatch(
         });
     });
 
+    if (turnPlannedCompatibleCommand) {
+        return { kind: 'none' };
+    }
+
     // Argument compatibility alone never establishes a synthetic alias:
     // without `tool_result` evidence, hold compatible calls provisionally
-    // unless the current turn has already persisted a matching planned command
-    // with no completed synthetic candidates.
+    // unless the current turn has already persisted a matching planned command.
     if (!hasResultSignal) {
         if (
             completedCandidates.length > 0
-            || (!turnPlannedCompatibleCommand && unpersistedCompatible.length > 0)
+            || unpersistedCompatible.length > 0
             || lookup.callStatus === 'completed'
             || lookup.callStatus === 'failed'
         ) {

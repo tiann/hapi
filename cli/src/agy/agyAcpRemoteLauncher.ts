@@ -439,9 +439,16 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.reconcileRetainedAmbiguousCompletions(null);
         this.advanceCursorFromLastTurnState();
         this.lastTurnTranscriptState = null;
+        const prevCursor = this.lastTranscriptStepIndex;
         const latest = readLatestAgyTranscriptStepIndex(this.brainDir, acpSessionId);
-        if (latest > this.lastTranscriptStepIndex) {
+        if (latest > prevCursor) {
             this.lastTranscriptStepIndex = latest;
+            if (prevCursor >= 0 && this.backgroundCommands.length > 0) {
+                this.recordDeferredTruncatedSystemSteps(
+                    readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, prevCursor)
+                        .filter((step) => step.step_index <= latest)
+                );
+            }
         }
         this.pausedWakeupStepIndex = null;
     }
@@ -477,6 +484,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // the newly consumed range before the idle wakeup watcher skips them.
             if (!turn && this.backgroundCommands.length > 0) {
                 this.settleTranscriptBackgroundCommands(this.lastTranscriptStepIndex);
+            }
+            if (this.backgroundCommands.length > 0) {
+                this.recordDeferredTruncatedSystemSteps(
+                    stepsAfterStart.filter((step) => step.step_index <= nextCursor)
+                );
             }
         }
         if (turn) {
@@ -1894,14 +1906,26 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                 );
                 if (match.kind === 'matched') {
-                    turn.corroboratedSyntheticMatches += 1;
                     const settledIdx = this.settledSyntheticCommands.findIndex(
                         (entry) => entry.callId === match.entry.callId
                     );
                     if (settledIdx >= 0) {
-                        this.settledSyntheticCommands.splice(settledIdx, 1);
-                        return { message: { ...message, id: match.entry.callId }, suppressForward: true, skipTracking: true };
+                        const exactTaskMatch = match.entry.taskId !== undefined
+                            && matchesBackgroundTaskId(message.id, match.entry.taskId);
+                        if (exactTaskMatch) {
+                            turn.corroboratedSyntheticMatches += 1;
+                            this.settledSyntheticCommands.splice(settledIdx, 1);
+                            return { message: { ...message, id: match.entry.callId }, suppressForward: true, skipTracking: true };
+                        }
+                        this.retainedAmbiguousCompletions.push({
+                            turnStartStepIndex: turn.turnStartStepIndex,
+                            callMessage: deferredCall,
+                            resultMessage: message,
+                            nativeArgs
+                        });
+                        return { message, suppressForward: true, skipTracking: true };
                     }
+                    turn.corroboratedSyntheticMatches += 1;
                     this.nativeToolNames.set(match.entry.callId, 'run_command');
                     return { message: { ...message, id: match.entry.callId }, suppressForward: false };
                 }
@@ -2302,7 +2326,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const hadTurn = this.turn !== null || this.reactiveWakeupAbort !== null;
         await this.cancelActiveTurn();
         this.clearBackgroundTasksSnapshot();
-        if (hadTurn || this.shouldExit) {
+        if (this.shouldExit) {
             this.backgroundCommands.length = 0;
             this.settledSyntheticCommands.length = 0;
             this.settledReplayTaskIds.clear();
@@ -2310,12 +2334,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             this.retainedAmbiguousCompletions.length = 0;
             this.syntheticCallAliases.clear();
         } else {
-            // Abort while idle clears the indicator without cancelling ACP, so
-            // retain task correlation for late completions without re-surfacing
-            // these commands in future running-task snapshots.
+            // Stopping a turn or aborting while idle clears the indicator and
+            // transient turn-local replay state while retaining prior background
+            // command correlation so late completions still settle their original
+            // Bash cards without re-surfacing in future running-task snapshots.
             for (const entry of this.backgroundCommands) {
                 entry.dismissedFromIndicator = true;
             }
+            this.retainedAmbiguousCompletions.length = 0;
+            this.syntheticCallAliases.clear();
         }
         this.abortController.abort();
         this.abortController = new AbortController();
