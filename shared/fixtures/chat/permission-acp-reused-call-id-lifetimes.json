@@ -1,0 +1,519 @@
+{
+    "description": "An ACP agent reused question:0 three times: a legacy plain-id row answered before lifetime ids existed, an aborted lifetime and a pending reused lifetime. Each renders as its own card with its own permission; the pending one stays answerable.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000001000,
+                "id": "acp-user-1",
+                "kind": "user-text",
+                "localId": null,
+                "text": "First question."
+            },
+            {
+                "createdAt": 1755000002000,
+                "id": "question:0",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "question:0",
+                    "input": {
+                        "questions": [
+                            {
+                                "header": "Color",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Warm",
+                                        "label": "Red"
+                                    },
+                                    {
+                                        "description": "Cool",
+                                        "label": "Blue"
+                                    }
+                                ],
+                                "question": "Which color?"
+                            }
+                        ]
+                    },
+                    "name": "AskUserQuestion",
+                    "permission": {
+                        "answers": {
+                            "0": [
+                                "Red"
+                            ]
+                        },
+                        "decision": "approved",
+                        "status": "approved"
+                    },
+                    "state": "running"
+                }
+            },
+            {
+                "createdAt": 1755000003000,
+                "id": "acp-user-2",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Second question."
+            },
+            {
+                "createdAt": 1755000004000,
+                "id": "question:0#3f0e8b9a-1d2c-4e5f-8a9b-0c1d2e3f4a5b",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "question:0#3f0e8b9a-1d2c-4e5f-8a9b-0c1d2e3f4a5b",
+                    "input": {
+                        "questions": [
+                            {
+                                "header": "Color",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Warm",
+                                        "label": "Red"
+                                    },
+                                    {
+                                        "description": "Cool",
+                                        "label": "Blue"
+                                    }
+                                ],
+                                "question": "Which color?"
+                            }
+                        ]
+                    },
+                    "name": "AskUserQuestion",
+                    "permission": {
+                        "decision": "abort",
+                        "reason": "User aborted",
+                        "status": "canceled"
+                    },
+                    "state": "error"
+                }
+            },
+            {
+                "createdAt": 1755000005000,
+                "id": "acp-user-3",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Third question."
+            },
+            {
+                "createdAt": 1755000006000,
+                "id": "question:0#9b1c2d3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "question:0#9b1c2d3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e",
+                    "input": {
+                        "questions": [
+                            {
+                                "header": "Color",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Warm",
+                                        "label": "Red"
+                                    },
+                                    {
+                                        "description": "Cool",
+                                        "label": "Blue"
+                                    }
+                                ],
+                                "question": "Which color?"
+                            }
+                        ]
+                    },
+                    "name": "AskUserQuestion",
+                    "permission": {
+                        "status": "pending"
+                    },
+                    "state": "running"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000001000,
+                "id": "acp-user-1",
+                "kind": "user-text",
+                "localId": null,
+                "text": "First question."
+            },
+            {
+                "createdAt": 1755000002000,
+                "id": "question:0",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "question:0",
+                    "input": {
+                        "questions": [
+                            {
+                                "header": "Color",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Warm",
+                                        "label": "Red"
+                                    },
+                                    {
+                                        "description": "Cool",
+                                        "label": "Blue"
+                                    }
+                                ],
+                                "question": "Which color?"
+                            }
+                        ]
+                    },
+                    "name": "AskUserQuestion",
+                    "permission": {
+                        "answers": {
+                            "0": [
+                                "Red"
+                            ]
+                        },
+                        "decision": "approved",
+                        "status": "approved"
+                    },
+                    "state": "running"
+                }
+            },
+            {
+                "createdAt": 1755000003000,
+                "id": "acp-user-2",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Second question."
+            },
+            {
+                "createdAt": 1755000004000,
+                "id": "question:0#3f0e8b9a-1d2c-4e5f-8a9b-0c1d2e3f4a5b",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "question:0#3f0e8b9a-1d2c-4e5f-8a9b-0c1d2e3f4a5b",
+                    "input": {
+                        "questions": [
+                            {
+                                "header": "Color",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Warm",
+                                        "label": "Red"
+                                    },
+                                    {
+                                        "description": "Cool",
+                                        "label": "Blue"
+                                    }
+                                ],
+                                "question": "Which color?"
+                            }
+                        ]
+                    },
+                    "name": "AskUserQuestion",
+                    "permission": {
+                        "decision": "abort",
+                        "reason": "User aborted",
+                        "status": "canceled"
+                    },
+                    "state": "error"
+                }
+            },
+            {
+                "createdAt": 1755000005000,
+                "id": "acp-user-3",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Third question."
+            },
+            {
+                "createdAt": 1755000006000,
+                "id": "question:0#9b1c2d3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "question:0#9b1c2d3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e",
+                    "input": {
+                        "questions": [
+                            {
+                                "header": "Color",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Warm",
+                                        "label": "Red"
+                                    },
+                                    {
+                                        "description": "Cool",
+                                        "label": "Blue"
+                                    }
+                                ],
+                                "question": "Which color?"
+                            }
+                        ]
+                    },
+                    "name": "AskUserQuestion",
+                    "permission": {
+                        "status": "pending"
+                    },
+                    "state": "running"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "completedRequests": {
+                "question:0": {
+                    "answers": {
+                        "0": [
+                            "Red"
+                        ]
+                    },
+                    "arguments": {
+                        "questions": [
+                            {
+                                "header": "Color",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Warm",
+                                        "label": "Red"
+                                    },
+                                    {
+                                        "description": "Cool",
+                                        "label": "Blue"
+                                    }
+                                ],
+                                "question": "Which color?"
+                            }
+                        ]
+                    },
+                    "completedAt": 1755000002500,
+                    "createdAt": 1755000002100,
+                    "decision": "approved",
+                    "status": "approved",
+                    "tool": "AskUserQuestion",
+                    "toolCallId": "question:0"
+                },
+                "question:0#3f0e8b9a-1d2c-4e5f-8a9b-0c1d2e3f4a5b": {
+                    "arguments": {
+                        "questions": [
+                            {
+                                "header": "Color",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Warm",
+                                        "label": "Red"
+                                    },
+                                    {
+                                        "description": "Cool",
+                                        "label": "Blue"
+                                    }
+                                ],
+                                "question": "Which color?"
+                            }
+                        ]
+                    },
+                    "completedAt": 1755000004500,
+                    "createdAt": 1755000004100,
+                    "decision": "abort",
+                    "reason": "User aborted",
+                    "status": "canceled",
+                    "tool": "AskUserQuestion",
+                    "toolCallId": "question:0#3f0e8b9a-1d2c-4e5f-8a9b-0c1d2e3f4a5b"
+                }
+            },
+            "requests": {
+                "question:0#9b1c2d3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e": {
+                    "arguments": {
+                        "questions": [
+                            {
+                                "header": "Color",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Warm",
+                                        "label": "Red"
+                                    },
+                                    {
+                                        "description": "Cool",
+                                        "label": "Blue"
+                                    }
+                                ],
+                                "question": "Which color?"
+                            }
+                        ]
+                    },
+                    "createdAt": 1755000006100,
+                    "tool": "AskUserQuestion",
+                    "toolCallId": "question:0#9b1c2d3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e"
+                }
+            }
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "First question.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000001000,
+                "id": "acp-user-1",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "question:0",
+                            "input": {
+                                "questions": [
+                                    {
+                                        "header": "Color",
+                                        "multiSelect": false,
+                                        "options": [
+                                            {
+                                                "description": "Warm",
+                                                "label": "Red"
+                                            },
+                                            {
+                                                "description": "Cool",
+                                                "label": "Blue"
+                                            }
+                                        ],
+                                        "question": "Which color?"
+                                    }
+                                ]
+                            },
+                            "name": "AskUserQuestion",
+                            "nativeTitle": "question",
+                            "status": "pending",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002000,
+                "id": "acp-legacy",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "text": "Second question.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000003000,
+                "id": "acp-user-2",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "question:0#3f0e8b9a-1d2c-4e5f-8a9b-0c1d2e3f4a5b",
+                            "input": {
+                                "questions": [
+                                    {
+                                        "header": "Color",
+                                        "multiSelect": false,
+                                        "options": [
+                                            {
+                                                "description": "Warm",
+                                                "label": "Red"
+                                            },
+                                            {
+                                                "description": "Cool",
+                                                "label": "Blue"
+                                            }
+                                        ],
+                                        "question": "Which color?"
+                                    }
+                                ]
+                            },
+                            "name": "AskUserQuestion",
+                            "nativeTitle": "question",
+                            "status": "pending",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000004000,
+                "id": "acp-aborted",
+                "localId": null,
+                "seq": 4
+            },
+            {
+                "content": {
+                    "content": {
+                        "text": "Third question.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000005000,
+                "id": "acp-user-3",
+                "localId": null,
+                "seq": 5
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "question:0#9b1c2d3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e",
+                            "input": {
+                                "questions": [
+                                    {
+                                        "header": "Color",
+                                        "multiSelect": false,
+                                        "options": [
+                                            {
+                                                "description": "Warm",
+                                                "label": "Red"
+                                            },
+                                            {
+                                                "description": "Cool",
+                                                "label": "Blue"
+                                            }
+                                        ],
+                                        "question": "Which color?"
+                                    }
+                                ]
+                            },
+                            "name": "AskUserQuestion",
+                            "nativeTitle": "question",
+                            "status": "pending",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000006000,
+                "id": "acp-reused",
+                "localId": null,
+                "seq": 6
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "permission-acp-reused-call-id-lifetimes"
+}

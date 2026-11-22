@@ -134,9 +134,12 @@ export function classifyRecoveredProcessGeneration(
 export function probeRecoveredProcessGeneration(
   pid: number,
   record: { processStartMarker: string; bootId?: string },
-  currentMarker?: string | null
+  currentMarker?: string | null,
+  knownAlive = false
 ): 'verified' | 'quarantined' | 'exited' {
-  if (!isProcessAlive(pid)) return 'exited';
+  // A successful process-table lookup already establishes liveness. Avoid a
+  // synchronous per-PID tasklist call that blocks the socket event loop.
+  if (!knownAlive && !isProcessAlive(pid)) return 'exited';
   const evidence = {
     pid,
     threadGroupId: getProcessThreadGroupId(pid),
@@ -870,6 +873,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           detached: true,  // Sessions stay alive when runner stops
           stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
           env: {
+            // Make JSC collect earlier so idle wrappers keep a lower heap
+            // high-water mark. Placed before process.env so users can override it.
+            BUN_JSC_forceRAMSize: String(256 * 1024 * 1024),
             ...process.env,
             ...extraEnv
           }
@@ -2018,7 +2024,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         const persisted = persistedResumeProcesses.get(pid);
         if (persisted) {
           const currentMarker = heartbeatTable ? heartbeatTable.get(pid)?.marker ?? null : undefined;
-          const generation = probeRecoveredProcessGeneration(pid, persisted, currentMarker);
+          const generation = probeRecoveredProcessGeneration(pid, persisted, currentMarker, !!heartbeatTable);
           if (generation === 'exited') {
             logger.debug(`[RUNNER RUN] Removing stale session with reused PID ${pid}`);
             discardStaleProcess(pid);
@@ -2265,6 +2271,11 @@ export function buildCliArgs(
   // Message-level Fork current for Claude: must follow --resume.
   if (options.forkSession && agentCommand === 'claude') {
     args.push('--fork-session');
+  }
+  // Fork at a message / rewind: native resume-time truncation (v2.1.223+).
+  // resume-session-at alone truncates unconditionally.
+  if (agentCommand === 'claude' && options.resumeSessionAt) {
+    args.push('--resume-session-at', options.resumeSessionAt);
   }
   const startingMode = options.startingMode || 'remote';
   // Codex shares one engine; Runner owns the wrapper, not a remote mode.

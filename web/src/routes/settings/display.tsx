@@ -6,6 +6,7 @@ import { getFontScaleOptions, useFontScale } from '@/hooks/useFontScale'
 import { getTerminalFontSizeOptions, useTerminalFontSize } from '@/hooks/useTerminalFontSize'
 import { getSessionListStatusModeOptions, useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
+import { isIndicatorSmoothingEnabled, setIndicatorSmoothing } from '@/hooks/useLowRateAnimation'
 import { useKeepUnreadSessionsVisible } from '@/hooks/useKeepUnreadSessionsVisible'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
 import { getPinInProgressSessionsModeOptions, usePinInProgressSessionsMode } from '@/hooks/usePinInProgressSessionsMode'
@@ -216,6 +217,7 @@ export default function SettingsDisplayPage() {
                 />
                 <SettingsSwitch label={t('settings.display.keepUnreadSessionsVisible')} description={t('settings.display.keepUnreadSessionsVisible.desc')} checked={keepUnreadSessionsVisible} onChange={setKeepUnreadSessionsVisible} />
                 <SettingsSwitch label={t('settings.display.appBadge')} description={t('settings.display.appBadge.desc')} checked={appBadgeEnabled} onChange={setAppBadgeEnabled} />
+                <SmoothIndicatorsControl />
                 <SettingsChoiceGroup
                     label={t('settings.display.sessionListStatus')}
                     description={t('settings.display.sessionListStatus.detailedDescription')}
@@ -245,5 +247,22 @@ export default function SettingsDisplayPage() {
                 />
             </SettingsSection>
         </SettingsPageContent>
+    )
+}
+
+
+function SmoothIndicatorsControl() {
+    const { t } = useTranslation()
+    const [smooth, setSmooth] = useState(() => isIndicatorSmoothingEnabled())
+    return (
+        <SettingsSwitch
+            label={t('settings.display.smoothIndicators')}
+            description={t('settings.display.smoothIndicators.desc')}
+            checked={smooth}
+            onChange={(checked) => {
+                setIndicatorSmoothing(checked)
+                setSmooth(checked)
+            }}
+        />
     )
 }

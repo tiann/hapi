@@ -480,4 +480,59 @@ describe('alive incremental events', () => {
         expect(machines.getMachine(machine.id)?.active).toBe(true)
         expect(sessions.getSession(session.id)?.active).toBe(true)
     })
+
+    it('throttles unchanged idle alive SSE broadcasts to 60s while emitting state changes immediately', () => {
+        const store = new Store(':memory:')
+        const sessionEvents: SyncEvent[] = []
+        const machineEvents: SyncEvent[] = []
+        const sessions = new SessionCache(store, createPublisher(sessionEvents))
+        const machines = new MachineCache(store, createPublisher(machineEvents))
+        const t0 = 1_700_000_000_000
+        let now = t0
+        const originalNow = Date.now
+        Date.now = () => now
+
+        try {
+            const session = sessions.getOrCreateSession(
+                'session-throttle-test',
+                { path: '/tmp/project', host: 'localhost' },
+                { requests: {}, completedRequests: {} },
+                'default'
+            )
+            const machine = machines.getOrCreateMachine(
+                'machine-throttle-test',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+
+            sessionEvents.length = 0
+            machineEvents.length = 0
+            sessions.handleSessionAlive({ sid: session.id, time: now, thinking: false })
+            machines.handleMachineAlive({ machineId: machine.id, time: now })
+            expect(sessionEvents.filter((event) => event.type === 'session-updated')).toHaveLength(1)
+            expect(machineEvents.filter((event) => event.type === 'machine-updated')).toHaveLength(1)
+
+            // Unchanged heartbeats within 60s must update liveness without spamming SSE.
+            now = t0 + 30_000
+            sessions.handleSessionAlive({ sid: session.id, time: now, thinking: false })
+            machines.handleMachineAlive({ machineId: machine.id, time: now })
+            expect(sessionEvents.filter((event) => event.type === 'session-updated')).toHaveLength(1)
+            expect(machineEvents.filter((event) => event.type === 'machine-updated')).toHaveLength(1)
+
+            // State changes within the 60s window still broadcast immediately.
+            now = t0 + 35_000
+            sessions.handleSessionAlive({ sid: session.id, time: now, thinking: true })
+            expect(sessionEvents.filter((event) => event.type === 'session-updated')).toHaveLength(2)
+
+            // Past 60s without state changes, the periodic keep-alive SSE broadcast resumes.
+            now = t0 + 96_000
+            sessions.handleSessionAlive({ sid: session.id, time: now, thinking: true })
+            machines.handleMachineAlive({ machineId: machine.id, time: now })
+            expect(sessionEvents.filter((event) => event.type === 'session-updated')).toHaveLength(3)
+            expect(machineEvents.filter((event) => event.type === 'machine-updated')).toHaveLength(2)
+        } finally {
+            Date.now = originalNow
+        }
+    })
 })

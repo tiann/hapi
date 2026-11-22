@@ -15,6 +15,7 @@ import type { InlineMediaSource } from '@/modules/common/inlineMediaSource';
 
 type PendingExtensionRequest = {
     tool: string;
+    toolCallId: string;
     arguments: unknown;
     respond: (result: unknown) => void;
 };
@@ -76,13 +77,27 @@ export class CursorExtensionAdapter {
         });
     }
 
+    /**
+     * The HAPI id of the tool call these params name: the backend's lifetime
+     * id, so cards and requests land on the call's ACP tool messages.
+     */
+    private toolCallLifetimeId(params: unknown, kind: 'request' | 'update' | 'terminal'): string | null {
+        const agentToolCallId = extractToolCallId(params);
+        if (!agentToolCallId) return null;
+        const sessionId = isObject(params) ? asString(params.sessionId) : null;
+        return this.backend.resolveToolCallLifetimeId(agentToolCallId, kind, sessionId);
+    }
+
     private async handleBlockingRequest(tool: string, params: unknown): Promise<unknown> {
-        const requestId = extractToolCallId(params) ?? `cursor-${randomUUID()}`;
-        const args = isObject(params) ? params : { toolCallId: requestId };
+        const lifetimeId = this.toolCallLifetimeId(params, 'request');
+        const toolCallId = lifetimeId ?? `cursor-${randomUUID()}`;
+        const requestId = lifetimeId ? this.backend.allocateToolCallRequestId(lifetimeId) : toolCallId;
+        const args = isObject(params) ? params : { toolCallId };
 
         return await new Promise<unknown>((resolve) => {
             this.pending.set(requestId, {
                 tool,
+                toolCallId,
                 arguments: args,
                 respond: resolve
             });
@@ -93,7 +108,7 @@ export class CursorExtensionAdapter {
                     ...currentState.requests,
                     [requestId]: {
                         tool,
-                        toolCallId: requestId,
+                        toolCallId,
                         arguments: args,
                         createdAt: Date.now()
                     }
@@ -151,6 +166,7 @@ export class CursorExtensionAdapter {
                     ...currentState.completedRequests,
                     [response.id]: {
                         tool: pending.tool,
+                        toolCallId: pending.toolCallId,
                         arguments: pending.arguments,
                         createdAt: requestEntry?.createdAt ?? Date.now(),
                         completedAt: Date.now(),
@@ -184,9 +200,10 @@ export class CursorExtensionAdapter {
 
     private handleTaskNotification(params: unknown): void {
         if (!isObject(params)) return;
-        const toolCallId = extractToolCallId(params) ?? `cursor-task-${randomUUID()}`;
         const title = asString(params.title) ?? asString(params.description) ?? 'Cursor task';
         const status = normalizeTaskStatus(asString(params.status));
+        const toolCallId = this.toolCallLifetimeId(params, status === 'completed' || status === 'failed' ? 'terminal' : 'update')
+            ?? `cursor-task-${randomUUID()}`;
         this.onMessage({
             type: 'tool_call',
             id: toolCallId,
@@ -206,7 +223,7 @@ export class CursorExtensionAdapter {
 
     private async handleGenerateImage(params: unknown): Promise<void> {
         if (!isObject(params)) return;
-        const toolCallId = extractToolCallId(params) ?? `cursor-image-${randomUUID()}`;
+        const toolCallId = this.toolCallLifetimeId(params, 'terminal') ?? `cursor-image-${randomUUID()}`;
         const safeParams = summarizeGenerateImageParams(params);
         this.onMessage({
             type: 'tool_call',
@@ -266,6 +283,7 @@ export class CursorExtensionAdapter {
                         ...currentState.completedRequests,
                         [id]: {
                             tool: pending.tool,
+                            toolCallId: pending.toolCallId,
                             arguments: pending.arguments,
                             createdAt: requestEntry?.createdAt ?? Date.now(),
                             completedAt: Date.now(),

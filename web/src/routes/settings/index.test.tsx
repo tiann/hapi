@@ -264,10 +264,32 @@ vi.mock('@/lib/app-context', () => ({
             updateHubSettings,
             getUsageSummary,
             getUsageQuotas,
-            getSessions: vi.fn().mockResolvedValue({ sessions: [] })
+            getSessions: vi.fn().mockResolvedValue({ sessions: [] }),
+            listPasskeys: vi.fn().mockResolvedValue({
+                passkeys: [{ id: 'pk1', name: 'Chrome on macOS', rpId: 'hub.example.com', createdAt: 1, lastUsedAt: null, valid: false }]
+            }),
+            deletePasskey: vi.fn()
         },
         baseUrl: 'http://127.0.0.1:3006',
         token: context.token,
+    }),
+}))
+
+vi.mock('@/hooks/queries/useFeatures', () => ({
+    useFeatures: () => ({
+        features: {
+            githubPrAwareness: { enabled: false, source: 'default' },
+            prChipDisplay: {
+                staleMs: 7_200_000,
+                forge: {},
+                estateCodes: {}
+            },
+        },
+        isLoading: false,
+    }),
+    usePatchFeatures: () => ({
+        setGithubPrAwareness: vi.fn(),
+        isPending: false,
     }),
 }))
 
@@ -354,6 +376,9 @@ describe('responsive settings pages', () => {
         renderPage(<SettingsGeneralPage />)
         expect(screen.getByText('Companion')).toBeInTheDocument()
         expect(screen.getByText('Companion pairing')).toBeInTheDocument()
+        expect(screen.getByText('Passkeys')).toBeInTheDocument()
+        expect(await screen.findByText('Chrome on macOS')).toBeInTheDocument()
+        expect(screen.getByText('Inactive: the access token was rotated after this passkey was added.')).toBeInTheDocument()
         expect(await screen.findByRole('checkbox', { name: 'Emit status summaries' })).toBeInTheDocument()
         expect(screen.getByRole('checkbox', { name: 'Show status summaries in chat' })).toBeInTheDocument()
         fireEvent.click(screen.getByRole('radio', { name: '简体中文' }))
@@ -538,6 +563,16 @@ describe('responsive settings pages', () => {
         expect(screen.getByText(String(__APP_VERSION__))).toBeInTheDocument()
         expect(screen.getByText('Protocol Version')).toBeInTheDocument()
         expect(screen.getByRole('link', { name: 'hapi.run' })).toHaveAttribute('rel', 'noopener noreferrer')
+    })
+
+    it('reports an invalid settings import file and keeps current settings', async () => {
+        localStorage.setItem('hapi-appearance', 'dark')
+        const { container } = renderPage(<SettingsAboutPage />)
+        expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument()
+        const input = container.querySelector('input[type="file"]') as HTMLInputElement
+        fireEvent.change(input, { target: { files: [new File(['{}'], 'other.json', { type: 'application/json' })] } })
+        expect(await screen.findByRole('alert')).toHaveTextContent('not a HAPI settings export')
+        expect(localStorage.getItem('hapi-appearance')).toBe('dark')
     })
 
     it('links common voice settings to full-page voices and advanced pages', () => {

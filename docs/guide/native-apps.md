@@ -1,3 +1,7 @@
+---
+description: "Paid native HAPI apps for iOS, Android and macOS (Mac Catalyst): pairing with your hub, passkey sign-in, notifications and settings."
+---
+
 # Native apps (iOS / Android)
 
 HAPI offers native iOS and Android apps for controlling sessions on a hub
@@ -14,6 +18,7 @@ any phone browser and includes features the apps do not have yet; see
 | Platform | Device requirement | Download |
 |---|---|---|
 | iOS / iPadOS | iOS 17 or newer | [App Store](https://apps.apple.com/app/id6805699104) |
+| macOS | macOS 14 or newer, Apple silicon (same App Store purchase as iOS, runs via Mac Catalyst) | [App Store](https://apps.apple.com/app/id6805699104) |
 | Android | Android 8.0 (API 26) or newer | [Google Play](https://play.google.com/store/apps/details?id=run.hapi.companion) |
 
 Store builds include native push through the encrypted push relay; no Firebase
@@ -68,6 +73,12 @@ working connection. Prefer HTTPS on both platforms.
 Camera pairing is optional. Use manual entry on an iOS Simulator or any device
 without a usable scanner.
 
+After you pair a device with the access token, you can add a passkey for that hub in **Settings → Passkeys**. iOS syncs it through iCloud Keychain, and Android 9+ through Google Password Manager. On another device, choose **Sign in with a passkey** and pick the credential in the system sheet (it shows the Hub address): one check signs you in to that Hub, without typing its URL. Manual Hub entry remains available for long addresses or credentials without a discoverable address.
+
+- Web and App passkeys use the shared `auth.hapi.run` relying party. Register once in either client to sign in to that same Hub from both. Configure the Hub’s `HAPI_PUBLIC_URL` as its canonical HTTPS origin; no association files are needed on your own domain.
+- Rotating the hub's access token, or deleting the passkey, signs out every device that signed in with it.
+- See [Authentication](./authentication.md) for all sign-in methods.
+
 ## Sessions and everyday use
 
 Start an agent on your computer with `hapi` and choose an installed agent, or
@@ -95,7 +106,7 @@ directory browsing and session creation.
 | Scratchlist | On iOS, tap the tray beside the composer attachment button to enter **Save draft** mode; Android uses the chat menu. Text and attachments sync within the session. |
 | Dictation | Record audio, transcribe through a configured hub provider, then edit the inserted text before sending. |
 | Usage and storage | Available only to the hub owner (`default` namespace). |
-| Display | English/Simplified Chinese, theme preferences, system text scaling and machine filtering on the session list. |
+| Display | English/Simplified Chinese/Russian, theme preferences, system text scaling and machine filtering on the session list. |
 
 ### Share to an Android session
 
@@ -158,9 +169,9 @@ UI. On iOS, the chat's … menu forks the current conversation, rewinds or forks
 at a user message with a native history point, and exports the session as
 JSON; Android has no fork, rewind or export UI. Session history actions also
 depend on the agent's capabilities.
-Both apps display existing scheduled messages. On iOS, the composer's clock
-schedules a text-only send up to 7 days ahead (relative presets or a specific
-time); Android has no form to create scheduled sends.
+Both apps display existing scheduled messages and can schedule new ones: the
+composer's clock schedules a text-only send up to 7 days ahead (relative
+presets or a specific time).
 Android's full-text file export is a reader action,
 separate from exporting an entire session.
 
