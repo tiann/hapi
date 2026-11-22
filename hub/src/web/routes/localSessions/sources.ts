@@ -54,6 +54,8 @@ export type HubLocalSessionSource = {
         cursorKey?: 'piHistoryLeafEntryId'
         /** Maps stored and transcript content to the fields that must stay equal. */
         canonicalContent?: (content: unknown) => unknown
+        /** Reconciles non-imported live HAPI turns after the imported prefix against native transcript turns. */
+        reconcileLiveContinuation?: boolean
     }
         | { strategy: 'contentPrefix'; compareKey?: (content: unknown) => string | null }
     /** Lifecycle stamped on create. */
@@ -237,7 +239,7 @@ export const AGY_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     displayName: 'Antigravity',
     routeBase: 'agy',
     nativeIdKeys: ['agySessionId'],
-    match: { strategy: 'anchored' },
+    match: { strategy: 'anchored', reconcileLiveContinuation: true },
     lifecycleOnCreate: 'archived',
     requireWorkingDirectory: true,
     batch: 'continue',

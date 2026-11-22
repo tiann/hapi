@@ -388,13 +388,13 @@ const results: Record<string, unknown> = {}
                 content: '<USER_REQUEST>\\nClipped...'
             }
         ])
-        let headError: string | null = null
-        try {
-            await listLocalAgySessionsWithMessagesByIds(new Set(['conv-trunc-head']), { appDataDir: root })
-        } catch (err) {
-            headError = err instanceof Error ? err.message : String(err)
-        }
-        results.truncated = { beforeFull, afterFull, headError }
+        const batchWithUnfinished = await listLocalAgySessionsWithMessagesByIds(
+            new Set(['conv-trunc-head', 'conv-trunc-prefix']),
+            { appDataDir: root }
+        )
+        const unfinishedHead = batchWithUnfinished.find((item) => item.id === 'conv-trunc-head')
+        const headError = unfinishedHead?.importError ?? null
+        results.truncated = { beforeFull, afterFull, headError, batchIds: batchWithUnfinished.map((item) => item.id) }
     } finally {
         rmSync(root, { recursive: true, force: true })
     }
@@ -437,6 +437,7 @@ function runBunSuite() {
             beforeFull: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
             afterFull: { messages: Array<{ localId: string; anchor: string; content: Record<string, unknown> }> }
             headError: string | null
+            batchIds: string[]
         }
     }
 }
@@ -533,5 +534,6 @@ describe('agySessions', () => {
             }
         })
         expect(headError).toContain('full transcript is still flushing')
+        expect(output.truncated.batchIds).toEqual(expect.arrayContaining(['conv-trunc-head', 'conv-trunc-prefix']))
     })
 })

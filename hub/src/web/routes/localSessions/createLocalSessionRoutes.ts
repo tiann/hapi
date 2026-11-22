@@ -60,6 +60,10 @@ function toListItem(options: {
     }
     if (source.match.strategy === 'anchored' && imported) {
         item.hapiSessionId = imported.id
+        const savedPath = asRecord(imported.metadata)?.path
+        if (typeof savedPath === 'string' && savedPath.trim()) {
+            item.savedCwd = savedPath.trim()
+        }
     }
     if (source.importStateKey && imported) {
         const state = asRecord(asRecord(imported.metadata)?.[source.importStateKey])?.state
@@ -224,7 +228,11 @@ export function createLocalSessionRoutes(options: {
                     source,
                     transcript,
                     machine,
-                    request: { launch, requestMetadata, fallbackCwd: cwd }
+                    request: {
+                        launch,
+                        requestMetadata,
+                        ...(source.requireWorkingDirectory ? { fallbackCwd: cwd } : {})
+                    }
                 })
                 results.push({ ...outcome, [resultIdKey]: outcome.sessionId })
                 if (source.batch === 'stopOnFirstError' && outcome.error) break

@@ -1135,4 +1135,31 @@ describe('shouldShowOpenSessionTick', () => {
             tickRatio: null,
         })).toBe(false)
     })
+
+    it('keeps Antigravity sessions with the same agySessionId on different machines distinct in getSessionDedupKey and deduplicateSessionsByAgentId', () => {
+        const machineA = makeSession({
+            id: 'hapi-agy-m1',
+            metadata: {
+                path: '/work/proj',
+                machineId: 'machine-1',
+                flavor: 'agy',
+                agentSessionId: 'agy-conv-shared'
+            }
+        })
+        const machineB = makeSession({
+            id: 'hapi-agy-m2',
+            metadata: {
+                path: '/work/proj',
+                machineId: 'machine-2',
+                flavor: 'agy',
+                agentSessionId: 'agy-conv-shared'
+            }
+        })
+        expect(getSessionDedupKey(machineA)).toBe('agy:machine-1:agy-conv-shared')
+        expect(getSessionDedupKey(machineB)).toBe('agy:machine-2:agy-conv-shared')
+        expect(deduplicateSessionsByAgentId([machineA, machineB]).map((s) => s.id)).toEqual([
+            'hapi-agy-m1',
+            'hapi-agy-m2'
+        ])
+    })
 })

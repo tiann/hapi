@@ -240,7 +240,11 @@ vi.mock('@/components/AgySessionImportDialog', () => ({
         </button>
     ) : null
 }))
-vi.mock('./DirectorySection', () => ({ DirectorySection: () => null }))
+vi.mock('./DirectorySection', () => ({
+    DirectorySection: (props: { directory: string; isDisabled: boolean }) => (
+        <input data-testid="directory-input" value={props.directory} disabled={props.isDisabled} readOnly />
+    )
+}))
 vi.mock('./MachineSelector', () => ({
     MachineSelector: (props: { machines: Machine[]; machineId: string | null; isDisabled: boolean; onChange: (machineId: string) => void }) => (
         <select
@@ -1613,6 +1617,64 @@ describe('NewSession launch preferences', () => {
         fireEvent.click(screen.getByTestId('create'))
         await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('hapi-agy-1'))
         expect(agyApi.importAgySessions).toHaveBeenCalled()
+    })
+
+    it('displays and validates savedCwd for an already imported transcript-only Antigravity session', async () => {
+        savePreferredAgent('agy')
+        mocks.agyDialogSelection = ['agy-transcript-only']
+        mocks.checkPathsExists.mockImplementation(async (paths: string[]) => ({
+            exists: Object.fromEntries(paths.map((p) => [p, p === 'C:\\saved-proj-a'])),
+            outsideWorkspaceRoots: []
+        }))
+        const agyApi = {
+            getAgySessions: vi.fn().mockResolvedValue({
+                success: true,
+                sessions: [{
+                    id: 'agy-transcript-only',
+                    title: 'Transcript-only history',
+                    cwd: null,
+                    savedCwd: 'C:\\saved-proj-a',
+                    hapiSessionId: 'hapi-agy-saved',
+                    file: 'C:\\brain\\agy-transcript-only\\transcript.jsonl',
+                    modifiedAt: 100,
+                    messageCount: 2
+                }],
+                machineId: 'machine-1'
+            }),
+            importAgySessions: vi.fn().mockResolvedValue({
+                success: true,
+                results: [{ agySessionId: 'agy-transcript-only', hapiSessionId: 'hapi-agy-saved', action: 'unchanged', appended: 0 }]
+            }),
+            reopenSession: vi.fn().mockResolvedValue({ sessionId: 'hapi-agy-saved' })
+        } as unknown as ApiClient
+
+        renderWithQuery(
+            <NewSession
+                api={agyApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\form-proj-b"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'agyImport.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-agy-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-agy-history'))
+
+        await waitFor(() => {
+            expect(screen.getByTestId('directory-input')).toHaveValue('C:\\saved-proj-a')
+            expect(screen.getByTestId('directory-input')).toBeDisabled()
+        })
+
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('hapi-agy-saved'))
+        expect(mocks.checkPathsExists).toHaveBeenCalledWith(['C:\\saved-proj-a'])
+        expect(agyApi.importAgySessions).toHaveBeenCalledWith(expect.objectContaining({
+            sessionIds: ['agy-transcript-only'],
+            cwd: 'C:\\saved-proj-a'
+        }))
     })
 
     it('discards a stale Pi scan after switching machines', async () => {

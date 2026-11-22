@@ -1296,8 +1296,17 @@ export function NewSession(props: {
         () => agyImport.sessions.find((session) => session.id === selectedAgyImportSessionId) ?? null,
         [agyImport.sessions, selectedAgyImportSessionId]
     )
+    const lockedAgyImportCwd = selectedAgyImportSession?.cwd?.trim()
+        || selectedAgyImportSession?.savedCwd?.trim()
+        || null
     const isContinuingAgyImport = agent === 'agy' && Boolean(selectedAgyImportSession)
     const effectiveSessionType = isContinuingAgyImport ? 'simple' : sessionType
+
+    useEffect(() => {
+        if (isContinuingAgyImport && lockedAgyImportCwd && directory !== lockedAgyImportCwd) {
+            setDirectory(lockedAgyImportCwd)
+        }
+    }, [directory, isContinuingAgyImport, lockedAgyImportCwd])
 
     const currentDirectoryExists = trimmedDirectory ? pathExistence[trimmedDirectory] : undefined
     const directoryOutsideWorkspaceRoots = trimmedDirectory
@@ -2022,7 +2031,8 @@ export function NewSession(props: {
 
     const handleSelectAgyImportSession = useCallback((session: LocalSessionListItem) => {
         setSelectedAgyImportSessionId(session.id)
-        if (session.cwd?.trim()) setDirectory(session.cwd.trim())
+        const lockedCwd = session.cwd?.trim() || session.savedCwd?.trim()
+        if (lockedCwd) setDirectory(lockedCwd)
     }, [])
 
     const handlePathClick = useCallback((path: string) => {
@@ -2286,7 +2296,7 @@ export function NewSession(props: {
                 setIsImportingAgySession(true)
                 const result = await props.api.importAgySessions({
                     sessionIds: [selectedAgyImportSession.id],
-                    cwd: selectedAgyImportSession.cwd ?? trimmedDirectory,
+                    cwd: lockedAgyImportCwd ?? trimmedDirectory,
                     machineId: agyImport.machineId ?? machineId,
                     model: resolvedModel ?? null,
                     effort: resolvedEffort ?? null,
@@ -2436,7 +2446,7 @@ export function NewSession(props: {
                 directory={directory}
                 suggestions={suggestions}
                 selectedIndex={selectedIndex}
-                isDisabled={isFormDisabled || Boolean(isContinuingAgyImport && selectedAgyImportSession?.cwd?.trim())}
+                isDisabled={isFormDisabled || Boolean(isContinuingAgyImport && lockedAgyImportCwd)}
                 recentPaths={recentPaths}
                 statusMessage={directoryStatusMessage}
                 statusTone={directoryStatusTone}

@@ -388,7 +388,11 @@ describe('generic local session routes', () => {
         stores.push(store)
         const engine = {
             getOnlineMachinesByNamespace: () => [machine()],
-            listLocalSessionsForMachine: async () => ({ success: true, sessions: [current] }),
+            listLocalSessionsForMachine: async (_machineId: string, payload: { sessionIds?: string[] | null }) => {
+                if (payload.sessionIds) return { success: true, sessions: [current] }
+                const { messages: _messages, ...summary } = current
+                return { success: true, sessions: [summary] }
+            },
             recordSessionActivity: () => {},
             handleRealtimeEvent: () => {},
             applySessionConfig: async () => {}
@@ -441,7 +445,11 @@ describe('generic local session routes', () => {
         stores.push(store)
         const engine = {
             getOnlineMachinesByNamespace: () => [machine()],
-            listLocalSessionsForMachine: async () => ({ success: true, sessions: [current] }),
+            listLocalSessionsForMachine: async (_machineId: string, payload: { sessionIds?: string[] | null }) => {
+                if (payload.sessionIds) return { success: true, sessions: [current] }
+                const { messages: _messages, ...summary } = current
+                return { success: true, sessions: [summary] }
+            },
             recordSessionActivity: () => {},
             handleRealtimeEvent: () => {},
             applySessionConfig: async () => {}
@@ -468,6 +476,257 @@ describe('generic local session routes', () => {
         })).json() as { results: Array<{ hapiSessionId?: string; action?: string; appended?: number }> }
         expect(second.results[0]).toMatchObject({ hapiSessionId: sessionId, action: 'updated', appended: 1 })
         expect((store.sessions.getSessionByNamespace(sessionId, 'default')?.metadata as { path?: string }).path).toBe('/proj-a')
+
+        const listed = await (await app.request('/api/agy/sessions')).json() as {
+            sessions: Array<{ id: string; cwd: string | null; savedCwd?: string; hapiSessionId?: string }>
+        }
+        expect(listed.sessions[0]).toMatchObject({
+            id: 'agy-no-cwd',
+            cwd: null,
+            savedCwd: '/proj-a',
+            hapiSessionId: sessionId
+        })
+    })
+
+    it('keeps a mixed Antigravity batch going when one transcript is still flushing, reconciles live HAPI turns on re-import, and does not apply fallbackCwd to Claude', async () => {
+        const makeAgyTranscript = (id: string): LocalTranscript => ({
+            flavor: 'agy',
+            id,
+            title: `Antigravity ${id}`,
+            lastUserMessage: 'first prompt',
+            cwd: '/work',
+            file: `/tmp/.gemini/antigravity-cli/brain/${id}/.system_generated/logs/transcript.jsonl`,
+            modifiedAt: 10,
+            messages: [
+                {
+                    id: `agy:${id}:step:0:user`,
+                    createdAt: 10,
+                    content: { role: 'user', content: { type: 'text', text: 'first prompt' }, meta: { sentFrom: 'cli' } },
+                    anchor: 'step:0:user'
+                }
+            ]
+        })
+        const flushing: LocalTranscript = {
+            ...makeAgyTranscript('agy-flushing'),
+            messages: [],
+            extra: { importError: 'Antigravity full transcript is still flushing; please retry import shortly' }
+        }
+        let agyContinued: LocalTranscript = makeAgyTranscript('agy-continued')
+        const claudeNullCwd: LocalTranscript = {
+            flavor: 'claude',
+            id: 'claude-null-cwd',
+            title: 'Claude without cwd',
+            lastUserMessage: 'hello claude',
+            cwd: null,
+            file: '/claude-projects/my-proj/claude-null-cwd.jsonl',
+            modifiedAt: 10,
+            messages: [
+                {
+                    id: 'claude:uuid-1',
+                    createdAt: 10,
+                    content: { role: 'user', content: { type: 'text', text: 'hello claude' }, meta: { sentFrom: 'cli' } }
+                }
+            ]
+        }
+        const store = new Store(':memory:')
+        stores.push(store)
+        const engine = {
+            getOnlineMachinesByNamespace: () => [machine()],
+            listLocalSessionsForMachine: async (_machineId: string, payload: { flavor: string }) => ({
+                success: true,
+                sessions: payload.flavor === 'claude' ? [claudeNullCwd] : [flushing, agyContinued]
+            }),
+            recordSessionActivity: () => {},
+            handleRealtimeEvent: () => {},
+            applySessionConfig: async () => {}
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createLocalSessionRoutes({
+            store,
+            getSyncEngine: () => engine,
+            sources: [AGY_LOCAL_SESSION_SOURCE, CLAUDE_LOCAL_SESSION_SOURCE]
+        }))
+
+        const batchRes = await (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-flushing', 'agy-continued'], cwd: '/work' })
+        })).json() as {
+            success: boolean
+            results: Array<{ agySessionId: string; hapiSessionId?: string; action?: string; error?: { code: string; message: string } }>
+        }
+        expect(batchRes.success).toBe(false)
+        expect(batchRes.results).toEqual([
+            expect.objectContaining({
+                agySessionId: 'agy-flushing',
+                error: {
+                    code: 'transcript_flushing',
+                    message: 'Antigravity full transcript is still flushing; please retry import shortly'
+                }
+            }),
+            expect.objectContaining({
+                agySessionId: 'agy-continued',
+                action: 'created'
+            })
+        ])
+        const hapiId = batchRes.results[1]!.hapiSessionId!
+
+        // Simulate a live turn sent in HAPI on the imported session (stored without agy: localIds).
+        store.messages.addMessage(
+            hapiId,
+            { role: 'user', content: { type: 'text', text: 'live follow-up from HAPI' }, meta: { sentFrom: 'web' } },
+            'web-live-uuid-1'
+        )
+        store.messages.addMessage(
+            hapiId,
+            {
+                role: 'agent',
+                content: { type: 'codex', data: { type: 'message', message: 'Live answer from agy' } },
+                meta: { sentFrom: 'cli' }
+            },
+            undefined
+        )
+        store.messages.addMessage(
+            hapiId,
+            {
+                role: 'agent',
+                content: { type: 'event', data: { type: 'round-summary', summary: { provider: 'agy' } } },
+                meta: { sentFrom: 'cli' }
+            },
+            undefined
+        )
+
+        // Native transcript now includes that live turn plus a subsequent external CLI turn.
+        agyContinued = {
+            ...agyContinued,
+            messages: [
+                ...agyContinued.messages,
+                {
+                    id: 'agy:agy-continued:step:2:user',
+                    createdAt: 20,
+                    content: { role: 'user', content: { type: 'text', text: 'live follow-up from HAPI' }, meta: { sentFrom: 'cli' } },
+                    anchor: 'step:2:user'
+                },
+                {
+                    id: 'agy:agy-continued:step:3:text',
+                    createdAt: 21,
+                    content: {
+                        role: 'agent',
+                        content: { type: 'codex', data: { type: 'message', message: 'Live answer from agy' } },
+                        meta: { sentFrom: 'cli' }
+                    },
+                    anchor: 'step:3:text'
+                }
+            ]
+        }
+
+        const reimportSame = await (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-continued'], cwd: '/work' })
+        })).json() as { success: boolean; results: Array<{ hapiSessionId?: string; action?: string; appended?: number }> }
+        expect(reimportSame.success).toBe(true)
+        expect(reimportSame.results[0]).toMatchObject({
+            hapiSessionId: hapiId,
+            action: 'unchanged',
+            appended: 0
+        })
+
+        // External CLI appends one more turn after the HAPI turn.
+        agyContinued = {
+            ...agyContinued,
+            messages: [
+                ...agyContinued.messages,
+                {
+                    id: 'agy:agy-continued:step:4:user',
+                    createdAt: 30,
+                    content: { role: 'user', content: { type: 'text', text: 'external cli turn' }, meta: { sentFrom: 'cli' } },
+                    anchor: 'step:4:user'
+                }
+            ]
+        }
+        const reimportAfterExternal = await (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-continued'], cwd: '/work' })
+        })).json() as { success: boolean; results: Array<{ hapiSessionId?: string; action?: string; appended?: number }> }
+        expect(reimportAfterExternal.success).toBe(true)
+        expect(reimportAfterExternal.results[0]).toMatchObject({
+            hapiSessionId: hapiId,
+            action: 'updated',
+            appended: 1
+        })
+
+        // Claude with cwd: null keeps dirname(transcript.file) instead of request fallbackCwd.
+        const claudeRes = await (await app.request('/api/claude/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['claude-null-cwd'], cwd: '/form-unrelated-dir' })
+        })).json() as { success: boolean; results: Array<{ hapiSessionId?: string }> }
+        expect(claudeRes.success).toBe(true)
+        const claudeHapiId = claudeRes.results[0]!.hapiSessionId!
+        expect((store.sessions.getSessionByNamespace(claudeHapiId, 'default')?.metadata as { path?: string }).path)
+            .toBe('/claude-projects/my-proj')
+    })
+
+    it('keeps imported Antigravity sessions with the same native ID distinct across two machines', async () => {
+        const store = new Store(':memory:')
+        stores.push(store)
+        const m1 = machine('m-1')
+        const m2 = machine('m-2')
+        const engine = {
+            getOnlineMachinesByNamespace: () => [m1, m2],
+            listLocalSessionsForMachine: async (machineId: string) => ({
+                success: true,
+                sessions: [{
+                    flavor: 'agy' as const,
+                    id: 'agy-shared-conv',
+                    title: 'Shared conv',
+                    lastUserMessage: `from ${machineId}`,
+                    cwd: '/work',
+                    file: '/tmp/.gemini/antigravity-cli/brain/agy-shared-conv/.system_generated/logs/transcript.jsonl',
+                    modifiedAt: 10,
+                    messages: [{
+                        id: 'agy:agy-shared-conv:step:0:user',
+                        createdAt: 10,
+                        content: { role: 'user', content: { type: 'text', text: `from ${machineId}` }, meta: { sentFrom: 'cli' } },
+                        anchor: 'step:0:user'
+                    }]
+                }]
+            }),
+            recordSessionActivity: () => {},
+            handleRealtimeEvent: () => {},
+            applySessionConfig: async () => {}
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createLocalSessionRoutes({
+            store,
+            getSyncEngine: () => engine,
+            sources: [AGY_LOCAL_SESSION_SOURCE]
+        }))
+
+        const importM1 = await (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-shared-conv'], machineId: 'm-1', cwd: '/work' })
+        })).json() as { results: Array<{ hapiSessionId?: string; action?: string }> }
+        const importM2 = await (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-shared-conv'], machineId: 'm-2', cwd: '/work' })
+        })).json() as { results: Array<{ hapiSessionId?: string; action?: string }> }
+
+        const hapiM1 = importM1.results[0]!.hapiSessionId!
+        const hapiM2 = importM2.results[0]!.hapiSessionId!
+        expect(hapiM1).not.toBe(hapiM2)
+        expect(store.messages.getAllMessages(hapiM1)[0]?.content).toMatchObject({
+            content: { text: 'from m-1' }
+        })
+        expect(store.messages.getAllMessages(hapiM2)[0]?.content).toMatchObject({
+            content: { text: 'from m-2' }
+        })
     })
 
 })

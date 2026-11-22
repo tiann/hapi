@@ -284,6 +284,7 @@ export function agyToTranscriptSummary(session: AgyLocalSessionSummary): LocalTr
 export function agyToTranscript(session: AgyLocalSessionWithMessages): LocalTranscript {
     return {
         ...agyToTranscriptSummary(session),
+        ...(session.importError ? { extra: { importError: session.importError } } : {}),
         messages: session.messages.map((message) => ({
             id: message.localId,
             createdAt: message.createdAt,

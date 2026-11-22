@@ -309,6 +309,20 @@ export function runLocalImportSync(options: {
                 target = current
             }
 
+            const transcriptImportError = typeof transcript.extra?.importError === 'string' && transcript.extra.importError.trim()
+                ? transcript.extra.importError.trim()
+                : null
+            if (transcriptImportError) {
+                return finishErrorState({
+                    sessionId: transcript.id,
+                    ...(target ? { hapiSessionId: target.id } : {}),
+                    error: {
+                        code: 'transcript_flushing',
+                        message: transcriptImportError
+                    }
+                }, 'failed')
+            }
+
             if (source.requireWorkingDirectory) {
                 const existingPath = target ? storedMetadata(target).path : undefined
                 const hasExistingPath = typeof existingPath === 'string' && existingPath.trim().length > 0
@@ -362,6 +376,7 @@ export function runLocalImportSync(options: {
                     transcript,
                     importPrefix,
                     canonicalContent: source.match.canonicalContent,
+                    reconcileLiveContinuation: source.match.reconcileLiveContinuation,
                     cursor: target && cursorKey
                         ? (typeof storedMetadata(target)[cursorKey] === 'string' ? storedMetadata(target)[cursorKey] as string : null)
                         : null

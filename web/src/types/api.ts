@@ -360,6 +360,7 @@ export type AgyLocalSessionSummary = {
     title: string
     lastUserMessage?: string | null
     cwd?: string | null
+    savedCwd?: string | null
     file: string
     modifiedAt: number
     messageCount?: number

@@ -381,7 +381,7 @@ type MachineGroup = {
 export const UNKNOWN_MACHINE_ID = '__unknown__'
 export const GROUP_SESSION_PREVIEW_LIMIT = DEFAULT_SESSION_PREVIEW_LIMIT
 
-const MACHINE_LOCAL_AGENT_FLAVORS = new Set(['codex', 'claude', 'pi', 'opencode'])
+const MACHINE_LOCAL_AGENT_FLAVORS = new Set(['codex', 'claude', 'pi', 'opencode', 'agy'])
 
 export function getSessionDedupKey(session: SessionSummary): string | null {
     const agentId = session.metadata?.agentSessionId?.trim()

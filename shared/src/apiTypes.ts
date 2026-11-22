@@ -424,13 +424,15 @@ export const AgyLocalSessionSummarySchema = z.object({
     title: z.string(),
     lastUserMessage: z.string().nullable().optional(),
     cwd: z.string().nullable().optional(),
+    savedCwd: z.string().nullable().optional(),
     file: z.string().min(1),
     modifiedAt: z.number(),
     messageCount: z.number().int().nonnegative().optional()
 })
 
 export const AgyLocalSessionWithMessagesSchema = AgyLocalSessionSummarySchema.extend({
-    messages: z.array(AgyImportedMessageSchema)
+    messages: z.array(AgyImportedMessageSchema),
+    importError: z.string().nullable().optional()
 })
 
 export type AgyImportedMessageContent = z.infer<typeof AgyImportedMessageContentSchema>
