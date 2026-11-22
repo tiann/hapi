@@ -1392,7 +1392,7 @@ if (isReconnect) {
         }, 'droppable')
     }
 
-    emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean; steered?: boolean }): void {
+    emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean; steered?: boolean; anchor?: { toolCallId: string } }): void {
         if (localIds.length === 0) return
         // `clearQueuedThinkingGrace` is an opt-in signal for the hub to drop
         // the 15s queued-thinking grace immediately. Only synchronous handlers
@@ -1405,6 +1405,7 @@ if (isReconnect) {
             localIds: string[]
             clearQueuedThinkingGrace?: boolean
             steered?: boolean
+            anchor?: { toolCallId: string }
         } = {
             sid: this.sessionId,
             localIds
@@ -1414,6 +1415,9 @@ if (isReconnect) {
         }
         if (options?.steered) {
             payload.steered = true
+        }
+        if (options?.anchor) {
+            payload.anchor = options.anchor
         }
         this.emitOrQueue(() => this.socket.emit('messages-consumed', payload))
     }

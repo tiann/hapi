@@ -41,6 +41,7 @@ import {
     readLatestAgyTranscriptStepIndex,
     resolveAgyBackgroundTaskIds,
     type AgyOpenBackgroundCommand,
+    type AgyTranscriptStep,
     type AgyReactiveTimingConfig
 } from './agyReactiveWakeup';
 import type { AgyMode, PermissionMode } from './types';
@@ -232,10 +233,50 @@ type AgyTurn = {
     unechoedSteers: Array<{ text: string; echo: string; accept: () => void }>;
     // Steers agy answered without an echo; settled when the turn ends.
     answeredSteers: Array<{ accept: () => void; hold: () => void }>;
+    // Steers still waiting for their USER_INPUT row in agy's transcript, in
+    // send order. A steer stays listed after another source confirmed it, so
+    // its row is not taken by a later steer with the same text.
+    rowSteers: AgySteerRow[];
+    consumedSteerRows: Set<number>;
+    rowPoll: ReturnType<typeof setInterval> | null;
+    // Tool calls shown to the hub this turn, in order: the anchors for a
+    // steer's position.
+    shownToolCalls: Array<{ id: string; names: string[] }>;
+    // The turn's own prompt row in the transcript, which no steer may claim.
+    promptRowText: string;
     abandonSteers: Array<() => void>;
     releaseSteerWait: () => void;
     steerWaitReleased: Promise<void>;
 };
+
+type AgySteerRow = {
+    text: string;
+    // Highest transcript step when the steer was written: its row comes after.
+    boundary: number;
+    // The agy conversation the steer was written to; a new one ends matching.
+    sessionId: string;
+    done: boolean;
+    accept: (anchorToolCallId?: string) => void;
+};
+
+/**
+ * The text of a transcript `USER_INPUT` row: agy wraps the message as
+ * `<USER_REQUEST>\n…\n</USER_REQUEST>` plus metadata and keeps the text
+ * byte for byte, so only line endings and the outer whitespace are
+ * normalized (the queue may trim before sending).
+ */
+export function agySteerRowText(content: string | undefined): string | null {
+    const head = '<USER_REQUEST>\n';
+    if (!content?.startsWith(head)) return null;
+    const tail = '\n</USER_REQUEST>';
+    const end = content.lastIndexOf(`${tail}\n<ADDITIONAL_METADATA>`);
+    const body = content.slice(head.length, end >= 0 ? end : content.lastIndexOf(tail));
+    return normalizeSteerText(body);
+}
+
+function normalizeSteerText(text: string): string {
+    return text.replace(/\r\n/g, '\n').trim();
+}
 
 /**
  * Antigravity over `agy acp`. The agy conversation id is the ACP session id,
@@ -1085,6 +1126,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             promptEcho: { text: normalizeEcho(message), echo: '', done: false },
             unechoedSteers: [],
             answeredSteers: [],
+            rowSteers: [],
+            consumedSteerRows: new Set(),
+            rowPoll: null,
+            shownToolCalls: [],
+            promptRowText: normalizeSteerText(message),
             abandonSteers: [],
             releaseSteerWait,
             steerWaitReleased
@@ -1214,6 +1260,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // After a Stop or a lost agy process, agy may have dropped a steer
             // it had not echoed yet.
             const endedCleanly = !turn.aborted && !this.backendLost;
+            if (!this.backendLost) this.pollSteerRows(turn);
+            if (turn.rowPoll) clearInterval(turn.rowPoll);
+            turn.rowPoll = null;
+            turn.rowSteers = [];
             for (const steer of turn.answeredSteers) {
                 if (endedCleanly) steer.accept();
                 else steer.hold();
@@ -1345,9 +1395,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         let resolved = false;
         let steerCounted = false;
         let forgetEcho = () => {};
+        let rowSteer: AgySteerRow | null = null;
         const markIndeterminate = () => {
             if (resolved) return;
             resolved = true;
+            if (rowSteer) rowSteer.done = true;
             forgetEcho();
             if (session.queue.markReservationIndeterminate(taken)) {
                 session.client.emitSteerIndeterminate([localId]);
@@ -1356,6 +1408,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const restoreQueued = async (): Promise<void> => {
             if (resolved) return;
             resolved = true;
+            if (rowSteer) rowSteer.done = true;
             forgetEcho();
             if (steerCounted) {
                 steerCounted = false;
@@ -1386,6 +1439,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             return { steered: false, error: 'Antigravity is waiting for your approval or answer; respond to it, then steer' };
         }
 
+        // The steer's row comes after everything agy has written so far.
+        const rowBoundary = readLatestAgyTranscriptStepIndex(this.brainDir, acpSessionId);
         let steer: ReturnType<AcpSdkBackend['beginSoftSteerPrompt']>;
         try {
             steer = backend.beginSoftSteerPrompt(
@@ -1423,19 +1478,28 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // agy echoes a steer (user_message_chunk) when it folds it into the
         // turn, which is the moment it belongs in the transcript; the request
         // itself is only answered when the turn ends.
-        const accept = () => {
+        const accept = (anchorToolCallId?: string) => {
             if (resolved) return;
             resolved = true;
             forgetEcho();
             session.queue.commitReservation(taken);
             this.messageBuffer.addMessage(taken.item.message, 'user');
-            session.client.emitMessagesConsumed([localId], { steered: true });
+            session.client.emitMessagesConsumed([localId], {
+                steered: true,
+                ...(anchorToolCallId ? { anchor: { toolCallId: anchorToolCallId } } : {})
+            });
         };
         forgetEcho = () => {
             turn.unechoedSteers = turn.unechoedSteers.filter((entry) => entry.accept !== accept);
         };
         turn.unechoedSteers.push({ text: normalizeEcho(taken.item.message), echo: '', accept });
         turn.abandonSteers.push(markIndeterminate);
+        // agy writes the steer to its transcript when it folds it in: that row
+        // confirms the steer and says where it entered the turn. The echo
+        // (agy <= 1.5.8) and the turn's end remain the other ways to confirm.
+        rowSteer = { text: normalizeSteerText(taken.item.message), boundary: rowBoundary, sessionId: acpSessionId, done: false, accept };
+        turn.rowSteers.push(rowSteer);
+        this.startSteerRowPoll(turn);
 
         try {
             await steer.dispatched;
@@ -1453,6 +1517,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // agy may or may not have folded it in, so hold it for an
             // explicit Retry/Cancel.
             if (stopReason === 'cancelled') {
+                // A row already in the transcript proves agy took it.
+                this.pollSteerRows(turn);
                 markIndeterminate();
                 return;
             }
@@ -1471,6 +1537,69 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             void restoreQueued();
         });
         return { steered: true };
+    }
+
+    private startSteerRowPoll(turn: AgyTurn): void {
+        if (turn.rowPoll) return;
+        const timer = setInterval(() => this.pollSteerRows(turn), this.reactivePollMs);
+        timer.unref?.();
+        turn.rowPoll = timer;
+    }
+
+    /**
+     * Confirms the steers whose USER_INPUT row has reached agy's transcript.
+     * Rows are written in the order the steers were sent, so each steer takes
+     * the first unclaimed row with its text past its own boundary.
+     */
+    private pollSteerRows(turn: AgyTurn): void {
+        const pending = turn.rowSteers.filter((entry) => !entry.done);
+        if (pending.length === 0) {
+            if (turn.rowPoll) clearInterval(turn.rowPoll);
+            turn.rowPoll = null;
+            return;
+        }
+        const acpSessionId = this.acpSessionId;
+        // A new agy conversation has its own step numbers: stop matching and
+        // leave these steers to the end of the turn.
+        for (const entry of pending) {
+            if (entry.sessionId !== acpSessionId) entry.done = true;
+        }
+        const live = pending.filter((entry) => !entry.done);
+        if (live.length === 0 || !acpSessionId) return;
+        const from = Math.min(turn.turnStartStepIndex, ...live.map((entry) => entry.boundary));
+        const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, from);
+        const userRows = steps.filter((step) =>
+            step.source === 'USER_EXPLICIT' && step.type === 'USER_INPUT' && step.step_index > turn.turnStartStepIndex);
+        // The turn's own prompt is the first row; a steer with the same text
+        // must not take it.
+        const promptRow = userRows[0] && agySteerRowText(userRows[0].content) === turn.promptRowText ? userRows[0] : null;
+        for (const entry of live) {
+            const row = userRows.find((candidate) =>
+                candidate !== promptRow
+                && candidate.step_index > entry.boundary
+                && !turn.consumedSteerRows.has(candidate.step_index)
+                && agySteerRowText(candidate.content) === entry.text);
+            if (!row) continue;
+            turn.consumedSteerRows.add(row.step_index);
+            entry.done = true;
+            entry.accept(this.steerAnchor(turn, steps, row.step_index));
+        }
+    }
+
+    /**
+     * The tool call a steer row follows: agy's transcript has no call ids, so
+     * the Nth tool call the turn's planner steps made before the row is the
+     * Nth call shown to the hub, if the names agree.
+     */
+    private steerAnchor(turn: AgyTurn, steps: AgyTranscriptStep[], rowStepIndex: number): string | undefined {
+        const names: string[] = [];
+        for (const step of steps) {
+            if (step.step_index <= turn.turnStartStepIndex || step.step_index >= rowStepIndex) continue;
+            if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') continue;
+            for (const call of step.tool_calls ?? []) names.push(call.name);
+        }
+        const shown = turn.shownToolCalls[names.length - 1];
+        return shown && shown.names.includes(names[names.length - 1]!) ? shown.id : undefined;
     }
 
     private handleUserEcho(text: string): void {
@@ -1857,8 +1986,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private forwardAgentMessage(message: AgentMessage): void {
-        const converted = convertAgentMessage(this.toCanonicalToolMessage(message), this.currentModelId);
+        const canonical = this.toCanonicalToolMessage(message);
+        const converted = convertAgentMessage(canonical, this.currentModelId);
         if (converted) this.session.sendAgentMessage(converted);
+        if (message.type === 'tool_call' && canonical.type === 'tool_call' && this.turn) {
+            const shown = this.turn.shownToolCalls;
+            if (!shown.some((call) => call.id === canonical.id)) {
+                shown.push({ id: canonical.id, names: [message.nativeName, message.name, canonical.name].filter((name): name is string => !!name) });
+            }
+        }
 
         switch (message.type) {
             case 'text':

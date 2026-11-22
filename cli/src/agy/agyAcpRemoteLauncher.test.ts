@@ -16,6 +16,7 @@ import type { AgyMode } from './types';
 import {
     AgyAcpRemoteLauncher,
     addAgyUsage,
+    agySteerRowText,
     agyAcpModeForPermission,
     agyRoundSummary,
     resolveAgyAcpModelId
@@ -255,7 +256,7 @@ function makeSession(sessionId: string | null = null) {
 function launch(
     session: AgySession,
     backends: FakeAgyBackend[],
-    opts: { cancelHardStopMs?: number; killSettleMs?: number; brainDir?: string } = {}
+    opts: { cancelHardStopMs?: number; killSettleMs?: number; brainDir?: string; reactivePollMs?: number } = {}
 ) {
     const created: FakeAgyBackend[] = [];
     const launcher = new AgyAcpRemoteLauncher(session, {
@@ -263,13 +264,14 @@ function launch(
         cancelHardStopMs: opts.cancelHardStopMs ?? 2_000,
         killSettleMs: opts.killSettleMs,
         brainDir: opts.brainDir,
+        ...(opts.reactivePollMs ? { reactivePollMs: opts.reactivePollMs } : {}),
         createBackend: () => {
             const backend = backends.shift() ?? new FakeAgyBackend();
             created.push(backend);
             return backend as unknown as AcpSdkBackend;
         }
     });
-    return { run: launcher.launch(), created };
+    return { run: launcher.launch(), created, launcher };
 }
 
 function steeringStates(client: ReturnType<typeof makeClient>): boolean[] {
@@ -2383,5 +2385,192 @@ describe('AgyAcpRemoteLauncher questions (agy ask_question)', () => {
         } finally {
             rmSync(brainDir, { recursive: true, force: true });
         }
+    });
+});
+
+describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
+    type Handlers = Map<string, (payload?: unknown) => Promise<unknown>>;
+    const SESSION = 'agy-conv-new';
+    let brainDir: string;
+    let stepRows: Array<Record<string, unknown>>;
+
+    beforeEach(() => {
+        brainDir = mkdtempSync(join(tmpdir(), 'hapi-agy-steer-rows-'));
+        stepRows = [];
+    });
+    afterEach(() => {
+        rmSync(brainDir, { recursive: true, force: true });
+    });
+
+    const userRow = (stepIndex: number, text: string) => ({
+        step_index: stepIndex,
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        content: `<USER_REQUEST>\n${text}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: now.\n</ADDITIONAL_METADATA>`
+    });
+    const plannerRow = (stepIndex: number, toolNames: string[]) => ({
+        step_index: stepIndex,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        tool_calls: toolNames.map((name) => ({ name, args: {} }))
+    });
+    const genericRow = (stepIndex: number) => ({ step_index: stepIndex, source: 'MODEL', type: 'GENERIC', status: 'RUNNING' });
+    function writeTranscript(rows: Array<Record<string, unknown>>): void {
+        stepRows = rows;
+        const dir = join(brainDir, SESSION, '.system_generated', 'logs');
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'transcript.jsonl'), `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
+    }
+    const consumedFor = (client: ReturnType<typeof makeClient>, localId: string) =>
+        client.emitMessagesConsumed.mock.calls.filter(([ids]) => (ids as string[])[0] === localId);
+
+    async function startTurn(initialRows?: Array<Record<string, unknown>>) {
+        const backend = new FakeAgyBackend();
+        const { session, queue, client } = makeSession();
+        let releaseFirst!: () => void;
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'tool_call', id: 't1', name: 'run_command', input: {}, status: 'in_progress' });
+            await new Promise<void>((resolve) => { releaseFirst = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('run the tests', REVIEW, 'first');
+        const { run, launcher } = launch(session, [backend], { brainDir, reactivePollMs: 10 });
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        const handlers = client.rpcHandlerManager.handlers as Handlers;
+        // agy has written the prompt and the first tool call by now.
+        writeTranscript(initialRows ?? [userRow(0, 'run the tests'), plannerRow(1, ['run_command']), genericRow(2)]);
+        const steer = async (text: string, localId: string) => {
+            queue.push(text, REVIEW, localId);
+            return await handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId });
+        };
+        const finish = async () => {
+            releaseFirst();
+            for (const completion of backend.steerCompletions) completion.resolve('end_turn');
+            await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+            queue.close();
+            await run;
+        };
+        return { backend, queue, client, handlers, launcher, steer, finish, releaseFirst: () => releaseFirst() };
+    }
+
+    it('confirms a steer from its transcript row before the turn ends, anchored to the last tool call', async () => {
+        const { client, steer, finish } = await startTurn();
+        await steer('also lint', 'steer-1');
+        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
+
+        writeTranscript([...stepRows, userRow(3, 'also lint')]);
+
+        await vi.waitFor(() => expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-1'], { steered: true, anchor: { toolCallId: 't1' } }));
+        expect(sessionEvents(client)).not.toContainEqual({ type: 'ready' });
+        await finish();
+        expect(consumedFor(client, 'steer-1')).toHaveLength(1);
+    });
+
+    it('matches identical steer texts to their rows in send order', async () => {
+        const { client, steer, finish } = await startTurn();
+        await steer('again', 'steer-1');
+        await steer('again', 'steer-2');
+
+        writeTranscript([...stepRows, userRow(3, 'again')]);
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toHaveLength(1));
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(consumedFor(client, 'steer-2')).toHaveLength(0);
+
+        writeTranscript([...stepRows, userRow(4, 'again')]);
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-2')).toHaveLength(1));
+        await finish();
+    });
+
+    it('does not take the turn\'s own prompt row or a row from before the steer', async () => {
+        const { client, steer, finish } = await startTurn();
+        await steer('run the tests', 'steer-1');
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
+        await finish();
+        // Only the turn's end confirmed it, with no position.
+        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]);
+    });
+
+    it('stops matching when agy moves to another conversation and leaves the steer to the turn end', async () => {
+        const { client, steer, launcher, finish } = await startTurn();
+        await steer('also lint', 'steer-1');
+        (launcher as unknown as { acpSessionId: string }).acpSessionId = 'agy-conv-other';
+        writeTranscript([...stepRows, userRow(3, 'also lint')]);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
+
+        (launcher as unknown as { acpSessionId: string }).acpSessionId = SESSION;
+        await finish();
+        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]);
+    });
+
+    it('confirms a steer whose row is there when Stop cancels it, and holds one without a row', async () => {
+        const { backend, client, steer, releaseFirst, queue } = await startTurn();
+        await steer('also lint', 'with-row');
+        await steer('and test', 'no-row');
+        // The transcript is read when Stop answers the steers.
+        stepRows = [...stepRows, userRow(3, 'also lint')];
+        backend.onCancel = () => {
+            writeTranscript(stepRows);
+            releaseFirst();
+            backend.steerCompletions[0]!.resolve('cancelled');
+            backend.steerCompletions[1]!.resolve('cancelled');
+        };
+        await (client.rpcHandlerManager.handlers as Handlers).get(RPC_METHODS.Abort)!();
+
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(consumedFor(client, 'with-row')).toHaveLength(1);
+        expect(consumedFor(client, 'no-row')).toHaveLength(0);
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['no-row']);
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['with-row']);
+        queue.close();
+    });
+
+    it('restores a refused steer and ignores a later row with its text', async () => {
+        const { backend, client, steer, finish } = await startTurn();
+        await steer('also lint', 'steer-1');
+        backend.steerCompletions[0]!.reject(new Error('Can\'t add this prompt to session'));
+        await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-1'], 'queued'));
+
+        writeTranscript([...stepRows, userRow(3, 'also lint')]);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
+        await finish();
+        // It went back to the queue and ran as the next prompt, not as a steer.
+        expect(consumedFor(client, 'steer-1').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
+    });
+
+    it('confirms without a position when no tool call came before the row', async () => {
+        const { client, steer, finish } = await startTurn([userRow(0, 'run the tests'), genericRow(1)]);
+        await steer('also lint', 'steer-1');
+        writeTranscript([...stepRows, userRow(3, 'also lint')]);
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toHaveLength(1));
+        expect(consumedFor(client, 'steer-1')[0]).toEqual([['steer-1'], { steered: true }]);
+        await finish();
+    });
+
+    it('keeps the echo path: the echo confirms at once and the row adds nothing', async () => {
+        const { backend, client, steer, finish } = await startTurn();
+        await steer('also lint', 'steer-1');
+        backend.echo!('also lint');
+        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]);
+
+        writeTranscript([...stepRows, userRow(3, 'also lint')]);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        await finish();
+        expect(consumedFor(client, 'steer-1')).toHaveLength(1);
+    });
+
+    it('reads the steer text out of the row wrapper without touching it', () => {
+        const wrap = (text: string) => `<USER_REQUEST>\n${text}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nlocal time\n</ADDITIONAL_METADATA>`;
+        expect(agySteerRowText(wrap('한국어 테스트 🎉'))).toBe('한국어 테스트 🎉');
+        expect(agySteerRowText(wrap('line1\nline2\n\nline4'))).toBe('line1\nline2\n\nline4');
+        expect(agySteerRowText(wrap('crlf1\r\ncrlf2'))).toBe('crlf1\ncrlf2');
+        expect(agySteerRowText(wrap('  padded  \n'))).toBe('padded');
+        expect(agySteerRowText(wrap('quote </USER_REQUEST> inside'))).toBe('quote </USER_REQUEST> inside');
+        expect(agySteerRowText('plain text')).toBeNull();
+        expect(agySteerRowText(undefined)).toBeNull();
     });
 });
