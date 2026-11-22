@@ -34,6 +34,8 @@ jobs:
             - run: bun install --frozen-lockfile
             - run: bun run build:single-exe:all
             - name: Publish to npm
+              env:
+                  NPM_PUBLISH_WAIT_TIMEOUT_SECONDS: ${{ vars.NPM_PUBLISH_WAIT_TIMEOUT_SECONDS }}
               run: bun run --cwd cli publish-npm
             - name: Package release artifacts
               run: |
