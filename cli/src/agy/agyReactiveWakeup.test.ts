@@ -5046,6 +5046,9 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             h.client.sendAgentMessage.mockClear();
             h.client.sendSessionEvent.mockClear();
             await h.ready();
+            // The same call is announced again after ready: it was suppressed during the Stop, so it stays dropped.
+            h.notify(bgCall('call-cfg-late', 'sleep 8'));
+            await new Promise((r) => setTimeout(r, 40));
             h.queue.push('again', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-3');
             await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
             await h.ready();

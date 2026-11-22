@@ -1361,6 +1361,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         turn.openCommands.clear();
     }
 
+    private rememberStoppedWakeupCall(agentId: string): void {
+        this.stoppedWakeupCallIds.add(agentId);
+        for (const id of this.stoppedWakeupCallIds) {
+            if (this.stoppedWakeupCallIds.size <= 64) break;
+            this.stoppedWakeupCallIds.delete(id);
+        }
+    }
+
     /** Stop: drop what the stopped wakeup left open, and remember its commands so a late start of one is dropped. */
     private async discardStoppedWakeup(): Promise<void> {
         await this.backend?.flushPendingMessageBuffers();
@@ -1369,11 +1377,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.discardingStoppedStarts = false;
         if (!turn) return;
         for (const id of [...turn.commandCallIds, ...turn.openCommands, ...turn.deferredLiveCommandCalls.keys()]) {
-            this.stoppedWakeupCallIds.add(parseToolCallLifetimeId(id) ?? id);
-        }
-        for (const id of this.stoppedWakeupCallIds) {
-            if (this.stoppedWakeupCallIds.size <= 64) break;
-            this.stoppedWakeupCallIds.delete(id);
+            this.rememberStoppedWakeupCall(parseToolCallLifetimeId(id) ?? id);
         }
         turn.deferredLiveCommandCalls.clear();
         turn.openCommands.clear();
@@ -1810,7 +1814,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         turn.openCommands.clear(); // a cancelled prompt's command is not this wakeup's
                     }
                     const isStart = message.type === 'tool_call' && message.nativeName === 'run_command';
-                    if (isStart && (this.discardingStoppedStarts || this.stoppedWakeupCallIds.has(parseToolCallLifetimeId(message.id) ?? message.id))) return;
+                    if (isStart) {
+                        const agentId = parseToolCallLifetimeId(message.id) ?? message.id;
+                        if (this.discardingStoppedStarts) this.rememberStoppedWakeupCall(agentId);
+                        if (this.discardingStoppedStarts || this.stoppedWakeupCallIds.has(agentId)) return;
+                    }
                 }
                 turn.sawActivity = true;
                 turn.acknowledge();
