@@ -450,6 +450,7 @@ export default {
   'dialog.delete.title': 'セッションを削除',
   'dialog.delete.clearMeter': '応答のないジョブの記録を削除',
   'dialog.delete.clearMeterDetail': '「{job}」は15分以上応答していません。プロセスが終了したことを確認してください。進捗の記録だけを削除し、プロセスの停止やセッションの削除は行いません。',
+  'dialog.delete.jobChanged': 'ジョブの状態が変わったため記録を保持しました。もう一度「削除」で現在の状態を確認してください。',
   'dialog.delete.liveMeter': '「{job}」はまだ進捗を送信しています。終了してからセッションを削除してください。再アーカイブは不要です。',
   'dialog.delete.description': '「{name}」を削除してもよろしいですか？この操作は元に戻せません。',
   'dialog.delete.scratchlist.one': 'スクラッチリストの項目 1 件も削除されます。',

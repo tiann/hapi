@@ -41,9 +41,12 @@ export function useSession(api: ApiClient | null, sessionId: string | null): {
             const current = queryClient.getQueryData<{ session: Session }>(queryKeys.session(sessionId))?.session
             return { ...response, session: { ...response.session,
                 // A later live patch can land while an older REST snapshot is in flight.
-                ...(current && current !== atStart && current.activeAt > response.session.activeAt
+                ...(current && current !== atStart && (current.activeAt > response.session.activeAt
+                    || (current.activeAt === response.session.activeAt && current.active !== atStart?.active))
                     ? { active: current.active, activeAt: current.activeAt, thinking: current.thinking,
-                        thinkingAt: current.thinkingAt, activeTurnStartedAt: current.activeTurnStartedAt }
+                        thinkingAt: current.thinkingAt, activeTurnStartedAt: current.activeTurnStartedAt,
+                        backgroundTaskCount: current.backgroundTaskCount, backgroundTasks: current.backgroundTasks,
+                        derivedToolWork: current.derivedToolWork }
                     : {}),
                 ...(current && current.metadataVersion > response.session.metadataVersion
                     ? { metadata: current.metadata, metadataVersion: current.metadataVersion } : {}),

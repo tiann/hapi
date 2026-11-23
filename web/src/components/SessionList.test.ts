@@ -924,6 +924,11 @@ describe('bucketRunningSessions', () => {
         expect(filterSessionsForListStatus([stale], 'archived')).toEqual([])
     })
 
+    it('keeps a session with another reporting job in progress when its primary meter expires', () => {
+        const mixed = { ...withJob, attachedJob: { ...withJob.attachedJob!, heartbeatAt: 1, latestRunningHeartbeatAt: Date.now() } }
+        expect(bucketRunningSessions([mixed], 'jobs').jobs).toEqual([mixed])
+    })
+
     it('puts running attachedJob into jobs under mode jobs', () => {
         const buckets = bucketRunningSessions([withJob, quiet], 'jobs')
         expect(buckets.jobs.map((s) => s.id)).toEqual(['job-1'])

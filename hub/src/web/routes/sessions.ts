@@ -1773,7 +1773,7 @@ export function createSessionsRoutes(
         const job = engine.getPrimaryAttachedJob(sessionResult.sessionId)
         if (job) {
             return c.json({
-                code: 'attached_job_running', job,
+                code: 'attached_job_running', job, canClearStale: isAttachedJobStale(job),
                 error: 'Cannot delete a session while an attached job is running. Complete or clear it first.'
             }, 409)
         }

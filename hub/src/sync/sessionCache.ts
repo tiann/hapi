@@ -1179,6 +1179,7 @@ export class SessionCache {
             // same stop time, or stopped rows reorder after a hub restart.
             this.store.sessions.setSessionActive(session.id, false, session.activeAt, session.namespace)
             session.thinking = false
+            session.activeTurnStartedAt = null
             // The keepalive died, not the tasks: reset the transient work
             // state like handleSessionEnd does, or a session that expired
             // mid-background-work keeps its stale backgroundTaskCount (and
@@ -1196,6 +1197,8 @@ export class SessionCache {
                 sessionId: session.id,
                 data: {
                     active: false,
+                    thinking: false,
+                    activeTurnStartedAt: null,
                     // The last keepalive: when the session stopped, for clients
                     // that only saw an older activeAt.
                     activeAt: session.activeAt,

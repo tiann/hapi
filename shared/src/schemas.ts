@@ -703,6 +703,8 @@ export const AttachedJobSchema = z.object({
     wakeOnTerminal: z.boolean().optional(),
     /** Optional prescription text appended to the hub wake message. */
     wakePrompt: z.string().max(2000).optional(),
+    /** In list / primary projections, the newest heartbeat across running jobs. */
+    latestRunningHeartbeatAt: z.number().optional(),
     heartbeatAt: z.number(),
     startedAt: z.number(),
     updatedAt: z.number()

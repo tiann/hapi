@@ -190,7 +190,7 @@ it('keeps delete confirmation after clearing the meter removes its row from Acti
             startedAt: 1, updatedAt: 1, heartbeatAt: 1 }
         const initial = makeSession({ id: 'stale', active: false, attachedJob: job })
         const remove = vi.fn(async () => {}).mockRejectedValueOnce(new ApiError('conflict', 409,
-            'attached_job_running', JSON.stringify({ job })))
+            'attached_job_running', JSON.stringify({ job, canClearStale: true })))
         function List() {
             const [row, setRow] = useState(initial)
             const api = { deleteSession: remove, clearStaleSessionJob: async () => setRow({ ...row, attachedJob: null }) } as unknown as ApiClient

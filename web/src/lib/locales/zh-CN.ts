@@ -499,6 +499,7 @@ export default {
   'dialog.delete.title': '删除会话',
   'dialog.delete.clearMeter': '移除失联的任务记录',
   'dialog.delete.clearMeterDetail': '“{job}”超过 15 分钟没有心跳。请先确认进程已结束。此操作只移除进度记录，不会停止进程或删除会话。',
+  'dialog.delete.jobChanged': '任务状态已变化，记录未移除。可再次点击“删除”核实当前状态。',
   'dialog.delete.liveMeter': '后台任务“{job}”仍有心跳。请等待任务结束后再删除会话，无需再次归档。',
   'dialog.delete.description': '确定要删除 "{name}" 吗？此操作无法撤销。',
   'dialog.delete.scratchlist.one': '这也将删除 1 条草稿清单条目。',

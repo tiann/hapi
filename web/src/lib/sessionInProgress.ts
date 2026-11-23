@@ -13,7 +13,8 @@ export function hasUnarchivedJob(session: SessionSummary): boolean {
 }
 
 export function hasInProgressJobSession(session: SessionSummary): boolean {
-    return hasUnarchivedJob(session) && !!session.attachedJob && !isAttachedJobStale(session.attachedJob)
+    const job = session.attachedJob
+    return hasUnarchivedJob(session) && !!job && !isAttachedJobStale({ heartbeatAt: job.latestRunningHeartbeatAt ?? job.heartbeatAt })
 }
 
 /**

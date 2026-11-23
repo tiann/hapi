@@ -60,9 +60,9 @@ describe('DeleteSessionDialog shared archive progress', () => {
         const clearStaleSessionJob = vi.fn(async () => {})
         const api = { clearStaleSessionJob } as unknown as ApiClient
         const job = { key: 'import', label: 'Batch', status: 'running', runId: 'gen', startedAt: 1,
-            updatedAt: 2, heartbeatAt: stale ? 2 : Date.now() }
+            updatedAt: 2, heartbeatAt: stale ? Date.now() : 2 }
         const remove = vi.fn(async () => {}).mockRejectedValueOnce(new ApiError('conflict', 409,
-            'attached_job_running', JSON.stringify({ job })))
+            'attached_job_running', JSON.stringify({ job, canClearStale: stale })))
         render(<DeleteSessionDialog isOpen sessionId="A" api={api} description="Delete session?"
             onClose={state.onClose} isPending={false} onConfirm={remove} />, { wrapper: state.wrapper })
         fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
@@ -78,6 +78,22 @@ describe('DeleteSessionDialog shared archive progress', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
         await waitFor(() => expect(state.onClose).toHaveBeenCalledOnce())
         expect(remove).toHaveBeenCalledTimes(2)
+    })
+
+    it('explains that a newly heartbeating job was kept and checks again before recovery', async () => {
+        const state = setup()
+        const job = { key: 'k', label: 'Batch', status: 'running', startedAt: 1, heartbeatAt: 2, updatedAt: 2 }
+        const conflict = (canClearStale: boolean) => new ApiError('blocked', 409, 'attached_job_running', JSON.stringify({ job, canClearStale }))
+        const remove = vi.fn().mockRejectedValueOnce(conflict(true)).mockRejectedValueOnce(conflict(false))
+        const clear = vi.fn().mockRejectedValue(new ApiError('changed', 409, 'job_changed'))
+        render(<DeleteSessionDialog isOpen sessionId="A" api={{ clearStaleSessionJob: clear } as unknown as ApiClient}
+            description="Delete?" onClose={state.onClose} isPending={false} onConfirm={remove} />, { wrapper: state.wrapper })
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+        fireEvent.click(await screen.findByRole('button', { name: 'Remove stale job record' }))
+        expect(await screen.findByText(/job changed and its record was kept/)).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+        expect(await screen.findByText(/Batch.*still reporting/)).toBeInTheDocument()
+        expect(clear).toHaveBeenCalledTimes(1)
     })
 
     it('updates an already-open dialog when another view starts archiving', async () => {

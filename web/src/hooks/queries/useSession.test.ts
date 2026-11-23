@@ -67,3 +67,22 @@ it('preserves an archive metadata patch even when its liveness clock is unchange
     view.unmount()
     client.clear()
 })
+
+it('keeps an expiry patch over a delayed active snapshot with the same keepalive time', async () => {
+    const client = new QueryClient()
+    const key = queryKeys.session('expiry')
+    const active = { id: 'expiry', active: true, activeAt: 10, thinking: true, metadataVersion: 0 } as Session
+    client.setQueryData(key, { session: active }, { updatedAt: 1 })
+    let resolve!: (value: { session: Session }) => void
+    const api = { getSession: () => new Promise(done => { resolve = done }) } as unknown as ApiClient
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const view = renderHook(() => useSession(api, 'expiry'), { wrapper })
+    await act(async () => {
+        client.setQueryData(key, { session: { ...active, active: false, thinking: false } })
+        resolve({ session: active })
+    })
+    await waitFor(() => expect(view.result.current.isFetching).toBe(false))
+    expect(view.result.current.session).toMatchObject({ active: false, thinking: false, activeAt: 10 })
+    view.unmount()
+    client.clear()
+})

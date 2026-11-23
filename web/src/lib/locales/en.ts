@@ -496,6 +496,7 @@ export default {
   'dialog.delete.title': 'Delete Session',
   'dialog.delete.clearMeter': 'Remove stale job record',
   'dialog.delete.clearMeterDetail': '“{job}” has not reported for over 15 minutes. Confirm the process has ended first. Removing its meter does not stop the process or delete the session.',
+  'dialog.delete.jobChanged': 'The job changed and its record was kept. Try Delete again to check its current status.',
   'dialog.delete.liveMeter': '“{job}” is still reporting. Wait for it to finish before deleting the session; no further archive is needed.',
   'dialog.delete.description': 'Are you sure you want to delete "{name}"? This action cannot be undone.',
   'dialog.delete.scratchlist.one': 'This will also delete 1 scratchlist entry.',
