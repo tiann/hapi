@@ -1160,6 +1160,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         // (record modelError / suppress ready / auto-Bridge).
                         this.pendingStderrFailure = null;
                         this.pendingTextFailure = null;
+                        let caughtRetryableError: unknown = null;
                         let turnCompleted = false;
                         try {
                             // Capture before prompt(): pre-swap drain still uses this
@@ -1261,6 +1262,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                 if (!bridgeQueued) this.stampBlockedFooter(message);
                                 break;
                             }
+                            caughtRetryableError = error;
                             this.pendingRetryableError = error instanceof Error ? error.message : String(error);
                         }
 
@@ -1314,7 +1316,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                 : CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE;
                             this.surfacePromptFailure(giveUpMessage, { deferFooter: true });
                             const failure = settleFailure(
-                                this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
+                                caughtRetryableError ?? this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
                             );
                             this.pendingStderrFailure = null;
                             this.pendingTextFailure = null;
@@ -1333,7 +1335,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             // budget — give up rather than resending Continue N times.
                             this.surfacePromptFailure(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE, { deferFooter: true });
                             const continueFailure = settleFailure(
-                                this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
+                                caughtRetryableError ?? this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
                             );
                             this.pendingStderrFailure = null;
                             this.pendingTextFailure = null;
@@ -1356,7 +1358,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             const message = `Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`;
                             this.surfacePromptFailure(message, { deferFooter: true });
                             const exhaustedFailure = settleFailure(
-                                this.pendingRetryableError ?? 'Cursor Agent failed after retries'
+                                caughtRetryableError ?? this.pendingRetryableError ?? 'Cursor Agent failed after retries'
                             );
                             this.pendingStderrFailure = null;
                             this.pendingTextFailure = null;

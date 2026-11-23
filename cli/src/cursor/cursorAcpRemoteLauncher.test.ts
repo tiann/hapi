@@ -1857,6 +1857,66 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     }, 10_000);
 
+    it('preserves the final prompt retryable RPC error when a pending steer emits a different inline error during the drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('Error: T: [unavailable]')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(4);
+
+        // Steer emits a different inline retryable error while the drain awaits it.
+        harness.activeOnMessage!({
+            type: 'text',
+            text: 'Error: T: [canceled]'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'modelError',
+                kind: 'unavailable',
+                rawSnippet: expect.stringContaining('[unavailable]')
+            }));
+        });
+        expect(session.client.sendSessionEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError',
+            kind: 'canceled'
+        }));
+
+        session.queue.close();
+        await runPromise;
+    });
+
     it('releases an in-loop retry soft-steer wait on Switch without sending a retry', async () => {
         let releasePrompt!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
