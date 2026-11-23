@@ -102,7 +102,10 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
     useEffect(() => {
         const onStorage = (event: StorageEvent) => {
             if (event.key !== storageKey && event.key !== null) return
-            const next = parseSearchHistory(event.key === null ? null : event.newValue)
+            // A storage event describes the write that queued it, not necessarily
+            // the value still on disk after a more recent write in this tab.
+            const next = readHistory(storageKey)
+            if (!next) return
             current.current = next
             storageFailed.current = false
             setState(next)

@@ -972,6 +972,7 @@ export function measureOpenSessionTickContentOffset(
 }
 
 export function SessionListSearch(props: {
+    enableHistory?: boolean
     searchRef?: (node: HTMLDivElement | null) => void
     value: string
     onChange: (value: string) => void
@@ -999,7 +1000,7 @@ export function SessionListSearch(props: {
     const [searchMatchModeOpen, setSearchMatchModeOpen] = useState(false)
 
     const inputRef = useRef<HTMLInputElement>(null)
-    const history = useSearchHistoryField('sessions', props.value, props.onChange, inputRef)
+    const history = useSearchHistoryField('sessions', props.value, props.onChange, inputRef, { enabled: props.enableHistory === true })
     const collapsedButtonRef = useRef<HTMLButtonElement>(null)
     const scopeButtonRef = useRef<HTMLButtonElement>(null)
     const scopeFue = useFue('session-list-search-scope')
@@ -3434,6 +3435,7 @@ export function SessionList(props: {
                 >
                     {showSearch ? (
                         <SessionListSearch
+                            enableHistory
                             searchRef={setSearchNode}
                             value={searchQuery}
                             onChange={setSearchQuery}

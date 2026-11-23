@@ -200,6 +200,55 @@ test('malformed stored history recovers, whitespace is ignored and only the late
     expect((await history(page)).sessions.slice(0, 2)).toEqual(['query-10', 'query-21'])
 })
 
+test('the shared picker search neither sees nor writes the main session history', async ({ page }) => {
+    await page.goto(fixture)
+    await optIn(page)
+    await page.getByRole('searchbox').fill('main-only')
+    await page.getByRole('searchbox').press('Enter')
+    await page.goto(`${fixture}?sharePicker=1`)
+    const input = page.getByRole('searchbox')
+    await input.focus()
+    await expect(recent(page)).toHaveCount(0)
+    await input.fill('picker-only')
+    await input.press('Enter')
+    expect((await history(page)).sessions).toEqual(['main-only'])
+})
+
+test('keyboard clear discards the uncommitted file query', async ({ page }) => {
+    await page.goto(fixture)
+    await optIn(page)
+    await go(page, 'Files')
+    const input = page.getByPlaceholder('Search files')
+    await input.fill('README')
+    await input.press('Enter')
+    await input.fill('discarded by keyboard')
+    await input.press('Tab')
+    await expect(page.getByRole('button', { name: 'Clear search', exact: true })).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect(input).toBeFocused()
+    await expect(recent(page).getByRole('button', { name: 'README', exact: true })).toBeVisible()
+    expect((await history(page)).files).toEqual(['README'])
+    if (process.env.HAPI_REVIEW_SCREENSHOT) await page.screenshot({ path: process.env.HAPI_REVIEW_SCREENSHOT })
+})
+
+test('a delayed storage event cannot resurrect locally cleared history', async ({ page }) => {
+    await page.goto(fixture)
+    await optIn(page)
+    const input = page.getByRole('searchbox')
+    await input.fill('old query')
+    await input.press('Enter')
+    const old = await history(page)
+    await go(page, 'Settings')
+    await page.getByRole('button', { name: 'Clear search history' }).click()
+    await page.evaluate(data => {
+        const key = Object.keys(localStorage).find(key => key.startsWith('hapi.searchHistory.v1.'))!
+        window.dispatchEvent(new StorageEvent('storage', { key, newValue: JSON.stringify(data) }))
+    }, old)
+    await go(page, 'Sessions')
+    await expect(recent(page)).toHaveCount(0)
+    expect((await history(page)).sessions).toEqual([])
+})
+
 test('another tab receives preference changes and history clearing', async ({ page, context }) => {
     await page.goto(fixture)
     await optIn(page)

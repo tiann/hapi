@@ -43,6 +43,7 @@ function SessionSearch() {
     const [expanded, setExpanded] = useState(true)
     return <section className="relative mx-auto max-w-xl p-3" aria-label="Session search fixture">
         <SessionListSearch value={value} onChange={setValue} expanded={expanded} onExpandedChange={setExpanded}
+            enableHistory={!new URLSearchParams(location.search).has('sharePicker')}
             customStart="" customEnd="" sessionActivityDates={new Set()} onDateRangeChange={() => {}} />
         <p data-fixture-control="" className="mt-4">{chinese ? (value ? `筛选会话：${value}` : '全部会话') : (value ? `Filtered sessions: ${value}` : 'All sessions')}</p>
         <button data-fixture-control="" type="button" className="min-h-11" onClick={() => setExpanded(true)}>{chinese ? '聚焦会话搜索' : 'Focus session search'}</button>

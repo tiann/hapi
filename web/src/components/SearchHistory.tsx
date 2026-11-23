@@ -3,8 +3,15 @@ import { useSearchHistory, type SearchHistoryType } from '@/lib/search-history'
 import { useTranslation } from '@/lib/use-translation'
 import { CloseIcon } from '@/components/icons'
 
-export function useSearchHistoryField(type: SearchHistoryType, query: string, onChange: (query: string) => void, inputRef: RefObject<HTMLInputElement | null>) {
+export function useSearchHistoryField(
+    type: SearchHistoryType,
+    query: string,
+    onChange: (query: string) => void,
+    inputRef: RefObject<HTMLInputElement | null>,
+    options: { enabled?: boolean; clearButtonRef?: RefObject<HTMLButtonElement | null> } = {}
+) {
     const history = useSearchHistory()
+    const enabled = options.enabled !== false && history.state.enabled
     const [open, setOpen] = useState(false)
     const [composing, setComposing] = useState(false)
     const composingRef = useRef(false)
@@ -37,20 +44,22 @@ export function useSearchHistoryField(type: SearchHistoryType, query: string, on
         }
     }, [type])
     useEffect(() => {
-        if (!history.state.enabled) dirty.current = false
-    }, [history.state.enabled])
+        if (!enabled) dirty.current = false
+    }, [enabled])
 
-    const visible = open && !composing && history.state.enabled && query.length === 0 && history.state[type].length > 0
+    const visible = open && !composing && enabled && query.length === 0 && history.state[type].length > 0
     const focusEntry = (last = false) => {
         const entries = panelRef.current?.querySelectorAll<HTMLButtonElement>('[data-history-query]')
         entries?.[last ? entries.length - 1 : 0]?.focus()
     }
     const blur = (event: FocusEvent<HTMLElement>) => {
+        const next = event.relatedTarget
+        if (next && (next === inputRef.current || next === options.clearButtonRef?.current || panelRef.current?.contains(next))) return
         commit()
-        if (event.relatedTarget === inputRef.current || panelRef.current?.contains(event.relatedTarget as Node | null)) return
         setOpen(false)
     }
     return {
+        onClearButtonBlur: blur,
         clearQuery: () => {
             cancelPending()
             onChange('')
@@ -62,7 +71,7 @@ export function useSearchHistoryField(type: SearchHistoryType, query: string, on
             onFocus: () => setOpen(true),
             onBlur: blur,
             onChange: (event: { target: { value: string } }) => {
-                dirty.current = history.state.enabled
+                dirty.current = enabled
                 // Keep unmount/pagehide recording in sync even before React commits a render.
                 pendingQuery.current = event.target.value
                 onChange(event.target.value)

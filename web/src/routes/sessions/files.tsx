@@ -383,7 +383,8 @@ export default function FilesPage() {
     }, [activeTab, navigate, sessionId])
 
     const searchInputRef = useRef<HTMLInputElement>(null)
-    const history = useSearchHistoryField('files', searchQuery, setSearchQuery, searchInputRef)
+    const clearSearchRef = useRef<HTMLButtonElement>(null)
+    const history = useSearchHistoryField('files', searchQuery, setSearchQuery, searchInputRef, { clearButtonRef: clearSearchRef })
 
     useEffect(() => {
         try {
@@ -578,6 +579,8 @@ export default function FilesPage() {
                         {searchQuery ? (
                             <button
                                 type="button"
+                                ref={clearSearchRef}
+                                onBlur={history.onClearButtonBlur}
                                 onClick={() => {
                                     history.clearQuery()
                                     searchInputRef.current?.focus()
