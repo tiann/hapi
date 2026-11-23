@@ -931,69 +931,45 @@ export class SyncEngine {
     } {
         const perSession = sessionIds.map((sessionId) => ({
             sessionId,
-            messages: this.store.messages.getAllMessages(sessionId),
             ackKeys: this.store.sessions.getSessionByNamespace(sessionId, namespace)?.blockedAckKeys ?? [],
             derived: this.deriveNotifyStateFromTranscript(sessionId, null)
         }))
 
-        // "Elsewhere" means it, not "earlier in the same transcript": a
-        // session whose own history repeats one status+note across two
-        // distinct episodes (the first replied-to, the second a genuinely
-        // new occurrence) already has `derived.signal` pointing at the
-        // live one — `deriveNotifyStateFromTranscript` excluded the
-        // superseded occurrence by MESSAGE IDENTITY. Re-scanning that same
-        // session's own messages here matches by CONTENT instead, so the
-        // superseded occurrence's identical text trivially "resolves" the
-        // live one against itself, discarding a footer nothing ever
-        // answered (#1717).
-        const isResolvedElsewhere = (sourceSessionId: string, status: string, note: string | null): boolean => {
-            for (const other of perSession) {
-                if (other.sessionId === sourceSessionId) continue
-                if (other.derived.boundaryPosition === null) continue
-                for (const message of other.messages) {
-                    const signal = extractSessionNotifySignal(message.content, message.createdAt)
-                    if (!signal || signal.status !== status || signal.note !== note) continue
-                    const position: NotifyPosition = [messageReceivedAt(message), message.seq]
-                    if (positionAtOrBefore(position, other.derived.boundaryPosition)) return true
-                }
-            }
-            return false
-        }
-        const survivors = perSession.filter((source) => (
-            source.derived.signal !== null
-            && !isResolvedElsewhere(source.sessionId, source.derived.signal.status, source.derived.signal.note)
-        ))
+        // No cross-session "already resolved" check (#1717 cold-review
+        // round 31) — there used to be one here, matching a candidate's
+        // signal against a SIBLING's transcript by status+note CONTENT.
+        // Content equality is not evidence the two occurrences are the
+        // SAME real event: the self-exclusion fix (round 29) already
+        // proved recurring identical text is a real pattern, not
+        // hypothetical, and nothing stops the SAME pattern splitting
+        // across two duplicate sessions' independently-synced histories
+        // instead of within one. Matching would need a stable cross-copy
+        // identity to be sound, and #1717 (filed as hapi#2577) traced that
+        // none exists today for any flavor's live-vs-imported pairing —
+        // the dominant real scenario this code has to handle.
+        //
+        // Given that, the only safe default is to decline: a session's own
+        // self-consistent derivation (which DOES use real identity for its
+        // own within-session ordering) is trusted as-is, full stop. The
+        // cost is a dismissal legitimately recorded on a sibling session
+        // occasionally not carrying across the merge — an answered blocker
+        // stays visible until something touches it directly. That is the
+        // safe direction to be wrong in; the alternative (matching by
+        // content) can hide a genuinely unanswered blocker instead, which
+        // is the failure this entire subsystem exists to prevent.
+        const survivors = perSession.filter((source) => source.derived.signal !== null)
         const winner = survivors[0] ?? null
 
-        if (winner && winner.derived.signal !== null) {
-            // Matched against each source's OWN current signal, never a raw
-            // scan of its full message history (#1717). Scanning every
-            // status+note match in a source's history conflated two
-            // DISTINCT blocking episodes that happen to repeat the same
-            // text — dismissing an earlier one and remapping that dismissal
-            // onto whichever later, genuinely-still-open occurrence happens
-            // to share the words, hiding a real new blocker. A source's own
-            // `derived.signal` is already the ONE occurrence its own
-            // self-consistent timeline currently considers live, so only
-            // that occurrence's dismissal can legitimately transfer.
-            const winningSignal = winner.derived.signal
-            const winningKey = notifyBlockerKey(winningSignal.at)
-            for (const source of perSession) {
-                if (source.sessionId === canonicalSessionId) continue
-                if (source.ackKeys.length === 0) continue
-                if (source.derived.signal === null) continue
-                if (source.derived.signal.status !== winningSignal.status
-                    || source.derived.signal.note !== winningSignal.note) continue
-                const ownKey = notifyBlockerKey(source.derived.signal.at)
-                // NOT a no-op skip (#1717 cold-review round 29): when the
-                // WINNER itself is a non-canonical duplicate, its own key
-                // trivially equals `winningKey` — exactly the case where its
-                // ack is the one that must land on canonical, since nothing
-                // else carries it forward once the merge deletes this row.
-                // A same-value remap is still a real UNION write on
-                // `transferBlockedAck`'s target side, not a true no-op.
-                this.transferBlockedAck(source.sessionId, canonicalSessionId, namespace, new Map([[ownKey, winningKey]]))
-            }
+        if (winner && winner.derived.signal !== null && winner.sessionId !== canonicalSessionId && winner.ackKeys.length > 0) {
+            // Only the WINNER's own acknowledgement ever transfers — never
+            // a sibling's, even one whose content happens to match (#1717
+            // cold-review round 31, same reasoning as declining the
+            // cross-session resolve above). The winner's own ack is the
+            // one case identity is actually certain: it is the session's
+            // own acknowledgement of its own signal, by construction, not
+            // a content match across two distinct objects.
+            const winningKey = notifyBlockerKey(winner.derived.signal.at)
+            this.transferBlockedAck(winner.sessionId, canonicalSessionId, namespace, new Map([[winningKey, winningKey]]))
         }
 
         return {
