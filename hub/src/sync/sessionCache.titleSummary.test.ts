@@ -45,7 +45,7 @@ describe('SessionCache.updateSessionSummary', () => {
             'default'
         )
 
-        await cache.updateSessionSummary(created.id, 'Generated title', { clearName: true })
+        await cache.updateSessionSummary(created.id, 'Generated title', { clearName: true, expectedName: 'Manual name' })
 
         const updated = cache.getSession(created.id)
         expect(updated?.metadata?.name).toBeUndefined()
@@ -101,7 +101,7 @@ describe('SessionCache.updateSessionSummary', () => {
             'default'
         )
 
-        await cache.updateSessionSummary(created.id, 'Generated title', { clearName: true })
+        await cache.updateSessionSummary(created.id, 'Generated title', { clearName: true, expectedName: '   ' })
 
         const updated = cache.getSession(created.id)
         expect(updated?.metadata?.name).toBeUndefined()

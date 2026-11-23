@@ -606,6 +606,20 @@ describe('sessions routes', () => {
         expect(updates).toEqual([['session-1', 'Generated title', { clearName: true, expectedName: null }]])
     })
 
+    it('rejects name replacement when the request omits the expected manual name', async () => {
+        let calls = 0
+        const { app } = createApp(createSession(), {
+            updateSessionSummary: async () => { calls += 1 }
+        })
+        const response = await app.request('/api/sessions/session-1/summary', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: 'Generated title', clearName: true })
+        })
+        expect(response.status).toBe(400)
+        expect(calls).toBe(0)
+    })
+
     it('rejects an empty summary', async () => {
         const { app } = createApp(createSession())
 

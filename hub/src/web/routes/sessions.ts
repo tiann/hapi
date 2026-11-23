@@ -1732,7 +1732,8 @@ export function createSessionsRoutes(
         const body = await c.req.json().catch(() => null)
         const parsed = UpdateSessionSummaryRequestSchema.safeParse(body)
         if (!parsed.success) {
-            return c.json({ error: 'Invalid body: text is required' }, 400)
+            const message = parsed.error.issues.find(issue => issue.path[0] === 'expectedName')?.message
+            return c.json({ error: message ?? 'Invalid body: text is required' }, 400)
         }
 
         try {

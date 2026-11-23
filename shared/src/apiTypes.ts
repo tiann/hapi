@@ -495,6 +495,9 @@ export const UpdateSessionSummaryRequestSchema = z.object({
     clearName: z.boolean().optional(),
     expectedName: z.string().nullable().optional(),
     titleLocked: z.boolean().optional()
+}).refine(value => value.clearName !== true || value.expectedName !== undefined, {
+    path: ['expectedName'],
+    message: 'expectedName is required when replacing a manual name'
 })
 
 export type UpdateSessionSummaryRequest = z.infer<typeof UpdateSessionSummaryRequestSchema>
