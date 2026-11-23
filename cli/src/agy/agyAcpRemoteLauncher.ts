@@ -34,6 +34,7 @@ import {
     agyTranscriptPaths,
     convertAgyReactiveSteps,
     defaultAgyBrainDir,
+    decodeAgyTranscriptArgs,
     extractAgyBackgroundTaskIds,
     inspectAgyReactiveSteps,
     inspectSyntheticBackgroundCommandMatch,
@@ -160,6 +161,16 @@ function normalizeEcho(text: string): string {
     return text.replace(/\s+/g, ' ').trim();
 }
 
+/** Corroborates a transcript call against a live ACP call by shared args. */
+function argsAgree(transcriptArgs: Record<string, unknown>, liveArgs: Record<string, unknown>): boolean {
+    for (const [key, value] of Object.entries(transcriptArgs)) {
+        if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') continue;
+        const live = liveArgs[key];
+        if (live !== undefined && live !== value) return false;
+    }
+    return true;
+}
+
 /** agy's question tool; its permission request must reach the user. */
 export function isAgyQuestionRequest(request: PermissionRequest): boolean {
     const input = request.rawInput as { questions?: unknown } | undefined;
@@ -239,9 +250,9 @@ type AgyTurn = {
     rowSteers: AgySteerRow[];
     consumedSteerRows: Set<number>;
     rowPoll: ReturnType<typeof setInterval> | null;
-    // Tool calls shown to the hub this turn, in order: the anchors for a
-    // steer's position.
-    shownToolCalls: Array<{ id: string; names: string[] }>;
+    // Every tool call of this turn in planner (ACP arrival) order, including
+    // deferred ones; a deferred call keeps its slot but cannot anchor a steer.
+    plannerCalls: Array<{ id: string; names: string[]; args?: Record<string, unknown>; shown: boolean }>;
     // The turn's own prompt row in the transcript, which no steer may claim.
     promptRowText: string;
     abandonSteers: Array<() => void>;
@@ -1129,7 +1140,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             rowSteers: [],
             consumedSteerRows: new Set(),
             rowPoll: null,
-            shownToolCalls: [],
+            plannerCalls: [],
             promptRowText: normalizeSteerText(message),
             abandonSteers: [],
             releaseSteerWait,
@@ -1501,6 +1512,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // agy writes the steer to its transcript when it folds it in: that row
         // confirms the steer and says where it entered the turn. The echo
         // (agy <= 1.5.8) and the turn's end remain the other ways to confirm.
+        // A late echo can confirm the next identical steer instead; that path
+        // is best effort for those versions.
         rowSteer = { text: normalizeSteerText(taken.item.message), boundary: rowBoundary, sessionId: acpSessionId, done: false, accept };
         turn.rowSteers.push(rowSteer);
         this.startSteerRowPoll(turn);
@@ -1592,18 +1605,23 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     /**
      * The tool call a steer row follows: agy's transcript has no call ids, so
-     * the Nth tool call the turn's planner steps made before the row is the
-     * Nth call shown to the hub, if the names agree.
+     * the Nth planner call before the row maps to the Nth call of this turn.
+     * A steer folded in after model text lands after the preceding call, since
+     * text rows have no id to anchor to.
      */
     private steerAnchor(turn: AgyTurn, steps: AgyTranscriptStep[], rowStepIndex: number): string | undefined {
-        const names: string[] = [];
+        const transcriptCalls: NonNullable<AgyTranscriptStep['tool_calls']> = [];
         for (const step of steps) {
             if (step.step_index <= turn.turnStartStepIndex || step.step_index >= rowStepIndex) continue;
             if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') continue;
-            for (const call of step.tool_calls ?? []) names.push(call.name);
+            transcriptCalls.push(...(step.tool_calls ?? []));
         }
-        const shown = turn.shownToolCalls[names.length - 1];
-        return shown && shown.names.includes(names[names.length - 1]!) ? shown.id : undefined;
+        const last = transcriptCalls[transcriptCalls.length - 1];
+        const candidate = turn.plannerCalls[transcriptCalls.length - 1];
+        if (!last || !candidate?.shown) return undefined;
+        if (candidate.names.length > 0 && !candidate.names.includes(last.name)) return undefined;
+        if (candidate.args && !argsAgree(decodeAgyTranscriptArgs(last.args), candidate.args)) return undefined;
+        return candidate.id;
     }
 
     private handleUserEcho(text: string): void {
@@ -1761,6 +1779,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             if (match.kind === 'ambiguous') {
                 turn.deferredLiveCommandCalls.set(message.id, message);
+                if (!turn.plannerCalls.some((call) => call.id === message.id)) {
+                    turn.plannerCalls.push({
+                        id: message.id,
+                        names: [message.nativeName, message.name].filter((name): name is string => !!name),
+                        ...(nativeArgs ? { args: nativeArgs } : {}),
+                        shown: false
+                    });
+                }
                 return { message, suppressForward: true, skipTracking: true };
             }
             turn.deferredLiveCommandCalls.delete(message.id);
@@ -1995,9 +2021,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (converted) this.session.sendAgentMessage(converted);
         if (message.type === 'tool_call' && canonical.type === 'tool_call' && this.turn
             && !this.turn.priorBackgroundCallIds.has(canonical.id)) {
-            const shown = this.turn.shownToolCalls;
-            if (!shown.some((call) => call.id === canonical.id)) {
-                shown.push({ id: canonical.id, names: [message.nativeName, message.name, canonical.name].filter((name): name is string => !!name) });
+            const calls = this.turn.plannerCalls;
+            if (!calls.some((call) => call.id === canonical.id)) {
+                const args = message.nativeArgs && typeof message.nativeArgs === 'object' && !Array.isArray(message.nativeArgs)
+                    ? message.nativeArgs as Record<string, unknown>
+                    : undefined;
+                calls.push({
+                    id: canonical.id,
+                    names: [message.nativeName, message.name, canonical.name].filter((name): name is string => !!name),
+                    ...(args ? { args } : {}),
+                    shown: true
+                });
             }
         }
 

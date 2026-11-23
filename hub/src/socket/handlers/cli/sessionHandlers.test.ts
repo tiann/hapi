@@ -828,7 +828,7 @@ it.each([
             store.close()
         })
 
-        it('keeps transcript order for two steers that share one anchor', () => {
+        it('stamps two steers sharing one anchor at the same slot, leaving order to the queue', () => {
             const store = new Store(':memory:')
             const session = store.sessions.getOrCreateSession('anchor-order', {}, null, 'default')
             const socket = new FakeSocket()
@@ -852,15 +852,16 @@ it.each([
 
             const consumed = events.filter(event => event.type === 'messages-consumed') as Array<Extract<SyncEvent, { type: 'messages-consumed' }>>
             expect(consumed.map(event => event.localIds[0])).toEqual(['steer-b', 'steer-a'])
-            expect(consumed.map(event => event.invokedAt)).toEqual([t0 + 1, t0 + 2])
+            // Both steers get the same slot; display order falls back to the queue.
+            expect(consumed.map(event => event.invokedAt)).toEqual([t0 + 1, t0 + 1])
 
             const byPosition = store.messages.getMessagesByPosition(session.id, 10)
             expect(byPosition.filter(message => message.localId?.startsWith('steer-')).map(message => message.localId))
-                .toEqual(['steer-b', 'steer-a'])
+                .toEqual(['steer-a', 'steer-b'])
             store.close()
         })
 
-        it('restarts the offset when a later steer uses a different anchor in the same session', () => {
+        it('stamps each steer from its own anchor regardless of earlier steers', () => {
             const store = new Store(':memory:')
             const session = store.sessions.getOrCreateSession('anchor-reset', {}, null, 'default')
             const socket = new FakeSocket()

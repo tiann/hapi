@@ -2434,6 +2434,67 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
     const consumedFor = (client: ReturnType<typeof makeClient>, localId: string) =>
         client.emitMessagesConsumed.mock.calls.filter(([ids]) => (ids as string[])[0] === localId);
 
+    it('maps a steer past a deferred call without taking a later call as the anchor', () => {
+        // agy recorded call A then B before the steer row; A's ACP update was
+        // deferred (no card), while C was shown afterwards. Counting only the
+        // shown cards shifts B's slot onto C.
+        const { session } = makeSession();
+        const launcher = new AgyAcpRemoteLauncher(session, { brainDir });
+        const turn = {
+            turnStartStepIndex: 0,
+            shownToolCalls: [
+                { id: 'b', names: ['run_command'] },
+                { id: 'c', names: ['run_command'] }
+            ],
+            plannerCalls: [
+                { id: 'a', names: ['run_command'], args: { CommandLine: 'A' }, shown: false },
+                { id: 'b', names: ['run_command'], args: { CommandLine: 'B' }, shown: true },
+                { id: 'c', names: ['run_command'], args: { CommandLine: 'C' }, shown: true }
+            ]
+        };
+        const planner = (stepIndex: number, commandLine: string) => ({
+            step_index: stepIndex,
+            source: 'MODEL',
+            type: 'PLANNER_RESPONSE',
+            status: 'DONE',
+            tool_calls: [{ name: 'run_command', args: { CommandLine: JSON.stringify(commandLine) } }]
+        });
+        const steps = [planner(1, 'A'), planner(2, 'B'), planner(4, 'C')];
+        const anchor = (launcher as unknown as {
+            steerAnchor: (turn: unknown, steps: unknown[], rowStepIndex: number) => string | undefined;
+        }).steerAnchor(turn, steps, 3);
+        expect(anchor).toBe('b');
+    });
+
+    it('sends no anchor when the matching call is deferred or disagrees on name or args', () => {
+        const { session } = makeSession();
+        const launcher = new AgyAcpRemoteLauncher(session, { brainDir });
+        const steerAnchor = (launcher as unknown as {
+            steerAnchor: (turn: unknown, steps: unknown[], rowStepIndex: number) => string | undefined;
+        }).steerAnchor.bind(launcher);
+        const steps = (name: string, line: string) => [
+            { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"A"' } }] },
+            { step_index: 2, source: 'MODEL', type: 'PLANNER_RESPONSE', tool_calls: [{ name, args: { CommandLine: JSON.stringify(line) } }] }
+        ];
+        const turnWith = (plannerCalls: unknown[]) => ({ turnStartStepIndex: 0, plannerCalls });
+
+        // The matching call was deferred, so no card was shown to anchor to.
+        expect(steerAnchor(turnWith([
+            { id: 'a', names: ['run_command'], args: { CommandLine: 'A' }, shown: false },
+            { id: 'b', names: ['run_command'], args: { CommandLine: 'B' }, shown: false }
+        ]), steps('run_command', 'B'), 3)).toBeUndefined();
+
+        // A name or argument that disagrees with the transcript cannot corroborate.
+        expect(steerAnchor(turnWith([
+            { id: 'a', names: ['run_command'], args: { CommandLine: 'A' }, shown: true },
+            { id: 'b', names: ['write_file'], args: { CommandLine: 'B' }, shown: true }
+        ]), steps('run_command', 'B'), 3)).toBeUndefined();
+        expect(steerAnchor(turnWith([
+            { id: 'a', names: ['run_command'], args: { CommandLine: 'A' }, shown: true },
+            { id: 'b', names: ['run_command'], args: { CommandLine: 'OTHER' }, shown: true }
+        ]), steps('run_command', 'B'), 3)).toBeUndefined();
+    });
+
     async function startTurn(initialRows?: Array<Record<string, unknown>>) {
         const backend = new FakeAgyBackend();
         const { session, queue, client } = makeSession();
