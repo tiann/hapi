@@ -370,7 +370,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
                                 type="submit"
                                 disabled={busy || !name.trim()}
                             >
-                                {isGenerating ? t('button.save') : (isPending || isSaving) ? t('dialog.rename.saving') : t('button.save')}
+                                {isSaving ? t('dialog.rename.saving') : t('button.save')}
                             </Button>
                         </div>
                     </div>

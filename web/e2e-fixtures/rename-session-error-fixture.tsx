@@ -28,7 +28,7 @@ function App() {
                         JSON.stringify({ error: 'No conversation content', code: 'empty' })
                     )
                 }}
-                isPending={false}
+                isPending={new URL(location.href).searchParams.has('archivePending')}
             />
         </I18nProvider>
     )

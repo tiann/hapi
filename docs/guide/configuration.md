@@ -170,7 +170,12 @@ you typed, and you can tap **Translated** to see the English that was sent.
 - Each translated prompt is sent to the configured provider.
 
 The `HAPI_TRANSLATION_PROVIDER_*` connection variables are optional. If they
-are unset, the hub uses the `HAPI_TITLE_PROVIDER_*` connection.
+are unset, the hub uses the `HAPI_TITLE_PROVIDER_*` environment connection.
+It does not reuse `titleProvider` from `settings.json` for input translation.
+Before removing the title environment variables during migration, set
+`HAPI_TRANSLATION_PROVIDER_BASE_URL`, `HAPI_TRANSLATION_PROVIDER_API_KEY`, and
+`HAPI_TRANSLATION_PROVIDER_MODEL` to keep input translation available. Choose a
+provider that is approved to receive user prompts.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

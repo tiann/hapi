@@ -72,8 +72,9 @@ and the original in `meta.translatedFrom`. Sends for that session are queued
 in order, so a slow translation cannot reorder prompts. If translation fails,
 the original text is sent. `GET /api/features` reports
 `inputTranslation.available`. The provider comes from
-`HAPI_TRANSLATION_PROVIDER_*`; if those are unset, the hub uses the title
-provider. See the
+`HAPI_TRANSLATION_PROVIDER_*`; if those are unset, the hub falls back to the
+`HAPI_TITLE_PROVIDER_*` environment connection, not `titleProvider` from
+`settings.json`. See the
 [configuration guide](../docs/guide/configuration.md#translating-input-to-english).
 
 ### Optional
