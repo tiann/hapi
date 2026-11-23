@@ -10,6 +10,7 @@ import {
     expandSelectedSessionCollapseOverrides,
     groupSessionsByDirectory,
     filterActiveSessionsOnly,
+    restoreSelectedSessionExemption,
     filterScratchlistSessionsOnly,
     filterUnreadSessionsOnly,
     filterWorkingSessionsOnly,
@@ -658,6 +659,42 @@ describe('filterActiveSessionsOnly', () => {
             makeSession({ id: 'c', active: true, metadata: { path: '/p' } })
         ]
         expect(filterActiveSessionsOnly(sessions).map(s => s.id)).toEqual(['a', 'c'])
+    })
+})
+
+describe('restoreSelectedSessionExemption (#1717)', () => {
+    it('re-adds the selected session when a DIFFERENT jump target replaced its exemption', () => {
+        // With Active-only enabled, the selected stopped session stays
+        // visible through its own exemption. Jumping to a different
+        // stopped blocker sets `filterExemptId` to the jump target instead
+        // — the selected session's exemption is gone, and a lens filter
+        // upstream (e.g. `filterActiveSessionsOnly`) already dropped its row.
+        const unfiltered = [
+            makeSession({ id: 'selected-stopped', metadata: { path: '/p' } }),
+            makeSession({ id: 'jump-target-stopped', metadata: { path: '/p' } })
+        ]
+        const filtered = [unfiltered[1]!] // only the jump target survived the lens above
+        const result = restoreSelectedSessionExemption(filtered, unfiltered, 'selected-stopped', 'jump-target-stopped')
+        expect(result.map(s => s.id).sort()).toEqual(['jump-target-stopped', 'selected-stopped'])
+    })
+
+    it('does nothing when the selected session already survived the filter', () => {
+        const unfiltered = [makeSession({ id: 'a', metadata: { path: '/p' } })]
+        const filtered = [unfiltered[0]!]
+        const result = restoreSelectedSessionExemption(filtered, unfiltered, 'a', 'a')
+        expect(result).toBe(filtered)
+    })
+
+    it('does nothing when there is no selection', () => {
+        const unfiltered = [makeSession({ id: 'a', metadata: { path: '/p' } })]
+        const result = restoreSelectedSessionExemption([], unfiltered, null, null)
+        expect(result).toEqual([])
+    })
+
+    it('does nothing when the selected session no longer exists at all', () => {
+        const unfiltered = [makeSession({ id: 'a', metadata: { path: '/p' } })]
+        const result = restoreSelectedSessionExemption([], unfiltered, 'gone', null)
+        expect(result).toEqual([])
     })
 })
 

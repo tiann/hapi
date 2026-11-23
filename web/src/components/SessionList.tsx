@@ -668,6 +668,35 @@ export function filterActiveSessionsOnly(sessions: SessionSummary[], selectedSes
 }
 
 /**
+ * Re-add the selected session to a filtered list if the pipeline above
+ * dropped it (#1717).
+ *
+ * The jump-reveal exemption and the selected session's own exemption are
+ * not interchangeable: every lens filter above takes ONE exempt id
+ * (`revealBlockedSessionId ?? selectedSessionId`), so revealing a
+ * DIFFERENT stopped blocker replaces the selected session's exemption
+ * rather than adding to it, and the operator's already-open chat row
+ * disappears while the jump target is shown. `unfiltered` is searched
+ * (not `filtered`) because the session being restored is, by definition,
+ * the one a filter above already removed.
+ */
+export function restoreSelectedSessionExemption<T extends SessionSummary>(
+    filtered: T[],
+    unfiltered: T[],
+    selectedSessionId: string | null | undefined,
+    filterExemptId: string | null | undefined
+): T[] {
+    if (selectedSessionId == null || selectedSessionId === filterExemptId) {
+        return filtered
+    }
+    if (filtered.some(session => session.id === selectedSessionId)) {
+        return filtered
+    }
+    const selectedSession = unfiltered.find(session => session.id === selectedSessionId)
+    return selectedSession ? [...filtered, selectedSession] : filtered
+}
+
+/**
  * List-view status filter with the #1404 jobs exception on "active": idle rows
  * that still have a running attachedJob stay visible (and stay out of archived).
  */
@@ -3095,7 +3124,10 @@ export function SessionList(props: {
                 session.id === filterExemptId || sessionIsBlocked(session, { now })
             )
         }
-        return filtered
+        // `filterExemptId` is `revealBlockedSessionId ?? selectedSessionId`
+        // — see `restoreSelectedSessionExemption`'s own doc comment for why
+        // the two are not interchangeable.
+        return restoreSelectedSessionExemption(filtered, visibleSessions, selectedSessionId, filterExemptId)
     }, [
         showBlockedOnly,
         isScratchlistStatusLoading,
@@ -3103,6 +3135,7 @@ export function SessionList(props: {
         scratchlistSessionIds,
         scratchlistStatusError,
         filterExemptId,
+        selectedSessionId,
         showScratchlistOnly,
         showActiveOnly,
         showWorkingOnly,
