@@ -1281,6 +1281,83 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('does not let a session\'s own earlier, already-replied-to footer resolve its own later, genuinely unanswered occurrence with identical text (#1717)', async () => {
+        // The cross-session "is this content already answered elsewhere"
+        // check scanned every session's FULL transcript, including the
+        // CANDIDATE's own — so when a session's own history repeats one
+        // status+note across two distinct episodes (the first replied-to,
+        // the second a fresh, still-open occurrence), the content-only
+        // match found the first episode at-or-before its OWN reply boundary
+        // and concluded the live second occurrence was "already answered",
+        // discarding a footer nothing ever replied to. The session's own
+        // single-session derivation already excludes the superseded
+        // episode by message IDENTITY when picking its current signal —
+        // re-litigating that by CONTENT here is always wrong for the
+        // session itself; it only has a legitimate job checking siblings.
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-self-answered', { codexSessionId: 'codex-thread-self-answered', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const duplicate = store.sessions.getOrCreateSession(
+            'dup-self-answered', { codexSessionId: 'codex-thread-self-answered', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const base = Date.now() - 600_000
+        const footerText = 'Stuck.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs creds' })
+
+        // Canonical: padding only, no signal or reply of its own — the
+        // winning representative must come from the duplicate.
+        for (let i = 0; i < 6; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `pad ${i}` }] } }
+                }
+            }, `self-answered-pad-${i}`, base)
+        }
+
+        // Duplicate: the SAME status+note blocked, replied to, then blocked
+        // again with IDENTICAL text — nothing ever answers the second one.
+        store.messages.addImportedMessage(duplicate.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } } }
+        }, 'self-answered-old-footer', base + 1_000)
+        store.messages.addImportedMessage(duplicate.id, {
+            role: 'user', content: { type: 'text', text: 'try the staging key' }, meta: { sentFrom: 'webapp' }
+        }, 'self-answered-reply', base + 2_000)
+        store.messages.addImportedMessage(duplicate.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } } }
+        }, 'self-answered-new-footer', base + 9_000)
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-self-answered'] })
+            })
+            expect(response.status).toBe(200)
+
+            const merged = store.sessions.getSessionByNamespace(canonical.id, 'default')
+            // The second, genuinely unanswered occurrence must still be the
+            // representative signal — not cleared by its own answered twin.
+            expect(merged?.lastNotifyStatus).toBe('blocked')
+            expect(merged?.lastNotifyAt).toBe(base + 9_000)
+        } finally {
+            store.close()
+        }
+    })
+
     it('does not let an untimestamped import\'s own initiating prompt resolve its own still-open footer through a merge\'s cross-session override check (#1717)', async () => {
         // Within ONE session, the untimestamped-import tiebreak (seq) is
         // already proven correct (#1717 round 27). But the cross-session

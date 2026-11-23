@@ -907,8 +907,19 @@ export class SyncEngine {
             derived: this.deriveNotifyStateFromTranscript(sessionId, null)
         }))
 
-        const isResolvedElsewhere = (status: string, note: string | null): boolean => {
+        // "Elsewhere" means it, not "earlier in the same transcript": a
+        // session whose own history repeats one status+note across two
+        // distinct episodes (the first replied-to, the second a genuinely
+        // new occurrence) already has `derived.signal` pointing at the
+        // live one — `deriveNotifyStateFromTranscript` excluded the
+        // superseded occurrence by MESSAGE IDENTITY. Re-scanning that same
+        // session's own messages here matches by CONTENT instead, so the
+        // superseded occurrence's identical text trivially "resolves" the
+        // live one against itself, discarding a footer nothing ever
+        // answered (#1717).
+        const isResolvedElsewhere = (sourceSessionId: string, status: string, note: string | null): boolean => {
             for (const other of perSession) {
+                if (other.sessionId === sourceSessionId) continue
                 if (other.derived.boundaryPosition === null) continue
                 for (const message of other.messages) {
                     const signal = extractSessionNotifySignal(message.content, message.createdAt)
@@ -921,7 +932,7 @@ export class SyncEngine {
         }
         const survivors = perSession.filter((source) => (
             source.derived.signal !== null
-            && !isResolvedElsewhere(source.derived.signal.status, source.derived.signal.note)
+            && !isResolvedElsewhere(source.sessionId, source.derived.signal.status, source.derived.signal.note)
         ))
         const winner = survivors[0] ?? null
 
