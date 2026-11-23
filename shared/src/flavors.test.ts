@@ -12,7 +12,29 @@ import {
     usesNativePermissionSelect,
     usesSharedPermissionModeState,
 } from './flavors'
-import { AGENT_FLAVORS, type AgentFlavor, type PermissionMode } from './modes'
+import {
+    AGENT_FLAVORS,
+    AGY_PERMISSION_MODES,
+    CLAUDE_PERMISSION_MODES,
+    CODEX_PERMISSION_MODES,
+    COPILOT_PERMISSION_MODES,
+    CREATABLE_AGENT_FLAVORS,
+    CURSOR_PERMISSION_MODES,
+    GEMINI_PERMISSION_MODES,
+    GROK_PERMISSION_MODES,
+    KIMI_PERMISSION_MODES,
+    OPENCODE_PERMISSION_MODES,
+    STEERING_SUPPORTED_FLAVORS
+} from './modes'
+import type { AgentFlavor, PermissionMode } from './modes'
+import {
+    getPermissionModeLabel,
+    getPermissionModeOptionsForFlavor,
+    getPermissionModeTone,
+    getPermissionModesForFlavor,
+    isPermissionModeAllowedForFlavor,
+    PERMISSION_MODES
+} from './index'
 
 describe('hasCapability', () => {
     test('agy supports model-change and effort', () => {
@@ -230,5 +252,89 @@ describe('getPermissionReplyStyle with a tool name', () => {
     test('the prefix match is case-sensitive and anchored at the start', () => {
         expect(getPermissionReplyStyle('claude', 'codexSearch')).toBe('allowTools')
         expect(getPermissionReplyStyle('claude', 'MyCodexTool')).toBe('allowTools')
+    })
+})
+
+// Exact per-flavor mode lists.
+const PERMISSION_MODES_BY_FLAVOR = {
+    agy: ['request-review', 'acceptEdits', 'plan', 'always-proceed'],
+    claude: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
+    codex: ['default', 'read-only', 'autoReview', 'yolo'],
+    dsh: [],
+    copilot: ['default', 'read-only', 'safe-yolo', 'yolo'],
+    cursor: ['default', 'plan', 'ask', 'debug', 'autoReview', 'yolo'],
+    gemini: ['default', 'read-only', 'safe-yolo', 'yolo'],
+    grok: ['default', 'auto', 'plan', 'bypassPermissions'],
+    kimi: ['default', 'read-only', 'safe-yolo', 'yolo'],
+    opencode: ['default', 'plan', 'yolo'],
+    pi: [],
+} as const satisfies Record<AgentFlavor, readonly PermissionMode[]>
+
+describe('getPermissionModesForFlavor', () => {
+    test.each(AGENT_FLAVORS)('%s returns its declared permission modes', (flavor) => {
+        expect(getPermissionModesForFlavor(flavor)).toEqual(PERMISSION_MODES_BY_FLAVOR[flavor])
+    })
+
+    test.each([null, undefined, 'unknown-flavor'])('%p keeps the Claude fallback list', (flavor) => {
+        expect(getPermissionModesForFlavor(flavor)).toEqual(PERMISSION_MODES_BY_FLAVOR.claude)
+    })
+})
+
+describe('isPermissionModeAllowedForFlavor', () => {
+    test.each([...AGENT_FLAVORS, null, undefined, 'unknown-flavor'])('%p allows exactly its declared modes', (flavor) => {
+        const expected: readonly PermissionMode[] = getPermissionModesForFlavor(flavor)
+        for (const mode of PERMISSION_MODES) {
+            expect(isPermissionModeAllowedForFlavor(mode, flavor)).toBe(expected.includes(mode))
+        }
+    })
+})
+
+describe('getPermissionModeOptionsForFlavor', () => {
+    test('maps each mode to its label and tone', () => {
+        expect(getPermissionModeOptionsForFlavor('codex')).toEqual(
+            PERMISSION_MODES_BY_FLAVOR.codex.map((mode) => ({
+                mode,
+                label: getPermissionModeLabel(mode),
+                tone: getPermissionModeTone(mode)
+            }))
+        )
+    })
+
+    test('is empty for a flavor without modes', () => {
+        expect(getPermissionModeOptionsForFlavor('pi')).toEqual([])
+    })
+})
+
+describe('flavor lists', () => {
+    test('AGENT_FLAVORS keeps its exact order', () => {
+        expect([...AGENT_FLAVORS]).toEqual([
+            'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'
+        ])
+    })
+
+    test('CREATABLE_AGENT_FLAVORS is every flavor except gemini, in order', () => {
+        expect([...CREATABLE_AGENT_FLAVORS]).toEqual([
+            'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'kimi', 'opencode', 'pi'
+        ])
+    })
+})
+
+describe('steering-supported flavors', () => {
+    test('STEERING_SUPPORTED_FLAVORS is exactly the steerable flavors, in order', () => {
+        expect([...STEERING_SUPPORTED_FLAVORS]).toEqual(['agy', 'claude', 'codex', 'cursor', 'opencode', 'pi'])
+    })
+})
+
+describe('per-flavor permission mode constants', () => {
+    test('each constant holds its flavor list', () => {
+        expect([...AGY_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.agy)
+        expect([...CLAUDE_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.claude)
+        expect([...CODEX_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.codex)
+        expect([...COPILOT_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.copilot)
+        expect([...CURSOR_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.cursor)
+        expect([...GEMINI_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.gemini)
+        expect([...GROK_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.grok)
+        expect([...KIMI_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.kimi)
+        expect([...OPENCODE_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.opencode)
     })
 })
