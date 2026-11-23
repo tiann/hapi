@@ -140,3 +140,25 @@ for (const error of ['unavailable', 'empty']) {
         if (error === 'unavailable' && screenshot) await page.screenshot({ path: screenshot })
     })
 }
+
+
+test('all Russian rename actions fit on a 320px viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 600 })
+    await page.goto('/e2e-fixtures/rename-session-error-fixture.html?locale=ru')
+    const dialog = page.getByRole('dialog')
+    const generate = dialog.getByRole('button', { name: 'Сгенерировать' })
+    const cancel = dialog.getByRole('button', { name: 'Отмена', exact: true })
+    const save = dialog.getByRole('button', { name: 'Сохранить', exact: true })
+    await expect(save).toBeInViewport({ ratio: 1 })
+    const bounds = await dialog.boundingBox()
+    const [generateBounds, cancelBounds, saveBounds] = await Promise.all([generate.boundingBox(), cancel.boundingBox(), save.boundingBox()])
+    expect(bounds).not.toBeNull()
+    for (const button of [generateBounds, cancelBounds, saveBounds]) {
+        expect(button).not.toBeNull()
+        expect(button!.x).toBeGreaterThanOrEqual(bounds!.x)
+        expect(button!.x + button!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width)
+    }
+    expect(cancelBounds!.y).toBe(saveBounds!.y)
+    const screenshot = process.env.HAPI_RENAME_NARROW_RUSSIAN_SCREENSHOT
+    if (screenshot) await page.screenshot({ path: screenshot })
+})

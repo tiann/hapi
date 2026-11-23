@@ -6,7 +6,7 @@ import { RenameSessionDialog } from '../src/components/RenameSessionDialog'
 import { I18nProvider } from '../src/lib/i18n-context'
 
 const locale = new URL(window.location.href).searchParams.get('locale')
-if (locale === 'en' || locale === 'zh-CN') {
+if (locale === 'en' || locale === 'zh-CN' || locale === 'ru') {
     localStorage.setItem('hapi-lang', locale)
 }
 
