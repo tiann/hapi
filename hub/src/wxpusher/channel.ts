@@ -1,3 +1,4 @@
+import type { NotificationSendContext } from '../notifications/notificationSendContext'
 import type { WxPusherDestination } from '../config/notificationDestinations'
 import type { Session } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
@@ -68,8 +69,8 @@ export class WxPusherChannel implements NotificationChannel {
         private readonly namespace = DEFAULT_NAMESPACE
     ) {}
 
-    async sendReady(session: Session): Promise<void> {
-        if (!session.active || this.shouldSuppress(session)) {
+    async sendReady(session: Session, ctx?: NotificationSendContext): Promise<void> {
+        if (!session.active || ctx?.readyReason === 'reactive-polling-paused' || this.shouldSuppress(session)) {
             return
         }
 

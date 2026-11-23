@@ -6,7 +6,7 @@ import type {
     NotificationHubOptions
 } from './notificationTypes'
 import type { NotificationSendContext } from './notificationSendContext'
-import { extractMessageEventType } from './eventParsing'
+import { extractMessageEventData } from './eventParsing'
 
 export class NotificationHub {
     private readonly channels: NotificationChannel[]
@@ -132,9 +132,10 @@ export class NotificationHub {
         }
 
         if (event.type === 'message-received' && event.sessionId) {
-            const eventType = extractMessageEventType(event)
-            if (eventType === 'ready') {
-                this.sendReadyNotification(event.sessionId).catch((error) => {
+            const data = extractMessageEventData(event)
+            if (data?.type === 'ready') {
+                const reason = data.reason === 'reactive-polling-paused' ? data.reason : undefined
+                this.sendReadyNotification(event.sessionId, reason).catch((error) => {
                     console.error('[NotificationHub] Failed to send ready notification:', error)
                 })
             }
@@ -385,7 +386,7 @@ export class NotificationHub {
         await this.notifyPermission(session)
     }
 
-    private async sendReadyNotification(sessionId: string): Promise<void> {
+    private async sendReadyNotification(sessionId: string, reason?: NotificationSendContext['readyReason']): Promise<void> {
         const session = this.getNotifiableSession(sessionId)
         if (!session) {
             return
@@ -398,7 +399,7 @@ export class NotificationHub {
         }
         this.lastReadyNotificationAt.set(sessionId, now)
 
-        await this.notifyReady(session)
+        await this.notifyReady(session, reason)
     }
 
     private async sendSessionCompletion(sessionId: string, reason: SessionEndReason): Promise<void> {
@@ -439,9 +440,9 @@ export class NotificationHub {
         await Promise.all(independent)
     }
 
-    private async notifyReady(session: Session): Promise<void> {
+    private async notifyReady(session: Session, reason?: NotificationSendContext['readyReason']): Promise<void> {
         const ctx: NotificationSendContext = { nativeGate: { sent: false } }
-        await this.dispatchNotification('ready', channel => channel.sendReady(session, channel.independent ? undefined : ctx))
+        await this.dispatchNotification('ready', channel => channel.sendReady(session, channel.independent ? { readyReason: reason } : ctx))
     }
 
     private async notifyPermission(session: Session): Promise<void> {

@@ -777,7 +777,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     this.pausedWakeupStepIndex = inspection.latestStepIndex;
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
-                        session.sendSessionEvent({ type: 'ready' });
+                        session.sendSessionEvent({ type: 'ready', reason: 'reactive-polling-paused' });
                     }
                     return;
                 }

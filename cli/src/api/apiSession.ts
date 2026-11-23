@@ -1243,6 +1243,7 @@ if (isReconnect) {
         mode: SessionPermissionMode
     } | {
         type: 'ready'
+        reason?: 'reactive-polling-paused'
     } | {
         // Emitted on abort so the web composer can restore the aborted prompt.
         // Carries the exact in-flight prompt text the web should restore.

@@ -3296,7 +3296,8 @@ export class SyncEngine {
         }
         const child = this.sessionCache.refreshSession(childId)
         if (child?.active) {
-            this.handleSessionEnd({ sid: childId, time: Date.now(), reason: 'error' })
+            // The provisional fork child is deliberately removed, not an operator-facing crash.
+            this.handleSessionEnd({ sid: childId, time: Date.now(), reason: 'terminated' })
         }
         await this.deleteSession(childId)
     }
