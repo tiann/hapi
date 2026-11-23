@@ -41,6 +41,7 @@ export async function readSessionWithLiveUpdates<T extends { session: Session }>
             seen.clear()
             result = await read()
         }
+        if (!seen.size) return result
         const session = { ...result.session }
         const repeated = seen.get('active')
         // If the exact tie recurs during verification, retain a confirmed stop
@@ -48,6 +49,18 @@ export async function readSessionWithLiveUpdates<T extends { session: Session }>
         if (!session.active && repeated?.at === session.activeAt && repeated?.fields.active === true) return result
         for (const { at, fields } of seen.values()) {
             if (at === undefined || at >= result.session.activeAt) Object.assign(session, fields)
+        }
+        // A queued-turn or tool update may carry no presence clock. It cannot
+        // reopen a turn after expiry; only an observed reconnect can do that.
+        if (!session.active && !result.session.active) {
+            return { ...result, session: { ...result.session, activeAt: session.activeAt } }
+        }
+        if (!session.active) {
+            session.thinking = false
+            session.activeTurnStartedAt = null
+            session.backgroundTaskCount = 0
+            session.backgroundTasks = []
+            session.derivedToolWork = false
         }
         return { ...result, session }
     } finally {

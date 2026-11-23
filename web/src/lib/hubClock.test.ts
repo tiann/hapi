@@ -13,3 +13,16 @@ it.each([-1, 1])('ages a job against its Hub when client time is offset by %i ho
         expect(isAttachedJobStale({ heartbeatAt: 10_000 }, hub.now())).toBe(true)
     } finally { wall.mockRestore(); monotonic.mockRestore() }
 })
+
+it('accepts a backward Hub correction but rejects the response to an older in-flight request', () => {
+    const hub = new HubClock()
+    const perf = vi.spyOn(performance, 'now').mockReturnValue(1)
+    try {
+        hub.observe(4_000_000)
+        const olderRequest = hub.beginSample()
+        hub.observe(1000)
+        hub.observe(4_000_100, olderRequest)
+        expect(hub.now()).toBe(1000)
+        expect(isAttachedJobStale({ heartbeatAt: 1000 }, hub.now())).toBe(false)
+    } finally { perf.mockRestore() }
+})

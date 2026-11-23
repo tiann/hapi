@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
-import { observeSessionDetail } from '@/lib/sessionDetailRead'
+import { observeSessionDetail, readSessionWithLiveUpdates } from '@/lib/sessionDetailRead'
 import { queryKeys } from '@/lib/query-keys'
 import { describe, expect, it, vi } from 'vitest'
 import { useSession, isSessionNotFoundError, SESSION_DETAIL_STALE_TIME_MS } from './useSession'
@@ -107,4 +107,13 @@ it('does not resurrect a stopped session from its pre-expiry heartbeat replay', 
     expect(getSession).toHaveBeenCalledTimes(2)
     expect(view.result.current.session).toMatchObject({ active: false, thinking: false })
     view.unmount(); client.clear()
+})
+
+it('does not let a replayed queued-turn event reopen a stopped turn', async () => {
+    const client = new QueryClient()
+    const result = await readSessionWithLiveUpdates(client, 'stopped', async () => {
+        observeSessionDetail(client, 'stopped', { thinking: true, activeTurnStartedAt: 1, updatedAt: 1 })
+        return { session: { id: 'stopped', active: false, activeAt: 1, thinking: false, activeTurnStartedAt: null } as Session }
+    })
+    expect(result.session).toMatchObject({ active: false, thinking: false, activeTurnStartedAt: null })
 })

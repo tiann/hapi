@@ -2626,7 +2626,7 @@ export function SessionList(props: {
     const [runningSectionCollapsed, setRunningSectionCollapsed] = useState(false)
     const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false)
     const autoExpandedSelectedSessionKeyRef = useRef<string | null>(null)
-    const initialSelection = useRef(selectedSessionId)
+    const previousSelection = useRef(selectedSessionId)
     const groupOverrides = ephemeralFilter ? filterCollapseOverrides : collapseOverrides
     const isGroupCollapsed = (group: SessionGroup): boolean => {
         const override = groupOverrides.get(group.key)
@@ -3008,6 +3008,7 @@ export function SessionList(props: {
     useEffect(() => {
         if (!selectedSessionId) {
             autoExpandedSelectedSessionKeyRef.current = null
+            previousSelection.current = selectedSessionId
             return
         }
 
@@ -3019,13 +3020,10 @@ export function SessionList(props: {
             g.sessions.some(s => s.id === selectedSessionId)
         )
         if (!group) {
-            // The selected session is not rendered inside any directory group
-            // (e.g. it moved to the pinned "in progress" section). Drop the
-            // guard so it auto-expands again when it transitions back into a
-            // group later.
-            if (!isFiltering) {
-                autoExpandedSelectedSessionKeyRef.current = null
-            }
+            // Selecting a row in a floating bucket is real navigation now,
+            // not a second navigation when the job expires and the row moves.
+            if (machineFilteredSessions.some(s => s.id === selectedSessionId)) previousSelection.current = selectedSessionId
+            if (!isFiltering) autoExpandedSelectedSessionKeyRef.current = null
             return
         }
 
@@ -3033,12 +3031,12 @@ export function SessionList(props: {
         if (autoExpandedSelectedSessionKeyRef.current === autoExpandKey) return
         autoExpandedSelectedSessionKeyRef.current = autoExpandKey
 
-        const restoring = initialSelection.current === selectedSessionId
-        initialSelection.current = null
-        if (restoring && !ephemeralFilter && savedFolds.has(group.key)) return
+        const movedWithoutNavigation = previousSelection.current === selectedSessionId
+        previousSelection.current = selectedSessionId
+        if (movedWithoutNavigation && (groupOverrides.get(group.key) === true || (!ephemeralFilter && savedFolds.has(group.key)))) return
         const setOverrides = ephemeralFilter ? setFilterCollapseOverrides : setCollapseOverrides
         setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
-    }, [selectedSessionId, groups, isFiltering, ephemeralFilter, savedFolds])
+    }, [selectedSessionId, groups, machineFilteredSessions, isFiltering, ephemeralFilter, savedFolds, groupOverrides])
 
     // Keep a keyboard-unpinned row reachable when it moves into a collapsed or
     // truncated destination section, or fall back to a visible row if removed.

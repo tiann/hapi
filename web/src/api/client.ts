@@ -419,8 +419,9 @@ export class ApiClient {
     }
 
     async getSessions(): Promise<SessionsResponse> {
+        const sample = this.hubClock.beginSample()
         const response = await this.request<SessionsResponse>('/api/sessions')
-        if (response.serverTime !== undefined) this.hubClock.observe(response.serverTime)
+        if (response.serverTime !== undefined) this.hubClock.observe(response.serverTime, sample)
         return response
     }
 

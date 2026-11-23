@@ -1425,6 +1425,20 @@ describe('SessionList collapse behavior', () => {
         })
     })
 
+    it('keeps an explicit fold when a selected job expires and moves back into its project', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        const idle = makeSession({ id: 'idle', active: true, metadata: { path: '/work/hapi', name: 'Idle' } })
+        const job = makeSession({ id: 'job', active: false, metadata: { path: '/work/hapi', name: 'Batch' },
+            attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: Date.now() } })
+        const { rerender } = render(renderSessionList([idle, job], null))
+        fireEvent.click(screen.getByTitle('/work/hapi'))
+        expect(getProjectPanel().getAttribute('data-open')).toBeNull()
+        rerender(renderSessionList([idle, job], 'job'))
+        rerender(renderSessionList([idle, { ...job, attachedJob: { ...job.attachedJob!, heartbeatAt: 1 } }], 'job'))
+        await waitFor(() => expect(screen.queryByTitle('In progress')).toBeNull())
+        expect(getProjectPanel().getAttribute('data-open')).toBeNull()
+    })
+
     it('auto-expands the path again when the selected session changes', async () => {
         const sessions = [
             makeSession({
