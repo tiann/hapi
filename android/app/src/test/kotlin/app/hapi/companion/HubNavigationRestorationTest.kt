@@ -54,6 +54,33 @@ class HubNavigationRestorationTest {
         compose.runOnIdle { assertNull(navController.previousBackStackEntry) }
     }
 
+    @Test fun switchingHubInSharePickerKeepsTheRequestButClearsTheOldChat() = withNavigation { scenario ->
+        openChat()
+        openSharePicker()
+
+        compose.runOnIdle { activeHubUrl.value = HUB_B }
+
+        assertSharePicker()
+        compose.runOnIdle { navController.popBackStack() }
+        assertDestination(Routes.HOME)
+        scenario.recreate()
+        scenario.mountNavigation()
+        assertDestination(Routes.HOME)
+        compose.runOnIdle { assertNull(navController.previousBackStackEntry) }
+    }
+
+    @Test fun sameHubRecreationRetainsTheChatUnderTheSharePicker() = withNavigation { scenario ->
+        openChat()
+        openSharePicker()
+
+        scenario.recreate()
+        scenario.mountNavigation()
+
+        assertSharePicker()
+        compose.runOnIdle { navController.popBackStack() }
+        assertDestination(Routes.CHAT, SESSION)
+    }
+
     @Test fun switchingHubWhileRecreatingDoesNotRetainTheOldChat() = withNavigation { scenario ->
         openChat()
         scenario.recreate()
@@ -98,6 +125,7 @@ class HubNavigationRestorationTest {
                     composable(Routes.HOME) { BasicText("Sessions") }
                     composable(Routes.CHAT) { BasicText("Chat") }
                     composable(Routes.FILES) { BasicText("Files") }
+                    composable(Routes.SHARE) { BasicText("Share") }
                     navigation(startDestination = Routes.PAIRING_LANDING, route = Routes.PAIRING) {
                         composable(Routes.PAIRING_LANDING) { BasicText("Pair a Hub") }
                     }
@@ -117,6 +145,18 @@ class HubNavigationRestorationTest {
         assertDestination(Routes.CHAT, SESSION)
     }
 
+    private fun openSharePicker() {
+        compose.runOnIdle { navController.navigate(Routes.share(REQUEST)) }
+        assertSharePicker()
+    }
+
+    private fun assertSharePicker() {
+        compose.runOnIdle {
+            assertEquals(Routes.SHARE, navController.currentDestination?.route)
+            assertEquals(REQUEST, navController.currentBackStackEntry?.arguments?.getString("requestId"))
+        }
+    }
+
     private fun assertDestination(route: String, sessionId: String? = null) {
         compose.runOnIdle {
             assertEquals(route, navController.currentDestination?.route)
@@ -130,5 +170,6 @@ class HubNavigationRestorationTest {
         const val HUB_A = "https://a.example.test"
         const val HUB_B = "https://b.example.test"
         const val SESSION = "session-a"
+        const val REQUEST = "share-a"
     }
 }

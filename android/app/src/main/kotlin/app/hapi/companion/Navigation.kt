@@ -1127,6 +1127,8 @@ private fun NavigateHomeOnSuccess(navController: NavHostController, state: Pairi
     }
 }
 
+private val hubScopedSessionRoutes = setOf(Routes.CHAT, Routes.FILES, Routes.FILE_VIEWER, Routes.SCRATCHLIST)
+
 @Composable
 internal fun HandleActiveHubNavigation(navController: NavHostController, activeHubUrl: String?) {
     // Restore the Hub alongside the back stack: the effect also runs on
@@ -1141,11 +1143,20 @@ internal fun HandleActiveHubNavigation(navController: NavHostController, activeH
             if (!onPairing) {
                 navController.navigateClearingBackStack(Routes.PAIRING)
             }
-        } else if (
-            hubChanged && navController.currentDestination?.route in
-                setOf(Routes.CHAT, Routes.FILES, Routes.FILE_VIEWER, Routes.SCRATCHLIST)
-        ) {
-            navController.popBackStack(Routes.HOME, inclusive = false)
+        } else if (hubChanged) {
+            val currentEntry = navController.currentBackStackEntry
+            val currentRoute = currentEntry?.destination?.route
+            if (currentRoute in hubScopedSessionRoutes) {
+                navController.popBackStack(Routes.HOME, inclusive = false)
+            } else if (
+                currentRoute == Routes.SHARE &&
+                navController.previousBackStackEntry?.destination?.route in hubScopedSessionRoutes
+            ) {
+                // The pending share lives in the inbox. Keep its picker open, but
+                // don't let Cancel or Back reveal a session from the old Hub.
+                val requestId = currentEntry?.arguments?.getString("requestId") ?: return@LaunchedEffect
+                navController.navigate(Routes.share(requestId)) { popUpTo(Routes.HOME) }
+            }
         }
     }
 }
