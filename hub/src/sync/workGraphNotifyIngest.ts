@@ -701,12 +701,40 @@ export function operatorReplyDeliveredAt(
  * learned a truer time.
  */
 export function deliveredOperatorReplyAt(
-    message: { createdAt: number; scheduledAt: number | null; invokedAt: number | null; reconciledInvokedAt?: number | null }
+    message: { createdAt: number; scheduledAt: number | null; invokedAt: number | null }
 ): number {
     // Invocation time, always. A reply composed before a footer can be
     // invoked after it; ordering on `createdAt` would let that reply "answer"
     // a footer written while it was still queued.
-    return message.reconciledInvokedAt ?? message.invokedAt ?? message.createdAt
+    return message.invokedAt ?? message.createdAt
+}
+
+/**
+ * Stable identity for a notify footer, independent of which session or
+ * which `createdAt` it happens to carry there (#1717).
+ *
+ * A Codex Desktop duplicate-session merge can hold two separate
+ * PROJECTIONS of the exact same underlying footer — a live Hapi session's
+ * own copy and a Desktop import of the same thread — each stamped with
+ * its own session's clock, so the same event can carry two different
+ * `createdAt` values depending on which session you read it from. Text
+ * plus status plus note is not enough on its own either: a Claude replay
+ * genuinely repeats the same footer a second time, same fields, and that
+ * replay IS meant to compare equal to the original. The native transcript
+ * id breaks the tie where one exists: an imported row carries it as
+ * `localId`, so two distinct turns that happen to report the same status
+ * and note are still two different messages. A live Claude reply has no
+ * local id at all and shares every field with the row it duplicates, so
+ * there the text (plus status, author time, and note) IS the only
+ * identity available.
+ */
+export function notifySignalIdentity(
+    message: { localId: string | null },
+    signal: { status: string; at: number; note: string | null }
+): string {
+    return message.localId == null
+        ? `text ${signal.status} ${signal.at} ${signal.note ?? ''}`
+        : `msg ${message.localId}`
 }
 
 /**

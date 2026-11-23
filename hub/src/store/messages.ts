@@ -27,8 +27,6 @@ type DbMessageRow = {
     seq: number
     local_id: string | null
     invoked_at: number | null
-    reconciled_invoked_at?: number | null
-    imported?: number | null
     swept_at?: number | null
     received_at?: number | null
     agent_delivered?: number | null
@@ -85,9 +83,9 @@ export function addImportedMessage(
         const canonicalContent = truncateOversizedMessageContent(content)
         prepareCached(db, `
             INSERT INTO messages (
-                id, session_id, content, created_at, received_at, seq, local_id, invoked_at, scheduled_at, imported
+                id, session_id, content, created_at, received_at, seq, local_id, invoked_at, scheduled_at
             ) VALUES (
-                @id, @session_id, @content, @created_at, @received_at, @seq, @local_id, @invoked_at, NULL, 1
+                @id, @session_id, @content, @created_at, @received_at, @seq, @local_id, @invoked_at, NULL
             )
         `).run({
             id,
@@ -134,8 +132,6 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         seq: row.seq,
         localId: row.local_id,
         invokedAt: row.invoked_at ?? null,
-        reconciledInvokedAt: row.reconciled_invoked_at ?? null,
-        imported: row.imported === 1 ? true : row.imported === 0 ? false : null,
         sweptAt: row.swept_at ?? null,
         receivedAt: row.received_at ?? null,
         agentDelivered: row.agent_delivered ?? null,
@@ -148,7 +144,7 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
 export type CopyStoredMessageInput = Pick<
     StoredMessage,
     'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'
-> & Partial<Pick<StoredMessage, 'receivedAt' | 'agentDelivered' | 'imported' | 'reconciledInvokedAt'>>
+> & Partial<Pick<StoredMessage, 'receivedAt' | 'agentDelivered'>>
 
 export function addMessage(
     db: Database,
@@ -206,9 +202,9 @@ export function addMessage(
         const previousHead = getNewestMessagePosition(db, sessionId)
         prepareCached(db, `
             INSERT INTO messages (
-                id, session_id, content, created_at, received_at, seq, local_id, invoked_at, scheduled_at, imported
+                id, session_id, content, created_at, received_at, seq, local_id, invoked_at, scheduled_at
             ) VALUES (
-                @id, @session_id, @content, @created_at, @received_at, @seq, @local_id, @invoked_at, @scheduled_at, 0
+                @id, @session_id, @content, @created_at, @received_at, @seq, @local_id, @invoked_at, @scheduled_at
             )
         `).run({
             id,
@@ -765,10 +761,10 @@ export function copyMessageToSession(
         prepareCached(db, `
             INSERT INTO messages (
                 id, session_id, content, created_at, received_at, agent_delivered,
-                seq, local_id, invoked_at, scheduled_at, delivery_state, imported, reconciled_invoked_at
+                seq, local_id, invoked_at, scheduled_at, delivery_state
             ) VALUES (
                 @id, @session_id, @content, @created_at, @received_at, @agent_delivered,
-                @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state, @imported, @reconciledInvokedAt
+                @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
             )
         `).run({
             id,
@@ -789,25 +785,7 @@ export function copyMessageToSession(
             local_id: localId ?? null,
             invoked_at: invokedAt ?? null,
             scheduled_at: message.scheduledAt ?? null,
-            delivery_state: message.deliveryState ?? 'queued',
-            // Carried too: provenance is a fact about the original event, not
-            // the copy (#1717 cold-review round 23). Tri-state, not boolean
-            // (round 26): `message.imported ? 1 : null` collapsed a known-LIVE
-            // row (`false`) onto the same NULL a never-stamped pre-round-23 row
-            // uses for "unknown". `isImported`'s NULL fallback then re-ran the
-            // timestamp heuristic on a row that already had an explicit
-            // answer, misreading a live footer whose created/arrival times
-            // happen to match as imported.
-            imported: message.imported === true ? 1 : message.imported === false ? 0 : null,
-            // A row already reconciled by an earlier merge must not lose that
-            // recovery on a SECOND one: a later import surviving as the new
-            // canonical copies this row across, and without carrying the
-            // value forward, the copy reverts to its raw (possibly still
-            // synthetic) `invoked_at` for reconciliation purposes — exactly
-            // the stranded-timing bug this column exists to prevent, just
-            // triggered by a second merge instead of the first (#1717
-            // cold-review round 24).
-            reconciledInvokedAt: message.reconciledInvokedAt ?? null
+            delivery_state: message.deliveryState ?? 'queued'
         })
         indexMessageContent(db, {
             id,
@@ -830,51 +808,6 @@ export function copyMessageToSession(
         bumpMessageEpoch(db, sessionId)
         return toStoredMessage(row)
     })
-}
-
-/**
- * Upgrade a surviving row's delivery timing after a session-merge alignment
- * decision (#1717 cold-review round 21).
- *
- * Content-only alignment correctly treats a real-stamped duplicate prompt as
- * the same occurrence as a synthetic-stamped (imported) one and drops the
- * duplicate rather than appending it — appending it would reintroduce a
- * visible duplicate prompt the alignment exists to prevent. But a synthetic
- * stamp is an importer's best guess, not a real delivery time, and leaving it
- * on the surviving row let reconciliation misread an imported initiating
- * prompt as a reply delivered after the footer it actually caused, hiding an
- * unanswered blocker. The real stamp replaces the synthetic one on whichever
- * row survives — "prefer the real stamp" does not care which session's copy
- * of the event happened to be the one still on disk.
- *
- * `reconciledInvokedAt` writes a SEPARATE column, not `invoked_at` itself
- * (#1717 cold-review round 23). `invoked_at` is also the display-position
- * key (`COALESCE(invoked_at, created_at)`), so round 22's version of this
- * function — which wrote the recovered time straight into `invoked_at` —
- * could move a reply's conversation position earlier than the footer it
- * answers, whenever that footer was not itself upgraded in the same pass
- * (e.g. a THIRD session merge where only the reply has a live duplicate).
- * Reconciliation (`deliveredOperatorReplyAt`) reads the override when
- * present; display never does.
- */
-export function upgradeMessageDeliveryStamp(
-    db: Database,
-    messageId: string,
-    stamp: { reconciledInvokedAt: number | null; receivedAt?: number | null; agentDelivered?: number | null }
-): boolean {
-    const result = prepareCached(db, `
-        UPDATE messages
-        SET reconciled_invoked_at = COALESCE(@reconciledInvokedAt, reconciled_invoked_at),
-            received_at = COALESCE(@receivedAt, received_at),
-            agent_delivered = COALESCE(@agentDelivered, agent_delivered)
-        WHERE id = @id
-    `).run({
-        id: messageId,
-        reconciledInvokedAt: stamp.reconciledInvokedAt,
-        receivedAt: stamp.receivedAt ?? null,
-        agentDelivered: stamp.agentDelivered ?? null
-    })
-    return result.changes === 1
 }
 
 /**

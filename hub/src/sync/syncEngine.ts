@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { BLOCKED_NOTIFY_STALE_MS, type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { BLOCKED_NOTIFY_STALE_MS, notifyBlockerKey, type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -92,7 +92,7 @@ import { ArchiveCleanupError } from './archiveCleanupError'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
-import { buildOperatorUnblockEvent, deliveredOperatorReplyAt, extractSessionNotifySignal, messageReceivedAt, operatorReplyDeliveredAt, ingestNotifySummaryFromMessage, isDeliveredOperatorReply, isOperatorReplyMessage } from './workGraphNotifyIngest'
+import { buildOperatorUnblockEvent, deliveredOperatorReplyAt, extractSessionNotifySignal, messageReceivedAt, notifySignalIdentity, operatorReplyDeliveredAt, ingestNotifySummaryFromMessage, isDeliveredOperatorReply, isOperatorReplyMessage } from './workGraphNotifyIngest'
 import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
 import { extractTodoWriteTodosFromMessageContent } from './todos'
@@ -186,6 +186,26 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown>
         : null
+}
+
+/** Key-order-independent content key, for recognizing a literal content
+ *  duplicate across two sessions' own message lists (#1717) — e.g. a live
+ *  session's copy of an operator reply and a Codex Desktop import's copy of
+ *  the same event, which carry the same content but are never the same row. */
+function stableContentKey(value: unknown): string {
+    if (value === null || value === undefined) return String(value)
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        return JSON.stringify(value)
+    }
+    if (Array.isArray(value)) {
+        return `[${value.map((item) => stableContentKey(item)).join(',')}]`
+    }
+    if (typeof value === 'object') {
+        const record = value as Record<string, unknown>
+        const keys = Object.keys(record).sort()
+        return `{${keys.map((key) => `${JSON.stringify(key)}:${stableContentKey(record[key])}`).join(',')}}`
+    }
+    return JSON.stringify(value)
 }
 
 function normalizeUserMessageText(value: string): string | undefined {
@@ -646,8 +666,45 @@ export class SyncEngine {
         const scanned = scanDepth === null
             ? this.store.messages.getAllMessages(sessionId)
             : this.store.messages.getMessages(sessionId, scanDepth)
+        return this.deriveNotifyStateFromMessageGroups([scanned])
+    }
 
-        // Position in the hub's arrival order, with `seq` breaking ties.
+    /**
+     * Same derivation as above, generalized to run across several SEPARATE
+     * transcripts at once (#1717) — each still one session's own messages,
+     * in that session's own order, never interleaved into one storage
+     * location. A Codex Desktop duplicate-session merge needs the combined
+     * answer BEFORE it merges anything: the footer and the reply that
+     * answers it can live in two different PRE-merge sessions (a live
+     * projection and an import of the same thread), so deriving per-session
+     * and picking a result independently would read the footer's own
+     * session as still-blocked without ever seeing the OTHER session's
+     * reply. Reconciling here, directly from each duplicate's own untouched
+     * messages, means the merge itself never has to preserve, upgrade, or
+     * carry forward timing evidence through which transcript rows survive —
+     * there is nothing left to reconstruct after the fact, because nothing
+     * is destroyed before this runs.
+     *
+     * `messageReceivedAt` is the SAME hub clock regardless of which session
+     * a message landed in, so it stays the primary ordering key across
+     * groups unchanged. Only the tie-break changes: `seq` alone is
+     * meaningless across two different sessions' own counters, so ties
+     * also compare which GROUP (array index — stable, arbitrary across
+     * groups, but irrelevant to correctness since a genuine cross-session
+     * tie in `messageReceivedAt` is already a coincidence no ordering
+     * signal can resolve better) a message came from before falling back
+     * to that group's own `seq`.
+     */
+    private deriveNotifyStateFromMessageGroups(groups: StoredMessage[][]): {
+        signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null
+        boundaryAt: number | null
+        authorCutoff: number | null
+    } {
+        const scanned = groups.flatMap((messages, groupRank) =>
+            messages.map((message) => ({ message, groupRank })))
+
+        // Position in the hub's arrival order, with group rank then `seq`
+        // breaking ties.
         //
         // The tie-break is not cosmetic: a Codex Desktop transcript carries no
         // per-message timestamps, so the importer stamps every row with the
@@ -657,19 +714,37 @@ export class SyncEngine {
         // conversation went missing from Blocked entirely. `seq` is the native
         // transcript order for imported rows, which is exactly the information
         // the timestamps lack.
-        const position = (message: StoredMessage): [number, number] =>
-            [messageReceivedAt(message), message.seq]
-        const atOrBefore = (a: [number, number], b: [number, number]): boolean =>
-            a[0] < b[0] || (a[0] === b[0] && a[1] <= b[1])
+        const position = (message: StoredMessage, groupRank: number): [number, number, number] =>
+            [messageReceivedAt(message), groupRank, message.seq]
+        const atOrBefore = (a: [number, number, number], b: [number, number, number]): boolean =>
+            a[0] < b[0] || (a[0] === b[0] && (a[1] < b[1] || (a[1] === b[1] && a[2] <= b[2])))
 
         // Where the operator's most recent genuine reply sits. Only a reply the
         // agent was actually given counts: a locally handled slash command has
         // `invoked_at` stamped but answered nothing.
-        let boundary: [number, number] | null = null
-        let boundaryAt: number | null = null
-        for (const message of scanned) {
+        //
+        // A genuine reply can appear in MULTIPLE groups at different
+        // positions: a live session's real delivery time, and a Codex
+        // Desktop import's synthetic (and frequently LATER) one for the SAME
+        // transcript event. Taking the latest occurrence outright let the
+        // import's bogus stamp outrun the real one and read a still-open
+        // footer as already answered. Collapsing same-content occurrences to
+        // their EARLIEST position first, then taking the latest of what
+        // remains, keeps a genuinely later reply able to set the boundary
+        // while a mistimed replay of one already counted cannot.
+        const earliestReplyByContent = new Map<string, [number, number, number]>()
+        for (const { message, groupRank } of scanned) {
             if (!isDeliveredOperatorReply(message)) continue
-            const here: [number, number] = [operatorReplyDeliveredAt(message), message.seq]
+            const here: [number, number, number] = [operatorReplyDeliveredAt(message), groupRank, message.seq]
+            const key = stableContentKey(message.content)
+            const existing = earliestReplyByContent.get(key)
+            if (existing === undefined || atOrBefore(here, existing)) {
+                earliestReplyByContent.set(key, here)
+            }
+        }
+        let boundary: [number, number, number] | null = null
+        let boundaryAt: number | null = null
+        for (const here of earliestReplyByContent.values()) {
             if (boundary === null || !atOrBefore(here, boundary)) {
                 boundary = here
                 boundaryAt = here[0]
@@ -696,31 +771,18 @@ export class SyncEngine {
         // import synthesizes one timestamp for every row) but refused for an
         // exact duplicate of something already answered.
         const supersededIdentities = new Set<string>()
-        // Identity comes from the MESSAGE where one exists, not from the
-        // footer's text. An imported row carries the transcript's own message
-        // id as its `localId`, so two distinct turns that happen to report the
-        // same status and note are still two different messages — keying on
-        // the text alone made the second one look like a replay of the first
-        // and hid the final, unanswered blocker of an import. A live Claude
-        // replay has no local id at all, and shares every field with the row
-        // it duplicates, so there the text IS the only identity available.
-        const identity = (
-            message: StoredMessage,
-            signal: { status: string; at: number; note: string | null }
-        ): string => (
-            message.localId == null
-                ? `text\u0000${signal.status}\u0000${signal.at}\u0000${signal.note ?? ''}`
-                : `msg\u0000${message.localId}`
-        )
+        // Shared with the merge-time dismissal-transfer lookup (#1717),
+        // so both agree on what counts as "the same footer" across sessions.
+        const identity = notifySignalIdentity
         const footers: Array<{
             signal: { status: string; at: number; note: string | null }
-            position: [number, number]
+            position: [number, number, number]
             identity: string
         }> = []
-        for (const message of scanned) {
+        for (const { message, groupRank } of scanned) {
             const signal = extractSessionNotifySignal(message.content, message.createdAt)
             if (!signal) continue
-            const here = position(message)
+            const here = position(message, groupRank)
             footers.push({ signal, position: here, identity: identity(message, signal) })
             if (boundary !== null && atOrBefore(here, boundary)) {
                 if (authorCutoff === null || signal.at > authorCutoff) authorCutoff = signal.at
@@ -734,7 +796,8 @@ export class SyncEngine {
         // eligible ones is newest is decided on AUTHOR time.
         let best: {
             signal: { status: string; at: number; note: string | null }
-            position: [number, number]
+            position: [number, number, number]
+            identity: string
         } | null = null
         for (const footer of footers) {
             if (boundary !== null && atOrBefore(footer.position, boundary)) continue
@@ -820,6 +883,66 @@ export class SyncEngine {
             derived.boundaryAt ?? 0,
             derived.authorCutoff
         )
+    }
+
+    /**
+     * Reconcile the blocked/notify projection across a Codex Desktop
+     * duplicate-session merge group, BEFORE the merge does anything (#1717).
+     *
+     * Each session's own messages are read directly, untouched — nothing
+     * about which transcript rows a subsequent merge keeps, drops, or
+     * copies matters here, because this never looks at the result of that.
+     * The footer and the reply that answers it can live in two different
+     * pre-merge sessions (a live projection and an import of the same
+     * thread), which is exactly the case `deriveNotifyStateFromMessageGroups`
+     * exists to combine correctly.
+     *
+     * Dismissals transfer alongside: a source session's OWN acknowledgement
+     * of its OWN copy of the winning footer carries forward even though
+     * that copy's `createdAt` (and so its notify key) can differ from
+     * whichever representative the combined derivation picked.
+     */
+    reconcileNotifyAcrossDuplicateSessions(
+        sessionIds: string[],
+        canonicalSessionId: string,
+        namespace: string
+    ): void {
+        const perSession = sessionIds.map((sessionId) => ({
+            sessionId,
+            messages: this.store.messages.getAllMessages(sessionId),
+            ackKeys: this.store.sessions.getSessionByNamespace(sessionId, namespace)?.blockedAckKeys ?? []
+        }))
+        const derived = this.deriveNotifyStateFromMessageGroups(perSession.map((s) => s.messages))
+        this.sessionCache.replaceNotifyAfterTruncate(
+            canonicalSessionId,
+            derived.signal,
+            derived.boundaryAt ?? Date.now(),
+            derived.authorCutoff
+        )
+        if (derived.signal === null) return
+
+        // Matched by STATUS + NOTE, not `notifySignalIdentity` — a source
+        // session's own projection of the winning footer is its own import
+        // batch, with its own synthetic local id, which never matches the
+        // winning representative's (#1717). Identity-by-local-id is right
+        // for recognizing a literal replay WITHIN one session's own replay
+        // sequence (where a stable id means a stable event); across two
+        // independently-imported sessions it is the wrong tool, because
+        // nothing guarantees two projections of the same real-world event
+        // share an id at all.
+        const winningKey = notifyBlockerKey(derived.signal.at)
+        for (const source of perSession) {
+            if (source.sessionId === canonicalSessionId) continue
+            if (source.ackKeys.length === 0) continue
+            const remap = new Map<string, string>()
+            for (const message of source.messages) {
+                const signal = extractSessionNotifySignal(message.content, message.createdAt)
+                if (!signal || signal.status !== derived.signal.status || signal.note !== derived.signal.note) continue
+                const ownKey = notifyBlockerKey(message.createdAt)
+                if (ownKey !== winningKey) remap.set(ownKey, winningKey)
+            }
+            this.transferBlockedAck(source.sessionId, canonicalSessionId, namespace, remap)
+        }
     }
 
     private resolveOnlineMachineForSession(

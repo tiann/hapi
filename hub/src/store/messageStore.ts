@@ -43,7 +43,6 @@ import {
     moveUninvokedMessages,
     type CopyStoredMessageInput,
     copyMessageToSession as copyStoredMessageToSession,
-    upgradeMessageDeliveryStamp,
     copyMessagesToSession as copyStoredMessagesToSession,
     addMessageSweepingLiveSnapshots,
     deleteLiveTextSnapshots,
@@ -127,13 +126,6 @@ export class MessageStore {
     ): StoredMessage {
         // 中文注释：重复会话合并时需要保留源消息的时间戳和排队信息，因此走专门的复制入口而不是普通 addMessage。
         return copyStoredMessageToSession(this.db, sessionId, message)
-    }
-
-    upgradeMessageDeliveryStamp(
-        messageId: string,
-        stamp: { reconciledInvokedAt: number | null; receivedAt?: number | null; agentDelivered?: number | null }
-    ): boolean {
-        return upgradeMessageDeliveryStamp(this.db, messageId, stamp)
     }
 
     copyMessagesToSession(
