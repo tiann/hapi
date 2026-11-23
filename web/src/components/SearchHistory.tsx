@@ -100,7 +100,7 @@ export function useSearchHistoryField(
             },
         },
         suggestions: visible ? <SearchHistorySuggestions
-            id={panelId} panelRef={panelRef} entries={history.state[type]} deleteNotSaved={history.failedWrite === 'delete'}
+            id={panelId} panelRef={panelRef} entries={history.state[type]} deleteNotSaved={history.failedDeletionTypes.includes(type)}
             onFocusCapture={event => { focusedSuggestion.current = event.target as HTMLElement }}
             onBlurCapture={event => { if (event.relatedTarget || event.target.isConnected) focusedSuggestion.current = null }}
             onBlur={options.wrapperHandlesBlur ? undefined : blur}

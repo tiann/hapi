@@ -63,13 +63,14 @@ type HistoryContextValue = {
     state: SearchHistoryState
     optOutNotSaved: boolean
     failedWrite: 'enable' | 'delete' | null
+    failedDeletionTypes: readonly SearchHistoryType[]
     record: (type: SearchHistoryType, query: string) => void
     remove: (type: SearchHistoryType, query: string) => void
     clear: (type?: SearchHistoryType) => void
     setEnabled: (enabled: boolean) => void
 }
 const HistoryContext = createContext<HistoryContextValue>({
-    state: emptyHistory(), optOutNotSaved: false, failedWrite: null,
+    state: emptyHistory(), optOutNotSaved: false, failedWrite: null, failedDeletionTypes: [],
     record: () => {}, remove: () => {}, clear: () => {}, setEnabled: () => {},
 })
 
@@ -194,6 +195,7 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
         }
         return {
             state, optOutNotSaved, failedWrite: failedWrite?.action ?? null,
+            failedDeletionTypes: failedWrite?.action === 'delete' ? failedWrite.affected.filter(entry => entry.queries.some(query => state[entry.type].includes(query))).map(entry => entry.type) : [],
             record: (type, query) => update(previous => {
                 const trimmed = query.trim()
                 if (!previous.enabled || !trimmed) return previous
@@ -235,7 +237,7 @@ export function SearchHistoryProvider({ storageKey, children }: { storageKey: st
     // Remount when identity changes so a previous Hub/account never flashes in the new view.
     return storageKey
         ? <ScopedSearchHistoryProvider key={storageKey} storageKey={storageKey}>{children}</ScopedSearchHistoryProvider>
-        : <HistoryContext.Provider value={{ state: emptyHistory(), optOutNotSaved: false, failedWrite: null, record: () => {}, remove: () => {}, clear: () => {}, setEnabled: () => {} }}>{children}</HistoryContext.Provider>
+        : <HistoryContext.Provider value={{ state: emptyHistory(), optOutNotSaved: false, failedWrite: null, failedDeletionTypes: [], record: () => {}, remove: () => {}, clear: () => {}, setEnabled: () => {} }}>{children}</HistoryContext.Provider>
 }
 
 export function useSearchHistory() {

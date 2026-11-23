@@ -574,3 +574,34 @@ test('a successful clear in another tab removes the old deletion warning', async
     await expect(page.getByRole('alert')).toHaveCount(0)
     if (process.env.HAPI_REVIEW_SCREENSHOT) await page.screenshot({ path: process.env.HAPI_REVIEW_SCREENSHOT, animations: 'disabled' })
 })
+
+test('failed deletion is visible only in the affected search panel', async ({ page }) => {
+    await page.goto(fixture)
+    await optIn(page)
+    const sessions = page.getByRole('searchbox', { name: /^Search sessions/ })
+    await sessions.fill('saved session')
+    await sessions.press('Enter')
+    await expect.poll(async () => (await history(page)).sessions).toEqual(['saved session'])
+    await go(page, 'Files')
+    const files = page.getByPlaceholder('Search files')
+    await files.fill('README')
+    await files.press('Enter')
+    await expect.poll(async () => (await history(page)).files).toEqual(['README'])
+    await go(page, 'Sessions')
+    await page.evaluate(() => {
+        const setItem = Storage.prototype.setItem
+        Storage.prototype.setItem = function (key, value) {
+            if (key.startsWith('hapi.searchHistory.v1.')) throw new DOMException('Fixture blocked', 'QuotaExceededError')
+            return setItem.call(this, key, value)
+        }
+    })
+    await sessions.fill('')
+    await recent(page).getByRole('button', { name: 'Remove search: saved session' }).click()
+    await expect(recent(page).getByRole('alert')).toContainText('Could not delete saved searches')
+    await go(page, 'Files')
+    await files.fill('')
+    await files.focus()
+    await expect(recent(page).getByRole('button', { name: 'README', exact: true })).toBeVisible()
+    await expect(recent(page).getByRole('alert')).toHaveCount(0)
+    if (process.env.HAPI_SEARCH_PANEL_SCREENSHOT) await page.screenshot({ path: process.env.HAPI_SEARCH_PANEL_SCREENSHOT })
+})

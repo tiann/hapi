@@ -6,10 +6,11 @@ function jwt(uid = 1, ns = 'default', exp = 1) {
     return `x.${btoa(JSON.stringify({ uid, ns, exp }))}.x`
 }
 function Controls() {
-    const { state, failedWrite, record, remove, clear, setEnabled } = useSearchHistory()
+    const { state, failedWrite, failedDeletionTypes, record, remove, clear, setEnabled } = useSearchHistory()
     return <>
         <output data-testid="state">{JSON.stringify(state)}</output>
         <output data-testid="failure">{failedWrite ?? "none"}</output>
+        <output data-testid="failed-types">{failedDeletionTypes.join(',')}</output>
         <button onClick={() => record('sessions', ' alpha ')}>session</button>
         <button onClick={() => record('files', 'src/*.ts')}>file</button>
         <button onClick={() => record('outlines', '中文')}>outline</button>
@@ -135,6 +136,7 @@ describe('scoped history provider', () => {
         expect(failure).toHaveTextContent('none')
         rejectOnce(); click('remove')
         expect(failure).toHaveTextContent('delete')
+        expect(screen.getByTestId('failed-types')).toHaveTextContent(/^sessions$/)
         external(true, ['alpha', 'beta'], ['unrelated file'])
         expect(failure).toHaveTextContent('delete')
         external(true, ['beta'], ['unrelated file'])
