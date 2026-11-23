@@ -177,12 +177,12 @@ describe('reconcileDelayedListSession', () => {
         // hub's counter before this tab's first post-restart list GET
         // lands, the reported revision is a small positive number that
         // still loses to this tab's much higher pre-restart cached value —
-        // unless the caller tells this function a restart happened at all,
-        // via `hubRestarted`, regardless of what the number reads.
-        const prior = makeSummary({ id: 'session-1', thinking: true, thinkingConfirmed: true, thinkingRevision: 47 })
-        const postRestart = makeSummary({ id: 'session-1', thinking: false, thinkingConfirmed: true, thinkingRevision: 2 })
+        // unless `hubGeneration` itself tells this function a restart
+        // happened at all, regardless of what the number reads.
+        const prior = makeSummary({ id: 'session-1', thinking: true, thinkingConfirmed: true, thinkingRevision: 47, hubGeneration: 'process-a' })
+        const postRestart = makeSummary({ id: 'session-1', thinking: false, thinkingConfirmed: true, thinkingRevision: 2, hubGeneration: 'process-b' })
 
-        const result = reconcileDelayedListSession(prior, postRestart, true)
+        const result = reconcileDelayedListSession(prior, postRestart)
         expect(result.thinking).toBe(false)
         expect(result.thinkingRevision).toBe(2)
     })

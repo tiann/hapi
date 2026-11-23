@@ -167,8 +167,7 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
  */
 export function reconcileDelayedListSession(
     prior: SessionSummary | undefined,
-    incoming: SessionSummary,
-    hubRestarted: boolean = false
+    incoming: SessionSummary
 ): SessionSummary {
     // A list GET can be captured BEFORE a clear and land after SSE applied
     // it, which would re-block the row from a stale body.
@@ -230,12 +229,22 @@ export function reconcileDelayedListSession(
     // some OTHER session's activity bumps the hub's counter to a small
     // positive number before this tab's first post-restart list GET lands,
     // the comparison above is none the wiser and the stale pre-restart
-    // value still wins (#1717 cold-review round 29). `hubRestarted` — set
-    // by the caller when this response's `hubGeneration` differs from the
-    // last one it saw — closes that gap directly: a different hub process
-    // makes EVERY cached revision stale, not just a reported 0.
+    // value still wins (#1717 cold-review round 29).
+    //
+    // Compared directly against PRIOR's own `hubGeneration` here, not via a
+    // connection-level "last seen" ref the caller threads through (#1717
+    // cold-review round 31) — a ref's lifetime is the HOOK INSTANCE's,
+    // while the cached row's lifetime is the QueryClient's, which outlives
+    // an unmount/remount. A ref that resets on remount while a stale
+    // pre-restart row is still cached reads as "no restart" when there
+    // plainly was one. `prior` carries where it came from and never
+    // outlives the data it describes, so reading the generation off it
+    // directly is the only comparison that can't desync from the cache.
+    const differentHubGeneration = prior?.hubGeneration !== undefined
+        && incoming.hubGeneration !== undefined
+        && prior.hubGeneration !== incoming.hubGeneration
     const keepPriorThinking = prior !== undefined
-        && !hubRestarted
+        && !differentHubGeneration
         && incomingThinkingRevision !== 0
         && priorThinkingRevision > incomingThinkingRevision
     return {
