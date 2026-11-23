@@ -1,5 +1,10 @@
 import { DEFAULT_NAMESPACE } from '../utils/accessToken'
 
+export type ServerChanErrorDestination = {
+    sendKey: string
+    backgroundOnly: boolean
+}
+
 export type WxPusherDestination = {
     appToken: string
     uids: string[]

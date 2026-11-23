@@ -14,6 +14,7 @@ import {
     readDestinationCredential,
     readNamespaceDestinations,
     setLegacyDefaultDestination,
+    type ServerChanErrorDestination,
     type WxPusherDestination,
 } from './notificationDestinations'
 
@@ -44,6 +45,7 @@ export interface ServerSettings {
     serverChanSendKey: string | null
     serverChanNotification: boolean
     serverChanBackgroundOnly: boolean
+    serverChanErrorDestinations: ReadonlyMap<string, ServerChanErrorDestination>
     wxPusherAppToken: string | null
     wxPusherUids: string[]
     wxPusherTopicIds: number[]
@@ -270,6 +272,13 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             throw new Error('serverChanBackgroundOnly must be a boolean')
         }
 
+        const serverChanErrorDestinations = readNamespaceDestinations(settings.serverChanErrorsByNamespace, 'serverChanErrorsByNamespace', (entry, field) => ({
+            sendKey: readDestinationCredential(entry.sendKey, `${field}.sendKey`),
+            backgroundOnly: readDestinationBackgroundOnly(entry.backgroundOnly, `${field}.backgroundOnly`),
+        }))
+        setLegacyDefaultDestination(serverChanErrorDestinations,
+            serverChanSendKey ? { sendKey: serverChanSendKey, backgroundOnly: serverChanBackgroundOnly } : null)
+
         // wxPusherAppToken: env > file > null
         let wxPusherAppToken: string | null = null
         if (process.env.WXPUSHER_APP_TOKEN) {
@@ -479,6 +488,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                     serverChanSendKey,
                     serverChanNotification,
                     serverChanBackgroundOnly,
+                    serverChanErrorDestinations,
                     wxPusherAppToken,
                     wxPusherUids,
                     wxPusherTopicIds,

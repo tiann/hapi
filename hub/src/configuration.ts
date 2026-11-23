@@ -92,6 +92,7 @@ class Configuration {
 
     /** Only send Server酱 notifications when no visible HAPI client exists */
     public readonly serverChanBackgroundOnly: boolean
+    public readonly serverChanErrorDestinations: ServerSettings['serverChanErrorDestinations']
 
     /** WxPusher App token */
     public readonly wxPusherAppToken: string | null
@@ -178,6 +179,7 @@ class Configuration {
         this.serverChanSendKey = serverSettings.serverChanSendKey
         this.serverChanNotification = serverSettings.serverChanNotification
         this.serverChanBackgroundOnly = serverSettings.serverChanBackgroundOnly
+        this.serverChanErrorDestinations = serverSettings.serverChanErrorDestinations
         this.wxPusherAppToken = serverSettings.wxPusherAppToken
         this.wxPusherUids = serverSettings.wxPusherUids
         this.wxPusherTopicIds = serverSettings.wxPusherTopicIds

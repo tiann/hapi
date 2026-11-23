@@ -9,6 +9,7 @@ function makeTempDir(): string {
 }
 
 const PUSH_ENV_KEYS = [
+    'SERVERCHAN_SENDKEY',
     'WXPUSHER_APP_TOKEN',
     'WXPUSHER_UIDS',
     'WXPUSHER_TOPIC_IDS',
@@ -163,6 +164,30 @@ describe('loadServerSettings', () => {
         }))
 
         await expect(loadServerSettings(dir)).rejects.toThrow('serverChanBackgroundOnly must be a boolean')
+    })
+
+    it('scopes the legacy ServerChan key to default for error alerts and allows an explicit replacement', async () => {
+        dir = makeTempDir()
+        process.env.SERVERCHAN_SENDKEY = 'SCT_LEGACY'
+        process.env.SERVERCHAN_BACKGROUND_ONLY = 'true'
+        const file = join(dir, 'settings.json')
+        writeFileSync(file, JSON.stringify({ serverChanErrorsByNamespace: { team: { sendKey: 'SCT_TEAM' } } }))
+        const legacy = (await loadServerSettings(dir)).settings
+        expect(legacy.serverChanErrorDestinations.get('default')).toEqual({ sendKey: 'SCT_LEGACY', backgroundOnly: true })
+        expect(legacy.serverChanErrorDestinations.get('team')).toEqual({ sendKey: 'SCT_TEAM', backgroundOnly: false })
+        expect(legacy.serverChanErrorDestinations.has('unknown')).toBe(false)
+
+        writeFileSync(file, JSON.stringify({ serverChanErrorsByNamespace: { default: { sendKey: 'SCT_EXPLICIT' } } }))
+        const explicit = (await loadServerSettings(dir)).settings
+        expect(explicit.serverChanErrorDestinations.get('default')).toEqual({ sendKey: 'SCT_EXPLICIT', backgroundOnly: false })
+        expect(explicit.serverChanSendKey).toBe('SCT_LEGACY')
+    })
+
+    it('does not inherit the default ServerChan key when an explicit destination is incomplete', async () => {
+        dir = makeTempDir()
+        process.env.SERVERCHAN_SENDKEY = 'SCT_LEGACY'
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ serverChanErrorsByNamespace: { team: { backgroundOnly: true } } }))
+        await expect(loadServerSettings(dir)).rejects.toThrow(/sendKey must be a non-empty string/)
     })
 
     it('defaults WxPusher settings to disabled without credentials or recipients', async () => {

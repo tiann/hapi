@@ -78,6 +78,18 @@ When `SERVERCHAN_BACKGROUND_ONLY=true`, a visible HAPI connection suppresses Ser
 
 These values can also be set in `settings.json` (`serverChanSendKey`, `serverChanNotification`, `serverChanBackgroundOnly`).
 
+For **session-error alerts**, the legacy SendKey applies only to `default`. Other namespaces must configure their own error destination in `settings.json`, for example:
+
+```json
+{
+  "serverChanErrorsByNamespace": {
+    "team-a": { "sendKey": "SCT_team-a-example", "backgroundOnly": true }
+  }
+}
+```
+
+A namespace with no matching error destination receives no session-error alert. An explicit `default` entry replaces the legacy error destination as a whole. The `SERVERCHAN_NOTIFICATION` switch controls both legacy and namespace-specific delivery. This setting does not change routing for existing ready, permission, or completion alerts. Keep `settings.json` private and restart the Hub after editing it.
+
 ## WxPusher App Setup
 
 WxPusher sends notifications to its own Android, iOS, and desktop clients. This integration targets the standard WxPusher App/client delivery path, not the separate WeChat ClawBot channel.

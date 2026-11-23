@@ -64,7 +64,8 @@ describe('ServerChanChannel', () => {
         globalThis.fetch = fetchMock as unknown as typeof fetch
 
         try {
-            const channel = new ServerChanChannel('SCT_TEST', 'https://hapi.example.com')
+            const channel = new ServerChanChannel('SCT_TEST', 'https://hapi.example.com', null, false,
+                new Map([['default', { sendKey: 'SCT_TEST', backgroundOnly: false }]]))
             await channel.sendSessionError(createSession({
                 id: 'session-error',
                 metadata: {
@@ -96,7 +97,8 @@ describe('ServerChanChannel', () => {
                 'SCT_TEST',
                 'https://hapi.example.com',
                 visibilityTracker,
-                true
+                true,
+                new Map([['default', { sendKey: 'SCT_TEST', backgroundOnly: true }]])
             )
 
             await channel.sendReady(createSession())
@@ -105,6 +107,57 @@ describe('ServerChanChannel', () => {
             await channel.sendSessionCompletion(createSession(), 'completed' satisfies SessionEndReason)
 
             expect(fetchMock).not.toHaveBeenCalled()
+        } finally {
+            globalThis.fetch = originalFetch
+        }
+    })
+
+    it('isolates session-error destinations without changing legacy completion routing', async () => {
+        const fetchMock = mock(async (_url: string, _init: RequestInit) => new Response('ok'))
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+        const visibility = new VisibilityTracker()
+        try {
+            const channel = new ServerChanChannel('SCT_LEGACY', 'https://hapi.example.com', visibility, false, new Map([
+                ['default', { sendKey: 'SCT_DEFAULT_ERROR', backgroundOnly: false }],
+                ['team-a', { sendKey: 'SCT_TEAM_A_ERROR', backgroundOnly: true }],
+                ['team-b', { sendKey: 'SCT_TEAM_B_ERROR', backgroundOnly: true }],
+            ]))
+            visibility.registerConnection('visible', 'team-a', 'visible')
+            await channel.sendSessionError(createSession({ namespace: 'team-a' }), 'error')
+            await channel.sendSessionError(createSession({ namespace: 'Team-b' }), 'error')
+            await channel.sendSessionError(createSession({ namespace: 'unknown' }), 'error')
+            expect(fetchMock).not.toHaveBeenCalled()
+
+            await channel.sendSessionError(createSession({ namespace: 'team-b' }), 'error')
+            await channel.sendSessionError(createSession({ namespace: 'default' }), 'error')
+            await channel.sendSessionCompletion(createSession({ namespace: 'unknown' }), 'completed')
+            expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+                'https://sctapi.ftqq.com/SCT_TEAM_B_ERROR.send',
+                'https://sctapi.ftqq.com/SCT_DEFAULT_ERROR.send',
+                'https://sctapi.ftqq.com/SCT_LEGACY.send',
+            ])
+        } finally {
+            globalThis.fetch = originalFetch
+        }
+    })
+
+    it('supports an error-only destination even if there is no legacy SendKey', async () => {
+        const fetchMock = mock(async (_url: string, _init: RequestInit) => new Response('ok'))
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+        try {
+            const channel = new ServerChanChannel(null, 'https://hapi.example.com', null, false,
+                new Map([['team', { sendKey: 'SCT_TEAM_ERROR', backgroundOnly: false }]]))
+            const session = createSession({ namespace: 'team' })
+            await channel.sendReady(session)
+            await channel.sendPermissionRequest(session)
+            await channel.sendSessionCompletion(session, 'completed')
+            await channel.sendSessionError(createSession(), 'error')
+            expect(fetchMock).not.toHaveBeenCalled()
+
+            await channel.sendSessionError(session, 'error')
+            expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['https://sctapi.ftqq.com/SCT_TEAM_ERROR.send'])
         } finally {
             globalThis.fetch = originalFetch
         }

@@ -63,6 +63,35 @@ describe('WxPusherChannel', () => {
         }
     })
 
+    it('uses the same namespace boundary for all actionable WxPusher events', async () => {
+        const fetchMock = mock(async (_url: string, _init: RequestInit) => new Response('{"code":1000}'))
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+        try {
+            const channels = createWxPusherChannels(new Map([
+                ['default', { appToken: 'AT_DEFAULT', uids: ['UID_DEFAULT'], topicIds: [], backgroundOnly: false }],
+                ['team', { appToken: 'AT_TEAM', uids: ['UID_TEAM'], topicIds: [], backgroundOnly: false }],
+            ]), 'https://hapi.example.com', null)
+            const sendAllActions = async (session: Session) => {
+                for (const channel of channels) {
+                    await channel.sendReady(session)
+                    await channel.sendPermissionRequest(session)
+                    await channel.sendSessionCompletion(session, 'completed')
+                    await channel.sendSessionError(session, 'error')
+                }
+            }
+            await sendAllActions(createSession({ namespace: 'unconfigured', active: true }))
+            expect(fetchMock).not.toHaveBeenCalled()
+            await sendAllActions(createSession({ namespace: 'team', active: true }))
+            expect(fetchMock).toHaveBeenCalledTimes(4)
+            for (const [, init] of fetchMock.mock.calls) {
+                expect(JSON.parse(String(init.body))).toMatchObject({ appToken: 'AT_TEAM', uids: ['UID_TEAM'] })
+            }
+        } finally {
+            globalThis.fetch = originalFetch
+        }
+    })
+
     it('sends session completion notifications to configured recipients', async () => {
         const fetchMock = mock(async () => new Response(JSON.stringify({ code: 1000, msg: '处理成功' }), {
             status: 200,

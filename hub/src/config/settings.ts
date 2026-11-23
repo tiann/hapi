@@ -19,6 +19,8 @@ export interface Settings {
     serverChanSendKey?: string
     serverChanNotification?: boolean
     serverChanBackgroundOnly?: boolean
+    /** Session-error destinations only. Legacy ready, permission and completion delivery is unchanged. */
+    serverChanErrorsByNamespace?: Record<string, { sendKey: string; backgroundOnly?: boolean }>
     wxPusherAppToken?: string
     wxPusherUids?: string[]
     wxPusherTopicIds?: number[]
