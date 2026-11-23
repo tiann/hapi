@@ -395,6 +395,127 @@ describe('mobile initial scroll settling', () => {
     })
 })
 
+describe('cached re-entry first frame', () => {
+    function renderCacheReentryThread(initial: {
+        isSyncingTail: boolean
+        cachedTailFirstFrame?: boolean
+        isCatchingUpFromCache?: boolean
+    }) {
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        let props = {
+            isSyncingTail: initial.isSyncingTail,
+            isCatchingUpFromCache: initial.isCatchingUpFromCache ?? false,
+            cachedTailFirstFrame: initial.cachedTailFirstFrame ?? false
+        }
+        const renderHappyThread = () => (
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <HappyThread
+                        api={{ getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false }) } as unknown as ApiClient}
+                        session={{ metadata: {} } as Session}
+                        sessionId="cache-reentry-session"
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={vi.fn()}
+                        onViewModeChange={vi.fn()}
+                        isSyncingTail={props.isSyncingTail}
+                        isCatchingUpFromCache={props.isCatchingUpFromCache}
+                        cachedTailFirstFrame={props.cachedTailFirstFrame}
+                        messagesWarning={null}
+                        hasMoreMessages={false}
+                        isLoadingMoreMessages={false}
+                        onLoadMore={vi.fn().mockResolvedValue({ status: 'exhausted' })}
+                        onCancelLoadMore={vi.fn()}
+                        unseenCount={0}
+                        rawMessagesCount={1}
+                        normalizedMessagesCount={1}
+                        messagesVersion={1}
+                        historyVersion={0}
+                        forceScrollToken={0}
+                        outlineOpen={false}
+                        outlineItems={[]}
+                        onOutlineOpenChange={vi.fn()}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+        const result = render(renderHappyThread())
+        const viewport = result.container.querySelector<HTMLElement>('.chat-scroll-y')
+        if (!viewport) {
+            throw new Error('Chat viewport was not rendered')
+        }
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, value: 1_232 },
+            clientHeight: { configurable: true, value: 530 }
+        })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        return {
+            ...result,
+            viewport,
+            rerenderThread: (next: Partial<typeof props> = {}) => {
+                props = { ...props, ...next }
+                result.rerender(renderHappyThread())
+            }
+        }
+    }
+
+    it('lands the first frame at the bottom of a hydrated tail window while the sync is still in flight', () => {
+        const { viewport } = renderCacheReentryThread({
+            // The composed isSyncingTail stays true until the authoritative
+            // latest-page fetch settles (~350-450ms network leg) and never
+            // flips in this test: the bottom scroll must not depend on it.
+            isSyncingTail: true,
+            cachedTailFirstFrame: true,
+            isCatchingUpFromCache: true
+        })
+
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+
+        expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight)
+        expect(viewport.scrollTop).toBe(702)
+    })
+
+    it('keeps the settle-first gate for windows without the cached-tail signal', () => {
+        const { viewport } = renderCacheReentryThread({
+            isSyncingTail: true
+        })
+
+        act(() => {
+            vi.advanceTimersByTime(3_000)
+        })
+
+        // Cold window / retained history window: no rows have been committed
+        // to the tail yet, so the viewport must stay parked until the sync
+        // settles instead of painting an arbitrary position first.
+        expect(viewport.scrollTop).toBe(0)
+    })
+
+    it('scrolls to the bottom only once the sync settles without the fast path', () => {
+        const { viewport, rerenderThread } = renderCacheReentryThread({
+            isSyncingTail: true
+        })
+
+        act(() => {
+            vi.advanceTimersByTime(3_000)
+        })
+        expect(viewport.scrollTop).toBe(0)
+
+        // The authoritative fetch settles -> the original gate passes and the
+        // initial bottom scroll commits.
+        rerenderThread({ isSyncingTail: false })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        expect(viewport.scrollTop).toBe(702)
+    })
+})
+
 describe('explicit tail scrolling', () => {
     it('renders the unread count inside the compact bottom control', () => {
         const { container } = renderThread(vi.fn(), 7)

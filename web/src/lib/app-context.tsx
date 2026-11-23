@@ -24,6 +24,10 @@ export function AppContextProvider(props: {
     )
 }
 
+export function useHubClock() {
+    return useContext(AppContext)?.api.hubClock
+}
+
 export function useAppContext(): AppContextValue {
     const context = useContext(AppContext)
     if (!context) {

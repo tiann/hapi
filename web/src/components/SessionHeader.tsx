@@ -1,3 +1,4 @@
+import { isLiveLifecycleState } from '@hapi/protocol/sessionLifecycle'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { NativeAppPromoButton } from '@/components/NativeAppPromo'
 import { useIsMutating, useQueryClient } from '@tanstack/react-query'
@@ -40,7 +41,6 @@ import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { selectMobileSessionHeaderSecondary } from '@/lib/sessionHeaderMobileMetadata'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
-import { markSessionUnread } from '@/lib/sessionLastSeen'
 
 /** Same preference order as session-list chips: display label → host → short id. */
 export function resolveSessionHeaderMachineLabel(
@@ -442,7 +442,7 @@ export function SessionHeader(props: {
 
     return (
         <>
-            <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
+            <div className="bg-[var(--app-bg)] pt-[var(--route-safe-area-top,env(safe-area-inset-top))]">
                 <div className="mx-auto w-full max-w-content flex items-center gap-2 p-3">
                     {/* Back button */}
                     <button
@@ -611,12 +611,13 @@ export function SessionHeader(props: {
                 sessionId={session.id}
                 sessionTitle={title}
                 sessionActive={session.active}
+                canArchive={session.active || isLiveLifecycleState(session.metadata?.lifecycleState)}
                 sessionPinned={Boolean(session.pinned)}
                 sessionGlobalPinned={Boolean(session.globalPinned)}
                 onRename={() => setRenameOpen(true)}
                 onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
                 linkedPr={linkedPr}
-                onMarkUnread={() => markSessionUnread(session.id, session.readState)}
+                readTarget={session}
                 onToggleTranslateInput={inputTranslation.visible ? () => void handleToggleTranslateInput() : undefined}
                 translateInputEnabled={inputTranslation.enabled}
                 onSetPinMode={api ? (mode) => void handleSetPinMode(mode) : undefined}
@@ -685,6 +686,7 @@ export function SessionHeader(props: {
             />
 
             <DeleteSessionDialog
+                api={api}
                 isOpen={deleteOpen}
                 sessionId={session.id}
                 onClose={() => setDeleteOpen(false)}

@@ -282,8 +282,11 @@ export default {
   'session.cursorMigration.bannerAmbiguous.body': 'Этот чат существует на диске в нескольких папках рабочего пространства, либо размер на диске не совпадает с синхронизированной историей, поэтому HAPI отказался переносить его автоматически. Проверьте логи хаба на предмет списка кандидатов (поиск по «[migrator] ambiguous legacy store» или «[migrator] size sanity check refused»), удалите устаревшие папки в ~/.cursor/chats/ и откройте сессию заново.',
 
   // Неактивная сессия
-  'session.inactive.autoResume': 'Эта сессия неактивна. Отправьте сообщение, чтобы возобновить.',
-  'session.inactive.cannotResume': 'Эта сессия неактивна и не может быть возобновлена.',
+  'session.inactive.checking': 'Проверяем соединение…',
+  'session.inactive.disconnectedResume': 'Агент не подключён. При отправке сообщения будет выполнена попытка переподключения.',
+  'session.inactive.disconnected': 'Агент не подключён.',
+  'session.inactive.autoResume': 'Сессия в архиве. Отправьте сообщение, чтобы открыть её снова.',
+  'session.inactive.cannotResume': 'Сессия в архиве и не может быть возобновлена.',
 
   // Шапка сессии
   'session.title': 'Файлы',
@@ -313,6 +316,7 @@ export default {
   'session.action.pinFailed': 'Не удалось изменить закрепление',
   'sessions.pinnedSection': 'Закреплённые сессии',
   'session.action.export': 'Экспортировать диалог',
+  'session.action.markRead': 'Отметить как прочитанную',
   'session.action.markUnread': 'Отметить как непрочитанную',
   'session.action.translateInputOn': 'Переводить мои сообщения на английский',
   'session.action.translateInputOff': 'Не переводить мои сообщения',
@@ -396,6 +400,10 @@ export default {
   'dialog.sessionFork.confirming': 'Создание форка…',
   'dialog.reopen.dismiss': 'Закрыть',
   'dialog.delete.title': 'Удалить сессию',
+  'dialog.delete.clearMeter': 'Убрать запись задачи',
+  'dialog.delete.clearMeterDetail': '«{job}» не обновлялась более 15 минут. Убедитесь, что процесс завершён. Будет удалён только индикатор, не процесс и не сессия.',
+  'dialog.delete.jobChanged': 'Состояние задачи изменилось, запись сохранена. Нажмите «Удалить» ещё раз, чтобы проверить её состояние.',
+  'dialog.delete.liveMeter': '«{job}» ещё передаёт данные. Дождитесь завершения, затем удалите сессию. Повторная архивация не нужна.',
   'dialog.delete.description': 'Вы уверены, что хотите удалить «{name}»? Это действие необратимо.',
   'dialog.delete.scratchlist.one': 'Также будет удалена 1 запись блокнота.',
   'dialog.delete.scratchlist.other': 'Также будут удалены записи блокнота: {n}.',
@@ -1012,7 +1020,7 @@ export default {
   'settings.display.pinInProgressMode.jobs': 'Долгие задачи',
   'settings.display.pinInProgressMode.all': 'Работа и ожидание',
   'settings.display.keepUnreadSessionsVisible': 'Не скрывать непрочитанные сессии',
-  'settings.display.keepUnreadSessionsVisible.desc': 'Свёрнутые проекты показывают свои непрочитанные сессии под заголовком, а лимит предпросмотра сессий не скрывает непрочитанные строки. Выключено — свёрнутые проекты сворачиваются полностью, и лимит предпросмотра действует и на непрочитанные.',
+  'settings.display.keepUnreadSessionsVisible.desc': 'В раскрытом проекте непрочитанные сессии видны сверх лимита предпросмотра. Свёрнутый проект скрывает все строки.',
   'settings.display.appBadge': 'Значок непрочитанного на панели задач',
   'settings.notifications.title': 'Уведомления',
   'settings.notifications.push': 'Push-уведомления на этом устройстве',
