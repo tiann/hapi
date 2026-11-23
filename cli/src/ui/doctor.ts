@@ -63,11 +63,9 @@ export function redactSettingsForDisplay(settings: Record<string, unknown>): Rec
                 if (typeof value !== 'string') return undefined
                 try {
                     const url = new URL(value)
-                    url.username = ''
-                    url.password = ''
-                    url.search = ''
-                    url.hash = ''
-                    return url.toString()
+                    // Provider URLs can embed credentials in arbitrary path
+                    // segments as well as the username or query string.
+                    return url.protocol === 'https:' || url.protocol === 'http:' ? url.origin : undefined
                 } catch {
                     return undefined
                 }

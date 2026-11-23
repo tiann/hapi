@@ -23,7 +23,7 @@ describe('redactSettingsForDisplay', () => {
             cliApiToken: '***',
             extraHeaders: '***',
             titleProvider: {
-                baseUrl: 'https://provider.example.com/v1',
+                baseUrl: 'https://provider.example.com',
                 apiKey: '***',
                 model: 'small-model',
                 timeoutMs: 20_000
@@ -45,7 +45,7 @@ describe('redactSettingsForDisplay', () => {
         })
 
         expect(displaySettings.titleProvider).toEqual({
-            baseUrl: 'https://provider.example.com/v1',
+            baseUrl: 'https://provider.example.com',
             apiKey: '***',
             model: 'small-model'
         })
@@ -80,17 +80,18 @@ describe('redactSettingsForDisplay', () => {
     it('removes credentials from title provider URLs in diagnostic output', () => {
         const displaySettings = redactSettingsForDisplay({
             titleProvider: {
-                baseUrl: 'https://user:password@provider.example/v1?apiKey=query-secret#fragment',
+                baseUrl: 'https://user:password@provider.example/v1/path-secret?apiKey=query-secret#fragment',
                 apiKey: 'title-provider-secret',
                 model: 'small-model'
             }
         })
 
         expect(displaySettings.titleProvider).toMatchObject({
-            baseUrl: 'https://provider.example/v1',
+            baseUrl: 'https://provider.example',
             apiKey: '***'
         })
         expect(JSON.stringify(displaySettings)).not.toContain('password')
         expect(JSON.stringify(displaySettings)).not.toContain('query-secret')
+        expect(JSON.stringify(displaySettings)).not.toContain('path-secret')
     })
 })
