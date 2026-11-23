@@ -162,3 +162,27 @@ test('all Russian rename actions fit on a 320px viewport', async ({ page }) => {
     const screenshot = process.env.HAPI_RENAME_NARROW_RUSSIAN_SCREENSHOT
     if (screenshot) await page.screenshot({ path: screenshot })
 })
+
+
+test('expanded setup guidance remains scrollable on a short landscape viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 568, height: 320 })
+    await page.route('**/api/sessions/fixture-title/title-suggestion', route => route.fulfill({
+        status: 503,
+        json: { code: 'unavailable' }
+    }))
+    await page.goto('/e2e-fixtures/rename-session-error-fixture.html?locale=en&apiResponse=1')
+    await page.getByRole('button', { name: 'Generate' }).click()
+    await page.getByRole('button', { name: 'Show error details' }).click()
+    await expect(page.getByTestId('title-suggestion-diagnostics')).toHaveText('HTTP 503 Error code: unavailable')
+    const dialog = page.getByRole('dialog')
+    const bounds = await dialog.boundingBox()
+    expect(bounds!.y).toBeGreaterThanOrEqual(0)
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(320)
+    const screenshot = process.env.HAPI_RENAME_LANDSCAPE_SCREENSHOT
+    const save = page.getByRole('button', { name: 'Save', exact: true })
+    await save.scrollIntoViewIfNeeded()
+    await expect(save).toBeInViewport({ ratio: 1 })
+    if (screenshot) await page.screenshot({ path: screenshot })
+    await dialog.evaluate(element => { element.scrollTop = 0 })
+    await expect(page.getByRole('button', { name: 'Close' })).toBeInViewport({ ratio: 1 })
+})
