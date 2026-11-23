@@ -326,7 +326,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                 const savedToken = typeof settings.wxPusherAppToken === 'string' ? settings.wxPusherAppToken.trim() : null
                 // Environment recipients belong to the active app. An app
                 // override cannot populate the saved recipients of another app.
-                const sameDestinationApp = !savedToken || savedToken === wxPusherAppToken
+                const sameDestinationApp = savedToken === wxPusherAppToken
                 // wxPusherUids: env > file > []
                 if (process.env.WXPUSHER_UIDS !== undefined) {
                     wxPusherUids = parseCommaSeparatedStrings(process.env.WXPUSHER_UIDS)
