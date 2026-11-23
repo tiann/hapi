@@ -293,7 +293,7 @@ type HarnessControls = {
     reorderAttachments: () => void
     dictationSetText: (text: string) => void
     abortRestore: (text: string) => void
-    acceptSend: () => void
+    acceptSend: (attachmentIds?: readonly string[]) => void
     setSending: (sending: boolean) => void
     setThreadDisabled: (disabled: boolean) => void
     settleSend: (error?: ComposerSendError) => void
@@ -328,6 +328,7 @@ function ComposerHarness(props: {
         programmaticEditRevision: number
         draftRevision: number
         originalText?: string
+        attachmentIds?: readonly string[]
     } | null>(null)
     const [sendSettlement, setSendSettlement] = useState<{
         attemptId: string
@@ -414,7 +415,7 @@ function ComposerHarness(props: {
         abortRestore: (text) => {
             setSendError(fail(2, text, null, true))
         },
-        acceptSend: () => {
+        acceptSend: (attachmentIds) => {
             setIsSending(true)
             setSendSettlement(null)
             setSendAcceptance({
@@ -423,6 +424,7 @@ function ComposerHarness(props: {
                 programmaticEditRevision,
                 draftRevision: getComposerDraftRevision(sessionId),
                 originalText: props.initialText,
+                attachmentIds,
             })
         },
         setSending: setIsSending,
@@ -1017,6 +1019,36 @@ describe('HappyComposer send-error atomic restore', () => {
             runtime.useRealDraftLifecycle = false
             clearDraft(sessionId)
             clearDraftAttachments(sessionId)
+        }
+    })
+
+    it('removes a restored sent chip while a different attachment is still hydrating', async () => {
+        const controls = renderComposer('', null)
+        act(() => controls.current!.addAttachment())
+        send()
+        act(() => controls.current!.acceptSend(['new-attachment']))
+        let finishHydration!: () => void
+        runtime.pendingHydration = new Promise<void>(resolve => { finishHydration = resolve })
+        try {
+            act(() => controls.current!.remount())
+            act(() => controls.current!.hydrateSubmittedAttachment())
+            act(() => controls.current!.settleSend())
+            await waitFor(() => expect(runtime.snapshot.composer.attachments).toEqual([]))
+            expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+            act(() => {
+                runtime.restoredAttachmentIds?.(['later-unsent'])
+                runtime.setSnapshot!(current => ({
+                    ...current, composer: {
+                        ...current.composer, attachments: [{ id: 'later-unsent', status: { type: 'complete' } }],
+                    },
+                }))
+            })
+            await act(async () => finishHydration())
+            expect(runtime.snapshot.composer.attachments.map(attachment => attachment.id)).toEqual(['later-unsent'])
+            expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, '', ['new-attachment'])
+        } finally {
+            runtime.pendingHydration = null
+            finishHydration()
         }
     })
 

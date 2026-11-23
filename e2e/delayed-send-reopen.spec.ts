@@ -16,6 +16,7 @@ for (const scenario of ['delayed send', 'durable recovery', 'scratchlist queue']
             metadata: { name: 'Delayed send fixture', host: 'fixture', path: '/synthetic/project', flavor: 'codex', codexSessionId: 'fixture-thread' },
             model: null, modelReasoningEffort: null, effort: null,
         }
+        const otherSession = { ...session, id: 'other-fixture', metadata: { ...session.metadata, name: 'Other session fixture' } }
         await page.addInitScript(({ scratchlistQueue, sessionId }) => {
             localStorage.setItem(`hapi_access_token::${location.origin}`, 'delayed-send-fixture')
             localStorage.setItem('hapi-lang', 'en')
@@ -31,11 +32,12 @@ for (const scenario of ['delayed send', 'durable recovery', 'scratchlist queue']
             const path = new URL(route.request().url()).pathname
             if (path === '/api/auth') await route.fulfill({ json: { token: 'synthetic-jwt', user: { id: 1, username: 'fixture' } } })
             else if (path === '/api/features') await route.fulfill({ json: { githubPrAwareness: { enabled: false, envPinned: false } } })
-            else if (path === '/api/sessions') await route.fulfill({ json: { sessions: [session] } })
+            else if (path === '/api/sessions') await route.fulfill({ json: { sessions: scenario === 'delayed send' ? [session, otherSession] : [session] } })
             else if (path === `/api/sessions/${session.id}/resume`) {
                 session.active = true
                 await route.fulfill({ json: { sessionId: session.id } })
             } else if (path === `/api/sessions/${session.id}`) await route.fulfill({ json: { session } })
+            else if (path === `/api/sessions/${otherSession.id}`) await route.fulfill({ json: { session: otherSession } })
             else if (path.endsWith('/messages') && route.request().method() === 'POST') {
                 posted.resolve()
                 await allowResponse.promise
@@ -100,12 +102,26 @@ for (const scenario of ['delayed send', 'durable recovery', 'scratchlist queue']
         try {
             await composer.getByRole('button', { name: 'Send', exact: true }).click()
             await posted.promise
+            await page.getByText(otherSession.metadata.name, { exact: true }).click()
+            await expect(page).toHaveURL(new RegExp(`/sessions/${otherSession.id}$`))
+            // Model a resume handoff restoring the previously submitted draft
+            // while this POST is still pending. The editor below is remounted
+            // by navigation and hydrates through its real draft lifecycle.
+            await page.evaluate(async id => {
+                const draftModule = '/src/lib/composer-drafts.ts'
+                const { saveDraft } = await import(draftModule)
+                saveDraft(id, 'First message')
+            }, session.id)
+            await page.getByText(session.metadata.name, { exact: true }).click()
+            await expect(page).toHaveURL(new RegExp(`/sessions/${session.id}$`))
+            await expect(editor).toHaveText('First message')
             await expand.click()
             await expect(composer).toHaveAttribute('data-expanded', 'true')
         } finally {
             allowResponse.resolve()
         }
         expect((await response).ok()).toBe(true)
+        await expect(editor).toHaveText('')
         await expect(composer.getByRole('button', { name: 'Collapse message editor' })).toBeVisible()
         await editor.fill('New draft after the earlier send')
         await expect(composer).toHaveAttribute('data-expanded', 'true')

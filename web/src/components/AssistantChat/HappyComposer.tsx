@@ -971,7 +971,7 @@ export function HappyComposer(props: {
         // The text can already be visible while the attachment read is still
         // pending. Wait on an empty composer so text restoration gets a chance
         // to run, but clear a visible, unchanged submitted draft immediately.
-        if (!draftHydration.complete && composerText === '') return
+        if (!draftHydration.complete && composerText === '' && attachments.length === 0) return
 
         const submittedText = settlement.originalText
             ?? props.sendAcceptance?.originalText
@@ -1038,12 +1038,10 @@ export function HappyComposer(props: {
             return
         }
 
-        if (composerText === submittedText) {
+        if (composerText && composerText === submittedText) {
             recordSuccessfulComposerClear(sessionId, composerText)
             api.composer().setText('')
         }
-        // Keep settlement available for submitted chips that hydrate later.
-        if (!draftHydration.complete) return
         const submittedAttachmentIds = settlement.attachmentIds
             ?? props.sendAcceptance?.attachmentIds
             ?? (
@@ -1051,6 +1049,8 @@ export function HappyComposer(props: {
                     ? acceptedSend.attachmentIds
                     : pendingSendAttachmentIdsRef.current ?? undefined
             )
+        // Without explicit IDs, don't guess from a partially hydrated list.
+        if (!draftHydration.complete && submittedAttachmentIds === undefined) return
         const submittedAttachmentIdSet = submittedAttachmentIds
             ? new Set(submittedAttachmentIds)
             : null
@@ -1076,6 +1076,9 @@ export function HappyComposer(props: {
                 }
             }
         }
+        // Revisit the settlement when another attachment arrives or the read
+        // completes. Already-visible submitted chips are not safe to resend.
+        if (!draftHydration.complete) return
         if (submittedAttachmentIds !== undefined) {
             clearDraftsAfterSend(
                 settlement.sessionId,
