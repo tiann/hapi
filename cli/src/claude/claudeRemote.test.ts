@@ -2466,3 +2466,46 @@ describe('claudeRemote live effort', () => {
         }
     });
 });
+
+describe('claudeRemote spawn baseline signal', () => {
+    it.each([
+        ['fresh', null, [], true],
+        ['resumed', 'session-1', [], false],
+        ['forked', null, ['--fork-session'], false]
+    ] as const)('reports a %s spawn to onSpawn', { timeout: 15_000 }, async (_label, sessionId, claudeArgs, expectedFresh) => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const onSpawn = vi.fn();
+        queryMock.mockReturnValueOnce(createAsyncStream([
+            { type: 'result', subtype: 'success' } as unknown as SDKMessage
+        ]));
+
+        let nextCallCount = 0;
+        try {
+            await claudeRemote({
+                sessionId,
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [...claudeArgs],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => nextCallCount++ === 0
+                    ? { message: 'A', mode: { permissionMode: 'default' } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onSpawn
+            });
+
+            expect(onSpawn).toHaveBeenCalledTimes(1);
+            expect(onSpawn).toHaveBeenCalledWith(expectedFresh);
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+});

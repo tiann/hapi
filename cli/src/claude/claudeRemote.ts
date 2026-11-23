@@ -121,6 +121,8 @@ export async function claudeRemote(opts: {
     onSessionFound: (id: string, extras?: { forkedFrom?: string }) => void,
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
+    /** Called once per spawn with whether the process starts fresh, before SDK messages arrive. */
+    onSpawn?: (fresh: boolean) => void,
     onContextUsage?: (usage: { model?: string, maxTokens?: number }) => void,
     onAccountIdentity?: (accountIdentity: string | null) => void,
     onFirstResult?: (initialMessage: string) => void,
@@ -494,6 +496,10 @@ export async function claudeRemote(opts: {
             : opts.allowedTools;
         sdkOptions.disallowedTools = first.mode.disallowedTools;
     }
+
+    // A fresh process starts its cumulative counters at zero, so the caller can
+    // seed a baseline before the first result is converted.
+    opts.onSpawn?.(!startFrom && !forkSession);
 
     // Start the loop
     let response: ReturnType<typeof query>;

@@ -66,6 +66,46 @@ type PermissionResponse = {
 }
 
 /**
+ * Per-model `modelUsage` counters that are cumulative across --resume.
+ * `contextWindow` and `maxOutputTokens` are model constants, passed through unchanged.
+ */
+type CumulativeModelUsageKey =
+    | 'inputTokens'
+    | 'outputTokens'
+    | 'cacheReadInputTokens'
+    | 'cacheCreationInputTokens'
+    | 'webSearchRequests'
+    | 'costUSD'
+
+const CUMULATIVE_MODEL_USAGE_KEYS: readonly CumulativeModelUsageKey[] = [
+    'inputTokens',
+    'outputTokens',
+    'cacheReadInputTokens',
+    'cacheCreationInputTokens',
+    'webSearchRequests',
+    'costUSD'
+]
+
+type ModelUsageCounters = Partial<Record<CumulativeModelUsageKey, number>>
+
+type CumulativeUsageBaseline = {
+    totalCostUsd: number
+    durationApiMs: number
+    modelUsage: Record<string, ModelUsageCounters>
+}
+
+/**
+ * Per-round delta of a cumulative counter, or undefined when no trustworthy
+ * delta exists (no baseline, or a value that went backwards and rebased).
+ * A restored stale snapshot still above the baseline under-reports that round; accepted.
+ */
+function perRoundDelta(current: number, previous: number | undefined): number | undefined {
+    if (previous === undefined) return undefined
+    const delta = current - previous
+    return delta >= 0 ? delta : undefined
+}
+
+/**
  * Get current git branch for the working directory
  */
 function getGitBranch(cwd: string): string | undefined {
@@ -111,6 +151,9 @@ export class SDKToLogConverter {
     // must not overwrite it.
     private contextUsageKeys = new Set<string>()
     private accountIdentity: string | null
+    // Cumulative cost/modelUsage/duration_api_ms survive --resume, so emit only
+    // deltas against a known baseline and omit fields when none is available.
+    private previousCumulative: CumulativeUsageBaseline | null = null
 
     constructor(
         context: Omit<ConversionContext, 'parentUuid'>,
@@ -215,6 +258,85 @@ export class SDKToLogConverter {
     resetParentChain(): void {
         this.lastUuid = null
         this.context.parentUuid = null
+        // A new Claude session has no trustworthy baseline yet.
+        this.previousCumulative = null
+    }
+
+    /**
+     * Seed a zero baseline for a process started without a prior transcript.
+     */
+    startFreshProcessBaseline(): void {
+        this.previousCumulative = {
+            totalCostUsd: 0,
+            durationApiMs: 0,
+            modelUsage: {}
+        }
+    }
+
+    /**
+     * Diff a result's cumulative fields against the previous raw values, then
+     * advance the baseline even for errored/compaction rounds and backwards
+     * values. Fields without a trustworthy delta are omitted, not emitted raw.
+     */
+    private consumeCumulativeDeltas(resultMsg: SDKResultMessage): {
+        totalCostUsd: number | undefined
+        durationApiMs: number | undefined
+        modelUsage: SDKResultMessage['modelUsage']
+    } {
+        const previous = this.previousCumulative
+        const totalCostUsd = perRoundDelta(resultMsg.total_cost_usd, previous?.totalCostUsd)
+        const durationApiMs = typeof resultMsg.duration_api_ms === 'number'
+            ? perRoundDelta(resultMsg.duration_api_ms, previous?.durationApiMs)
+            : undefined
+
+        let modelUsage = resultMsg.modelUsage
+        // Retain baselines for models not present in this result (e.g. a
+        // subagent that only appears in some rounds) so their next appearance
+        // is still diffed correctly.
+        const nextModelUsage: Record<string, ModelUsageCounters> = { ...(previous?.modelUsage ?? {}) }
+        if (resultMsg.modelUsage) {
+            const perRoundModelUsage: NonNullable<SDKResultMessage['modelUsage']> = {}
+            for (const [model, usage] of Object.entries(resultMsg.modelUsage)) {
+                const perRoundUsage = { ...usage } as Record<string, unknown>
+                const modelBaseline = previous?.modelUsage?.[model]
+                // With a baseline, a model missing from it is new in this
+                // process, so its raw counters are its per-round values.
+                const isNewModel = previous !== null && modelBaseline === undefined
+                const counters: ModelUsageCounters = { ...(modelBaseline ?? {}) }
+                let hasComparableDelta = false
+                let hasNonZeroDelta = false
+                for (const key of CUMULATIVE_MODEL_USAGE_KEYS) {
+                    const current = (usage as Record<string, unknown>)[key]
+                    if (typeof current !== 'number') continue
+                    counters[key] = current
+                    if (isNewModel) {
+                        perRoundUsage[key] = current
+                        continue
+                    }
+                    const delta = perRoundDelta(current, modelBaseline?.[key])
+                    if (delta !== undefined) {
+                        perRoundUsage[key] = delta
+                        hasComparableDelta = true
+                        if (delta > 0) hasNonZeroDelta = true
+                    } else {
+                        delete perRoundUsage[key]
+                    }
+                }
+                nextModelUsage[model] = counters
+                // A baseline with no counter movement means this model did no work this round.
+                if (modelBaseline !== undefined && hasComparableDelta && !hasNonZeroDelta) continue
+                perRoundModelUsage[model] = perRoundUsage as NonNullable<SDKResultMessage['modelUsage']>[string]
+            }
+            modelUsage = perRoundModelUsage
+        }
+
+        this.previousCumulative = {
+            totalCostUsd: resultMsg.total_cost_usd,
+            durationApiMs: resultMsg.duration_api_ms,
+            modelUsage: nextModelUsage
+        }
+
+        return { totalCostUsd, durationApiMs, modelUsage }
     }
 
     /**
@@ -486,6 +608,9 @@ export class SDKToLogConverter {
                         }
                     }
                 }
+                // These fields are cumulative across resumes; emit only a
+                // trustworthy per-round delta, never a lifetime total.
+                const perRound = this.consumeCumulativeDeltas(resultMsg)
                 logMessage = {
                     ...baseFields,
                     type: 'system',
@@ -493,11 +618,11 @@ export class SDKToLogConverter {
                     durationMs: resultMsg.duration_ms,
                     resultSummary: {
                         usage: resultMsg.usage,
-                        modelUsage: resultMsg.modelUsage,
-                        total_cost_usd: resultMsg.total_cost_usd,
+                        modelUsage: perRound.modelUsage,
+                        ...(perRound.totalCostUsd !== undefined ? { total_cost_usd: perRound.totalCostUsd } : {}),
                         num_turns: resultMsg.num_turns,
                         duration_ms: resultMsg.duration_ms,
-                        ...claudeGenerationFields(resultMsg)
+                        ...claudeGenerationFields(resultMsg, perRound.durationApiMs)
                     }
                 }
                 break
@@ -653,15 +778,17 @@ export function convertSDKToLog(
 }
 
 /**
- * tok/s fields straight from the result: `duration_api_ms` is Claude Code's
- * own API-active time (tool execution and permission waits are already
- * outside it), and the round's output tokens. Errored rounds and manual
- * compaction turns have no meaningful generation rate, so they emit nothing
- * rather than a wrong one.
+ * tok/s fields for the round: `generationMs` is the per-round delta of Claude
+ * Code's own API-active time (`duration_api_ms`, with tool execution and
+ * permission waits already outside it), paired with the round's output tokens.
+ * Errored rounds and manual compaction turns have no meaningful generation
+ * rate, so they emit nothing rather than a wrong one.
  */
-function claudeGenerationFields(resultMsg: SDKResultMessage): { generation_ms: number; generation_output_tokens: number } | Record<string, never> {
+function claudeGenerationFields(
+    resultMsg: SDKResultMessage,
+    generationMs: number | undefined
+): { generation_ms: number; generation_output_tokens: number } | Record<string, never> {
     if (resultMsg.is_error || resultMsg.hapi_compact_turn === true) return {}
-    const generationMs = resultMsg.duration_api_ms
     const outputTokens = resultMsg.usage?.output_tokens
     const measurable = (value: unknown): value is number =>
         typeof value === 'number' && Number.isSafeInteger(value) && value > 0
