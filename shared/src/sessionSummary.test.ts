@@ -532,6 +532,30 @@ describe('computePendingRequestRefs', () => {
         expect(refs.map(r => r.id)).toContain('perm-undismissed')
     })
 
+    it('keeps a genuine blocking permission over 200 non-blocking async questions (#1717 cold-review round 29)', () => {
+        // `getPendingBlockedState` returns early the moment `pendingRequestRefs`
+        // is non-empty — filtering to blocking refs THERE, with no fallback
+        // to the uncapped totals if that leaves nothing. 200 accumulated
+        // Codex async questions (non-blocking) filling every cap slot would
+        // push a genuinely pending permission out of this list entirely,
+        // and the session would never show as blocked at all despite it.
+        const requests: Record<string, { tool: string; arguments: unknown; createdAt: number }> = {}
+        for (let i = 0; i < 200; i += 1) {
+            requests[`async-${i.toString().padStart(3, '0')}`] = {
+                tool: 'request_user_input',
+                arguments: { isBlocking: false, questions: ['ok?'] },
+                createdAt: i
+            }
+        }
+        requests['perm-blocking'] = { tool: 'Bash', arguments: {}, createdAt: 300 }
+        const session = makeSession({ agentState: { requests } })
+
+        const refs = computePendingRequestRefs(session.agentState, session.updatedAt)
+        expect(refs).toHaveLength(200)
+        expect(refs.map(r => r.id)).toContain('perm-blocking')
+        expect(refs.find(r => r.id === 'perm-blocking')?.nonBlocking).toBeUndefined()
+    })
+
     it('returns everything unordered-by-dismissal when the full set already fits the cap', () => {
         const session = makeSession({
             agentState: { requests: {

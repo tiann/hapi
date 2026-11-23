@@ -361,18 +361,30 @@ export function computePendingRequestRefs(
     // contest, and the chip/dialog silently fall back to the lower-priority
     // permission instead.
     //
-    // Four buckets, not two: dismissed-vs-undismissed (round 23) still
-    // matters, but within each, an undismissed/dismissed QUESTION now also
-    // outranks a same-dismissal-state PERMISSION, so the single most
-    // important pending request is never the one truncation discards.
+    // Eight buckets, not four: BLOCKING-vs-non-blocking (round 29) outranks
+    // both of the other dimensions, because the classifier reads refs as an
+    // all-or-nothing list — `getPendingBlockedState` returns early the
+    // moment `pendingRequestRefs` is non-empty, filters to blocking refs
+    // THERE, and never falls back to the uncapped totals if that leaves
+    // nothing. A session that piles up enough non-blocking Codex async
+    // questions to fill the cap could push a genuine, still-pending
+    // permission out of this list entirely — the one case where "ref list
+    // is non-empty" and "a real blocker is being reported" can disagree.
+    // Dismissed-vs-undismissed (round 23) and question-vs-permission
+    // (round 27) still matter, but only after blocking status is decided.
     const isUndismissed = (request: { id: string }) =>
         !dismissedKeys?.has(requestBlockerKey(request.id))
     const isQuestion = (request: { kind: PendingRequestKind }) => request.kind === 'input'
+    const isBlocking = (request: { nonBlocking?: boolean }) => !request.nonBlocking
     const buckets = [
-        all.filter((request) => isUndismissed(request) && isQuestion(request)),
-        all.filter((request) => isUndismissed(request) && !isQuestion(request)),
-        all.filter((request) => !isUndismissed(request) && isQuestion(request)),
-        all.filter((request) => !isUndismissed(request) && !isQuestion(request))
+        all.filter((request) => isBlocking(request) && isUndismissed(request) && isQuestion(request)),
+        all.filter((request) => isBlocking(request) && isUndismissed(request) && !isQuestion(request)),
+        all.filter((request) => isBlocking(request) && !isUndismissed(request) && isQuestion(request)),
+        all.filter((request) => isBlocking(request) && !isUndismissed(request) && !isQuestion(request)),
+        all.filter((request) => !isBlocking(request) && isUndismissed(request) && isQuestion(request)),
+        all.filter((request) => !isBlocking(request) && isUndismissed(request) && !isQuestion(request)),
+        all.filter((request) => !isBlocking(request) && !isUndismissed(request) && isQuestion(request)),
+        all.filter((request) => !isBlocking(request) && !isUndismissed(request) && !isQuestion(request))
     ]
     const selectedIds = new Set(
         buckets.flat().slice(0, PENDING_REQUEST_REFS_CAP).map((request) => request.id)
