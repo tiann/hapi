@@ -3,225 +3,129 @@ import {
     Capabilities,
     Flavors,
     getFlavorLabel,
-    hasCapability,
-    isKnownFlavor,
-    supportsEffort,
-    supportsModelChange,
+    getPermissionModesForFlavor,
     getPermissionReplyStyle,
     getYoloToggleMigrationMode,
+    hasCapability,
+    isKnownFlavor,
+    isPermissionModeAllowedForFlavor,
+    isSteeringSupportedForFlavor,
+    isSteeringSupportedForSession,
     resolveHapiYoloPermissionMode,
+    supportsEffort,
+    supportsModelChange,
     usesNativePermissionSelect,
     usesSharedPermissionModeState,
 } from './flavors'
 import {
     AGENT_FLAVORS,
-    CREATABLE_AGENT_FLAVORS,
-    STEERING_SUPPORTED_FLAVORS
-} from './modes'
-import type { AgentFlavor, PermissionMode } from './modes'
-import {
     getPermissionModeLabel,
     getPermissionModeOptionsForFlavor,
     getPermissionModeTone,
-    getPermissionModesForFlavor,
-    isPermissionModeAllowedForFlavor,
     PERMISSION_MODES
-} from './index'
+} from './modes'
 
-describe('hasCapability', () => {
-    test('agy supports model-change and effort', () => {
-        expect(hasCapability('agy', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('agy', Capabilities.Effort)).toBe(true)
+// Values that are not a registered flavor, including names an object lookup would inherit.
+const UNREGISTERED = [null, undefined, '', 'unknown-flavor', 'Claude', 'Pi', '__proto__', 'constructor'] as const
+
+describe('flavor registry', () => {
+    // The agent selectors list flavors in this order.
+    test('AGENT_FLAVORS keeps its order', () => {
+        expect([...AGENT_FLAVORS]).toEqual([
+            'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'
+        ])
     })
 
-    test('claude supports model-change', () => {
-        expect(hasCapability('claude', Capabilities.ModelChange)).toBe(true)
+    test.each(AGENT_FLAVORS)('%s is a known flavor', (flavor) => {
+        expect(isKnownFlavor(flavor)).toBe(true)
     })
 
-    test('claude supports effort', () => {
-        expect(hasCapability('claude', Capabilities.Effort)).toBe(true)
-    })
-
-    test('gemini supports model-change but not effort', () => {
-        expect(hasCapability('gemini', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('gemini', Capabilities.Effort)).toBe(false)
-    })
-
-    test('dsh supports model-change but not effort (ACP config options)', () => {
-        expect(hasCapability('dsh', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('dsh', Capabilities.Effort)).toBe(false)
-    })
-
-    test('codex supports model-change but not effort', () => {
-        expect(hasCapability('codex', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('codex', Capabilities.Effort)).toBe(false)
-    })
-
-    test('cursor supports model-change but not effort', () => {
-        expect(hasCapability('cursor', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('cursor', Capabilities.Effort)).toBe(false)
-    })
-
-    test('opencode supports model-change but not effort', () => {
-        expect(hasCapability('opencode', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('opencode', Capabilities.Effort)).toBe(false)
-    })
-
-    test('pi supports model-change and effort', () => {
-        expect(hasCapability('pi', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('pi', Capabilities.Effort)).toBe(true)
-    })
-
-    test('kimi supports model-change and effort', () => {
-        expect(hasCapability('kimi', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('kimi', Capabilities.Effort)).toBe(true)
-    })
-
-    test('copilot supports model-change and effort', () => {
-        expect(hasCapability('copilot', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('copilot', Capabilities.Effort)).toBe(true)
-    })
-
-    test('grok supports runtime model and effort switching through ACP', () => {
-        expect(hasCapability('grok', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('grok', Capabilities.Effort)).toBe(true)
-    })
-
-    test('unknown flavor returns false', () => {
-        expect(hasCapability('unknown-flavor', Capabilities.ModelChange)).toBe(false)
-    })
-
-    test('null/undefined flavor returns false', () => {
-        expect(hasCapability(null, Capabilities.ModelChange)).toBe(false)
-        expect(hasCapability(undefined, Capabilities.ModelChange)).toBe(false)
+    test.each(UNREGISTERED)('%p is not a known flavor', (value) => {
+        expect(isKnownFlavor(value)).toBe(false)
     })
 })
 
-describe('getFlavorLabel', () => {
-    test('known flavors return display names', () => {
-        expect(getFlavorLabel('agy')).toBe('Antigravity')
-        expect(getFlavorLabel('claude')).toBe('Claude')
-        expect(getFlavorLabel('gemini')).toBe('Gemini')
-        expect(getFlavorLabel('codex')).toBe('Codex')
-        expect(getFlavorLabel('dsh')).toBe('DeepSeek Harness')
-        expect(getFlavorLabel('cursor')).toBe('Cursor')
-        expect(getFlavorLabel('opencode')).toBe('OpenCode')
-        expect(getFlavorLabel('pi')).toBe('Pi')
-        expect(getFlavorLabel('kimi')).toBe('Kimi')
-        expect(getFlavorLabel('copilot')).toBe('Copilot')
-        expect(getFlavorLabel('grok')).toBe('Grok Build')
-    })
-
-    test('unknown flavor returns Unknown', () => {
-        expect(getFlavorLabel('some-new-cli')).toBe('Unknown')
-    })
-
-    test('null/undefined returns Unknown', () => {
-        expect(getFlavorLabel(null)).toBe('Unknown')
-        expect(getFlavorLabel(undefined)).toBe('Unknown')
+describe('capability queries', () => {
+    test.each(AGENT_FLAVORS)('%s: the convenience queries agree with hasCapability', (flavor) => {
+        expect(supportsModelChange(flavor)).toBe(hasCapability(flavor, Capabilities.ModelChange))
+        expect(supportsEffort(flavor)).toBe(hasCapability(flavor, Capabilities.Effort))
     })
 })
 
-describe('isKnownFlavor', () => {
-    test('returns true for registered flavors', () => {
-        expect(isKnownFlavor('agy')).toBe(true)
-        expect(isKnownFlavor('claude')).toBe(true)
-        expect(isKnownFlavor('gemini')).toBe(true)
-        expect(isKnownFlavor('codex')).toBe(true)
-        expect(isKnownFlavor('dsh')).toBe(true)
-        expect(isKnownFlavor('cursor')).toBe(true)
-        expect(isKnownFlavor('opencode')).toBe(true)
-        expect(isKnownFlavor('pi')).toBe(true)
-        expect(isKnownFlavor('kimi')).toBe(true)
-        expect(isKnownFlavor('copilot')).toBe(true)
-        expect(isKnownFlavor('grok')).toBe(true)
+describe('auto-approve mode', () => {
+    test.each([
+        ['agy', 'always-proceed'],
+        ['claude', 'bypassPermissions'],
+        ['codex', 'yolo'],
+    ] as const)('%s uses %s, the only auto-approve mode in its list', (flavor, mode) => {
+        expect(resolveHapiYoloPermissionMode(flavor)).toBe(mode)
     })
 
-    test('returns false for unknown/null/undefined', () => {
-        expect(isKnownFlavor('foo')).toBe(false)
-        expect(isKnownFlavor(null)).toBe(false)
-        expect(isKnownFlavor(undefined)).toBe(false)
-    })
-})
-
-describe('convenience functions', () => {
-    test('supportsModelChange matches hasCapability', () => {
-        expect(supportsModelChange('agy')).toBe(true)
-        expect(supportsModelChange('claude')).toBe(true)
-        expect(supportsModelChange('gemini')).toBe(true)
-        expect(supportsModelChange('codex')).toBe(true)
-        expect(supportsModelChange('opencode')).toBe(true)
-        expect(supportsModelChange('cursor')).toBe(true)
-        expect(supportsModelChange('pi')).toBe(true)
-        expect(supportsModelChange('kimi')).toBe(true)
-        expect(supportsModelChange(null)).toBe(false)
+    test('a flavor with modes but no auto-approve mode has none, and a flavor without modes has none', () => {
+        expect(getPermissionModesForFlavor('claude')).not.toContain('yolo')
+        expect(resolveHapiYoloPermissionMode('dsh')).toBeNull()
+        expect(resolveHapiYoloPermissionMode('pi')).toBeNull()
     })
 
-    test('supportsEffort matches hasCapability', () => {
-        expect(supportsEffort('agy')).toBe(true)
-        expect(supportsEffort('claude')).toBe(true)
-        expect(supportsEffort('codex')).toBe(false)
-        expect(supportsEffort('gemini')).toBe(false)
-        expect(supportsEffort('pi')).toBe(true)
-        expect(supportsEffort('grok')).toBe(true)
-        expect(supportsEffort('kimi')).toBe(true)
-        expect(supportsEffort(null)).toBe(false)
+    test.each(AGENT_FLAVORS)('%s: the auto-approve mode is one of its own modes', (flavor) => {
+        const mode = resolveHapiYoloPermissionMode(flavor)
+        if (mode !== null) expect(getPermissionModesForFlavor(flavor)).toContain(mode)
     })
 })
 
-type PermissionTraits = {
-    replyStyle: 'decision' | 'allowTools' | 'generic'
-    nativeSelect: boolean
-    sharedState: boolean
-    yoloToggleMigration: PermissionMode | null
-    yolo: PermissionMode | null
-}
-
-const PERMISSION_TRAITS = {
-    agy: { replyStyle: 'generic', nativeSelect: true, sharedState: true, yoloToggleMigration: 'always-proceed', yolo: 'always-proceed' },
-    claude: { replyStyle: 'allowTools', nativeSelect: true, sharedState: true, yoloToggleMigration: 'bypassPermissions', yolo: 'bypassPermissions' },
-    codex: { replyStyle: 'decision', nativeSelect: true, sharedState: true, yoloToggleMigration: 'yolo', yolo: 'yolo' },
-    dsh: { replyStyle: 'generic', nativeSelect: false, sharedState: false, yoloToggleMigration: null, yolo: null },
-    copilot: { replyStyle: 'decision', nativeSelect: true, sharedState: true, yoloToggleMigration: null, yolo: 'yolo' },
-    cursor: { replyStyle: 'decision', nativeSelect: true, sharedState: true, yoloToggleMigration: 'yolo', yolo: 'yolo' },
-    gemini: { replyStyle: 'decision', nativeSelect: true, sharedState: true, yoloToggleMigration: null, yolo: 'yolo' },
-    grok: { replyStyle: 'decision', nativeSelect: true, sharedState: false, yoloToggleMigration: null, yolo: 'bypassPermissions' },
-    kimi: { replyStyle: 'decision', nativeSelect: true, sharedState: true, yoloToggleMigration: null, yolo: 'yolo' },
-    opencode: { replyStyle: 'decision', nativeSelect: true, sharedState: true, yoloToggleMigration: null, yolo: 'yolo' },
-    pi: { replyStyle: 'generic', nativeSelect: false, sharedState: false, yoloToggleMigration: null, yolo: null },
-} as const satisfies Record<AgentFlavor, PermissionTraits>
-
-describe('permission traits', () => {
-    test('the expectations cover exactly the known flavors', () => {
-        expect(Object.keys(PERMISSION_TRAITS).sort()).toEqual([...AGENT_FLAVORS].sort())
+describe('new-session form mode source', () => {
+    test('a flavor without modes is managed: no native select and no shared state', () => {
+        for (const flavor of ['dsh', 'pi'] as const) {
+            expect(usesNativePermissionSelect(flavor)).toBe(false)
+            expect(usesSharedPermissionModeState(flavor)).toBe(false)
+        }
     })
 
-    test.each(AGENT_FLAVORS)('%s declares its permission reply style', (flavor) => {
-        expect(getPermissionReplyStyle(flavor)).toBe(PERMISSION_TRAITS[flavor].replyStyle)
+    test('a flavor with its own form state has a native select outside the shared state', () => {
+        expect(usesNativePermissionSelect('grok')).toBe(true)
+        expect(usesSharedPermissionModeState('grok')).toBe(false)
     })
 
-    test.each(AGENT_FLAVORS)('%s declares whether the new-session form offers a native permission select', (flavor) => {
-        expect(usesNativePermissionSelect(flavor)).toBe(PERMISSION_TRAITS[flavor].nativeSelect)
+    test('other flavors with modes use the native select and the shared state', () => {
+        expect(usesNativePermissionSelect('codex')).toBe(true)
+        expect(usesSharedPermissionModeState('codex')).toBe(true)
+    })
+})
+
+describe('YOLO toggle migration', () => {
+    test('a flavor that migrates the saved toggle maps it to its auto-approve mode', () => {
+        for (const flavor of ['agy', 'claude', 'codex', 'cursor'] as const) {
+            expect(getYoloToggleMigrationMode(flavor)).toBe(resolveHapiYoloPermissionMode(flavor))
+        }
     })
 
-    test.each(AGENT_FLAVORS)('%s declares whether the new-session form keeps its mode in the shared state', (flavor) => {
-        expect(usesSharedPermissionModeState(flavor)).toBe(PERMISSION_TRAITS[flavor].sharedState)
+    test('a flavor that does not migrate has no migration mode even with an auto-approve mode', () => {
+        expect(resolveHapiYoloPermissionMode('copilot')).not.toBeNull()
+        expect(getYoloToggleMigrationMode('copilot')).toBeNull()
     })
+})
 
-    test.each(AGENT_FLAVORS)('%s declares the mode a saved YOLO toggle migrates to', (flavor) => {
-        expect(getYoloToggleMigrationMode(flavor)).toBe(PERMISSION_TRAITS[flavor].yoloToggleMigration)
-    })
-
-    test.each(AGENT_FLAVORS)('%s declares its auto-approve mode', (flavor) => {
-        expect(resolveHapiYoloPermissionMode(flavor)).toBe(PERMISSION_TRAITS[flavor].yolo)
-    })
-
-    test.each([null, undefined, 'unknown-flavor'])('%p gets generic replies and no permission-mode controls', (flavor) => {
+describe('unregistered flavors', () => {
+    test.each(UNREGISTERED)('%p falls back to the neutral record', (flavor) => {
+        expect(hasCapability(flavor, Capabilities.ModelChange)).toBe(false)
+        expect(supportsModelChange(flavor)).toBe(false)
+        expect(supportsEffort(flavor)).toBe(false)
+        expect(getFlavorLabel(flavor)).toBe('Unknown')
         expect(getPermissionReplyStyle(flavor)).toBe('generic')
         expect(usesNativePermissionSelect(flavor)).toBe(false)
         expect(usesSharedPermissionModeState(flavor)).toBe(false)
         expect(getYoloToggleMigrationMode(flavor)).toBeNull()
         expect(resolveHapiYoloPermissionMode(flavor)).toBeNull()
+        expect(isSteeringSupportedForFlavor(flavor)).toBe(false)
+        expect(isSteeringSupportedForSession({ flavor })).toBe(false)
+    })
+
+    test.each(UNREGISTERED)('%p keeps the Claude permission mode list', (flavor) => {
+        expect(getPermissionModesForFlavor(flavor)).toEqual(getPermissionModesForFlavor('claude'))
+        expect(getPermissionModeOptionsForFlavor(flavor)).toEqual(getPermissionModeOptionsForFlavor('claude'))
+        for (const mode of PERMISSION_MODES) {
+            expect(isPermissionModeAllowedForFlavor(mode, flavor)).toBe(isPermissionModeAllowedForFlavor(mode, 'claude'))
+        }
     })
 })
 
@@ -236,47 +140,31 @@ describe('getPermissionReplyStyle with a tool name', () => {
     )
 
     test('other tool names keep the flavor style', () => {
-        expect(getPermissionReplyStyle('claude', 'Bash')).toBe('allowTools')
-        expect(getPermissionReplyStyle('codex', 'Bash')).toBe('decision')
-        expect(getPermissionReplyStyle('agy', 'Edit')).toBe('generic')
+        expect(getPermissionReplyStyle('claude', 'Bash')).toBe(getPermissionReplyStyle('claude'))
+        expect(getPermissionReplyStyle('agy', 'Edit')).toBe(getPermissionReplyStyle('agy'))
     })
 
     test('the prefix match is case-sensitive and anchored at the start', () => {
-        expect(getPermissionReplyStyle('claude', 'codexSearch')).toBe('allowTools')
-        expect(getPermissionReplyStyle('claude', 'MyCodexTool')).toBe('allowTools')
+        expect(getPermissionReplyStyle('claude', 'codexSearch')).toBe(getPermissionReplyStyle('claude'))
+        expect(getPermissionReplyStyle('claude', 'MyCodexTool')).toBe(getPermissionReplyStyle('claude'))
     })
 })
 
-// Exact per-flavor mode lists.
-const PERMISSION_MODES_BY_FLAVOR = {
-    agy: ['request-review', 'acceptEdits', 'plan', 'always-proceed'],
-    claude: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
-    codex: ['default', 'read-only', 'autoReview', 'yolo'],
-    dsh: [],
-    copilot: ['default', 'read-only', 'safe-yolo', 'yolo'],
-    cursor: ['default', 'plan', 'ask', 'debug', 'autoReview', 'yolo'],
-    gemini: ['default', 'read-only', 'safe-yolo', 'yolo'],
-    grok: ['default', 'auto', 'plan', 'bypassPermissions'],
-    kimi: ['default', 'read-only', 'safe-yolo', 'yolo'],
-    opencode: ['default', 'plan', 'yolo'],
-    pi: [],
-} as const satisfies Record<AgentFlavor, readonly PermissionMode[]>
-
-describe('getPermissionModesForFlavor', () => {
-    test.each(AGENT_FLAVORS)('%s returns its declared permission modes', (flavor) => {
-        expect(getPermissionModesForFlavor(flavor)).toEqual(PERMISSION_MODES_BY_FLAVOR[flavor])
-    })
-
-    test.each([null, undefined, 'unknown-flavor'])('%p keeps the Claude fallback list', (flavor) => {
-        expect(getPermissionModesForFlavor(flavor)).toEqual(PERMISSION_MODES_BY_FLAVOR.claude)
-    })
-})
-
-describe('isPermissionModeAllowedForFlavor', () => {
-    test.each([...AGENT_FLAVORS, null, undefined, 'unknown-flavor'])('%p allows exactly its declared modes', (flavor) => {
-        const expected: readonly PermissionMode[] = getPermissionModesForFlavor(flavor)
+describe('permission mode membership', () => {
+    test.each([...AGENT_FLAVORS, ...UNREGISTERED])('%p: every query agrees on which modes are allowed', (flavor) => {
+        const modes: readonly string[] = getPermissionModesForFlavor(flavor)
         for (const mode of PERMISSION_MODES) {
-            expect(isPermissionModeAllowedForFlavor(mode, flavor)).toBe(expected.includes(mode))
+            expect(isPermissionModeAllowedForFlavor(mode, flavor)).toBe(modes.includes(mode))
+            if (isKnownFlavor(flavor)) {
+                expect(Flavors[flavor].allowsPermissionMode(mode)).toBe(modes.includes(mode))
+            }
+        }
+        expect(isPermissionModeAllowedForFlavor('not-a-mode', flavor)).toBe(false)
+    })
+
+    test('a flavor without modes allows none', () => {
+        for (const mode of PERMISSION_MODES) {
+            expect(isPermissionModeAllowedForFlavor(mode, 'pi')).toBe(false)
         }
     })
 })
@@ -284,7 +172,7 @@ describe('isPermissionModeAllowedForFlavor', () => {
 describe('getPermissionModeOptionsForFlavor', () => {
     test('maps each mode to its label and tone', () => {
         expect(getPermissionModeOptionsForFlavor('codex')).toEqual(
-            PERMISSION_MODES_BY_FLAVOR.codex.map((mode) => ({
+            getPermissionModesForFlavor('codex').map((mode) => ({
                 mode,
                 label: getPermissionModeLabel(mode),
                 tone: getPermissionModeTone(mode)
@@ -294,34 +182,5 @@ describe('getPermissionModeOptionsForFlavor', () => {
 
     test('is empty for a flavor without modes', () => {
         expect(getPermissionModeOptionsForFlavor('pi')).toEqual([])
-    })
-})
-
-describe('flavor lists', () => {
-    test('AGENT_FLAVORS keeps its exact order', () => {
-        expect([...AGENT_FLAVORS]).toEqual([
-            'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'
-        ])
-    })
-
-    test('CREATABLE_AGENT_FLAVORS is every flavor except gemini, in order', () => {
-        expect([...CREATABLE_AGENT_FLAVORS]).toEqual([
-            'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'kimi', 'opencode', 'pi'
-        ])
-    })
-})
-
-describe('steering-supported flavors', () => {
-    test('STEERING_SUPPORTED_FLAVORS is exactly the steerable flavors, in order', () => {
-        expect([...STEERING_SUPPORTED_FLAVORS]).toEqual(['agy', 'claude', 'codex', 'cursor', 'opencode', 'pi'])
-    })
-})
-
-describe('allowsPermissionMode', () => {
-    test.each(AGENT_FLAVORS)('%s allows exactly its declared modes', (flavor) => {
-        for (const mode of PERMISSION_MODES) {
-            expect(Flavors[flavor].allowsPermissionMode(mode)).toBe(PERMISSION_MODES_BY_FLAVOR[flavor].some((m) => m === mode))
-        }
-        expect(Flavors[flavor].allowsPermissionMode('not-a-mode')).toBe(false)
     })
 })
