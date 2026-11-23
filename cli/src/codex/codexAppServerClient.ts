@@ -389,8 +389,8 @@ export class CodexAppServerClient extends JsonLineParser {
         return response as SkillsListResponse;
     }
 
-    async listMcpServerStatuses(): Promise<unknown> {
-        return await this.sendRequest('mcpServerStatus/list', {}, {
+    async listMcpServerStatuses(threadId: string): Promise<unknown> {
+        return await this.sendRequest('mcpServerStatus/list', { threadId }, {
             timeoutMs: 30_000
         });
     }

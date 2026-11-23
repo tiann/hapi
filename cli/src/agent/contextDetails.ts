@@ -363,7 +363,7 @@ export function mergeContextDetails(
 
 export interface ContextDetailsClient {
     getMetadata?: () => Readonly<Metadata> | null
-    updateMetadata?: (handler: (metadata: Metadata) => Metadata) => void
+    updateMetadata?: (handler: (metadata: Metadata) => Metadata, options?: { skipUnchanged?: boolean }) => void
 }
 
 export interface PublishContextDetailsOptions {
@@ -379,22 +379,23 @@ export function publishContextDetails(
     if (!client.updateMetadata) return
     client.updateMetadata((metadata) => {
         const current = metadata.contextDetails
-        let merged = mergeContextDetails(current, next)
+        let incoming = next
         if (options.preserveUsageSnapshot && current?.provider === 'claude' && current.usage) {
-            merged = {
-                ...merged,
+            incoming = {
+                ...next,
                 usage: {
-                    ...merged.usage,
+                    ...next.usage,
                     ...(current.usage.contextTokens !== undefined ? { contextTokens: current.usage.contextTokens } : {}),
                     ...(current.usage.cacheReadTokens !== undefined ? { cacheReadTokens: current.usage.cacheReadTokens } : {})
                 }
             }
         }
+        const merged = mergeContextDetails(current, incoming)
         return merged === current
             ? metadata
             : {
                 ...metadata,
                 contextDetails: merged
             }
-    })
+    }, { skipUnchanged: true })
 }

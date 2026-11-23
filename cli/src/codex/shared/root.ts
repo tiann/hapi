@@ -373,8 +373,8 @@ export class SharedCodexRoot {
     private publishMcpInventoryIfAvailable(): void {
         const availableInventories = [this.configuredMcpServerInventory, this.statusMcpServerInventory]
             .filter((inventory): inventory is CodexMcpServerInventory[] => inventory !== undefined);
-        const complete = this.configuredMcpServerInventory !== undefined
-            && this.statusMcpServerInventory !== undefined;
+        const complete = this.statusMcpServerInventory !== undefined
+            && (this.host.attached || this.configuredMcpServerInventory !== undefined);
         const mergedInventory = mergeCodexMcpInventories(...availableInventories);
         if (!complete && mergedInventory.length === 0) return;
         this.mcpInventoryLoaded = true;
@@ -391,14 +391,18 @@ export class SharedCodexRoot {
             })
             .catch(error => logger.debug('[Codex shared] slash command inventory', error));
         void this.refreshContextSkills().catch(error => logger.debug('[Codex shared] skill inventory', error));
-        void listConfiguredCodexMcpServers(cwd, this.host.codexInventoryArgs)
-            .then(inventory => {
-                if (this.closed || this.stopping || inventory === undefined) return;
-                this.configuredMcpServerInventory = inventory;
-                this.publishMcpInventoryIfAvailable();
-            })
-            .catch(error => logger.debug('[Codex shared] configured MCP inventory', error));
-        void this.client.listMcpServerStatuses()
+        // An attached app-server may use a different home and launch flags.
+        // Its bound thread is authoritative; never merge in the wrapper's local MCP config.
+        if (!this.host.attached) {
+            void listConfiguredCodexMcpServers(cwd, this.host.codexInventoryArgs)
+                .then(inventory => {
+                    if (this.closed || this.stopping || inventory === undefined) return;
+                    this.configuredMcpServerInventory = inventory;
+                    this.publishMcpInventoryIfAvailable();
+                })
+                .catch(error => logger.debug('[Codex shared] configured MCP inventory', error));
+        }
+        void this.client.listMcpServerStatuses(this.threadId)
             .then(response => {
                 if (this.closed || this.stopping) return;
                 const inventory = parseCodexMcpStatusResponse(response);

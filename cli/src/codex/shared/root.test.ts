@@ -17,7 +17,8 @@ type NativeRequest = { id: string | number; method: string; params: unknown };
 
 const sharedHarness = vi.hoisted(() => ({
     skills: [{ name: 'find-docs', description: 'Find docs', path: '/tmp/SKILL.md', scope: 'user', enabled: true }],
-    mcpInventoryArgs: undefined as readonly string[] | undefined
+    mcpInventoryArgs: undefined as readonly string[] | undefined,
+    mcpStatusThreadId: undefined as string | undefined
 }));
 
 vi.mock('../codexAppServerClient', () => ({
@@ -40,7 +41,10 @@ vi.mock('../codexAppServerClient', () => ({
         async listSkills() {
             return { data: [{ cwd: '/tmp', skills: sharedHarness.skills, errors: [] }] };
         }
-        async listMcpServerStatuses() { return { data: [] }; }
+        async listMcpServerStatuses(threadId: string) {
+            sharedHarness.mcpStatusThreadId = threadId;
+            return { data: [] };
+        }
         async disconnect() { this.initialized = false; }
         async request(method: string, params: Record<string, unknown> = {}) {
             if (method === 'thread/read' || method === 'thread/resume') return { ...this.settings, thread: structuredClone(this.thread) };
@@ -159,6 +163,15 @@ session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
 }
 
 describe('externally attached root', () => {
+    it('queries MCP status for the bound thread without reading the wrapper config', async () => {
+        sharedHarness.mcpInventoryArgs = undefined;
+        sharedHarness.mcpStatusThreadId = undefined;
+        const f = await fixture({ attached: true });
+        await f.root.activate();
+        await vi.waitFor(() => expect(sharedHarness.mcpStatusThreadId).toBe('thread'));
+        expect(sharedHarness.mcpInventoryArgs).toBeUndefined();
+    });
+
     it('skips MCP, instructions and initial settings injection, and disables lifecycle actions', async () => {
         const builds = vi.mocked(buildHapiMcpBridge).mock.calls.length;
         const calls = vi.spyOn(CodexAppServerClient.prototype, 'request');
