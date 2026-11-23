@@ -1,7 +1,8 @@
 import {
     CREATABLE_AGENT_FLAVORS,
+    getYoloToggleMigrationMode,
     getPermissionModesForFlavor,
-    resolveHapiYoloPermissionMode,
+    usesSharedPermissionModeState,
     type AgentFlavor,
     type PermissionMode
 } from '@hapi/protocol'
@@ -18,7 +19,6 @@ import {
     type LaunchEffort,
     type NewSessionServiceTier
 } from './types'
-import { LEGACY_YOLO_BRIDGE_AGENTS, usesSharedPermissionModeState } from '@/lib/codexFamilyPermissionAgents'
 
 const AGENT_STORAGE_KEY = 'hapi:newSession:agent'
 const YOLO_STORAGE_KEY = 'hapi:newSession:yolo'
@@ -226,11 +226,12 @@ export function resolvePreferredLaunchSettings(
     const preferredPermissionMode = preferred?.permissionMode
     // Migrate a saved HAPI YOLO toggle into the native select (true → yolo-equivalent,
     // false → Default). Absent key leaves hub/stock defaults in place.
-    const legacyYoloBridgeMode = preferredPermissionMode === undefined
+    const migrationMode = getYoloToggleMigrationMode(agent)
+    const migratedYoloMode = preferredPermissionMode === undefined
         && legacyYolo !== null
-        && LEGACY_YOLO_BRIDGE_AGENTS.includes(agent)
+        && migrationMode !== null
         ? (legacyYolo
-            ? resolveHapiYoloPermissionMode(agent)
+            ? migrationMode
             : resolvePermissionModeForFlavor('default', agent as AgentFlavor))
         : null
     const hubMode = hubPermissionMode
@@ -249,8 +250,8 @@ export function resolvePreferredLaunchSettings(
                 // Explicit saved mode that left the launch catalog → Default,
                 // never hub yolo (would upgrade sandboxed → unrestricted).
                 ? resolvePermissionModeForFlavor('default', agent as AgentFlavor)
-                : legacyYoloBridgeMode && availablePermissionModes.includes(legacyYoloBridgeMode)
-                    ? legacyYoloBridgeMode
+                : migratedYoloMode && availablePermissionModes.includes(migratedYoloMode)
+                    ? migratedYoloMode
                     : hubMode ?? resolvePermissionModeForFlavor('default', agent as AgentFlavor)
         : undefined
 

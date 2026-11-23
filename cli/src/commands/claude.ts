@@ -13,11 +13,9 @@ import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import { extractErrorInfo } from '@/utils/errorUtils'
 import type { CommandDefinition } from './types'
 import type { ClaudePermissionMode } from '@hapi/protocol/types'
-import { ApiClient } from '@/api/api'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { parseClaudeResumeArgs, resolveClaudeResume } from '@/claude/resumeIdentity'
 import { claudeCheckSession } from '@/claude/utils/claudeCheckSession'
-import { prepareLocalResume, selectResumableSession } from './resume'
 
 /**
  * Terminal `hapi claude --resume/--continue`: when HAPI already owns the
@@ -31,6 +29,8 @@ async function applyClaudeResumeIdentity(options: StartOptions, machineId: strin
     const parsed = parseClaudeResumeArgs(options.claudeArgs ?? [])
     if (!parsed.request) return
 
+    const { ApiClient } = await import('@/api/api')
+    const { prepareLocalResume, selectResumableSession } = await import('./resume')
     const api = await ApiClient.create()
     const workingDirectory = options.workingDirectory ?? getInvokedCwd()
     const resolution = await resolveClaudeResume(parsed.request, {

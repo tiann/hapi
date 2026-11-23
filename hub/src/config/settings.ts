@@ -56,6 +56,11 @@ export interface Settings {
      */
     autoBridgeTransientModelErrors?: boolean
     /**
+     * Hub-wide default for input translation. Sessions without an explicit
+     * `metadata.translateInput` follow it. Default off.
+     */
+    translateInputByDefault?: boolean
+    /**
      * Hub-side provider API keys / endpoints managed from Settings.
      * Env vars still win when set at process start (ops override).
      */

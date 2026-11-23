@@ -244,4 +244,43 @@ class SessionDecodingTest {
         assertNull(response.page.nextAfterSeq)
         assertTrue(response.page.hasMore)
     }
+
+    @Test
+    fun `decodes hub-owned translateInput, absent means off`() {
+        val on = HapiJson.decodeFromString(
+            SessionMetadata.serializer(),
+            """{"path":"/repo","host":"devbox","translateInput":true}""",
+        )
+        assertEquals(true, on.translateInput)
+        val absent = HapiJson.decodeFromString(SessionMetadata.serializer(), """{"path":"/repo","host":"devbox"}""")
+        assertNull(absent.translateInput)
+    }
+
+    @Test
+    fun `features inputTranslation is optional and defaults to unavailable`() {
+        val available = HapiJson.decodeFromString(
+            FeaturesResponse.serializer(),
+            """
+            {
+              "githubPrAwareness": {"enabled": true, "source": "default"},
+              "prChipDisplay": {"mode": "compact"},
+              "inputTranslation": {"available": true}
+            }
+            """,
+        )
+        assertTrue(available.inputTranslationAvailable)
+        val older = HapiJson.decodeFromString(
+            FeaturesResponse.serializer(),
+            """{"githubPrAwareness": {"enabled": false, "source": "default"}}""",
+        )
+        assertFalse(older.inputTranslationAvailable)
+    }
+
+    @Test
+    fun `translate toggle request encodes only the flag`() {
+        assertEquals(
+            """{"translateInput":false}""",
+            HapiJson.encodeToString(SetSessionTranslateInputRequest.serializer(), SetSessionTranslateInputRequest(false)),
+        )
+    }
 }

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import { apiErrorMessage } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, OpencodeLocalSessionSummary, PiLocalSessionSummary } from '@/types/api'
-import { CREATABLE_AGENT_FLAVORS, resolveHapiYoloPermissionMode, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
+import { CREATABLE_AGENT_FLAVORS, getYoloToggleMigrationMode, usesNativePermissionSelect, usesSharedPermissionModeState, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import type { AgentAvailabilityEntry, CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -87,7 +87,6 @@ import {
 import { resolvePermissionModeForFlavor } from '@hapi/protocol/peerSpawnDefaults'
 import { SessionTypeSelector } from './SessionTypeSelector'
 import { PermissionField } from './PermissionField'
-import { usesNativePermissionSelect, usesSharedPermissionModeState, LEGACY_YOLO_BRIDGE_AGENTS } from '@/lib/codexFamilyPermissionAgents'
 import { CodexSessionSyncDialog } from '@/components/CodexSessionSyncDialog'
 import { PiSessionImportDialog } from '@/components/PiSessionImportDialog'
 import { OpencodeSessionImportDialog } from '@/components/OpencodeSessionImportDialog'
@@ -410,13 +409,14 @@ export function NewSession(props: {
             ? loadPreferredLaunchSettings(machineId, targetAgent)
             : null
         if (!editedPermissionRef.current && !savedLaunch?.permissionMode) {
+            const migrationMode = getYoloToggleMigrationMode(targetAgent)
             if (
                 legacyYoloBridge?.agent === targetAgent
                 && usesSharedPermissionModeState(targetAgent)
-                && LEGACY_YOLO_BRIDGE_AGENTS.includes(targetAgent)
+                && migrationMode !== null
             ) {
                 const bridged = legacyYoloBridge.enabled
-                    ? resolveHapiYoloPermissionMode(targetAgent)
+                    ? migrationMode
                     : resolvePermissionModeForFlavor('default', targetAgent)
                 if (bridged) {
                     setNativePermissionMode(bridged)
