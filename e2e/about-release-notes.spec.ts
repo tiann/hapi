@@ -88,3 +88,14 @@ for (const [locale, heading, linkLabel] of [
         if (locale === 'ja' && screenshots) await page.screenshot({ path: `${screenshots}/about-release-fallback-language.png` })
     })
 }
+
+
+test('v0.7.0 identifies the website change as a fix to the CLI install instructions', async ({ page }) => {
+    await page.goto(fixture)
+    const release = page.locator('details').filter({ has: page.getByRole('link', { name: 'Open release page for v0.7.0' }) })
+    await release.locator('summary time').click()
+    await expect(release.getByText('Fixed', { exact: true })).toBeVisible()
+    await expect(release.getByText(/npm install -g @twsxtd\/hapi/)).toBeVisible()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await release.screenshot({ path: `${screenshots}/about-cli-install-release-note.png` })
+})

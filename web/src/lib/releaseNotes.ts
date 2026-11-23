@@ -1362,11 +1362,11 @@ export const RELEASE_NOTES = [
             ]),
         ]),
     releaseNote('0.7.0', '2026-01-07',
-        'Use the scoped @twsxtd/hapi package for website installation instead of the deprecated hapi package.',
-        '网站安装改用带命名空间的 @twsxtd/hapi 软件包，不再使用已弃用的 hapi 包。',
+        'Correct the website’s HAPI CLI installation command to use @twsxtd/hapi.',
+        '更正网站上的 HAPI CLI 安装命令，改为使用 @twsxtd/hapi。',
         [
             group('Package installation', '软件包安装', [
-                change('feature', 'Install the website package as @twsxtd/hapi.', '网站软件包改用 @twsxtd/hapi 安装。'),
+                change('fix', 'Show npm install -g @twsxtd/hapi in the website’s CLI installation instructions.', '在网站的 CLI 安装说明中显示 npm install -g @twsxtd/hapi。'),
             ]),
         ]),
     releaseNote('0.6.0', '2026-01-05',
