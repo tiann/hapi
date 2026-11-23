@@ -326,16 +326,16 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                 const savedToken = typeof settings.wxPusherAppToken === 'string' ? settings.wxPusherAppToken.trim() : null
                 // Environment recipients belong to the active app. An app
                 // override cannot populate the saved recipients of another app.
-                const persistRecipients = !savedToken || savedToken === wxPusherAppToken
+                const sameDestinationApp = !savedToken || savedToken === wxPusherAppToken
                 // wxPusherUids: env > file > []
                 if (process.env.WXPUSHER_UIDS !== undefined) {
                     wxPusherUids = parseCommaSeparatedStrings(process.env.WXPUSHER_UIDS)
                     sources.wxPusherUids = 'env'
-                    if (persistRecipients && settings.wxPusherUids === undefined) {
+                    if (sameDestinationApp && settings.wxPusherUids === undefined) {
                         settings.wxPusherUids = wxPusherUids
                         needsSave = true
                     }
-                } else if (settings.wxPusherUids !== undefined) {
+                } else if (sameDestinationApp && settings.wxPusherUids !== undefined) {
                     wxPusherUids = readStringArraySetting(settings.wxPusherUids, 'wxPusherUids')
                     sources.wxPusherUids = 'file'
                 }
@@ -344,11 +344,11 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                 if (process.env.WXPUSHER_TOPIC_IDS !== undefined) {
                     wxPusherTopicIds = parseTopicIds(process.env.WXPUSHER_TOPIC_IDS)
                     sources.wxPusherTopicIds = 'env'
-                    if (persistRecipients && settings.wxPusherTopicIds === undefined) {
+                    if (sameDestinationApp && settings.wxPusherTopicIds === undefined) {
                         settings.wxPusherTopicIds = wxPusherTopicIds
                         needsSave = true
                     }
-                } else if (settings.wxPusherTopicIds !== undefined) {
+                } else if (sameDestinationApp && settings.wxPusherTopicIds !== undefined) {
                     wxPusherTopicIds = readTopicIdArraySetting(settings.wxPusherTopicIds, 'wxPusherTopicIds')
                     sources.wxPusherTopicIds = 'file'
                 }

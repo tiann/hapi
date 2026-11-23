@@ -312,6 +312,24 @@ describe('loadServerSettings', () => {
         expect(result.sources.wxPusherTopicIds).toBe('file')
     })
 
+    it("does not reuse another app's saved recipients with a temporary token", async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            wxPusherAppToken: 'saved-app', wxPusherUids: ['saved-uid'], wxPusherTopicIds: [42],
+        }))
+        process.env.WXPUSHER_APP_TOKEN = 'temporary-app'
+        expect((await loadServerSettings(dir)).settings.wxPusherDestinations.has('default')).toBe(false)
+        process.env.WXPUSHER_UIDS = 'temporary-uid'
+        expect((await loadServerSettings(dir)).settings.wxPusherDestinations.get('default')).toMatchObject({
+            appToken: 'temporary-app', uids: ['temporary-uid'], topicIds: [],
+        })
+        delete process.env.WXPUSHER_APP_TOKEN
+        delete process.env.WXPUSHER_UIDS
+        expect((await loadServerSettings(dir)).settings.wxPusherDestinations.get('default')).toMatchObject({
+            appToken: 'saved-app', uids: ['saved-uid'], topicIds: [42],
+        })
+    })
+
     it('does not save temporary recipients under a different saved app token', async () => {
         dir = makeTempDir()
         const file = join(dir, 'settings.json')
