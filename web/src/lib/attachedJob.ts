@@ -1,7 +1,7 @@
 import type { AttachedJob } from '@hapi/protocol'
 
-/** Stale if no heartbeat for 15 minutes — UI amber, still shows progress. */
-export const ATTACHED_JOB_STALE_MS = 15 * 60 * 1000
+import { isAttachedJobStale } from '@hapi/protocol'
+export { ATTACHED_JOB_STALE_MS, isAttachedJobStale } from '@hapi/protocol'
 
 /**
  * Compact lettered elapsed duration for list chrome.
@@ -66,7 +66,7 @@ export function formatAttachedJobProgress(
         const pct = Math.min(100, Math.round((job.done / job.total) * 100))
         base = `${pct}% · ${job.done}/${job.total}${job.unit ? ` ${job.unit}` : ''} · ${elapsed}`
     } else {
-        base = `${labels.running} · ${elapsed}`
+        base = isAttachedJobStale(job, now) ? elapsed : `${labels.running} · ${elapsed}`
     }
     if (isAttachedJobStale(job, now)) {
         return `${base} · ${labels.noHeartbeat} · ${formatAttachedJobHeartbeatAge(job, now)}`
@@ -85,8 +85,4 @@ export function attachedJobFraction(job: AttachedJob): number | null {
         return Math.max(0, Math.min(1, job.done / job.total))
     }
     return null
-}
-
-export function isAttachedJobStale(job: AttachedJob, now: number = Date.now()): boolean {
-    return now - job.heartbeatAt > ATTACHED_JOB_STALE_MS
 }

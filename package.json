@@ -32,6 +32,8 @@
         "test": "bun run test:cli && bun run test:hub && bun run test:web && bun run test:shared && bun run test:relay",
         "test:cli": "cd cli && bun run test",
         "test:cli:integration": "cd cli && bun run test:integration",
+        "test:parity": "cd cli && bun x --no-install vitest run --config vitest.parity.config.ts",
+        "parity:record": "bun cli/src/parity/record.ts",
         "test:hub": "cd hub && bun run test",
         "test:relay": "cd relay && bun run test",
         "test:web": "cd web && bun run test",

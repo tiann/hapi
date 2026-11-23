@@ -281,7 +281,7 @@ export default function SharePage() {
 
     return (
         <div className="flex h-full min-h-0 flex-col bg-[var(--app-bg)]">
-            <div className="border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+env(safe-area-inset-top))]">
+            <div className="border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+var(--route-safe-area-top,env(safe-area-inset-top)))]">
                 <div className="mx-auto w-full max-w-content">
                     <div className="flex items-center justify-between gap-2">
                         <div className="font-semibold">{t('share.title')}</div>

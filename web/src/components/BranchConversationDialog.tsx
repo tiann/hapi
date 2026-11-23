@@ -5,6 +5,7 @@ import type { ApiClient } from '@/api/client'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { SelectControl } from '@/components/ui/select-control'
+import { randomId } from '@/lib/randomId'
 import { useTranslation } from '@/lib/use-translation'
 
 export function BranchConversationDialog(props: {
@@ -46,7 +47,7 @@ export function BranchConversationDialog(props: {
         const options = { agent, model: model || undefined, boundary, workspace,
             messageLocalId: props.messageLocalId, messageId: props.messageId, instruction: instruction.trim() }
         const fingerprint = JSON.stringify(options)
-        const requestId = attempt?.fingerprint === fingerprint ? attempt.requestId : crypto.randomUUID()
+        const requestId = attempt?.fingerprint === fingerprint ? attempt.requestId : randomId()
         setAttempt({ fingerprint, requestId })
         setPending(true)
         setError(null)

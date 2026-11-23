@@ -896,7 +896,7 @@ describe('bucketRunningSessions', () => {
             key: 'batch',
             label: 'batch',
             status: 'running',
-            heartbeatAt: 1,
+            heartbeatAt: Date.now(),
             startedAt: 1,
             updatedAt: 1,
         },
@@ -908,6 +908,27 @@ describe('bucketRunningSessions', () => {
         expect(buckets.jobs).toHaveLength(0)
         expect(buckets.working).toHaveLength(0)
         expect(buckets.pending).toHaveLength(0)
+    })
+
+    it('keeps an archived session in Archived even if its job is still reporting', () => {
+        const archived = { ...withJob, metadata: { path: '/p', lifecycleState: 'archived' } }
+        expect(bucketRunningSessions([archived], 'jobs').jobs).toEqual([])
+        expect(bucketRunningSessions([archived], 'all').jobs).toEqual([])
+        expect(filterSessionsForListStatus([archived], 'active')).toEqual([])
+        const prepared = prepareSidebarSessions([archived])
+        expect(filterSessionsForListStatus(prepared, 'archived')).toEqual([archived])
+    })
+
+    it('removes a stale job from In progress without archiving the session', () => {
+        const stale = { ...withJob, attachedJob: { ...withJob.attachedJob!, heartbeatAt: 1 } }
+        expect(bucketRunningSessions([stale], 'jobs').jobs).toEqual([])
+        expect(filterSessionsForListStatus([stale], 'active')).toEqual([stale])
+        expect(filterSessionsForListStatus([stale], 'archived')).toEqual([])
+    })
+
+    it('keeps a session with another reporting job in progress when its primary meter expires', () => {
+        const mixed = { ...withJob, attachedJob: { ...withJob.attachedJob!, heartbeatAt: 1, latestRunningHeartbeatAt: Date.now() } }
+        expect(bucketRunningSessions([mixed], 'jobs').jobs).toEqual([mixed])
     })
 
     it('puts running attachedJob into jobs under mode jobs', () => {
@@ -1036,7 +1057,7 @@ describe('filterSessionsForListStatus', () => {
         const job = base('job', {
             attachedJob: {
                 key: 'drain', label: 'drain', status: 'running',
-                heartbeatAt: 1, startedAt: 1, updatedAt: 1
+                heartbeatAt: Date.now(), startedAt: 1, updatedAt: 1
             }
         })
         const idle = base('idle')
@@ -1048,7 +1069,7 @@ describe('filterSessionsForListStatus', () => {
         const job = base('job', {
             attachedJob: {
                 key: 'drain', label: 'drain', status: 'running',
-                heartbeatAt: 1, startedAt: 1, updatedAt: 1
+                heartbeatAt: Date.now(), startedAt: 1, updatedAt: 1
             }
         })
         const archived = base('archived')
