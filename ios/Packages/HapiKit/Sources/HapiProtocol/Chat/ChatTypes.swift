@@ -789,6 +789,14 @@ public struct UserTextBlock: Equatable, Sendable {
     public var status: String?
     public var originalText: String?
     public var meta: JSONValue?
+
+    /// What the user typed when the hub translated the prompt
+    /// (`meta.translatedFrom`, strings only); ``text`` is then the English
+    /// actually sent to the agent. Derived from ``meta`` so reducer output
+    /// (and fixture conformance) is unchanged.
+    public var translatedFrom: String? {
+        meta?.objectValue?["translatedFrom"]?.stringValue
+    }
 }
 
 public struct AgentTextBlock: Equatable, Sendable {
