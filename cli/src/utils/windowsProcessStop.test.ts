@@ -97,6 +97,23 @@ describe('Windows asynchronous tree stop', () => {
         expect(kills.map(kill => kill.pid)).toEqual([200])
     })
 
+    it('still cleans up descendants if a root sampled before escalation exits', async () => {
+        let scans = 0
+        rejectSoft = true
+        onKill = (pid, force) => { if (force) rows = rows.filter(entry => entry.ProcessId !== pid) }
+        const execute = execFileMock.getMockImplementation()!
+        execFileMock.mockImplementation((file, args, options, callback) => {
+            if (file !== 'powershell') return execute(file, args, options, callback)
+            return execute(file, args, options, (error: Error | null, stdout: string, stderr: string) => {
+                if (++scans === 4) rows = rows.filter(entry => entry.ProcessId !== 100)
+                callback(error, stdout, stderr)
+            })
+        })
+        const canSignal = (phase?: 'root' | 'descendant') => phase === 'descendant' || rows.some(entry => entry.ProcessId === 100)
+        expect(await killProcessTreeByPid(100, false, undefined, undefined, undefined, canSignal)).toBe(true)
+        expect(kills.map(kill => [kill.pid, kill.force])).toEqual([[100, false], [200, true]])
+    })
+
     it('confirms all descendants without blocking the runner with per-PID shell probes', async () => {
         await expect(killProcessTreeByPid(100, true)).resolves.toBe(true)
         expect(kills.map(k => k.pid)).toEqual([100, 200])

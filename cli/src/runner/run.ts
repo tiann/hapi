@@ -21,7 +21,7 @@ import { findStopSessionOrphanTargets, reapRunnerSpawnedOrphans } from '@/runner
 import { readStopRuntimeCandidates } from './stopRuntimes';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import { observeHeartbeatProcesses, type HeartbeatProcessState } from './heartbeatProcesses';
-import { captureProcessBinding, captureStopSignalBinding, sharedStopBinding, stopConfirmationBinding, terminateCapturedBinding } from './processBinding';
+import { captureNewProcessBindingGuard, captureProcessBinding, captureStopSignalBinding, captureStopResumeRecordBinding, sharedStopBinding, stopConfirmationBinding, terminateCapturedBinding } from './processBinding';
 import { cleanupFailedStartupAfterExit, sessionStartupTimeout, waitForRecoverableStartup } from './sessionStartup';
 import { buildChildExitNotices, type ChildExitNotice } from './childExitNotice';
 import {
@@ -444,18 +444,21 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         logger.debug('[RUNNER RUN] Failed to persist resume processes:', error);
       }
     };
-    const capturePidBinding = (pid: number, sessionId: string) => captureProcessBinding(() => [
-      pidToTrackedSession.get(pid), pidToRequestedSessionId.get(pid),
-      stopConfirmationBinding(pidToRequestedSessionId.get(pid), pidToConfirmedSessionId.get(pid), sessionId),
-      persistedResumeProcesses.get(pid),
-      existingSessionIdByChildPid.get(pid), sharedStopBinding(pidToTrackedSession.get(pid), sessionId),
-    ]);
-    const capturePidSignalGuard = (pid: number, sessionId: string) => captureStopSignalBinding(() => [
-      pidToTrackedSession.get(pid), pidToRequestedSessionId.get(pid),
-      stopConfirmationBinding(pidToRequestedSessionId.get(pid), pidToConfirmedSessionId.get(pid), sessionId),
-      persistedResumeProcesses.get(pid),
-      existingSessionIdByChildPid.get(pid),
-    ], () => sharedStopBinding(pidToTrackedSession.get(pid), sessionId) !== '[]');
+    const capturePidStopState = (pid: number, sessionId: string) => {
+      const readRecordBinding = captureStopResumeRecordBinding(pid, sessionId,
+        () => pidToTrackedSession.get(pid)?.childProcess, () => persistedResumeProcesses.get(pid));
+      return () => [
+        pidToTrackedSession.get(pid), pidToRequestedSessionId.get(pid),
+        stopConfirmationBinding(pidToRequestedSessionId.get(pid), pidToConfirmedSessionId.get(pid), sessionId),
+        readRecordBinding(), existingSessionIdByChildPid.get(pid),
+      ];
+    };
+    const capturePidBinding = (pid: number, sessionId: string) => {
+      const state = capturePidStopState(pid, sessionId);
+      return captureProcessBinding(() => [...state(), sharedStopBinding(pidToTrackedSession.get(pid), sessionId)]);
+    };
+    const capturePidSignalGuard = (pid: number, sessionId: string) => captureStopSignalBinding(
+      capturePidStopState(pid, sessionId), () => sharedStopBinding(pidToTrackedSession.get(pid), sessionId) !== '[]');
     for (const [pid, record] of [...persistedResumeProcesses]) {
       const alive = isProcessAlive(pid);
       const generation = probeRecoveredProcessGeneration(pid, record);
@@ -1375,6 +1378,12 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
       };
 
+      // An argv match cannot distinguish a replacement reporting the same
+      // session ID. Guard against bindings installed after this stop began.
+      const isNewTrackedBinding = captureNewProcessBindingGuard(pidToTrackedSession);
+      const isNewPersistedBinding = captureNewProcessBindingGuard(persistedResumeProcesses);
+      const isNewBinding = (pid: number) => isNewTrackedBinding(pid) || isNewPersistedBinding(pid);
+
       const finishWithOrphanSweep = async (
         base: 'stopped' | 'already_gone' | 'unknown'
       ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
@@ -1385,12 +1394,18 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           sessionId
         );
         const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
-          killTree: pid => killProcessTreeByPid(pid, false, undefined,
-            signalDeadlines.get(pid), undefined, capturePidSignalGuard(pid, sessionId)),
-          prepare: (target) => target.needsPublicationDrain === false ? Promise.resolve(true)
-            : prepareSessionStop(sessionId, target.pid, target.startMarker ?? undefined),          findTargets: (id) => findStopSessionOrphanTargets(
+          killTree: pid => {
+            if (isNewBinding(pid)) return Promise.resolve(false);
+            const guard = capturePidSignalGuard(pid, sessionId);
+            return killProcessTreeByPid(pid, false, undefined, signalDeadlines.get(pid), undefined,
+              phase => !isNewBinding(pid) && guard(phase));
+          },
+          prepare: (target) => isNewBinding(target.pid) ? Promise.resolve(false)
+            : target.needsPublicationDrain === false ? Promise.resolve(true)
+            : prepareSessionStop(sessionId, target.pid, target.startMarker ?? undefined),
+          findTargets: (id) => findStopSessionOrphanTargets(
             id,
-            (sid, pid) => shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid)
+            (sid, pid) => isNewBinding(pid) || shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid),
           ),
         });
         if (orphanStatus === 'still_alive') {

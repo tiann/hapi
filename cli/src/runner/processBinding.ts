@@ -12,6 +12,31 @@ export function stopConfirmationBinding(requested: string | undefined, confirmed
     return requested === target && confirmed === target ? undefined : confirmed;
 }
 
+/** The live child may gain its first record when startup confirms the target. */
+export function captureStopResumeRecordBinding<T extends {
+    pid: number; requestedSessionId: string; confirmedSessionId?: string; processStartMarker: string;
+}>(pid: number, target: string, readChild: () => object | undefined, readRecord: () => T | undefined): () => T | undefined {
+    const child = readChild();
+    const original = readRecord();
+    return () => {
+        const record = readRecord();
+        // On Windows the tree helper independently verifies the root process
+        // marker before it signals; unchanged ChildProcess ownership is also
+        // required here. Persisted-only/adopted records never get this bypass.
+        if (!original && child && child === readChild() && record?.pid === pid
+            && record.requestedSessionId === target && record.confirmedSessionId === target && record.processStartMarker) {
+            return undefined;
+        }
+        return record;
+    };
+}
+
+/** Protect bindings installed after a stop began, even if a PID was reused. */
+export function captureNewProcessBindingGuard<T>(bindings: ReadonlyMap<number, T>): (pid: number) => boolean {
+    const original = new Map(bindings);
+    return pid => bindings.has(pid) && bindings.get(pid) !== original.get(pid);
+}
+
 /** Empty maps after a proven wrapper exit are expected, unlike replacement bindings. */
 export function captureStopSignalBinding(
     readBinding: () => readonly unknown[],

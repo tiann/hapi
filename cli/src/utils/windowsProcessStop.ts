@@ -140,6 +140,13 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
     refresh(initial)
     if (!unresolved.size) return finish(true)
 
+    const originalRootExitedAfterVeto = async () => {
+        const table = await snapshot()
+        if (table) refresh(table)
+        phase = 'binding-veto'
+        return table !== null && !unresolved.has(rootPid)
+    }
+
     // Recheck the root's generation immediately before tree-wide signalling.
     let current = await snapshot()
     if (!current) return finish(false)
@@ -147,18 +154,9 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
     const rootMarker = members.get(rootPid)
     if (unresolved.has(rootPid) && rootMarker && current.get(rootPid)?.marker === rootMarker) {
         const result = await signal(rootPid, force, true)
-        if (result === 'vetoed') {
-            // The Runner may clear the binding just after the snapshot if the
-            // wrapper exits. Only a fresh generation check can distinguish
-            // that from a live root whose signal must remain vetoed.
-            if (unresolved.size <= 1) return finish(false)
-            current = await snapshot()
-            if (current) refresh(current)
-            if (!current || unresolved.has(rootPid)) {
-                phase = 'binding-veto'
-                return finish(false)
-            }
-        }
+        // The binding can disappear after a snapshot when the wrapper exits.
+        // Never proceed based on a veto alone: verify the original generation.
+        if (result === 'vetoed' && !await originalRootExitedAfterVeto()) return finish(false)
         if (!force && result === 'sent') {
             const graceDeadline = performance.now() + Math.min(2_000, remaining())
             while (unresolved.size && performance.now() < graceDeadline) {
@@ -202,7 +200,7 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
             if (!current) return finish(false)
             refresh(current)
             if (unresolved.has(rootPid) && current.get(rootPid)?.marker === rootMarker) {
-                if (await signal(rootPid, true, true) === 'vetoed') return finish(false)
+                if (await signal(rootPid, true, true) === 'vetoed' && !await originalRootExitedAfterVeto()) return finish(false)
             }
         }
     }
@@ -246,7 +244,8 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
         if (!current) return finish(false)
         refresh(current)
         if (unresolved.has(pid) && current.get(pid)?.marker === expected
-            && await signal(pid, true, true) === 'vetoed') return finish(false)
+            && await signal(pid, true, true) === 'vetoed'
+            && (pid !== rootPid || !await originalRootExitedAfterVeto())) return finish(false)
         for (const child of unresolved.keys()) {
             if (!scheduled.has(child)) { scheduled.add(child); pendingSignals.push(child) }
         }

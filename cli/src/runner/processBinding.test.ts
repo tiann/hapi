@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { captureProcessBinding, captureStopSignalBinding, stopConfirmationBinding, sharedStopBinding, terminateCapturedBinding } from './processBinding';
+import { captureNewProcessBindingGuard, captureProcessBinding, captureStopSignalBinding, captureStopResumeRecordBinding, stopConfirmationBinding, sharedStopBinding, terminateCapturedBinding } from './processBinding';
 
 describe('asynchronous process binding guard', () => {
     it('allows empty post-exit bindings only for captured descendants, never a replacement or sibling', () => {
@@ -104,4 +104,30 @@ it('retains the stop guard when the same requested session confirms, not after a
     confirmed = 'target';
     tracked = {};
     expect(signal('root')).toBe(false);
+});
+
+it('protects rebound or newly registered processes during an orphan sweep', () => {
+    const tracked = new Map([[42, { sessionId: 'same-session' }]])
+    const isNew = captureNewProcessBindingGuard(tracked)
+    expect(isNew(42)).toBe(false)
+    tracked.delete(42)
+    expect(isNew(42)).toBe(false)
+    tracked.set(42, { sessionId: 'same-session' })
+    tracked.set(43, { sessionId: 'same-session' })
+    expect(isNew(42)).toBe(true)
+    expect(isNew(43)).toBe(true)
+})
+
+it('accepts the first persisted confirmation only for the same live child and target', () => {
+    let child = {};
+    let record: { pid: number; requestedSessionId: string; confirmedSessionId: string; processStartMarker: string } | undefined;
+    const readBinding = captureStopResumeRecordBinding(42, 'target', () => child, () => record);
+    expect(readBinding()).toBeUndefined();
+    record = { pid: 42, requestedSessionId: 'target', confirmedSessionId: 'target', processStartMarker: 'checked' };
+    expect(readBinding()).toBeUndefined();
+    record.confirmedSessionId = 'different';
+    expect(readBinding()).toBe(record);
+    record.confirmedSessionId = 'target';
+    child = {};
+    expect(readBinding()).toBe(record);
 });
