@@ -13,7 +13,7 @@ export type PendingComposerSend = {
     attachmentIds?: readonly string[]
 }
 
-const pendingComposerSends = new Map<string, PendingComposerSend>()
+const pendingComposerSends = new Map<string, Map<string | null, PendingComposerSend>>()
 const composerProgrammaticEditRevisions = new Map<string, number>()
 const composerDraftRevisions = new Map<string, number>()
 const composerTextRevisions = new Map<string, number>()
@@ -42,20 +42,25 @@ export function subscribeComposerSendState(listener: () => void): () => void {
     return () => listeners.delete(listener)
 }
 
-export function getPendingComposerSend(sessionId: string): PendingComposerSend | null {
-    return pendingComposerSends.get(sessionId) ?? null
+export function getPendingComposerSend(sessionId: string, attemptId?: string | null): PendingComposerSend | null {
+    const attempts = pendingComposerSends.get(sessionId)
+    if (!attempts) return null
+    if (attemptId !== undefined) return attempts.get(attemptId) ?? null
+    return Array.from(attempts.values()).at(-1) ?? null
 }
 
 export function recordPendingComposerSend(send: PendingComposerSend): void {
-    pendingComposerSends.set(send.sessionId, send)
-    reconcileSuccessfulSend(send.sessionId)
+    const attempts = pendingComposerSends.get(send.sessionId) ?? new Map()
+    attempts.set(send.attemptId, send)
+    pendingComposerSends.set(send.sessionId, attempts)
+    if (send.attemptId !== null) reconcileSuccessfulSend(send.sessionId, send.attemptId)
     notify()
 }
 
 export function consumePendingComposerSend(sessionId: string, attemptId: string | null): void {
-    const current = pendingComposerSends.get(sessionId)
-    if (!current || current.attemptId !== attemptId) return
-    pendingComposerSends.delete(sessionId)
+    const attempts = pendingComposerSends.get(sessionId)
+    if (!attempts?.delete(attemptId)) return
+    if (!attempts.size) pendingComposerSends.delete(sessionId)
     notify()
 }
 
@@ -109,9 +114,14 @@ export function getComposerSendSettlement(sessionId: string | null): SendMessage
     if (!sessionId) return null
     const byAttempt = composerSendSettlements.get(sessionId)
     if (!byAttempt) return null
-    const pendingAttemptId = pendingComposerSends.get(sessionId)?.attemptId
-    if (pendingAttemptId !== null && pendingAttemptId !== undefined) {
-        return byAttempt.get(pendingAttemptId) ?? null
+    // Show an older completed attempt even while a newer POST remains
+    // pending. The composer matches this result to that attempt's acceptance.
+    const attempts = pendingComposerSends.get(sessionId)
+    if (attempts?.size) {
+        for (const settlement of byAttempt.values()) {
+            if (attempts.has(settlement.attemptId)) return settlement
+        }
+        if (Array.from(attempts.keys()).some(attemptId => attemptId !== null)) return null
     }
     return byAttempt.values().next().value ?? null
 }
@@ -120,7 +130,7 @@ export function publishComposerSendSettlement(settlement: SendMessageSettlement)
     const byAttempt = composerSendSettlements.get(settlement.sessionId) ?? new Map<string, SendMessageSettlement>()
     byAttempt.set(settlement.attemptId, settlement)
     composerSendSettlements.set(settlement.sessionId, byAttempt)
-    reconcileSuccessfulSend(settlement.sessionId)
+    reconcileSuccessfulSend(settlement.sessionId, settlement.attemptId)
     notify()
 }
 
@@ -130,10 +140,10 @@ export function publishComposerSendSettlement(settlement: SendMessageSettlement)
  * path keeps a route-unmounted or refreshed page from resurrecting a sent
  * draft. Preserve newer text, but still discard exact IDs that were sent.
  */
-function reconcileSuccessfulSend(sessionId: string): void {
-    const pending = pendingComposerSends.get(sessionId)
-    if (!pending?.attemptId) return
-    const settlement = composerSendSettlements.get(sessionId)?.get(pending.attemptId)
+function reconcileSuccessfulSend(sessionId: string, attemptId: string): void {
+    const pending = getPendingComposerSend(sessionId, attemptId)
+    if (!pending) return
+    const settlement = composerSendSettlements.get(sessionId)?.get(attemptId)
     if (settlement?.status !== 'success') return
     const sentText = settlement.originalText ?? pending.originalText ?? settlement.text
     const sentAttachmentIds = settlement.attachmentIds ?? pending.attachmentIds

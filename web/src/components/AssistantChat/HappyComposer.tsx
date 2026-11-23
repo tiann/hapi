@@ -46,7 +46,7 @@ import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
 import type { AttachmentDraftInput } from '@/lib/composer-attachment-drafts'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
-import { consumePendingComposerSend, getComposerDraftRevision, recordSuccessfulComposerClear, getComposerProgrammaticEditRevision, recordComposerProgrammaticEdit, recordComposerTextChange, recordComposerDraftChange } from '@/lib/composer-send-state'
+import { consumePendingComposerSend, getPendingComposerSend, getComposerDraftRevision, recordSuccessfulComposerClear, getComposerProgrammaticEditRevision, recordComposerProgrammaticEdit, recordComposerTextChange, recordComposerDraftChange } from '@/lib/composer-send-state'
 import { persistInactiveComposerAttachments, setComposerDraftSnapshot, updateComposerDraftTextSnapshot, attachmentDraftRevision, resetInactiveComposerAttachmentVisibility } from '@/lib/composer-draft-transfer'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
@@ -953,16 +953,18 @@ export function HappyComposer(props: {
             consumePendingComposerSend(sessionId, settlement.attemptId)
         }
 
+        const acceptance = getPendingComposerSend(sessionId, settlement.attemptId)
+            ?? (props.sendAcceptance?.attemptId === settlement.attemptId ? props.sendAcceptance : null)
         // Retry settlements reuse the failed message's local id and do not
         // represent a composer-accepted send. Consume them without touching a
         // matching draft that belongs to the operator.
         if (
             settlement.source !== 'send'
             || (
-                props.sendAcceptance?.sessionId !== undefined
-                && props.sendAcceptance.sessionId !== sessionId
+                acceptance?.sessionId !== undefined
+                && acceptance.sessionId !== sessionId
             )
-            || props.sendAcceptance?.attemptId !== settlement.attemptId
+            || acceptance?.attemptId !== settlement.attemptId
         ) {
             consumeSettlement()
             return
@@ -974,7 +976,7 @@ export function HappyComposer(props: {
         if (!draftHydration.complete && composerText === '' && attachments.length === 0) return
 
         const submittedText = settlement.originalText
-            ?? props.sendAcceptance?.originalText
+            ?? acceptance?.originalText
             ?? settlement.text
 
         const acceptedSend = acceptedSendEditGenerationRef.current
@@ -983,13 +985,13 @@ export function HappyComposer(props: {
         const attachmentGeneration = acceptedThisAttempt ? acceptedSend.attachmentGeneration : pendingSendAttachmentGenerationRef.current
         const scheduleGeneration = acceptedThisAttempt ? acceptedSend.scheduleGeneration : pendingSendScheduleGenerationRef.current
         const preserveText = (
-            props.sendAcceptance?.draftRevision !== undefined
-            && getComposerDraftRevision(sessionId) > props.sendAcceptance.draftRevision
+            acceptance?.draftRevision !== undefined
+            && getComposerDraftRevision(sessionId) > acceptance.draftRevision
         ) || userEditGenerationRef.current > (sendEditGeneration ?? 0)
             || userAttachmentGenerationRef.current > (attachmentGeneration ?? 0)
             || userScheduleGenerationRef.current > (scheduleGeneration ?? 0)
             || Math.max(props.programmaticEditRevision ?? 0, getComposerProgrammaticEditRevision(sessionId))
-                > (props.sendAcceptance?.programmaticEditRevision ?? 0)
+                > (acceptance?.programmaticEditRevision ?? 0)
             || (composerText !== '' && composerText !== submittedText)
 
         if (!preserveText && composerText && composerText === submittedText) {
@@ -997,7 +999,7 @@ export function HappyComposer(props: {
             api.composer().setText('')
         }
         const submittedAttachmentIds = settlement.attachmentIds
-            ?? props.sendAcceptance?.attachmentIds
+            ?? acceptance?.attachmentIds
             ?? (acceptedThisAttempt ? acceptedSend.attachmentIds : pendingSendAttachmentIdsRef.current ?? undefined)
         if (preserveText && !submittedAttachmentIds?.length) {
             consumeSettlement()

@@ -17,7 +17,7 @@ import {
     saveDraftAttachments,
 } from '@/lib/composer-attachment-drafts'
 import { clearDraft, getDraft, saveDraft } from '@/lib/composer-drafts'
-import { getComposerDraftRevision, resetComposerSendStateForTests } from '@/lib/composer-send-state'
+import { recordPendingComposerSend, consumePendingComposerSend,  getComposerDraftRevision, resetComposerSendStateForTests } from '@/lib/composer-send-state'
 import { appendFileReferenceToComposerDraft } from '@/lib/file-composer'
 import { appendTerminalExcerptToComposerDraft } from '@/lib/terminal-composer'
 
@@ -1042,6 +1042,36 @@ describe('HappyComposer send-error atomic restore', () => {
         await waitFor(() => expect(runtime.snapshot.composer.attachments.map(item => item.id)).toEqual(['keep-attachment']))
         expect(input()).toHaveValue('New queued edit')
         expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, 'submitted', ['new-attachment'], true)
+    })
+
+    it('cleans an earlier attempt chip that hydrates after a second submission', async () => {
+        const controls = renderComposer('old text', null)
+        send()
+        act(() => {
+            recordPendingComposerSend({ sessionId: 'session-a', attemptId: 'attempt-1', text: 'old text',
+                attachmentIds: ['new-attachment'], draftRevision: 0, programmaticEditRevision: 0 })
+            recordPendingComposerSend({ sessionId: 'session-a', attemptId: 'attempt-2', text: 'second text',
+                attachmentIds: [], draftRevision: 0, programmaticEditRevision: 0 })
+        })
+        let finishHydration!: () => void
+        runtime.pendingHydration = new Promise<void>(resolve => { finishHydration = resolve })
+        try {
+            act(() => controls.current!.remount())
+            act(() => {
+                controls.current!.queuedEditSetText('A newer draft')
+                controls.current!.settleSend()
+            })
+            act(() => controls.current!.hydrateSubmittedAttachment())
+            await waitFor(() => expect(runtime.snapshot.composer.attachments).toEqual([]))
+            expect(input()).toHaveValue('A newer draft')
+            await act(async () => finishHydration())
+            expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, 'old text', ['new-attachment'], true)
+        } finally {
+            runtime.pendingHydration = null
+            finishHydration()
+            consumePendingComposerSend('session-a', 'attempt-1')
+            consumePendingComposerSend('session-a', 'attempt-2')
+        }
     })
 
     it('removes a restored sent chip while a different attachment is still hydrating', async () => {

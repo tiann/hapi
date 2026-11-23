@@ -89,6 +89,25 @@ describe('composer send state', () => {
         consumeComposerSendSettlement('session-A', 'attempt-A')
     })
 
+    it('reconciles older attachment IDs while a second send in the same session is still pending', () => {
+        const sessionId = 'session-A'
+        recordPendingComposerSend({ sessionId, attemptId: 'first', text: 'old', attachmentIds: ['first-file'],
+            programmaticEditRevision: 0, draftRevision: 0 })
+        recordComposerProgrammaticEdit(sessionId)
+        recordPendingComposerSend({ sessionId, attemptId: 'second', text: 'new', attachmentIds: [],
+            programmaticEditRevision: 1, draftRevision: 1 })
+        publishComposerSendSettlement({ ...settlement(sessionId, 'first'), text: 'old' })
+        expect(getPendingComposerSend(sessionId)?.attemptId).toBe('second')
+        expect(getPendingComposerSend(sessionId, 'first')?.attachmentIds).toEqual(['first-file'])
+        expect(getComposerSendSettlement(sessionId)?.attemptId).toBe('first')
+        expect(mockClearDraftsAfterSend).toHaveBeenCalledWith(sessionId, null, 'old', ['first-file'], true)
+        consumePendingComposerSend(sessionId, 'first')
+        consumeComposerSendSettlement(sessionId, 'first')
+        publishComposerSendSettlement({ ...settlement(sessionId, 'second'), text: 'new' })
+        expect(getComposerSendSettlement(sessionId)?.attemptId).toBe('second')
+        expect(mockClearDraftsAfterSend).toHaveBeenLastCalledWith(sessionId, null, 'new', [])
+    })
+
     it('increments programmatic edit revisions per session', () => {
         expect(getComposerProgrammaticEditRevision('session-A')).toBe(0)
         recordComposerProgrammaticEdit('session-A')
