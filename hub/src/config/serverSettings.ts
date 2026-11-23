@@ -358,7 +358,6 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             throw new Error('wxPusherBackgroundOnly must be a boolean')
         }
 
-        assertWxPusherRecipientLimits(wxPusherUids, wxPusherTopicIds, 'Legacy WxPusher configuration')
         const wxPusherDestinations = readNamespaceDestinations(settings.wxPusherByNamespace, 'wxPusherByNamespace', (entry, field) => {
             const appToken = readDestinationCredential(entry.appToken, `${field}.appToken`)
             const uids = entry.uids === undefined ? [] : readStringArraySetting(entry.uids, `${field}.uids`)
@@ -369,6 +368,9 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             }
             return { appToken, uids, topicIds, backgroundOnly: readDestinationBackgroundOnly(entry.backgroundOnly, `${field}.backgroundOnly`) }
         })
+        if (!wxPusherDestinations.has('default') && wxPusherAppToken) {
+            assertWxPusherRecipientLimits(wxPusherUids, wxPusherTopicIds, 'Legacy WxPusher configuration')
+        }
         setLegacyDefaultDestination(wxPusherDestinations,
             wxPusherAppToken && (wxPusherUids.length || wxPusherTopicIds.length)
                 ? { appToken: wxPusherAppToken, uids: wxPusherUids, topicIds: wxPusherTopicIds, backgroundOnly: wxPusherBackgroundOnly }
