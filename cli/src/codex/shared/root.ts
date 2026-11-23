@@ -400,10 +400,11 @@ export class SharedCodexRoot {
         void listSlashCommands('codex', cwd)
             .then(commands => {
                 if (this.closed || this.stopping) return;
-                this.availableSlashCommands = commands.map(command => command.name).filter(name => {
-                    const command = name.replace(/^\//, '');
-                    return command !== 'agent' && !(this.host.attached && (command === 'clear' || command === 'new'));
-                });
+                this.availableSlashCommands = commands.filter(entry => {
+                    const name = entry.name.replace(/^\//, '').toLowerCase();
+                    if (this.host.attached && (name === 'clear' || name === 'new')) return false;
+                    return name !== 'agent' || (entry.source !== 'builtin' && Boolean(entry.content));
+                }).map(command => command.name);
                 this.publishRootContextDetails();
             })
             .catch(error => logger.debug('[Codex shared] slash command inventory', error));

@@ -17,3 +17,13 @@ for (const provider of ['codex', 'claude']) {
         if (screenshots) await details.screenshot({ path: `${screenshots}/agent-inventory-review-${provider}.png` })
     })
 }
+
+
+test('Agent details can list a custom project /agent command', async ({ page }) => {
+    await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=codex&customAgent=1')
+    await page.getByRole('button', { name: 'Open agent details' }).click()
+    const details = page.getByRole('dialog', { name: 'Agent details' })
+    await expect(details.getByText('/agent', { exact: true })).toBeVisible()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await details.screenshot({ path: `${screenshots}/agent-inventory-custom-agent.png` })
+})

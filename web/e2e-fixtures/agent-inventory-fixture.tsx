@@ -5,11 +5,12 @@ import '../src/index.css'
 import { ContextDetailsDialog } from '../src/components/AssistantChat/ContextDetailsDialog'
 import { I18nProvider } from '../src/lib/i18n-context'
 
-const isClaude = new URLSearchParams(location.search).get('provider') === 'claude'
+const params = new URLSearchParams(location.search)
+const isClaude = params.get('provider') === 'claude'
 const details: ContextDetails = isClaude
     ? { version: 1, updatedAt: 1, provider: 'claude', claude: { skills: [{ name: 'automatic-skill' }], slashCommands: ['/compact'] } }
     : { version: 1, updatedAt: 1, provider: 'codex', codex: {
-        mcpServers: [{ name: 'runtime-only', status: 'disabled', toolNames: [] }], slashCommands: ['/compact']
+        mcpServers: [{ name: 'runtime-only', status: 'disabled', toolNames: [] }], slashCommands: params.has('customAgent') ? ['/compact', '/agent'] : ['/compact']
     } }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

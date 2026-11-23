@@ -22,7 +22,8 @@ const sharedHarness = vi.hoisted(() => ({
     configuredInventory: [] as unknown[],
     runtimeInventory: null as Promise<unknown> | null,
     inventoryExecutable: undefined as unknown,
-    slashCommands: ['/compact']
+    slashCommands: ['/compact'],
+    customAgentPrompt: undefined as string | undefined
 }));
 
 vi.mock('../codexAppServerClient', () => ({
@@ -80,7 +81,9 @@ vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: vi.fn(async 
     toolNames: ['change_title'], server: { stop() {} }
 })) }));
 vi.mock('@/modules/common/slashCommands', () => ({
-    listSlashCommands: async () => sharedHarness.slashCommands.map(name => ({ name }))
+    listSlashCommands: async () => sharedHarness.slashCommands.map(name => name === 'agent' && sharedHarness.customAgentPrompt
+        ? { name, source: 'project', content: sharedHarness.customAgentPrompt }
+        : { name, source: 'builtin' })
 }));
 vi.mock('../utils/codexMcpInventory', async (importOriginal) => ({
     ...await importOriginal<typeof import('../utils/codexMcpInventory')>(),
@@ -98,6 +101,7 @@ afterEach(async () => {
         sharedHarness.configuredInventory = [];
         sharedHarness.runtimeInventory = null;
         sharedHarness.slashCommands = ['/compact'];
+        sharedHarness.customAgentPrompt = undefined;
         sharedHarness.inventoryExecutable = undefined;
         vi.useRealTimers();
     }
@@ -249,6 +253,15 @@ describe('externally attached root', () => {
         await f.root.activate();
         await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.slashCommands)
             .toEqual(attached ? ['/compact'] : ['/compact', '/clear', '/new']));
+    });
+
+    it('retains a working project prompt that overrides the builtin agent command', async () => {
+        sharedHarness.slashCommands = ['agent', 'clear'];
+        sharedHarness.customAgentPrompt = 'Fixture project prompt';
+        const f = await fixture({ attached: true });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.slashCommands).toEqual(['agent']));
+        expect(JSON.stringify(f.metadata().contextDetails)).not.toContain('Fixture project prompt');
     });
 
     it('queries MCP status for the bound thread without reading the wrapper config', async () => {
