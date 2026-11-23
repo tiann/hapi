@@ -9,6 +9,13 @@
  */
 
 import { getSettingsFile, updateSettings } from './settings'
+import {
+    readDestinationBackgroundOnly,
+    readDestinationCredential,
+    readNamespaceDestinations,
+    setLegacyDefaultDestination,
+    type WxPusherDestination,
+} from './notificationDestinations'
 
 const OLD_SETTINGS_FIELDS = ['webappHost', 'webappPort', 'webappUrl'] as const
 
@@ -42,6 +49,7 @@ export interface ServerSettings {
     wxPusherTopicIds: number[]
     wxPusherNotification: boolean
     wxPusherBackgroundOnly: boolean
+    wxPusherDestinations: ReadonlyMap<string, WxPusherDestination>
     listenHost: string
     listenPort: number
     publicUrl: string
@@ -340,6 +348,20 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             throw new Error('wxPusherBackgroundOnly must be a boolean')
         }
 
+        const wxPusherDestinations = readNamespaceDestinations(settings.wxPusherByNamespace, 'wxPusherByNamespace', (entry, field) => {
+            const appToken = readDestinationCredential(entry.appToken, `${field}.appToken`)
+            const uids = entry.uids === undefined ? [] : readStringArraySetting(entry.uids, `${field}.uids`)
+            const topicIds = entry.topicIds === undefined ? [] : readTopicIdArraySetting(entry.topicIds, `${field}.topicIds`)
+            if (uids.length === 0 && topicIds.length === 0) {
+                throw new Error(`${field} must specify at least one UID or topic ID`)
+            }
+            return { appToken, uids, topicIds, backgroundOnly: readDestinationBackgroundOnly(entry.backgroundOnly, `${field}.backgroundOnly`) }
+        })
+        setLegacyDefaultDestination(wxPusherDestinations,
+            wxPusherAppToken && (wxPusherUids.length || wxPusherTopicIds.length)
+                ? { appToken: wxPusherAppToken, uids: wxPusherUids, topicIds: wxPusherTopicIds, backgroundOnly: wxPusherBackgroundOnly }
+                : null)
+
         // listenHost: env > file > default
         let listenHost = '127.0.0.1'
         if (process.env.HAPI_LISTEN_HOST) {
@@ -462,6 +484,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                     wxPusherTopicIds,
                     wxPusherNotification,
                     wxPusherBackgroundOnly,
+                    wxPusherDestinations,
                     listenHost,
                     listenPort,
                     publicUrl,

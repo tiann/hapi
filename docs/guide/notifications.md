@@ -114,6 +114,19 @@ When `WXPUSHER_BACKGROUND_ONLY=true`, a visible HAPI connection suppresses WxPus
 
 These values can also be set in `settings.json` (`wxPusherAppToken`, `wxPusherUids`, `wxPusherTopicIds`, `wxPusherNotification`, `wxPusherBackgroundOnly`).
 
+The legacy app token and recipients are used **only** for the `default` namespace. On a shared Hub, give each other namespace its own destination in `settings.json`:
+
+```json
+{
+  "wxPusherByNamespace": {
+    "team-a": { "appToken": "AT_team-a-example", "uids": ["UID_team-a-example"], "backgroundOnly": true },
+    "team-b": { "appToken": "AT_team-b-example", "topicIds": [123] }
+  }
+}
+```
+
+Namespace keys are exact and case-sensitive. A namespace with no destination gets no WxPusher notifications. An explicit `default` entry replaces the legacy destination as a whole; no credentials or recipients are inherited. `WXPUSHER_NOTIFICATION=false` disables all WxPusher destinations. `backgroundOnly` is per destination (default: `false`) and checks visibility only within that namespace. Keep this file private and restart the Hub after editing it.
+
 ## Voice assistant setup
 
 Enable voice control:

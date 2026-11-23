@@ -202,6 +202,48 @@ describe('loadServerSettings', () => {
         expect(result.sources.wxPusherBackgroundOnly).toBe('env')
     })
 
+    it('limits legacy WxPusher settings to default and never fills other namespace entries', async () => {
+        dir = makeTempDir()
+        process.env.WXPUSHER_APP_TOKEN = 'AT_LEGACY'
+        process.env.WXPUSHER_UIDS = 'UID_LEGACY'
+        process.env.WXPUSHER_BACKGROUND_ONLY = 'true'
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ wxPusherByNamespace: {
+            'team-a': { appToken: ' AT_EXPLICIT ', topicIds: [7, 7] },
+        } }))
+        const { settings } = await loadServerSettings(dir)
+        expect(settings.wxPusherDestinations.get('default')).toEqual({
+            appToken: 'AT_LEGACY', uids: ['UID_LEGACY'], topicIds: [], backgroundOnly: true,
+        })
+        expect(settings.wxPusherDestinations.get('team-a')).toEqual({
+            appToken: 'AT_EXPLICIT', uids: [], topicIds: [7], backgroundOnly: false,
+        })
+        expect(settings.wxPusherDestinations.get('team-b')).toBeUndefined()
+    })
+
+    it('replaces the whole legacy destination with an explicit default', async () => {
+        dir = makeTempDir()
+        process.env.WXPUSHER_APP_TOKEN = 'AT_LEGACY'
+        process.env.WXPUSHER_UIDS = 'UID_LEGACY'
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ wxPusherByNamespace: {
+            default: { appToken: 'AT_EXPLICIT', topicIds: [7], backgroundOnly: true },
+        } }))
+        expect((await loadServerSettings(dir)).settings.wxPusherDestinations.get('default')).toEqual({
+            appToken: 'AT_EXPLICIT', uids: [], topicIds: [7], backgroundOnly: true,
+        })
+    })
+
+    it.each([
+        [{ ' team': { appToken: 'AT_EXPLICIT', uids: ['UID_ONE'] } }, /invalid namespace/],
+        [{ team: { uids: ['UID_ONE'] } }, /appToken must be a non-empty string/],
+        [{ team: { appToken: 'AT_EXPLICIT', uids: [' '] } }, /at least one UID or topic ID/],
+        [{ team: { appToken: 'AT_EXPLICIT', uids: ['UID_ONE'], backgroundOnly: 'true' } }, /backgroundOnly must be a boolean/],
+    ])('rejects invalid namespace destinations without inheriting credentials', async (wxPusherByNamespace, error) => {
+        dir = makeTempDir()
+        process.env.WXPUSHER_APP_TOKEN = 'AT_LEGACY'
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ wxPusherByNamespace }))
+        await expect(loadServerSettings(dir)).rejects.toThrow(error)
+    })
+
     it('loads WxPusher settings from settings.json', async () => {
         dir = makeTempDir()
         writeFileSync(join(dir, 'settings.json'), JSON.stringify({
