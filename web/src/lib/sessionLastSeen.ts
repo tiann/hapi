@@ -97,9 +97,13 @@ export async function flushSessionReadState(): Promise<void> {
     const send = sender
     let failed = false
     try {
-        for (const [id, entry] of Object.entries(readStore(key))) {
-            const pending = entry.pending
-            if (!pending || sender !== send || scope !== key) continue
+        for (const id of Object.keys(readStore(key))) {
+            if (sender !== send || scope !== key) break
+            // A user or another tab may replace this operation while an
+            // earlier session awaits the Hub. Only send the current intent.
+            const entry = readStore(key)[id]
+            const pending = entry?.pending
+            if (!pending) continue
             try {
                 const response = await send(id, pending.request)
                 const store = readStore(key)

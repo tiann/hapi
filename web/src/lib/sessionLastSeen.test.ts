@@ -160,6 +160,26 @@ describe('durable session read state', () => {
         expect(store.healthy.pending).toBeUndefined()
     })
 
+    it('sends the latest intent for the next session after an in-flight 500', async () => {
+        markSessionSeen('a', 1)
+        observeSessionReadStates([{ id: 'b', readState: server(0, 2) }])
+        markSessionSeen('b', 7)
+        let fail!: (error: unknown) => void
+        const send = vi.fn(async (id: string, _request: SessionReadStateRequest) => {
+            if (id === 'a') return new Promise<{ readState: SessionReadState }>((_, reject) => { fail = reject })
+            return { readState: server(1, 4, true) }
+        })
+        cleanup = configureSessionReadState('hub-a:alice', send)
+        markSessionUnread('b', server(1, 3))
+        fail({ status: 500 })
+        await vi.advanceTimersByTimeAsync(0)
+        expect(send.mock.calls).toEqual([
+            ['a', { type: 'read', readRevision: 1, expectedVersion: 0 }],
+            ['b', { type: 'unread', expectedVersion: 3 }],
+        ])
+        expect(getSessionManualUnreadAt('b')).toBe(0)
+    })
+
     it('rolls back a rejected operation to authoritative state', async () => {
         markSessionSeen('s', 9)
         cleanup = configureSessionReadState('hub-a:alice', async () => {
