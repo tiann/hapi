@@ -107,6 +107,18 @@ describe('SessionActionMenu - Mark unread action', () => {
         expect(screen.getByRole('menuitem', { name: focused === 'Rename' ? 'Rename' : 'Mark as unread' })).toHaveFocus()
     })
 
+    it('does not reinterpret a pending click as the opposite action after remote acknowledgement', () => {
+        const id = 'read-during-press'
+        const onClose = vi.fn()
+        renderMenu({ readTarget: { id, contentRevision: 3 }, onClose })
+        const pressed = screen.getByRole('menuitem', { name: 'Mark as read' })
+        fireEvent.pointerDown(pressed)
+        act(() => observeSessionReadStates([{ id, readState: { version: 1, readRevision: 3, manualUnread: false } }]))
+        expect(pressed).not.toBeInTheDocument()
+        fireEvent.pointerUp(screen.getByRole('menuitem', { name: 'Mark as unread' }))
+        expect(onClose).not.toHaveBeenCalled()
+    })
+
     it('does not render the action when no handler is provided', () => {
         renderMenu()
 

@@ -1,4 +1,4 @@
-import { useCallback, useId, useRef } from 'react'
+import { useCallback, useId, useLayoutEffect, useRef } from 'react'
 import { useTranslation } from '@/lib/use-translation'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import { buildSessionReferenceText } from '@/lib/sessionReference'
@@ -21,21 +21,31 @@ function ReadAction({ session, className, onClose }: { session: ReadTarget; clas
     useSessionLastSeenVersion()
     const unread = sessionNeedsReadAction(session)
     const manual = getSessionManualUnreadAt(session.id, session.readState) !== null
-    const primary = useRef<HTMLButtonElement>(null)
-    const secondaryRef = useCallback((button: HTMLButtonElement | null) => {
+    const actions = useRef(new Set<HTMLButtonElement>())
+    const restoreFocus = useRef(false)
+    const actionRef = useCallback((button: HTMLButtonElement | null) => {
         if (!button) return
-        return () => { if (document.activeElement === button) primary.current?.focus() }
+        actions.current.add(button)
+        return () => {
+            if (document.activeElement === button) restoreFocus.current = true
+            actions.current.delete(button)
+        }
     }, [])
+    useLayoutEffect(() => {
+        if (restoreFocus.current && document.activeElement === document.body) {
+            actions.current.values().next().value?.focus()
+        }
+        restoreFocus.current = false
+    }, [unread, manual])
     const markUnread = () => { onClose(); markSessionUnread(session.id, session.readState) }
     const markRead = () => { onClose(); markListedSessionSeen(session) }
-    const Icon = unread ? CheckIcon : UnreadIcon
     return (
         <>
-            <button ref={primary} type="button" role="menuitem" className={className} onClick={unread ? markRead : markUnread}>
-                <Icon className="text-[var(--app-hint)]" />
-                {t(unread ? 'session.action.markRead' : 'session.action.markUnread')}
-            </button>
-            {unread && !manual && <button ref={secondaryRef} type="button" role="menuitem" className={className} onClick={markUnread}>
+            {unread && <button ref={actionRef} type="button" role="menuitem" className={className} onClick={markRead}>
+                <CheckIcon className="text-[var(--app-hint)]" />
+                {t('session.action.markRead')}
+            </button>}
+            {!manual && <button ref={actionRef} type="button" role="menuitem" className={className} onClick={markUnread}>
                 <UnreadIcon className="text-[var(--app-hint)]" />
                 {t('session.action.markUnread')}
             </button>}
