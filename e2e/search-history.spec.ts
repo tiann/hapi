@@ -547,3 +547,30 @@ test('clearing history in another tab returns focus only from a removed suggesti
     await expect.poll(async () => (await history(page)).sessions).toEqual([])
     await expect(elsewhere).toBeFocused()
 })
+
+test('a successful clear in another tab removes the old deletion warning', async ({ page, context }) => {
+    await page.goto(fixture)
+    await optIn(page)
+    const input = page.getByRole('searchbox')
+    await input.fill('saved before the failed clear')
+    await input.press('Enter')
+    await expect.poll(async () => (await history(page)).sessions).toEqual(['saved before the failed clear'])
+    await go(page, 'Settings')
+    await page.evaluate(() => {
+        const setItem = Storage.prototype.setItem
+        Storage.prototype.setItem = function (key, value) {
+            if (key.startsWith('hapi.searchHistory.v1.')) throw new DOMException('Fixture write blocked', 'QuotaExceededError')
+            return setItem.call(this, key, value)
+        }
+    })
+    const clear = page.getByRole('button', { name: 'Clear search history', exact: true })
+    await clear.click()
+    await expect(page.getByRole('alert')).toContainText('Could not delete saved searches')
+    const other = await context.newPage()
+    await other.goto(fixture)
+    await go(other, 'Settings')
+    await other.getByRole('button', { name: 'Clear search history', exact: true }).click()
+    await expect(clear).toBeDisabled()
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    if (process.env.HAPI_REVIEW_SCREENSHOT) await page.screenshot({ path: process.env.HAPI_REVIEW_SCREENSHOT, animations: 'disabled' })
+})

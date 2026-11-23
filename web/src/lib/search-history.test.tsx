@@ -6,9 +6,10 @@ function jwt(uid = 1, ns = 'default', exp = 1) {
     return `x.${btoa(JSON.stringify({ uid, ns, exp }))}.x`
 }
 function Controls() {
-    const { state, record, remove, clear, setEnabled } = useSearchHistory()
+    const { state, failedWrite, record, remove, clear, setEnabled } = useSearchHistory()
     return <>
         <output data-testid="state">{JSON.stringify(state)}</output>
+        <output data-testid="failure">{failedWrite ?? "none"}</output>
         <button onClick={() => record('sessions', ' alpha ')}>session</button>
         <button onClick={() => record('files', 'src/*.ts')}>file</button>
         <button onClick={() => record('outlines', '中文')}>outline</button>
@@ -115,6 +116,30 @@ describe('scoped history provider', () => {
             window.dispatchEvent(new StorageEvent('storage', { key: null }))
         })
         expect(state()).toEqual({ enabled: false, sessions: [], files: [], outlines: [] })
+    })
+    it('dismisses only failures resolved by a saved update from another tab', () => {
+        const key = 'a'
+        const external = (enabled: boolean, sessions: string[], files: string[]) => act(() => {
+            localStorage.setItem(key, JSON.stringify({ enabled, sessions, files }))
+            window.dispatchEvent(new StorageEvent('storage', { key }))
+        })
+        render(<SearchHistoryProvider storageKey={key}><Controls /></SearchHistoryProvider>)
+        const write = vi.spyOn(Storage.prototype, 'setItem')
+        const rejectOnce = () => write.mockImplementationOnce(() => { throw new Error('blocked') })
+        const failure = screen.getByTestId('failure')
+        rejectOnce(); click('toggle')
+        expect(failure).toHaveTextContent('enable')
+        external(false, [], [])
+        expect(failure).toHaveTextContent('enable')
+        external(true, ['alpha', 'beta'], [])
+        expect(failure).toHaveTextContent('none')
+        rejectOnce(); click('remove')
+        expect(failure).toHaveTextContent('delete')
+        external(true, ['alpha', 'beta'], ['unrelated file'])
+        expect(failure).toHaveTextContent('delete')
+        external(true, ['beta'], ['unrelated file'])
+        expect(failure).toHaveTextContent('none')
+        expect(state().sessions).toEqual(['beta'])
     })
     it('keeps operating in memory if localStorage reads and writes throw', () => {
         vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('blocked') })

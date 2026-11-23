@@ -44,6 +44,21 @@ export function getSearchHistoryKey(baseUrl: string, token: string): string | nu
     }
 }
 
+const historyTypes = ['sessions', 'files', 'outlines'] as const
+
+type FailedWrite = { action: 'enable' } | {
+    action: 'delete'
+    affected: Array<{ type: SearchHistoryType; queries: string[] }>
+}
+
+function reconcileFailedWrite(failed: FailedWrite | null, saved: SearchHistoryState): FailedWrite | null {
+    if (!failed) return null
+    const completed = failed.action === 'enable'
+        ? saved.enabled
+        : failed.affected.every(({ type, queries }) => queries.every(query => !saved[type].includes(query)))
+    return completed ? null : failed
+}
+
 type HistoryContextValue = {
     state: SearchHistoryState
     optOutNotSaved: boolean
@@ -99,7 +114,7 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
     const [state, setState] = useState(() => initialHistory ?? emptyHistory())
     const lastKnownPersisted = useRef(initialHistory)
     const [optOutNotSaved, setOptOutNotSaved] = useState(false)
-    const [failedWrite, setFailedWrite] = useState<HistoryContextValue['failedWrite']>(null)
+    const [failedWrite, setFailedWrite] = useState<FailedWrite | null>(null)
     const suspendedRecording = useRef(false)
     const memoryFallback = useRef<SearchHistoryState | null>(null)
     const value = useMemo<HistoryContextValue>(() => {
@@ -130,7 +145,14 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
             }
             // Don't replace saved entries with a memory-only result when the
             // coordinator, a read, or a write stops working mid-session.
-            if (action === 'delete' || action === 'enable') setFailedWrite(action)
+            if (action === 'enable' && !saved.enabled) setFailedWrite({ action })
+            if (action === 'delete') {
+                const next = change(saved)
+                const affected = historyTypes.map(type => ({
+                    type, queries: saved[type].filter(query => !next[type].includes(query)),
+                })).filter(entry => entry.queries.length > 0)
+                if (affected.length) setFailedWrite({ action, affected })
+            }
             setState(suspendedRecording.current ? { ...saved, enabled: false } : saved)
         }
         const update = (change: Change, action: Action) => {
@@ -154,9 +176,9 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
                         // the flag makes opting out a smaller write at quota.
                         const { enabled, ...lists } = next
                         window.localStorage.setItem(storageKey, JSON.stringify(enabled ? next : lists))
-                        if (action !== 'record') setFailedWrite(null)
                     }
                     lastKnownPersisted.current = next
+                    setFailedWrite(failed => reconcileFailedWrite(failed, next))
                     memoryFallback.current = null
                     if (action === 'enable' || !next.enabled) {
                         suspendedRecording.current = false
@@ -171,7 +193,7 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
             void coordination.catch(() => onUnavailable(change, action))
         }
         return {
-            state, optOutNotSaved, failedWrite,
+            state, optOutNotSaved, failedWrite: failedWrite?.action ?? null,
             record: (type, query) => update(previous => {
                 const trimmed = query.trim()
                 if (!previous.enabled || !trimmed) return previous
@@ -194,6 +216,7 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
             const next = readHistory(storageKey)
             if (!next) return
             lastKnownPersisted.current = next
+            setFailedWrite(failed => reconcileFailedWrite(failed, next))
             memoryFallback.current = null
             if (!next.enabled) {
                 suspendedRecording.current = false
