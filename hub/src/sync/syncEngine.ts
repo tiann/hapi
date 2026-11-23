@@ -190,6 +190,21 @@ function asRecord(value: unknown): Record<string, unknown> | null {
         : null
 }
 
+/** [hub-arrival time, seq] position tuple used by the notify derivation's
+ *  "at or before a boundary" comparisons. Module-level so a cross-session
+ *  caller (`computeNotifyStateAcrossDuplicateSessions`'s override check) can
+ *  compare a candidate message against another session's OWN boundary
+ *  using the exact same seq tiebreak the single-session derivation uses
+ *  internally — an untimestamped Codex import stamps every row in its
+ *  batch with the same hub-arrival time, so dropping the tiebreak lets an
+ *  initiating prompt tie its own still-open footer's timestamp and read as
+ *  "at or before" it, same bug the tiebreak exists to prevent in the
+ *  first place. */
+type NotifyPosition = [number, number]
+function positionAtOrBefore(a: NotifyPosition, b: NotifyPosition): boolean {
+    return a[0] < b[0] || (a[0] === b[0] && a[1] <= b[1])
+}
+
 function normalizeUserMessageText(value: string): string | undefined {
     const text = value.trim().replace(/\s+/g, ' ')
     return text.length > 0 ? text : undefined
@@ -652,6 +667,11 @@ export class SyncEngine {
     ): {
         signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null
         boundaryAt: number | null
+        /** Full tiebreak-aware position of the boundary, for a caller that
+         *  needs to compare a FOREIGN message against THIS session's own
+         *  boundary precisely — see `computeNotifyStateAcrossDuplicateSessions`.
+         *  `boundaryAt` alone drops the seq tiebreak. */
+        boundaryPosition: NotifyPosition | null
         authorCutoff: number | null
     } {
         const scanned = scanDepth === null
@@ -668,19 +688,18 @@ export class SyncEngine {
         // conversation went missing from Blocked entirely. `seq` is the native
         // transcript order for imported rows, which is exactly the information
         // the timestamps lack.
-        const position = (message: StoredMessage): [number, number] =>
+        const position = (message: StoredMessage): NotifyPosition =>
             [messageReceivedAt(message), message.seq]
-        const atOrBefore = (a: [number, number], b: [number, number]): boolean =>
-            a[0] < b[0] || (a[0] === b[0] && a[1] <= b[1])
+        const atOrBefore = positionAtOrBefore
 
         // Where the operator's most recent genuine reply sits. Only a reply the
         // agent was actually given counts: a locally handled slash command has
         // `invoked_at` stamped but answered nothing.
-        let boundary: [number, number] | null = null
+        let boundary: NotifyPosition | null = null
         let boundaryAt: number | null = null
         for (const message of scanned) {
             if (!isDeliveredOperatorReply(message)) continue
-            const here: [number, number] = [operatorReplyDeliveredAt(message), message.seq]
+            const here: NotifyPosition = [operatorReplyDeliveredAt(message), message.seq]
             if (boundary === null || !atOrBefore(here, boundary)) {
                 boundary = here
                 boundaryAt = here[0]
@@ -710,7 +729,7 @@ export class SyncEngine {
         const identity = notifySignalIdentity
         const footers: Array<{
             signal: { status: string; at: number; note: string | null }
-            position: [number, number]
+            position: NotifyPosition
             identity: string
         }> = []
         for (const message of scanned) {
@@ -730,7 +749,7 @@ export class SyncEngine {
         // eligible ones is newest is decided on AUTHOR time.
         let best: {
             signal: { status: string; at: number; note: string | null }
-            position: [number, number]
+            position: NotifyPosition
             identity: string
         } | null = null
         for (const footer of footers) {
@@ -755,6 +774,7 @@ export class SyncEngine {
         return {
             signal: best === null ? null : { ...best.signal, receivedAt: best.position[0] },
             boundaryAt,
+            boundaryPosition: boundary,
             authorCutoff
         }
     }
@@ -820,8 +840,11 @@ export class SyncEngine {
     }
 
     /**
-     * Reconcile the blocked/notify projection across a Codex Desktop
-     * duplicate-session merge group, BEFORE the merge does anything (#1717).
+     * Compute the blocked/notify projection across a Codex Desktop
+     * duplicate-session merge group, from every session's OWN untouched
+     * pre-merge messages (#1717). Does NOT commit the result — see
+     * `applyReconciledNotifyState`, which a caller must invoke AFTER the
+     * merge finishes touching the transcript, not before.
      *
      * Each session's own signal is derived independently, via the ordinary
      * SINGLE-session derivation — never combined across sessions on a raw
@@ -840,14 +863,19 @@ export class SyncEngine {
      * status+note, that fact holds regardless of what any OTHER session's
      * copy of the same footer is stamped with. So a session's own blocked
      * signal is overridden (treated as already answered) when ANY session
-     * in the group — using only ITS OWN clock — independently shows that
-     * same status+note as superseded by a reply.
+     * in the group — using only ITS OWN clock, full tiebreak included — shows
+     * that same status+note at or before ITS OWN boundary. Dropping the seq
+     * tiebreak here (comparing bare `messageReceivedAt` numbers) reopens
+     * exactly the bug the tiebreak exists to prevent: an untimestamped
+     * import stamps its initiating prompt and its own still-open footer with
+     * the SAME arrival time, so a bare `<=` reads the footer as "at or
+     * before" the prompt's own position and misreads it as answered by it.
      *
      * Among whatever's left unresolved, the representative is picked by the
      * SAME deterministic order the merge already sorts its sessions into
      * (most messages, then newest `updatedAt`, then session id) — preferring
      * canonical's own signal, falling back to the first surviving duplicate
-     * in that order. This is the exact order the row-dedup loop below
+     * in that order. This is the exact order the row-dedup loop in the merge
      * processes sources in, so the chosen signal and whichever row the
      * content-dedup happens to keep are never pointing at different events.
      *
@@ -855,15 +883,23 @@ export class SyncEngine {
      * caller's sort (`survivors[0]`) rather than re-deriving it, so passing
      * an arbitrary order silently changes which signal represents the
      * group, with nothing here to catch it.
+     *
+     * Dismissal transfer also happens here, not in `applyReconciledNotifyState`
+     * — it reads each SOURCE session's own (pre-deletion) ack keys, which
+     * only exist before the merge removes those sessions.
      */
-    reconcileNotifyAcrossDuplicateSessions(
+    computeNotifyStateAcrossDuplicateSessions(
         // Caller's deterministic merge order (most messages, newest
         // `updatedAt`, then session id) — canonical first. See the doc
         // comment above; this function does not re-sort.
         sessionIds: string[],
         canonicalSessionId: string,
         namespace: string
-    ): void {
+    ): {
+        signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null
+        boundaryAt: number | null
+        authorCutoff: number | null
+    } {
         const perSession = sessionIds.map((sessionId) => ({
             sessionId,
             messages: this.store.messages.getAllMessages(sessionId),
@@ -873,11 +909,12 @@ export class SyncEngine {
 
         const isResolvedElsewhere = (status: string, note: string | null): boolean => {
             for (const other of perSession) {
-                if (other.derived.boundaryAt === null) continue
+                if (other.derived.boundaryPosition === null) continue
                 for (const message of other.messages) {
                     const signal = extractSessionNotifySignal(message.content, message.createdAt)
                     if (!signal || signal.status !== status || signal.note !== note) continue
-                    if (messageReceivedAt(message) <= other.derived.boundaryAt) return true
+                    const position: NotifyPosition = [messageReceivedAt(message), message.seq]
+                    if (positionAtOrBefore(position, other.derived.boundaryPosition)) return true
                 }
             }
             return false
@@ -888,37 +925,70 @@ export class SyncEngine {
         ))
         const winner = survivors[0] ?? null
 
-        this.sessionCache.replaceNotifyAfterTruncate(
-            canonicalSessionId,
-            winner?.derived.signal ?? null,
-            winner?.derived.boundaryAt ?? Date.now(),
-            winner?.derived.authorCutoff ?? null
-        )
-        if (!winner || winner.derived.signal === null) return
-
-        // Matched by STATUS + NOTE, not `notifySignalIdentity` — a source
-        // session's own projection of the winning footer is its own import
-        // batch, with its own synthetic local id, which never matches the
-        // winning representative's (#1717). Identity-by-local-id is right
-        // for recognizing a literal replay WITHIN one session's own replay
-        // sequence (where a stable id means a stable event); across two
-        // independently-imported sessions it is the wrong tool, because
-        // nothing guarantees two projections of the same real-world event
-        // share an id at all.
-        const winningSignal = winner.derived.signal
-        const winningKey = notifyBlockerKey(winningSignal.at)
-        for (const source of perSession) {
-            if (source.sessionId === canonicalSessionId) continue
-            if (source.ackKeys.length === 0) continue
-            const remap = new Map<string, string>()
-            for (const message of source.messages) {
-                const signal = extractSessionNotifySignal(message.content, message.createdAt)
-                if (!signal || signal.status !== winningSignal.status || signal.note !== winningSignal.note) continue
-                const ownKey = notifyBlockerKey(message.createdAt)
-                if (ownKey !== winningKey) remap.set(ownKey, winningKey)
+        if (winner && winner.derived.signal !== null) {
+            // Matched against each source's OWN current signal, never a raw
+            // scan of its full message history (#1717). Scanning every
+            // status+note match in a source's history conflated two
+            // DISTINCT blocking episodes that happen to repeat the same
+            // text — dismissing an earlier one and remapping that dismissal
+            // onto whichever later, genuinely-still-open occurrence happens
+            // to share the words, hiding a real new blocker. A source's own
+            // `derived.signal` is already the ONE occurrence its own
+            // self-consistent timeline currently considers live, so only
+            // that occurrence's dismissal can legitimately transfer.
+            const winningSignal = winner.derived.signal
+            const winningKey = notifyBlockerKey(winningSignal.at)
+            for (const source of perSession) {
+                if (source.sessionId === canonicalSessionId) continue
+                if (source.ackKeys.length === 0) continue
+                if (source.derived.signal === null) continue
+                if (source.derived.signal.status !== winningSignal.status
+                    || source.derived.signal.note !== winningSignal.note) continue
+                const ownKey = notifyBlockerKey(source.derived.signal.at)
+                if (ownKey === winningKey) continue
+                this.transferBlockedAck(source.sessionId, canonicalSessionId, namespace, new Map([[ownKey, winningKey]]))
             }
-            this.transferBlockedAck(source.sessionId, canonicalSessionId, namespace, remap)
         }
+
+        return {
+            signal: winner?.derived.signal ?? null,
+            boundaryAt: winner?.derived.boundaryAt ?? Date.now(),
+            authorCutoff: winner?.derived.authorCutoff ?? null
+        }
+    }
+
+    /**
+     * Commit a projection already computed by
+     * `computeNotifyStateAcrossDuplicateSessions` (#1717).
+     *
+     * MUST run AFTER the merge finishes copying and emitting appended
+     * transcript rows, never before: `emitImportedMessageEvents` replays
+     * each copied row through live ingestion
+     * (`SyncEngine.handleRealtimeEvent`'s `message-received` branch), which
+     * unconditionally overwrites the session's notify signal from whatever
+     * footer content that ONE row happens to carry — with no knowledge that
+     * a correct, already-computed reconciliation already accounted for it.
+     * Replaying a copied REPLY never undoes that (an imported row never goes
+     * through the delivery-confirmation callback a real reply does), so an
+     * answered blocker could resurface as blocked purely from replaying its
+     * own already-resolved footer back through the live path. Committing
+     * the precomputed projection last makes it the final word regardless of
+     * what the replay touched.
+     */
+    applyReconciledNotifyState(
+        sessionId: string,
+        computed: {
+            signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null
+            boundaryAt: number | null
+            authorCutoff: number | null
+        }
+    ): void {
+        this.sessionCache.replaceNotifyAfterTruncate(
+            sessionId,
+            computed.signal,
+            computed.boundaryAt ?? Date.now(),
+            computed.authorCutoff
+        )
     }
 
     private resolveOnlineMachineForSession(

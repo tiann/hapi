@@ -53,7 +53,8 @@ function createImportSyncEngine(store: Store, machines: Machine[], transcripts?:
         ),
         handleRealtimeEvent: () => {},
         reconcileNotifySignalAfterImport: () => {},
-        reconcileNotifyAcrossDuplicateSessions: () => {},
+        computeNotifyStateAcrossDuplicateSessions: () => ({ signal: null, boundaryAt: null, authorCutoff: null }),
+        applyReconciledNotifyState: () => {},
         recordSessionActivity: (sessionId: string, updatedAt: number) => {
             store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
         }
@@ -1092,7 +1093,8 @@ describe('Codex Desktop import routes', () => {
             },
             handleRealtimeEvent: () => {},
             reconcileNotifySignalAfterImport: () => {},
-            reconcileNotifyAcrossDuplicateSessions: () => {},
+            computeNotifyStateAcrossDuplicateSessions: () => ({ signal: null, boundaryAt: null, authorCutoff: null }),
+            applyReconciledNotifyState: () => {},
             recordSessionActivity: () => {}
         } as unknown as SyncEngine
         app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
@@ -1197,6 +1199,258 @@ describe('Codex Desktop import routes', () => {
             // survives, not the raw key the duplicate carried.
             expect(merged?.blockedAckKeys).toContain(notifyBlockerKey(base + 5_000))
             expect(merged?.blockedAckKeys).not.toContain(notifyBlockerKey(base + 1_000))
+        } finally {
+            store.close()
+        }
+    })
+
+    it('does not transfer a dismissal of an OLD blocker onto a distinct, still-open one with the same status and note (#1717)', async () => {
+        // A source session can hold two DISTINCT real episodes that happen
+        // to repeat the same status+note (e.g. "needs creds" recurring) —
+        // the operator dismissed the earlier one, and a later, genuinely
+        // unanswered occurrence is the session's own CURRENT signal.
+        // Matching a dismissal by "any occurrence anywhere in this
+        // session's history with matching content" instead of "the one
+        // occurrence this session's own timeline currently considers
+        // live" transferred the OLD dismissal onto the NEW occurrence and
+        // hid a real blocker that was never dismissed.
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-recurring', { codexSessionId: 'codex-thread-recurring', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const duplicate = store.sessions.getOrCreateSession(
+            'dup-recurring', { codexSessionId: 'codex-thread-recurring', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const base = Date.now() - 600_000
+        const footerText = 'Stuck.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs creds' })
+
+        // Canonical: padding only, no signal of its own — the winning
+        // representative must come from the duplicate.
+        for (let i = 0; i < 6; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `pad ${i}` }] } }
+                }
+            }, `recurring-pad-${i}`, base)
+        }
+
+        // Duplicate: the SAME status+note blocked TWICE, at different
+        // turns — the first one dismissed, the second one not.
+        store.messages.addImportedMessage(duplicate.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } } }
+        }, 'recurring-old-footer', base + 1_000)
+        const { notifyBlockerKey: notifyBlockerKeyFn } = await import('@hapi/protocol')
+        store.sessions.setSessionBlockedAck(duplicate.id, {
+            at: base + 1_000,
+            reason: 'handled the first time',
+            keys: [notifyBlockerKeyFn(base + 1_000)]
+        }, 'default')
+        store.messages.addImportedMessage(duplicate.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } } }
+        }, 'recurring-new-footer', base + 9_000)
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-recurring'] })
+            })
+            expect(response.status).toBe(200)
+
+            const merged = store.sessions.getSessionByNamespace(canonical.id, 'default')
+            // The winning representative is the NEW (undismissed)
+            // occurrence — nothing dismisses it.
+            expect(merged?.lastNotifyAt).toBe(base + 9_000)
+            expect(merged?.blockedAckKeys ?? []).not.toContain(notifyBlockerKeyFn(base + 9_000))
+        } finally {
+            store.close()
+        }
+    })
+
+    it('does not let an untimestamped import\'s own initiating prompt resolve its own still-open footer through a merge\'s cross-session override check (#1717)', async () => {
+        // Within ONE session, the untimestamped-import tiebreak (seq) is
+        // already proven correct (#1717 round 27). But the cross-session
+        // "is this content already answered elsewhere" override check
+        // compared a candidate message's bare `receivedAt` against the
+        // OTHER session's `boundaryAt` NUMBER, dropping that same seq
+        // tiebreak — so when a duplicate's own initiating prompt and its
+        // own still-open footer share the SAME untimestamped-batch stamp,
+        // the override read the footer as "at or before" the prompt that
+        // merely preceded it, and cleared a blocker nothing ever answered.
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-tiebreak', { codexSessionId: 'codex-thread-tiebreak', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const duplicate = store.sessions.getOrCreateSession(
+            'dup-tiebreak', { codexSessionId: 'codex-thread-tiebreak', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const importedAt = Date.now() - 600_000
+        const footerText = 'Stuck.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs creds' })
+
+        // Canonical: padding only, no signal of its own.
+        for (let i = 0; i < 6; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `pad ${i}` }] } }
+                }
+            }, `tiebreak-pad-${i}`, importedAt)
+        }
+
+        // Duplicate: a genuinely untimestamped import batch — the
+        // initiating prompt and the footer it caused share the EXACT same
+        // stamp, with only transcript order (seq) telling them apart.
+        store.messages.addImportedMessage(duplicate.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'tiebreak-prompt', importedAt)
+        store.messages.addImportedMessage(duplicate.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } } }
+        }, 'tiebreak-footer', importedAt)
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-tiebreak'] })
+            })
+            expect(response.status).toBe(200)
+
+            const merged = store.sessions.getSessionByNamespace(canonical.id, 'default')
+            expect(merged?.lastNotifyStatus).toBe('blocked')
+        } finally {
+            store.close()
+        }
+    })
+
+    it('does not let a copied distractor row\'s live-ingestion replay overwrite the precomputed blocker (#1717)', async () => {
+        // The merge copies new rows into canonical, then replays each
+        // through live ingestion — which unconditionally re-derives the
+        // notify signal from whatever ONE row it is looking at, with no
+        // knowledge of the correct, already-computed reconciliation. An
+        // UNRELATED footer, already answered within its OWN source
+        // session and therefore irrelevant to the merge's real blocker,
+        // still gets copied in (distinct content from anything canonical
+        // already has) and still carries a genuine AGENT_NOTIFY_SUMMARY —
+        // replaying it overwrote the correct blocker's own status/note
+        // with this unrelated, already-resolved one's. Applying the
+        // precomputed projection BEFORE that replay let the replay's
+        // one-sided side effect (a footer replay sets the signal; a reply
+        // replay never clears it, since an imported row never goes
+        // through the delivery-confirmation callback a real one does) win
+        // last.
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-clobber', { codexSessionId: 'codex-thread-clobber', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const realBlocker = store.sessions.getOrCreateSession(
+            'dup-real-blocker', { codexSessionId: 'codex-thread-clobber', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const distractor = store.sessions.getOrCreateSession(
+            'dup-distractor', { codexSessionId: 'codex-thread-clobber', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        // Both duplicates have an equal message count, so the merge's own
+        // deterministic order (used for its row-copy loop, and which this
+        // test's bug hinges on) ties on message count and falls back to
+        // `updatedAt` descending. Pinned explicitly so the distractor's
+        // footer is the LAST thing replayed — ahead of real `Date.now()`
+        // since `touchSessionUpdatedAt` is monotonic and both sessions'
+        // creation-time `updatedAt` already sit at real "now".
+        store.sessions.touchSessionUpdatedAt(realBlocker.id, Date.now() + 10_000, 'default')
+        store.sessions.touchSessionUpdatedAt(distractor.id, Date.now() + 5_000, 'default')
+        const base = Date.now() - 600_000
+        const realFooter = 'Stuck.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs X' })
+        const distractorFooter = 'Stuck too.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs Y' })
+
+        // Canonical: padding only, to win canonical selection.
+        for (let i = 0; i < 8; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `pad ${i}` }] } }
+                }
+            }, `clobber-pad-${i}`, base)
+        }
+
+        // The REAL blocker: a reply that precedes the footer (so it does
+        // NOT answer it) gives this session a real, non-null boundary —
+        // without one, the precomputed projection's own `boundaryAt` falls
+        // back to "now", which would coincidentally protect this test for
+        // the wrong reason.
+        store.messages.addMessage(realBlocker.id, {
+            role: 'user', content: { type: 'text', text: 'starting' }, meta: { sentFrom: 'webapp' }
+        }, 'clobber-early-reply', null, base + 500, base + 500)
+        store.messages.markMessagesInvoked(realBlocker.id, ['clobber-early-reply'], base + 500)
+        store.messages.addMessage(realBlocker.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: realFooter }] } } }
+        }, undefined, null, base + 1_000, base + 1_000)
+
+        // The distractor: a DIFFERENT, already-answered footer — distinct
+        // content, so it is copied into canonical rather than
+        // deduplicated, and its own `createdAt` lands AFTER the real
+        // blocker's boundary, so the store's monotonic guard does not
+        // reject the replay.
+        store.messages.addMessage(distractor.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: distractorFooter }] } } }
+        }, undefined, null, base + 2_000, base + 2_000)
+        store.messages.addMessage(distractor.id, {
+            role: 'user', content: { type: 'text', text: 'Fixed Y' }, meta: { sentFrom: 'webapp' }
+        }, 'clobber-distractor-reply', null, base + 3_000, base + 3_000)
+        store.messages.markMessagesInvoked(distractor.id, ['clobber-distractor-reply'], base + 3_000)
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-clobber'] })
+            })
+            expect(response.status).toBe(200)
+
+            const rows = store.messages.getAllMessages(canonical.id)
+            expect(rows.some((row) => JSON.stringify(row.content).includes('needs Y'))).toBe(true)
+
+            const merged = store.sessions.getSessionByNamespace(canonical.id, 'default')
+            expect(merged?.lastNotifyStatus).toBe('blocked')
+            expect(merged?.lastNotifyNote).toBe('needs X')
         } finally {
             store.close()
         }
@@ -1603,7 +1857,8 @@ describe('Codex Desktop import routes', () => {
             },
             handleRealtimeEvent: () => {},
             reconcileNotifySignalAfterImport: () => {},
-            reconcileNotifyAcrossDuplicateSessions: () => {},
+            computeNotifyStateAcrossDuplicateSessions: () => ({ signal: null, boundaryAt: null, authorCutoff: null }),
+            applyReconciledNotifyState: () => {},
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             }

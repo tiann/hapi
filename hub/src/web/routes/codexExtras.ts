@@ -852,25 +852,29 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         )
     }
 
-    // Reconciled from every duplicate's OWN pre-merge messages, BEFORE any
-    // of them are touched (#1717). The footer and the reply that answers it
-    // can live in two different sessions — a live projection and an import
-    // of the same thread — so deriving this from the merge's OWN output
-    // would need the merge to preserve which row answered which. Reconciling
-    // first means the merge never has to carry that evidence through: it can
+    // Computed from every duplicate's OWN pre-merge messages, BEFORE any of
+    // them are touched (#1717). The footer and the reply that answers it can
+    // live in two different sessions — a live projection and an import of
+    // the same thread — so deriving this from the merge's OWN output would
+    // need the merge to preserve which row answered which. Computing first
+    // means the merge never has to carry that evidence through: it can
     // dedupe by plain content key, exactly as it always could, because there
     // is nothing left here for dropping a duplicate row to lose.
+    //
+    // NOT committed yet — see where `applyReconciledNotifyState` is called
+    // below, after the appended rows are emitted, and why that ordering is
+    // required.
     //
     // `sessionStates` is already in the function's required deterministic
     // order (most messages, newest `updatedAt`, session id — canonical
     // first); see that function's own doc comment for why this matters.
-    if (engine) {
-        engine.reconcileNotifyAcrossDuplicateSessions(
+    const precomputedNotify = engine
+        ? engine.computeNotifyStateAcrossDuplicateSessions(
             sessionStates.map((candidate) => candidate.sessionId),
             canonical.sessionId,
             options.namespace
         )
-    }
+        : null
 
     for (const source of sessionStates.slice(1)) {
         latestActivity = Math.max(latestActivity, source.updatedAt)
@@ -916,6 +920,18 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
 
     if (appendedMessages.length > 0) {
         emitImportedMessageEvents(engine, canonical.sessionId, appendedMessages)
+    }
+
+    // Committed LAST, after the appended rows are emitted (#1717): replaying
+    // a copied footer through `emitImportedMessageEvents` re-derives and
+    // overwrites the notify signal via live ingestion, with no knowledge
+    // that the precomputed projection above already accounted for it
+    // correctly — replaying a copied REPLY never undoes that, since an
+    // imported row never goes through the delivery-confirmation callback a
+    // real one does. Applying the precomputed result after the replay makes
+    // it the final word rather than something the replay can clobber.
+    if (engine && precomputedNotify) {
+        engine.applyReconciledNotifyState(canonical.sessionId, precomputedNotify)
     }
 
     if (engine) {
