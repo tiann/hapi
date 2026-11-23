@@ -65,7 +65,7 @@ describe('title lock draft', () => {
         await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Generated'))
         fireEvent.click(screen.getByRole('button', { name: label }))
         fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-        await waitFor(() => expect(f.onUpdateSummary).toHaveBeenCalledWith('Generated', true, null))
+        await waitFor(() => expect(f.onUpdateSummary).toHaveBeenCalledWith('Generated', true, null, false))
     })
 
     it('discards cancel/escape drafts and does not leak a lock into another session', () => {

@@ -20,7 +20,7 @@ type RenameSessionDialogProps = {
     sessionId?: string
     onRename: (newName: string | undefined, titleLocked?: boolean) => Promise<void>
     onSuggestTitle?: () => Promise<string>
-    onUpdateSummary?: (text: string, titleLocked: boolean, expectedName: string | null) => Promise<void>
+    onUpdateSummary?: (text: string, titleLocked: boolean, expectedName: string | null, expectedTitleLocked: boolean) => Promise<void>
     isPending: boolean
 }
 
@@ -116,7 +116,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
     const busy = isPending || isGenerating || isSaving
     const openedRef = useRef(false)
     const sessionRef = useRef(sessionId)
-    const openedManualName = useRef(currentManualName)
+    const openedTitle = useRef({ name: currentManualName, titleLocked: currentTitleLocked })
     const titleLockButtonRef = useRef<HTMLButtonElement>(null)
     const titleLockFue = useFue('session-title-lock')
 
@@ -139,7 +139,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
             generationRef.current += 1
             openedRef.current = true
             sessionRef.current = sessionId
-            openedManualName.current = currentManualName
+            openedTitle.current = { name: currentManualName, titleLocked: currentTitleLocked }
             setName(currentName)
             setTitleLocked(currentTitleLocked)
             setError(null)
@@ -208,7 +208,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
                 // Preserve summary/name ownership when only the lock changes.
                 await onRename(undefined, titleLocked)
             } else if (draftSource === 'generated' && onUpdateSummary) {
-                await onUpdateSummary(trimmed, titleLocked, openedManualName.current)
+                await onUpdateSummary(trimmed, titleLocked, openedTitle.current.name, openedTitle.current.titleLocked)
             } else {
                 await onRename(trimmed, titleLocked)
             }

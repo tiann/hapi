@@ -108,7 +108,7 @@ describe('session dialog title alignment', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
 
         await waitFor(() => expect(screen.getByText(
-            'This session has no conversation content yet. Send a message before generating a title.'
+            'No recent conversation text is available. Send a message before generating a title.'
         )).toBeInTheDocument())
         const detailsToggle = screen.getByRole('button', { name: 'Show error details' })
         expect(detailsToggle).toHaveClass('inline-flex', 'whitespace-nowrap')
@@ -271,7 +271,7 @@ describe('session dialog title alignment', () => {
         await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Generated title'))
         fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
-        await waitFor(() => expect(onUpdateSummary).toHaveBeenCalledWith('Generated title', false, null))
+        await waitFor(() => expect(onUpdateSummary).toHaveBeenCalledWith('Generated title', false, null, false))
         expect(onRename).not.toHaveBeenCalled()
     })
 
@@ -294,7 +294,7 @@ describe('session dialog title alignment', () => {
         await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Generated title'))
         fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
-        await waitFor(() => expect(onUpdateSummary).toHaveBeenCalledWith('Generated title', false, null))
+        await waitFor(() => expect(onUpdateSummary).toHaveBeenCalledWith('Generated title', false, null, false))
     })
 
     it('treats any edit to a generated draft as a manual metadata.name rename', async () => {

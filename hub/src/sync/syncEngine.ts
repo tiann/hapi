@@ -4222,7 +4222,7 @@ export class SyncEngine {
     async updateSessionSummary(
         sessionId: string,
         text: string,
-        options?: boolean | { clearName?: boolean; titleLocked?: boolean; expectedName?: string | null }
+        options?: boolean | { clearName?: boolean; titleLocked?: boolean; expectedName?: string | null; expectedTitleLocked?: boolean }
     ): Promise<void> {
         await this.sessionCache.updateSessionSummary(sessionId, text, options)
     }

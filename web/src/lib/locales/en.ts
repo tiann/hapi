@@ -480,7 +480,7 @@ export default {
   'dialog.rename.providerReason.connectionFailed': 'connection failed',
   'dialog.rename.providerReason.emptyResponse': 'empty response',
   'dialog.rename.providerReason.invalidResponse': 'invalid response',
-  'dialog.rename.generateEmpty': 'This session has no conversation content yet. Send a message before generating a title.',
+  'dialog.rename.generateEmpty': 'No recent conversation text is available. Send a message before generating a title.',
   'dialog.rename.showDiagnostics': 'Show error details',
   'dialog.rename.hideDiagnostics': 'Hide error details',
   'dialog.rename.diagnosticCode': 'Error code: {code}',

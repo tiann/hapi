@@ -480,7 +480,7 @@ export default {
   'dialog.rename.providerReason.connectionFailed': '连接失败',
   'dialog.rename.providerReason.emptyResponse': '返回了空响应',
   'dialog.rename.providerReason.invalidResponse': '返回了无效响应',
-  'dialog.rename.generateEmpty': '此会话还没有对话内容，请先发送一条消息再生成标题。',
+  'dialog.rename.generateEmpty': '没有可用于生成标题的近期对话文本，请先发送一条消息再试。',
   'dialog.rename.showDiagnostics': '展开错误详情',
   'dialog.rename.hideDiagnostics': '收起错误详情',
   'dialog.rename.diagnosticCode': '错误代码：{code}',

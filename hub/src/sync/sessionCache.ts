@@ -1543,7 +1543,7 @@ export class SessionCache {
     async updateSessionSummary(
         sessionId: string,
         text: string,
-        options?: boolean | { clearName?: boolean; titleLocked?: boolean; expectedName?: string | null }
+        options?: boolean | { clearName?: boolean; titleLocked?: boolean; expectedName?: string | null; expectedTitleLocked?: boolean }
     ): Promise<void> {
         // Keep the generated/native title separate from metadata.name unless
         // the user explicitly saved a generated title as the replacement for
@@ -1553,8 +1553,9 @@ export class SessionCache {
         const clearName = typeof options === 'object' && options !== null ? Boolean(options.clearName) : false
         const titleLocked = typeof options === 'boolean' ? options : options?.titleLocked
         const expectedName = typeof options === 'object' ? options?.expectedName : undefined
-        if (clearName && expectedName === undefined) {
-            throw new Error('An expected manual name is required to replace it')
+        const expectedTitleLocked = typeof options === 'object' ? options?.expectedTitleLocked : undefined
+        if (clearName && (expectedName === undefined || expectedTitleLocked === undefined)) {
+            throw new Error('An expected manual name and title lock are required to replace it')
         }
         for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
             const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
@@ -1571,7 +1572,8 @@ export class SessionCache {
                 }
             }
 
-            if (clearName && (currentMetadata.name ?? null) !== expectedName) {
+            if (clearName && ((currentMetadata.name ?? null) !== expectedName
+                || (currentMetadata.titleLocked === true) !== expectedTitleLocked)) {
                 throw new Error('Session title was modified concurrently. Reopen the rename dialog to try again.')
             }
             if (clearName && Object.prototype.hasOwnProperty.call(newMetadata, 'name')) {

@@ -11,8 +11,11 @@ if (locale === 'en' || locale === 'zh-CN') {
 }
 
 function App() {
-    const conflict = new URL(location.href).searchParams.has('concurrentTitle')
+    const params = new URL(location.href).searchParams
+    const lockConflict = params.has('concurrentTitleLock')
+    const conflict = params.has('concurrentTitle') || lockConflict
     const [manualName, setManualName] = React.useState('Original title')
+    const [manualTitleLocked, setManualTitleLocked] = React.useState(false)
     return (
         <I18nProvider>
             <RenameSessionDialog
@@ -20,8 +23,9 @@ function App() {
                 onClose={() => undefined}
                 currentName={conflict ? manualName : '新会话'}
                 currentManualName={conflict ? manualName : null}
-                onUpdateSummary={conflict ? async (_text, _locked, expectedName) => {
-                    if (expectedName !== manualName) throw new ApiError('Title conflict', 409)
+                currentTitleLocked={manualTitleLocked}
+                onUpdateSummary={conflict ? async (_text, _locked, expectedName, expectedTitleLocked) => {
+                    if (expectedName !== manualName || expectedTitleLocked !== manualTitleLocked) throw new ApiError('Title conflict', 409)
                     throw new Error('Expected the dialog to send the original manual name')
                 } : undefined}
                 onRename={async () => {
@@ -32,7 +36,8 @@ function App() {
                         return (await new ApiClient('').suggestSessionTitle('fixture-title')).title
                     }
                     if (conflict) {
-                        setManualName('Manual title from another tab')
+                        if (lockConflict) setManualTitleLocked(true)
+                        else setManualName('Manual title from another tab')
                         return 'Generated draft'
                     }
                     throw new ApiError(

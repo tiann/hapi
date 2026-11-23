@@ -366,6 +366,7 @@ export default {
   'dialog.rename.generate': 'Сгенерировать',
   'dialog.rename.generating': 'Генерация…',
   'dialog.rename.generateError': 'Не удалось сгенерировать название. Попробуйте ещё раз.',
+  'dialog.rename.generateEmpty': 'Нет недавнего текста разговора. Отправьте сообщение перед генерацией заголовка.',
   'dialog.rename.showDiagnostics': 'Показать сведения об ошибке',
   'dialog.rename.hideDiagnostics': 'Скрыть сведения об ошибке',
   'dialog.rename.diagnosticCode': 'Код ошибки: {code}',

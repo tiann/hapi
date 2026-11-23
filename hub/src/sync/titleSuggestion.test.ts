@@ -10,6 +10,7 @@ import {
     readTitleProviderConfig,
     readTitleProviderRequestLimits,
     readTitleSuggestionLimits,
+    TITLE_SUGGESTION_MESSAGE_LIMIT,
     TitleSuggestionError,
     TitleSuggestionService
 } from './titleSuggestion'
@@ -391,6 +392,20 @@ describe('TitleSuggestionService', () => {
 
         await expect(service.suggestTitle(sessionId)).resolves.toBe('Current topic')
         expect(prompt).toContain('The late queued prompt is the current topic')
+    })
+
+    it('returns empty for a recent tool-only window even if older conversation text exists', async () => {
+        const { store, sessionId } = makeStore()
+        store.messages.addMessage(sessionId, { role: 'user', content: { type: 'text', text: 'An older conversation' } })
+        for (let index = 0; index < TITLE_SUGGESTION_MESSAGE_LIMIT; index++) {
+            store.messages.addMessage(sessionId, { role: 'agent', content: {
+                type: 'codex', data: { type: 'tool-call', callId: `tool-${index}`, name: 'shell', input: {} }
+            } })
+        }
+        const service = new TitleSuggestionService(store, {
+            provider: { suggest: async () => { throw new Error('Should not call the provider without recent text') } }
+        })
+        await expect(service.suggestTitle(sessionId)).rejects.toMatchObject({ code: 'empty', status: 422 })
     })
 
     it('reports unavailable configuration and enforces the per-session request limit', async () => {

@@ -1732,7 +1732,7 @@ export function createSessionsRoutes(
         const body = await c.req.json().catch(() => null)
         const parsed = UpdateSessionSummaryRequestSchema.safeParse(body)
         if (!parsed.success) {
-            const message = parsed.error.issues.find(issue => issue.path[0] === 'expectedName')?.message
+            const message = parsed.error.issues.find(issue => issue.path[0] === 'expectedName' || issue.path[0] === 'expectedTitleLocked')?.message
             return c.json({ error: message ?? 'Invalid body: text is required' }, 400)
         }
 
@@ -1741,7 +1741,8 @@ export function createSessionsRoutes(
                 ? {
                     clearName: parsed.data.clearName,
                     ...(parsed.data.titleLocked !== undefined ? { titleLocked: parsed.data.titleLocked } : {}),
-                    ...(parsed.data.expectedName !== undefined ? { expectedName: parsed.data.expectedName } : {})
+                    ...(parsed.data.expectedName !== undefined ? { expectedName: parsed.data.expectedName } : {}),
+                    ...(parsed.data.expectedTitleLocked !== undefined ? { expectedTitleLocked: parsed.data.expectedTitleLocked } : {})
                 }
                 : parsed.data.titleLocked
             await engine.updateSessionSummary(sessionResult.sessionId, parsed.data.text, summaryOptions)

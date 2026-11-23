@@ -1,12 +1,12 @@
 import { expect, test } from '@playwright/test'
 
-test('empty sessions explain why title generation cannot run', async ({ page }) => {
+test('title guidance says when no recent conversation text is available', async ({ page }) => {
     await page.goto('/e2e-fixtures/rename-session-error-fixture.html?locale=zh-CN')
 
     await page.getByRole('button', { name: '生成' }).click()
 
     await expect(page.getByText(
-        '此会话还没有对话内容，请先发送一条消息再生成标题。'
+        '没有可用于生成标题的近期对话文本，请先发送一条消息再试。'
     )).toBeVisible()
     await expect(page.getByText('标题生成失败，请重试。')).not.toBeVisible()
 
@@ -60,6 +60,15 @@ test('a generated draft reports a stale manual title without discarding the draf
     if (screenshot) await page.screenshot({ path: screenshot })
 })
 
+
+test('a generated draft retains the original lock precondition when another tab locks the title', async ({ page }) => {
+    await page.goto('/e2e-fixtures/rename-session-error-fixture.html?locale=en&concurrentTitleLock=1')
+    await page.getByRole('button', { name: 'Generate' }).click()
+    await expect(page.getByRole('textbox')).toHaveValue('Generated draft')
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(page.getByText('The session title changed elsewhere.', { exact: false })).toBeVisible()
+    await expect(page.getByRole('textbox')).toHaveValue('Generated draft')
+})
 
 for (const status of [502, 422]) {
     test(`title generation diagnostics do not expose an unrecognized proxy response (HTTP ${status})`, async ({ page }) => {

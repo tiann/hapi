@@ -434,6 +434,7 @@ export default {
   'dialog.rename.generate': '生成',
   'dialog.rename.generating': '生成中…',
   'dialog.rename.generateError': 'タイトルを生成できませんでした。もう一度お試しください。',
+  'dialog.rename.generateEmpty': '最近の会話テキストが見つかりません。タイトルを生成する前にメッセージを送信してください。',
   'dialog.rename.showDiagnostics': 'エラーの詳細を表示',
   'dialog.rename.hideDiagnostics': 'エラーの詳細を閉じる',
   'dialog.rename.diagnosticCode': 'エラーコード: {code}',
