@@ -173,7 +173,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             const currentSession = currentSessionRef.current;
             forwardClaudeAutoCompactionStart(currentSession, sessionId, data);
             currentSession?.localPermissionBridge.onHook(data);
-            if (currentSession && (data.hook_event_name === 'SessionStart' || data.hook_event_name === undefined)) {
+            if (currentSession && (data.hook_event_name === 'SessionStart' || data.hook_event_name === undefined)
+                && !(data.source === 'clear' && currentSession.handleRemoteClearHook?.(sessionId))) {
                 const previousSessionId = currentSession.sessionId;
                 if (previousSessionId !== sessionId) {
                     logger.debug(`[START] Claude session ID changed: ${previousSessionId} -> ${sessionId}`);

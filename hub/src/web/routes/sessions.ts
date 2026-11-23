@@ -1669,11 +1669,19 @@ export function createSessionsRoutes(
         const body = await c.req.json().catch(() => null)
         const parsed = RenameSessionRequestSchema.safeParse(body)
         if (!parsed.success) {
-            return c.json({ error: 'Invalid body: name or titleLocked is required' }, 400)
+            return c.json({ error: 'Invalid body: name, titleLocked, or translateInput is required' }, 400)
         }
 
         try {
-            await engine.renameSession(sessionResult.sessionId, parsed.data.name, parsed.data.titleLocked)
+            if (parsed.data.translateInput !== undefined) {
+                if (parsed.data.translateInput && !engine.isInputTranslationAvailable()) {
+                    return c.json({ error: 'Input translation is not configured on this hub' }, 400)
+                }
+                await engine.setSessionTranslateInput(sessionResult.sessionId, parsed.data.translateInput)
+            }
+            if (parsed.data.name !== undefined || parsed.data.titleLocked !== undefined) {
+                await engine.renameSession(sessionResult.sessionId, parsed.data.name, parsed.data.titleLocked)
+            }
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to rename session'

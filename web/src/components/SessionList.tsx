@@ -164,7 +164,10 @@ import {
 } from '@/components/sessionToolbarShed'
 
 /** Hit targets that must stay visible: icon, clear, calendar. Not the query text. */
-function measureSearchChrome(search: HTMLElement): number {
+function measureSearchChrome(
+    search: HTMLElement,
+    onMeasurePart?: (el: HTMLElement, width: number) => void
+): number {
     const parts = [...search.querySelectorAll<HTMLElement>('[data-toolbar-chrome]')]
     if (parts.length === 0) return search.offsetWidth
     const gap = Number.parseFloat(getComputedStyle(search).columnGap) || 0
@@ -173,7 +176,13 @@ function measureSearchChrome(search: HTMLElement): number {
     const triggerPad = triggerStyle
         ? (Number.parseFloat(triggerStyle.paddingLeft) || 0) + (Number.parseFloat(triggerStyle.paddingRight) || 0)
         : 0
-    return parts.reduce((sum, el) => sum + el.offsetWidth, 0) + triggerPad + gap * Math.max(0, parts.length - 1)
+    let total = 0
+    for (const el of parts) {
+        const width = el.offsetWidth
+        total += width
+        onMeasurePart?.(el, width)
+    }
+    return total + triggerPad + gap * Math.max(0, parts.length - 1)
 }
 
 export type SessionToolbarExtra = {
@@ -970,6 +979,7 @@ export function measureOpenSessionTickContentOffset(
 }
 
 export function SessionListSearch(props: {
+    searchRef?: (node: HTMLDivElement | null) => void
     value: string
     onChange: (value: string) => void
     customStart?: string
@@ -1223,6 +1233,7 @@ export function SessionListSearch(props: {
             : 0
         return (
             <div
+                ref={props.searchRef}
                 data-testid="session-list-search"
                 data-expanded="false"
                 style={chromeFloor > 0 || reservedCap > 0
@@ -1304,6 +1315,7 @@ export function SessionListSearch(props: {
 
     return (
         <div
+            ref={props.searchRef}
             data-testid="session-list-search"
             data-expanded="true"
             className="relative min-w-0 flex-1"
@@ -2086,12 +2098,83 @@ export function SessionList(props: {
     const [searchMaxPx, setSearchMaxPx] = useState(0)
     // jsdom reports clientWidth 0; the row observer publishes the stubbed width.
     const [toolbarRowBoxPx, setToolbarRowBoxPx] = useState(0)
+
+    const searchChromeDirtyRef = useRef(true)
+    const prevSearchExpandedRef = useRef(searchExpanded)
+    const prevHasQueryRef = useRef(searchQuery.length > 0)
+    const [, bumpSearchChromeTick] = useState(0)
+    const searchNodeRef = useRef<HTMLElement | null>(null)
+    const searchMutationObserverRef = useRef<MutationObserver | null>(null)
+    const observedChromePartsRef = useRef<Set<HTMLElement>>(new Set())
+    const searchElementSizesRef = useRef<WeakMap<Element, { width: number; height: number }>>(new WeakMap())
+
+    const syncSearchChromeObservers = useCallback((search: HTMLElement | null) => {
+        if (typeof ResizeObserver === 'undefined') {
+            searchMutationObserverRef.current?.disconnect()
+            searchMutationObserverRef.current = null
+            return
+        }
+        const ro = actionsObserverRef.current
+        const prevSearch = searchNodeRef.current
+        if (prevSearch && prevSearch !== search) {
+            if (ro) {
+                ro.unobserve(prevSearch)
+                for (const el of observedChromePartsRef.current) ro.unobserve(el)
+            }
+            observedChromePartsRef.current.clear()
+            searchMutationObserverRef.current?.disconnect()
+            searchMutationObserverRef.current = null
+        }
+        searchNodeRef.current = search
+        if (!search) {
+            return
+        }
+        if (ro) {
+            ro.observe(search)
+            const currentParts = new Set(search.querySelectorAll<HTMLElement>('[data-toolbar-chrome]'))
+            for (const el of observedChromePartsRef.current) {
+                if (!currentParts.has(el)) {
+                    ro.unobserve(el)
+                    observedChromePartsRef.current.delete(el)
+                }
+            }
+            for (const el of currentParts) {
+                if (!observedChromePartsRef.current.has(el)) {
+                    ro.observe(el)
+                    observedChromePartsRef.current.add(el)
+                }
+            }
+        }
+        if (typeof MutationObserver !== 'undefined' && !searchMutationObserverRef.current) {
+            const mo = new MutationObserver(() => {
+                if (search.dataset.expanded === 'true') {
+                    return
+                }
+                const currentParts = new Set(search.querySelectorAll<HTMLElement>('[data-toolbar-chrome]'))
+                const partsChanged = currentParts.size !== observedChromePartsRef.current.size
+                    || [...currentParts].some((el) => !observedChromePartsRef.current.has(el))
+                if (!partsChanged) return
+                syncSearchChromeObservers(search)
+                searchChromeDirtyRef.current = true
+                bumpSearchChromeTick((v) => v + 1)
+            })
+            mo.observe(search, { childList: true, subtree: true })
+            searchMutationObserverRef.current = mo
+        }
+    }, [])
+
+    const setSearchNode = useCallback((node: HTMLDivElement | null) => {
+        syncSearchChromeObservers(node)
+        searchChromeDirtyRef.current = true
+    }, [syncSearchChromeObservers])
+
     // Search expand unmounts the actions box. A callback ref re-observes the
     // new node when search collapses; an effect keyed only on showHeaderRow does not.
     const setHeaderActionsNode = useCallback((node: HTMLDivElement | null) => {
         headerActionsRef.current = node
         actionsObserverRef.current?.disconnect()
         actionsObserverRef.current = null
+        observedChromePartsRef.current.clear()
         // Search expand unmounts this node — keep the last positive width so
         // we do not fall back to a permissive unmeasured budget mid-cycle.
         if (!node || typeof ResizeObserver === 'undefined') return
@@ -2105,6 +2188,7 @@ export function SessionList(props: {
         const ro = new ResizeObserver((entries) => {
             let actionsWidth = 0
             let sawActions = false
+            let sawSearch = false
             for (const entry of entries) {
                 const target = entry.target
                 const reported = entry.contentRect.width ?? 0
@@ -2117,15 +2201,33 @@ export function SessionList(props: {
                     sawActions = true
                     actionsWidth = width
                 }
+                if (target instanceof HTMLElement && (target.dataset.testid === 'session-list-search' || target.hasAttribute('data-toolbar-chrome'))) {
+                    const isExpanded = target.dataset.expanded === 'true'
+                        || target.closest('[data-testid="session-list-search"]')?.getAttribute('data-expanded') === 'true'
+                    if (isExpanded) continue
+                    const prev = searchElementSizesRef.current.get(target)
+                    const reportedW = entry.contentRect.width ?? 0
+                    const targetW = target.offsetWidth || target.clientWidth || (Number.parseFloat(target.style.minWidth) || reportedW)
+                    if (!prev || Math.abs(prev.width - targetW) >= 0.5) {
+                        sawSearch = true
+                        searchElementSizesRef.current.set(target, { width: targetW, height: 0 })
+                    }
+                }
             }
             if (sawActions) publishActions(actionsWidth)
+            if (sawSearch) {
+                searchChromeDirtyRef.current = true
+                bumpSearchChromeTick((v) => v + 1)
+            }
         })
         ro.observe(node)
         const row = headerRowRef.current
         if (row && row !== node) ro.observe(row)
         actionsObserverRef.current = ro
+        const search = searchNodeRef.current ?? headerRowRef.current?.querySelector<HTMLElement>('[data-testid="session-list-search"]') ?? null
+        syncSearchChromeObservers(search)
         publishActions(node.clientWidth || node.getBoundingClientRect().width)
-    }, [])
+    }, [syncSearchChromeObservers])
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
     const isSearchFiltering = normalizedQuery.length > 0 || timeRange !== null
@@ -3060,13 +3162,33 @@ export function SessionList(props: {
 
     useEffect(() => () => {
         actionsObserverRef.current?.disconnect()
+        searchMutationObserverRef.current?.disconnect()
     }, [])
+
     useLayoutEffect(() => {
+        const hasQuery = searchQuery.length > 0
+        if (prevSearchExpandedRef.current !== searchExpanded || prevHasQueryRef.current !== hasQuery) {
+            prevSearchExpandedRef.current = searchExpanded
+            prevHasQueryRef.current = hasQuery
+            searchChromeDirtyRef.current = true
+            const searchNode = headerRowRef.current?.querySelector<HTMLElement>('[data-testid="session-list-search"]') ?? null
+            syncSearchChromeObservers(searchNode)
+        }
         const search = headerRowRef.current?.querySelector<HTMLElement>('[data-testid="session-list-search"]')
-        const nextChrome = search && search.dataset.expanded !== 'true'
-            ? measureSearchChrome(search)
-            : 0
-        setSearchChromePx((previous) => previous === nextChrome ? previous : nextChrome)
+        if (searchChromeDirtyRef.current || typeof ResizeObserver === 'undefined') {
+            searchChromeDirtyRef.current = false
+            const hasRO = typeof ResizeObserver !== 'undefined'
+            const nextChrome = search && search.dataset.expanded !== 'true'
+                ? measureSearchChrome(search, hasRO ? (el, width) => {
+                    searchElementSizesRef.current.set(el, { width, height: 0 })
+                } : undefined)
+                : 0
+            if (hasRO && search && search.dataset.expanded !== 'true') {
+                const searchWidth = search.offsetWidth || search.clientWidth || (Number.parseFloat(search.style.minWidth) || nextChrome)
+                searchElementSizesRef.current.set(search, { width: searchWidth, height: 0 })
+            }
+            setSearchChromePx((previous) => previous === nextChrome ? previous : nextChrome)
+        }
         const root = toolbarMeasureRef.current
         if (!root) return
         const next: Record<string, number> = {}
@@ -3312,6 +3434,7 @@ export function SessionList(props: {
                 >
                     {showSearch ? (
                         <SessionListSearch
+                            searchRef={setSearchNode}
                             value={searchQuery}
                             onChange={setSearchQuery}
                             expanded={searchExpanded}

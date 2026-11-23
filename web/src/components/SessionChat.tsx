@@ -94,6 +94,8 @@ import {
     type AttachmentDraftInput,
 } from '@/lib/composer-attachment-drafts'
 import { useTranslation } from '@/lib/use-translation'
+import { useOptionalAddToast } from '@/lib/toast-context'
+import { useSessionInputTranslation } from '@/hooks/useSessionInputTranslation'
 import type { SendMessageAcceptance } from '@/hooks/mutations/useSendMessage'
 import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { SessionHeader } from '@/components/SessionHeader'
@@ -1315,6 +1317,19 @@ function SessionChatInner(props: SessionChatProps) {
         enabled: agentFlavor === 'cursor' && props.session.active
     })
     const sessionMachineId = props.session.metadata?.machineId ?? null
+    const addToast = useOptionalAddToast()
+    const inputTranslation = useSessionInputTranslation(props.api, props.session)
+    const inputTranslationToggle = inputTranslation.toggle
+    const handleToggleInputTranslation = useCallback(() => {
+        void inputTranslationToggle().catch((error: unknown) => {
+            addToast?.({
+                title: t('dialog.error.default'),
+                body: error instanceof Error ? error.message : t('dialog.error.default'),
+                sessionId: props.session.id,
+                url: `/sessions/${props.session.id}`
+            })
+        })
+    }, [addToast, inputTranslationToggle, props.session.id, t])
     // A running session discovers its models over its own connection (kimi
     // provider list --json), so this works without a background runner;
     // switching itself still goes through the existing ACP setModel path.
@@ -2607,6 +2622,12 @@ function SessionChatInner(props: SessionChatProps) {
                         effort={agentFlavor === 'agy' ? agyCurrentEffort : props.session.effort}
                         agentFlavor={agentFlavor}
                         machineId={sessionMachineId}
+                        inputTranslation={inputTranslation.visible ? {
+                            enabled: inputTranslation.enabled,
+                            fromDefault: inputTranslation.fromDefault,
+                            pending: inputTranslation.pending,
+                            onToggle: handleToggleInputTranslation
+                        } : undefined}
                         availableModelOptions={
                             agentFlavor === 'codex'
                                 ? codexModelOptions

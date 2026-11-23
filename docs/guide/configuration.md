@@ -152,6 +152,43 @@ before.
 | `HAPI_TITLE_SUGGESTION_RATE_LIMIT` | `5` | Suggestions per session per window. |
 | `HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS` | `600000` | Rate-limit window. |
 
+### Translating input to English
+
+When a translation provider is configured, the hub can translate each prompt
+you send from the web app, native apps, or Telegram before the agent sees it.
+Your chat shows what you typed, and you can tap **Translated** to see the
+English that was sent.
+
+- **For every session:** the hub owner can turn on **Settings → General →
+  Translate my messages to English by default**. Every session you have not
+  set yourself follows this setting.
+- **For one session:** tap the **EN** chip above the web composer, or use
+  **Translate my messages to English** in the session **⋮** menu. A
+  per-session choice always overrides the default, in both directions.
+
+While a translated message is being sent, its bubble shows **Translating…**.
+If the provider fails, the bubble shows **Not translated** and the agent
+receives your original text.
+
+- Every message is translated, whatever its language. The only messages
+  skipped are slash commands (`/compact`, ...), messages made up only of
+  code or mentions, and messages over 8,000 characters.
+- Code blocks, inline code, URLs, and `@path` mentions are sent to the agent
+  unchanged.
+- If the provider fails, times out, or garbles the protected spans, the
+  original text is sent instead. Translation never blocks a prompt.
+- Each translated prompt is sent to the configured provider.
+
+The `HAPI_TRANSLATION_PROVIDER_*` connection variables are optional. If they
+are unset, the hub uses the `HAPI_TITLE_PROVIDER_*` connection.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HAPI_TRANSLATION_PROVIDER_BASE_URL` | title provider | OpenAI-compatible Chat Completions base URL. |
+| `HAPI_TRANSLATION_PROVIDER_API_KEY` | title provider | API key for that provider. |
+| `HAPI_TRANSLATION_PROVIDER_MODEL` | title provider | Model id. |
+| `HAPI_TRANSLATION_PROVIDER_TIMEOUT_MS` | `15000` | Request timeout before falling back to the original text. |
+
 ### Sessions, uploads and terminals
 
 | Variable | Default | Description |

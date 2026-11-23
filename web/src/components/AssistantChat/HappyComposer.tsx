@@ -49,7 +49,7 @@ import { persistInactiveComposerAttachments, setComposerDraftSnapshot, updateCom
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
-import { StatusBar } from '@/components/AssistantChat/StatusBar'
+import { StatusBar, type StatusBarInputTranslation } from '@/components/AssistantChat/StatusBar'
 import {
     ComposerButtons,
     UnifiedButton,
@@ -315,6 +315,8 @@ export function HappyComposer(props: {
     thinking?: boolean
     agentState?: AgentState | null
     onPendingRequestClick?: (requestId: string) => void
+    /** Quick toggle for hub input translation; omitted when the hub has no provider. */
+    inputTranslation?: StatusBarInputTranslation
     backgroundTaskCount?: number
     contextSize?: number
     contextCacheRead?: number
@@ -442,6 +444,7 @@ export function HappyComposer(props: {
         thinking = false,
         agentState,
         onPendingRequestClick,
+        inputTranslation,
         backgroundTaskCount,
         contextSize,
         contextCacheRead,
@@ -2379,6 +2382,7 @@ export function HappyComposer(props: {
                         thinking={thinking}
                         agentState={agentState}
                         onPendingRequestClick={onPendingRequestClick}
+                        inputTranslation={inputTranslation}
                         backgroundTaskCount={backgroundTaskCount}
                         contextSize={contextSize}
                         contextCacheRead={contextCacheRead}

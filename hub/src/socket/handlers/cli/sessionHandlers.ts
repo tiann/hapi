@@ -97,6 +97,7 @@ const HUB_OWNED_METADATA_KEYS = [
     'jobsTransferredToSessionId',
     'jobKeyRedirects',
     'promptTitle',
+    'translateInput',
     'hibernation'
 ] as const
 
