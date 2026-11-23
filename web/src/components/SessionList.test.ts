@@ -696,6 +696,42 @@ describe('restoreSelectedSessionExemption (#1717)', () => {
         const result = restoreSelectedSessionExemption([], unfiltered, 'gone', null)
         expect(result).toEqual([])
     })
+
+    it('must be given a base the saved status filter has not already run against (#1717 cold-review round 29)', () => {
+        // `SessionList`'s own call site feeds this `sidebarSessions` (never
+        // touched by `listView.status`), not `visibleSessions` (already
+        // run through `filterSessionsForListStatus` against the CURRENT
+        // `filterExemptId`). Composing the two pure functions the way the
+        // broken wiring did proves why: with Active-only on, a jump target
+        // replacing the selected session's exemption drops the selected
+        // session from `visibleSessions` BEFORE this function ever runs —
+        // there is nothing left in that array to restore from.
+        const selected = makeSession({ id: 'selected-stopped', active: false, metadata: { path: '/p' } })
+        const jumpTarget = makeSession({ id: 'jump-target-stopped', active: false, metadata: { path: '/p' } })
+        const sidebarSessions = [selected, jumpTarget] // never filtered by status
+        const statusFilteredWithJumpTargetExempt = filterSessionsForListStatus(
+            sidebarSessions, 'active', 'jump-target-stopped'
+        )
+        // Confirms the premise: the saved filter really did drop the
+        // selected session once the jump target took its exemption slot.
+        expect(statusFilteredWithJumpTargetExempt.map(s => s.id)).toEqual(['jump-target-stopped'])
+
+        const brokenWiring = restoreSelectedSessionExemption(
+            statusFilteredWithJumpTargetExempt,
+            statusFilteredWithJumpTargetExempt, // `visibleSessions` stand-in — already status-filtered
+            'selected-stopped',
+            'jump-target-stopped'
+        )
+        expect(brokenWiring.map(s => s.id)).toEqual(['jump-target-stopped'])
+
+        const correctWiring = restoreSelectedSessionExemption(
+            statusFilteredWithJumpTargetExempt,
+            sidebarSessions, // the real call site's base
+            'selected-stopped',
+            'jump-target-stopped'
+        )
+        expect(correctWiring.map(s => s.id).sort()).toEqual(['jump-target-stopped', 'selected-stopped'])
+    })
 })
 
 describe('filterUnreadSessionsOnly', () => {

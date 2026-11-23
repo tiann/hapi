@@ -678,7 +678,13 @@ export function filterActiveSessionsOnly(sessions: SessionSummary[], selectedSes
  * rather than adding to it, and the operator's already-open chat row
  * disappears while the jump target is shown. `unfiltered` is searched
  * (not `filtered`) because the session being restored is, by definition,
- * the one a filter above already removed.
+ * the one a filter above already removed — it MUST be a base no
+ * `filterExemptId`-dependent filter has touched (e.g. `sidebarSessions`,
+ * not `visibleSessions`), or the saved "Active sessions only" status
+ * filter upstream (`listView.status`, applied against the CURRENT
+ * `filterExemptId` before this function ever runs) can have already
+ * dropped the selected session from `unfiltered` itself, leaving nothing
+ * to restore from (#1717 cold-review round 29).
  */
 export function restoreSelectedSessionExemption<T extends SessionSummary>(
     filtered: T[],
@@ -3126,8 +3132,14 @@ export function SessionList(props: {
         }
         // `filterExemptId` is `revealBlockedSessionId ?? selectedSessionId`
         // — see `restoreSelectedSessionExemption`'s own doc comment for why
-        // the two are not interchangeable.
-        return restoreSelectedSessionExemption(filtered, visibleSessions, selectedSessionId, filterExemptId)
+        // the two are not interchangeable. Restoring from `sidebarSessions`,
+        // not `visibleSessions`: the saved "Active sessions only" status
+        // filter (`listView.status`) already ran against the CURRENT
+        // `filterExemptId` upstream of `visibleSessions`, so a jump that
+        // just replaced the selected session's exemption can have already
+        // erased it from `visibleSessions` too, with nothing left there to
+        // restore (#1717 cold-review round 29).
+        return restoreSelectedSessionExemption(filtered, sidebarSessions, selectedSessionId, filterExemptId)
     }, [
         showBlockedOnly,
         isScratchlistStatusLoading,
@@ -3140,7 +3152,8 @@ export function SessionList(props: {
         showActiveOnly,
         showWorkingOnly,
         listView.unreadOnly,
-        visibleSessions
+        visibleSessions,
+        sidebarSessions
     ])
     const machineFilteredSessions = useMemo(
         () => activeMachineFilter === null
