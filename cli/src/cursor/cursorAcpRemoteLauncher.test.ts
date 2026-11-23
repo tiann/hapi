@@ -1510,6 +1510,72 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
+    it('publishes give-up failure and Blocked status before waiting on a pending soft steer when one-shot Continue fails', async () => {
+        let releasePrompt1!: () => void;
+        let releasePrompt2!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt1 = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'ls' },
+            status: 'completed'
+        }], []];
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        let launcherFinished = false;
+        const runPromise = cursorAcpRemoteLauncher(session).then((result) => {
+            launcherFinished = true;
+            return result;
+        });
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt2 = resolve; });
+        releasePrompt1();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt2();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'error',
+                message: expect.stringContaining('auto-continue also failed')
+            }));
+        });
+        expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError'
+        }));
+        expect(harness.promptCalls).toBe(2);
+        // Cleanup in finally still holds ready / turn exit until the steer completes.
+        expect(launcherFinished).toBe(false);
+
+        releaseSoftSteer();
+        session.queue.close();
+        await runPromise;
+        expect(launcherFinished).toBe(true);
+    });
+
     it('releases an in-loop retry soft-steer wait on Switch without sending a retry', async () => {
         let releasePrompt!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });

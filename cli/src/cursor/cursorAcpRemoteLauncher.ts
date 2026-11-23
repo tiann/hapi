@@ -1258,7 +1258,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         // Wait for any overlapping soft-steer before deciding between
                         // prompt replay and post-tool Continue (#2509): tool updates
                         // emitted by the settling steer set attemptProducedToolActivity.
-                        if (!await this.drainSoftSteerWaitersBeforeRetry()) break;
+                        // Skip once one-shot Continue has already been spent so give-up
+                        // publishes Blocked immediately before cleanup drains waiters.
+                        if (!postToolAutoContinueUsed && !await this.drainSoftSteerWaitersBeforeRetry()) break;
 
                         if (this.attemptProducedToolActivity) {
                             if (!postToolAutoContinueUsed) {
