@@ -162,6 +162,20 @@ describe('durable session read state', () => {
         expect(getSessionManualUnreadAt('s')).toBe(returnedVersion === 2 ? null : 0)
     })
 
+    it.each([2, 4])('settles an explicit read whose own response still carries the marker at v%s', async version => {
+        const seen = { id: 's', contentRevision: 7, readState: server(2, 1, true) }
+        markListedSessionSeen(seen)
+        const sent: SessionReadStateRequest[] = []
+        cleanup = configureSessionReadState('hub-a:alice', async (_id, request) => {
+            sent.push({ ...request })
+            return { readState: sent.length === 1 ? server(7, version, true) : server(7, version + 1) }
+        })
+        await vi.advanceTimersByTimeAsync(0)
+        await flushSessionReadState()
+        expect(sent.map(r => r.expectedVersion)).toEqual(version === 2 ? [1, 2] : [1])
+        expect(getSessionManualUnreadAt('s')).toBe(version === 2 ? null : 0)
+    })
+
     it('syncs other receipts while one session keeps returning 500', async () => {
         markSessionSeen('broken', 5)
         markSessionSeen('healthy', 3)

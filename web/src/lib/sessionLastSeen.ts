@@ -109,21 +109,23 @@ export async function flushSessionReadState(): Promise<void> {
                 const store = readStore(key)
                 const current = store[id] ?? entry
                 current.server = mergeReadState(current.server, response.readState)!
-                if (current.pending?.id === pending.id) delete current.pending
+                if (current.pending?.manualReadFrom !== undefined && pending.request.type === 'read'
+                    && response.readState.manualUnread && response.readState.version === current.server.version
+                    && response.readState.version === current.pending.request.expectedVersion + 1
+                    && response.readState.readRevision > current.pending.manualReadFrom) {
+                    // The single intervening write advanced the watermark without
+                    // changing the manual flag the newer read intended to clear.
+                    current.pending = {
+                        ...current.pending, id: randomId(), manualReadFrom: response.readState.readRevision,
+                        request: { ...current.pending.request, expectedVersion: response.readState.version }
+                    }
+                } else if (current.pending?.id === pending.id) delete current.pending
                 else if (current.pending?.request.expectedVersion === pending.request.expectedVersion
                     && response.readState.version <= pending.request.expectedVersion + 1
                     && response.readState.manualUnread === (pending.request.type === 'unread')) {
                     // A newer local intent follows our own acknowledged write.
                     // Do not rebase across another client's manual-unread change.
                     current.pending.request.expectedVersion = response.readState.version
-                } else if (current.pending?.manualReadFrom !== undefined && pending.request.type === 'read'
-                    && response.readState.manualUnread && response.readState.version === current.server.version
-                    && response.readState.version === current.pending.request.expectedVersion + 1
-                    && response.readState.readRevision > current.pending.manualReadFrom) {
-                    // The single intervening write advanced the watermark without
-                    // changing the manual flag the newer read intended to clear.
-                    current.pending.request.expectedVersion = response.readState.version
-                    current.pending.manualReadFrom = response.readState.readRevision
                 }
                 store[id] = current
                 if (!save(store, key)) failed = true
