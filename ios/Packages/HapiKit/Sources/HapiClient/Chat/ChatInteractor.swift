@@ -1229,6 +1229,25 @@ public final class ChatInteractor {
         }
     }
 
+    /// Hub-owned `metadata.translateInput` of the loaded detail (absent = off).
+    public var translateInputEnabled: Bool {
+        sessionStore.detail(for: sessionId)?.metadata?.translateInput == true
+    }
+
+    /// `PATCH /sessions/:id {translateInput}` (web `SessionHeader`
+    /// toggle). Optimistic on the detail; a failure (e.g. 400 when the hub
+    /// has no translation provider) surfaces the hub's error as a notice.
+    public func setTranslateInput(_ enabled: Bool) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.sessionStore.setTranslateInput(sessionId: self.sessionId, enabled: enabled)
+            } catch {
+                self.emit(.notice(hubErrorMessage(error) ?? "Failed to update session"))
+            }
+        }
+    }
+
     /// `DELETE /sessions/:id` for an inactive session. Success removes the
     /// row and fires the store's removal callback, which closes this chat;
     /// a 409 means the session became active again.

@@ -29,6 +29,11 @@ extension APIClient {
         )
     }
 
+    /// `GET /api/features` — hub feature flags (input translation, ...).
+    public func features() async throws -> HubFeaturesResponse {
+        try await request(.get, "/api/features")
+    }
+
     /// `POST /api/visibility` — reports foreground/background transitions so
     /// the hub can suppress redundant pushes while the app is visible.
     /// `subscriptionId` comes from the SSE `connection-changed` handshake;
