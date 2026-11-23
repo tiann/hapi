@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
+import { observeSessionDetail } from '@/lib/sessionDetailRead'
 import { queryKeys } from '@/lib/query-keys'
 import { describe, expect, it, vi } from 'vitest'
 import { useSession, isSessionNotFoundError, SESSION_DETAIL_STALE_TIME_MS } from './useSession'
@@ -40,11 +41,12 @@ it('checks a cached disconnected session on entry and keeps a newer reconnect du
     expect(view.result.current.isFetching).toBe(true)
     expect(getSession).toHaveBeenCalledTimes(1)
     await act(async () => {
+        observeSessionDetail(client, 'test', { active: true, thinking: true, activeAt: 20 })
         client.setQueryData(key, { session: { ...offline, active: true, thinking: true, thinkingAt: 20, activeAt: 20 } })
-        resolve({ session: offline })
+        resolve({ session: { ...offline, activeTurnStartedAt: 15 } })
     })
     await waitFor(() => expect(view.result.current.isFetching).toBe(false))
-    expect(view.result.current.session).toMatchObject({ active: true, thinking: true, activeAt: 20 })
+    expect(view.result.current.session).toMatchObject({ active: true, thinking: true, activeAt: 20, activeTurnStartedAt: 15 })
     view.unmount()
     client.clear()
 })
@@ -68,21 +70,22 @@ it('preserves an archive metadata patch even when its liveness clock is unchange
     client.clear()
 })
 
-it('keeps an expiry patch over a delayed active snapshot with the same keepalive time', async () => {
+it.each([true, false])('keeps equal-time expiry over a live snapshot (cached active=%s)', async cachedActive => {
     const client = new QueryClient()
     const key = queryKeys.session('expiry')
     const active = { id: 'expiry', active: true, activeAt: 10, thinking: true, metadataVersion: 0 } as Session
-    client.setQueryData(key, { session: active }, { updatedAt: 1 })
+    client.setQueryData(key, { session: { ...active, active: cachedActive } }, { updatedAt: 1 })
     let resolve!: (value: { session: Session }) => void
     const api = { getSession: () => new Promise(done => { resolve = done }) } as unknown as ApiClient
     const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
     const view = renderHook(() => useSession(api, 'expiry'), { wrapper })
     await act(async () => {
+        observeSessionDetail(client, 'expiry', { active: false, activeAt: 10, thinking: false, activeTurnStartedAt: null })
         client.setQueryData(key, { session: { ...active, active: false, thinking: false } })
-        resolve({ session: active })
+        resolve({ session: { ...active, activeTurnStartedAt: 9 } })
     })
     await waitFor(() => expect(view.result.current.isFetching).toBe(false))
-    expect(view.result.current.session).toMatchObject({ active: false, thinking: false, activeAt: 10 })
+    expect(view.result.current.session).toMatchObject({ active: false, thinking: false, activeAt: 10, activeTurnStartedAt: null })
     view.unmount()
     client.clear()
 })

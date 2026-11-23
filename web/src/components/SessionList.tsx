@@ -2570,16 +2570,9 @@ export function SessionList(props: {
         + runningSessions.pending.length
     const groups = useMemo(
         () => {
+            const inProgressIds = new Set(Object.values(runningSessions).flat().map(session => session.id))
             const grouped = groupSessionsByDirectory(
-                machineFilteredSessions.filter((session) => {
-                    if (session.globalPinned) return false
-                    if (
-                        effectivePinInProgressMode !== 'off'
-                        && !session.pinned
-                        && isPinnedInProgressSession(session, effectivePinInProgressMode)
-                    ) return false
-                    return true
-                }),
+                machineFilteredSessions.filter(session => !session.globalPinned && !inProgressIds.has(session.id)),
                 // Search keeps its own contract: relevance first, then the stable
                 // last-message order for ties, whatever the list view says.
                 hasTextQuery ? undefined : listView
@@ -2589,7 +2582,7 @@ export function SessionList(props: {
             }
             return grouped
         },
-        [listClockTick, machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listView]
+        [runningSessions, machineFilteredSessions, searchScoreIndex, hasTextQuery, listView]
     )
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory

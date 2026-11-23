@@ -22,6 +22,7 @@ import type {
     SessionSummary,
     SyncEvent
 } from '@/types/api'
+import { observeSessionDetail } from '@/lib/sessionDetailRead'
 import { queryKeys } from '@/lib/query-keys'
 import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
 import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesDispatching, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
@@ -773,6 +774,7 @@ export function useSSE(options: {
                     queueScratchlistStatusInvalidation()
                 } else if (isSessionRecord(event.data) && event.data.id === event.sessionId) {
                     const incoming = event.data
+                    observeSessionDetail(queryClient, event.sessionId, incoming)
                     queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), previous => ({ session: {
                         ...incoming,
                         contentRevision: Math.max(previous?.session.contentRevision ?? 0, incoming.contentRevision ?? 0),
@@ -785,6 +787,7 @@ export function useSSE(options: {
                 } else {
                     const patch = getSessionPatch(event.data)
                     if (patch) {
+                        observeSessionDetail(queryClient, event.sessionId, patch)
                         const detailPatched = patchSessionDetail(event.sessionId, patch)
                         const summaryPatched = patchSessionSummary(event.sessionId, patch)
 

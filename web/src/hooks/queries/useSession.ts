@@ -2,6 +2,7 @@ import { mergeReadState } from '@hapi/protocol'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
+import { readSessionWithLiveUpdates } from '@/lib/sessionDetailRead'
 import { queryKeys } from '@/lib/query-keys'
 
 export function isSessionNotFoundError(error: unknown): boolean {
@@ -36,18 +37,9 @@ export function useSession(api: ApiClient | null, sessionId: string | null): {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            const atStart = queryClient.getQueryData<{ session: Session }>(queryKeys.session(sessionId))?.session
-            const response = await api.getSession(sessionId)
+            const response = await readSessionWithLiveUpdates(queryClient, sessionId, () => api.getSession(sessionId))
             const current = queryClient.getQueryData<{ session: Session }>(queryKeys.session(sessionId))?.session
             return { ...response, session: { ...response.session,
-                // A later live patch can land while an older REST snapshot is in flight.
-                ...(current && current !== atStart && (current.activeAt > response.session.activeAt
-                    || (current.activeAt === response.session.activeAt && current.active !== atStart?.active))
-                    ? { active: current.active, activeAt: current.activeAt, thinking: current.thinking,
-                        thinkingAt: current.thinkingAt, activeTurnStartedAt: current.activeTurnStartedAt,
-                        backgroundTaskCount: current.backgroundTaskCount, backgroundTasks: current.backgroundTasks,
-                        derivedToolWork: current.derivedToolWork }
-                    : {}),
                 ...(current && current.metadataVersion > response.session.metadataVersion
                     ? { metadata: current.metadata, metadataVersion: current.metadataVersion } : {}),
                 contentRevision: Math.max(current?.contentRevision ?? 0, response.session.contentRevision ?? 0),
