@@ -9,8 +9,10 @@ function clearComposerDraft(
     sessionId: string,
     sentText?: string,
     sentAttachmentIds?: readonly string[],
+    preserveText = false,
 ): void {
-    clearDraft(sessionId)
+    if (preserveText && sentAttachmentIds === undefined) return
+    if (!preserveText) clearDraft(sessionId)
     if (sentAttachmentIds === undefined) {
         clearDraftAttachments(sessionId)
     } else {
@@ -18,7 +20,8 @@ function clearComposerDraft(
     }
     if (sentText !== undefined) {
         if (sentAttachmentIds !== undefined) {
-            clearComposerDraftSnapshotIfText(sessionId, sentText, sentAttachmentIds)
+            if (preserveText) clearComposerDraftSnapshotIfText(sessionId, sentText, sentAttachmentIds, true)
+            else clearComposerDraftSnapshotIfText(sessionId, sentText, sentAttachmentIds)
         } else {
             clearComposerDraftSnapshotIfText(sessionId, sentText)
         }
@@ -35,9 +38,10 @@ export function clearDraftsAfterSend(
     routeSessionId: string | null,
     sentText?: string,
     sentAttachmentIds?: readonly string[],
+    preserveText = false,
 ): void {
-    clearComposerDraft(sentSessionId, sentText, sentAttachmentIds)
+    clearComposerDraft(sentSessionId, sentText, sentAttachmentIds, preserveText)
     if (routeSessionId && sentSessionId !== routeSessionId) {
-        clearComposerDraft(routeSessionId, sentText, sentAttachmentIds)
+        clearComposerDraft(routeSessionId, sentText, sentAttachmentIds, preserveText)
     }
 }

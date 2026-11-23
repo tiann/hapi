@@ -194,6 +194,16 @@ describe('composer send state', () => {
         )
     })
 
+    it('reconciles exact attachment IDs but preserves text when a new draft supersedes the send', () => {
+        recordPendingComposerSend({
+            sessionId: 'session-A', attemptId: 'attempt-A', text: 'message A',
+            attachmentIds: ['sent-file'], programmaticEditRevision: 0, draftRevision: 0,
+        })
+        recordComposerProgrammaticEdit('session-A')
+        publishComposerSendSettlement(settlement('session-A', 'attempt-A'))
+        expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-A', null, 'text-session-A', ['sent-file'], true)
+    })
+
     it('does not reconcile after a newer draft revision', () => {
         recordPendingComposerSend({
             sessionId: 'session-A',

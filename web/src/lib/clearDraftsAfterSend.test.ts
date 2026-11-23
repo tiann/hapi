@@ -58,6 +58,14 @@ describe('clearDraftsAfterSend', () => {
         expect(mockClearComposerDraftSnapshotIfText).toHaveBeenCalledWith('session-A', 'sent text')
     })
 
+    it('removes submitted IDs from storage and the snapshot without clearing newer text', () => {
+        clearDraftsAfterSend('session-A', null, 'sent text', ['att-1'], true)
+        expect(mockClearDraft).not.toHaveBeenCalled()
+        expect(mockClearDraftAttachments).not.toHaveBeenCalled()
+        expect(mockRemoveDraftAttachmentsById).toHaveBeenCalledWith('session-A', ['att-1'])
+        expect(mockClearComposerDraftSnapshotIfText).toHaveBeenCalledWith('session-A', 'sent text', ['att-1'], true)
+    })
+
     it('removes only submitted attachment IDs when provided', () => {
         clearDraftsAfterSend('session-A', null, 'sent text', ['att-1'])
         expect(mockClearDraft).toHaveBeenCalledWith('session-A')

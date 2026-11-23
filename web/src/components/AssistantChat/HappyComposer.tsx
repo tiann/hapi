@@ -977,78 +977,32 @@ export function HappyComposer(props: {
             ?? props.sendAcceptance?.originalText
             ?? settlement.text
 
-        if (
+        const acceptedSend = acceptedSendEditGenerationRef.current
+        const acceptedThisAttempt = acceptedSend?.attemptId === settlement.attemptId
+        const sendEditGeneration = acceptedThisAttempt ? acceptedSend.generation : pendingSendEditGenerationRef.current
+        const attachmentGeneration = acceptedThisAttempt ? acceptedSend.attachmentGeneration : pendingSendAttachmentGenerationRef.current
+        const scheduleGeneration = acceptedThisAttempt ? acceptedSend.scheduleGeneration : pendingSendScheduleGenerationRef.current
+        const preserveText = (
             props.sendAcceptance?.draftRevision !== undefined
             && getComposerDraftRevision(sessionId) > props.sendAcceptance.draftRevision
-        ) {
-            consumeSettlement()
-            return
-        }
+        ) || userEditGenerationRef.current > (sendEditGeneration ?? 0)
+            || userAttachmentGenerationRef.current > (attachmentGeneration ?? 0)
+            || userScheduleGenerationRef.current > (scheduleGeneration ?? 0)
+            || Math.max(props.programmaticEditRevision ?? 0, getComposerProgrammaticEditRevision(sessionId))
+                > (props.sendAcceptance?.programmaticEditRevision ?? 0)
+            || (composerText !== '' && composerText !== submittedText)
 
-        const acceptedSend = acceptedSendEditGenerationRef.current
-        const sendEditGeneration = acceptedSend?.attemptId === settlement.attemptId
-            ? acceptedSend.generation
-            : pendingSendEditGenerationRef.current
-        const userEditedAfterSend = sendEditGeneration !== null
-            ? userEditGenerationRef.current > sendEditGeneration
-            : userEditGenerationRef.current > 0
-        if (userEditedAfterSend) {
-            consumeSettlement()
-            return
-        }
-
-        if (composerText !== submittedText && composerText !== '') {
-            consumeSettlement()
-            return
-        }
-
-        const editedProgrammaticallyAfterSend =
-            Math.max(props.programmaticEditRevision ?? 0, getComposerProgrammaticEditRevision(sessionId))
-            > (props.sendAcceptance?.programmaticEditRevision ?? 0)
-
-        // Queued-message Edit restores text through the assistant-ui store and
-        // does not fire the composer input handlers. Its external revision is
-        // the only signal that an exact-text replacement is newer state. A
-        // same-session resume can rehydrate the submitted text without that
-        // revision, so it must remain clearable.
-        if (editedProgrammaticallyAfterSend) {
-            consumeSettlement()
-            return
-        }
-
-        const attachmentGeneration = acceptedSend?.attemptId === settlement.attemptId
-            ? acceptedSend.attachmentGeneration
-            : pendingSendAttachmentGenerationRef.current
-        const attachmentsChangedAfterSend = attachmentGeneration !== null
-            ? userAttachmentGenerationRef.current > attachmentGeneration
-            : userAttachmentGenerationRef.current > 0
-        if (attachmentsChangedAfterSend) {
-            consumeSettlement()
-            return
-        }
-
-        const scheduleGeneration = acceptedSend?.attemptId === settlement.attemptId
-            ? acceptedSend.scheduleGeneration
-            : pendingSendScheduleGenerationRef.current
-        const scheduleChangedAfterSend = scheduleGeneration !== null
-            ? userScheduleGenerationRef.current > scheduleGeneration
-            : userScheduleGenerationRef.current > 0
-        if (scheduleChangedAfterSend) {
-            consumeSettlement()
-            return
-        }
-
-        if (composerText && composerText === submittedText) {
+        if (!preserveText && composerText && composerText === submittedText) {
             recordSuccessfulComposerClear(sessionId, composerText)
             api.composer().setText('')
         }
         const submittedAttachmentIds = settlement.attachmentIds
             ?? props.sendAcceptance?.attachmentIds
-            ?? (
-                acceptedSend?.attemptId === settlement.attemptId
-                    ? acceptedSend.attachmentIds
-                    : pendingSendAttachmentIdsRef.current ?? undefined
-            )
+            ?? (acceptedThisAttempt ? acceptedSend.attachmentIds : pendingSendAttachmentIdsRef.current ?? undefined)
+        if (preserveText && !submittedAttachmentIds?.length) {
+            consumeSettlement()
+            return
+        }
         // Without explicit IDs, don't guess from a partially hydrated list.
         if (!draftHydration.complete && submittedAttachmentIds === undefined) return
         const submittedAttachmentIdSet = submittedAttachmentIds
@@ -1079,7 +1033,9 @@ export function HappyComposer(props: {
         // Revisit the settlement when another attachment arrives or the read
         // completes. Already-visible submitted chips are not safe to resend.
         if (!draftHydration.complete) return
-        if (submittedAttachmentIds !== undefined) {
+        if (preserveText && submittedAttachmentIds !== undefined) {
+            clearDraftsAfterSend(settlement.sessionId, null, submittedText, submittedAttachmentIds, true)
+        } else if (submittedAttachmentIds !== undefined) {
             clearDraftsAfterSend(
                 settlement.sessionId,
                 null,

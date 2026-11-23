@@ -107,6 +107,7 @@ export function clearComposerDraftSnapshotIfText(
     sessionId: string,
     text: string,
     sentAttachmentIds?: readonly string[],
+    preserveText = false,
 ): void {
     const snapshot = liveSnapshots.get(sessionId)
     if (!snapshot) return
@@ -119,7 +120,7 @@ export function clearComposerDraftSnapshotIfText(
     const remainingAttachments = snapshot.attachments.filter(
         (attachment) => !sentIdSet.has(attachment.id),
     )
-    if (snapshot.text !== text && snapshot.text !== '') {
+    if (preserveText || (snapshot.text !== text && snapshot.text !== '')) {
         if (remainingAttachments.length !== snapshot.attachments.length) {
             liveSnapshots.set(sessionId, {
                 text: snapshot.text,

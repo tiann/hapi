@@ -128,17 +128,23 @@ export function publishComposerSendSettlement(settlement: SendMessageSettlement)
  * Clear durable draft storage as soon as both halves of a successful send are
  * known. The mounted composer still owns live assistant-ui cleanup, but this
  * path keeps a route-unmounted or refreshed page from resurrecting a sent
- * draft. A newer draft revision always wins and remains intact.
+ * draft. Preserve newer text, but still discard exact IDs that were sent.
  */
 function reconcileSuccessfulSend(sessionId: string): void {
     const pending = pendingComposerSends.get(sessionId)
     if (!pending?.attemptId) return
     const settlement = composerSendSettlements.get(sessionId)?.get(pending.attemptId)
     if (settlement?.status !== 'success') return
-    if (getComposerDraftRevision(sessionId) !== pending.draftRevision) return
     const sentText = settlement.originalText ?? pending.originalText ?? settlement.text
     const sentAttachmentIds = settlement.attachmentIds ?? pending.attachmentIds
-    if (getDraft(sessionId) === sentText) recordSuccessfulComposerClear(sessionId, sentText)
+    const currentText = getDraft(sessionId)
+    const preserveText = getComposerDraftRevision(sessionId) !== pending.draftRevision
+        || (currentText !== '' && currentText !== sentText)
+    if (preserveText) {
+        if (sentAttachmentIds?.length) clearDraftsAfterSend(sessionId, null, sentText, sentAttachmentIds, true)
+        return
+    }
+    if (currentText === sentText) recordSuccessfulComposerClear(sessionId, sentText)
     if (sentAttachmentIds !== undefined) {
         clearDraftsAfterSend(sessionId, null, sentText, sentAttachmentIds)
         return

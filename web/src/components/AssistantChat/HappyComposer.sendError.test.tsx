@@ -1022,6 +1022,28 @@ describe('HappyComposer send-error atomic restore', () => {
         }
     })
 
+    it('preserves a newer queued edit while removing only the sent attachment on remount', async () => {
+        const controls = renderComposer('submitted', null)
+        act(() => controls.current!.addAttachment())
+        send()
+        act(() => controls.current!.acceptSend(['new-attachment']))
+        act(() => controls.current!.remount())
+        act(() => {
+            controls.current!.hydrateSubmittedAttachment()
+            runtime.restoredAttachmentIds?.(['keep-attachment'])
+            runtime.setSnapshot!(current => ({
+                ...current, composer: { ...current.composer, attachments: [
+                    ...current.composer.attachments, { id: 'keep-attachment', status: { type: 'complete' } },
+                ] },
+            }))
+            controls.current!.queuedEditSetText('New queued edit')
+        })
+        act(() => controls.current!.settleSend())
+        await waitFor(() => expect(runtime.snapshot.composer.attachments.map(item => item.id)).toEqual(['keep-attachment']))
+        expect(input()).toHaveValue('New queued edit')
+        expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, 'submitted', ['new-attachment'], true)
+    })
+
     it('removes a restored sent chip while a different attachment is still hydrating', async () => {
         const controls = renderComposer('', null)
         act(() => controls.current!.addAttachment())
