@@ -345,6 +345,36 @@ describe('position pagination and structural epochs', () => {
         expect(store.messages.getMessageEpoch(session.id)).toBe(1)
     })
 
+    it('bumps the epoch when an anchored steer lands at the head timestamp with a lower seq', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'epoch-anchored-steer')
+        const steer = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'steer' } },
+            'steer-local',
+            undefined,
+            1000
+        )
+        const head = store.messages.addMessage(
+            session.id,
+            { role: 'assistant', content: { type: 'text', text: 'head' } },
+            undefined,
+            undefined,
+            1001
+        )
+        expect(steer.seq).toBeLessThan(head.seq)
+        expect(steer.invokedAt).toBeNull()
+        expect(store.messages.getMessageEpoch(session.id)).toBe(0)
+
+        store.messages.markMessagesInvoked(session.id, ['steer-local'], 1001, { reorderEpoch: true })
+
+        // (1001, steer.seq) sorts before the head at the same timestamp.
+        expect(store.messages.getMessagesAfterPosition(session.id, 10, { at: 1001, seq: head.seq })).toEqual([])
+        expect(store.messages.getMessagesByPosition(session.id, 10).map(message => message.localId))
+            .toEqual(['steer-local', head.localId])
+        expect(store.messages.getMessageEpoch(session.id)).toBe(1)
+    })
+
     it('bumps the target epoch when a copied message lands behind the cached head', () => {
         const store = makeStore()
         const target = makeSession(store, 'epoch-copy-target')

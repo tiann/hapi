@@ -828,6 +828,67 @@ it.each([
             store.close()
         })
 
+        it('keeps transcript order for two steers that share one anchor', () => {
+            const store = new Store(':memory:')
+            const session = store.sessions.getOrCreateSession('anchor-order', {}, null, 'default')
+            const socket = new FakeSocket()
+            const events: SyncEvent[] = []
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+                onWebappEvent: event => events.push(event)
+            })
+            const t0 = Date.now() - 60_000
+            socket.trigger('message', { sid: session.id, message: toolCallContent('call-1', { status: 'running' }), createdAt: t0 })
+            for (const localId of ['steer-a', 'steer-b']) {
+                socket.trigger('message', {
+                    sid: session.id,
+                    localId,
+                    message: { role: 'user', content: { type: 'text', text: localId } }
+                })
+            }
+            // agy took B before A, and both rows follow the same call.
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['steer-b'], steered: true, anchor: { toolCallId: 'call-1' } })
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['steer-a'], steered: true, anchor: { toolCallId: 'call-1' } })
+
+            const consumed = events.filter(event => event.type === 'messages-consumed') as Array<Extract<SyncEvent, { type: 'messages-consumed' }>>
+            expect(consumed.map(event => event.localIds[0])).toEqual(['steer-b', 'steer-a'])
+            expect(consumed.map(event => event.invokedAt)).toEqual([t0 + 1, t0 + 2])
+
+            const byPosition = store.messages.getMessagesByPosition(session.id, 10)
+            expect(byPosition.filter(message => message.localId?.startsWith('steer-')).map(message => message.localId))
+                .toEqual(['steer-b', 'steer-a'])
+            store.close()
+        })
+
+        it('restarts the offset when a later steer uses a different anchor in the same session', () => {
+            const store = new Store(':memory:')
+            const session = store.sessions.getOrCreateSession('anchor-reset', {}, null, 'default')
+            const socket = new FakeSocket()
+            const events: SyncEvent[] = []
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+                onWebappEvent: event => events.push(event)
+            })
+            const t0 = Date.now() - 60_000
+            socket.trigger('message', { sid: session.id, message: toolCallContent('call-1', { status: 'running' }), createdAt: t0 })
+            socket.trigger('message', { sid: session.id, message: toolCallContent('call-2', { status: 'running' }), createdAt: t0 + 20_000 })
+            for (const localId of ['steer-1', 'steer-2', 'steer-3']) {
+                socket.trigger('message', {
+                    sid: session.id,
+                    localId,
+                    message: { role: 'user', content: { type: 'text', text: localId } }
+                })
+            }
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['steer-1'], steered: true, anchor: { toolCallId: 'call-1' } })
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['steer-2'], steered: true, anchor: { toolCallId: 'call-1' } })
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['steer-3'], steered: true, anchor: { toolCallId: 'call-2' } })
+
+            const consumed = events.filter(event => event.type === 'messages-consumed') as Array<Extract<SyncEvent, { type: 'messages-consumed' }>>
+            const secondAnchorAt = store.messages.findToolCallPositionAt(session.id, 'call-2')
+            expect(consumed[2]?.invokedAt).toBe((secondAnchorAt ?? 0) + 1)
+            store.close()
+        })
+
         it('stamps now when the anchor is missing or not found', () => {
             for (const anchor of [undefined, { toolCallId: 'gone' }, { toolCallId: 42 }]) {
                 const { store, session, socket, consumed, invokedAtOf } = setup()

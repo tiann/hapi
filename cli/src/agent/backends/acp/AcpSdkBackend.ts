@@ -1016,6 +1016,8 @@ export class AcpSdkBackend implements AgentBackend {
         // Agents that answer each request with its own share (Antigravity)
         // need every response's usage to total the turn.
         onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void;
+        // Settles on an explicit request rejection before late output is drained.
+        onRefused?: () => void;
     }): {
         dispatched: Promise<void>;
         /** Settles when the agent answers, before late output is drained. */
@@ -1073,7 +1075,7 @@ export class AcpSdkBackend implements AgentBackend {
             });
         });
 
-        const answered = request.completed.then(() => {}, () => {});
+        const answered = request.completed.then(() => {}, () => { options?.onRefused?.(); });
         return { dispatched: request.dispatched, answered, completed };
     }
 

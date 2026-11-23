@@ -8,6 +8,7 @@ import { hashObject } from '@/utils/deterministicJson';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentMessage, PermissionRequest, PromptContent } from '@/agent/types';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { AgySession } from './session';
 import type { AgyMode } from './types';
 import { AgyAcpRemoteLauncher } from './agyAcpRemoteLauncher';
@@ -126,8 +127,22 @@ class WakeupTestBackend {
     async cancelPrompt(sessionId: string): Promise<void> {
         this.cancelCalls.push(sessionId);
     }
-    beginSoftSteerPrompt(): never {
-        throw new Error('not used');
+    readonly steerPrompts: PromptContent[][] = [];
+    steerCompletions: Array<{
+        resolve: (stopReason: string | null) => void;
+        reject: (error: unknown) => void;
+    }> = [];
+    beginSoftSteerPrompt(_sessionId: string, content: PromptContent[]) {
+        this.steerPrompts.push(content);
+        let resolve!: (stopReason: string | null) => void;
+        let reject!: (error: unknown) => void;
+        const completed = new Promise<string | null>((res, rej) => { resolve = res; reject = rej; });
+        let answer!: () => void;
+        const answered = new Promise<void>((res) => { answer = res; });
+        void completed.then(answer, answer);
+        const dispatched = Promise.resolve();
+        this.steerCompletions.push({ resolve, reject });
+        return { dispatched, answered, completed };
     }
     abortSoftSteers(): void {}
     async refreshSessionInfo(): Promise<void> {}
@@ -2875,7 +2890,6 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 nativeArgs: { CommandLine: 'sleep 20' }
             });
             onUpdate({ type: 'text', text: 'New command backgrounded.' });
-            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
 
             const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
             appendFileSync(
@@ -2918,6 +2932,24 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 ].join('\n') + '\n',
                 'utf8'
             );
+
+            // A steer after the new command must anchor to the new command's
+            // card, not the prior turn's completed background call.
+            queue.push('anchor steer', { permissionMode: 'always-proceed' }, 'steer-msg');
+            await client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer-msg' });
+            appendFileSync(
+                compactPath,
+                `${JSON.stringify({
+                    step_index: 9,
+                    source: 'USER_EXPLICIT',
+                    type: 'USER_INPUT',
+                    status: 'DONE',
+                    content: '<USER_REQUEST>\nanchor steer\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: now.\n</ADDITIONAL_METADATA>'
+                })}\n`,
+                'utf8'
+            );
+            backend.steerCompletions[0]!.resolve('end_turn');
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
         });
 
         const launcher = new AgyAcpRemoteLauncher(session, {
@@ -2940,6 +2972,11 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             expect(backend.prompts).toHaveLength(2);
             expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
         });
+        await vi.waitFor(() => {
+            expect(client.emitMessagesConsumed).toHaveBeenCalledWith(
+                ['steer-msg'], { steered: true, anchor: { toolCallId: 'call-bg-new' } }
+            );
+        });
         client.sendSessionEvent.mockClear();
         client.sendAgentMessage.mockClear();
 
@@ -2949,14 +2986,14 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             compactPath,
             [
                 JSON.stringify({
-                    step_index: 9,
+                    step_index: 10,
                     source: 'SYSTEM',
                     type: 'SYSTEM_MESSAGE',
                     status: 'DONE',
                     content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-32" finished with result:\nCommand exited with code 0.\n\nCommand output:\nNEW_DONE\n</SYSTEM_MESSAGE>`
                 }),
                 JSON.stringify({
-                    step_index: 10,
+                    step_index: 11,
                     source: 'MODEL',
                     type: 'PLANNER_RESPONSE',
                     status: 'DONE',

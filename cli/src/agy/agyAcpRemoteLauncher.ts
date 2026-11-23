@@ -1452,7 +1452,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         // out, and a second one would read as another turn.
                         if (this.turn !== turn) return;
                         turn.usage = addAgyUsage(turn.usage, usage);
-                    }
+                    },
+                    // The refusal arrives before the output drain; drop this
+                    // steer from row matching so a later identical steer's row
+                    // is not claimed for it.
+                    onRefused: () => { if (rowSteer) rowSteer.done = true; }
                 }
             );
         } catch (error) {
@@ -1989,7 +1993,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const canonical = this.toCanonicalToolMessage(message);
         const converted = convertAgentMessage(canonical, this.currentModelId);
         if (converted) this.session.sendAgentMessage(converted);
-        if (message.type === 'tool_call' && canonical.type === 'tool_call' && this.turn) {
+        if (message.type === 'tool_call' && canonical.type === 'tool_call' && this.turn
+            && !this.turn.priorBackgroundCallIds.has(canonical.id)) {
             const shown = this.turn.shownToolCalls;
             if (!shown.some((call) => call.id === canonical.id)) {
                 shown.push({ id: canonical.id, names: [message.nativeName, message.name, canonical.name].filter((name): name is string => !!name) });

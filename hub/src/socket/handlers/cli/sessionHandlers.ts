@@ -134,6 +134,10 @@ export type SessionHandlersDeps = {
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
     const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed } = deps
+    // Steers under one anchor arrive in transcript order; give each a distinct
+    // slot after the anchor so display order does not fall back to enqueue order.
+    // Only the latest anchor per session is kept so this stays bounded.
+    const anchoredSteerOffsets = new Map<string, { anchorAt: number; offset: number }>()
 
     socket.on('native-queue-message', data => {
         const parsed = z.object({ sid: z.string(), localId: z.string().min(1), text: z.string().nullable() }).safeParse(data)
@@ -501,7 +505,15 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 console.error('findToolCallPositionAt failed', err)
             }
         }
-        const invokedAt = anchorAt !== null ? anchorAt + 1 : Date.now()
+        let invokedAt: number
+        if (anchorAt !== null) {
+            const tracked = anchoredSteerOffsets.get(data.sid)
+            const offset = tracked?.anchorAt === anchorAt ? tracked.offset + 1 : 1
+            anchoredSteerOffsets.set(data.sid, { anchorAt, offset })
+            invokedAt = anchorAt + offset
+        } else {
+            invokedAt = Date.now()
+        }
         let sessionUpdatedAt: number
         try {
             sessionUpdatedAt = store.recordMessagesConsumed(

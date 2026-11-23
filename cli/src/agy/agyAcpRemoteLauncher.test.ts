@@ -140,13 +140,18 @@ class FakeAgyBackend {
         reject: (error: unknown) => void;
         // agy answered, but HAPI is still draining late output.
         answer: () => void;
+        // The ACP refusal reaches the launcher before the late-output drain.
+        refuseEarly: () => void;
         onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void;
     }> = [];
     abortSoftSteersCalls = 0;
     beginSoftSteerPrompt(
         _sessionId: string,
         content: PromptContent[],
-        options?: { onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void }
+        options?: {
+            onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void;
+            onRefused?: () => void;
+        }
     ) {
         if (this.steerStartError) throw this.steerStartError;
         if (!this.processingMessage) throw new Error('No active ACP prompt to soft-steer into');
@@ -159,7 +164,10 @@ class FakeAgyBackend {
         let answer!: () => void;
         const answered = new Promise<void>((res) => { answer = res; });
         void completed.then(answer, answer);
-        this.steerCompletions.push({ resolve, reject, answer, onUsage: options?.onUsage });
+        this.steerCompletions.push({
+            resolve, reject, answer, onUsage: options?.onUsage,
+            refuseEarly: () => options?.onRefused?.()
+        });
         const dispatched = this.steerDispatchError ? Promise.reject(this.steerDispatchError) : Promise.resolve();
         void dispatched.catch(() => {});
         return { dispatched, answered, completed };
@@ -2540,6 +2548,22 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await finish();
         // It went back to the queue and ran as the next prompt, not as a steer.
         expect(consumedFor(client, 'steer-1').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
+    });
+
+    it('gives a delayed refusal steer\'s row to a later identical steer', async () => {
+        const { backend, client, steer, finish } = await startTurn();
+        await steer('again', 'refused');
+        await steer('again', 'taken');
+        // agy refuses the first steer; the refusal reaches the launcher before
+        // the late-output drain, while the second steer's row is already written.
+        backend.steerCompletions[0]!.refuseEarly();
+
+        writeTranscript([...stepRows, userRow(3, 'again')]);
+        await vi.waitFor(() => expect(consumedFor(client, 'taken')).toHaveLength(1));
+        expect(consumedFor(client, 'refused')).toHaveLength(0);
+
+        backend.steerCompletions[0]!.reject(new Error('Can\'t add this prompt to session'));
+        await finish();
     });
 
     it('confirms without a position when no tool call came before the row', async () => {

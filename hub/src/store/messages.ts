@@ -1613,14 +1613,19 @@ export function markMessagesInvoked(
                AND invoked_at IS NULL`
         ).run(invokedAt, sessionId, ...localIds).changes
         if (changes > 0) {
-            // An anchored steer can land before the newest row; clients holding
-            // the old order need to reload.
-            if (previousHead && invokedAt < previousHead.at) bumpMessageEpoch(db, sessionId)
             const rows = prepareCached(db, `
                 SELECT id, session_id, content, created_at, seq, invoked_at
                 FROM messages
                 WHERE session_id = ? AND local_id IN (${placeholders}) AND invoked_at IS NOT NULL
             `).all(sessionId, ...localIds) as DbMessageRow[]
+            // An anchored steer can land before the newest row; clients holding
+            // the old order need to reload. Compare the full position so a move
+            // to the head's timestamp with a lower seq is caught too.
+            if (previousHead && (
+                invokedAt < previousHead.at
+                || (invokedAt === previousHead.at
+                    && rows.some(row => row.invoked_at === invokedAt && row.seq < previousHead.seq))
+            )) bumpMessageEpoch(db, sessionId)
             for (const row of rows) {
                 indexMessageContent(db, {
                     id: row.id,
