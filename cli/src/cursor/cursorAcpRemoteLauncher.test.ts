@@ -1780,6 +1780,83 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(launcherFinished).toBe(true);
     });
 
+    it('surfaces a status update when an unresolved soft steer stalls an earlier retry and resumes once it settles', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session, { exhaustedRetrySteerWaitTimeoutMs: 40 });
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith({
+                type: 'message',
+                message: 'Waiting for a pending soft steer to finish before retrying Cursor Agent.'
+            });
+        });
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'first' }]);
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('releases an earlier stalled-steer status wait on Abort without sending a retry', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise(() => {});
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session, { exhaustedRetrySteerWaitTimeoutMs: 40 });
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith({
+                type: 'message',
+                message: 'Waiting for a pending soft steer to finish before retrying Cursor Agent.'
+            });
+        });
+        expect(harness.promptCalls).toBe(1);
+
+        await handlers.get(RPC_METHODS.Abort)!();
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+
+        session.queue.close();
+        await runPromise;
+    }, 10_000);
+
     it('releases an in-loop retry soft-steer wait on Switch without sending a retry', async () => {
         let releasePrompt!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });

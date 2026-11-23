@@ -1269,16 +1269,28 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         // emitted by the settling steer set attemptProducedToolActivity.
                         // Skip once one-shot Continue has already been spent so give-up
                         // publishes Blocked immediately before cleanup drains waiters.
-                        // On the final ordinary attempt, bound this wait so a stalled
-                        // steer still surfaces exhausted retries + Blocked without
-                        // dropping softSteerWaiters before turn cleanup.
+                        // On earlier retries, surface a status message if a steer stalls
+                        // past the decision window while keeping the drain active so
+                        // recovery can still resume (or Abort can release it). On the
+                        // final ordinary attempt, stop waiting at the deadline so a
+                        // stalled steer still surfaces Blocked without dropping
+                        // softSteerWaiters before turn cleanup.
                         let drainOutcome: 'drained' | 'timed_out' | 'aborted' = 'drained';
                         if (!postToolAutoContinueUsed) {
-                            const decisionTimeoutMs = retryAttempt >= CURSOR_AUTO_RETRY_LIMIT
-                                ? this.exhaustedRetrySteerWaitTimeoutMs
-                                : undefined;
-                            drainOutcome = await this.drainSoftSteerWaitersBeforeRetry(decisionTimeoutMs);
+                            drainOutcome = await this.drainSoftSteerWaitersBeforeRetry(
+                                this.exhaustedRetrySteerWaitTimeoutMs
+                            );
                             if (drainOutcome === 'aborted') break;
+                            if (drainOutcome === 'timed_out' && retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
+                                const pauseNotice = 'Waiting for a pending soft steer to finish before retrying Cursor Agent.';
+                                this.session.sendSessionEvent({
+                                    type: 'message',
+                                    message: pauseNotice
+                                });
+                                this.messageBuffer.addMessage(pauseNotice, 'status');
+                                drainOutcome = await this.drainSoftSteerWaitersBeforeRetry();
+                                if (drainOutcome === 'aborted') break;
+                            }
                         }
 
                         if (this.attemptProducedToolActivity) {
