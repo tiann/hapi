@@ -3,7 +3,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { SettingsSection, SettingsSwitch } from './SettingsPrimitives'
 
 export function SearchHistorySettings() {
-    const { state, optOutNotSaved, setEnabled, clear } = useSearchHistory()
+    const { state, optOutNotSaved, failedWrite, setEnabled, clear } = useSearchHistory()
     const { t } = useTranslation()
     const hasHistory = state.sessions.length + state.files.length + state.outlines.length > 0
     return <SettingsSection title={t('searchHistory.title')} description={t('searchHistory.local')}>
@@ -11,6 +11,9 @@ export function SearchHistorySettings() {
         {optOutNotSaved ? <p role="alert" className="px-3 py-2 text-sm text-[var(--app-hint)]">
             {t('searchHistory.optOutNotSaved')}{' '}
             <button type="button" className="text-[var(--app-link)] underline" onClick={() => setEnabled(false)}>{t('searchHistory.retryOptOut')}</button>
+        </p> : null}
+        {failedWrite ? <p role="alert" className="px-3 py-2 text-sm text-[var(--app-hint)]">
+            {t(failedWrite === 'enable' ? 'searchHistory.optInNotSaved' : 'searchHistory.deleteNotSaved')}
         </p> : null}
         <button type="button" onClick={() => clear()} disabled={!hasHistory}
             className="min-h-12 w-full px-3 py-3 text-left text-sm text-[var(--app-link)] hover:bg-[var(--app-subtle-bg)] disabled:opacity-40">

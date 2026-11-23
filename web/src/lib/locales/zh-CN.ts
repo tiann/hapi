@@ -1,4 +1,6 @@
 export default {
+  'searchHistory.optInNotSaved': '无法开启搜索历史。设置保存前不会记录搜索。',
+  'searchHistory.deleteNotSaved': '无法删除已保存的搜索。记录仍然保留，请重试。',
   'searchHistory.title': '搜索历史',
   'searchHistory.local': '仅保存在此浏览器中，按当前 Hub 和账号区分，不会跨设备同步。',
   'searchHistory.description': '保存最近的会话、文件和大纲搜索。关闭后隐藏历史并停止保存，已有记录仍会保留。',

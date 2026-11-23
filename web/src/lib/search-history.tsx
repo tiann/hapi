@@ -47,13 +47,14 @@ export function getSearchHistoryKey(baseUrl: string, token: string): string | nu
 type HistoryContextValue = {
     state: SearchHistoryState
     optOutNotSaved: boolean
+    failedWrite: 'enable' | 'delete' | null
     record: (type: SearchHistoryType, query: string) => void
     remove: (type: SearchHistoryType, query: string) => void
     clear: (type?: SearchHistoryType) => void
     setEnabled: (enabled: boolean) => void
 }
 const HistoryContext = createContext<HistoryContextValue>({
-    state: emptyHistory(), optOutNotSaved: false,
+    state: emptyHistory(), optOutNotSaved: false, failedWrite: null,
     record: () => {}, remove: () => {}, clear: () => {}, setEnabled: () => {},
 })
 
@@ -96,11 +97,12 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
     const canCoordinate = Boolean(locks || hasIndexedDb)
     const [state, setState] = useState(() => (canCoordinate ? readHistory(storageKey) : null) ?? emptyHistory())
     const [optOutNotSaved, setOptOutNotSaved] = useState(false)
+    const [failedWrite, setFailedWrite] = useState<HistoryContextValue['failedWrite']>(null)
     const suspendedRecording = useRef(false)
     const memoryFallback = useRef<SearchHistoryState | null>(null)
     const value = useMemo<HistoryContextValue>(() => {
         type Change = (previous: SearchHistoryState) => SearchHistoryState
-        type Action = 'record' | 'disable' | 'enable' | 'other'
+        type Action = 'record' | 'disable' | 'enable' | 'delete'
         const updateInMemory = (change: Change) => {
             // No cross-tab lock means no write to persisted history. A stale
             // tab must never write it back after an opt-out or clear.
@@ -111,9 +113,10 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
         const handleUnsavedOptOut = (previous: SearchHistoryState) => {
             suspendedRecording.current = true
             setOptOutNotSaved(true)
+            setFailedWrite(null)
             setState({ ...previous, enabled: false })
         }
-        const update = (change: Change, action: Action = 'other') => {
+        const update = (change: Change, action: Action) => {
             if (action === 'record' && suspendedRecording.current) return
             if (!canCoordinate) {
                 updateInMemory(change)
@@ -134,6 +137,7 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
                         // the flag makes opting out a smaller write at quota.
                         const { enabled, ...lists } = next
                         window.localStorage.setItem(storageKey, JSON.stringify(enabled ? next : lists))
+                        if (action !== 'record') setFailedWrite(null)
                     }
                     memoryFallback.current = null
                     if (action === 'enable' || !next.enabled) {
@@ -142,8 +146,14 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
                     }
                     setState(suspendedRecording.current ? { ...next, enabled: false } : next)
                 } catch {
-                    if (action === 'disable' && previous.enabled) handleUnsavedOptOut(previous)
-                    else updateInMemory(change)
+                    if (action === 'disable' && previous.enabled) {
+                        handleUnsavedOptOut(previous)
+                    } else {
+                        // If we can read persisted state, don't pretend an
+                        // unsuccessful mutation took effect in localStorage.
+                        if (action === 'delete' || action === 'enable') setFailedWrite(action)
+                        setState(suspendedRecording.current ? { ...previous, enabled: false } : previous)
+                    }
                 }
             }
             const coordination = locks ? locks.request(storageKey, mutate) : withIndexedDbLock(storageKey, mutate)
@@ -153,19 +163,19 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
             })
         }
         return {
-            state, optOutNotSaved,
+            state, optOutNotSaved, failedWrite,
             record: (type, query) => update(previous => {
                 const trimmed = query.trim()
                 if (!previous.enabled || !trimmed) return previous
                 return { ...previous, [type]: [trimmed, ...previous[type].filter(entry => entry !== trimmed)].slice(0, SEARCH_HISTORY_LIMIT) }
             }, 'record'),
-            remove: (type, query) => update(previous => ({ ...previous, [type]: previous[type].filter(entry => entry !== query) })),
+            remove: (type, query) => update(previous => ({ ...previous, [type]: previous[type].filter(entry => entry !== query) }), 'delete'),
             clear: type => update(previous => type
                 ? { ...previous, [type]: [] }
-                : { ...emptyHistory(), enabled: previous.enabled }),
+                : { ...emptyHistory(), enabled: previous.enabled }, 'delete'),
             setEnabled: enabled => update(previous => ({ ...previous, enabled }), enabled ? 'enable' : 'disable'),
         }
-    }, [canCoordinate, locks, optOutNotSaved, state, storageKey])
+    }, [canCoordinate, failedWrite, locks, optOutNotSaved, state, storageKey])
 
     useEffect(() => {
         if (!canCoordinate) return
@@ -193,7 +203,7 @@ export function SearchHistoryProvider({ storageKey, children }: { storageKey: st
     // Remount when identity changes so a previous Hub/account never flashes in the new view.
     return storageKey
         ? <ScopedSearchHistoryProvider key={storageKey} storageKey={storageKey}>{children}</ScopedSearchHistoryProvider>
-        : <HistoryContext.Provider value={{ state: emptyHistory(), optOutNotSaved: false, record: () => {}, remove: () => {}, clear: () => {}, setEnabled: () => {} }}>{children}</HistoryContext.Provider>
+        : <HistoryContext.Provider value={{ state: emptyHistory(), optOutNotSaved: false, failedWrite: null, record: () => {}, remove: () => {}, clear: () => {}, setEnabled: () => {} }}>{children}</HistoryContext.Provider>
 }
 
 export function useSearchHistory() {

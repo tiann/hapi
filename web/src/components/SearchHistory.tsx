@@ -91,7 +91,7 @@ export function useSearchHistoryField(
             },
         },
         suggestions: visible ? <SearchHistorySuggestions
-            id={panelId} panelRef={panelRef} entries={history.state[type]}
+            id={panelId} panelRef={panelRef} entries={history.state[type]} deleteNotSaved={history.failedWrite === 'delete'}
             onBlur={options.wrapperHandlesBlur ? undefined : blur}
             onSelect={entry => {
                 dirty.current = false
@@ -111,6 +111,7 @@ function SearchHistorySuggestions(props: {
     id: string
     panelRef: RefObject<HTMLDivElement | null>
     entries: string[]
+    deleteNotSaved: boolean
     onSelect: (query: string) => void
     onRemove: (query: string) => void
     onClear: () => void
@@ -138,6 +139,7 @@ function SearchHistorySuggestions(props: {
             }
         }}
     >
+        {props.deleteNotSaved ? <p role="alert" className="px-2 py-1 text-xs text-[var(--app-hint)]">{t('searchHistory.deleteNotSaved')}</p> : null}
         <div className="flex items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 text-xs text-[var(--app-hint)]">
             <span>{t('searchHistory.recent')}</span>
             <button type="button" onClick={props.onClear} className="min-h-10 px-2 text-[var(--app-link)] hover:underline">{t('searchHistory.clear')}</button>

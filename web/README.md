@@ -118,6 +118,8 @@ The Hub persists and enforces the lock across clients, restarts, and resume.
 
 ### Search history
 
+Completed searches are saved on Enter or when leaving a search field. Saving an unfinished search when closing the browser tab is best effort: the browser may close the page before a pending write completes.
+
 - Session-list, file, and conversation-outline search each keep up to 20 recent queries.
 - Focus an empty search field to recall a query, remove an entry, or clear that field's history. Arrow keys navigate suggestions; Escape dismisses them.
 - Queries are recorded on Enter, leaving the field, or closing/navigating away from the view. Intermediate keystrokes and unfinished IME composition are not recorded.

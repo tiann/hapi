@@ -448,3 +448,52 @@ test('a denied opt-out write shows a warning and never records more queries loca
     await input.press('Enter')
     expect(await history(page)).toEqual({ enabled: true, sessions: [], outlines: [], files: [] })
 })
+
+test('denied opt-in and deletion writes never report success', async ({ page }) => {
+    await page.addInitScript(() => {
+        const setItem = Storage.prototype.setItem
+        Storage.prototype.setItem = function (key, value) {
+            if (document.body.dataset.blockHistoryWrites && key.startsWith('hapi.searchHistory.v1.')) {
+                throw new DOMException('Test write blocked', 'QuotaExceededError')
+            }
+            return setItem.call(this, key, value)
+        }
+    })
+    await page.goto(fixture)
+    await go(page, 'Settings')
+    const toggle = page.getByRole('checkbox', { name: 'Search history', exact: true })
+    const allowWrites = (enabled: boolean) => page.evaluate(allowed => {
+        if (allowed) delete document.body.dataset.blockHistoryWrites
+        else document.body.dataset.blockHistoryWrites = '1'
+    }, enabled)
+    await allowWrites(false)
+    await toggle.locator('..').click()
+    await expect(page.getByRole('alert')).toContainText('Could not turn on search history')
+    await expect(toggle).not.toBeChecked()
+    await go(page, 'Sessions')
+    const input = page.getByRole('searchbox')
+    await input.fill('not saved')
+    await input.press('Enter')
+    expect(await history(page)).toBeNull()
+    await go(page, 'Settings')
+    await allowWrites(true)
+    await toggle.locator('..').click()
+    await expect(toggle).toBeChecked()
+    await go(page, 'Sessions')
+    await input.fill('saved query')
+    await input.press('Enter')
+    await expect.poll(async () => (await history(page)).sessions).toEqual(['saved query'])
+    await go(page, 'Settings')
+    await allowWrites(false)
+    const clear = page.getByRole('button', { name: 'Clear search history', exact: true })
+    await clear.click()
+    await expect(page.getByRole('alert')).toContainText('Could not delete saved searches')
+    await expect(clear).toBeEnabled()
+    expect((await history(page)).sessions).toEqual(['saved query'])
+    if (process.env.HAPI_DELETE_WARNING_SCREENSHOT) await page.screenshot({ path: process.env.HAPI_DELETE_WARNING_SCREENSHOT, animations: 'disabled' })
+    await allowWrites(true)
+    await clear.click()
+    await expect(clear).toBeDisabled()
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    expect((await history(page)).sessions).toEqual([])
+})
