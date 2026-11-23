@@ -1363,6 +1363,138 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
+    it('drains an in-flight soft steer before sending an automatic retry', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('drains an in-flight soft steer before sending post-tool auto-continue', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'ls' },
+            status: 'completed'
+        }]];
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('releases an in-loop retry soft-steer wait on Abort without sending a retry', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise(() => {});
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendAgentMessage).not.toHaveBeenCalled();
+
+        await handlers.get(RPC_METHODS.Abort)!();
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendAgentMessage).not.toHaveBeenCalled();
+
+        session.queue.close();
+        await runPromise;
+    }, 10_000);
+
+    it('releases an in-loop retry soft-steer wait on Switch without sending a retry', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise(() => {});
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+
+        await handlers.get(RPC_METHODS.Switch)!();
+        await expect(runPromise).resolves.toBe('switch');
+        expect(harness.promptCalls).toBe(1);
+    });
+
     it('acknowledges a steer dispatched before an overlapping abort', async () => {
         let releasePrompt!: () => void;
         let releaseDispatch!: () => void;

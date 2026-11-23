@@ -1257,6 +1257,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
                         if (this.attemptProducedToolActivity) {
                             if (!postToolAutoContinueUsed) {
+                                if (!await this.drainSoftSteerWaitersBeforeRetry()) break;
                                 postToolAutoContinueUsed = true;
                                 promptContent = [{
                                     type: 'text',
@@ -1308,6 +1309,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             break;
                         }
                         if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
+                            if (!await this.drainSoftSteerWaitersBeforeRetry()) break;
                             this.surfaceRetry(retryAttempt + 1);
                             continue;
                         }
@@ -1332,29 +1334,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false }));
                 // Soft-steers share the ACP session; wait for them before ready /
                 // the next prompt so message handlers are not swapped mid-inject.
-                // An Abort (which clears the waiters) must release this wait too:
-                // race the settle against the abort signal so the launcher never
-                // blocks on a soft steer whose completion is unbounded.
-                if (this.softSteerWaiters.length > 0 && !this.shouldExit) {
-                    const waitSignal = this.abortController.signal;
-                    let releaseWait!: () => void;
-                    const drainOrAbort = new Promise<void>((resolve) => { releaseWait = resolve; });
-                    const abortListener = () => releaseWait();
-                    if (waitSignal.aborted) {
-                        releaseWait();
-                    } else {
-                        waitSignal.addEventListener('abort', abortListener, { once: true });
-                    }
-                    try {
-                        await Promise.race([
-                            Promise.allSettled([...this.softSteerWaiters]),
-                            drainOrAbort
-                        ]);
-                    } finally {
-                        // Repeated waits must not accumulate abort listeners.
-                        waitSignal.removeEventListener('abort', abortListener);
-                    }
-                    this.softSteerWaiters = [];
+                if (!this.shouldExit) {
+                    await this.drainSoftSteerWaiters();
                 }
                 // Soft-steer can emit Error: T / RetriableError / strong stderr
                 // after the primary prompt already settled successfully. Flush
@@ -2805,6 +2786,50 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         // un-aborted signal and start() never reaches cleanup().
         this.session.queue.reset({ preserveDispatchingReservations: true });
         this.abortController.abort();
+    }
+
+    /**
+     * Wait for any in-flight soft-steer requests to settle before swapping the
+     * primary prompt handler (for an in-loop retry, the next turn, or ready),
+     * releasing on Abort so an unbounded steer cannot stall recovery or exit.
+     */
+    private async drainSoftSteerWaiters(): Promise<boolean> {
+        while (this.softSteerWaiters.length > 0 && !this.shouldExit) {
+            const waitSignal = this.abortController.signal;
+            if (waitSignal.aborted) {
+                this.softSteerWaiters = [];
+                return false;
+            }
+            const pending = [...this.softSteerWaiters];
+            let releaseWait!: () => void;
+            const drainOrAbort = new Promise<void>((resolve) => { releaseWait = resolve; });
+            const abortListener = () => releaseWait();
+            waitSignal.addEventListener('abort', abortListener, { once: true });
+            try {
+                await Promise.race([
+                    Promise.allSettled(pending),
+                    drainOrAbort
+                ]);
+            } finally {
+                // Repeated waits must not accumulate abort listeners.
+                waitSignal.removeEventListener('abort', abortListener);
+            }
+            if (waitSignal.aborted || this.shouldExit) {
+                this.softSteerWaiters = [];
+                return false;
+            }
+            const drained = new Set(pending);
+            this.softSteerWaiters = this.softSteerWaiters.filter((waiter) => !drained.has(waiter));
+        }
+        return !this.shouldExit && !this.abortController.signal.aborted;
+    }
+
+    private async drainSoftSteerWaitersBeforeRetry(): Promise<boolean> {
+        if (this.shouldExit || this.userAbortRequested) {
+            return false;
+        }
+        const drained = await this.drainSoftSteerWaiters();
+        return drained && !this.shouldExit && !this.userAbortRequested;
     }
 }
 
