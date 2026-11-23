@@ -40,6 +40,7 @@ import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { getShareTurnReasoningLabel, selectShareTurnMetadata } from '@/lib/shareTurnMetadata'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { queryKeys } from '@/lib/query-keys'
+import { useSessionInputTranslation } from '@/hooks/useSessionInputTranslation'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { matchesSearchQuery } from '@hapi/protocol'
 import { useSearchHistoryField } from '@/components/SearchHistory'
@@ -822,6 +823,7 @@ export function HappyThread(props: {
         retry: false,
     })
     const showSessionSummaryInChat = hubSettingsQuery.data?.sessionSummaryInChat === true
+    const inputTranslation = useSessionInputTranslation(props.api, props.session)
     const targetSearchQuery = props.initialTargetMessageQuery?.trim() ?? ''
     const initialSearchTargetId = props.initialTargetMessageId?.trim() ?? ''
     const hasSearchTarget = Boolean(initialSearchTargetId && targetSearchQuery)
@@ -2788,6 +2790,7 @@ export function HappyThread(props: {
             metadata: props.metadata,
             terminalToolDisplayMode,
             showSessionSummaryInChat,
+            inputTranslationEnabled: inputTranslation.enabled,
             disabled: props.disabled,
             onRefresh: props.onRefresh,
             codexPlanProposalId: props.session.active && props.session.metadata?.capabilities?.concurrentClients
