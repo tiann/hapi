@@ -177,6 +177,8 @@ export type SessionSummary = {
      *  carried for display only. Optional for the same reason `thinkingAt`
      *  is — absent on either side, the merge takes the incoming value. */
     thinkingRevision?: number
+    /** See `Session.hubGeneration` (#1717 cold-review round 30). */
+    hubGeneration?: string
     activeAt: number
     updatedAt: number
     /** Creation time is the stable order key before the first user message. */
@@ -512,6 +514,7 @@ export function toSessionSummary(
         thinkingConfirmed: session.thinkingConfirmed,
         thinkingAt: session.thinkingAt,
         thinkingRevision: session.thinkingRevision,
+        hubGeneration: session.hubGeneration,
         activeAt: session.activeAt,
         updatedAt: session.updatedAt,
         contentRevision: session.contentRevision,

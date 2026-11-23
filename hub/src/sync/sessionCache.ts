@@ -462,6 +462,12 @@ export class SessionCache {
 
         const session: Session = {
             hasConversationContent: this.store.messages.hasConversationContent(sessionId),
+            // Always THIS process's generation, never inherited from
+            // `existing` — unlike `thinkingRevision`, there is nothing to
+            // carry forward across a refresh within one process's lifetime,
+            // and the whole point is that it must change across a restart
+            // (#1717 cold-review round 30).
+            hubGeneration: this.hubGeneration,
             id: stored.id,
             namespace: stored.namespace,
             seq: stored.seq,
@@ -935,7 +941,8 @@ export class SessionCache {
                 activeAt: session.activeAt,
                 thinking: session.thinking,
                 thinkingAt: session.thinkingAt,
-                thinkingRevision: session.thinkingRevision
+                thinkingRevision: session.thinkingRevision,
+                hubGeneration: this.hubGeneration
             } satisfies SessionPatch
         })
 
@@ -1228,6 +1235,7 @@ export class SessionCache {
                     thinking: session.thinking,
                     thinkingAt: session.thinkingAt,
                     thinkingRevision: session.thinkingRevision,
+                    hubGeneration: this.hubGeneration,
                     thinkingConfirmed: session.thinkingConfirmed,
                     activeTurnStartedAt: session.activeTurnStartedAt,
                     permissionMode: session.permissionMode,
@@ -1337,6 +1345,7 @@ export class SessionCache {
                     thinking: true,
                     thinkingAt: session.thinkingAt,
                     thinkingRevision: session.thinkingRevision,
+                    hubGeneration: this.hubGeneration,
                     thinkingConfirmed: session.thinkingConfirmed,
                     activeTurnStartedAt: session.activeTurnStartedAt,
                     updatedAt: session.updatedAt
@@ -1714,6 +1723,7 @@ export class SessionCache {
                 thinking: false,
                 thinkingAt: session.thinkingAt,
                 thinkingRevision: session.thinkingRevision,
+                hubGeneration: this.hubGeneration,
                 activeTurnStartedAt: null,
                 backgroundTaskCount: 0,
                 backgroundTasks: [],
@@ -1765,6 +1775,7 @@ export class SessionCache {
                     active: false,
                     thinking: false,
                     thinkingRevision: session.thinkingRevision,
+                    hubGeneration: this.hubGeneration,
                     activeTurnStartedAt: null,
                     // The last keepalive: when the session stopped, for clients
                     // that only saw an older activeAt.

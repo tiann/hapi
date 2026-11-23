@@ -82,8 +82,20 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
     // to) or a post-restart reset (the cached higher value describes a
     // process that no longer exists). Either way it must win outright,
     // exactly like the absent case just above.
+    //
+    // That exception alone only covers the instant nothing has ticked yet
+    // after a restart — if some OTHER session's activity bumps the new
+    // process's counter to a small positive number before this patch
+    // lands, the comparison above is none the wiser (#1717 cold-review
+    // round 30). `hubGeneration` closes that gap directly: a patch from a
+    // DIFFERENT process than the one this cached session describes makes
+    // every cached revision stale, not just a reported 0.
+    const differentHubGeneration = patch.hubGeneration !== undefined
+        && session.hubGeneration !== undefined
+        && patch.hubGeneration !== session.hubGeneration
     if (
-        patch.thinkingRevision === undefined
+        differentHubGeneration
+        || patch.thinkingRevision === undefined
         || patch.thinkingRevision === 0
         || patch.thinkingRevision >= (session.thinkingRevision ?? 0)
     ) {
@@ -92,6 +104,7 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
         if (patch.thinkingAt !== undefined) assign('thinkingAt', patch.thinkingAt)
         if (patch.thinkingRevision !== undefined) assign('thinkingRevision', patch.thinkingRevision)
     }
+    if (patch.hubGeneration !== undefined) assign('hubGeneration', patch.hubGeneration)
     if (patch.activeAt !== undefined) assign('activeAt', patch.activeAt)
     // Monotonic with hub applySessionPatch: a rejected stale
     // metadata/agentState replay must not rewind updatedAt.

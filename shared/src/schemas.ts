@@ -665,6 +665,14 @@ export const SessionSchema = z.object({
     // hub's objects (reconstructed before this field existed) still parse;
     // defaults to 0 wherever read.
     thinkingRevision: z.number().optional(),
+    // One value per hub process (#1717 cold-review round 30); see
+    // `SessionCache.hubGeneration`. `thinkingRevision` resets to 0 on a
+    // restart, but a restarted hub's counter can tick past 0 again before a
+    // reconnecting client's first update lands — the zero-exception alone
+    // only covers the instant nothing has ticked yet. This lets a client
+    // detect "this came from a different process" directly, regardless of
+    // what the revision number itself reads.
+    hubGeneration: z.string().optional(),
     // False only during the hub's optimistic queue-to-delivery grace window
     // (#1717 cold-review round 22): `markMessageQueued` sets `thinking: true`
     // before the CLI has confirmed it ever saw the prompt, so a reply
@@ -829,6 +837,8 @@ export const SessionPatchSchema = z.object({
     // `thinkingAt` cannot order two transitions that land in the same
     // clamped-to-"now" millisecond — this hub-issued counter always can.
     thinkingRevision: z.number().optional(),
+    // See `Session.hubGeneration` (#1717 cold-review round 30).
+    hubGeneration: z.string().optional(),
     activeTurnStartedAt: z.number().nullable().optional(),
     activeAt: z.number().optional(),
     updatedAt: z.number().optional(),

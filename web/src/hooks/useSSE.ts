@@ -146,6 +146,11 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         // then compare against the STALE cached revision and win a fight it
         // should have lost, able to drag `thinking` back to a stale value.
         && (current.thinkingRevision ?? 0) === (next.thinkingRevision ?? 0)
+        // Same reasoning as the revision check just above (#1717 cold-review
+        // round 30): skipping a generation-only move would leave the cache
+        // holding a STALE `hubGeneration`, able to mask a later patch's own
+        // thinking-revision gate from recognizing a restart it should.
+        && current.hubGeneration === next.hubGeneration
         && current.updatedAt === next.updatedAt
         && current.lastUserMessageAt === next.lastUserMessageAt
         && current.backgroundTaskCount === next.backgroundTaskCount
@@ -555,9 +560,19 @@ export function useSSE(options: {
                 // this tab keeps whatever higher value it cached from the
                 // previous process. A reported 0 can never actually be
                 // stale, so it must win outright rather than lose here.
+                //
+                // That exception only covers the instant nothing has
+                // ticked yet after a restart (#1717 cold-review round 30)
+                // — `hubGeneration` catches the rest: a snapshot from a
+                // DIFFERENT process than the one `existing` describes makes
+                // its cached revision stale regardless of the number.
                 const existingThinkingRevision = existing?.thinkingRevision ?? 0
                 const incomingThinkingRevision = session.thinkingRevision ?? 0
+                const differentHubGeneration = session.hubGeneration !== undefined
+                    && existing?.hubGeneration !== undefined
+                    && session.hubGeneration !== existing.hubGeneration
                 const keepExistingThinking = existing !== undefined
+                    && !differentHubGeneration
                     && incomingThinkingRevision !== 0
                     && existingThinkingRevision > incomingThinkingRevision
                 const summary = {
@@ -646,7 +661,17 @@ export function useSSE(options: {
                 // previous process. A reported 0 can never actually be
                 // stale, so it is excluded from the "older" check below
                 // exactly like the absent case already is.
-                const keepCurrentThinking = patch.thinkingRevision !== undefined
+                //
+                // That exception only covers the instant nothing has
+                // ticked yet after a restart (#1717 cold-review round 30)
+                // — `hubGeneration` catches the rest: a patch from a
+                // DIFFERENT process than the one `current` describes makes
+                // its cached revision stale regardless of the number.
+                const differentHubGeneration = patch.hubGeneration !== undefined
+                    && current.hubGeneration !== undefined
+                    && patch.hubGeneration !== current.hubGeneration
+                const keepCurrentThinking = !differentHubGeneration
+                    && patch.thinkingRevision !== undefined
                     && patch.thinkingRevision !== 0
                     && patch.thinkingRevision < (current.thinkingRevision ?? 0)
                 const nextSummary: SessionSummary = {
@@ -662,6 +687,7 @@ export function useSSE(options: {
                     thinkingRevision: keepCurrentThinking
                         ? current.thinkingRevision
                         : (patch.thinkingRevision ?? current.thinkingRevision),
+                    hubGeneration: patch.hubGeneration ?? current.hubGeneration,
                     activeAt: patch.activeAt ?? current.activeAt,
                     // Monotonic: stale versioned-patch replays can carry an
                     // older updatedAt; never move the list clock backward.

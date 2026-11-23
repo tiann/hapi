@@ -336,6 +336,17 @@ describe('isRenderIrrelevantPatch', () => {
         expect(isRenderIrrelevantPatch(current, next)).toBe(false)
     })
 
+    it('reports a hubGeneration-only move as relevant even when nothing else changes (#1717 cold-review round 30)', () => {
+        // Same reasoning as the revision-only case above: skipping this
+        // leaves the cache holding a STALE hubGeneration, which could mask
+        // a later patch's own thinkingRevision gate from recognizing a
+        // restart it should.
+        const current = makeSummary({ thinking: false, hubGeneration: 'process-a' })
+        const next = makeSummary({ thinking: false, hubGeneration: 'process-b', activeAt: 11_000 })
+
+        expect(isRenderIrrelevantPatch(current, next)).toBe(false)
+    })
+
     it('reports attachedJob.startedAt changes as relevant', () => {
         const job = {
             key: 'beets',
@@ -505,6 +516,27 @@ describe('applySessionDetailPatch (PR #897 review, Copilot keep-alive)', () => {
         })
         expect(next?.thinking).toBe(false)
         expect(next?.thinkingRevision).toBe(0)
+    })
+
+    it('trusts a patch from a different hubGeneration even with a small positive revision (#1717 cold-review round 30)', () => {
+        // The revision-0 exception above only covers the instant nothing
+        // has ticked yet after a restart. If some OTHER session's activity
+        // bumps the restarted hub's counter before this patch lands, a
+        // small positive revision can still lose to this cached session's
+        // much higher pre-restart value — unless the patch's
+        // `hubGeneration` differs from the cached session's own, which
+        // makes the cached revision stale regardless of its number.
+        const thinkingSession = {
+            ...session, thinking: true, thinkingRevision: 47, hubGeneration: 'process-a'
+        } as unknown as Session
+        const next = applySessionDetailPatch(thinkingSession, {
+            thinking: false,
+            thinkingRevision: 2,
+            hubGeneration: 'process-b'
+        })
+        expect(next?.thinking).toBe(false)
+        expect(next?.thinkingRevision).toBe(2)
+        expect(next?.hubGeneration).toBe('process-b')
     })
 })
 
@@ -729,6 +761,31 @@ describe('useSSE user-activity ordering', () => {
         unmount()
     })
 
+    it('trusts a full-session snapshot from a different hubGeneration even with a small positive revision (#1717 cold-review round 30)', () => {
+        // The revision-0 exception alone only covers the instant nothing
+        // has ticked yet after a restart — a small positive revision from
+        // the new process can still lose to a much higher cached
+        // pre-restart value unless `hubGeneration` itself is compared.
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
+            id: 'session-1', thinking: true, thinkingConfirmed: true, thinkingRevision: 47, hubGeneration: 'process-a'
+        })] })
+
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: {
+                ...makeSummary(), id: 'session-1', namespace: 'default', seq: 1,
+                createdAt: 1, agentState: null, thinkingAt: 0,
+                thinking: false, thinkingConfirmed: true, thinkingRevision: 2, hubGeneration: 'process-b'
+            }
+        }))
+
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        expect(data?.sessions[0]?.thinking).toBe(false)
+        expect(data?.sessions[0]?.thinkingRevision).toBe(2)
+        unmount()
+    })
+
     it('does not get fooled by an identical thinkingAt across two distinct transitions in a full-session snapshot (cold-review round 27)', () => {
         const { queryClient, unmount } = renderUseSSE()
         queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
@@ -788,6 +845,23 @@ describe('useSSE user-activity ordering', () => {
         const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
         expect(data?.sessions[0]?.thinking).toBe(false)
         expect(data?.sessions[0]?.thinkingRevision).toBe(0)
+        unmount()
+    })
+
+    it('trusts an incremental patch from a different hubGeneration even with a small positive revision (#1717 cold-review round 30)', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
+            id: 'session-1', thinking: true, thinkingConfirmed: true, thinkingRevision: 47, hubGeneration: 'process-a'
+        })] })
+
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: { thinking: false, thinkingConfirmed: true, thinkingRevision: 2, hubGeneration: 'process-b' }
+        }))
+
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        expect(data?.sessions[0]?.thinking).toBe(false)
+        expect(data?.sessions[0]?.thinkingRevision).toBe(2)
         unmount()
     })
 
