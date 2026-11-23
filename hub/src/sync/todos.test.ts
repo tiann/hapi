@@ -2,6 +2,18 @@ import { describe, expect, it } from 'bun:test'
 import { extractSessionTodosFromMessageContent } from './todos'
 
 describe('extractSessionTodosFromMessageContent', () => {
+    it('keeps a single explicit Claude plan step but ignores unstructured fallback prose', () => {
+        const message = (input: Record<string, unknown>) => ({ role: 'agent', content: { type: 'output', data: {
+            type: 'assistant', message: { content: [
+                { type: 'text', text: 'Unstructured fallback prose' },
+                { type: 'tool_use', name: 'ExitPlanMode', input },
+            ] },
+        } } })
+        expect(extractSessionTodosFromMessageContent(message({ plan: 'Test the harness' })))
+            .toMatchObject([{ content: 'Test the harness', status: 'pending' }])
+        expect(extractSessionTodosFromMessageContent(message({}))).toBeNull()
+    })
+
     it('promotes Codex update_plan tool calls to session todos', () => {
         const todos = extractSessionTodosFromMessageContent({
             role: 'agent',

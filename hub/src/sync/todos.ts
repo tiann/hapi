@@ -67,7 +67,7 @@ function normalizePlanEntries(candidate: unknown): TodoItem[] | null {
     return parsed.success ? parsed.data : null
 }
 
-function extractTodosFromPlanText(value: unknown): TodoItem[] | null {
+function extractTodosFromPlanText(value: unknown, allowSingleStep = false): TodoItem[] | null {
     if (typeof value !== 'string') return null
 
     const listLines = value.split(/\r?\n/).flatMap((line) => {
@@ -76,7 +76,7 @@ function extractTodosFromPlanText(value: unknown): TodoItem[] | null {
         return [{ indent: match[1]?.length ?? 0, content: match[2] }]
     })
 
-    if (listLines.length === 0) return null
+    if (listLines.length === 0) return allowSingleStep && value.trim() ? normalizePlanEntries([value.trim()]) : null
     const topLevelIndent = Math.min(...listLines.map((line) => line.indent))
     return normalizePlanEntries(
         listLines
@@ -103,6 +103,7 @@ function extractTodosFromClaudeOutput(content: Record<string, unknown>): TodoIte
 
     let planExitSeen = false
     let planText: string | null = null
+    let explicitPlan: string | null = null
     for (const block of modelContent) {
         if (!isObject(block)) continue
         if (block.type === 'text' && typeof block.text === 'string') {
@@ -125,12 +126,12 @@ function extractTodosFromClaudeOutput(content: Record<string, unknown>): TodoIte
         if (isPlanExitToolName(name)) {
             planExitSeen = true
             if (isObject(input) && typeof input.plan === 'string') {
-                planText = input.plan
+                explicitPlan = input.plan
             }
         }
     }
 
-    return planExitSeen ? extractTodosFromPlanText(planText) : null
+    return planExitSeen ? extractTodosFromPlanText(explicitPlan ?? planText, explicitPlan !== null) : null
 }
 
 function extractTodosFromCodexMessage(content: Record<string, unknown>): TodoItem[] | null {
@@ -159,7 +160,7 @@ function extractTodosFromCodexMessage(content: Record<string, unknown>): TodoIte
         return parsed.success ? parsed.data : null
     }
     if (isPlanExitToolName(name)) {
-        return extractTodosFromPlanText(isObject(input) ? input.plan : null)
+        return extractTodosFromPlanText(isObject(input) ? input.plan : null, true)
     }
 
     return null
@@ -199,7 +200,8 @@ export function findLatestStructuredTodos(
         const page = store.messages.getMessagesByPosition(
             sessionId,
             STRUCTURED_TODOS_BACKFILL_PAGE_SIZE,
-            before
+            before,
+            'created'
         )
         for (let i = page.length - 1; i >= 0; i -= 1) {
             const message = page[i]
@@ -208,7 +210,7 @@ export function findLatestStructuredTodos(
             if (todos) {
                 return {
                     todos,
-                    source: { at: message.invokedAt ?? message.createdAt, seq: message.seq }
+                    source: { at: message.createdAt, seq: message.seq }
                 }
             }
         }
@@ -216,6 +218,6 @@ export function findLatestStructuredTodos(
         if (page.length < STRUCTURED_TODOS_BACKFILL_PAGE_SIZE) return null
         const oldest = page[0]
         if (!oldest) return null
-        before = { at: oldest.invokedAt ?? oldest.createdAt, seq: oldest.seq }
+        before = { at: oldest.createdAt, seq: oldest.seq }
     }
 }

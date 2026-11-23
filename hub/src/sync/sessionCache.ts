@@ -2167,7 +2167,35 @@ export class SessionCache {
         }
         if (!metadataTransferred) throw new Error('Failed to preserve session metadata during merge')
 
-        const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        const movedMessages = this.store.runInTransaction(() => {
+            const moved = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+            const mergedTasks = findLatestStructuredTodos(this.store, newSessionId)
+            if (mergedTasks) {
+                // A rewound source can retain a high replay barrier even though the
+                // plan it displays is older. Select visible todos from actual merged
+                // history; carry the barrier independently of that selection.
+                const oldBarrier = oldStored.todosSourceAt === null ? null
+                    : { at: oldStored.todosSourceAt, seq: oldStored.todosSourceSeq ?? -1 }
+                const source = oldBarrier && (oldBarrier.at > mergedTasks.source.at
+                    || (oldBarrier.at === mergedTasks.source.at && oldBarrier.seq > mergedTasks.source.seq))
+                    ? oldBarrier : mergedTasks.source
+                if (!this.store.sessions.replaceSessionTodos(newSessionId, mergedTasks.todos, namespace, source,
+                    { touchUpdatedAt: false })) throw new Error('Failed to persist merged session tasks')
+            } else if (oldStored.todos !== null && oldStored.todosUpdatedAt !== null) {
+                this.store.sessions.setSessionTodos(
+                    newSessionId,
+                    oldStored.todos,
+                    {
+                        at: oldStored.todosSourceAt ?? oldStored.todosUpdatedAt,
+                        seq: oldStored.todosSourceSeq ?? -1
+                    },
+                    namespace,
+                    { touchUpdatedAt: false, throwOnError: true }
+                )
+            }
+
+            return moved
+        })
         this.syncReadState(newSessionId)
         if (!options.deleteOldSession) this.syncReadState(oldSessionId)
         // mergeSessions deletes the source. mergeSessionHistory keeps it alive
@@ -2361,31 +2389,6 @@ export class SessionCache {
                     throw new Error('Failed to preserve session pin during merge')
                 }
             }
-        }
-
-        const mergedTasks = findLatestStructuredTodos(this.store, newSessionId)
-        if (mergedTasks) {
-            // A rewound source can retain a high replay barrier even though the
-            // plan it displays is older. Select visible todos from actual merged
-            // history; carry the barrier independently of that selection.
-            const oldBarrier = oldStored.todosSourceAt === null ? null
-                : { at: oldStored.todosSourceAt, seq: oldStored.todosSourceSeq ?? -1 }
-            const source = oldBarrier && (oldBarrier.at > mergedTasks.source.at
-                || (oldBarrier.at === mergedTasks.source.at && oldBarrier.seq > mergedTasks.source.seq))
-                ? oldBarrier : mergedTasks.source
-            this.store.sessions.replaceSessionTodos(newSessionId, mergedTasks.todos, namespace, source,
-                { touchUpdatedAt: false })
-        } else if (oldStored.todos !== null && oldStored.todosUpdatedAt !== null) {
-            this.store.sessions.setSessionTodos(
-                newSessionId,
-                oldStored.todos,
-                {
-                    at: oldStored.todosSourceAt ?? oldStored.todosUpdatedAt,
-                    seq: oldStored.todosSourceSeq ?? -1
-                },
-                namespace,
-                { touchUpdatedAt: false }
-            )
         }
 
         // Merge agentState: union requests/completedRequests from both sessions so pending

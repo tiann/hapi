@@ -216,6 +216,27 @@ describe('SessionCache structured task backfill', () => {
         ])
     })
 
+    it('rolls the transcript move back if the merged checklist cannot persist', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        const source = cache.getOrCreateSession('move-fail-source', { path: '/tmp', host: 'h' }, null, 'default')
+        const target = cache.getOrCreateSession('move-fail-target', { path: '/tmp', host: 'h' }, null, 'default')
+        store.messages.addMessage(source.id, { role: 'agent', content: { type: 'codex', data: {
+            type: 'plan_update', plan: [{ step: 'Keep task and transcript together', status: 'pending' }],
+        } } })
+        const db = (store as unknown as { db: Database }).db
+        db.exec(`CREATE TRIGGER fail_merged_task BEFORE UPDATE OF todos ON sessions
+            BEGIN SELECT RAISE(ABORT, 'fixture interrupted task write'); END`)
+        try {
+            await expect(cache.mergeSessionHistory(source.id, target.id, 'default')).rejects.toThrow('Failed to persist merged session tasks')
+            expect(store.messages.getAllMessages(source.id)).toHaveLength(1)
+            expect(store.messages.getAllMessages(target.id)).toHaveLength(0)
+            db.exec('DROP TRIGGER fail_merged_task')
+            await cache.mergeSessionHistory(source.id, target.id, 'default')
+            expect(store.sessions.getSession(target.id)?.todos).toMatchObject([{ content: 'Keep task and transcript together' }])
+        } finally { store.close() }
+    })
+
     it('keeps the later target plan after merge rebases message sequence positions', async () => {
         const store = new Store(':memory:')
         const cache = new SessionCache(store, createPublisher([]))

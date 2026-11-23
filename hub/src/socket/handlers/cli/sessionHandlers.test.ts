@@ -5,6 +5,7 @@ import { Store, type StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import type { CliSocketWithData } from '../../socketTypes'
 import { registerSessionHandlers } from './sessionHandlers'
+import { findLatestStructuredTodos } from '../../../sync/todos'
 
 class FakeSocket {
     readonly roomEvents: Array<{ room: string; event: string; data: unknown }> = []
@@ -334,6 +335,29 @@ describe('cli session handlers', () => {
         expect(store.messages.getMessages(session.id)).toHaveLength(0)
         expect(socket.roomEvents).toHaveLength(0)
         expect(webEvents).toHaveLength(0)
+    })
+
+    it('keeps newer tasks on replay and rebuild after a delayed consumption acknowledgement', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('delayed-plan-ack', {}, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+        })
+        const plan = (localId: string, createdAt: number) => ({ sid: session.id, localId, createdAt,
+            message: { role: 'agent', content: { type: 'codex', data: {
+                type: 'plan_update', plan: [{ step: localId, status: 'pending' }],
+            } } } })
+        const first = plan('old', 1000)
+        try {
+            socket.trigger('message', first)
+            socket.trigger('message', plan('new', 2000))
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['old'] })
+            expect(store.messages.getAllMessages(session.id).find(row => row.localId === 'old')?.invokedAt).toBeGreaterThan(2000)
+            socket.trigger('message', first)
+            expect(store.sessions.getSession(session.id)?.todos).toMatchObject([{ content: 'new' }])
+            expect(findLatestStructuredTodos(store, session.id)?.todos).toMatchObject([{ content: 'new' }])
+        } finally { store.close() }
     })
 
     it('rolls back a live plan message if its checklist cannot be persisted, then repairs a missing snapshot on replay', () => {

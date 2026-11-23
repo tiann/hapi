@@ -217,7 +217,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             // older replay from replacing a newer plan.
             const todos = extractSessionTodosFromMessageContent(msg.content)
             const todosUpdated = todos !== null && store.sessions.setSessionTodos(
-                sid, todos, { at: msg.invokedAt ?? msg.createdAt, seq: msg.seq }, session.namespace,
+                sid, todos, { at: msg.createdAt, seq: msg.seq }, session.namespace,
                 { allowSameSource: stored.updated && !wasStored, touchUpdatedAt: false, throwOnError: true }
             )
             return { stored, wasStored, todos, todosUpdated }
