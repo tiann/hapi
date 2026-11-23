@@ -417,6 +417,26 @@ describe('getSessionBlockedState', () => {
         )).toBeNull()
     })
 
+    it('does not let a stuck thinking flag hide a stored footer once the session is inactive (#1717)', () => {
+        // A runner that sends a blocked footer and disconnects before its own
+        // idle tick leaves `thinking` stuck true on whatever patch the
+        // browser last saw. The hub independently marks the session
+        // inactive on its own timeout — an inactive session is never
+        // "working", so this guard must not be the thing still hiding a
+        // real, stored footer behind a stale flag the hub has already moved
+        // past.
+        const state = getSessionBlockedState(
+            makeSummary({
+                id: 'a',
+                active: false,
+                thinking: true,
+                lastNotify: { status: 'blocked', at: now, note: null }
+            }),
+            { now }
+        )
+        expect(state?.reason).toBe('blocked')
+    })
+
     it('keeps a stored footer visible during the queue-to-delivery grace window (cold-review round 22)', () => {
         // `thinkingConfirmed: false` is what `markMessageQueued` sends while a
         // reply sits in the hub's optimistic grace window, before the CLI has
@@ -465,6 +485,42 @@ describe('getSessionBlockedState', () => {
             { now }
         )
         expect(state?.reason).toBe('permission')
+    })
+
+    it('does not block on a Codex asynchronous question the agent did not pause for (#1717)', () => {
+        // Codex's asynchronous `request_user_input` questions share the SAME
+        // `tool` as a genuinely blocking one — `arguments.isBlocking: false`
+        // is the only thing that tells them apart, carried here as
+        // `nonBlocking` on the request/ref. The agent keeps working through
+        // one of these without pausing, so a working Codex session must not
+        // move into Blocked (or fire an arrival alert) just because it asked
+        // one.
+        const state = getSessionBlockedState(makeSummary({
+            id: 'a',
+            pendingRequestsCount: 1,
+            pendingRequestKinds: ['input'],
+            pendingRequests: [{ id: 'r1', kind: 'input', tool: 'request_user_input', since: now, nonBlocking: true }],
+            pendingRequestRefs: [{ id: 'r1', kind: 'input', since: now, nonBlocking: true }]
+        }), { now })
+        expect(state).toBeNull()
+    })
+
+    it('still blocks on a genuine question alongside a dismissed Codex asynchronous one (#1717)', () => {
+        const state = getSessionBlockedState(makeSummary({
+            id: 'a',
+            pendingRequestsCount: 2,
+            pendingRequestKinds: ['input'],
+            pendingRequests: [
+                { id: 'async-1', kind: 'input', tool: 'request_user_input', since: now - 2000, nonBlocking: true },
+                { id: 'real-1', kind: 'input', tool: 'AskUserQuestion', since: now - 1000 }
+            ],
+            pendingRequestRefs: [
+                { id: 'async-1', kind: 'input', since: now - 2000, nonBlocking: true },
+                { id: 'real-1', kind: 'input', since: now - 1000 }
+            ]
+        }), { now })
+        expect(state?.key).toBe('request:real-1')
+        expect(state?.reason).toBe('question')
     })
 
     it('marks a report older than the loud window stale rather than dropping it', () => {

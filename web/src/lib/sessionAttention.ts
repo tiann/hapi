@@ -177,9 +177,17 @@ function getPendingBlockedState(
     // dismissed prompt's kind and another prompt's timestamp.
     const refs = summary.pendingRequestRefs ?? []
     if (refs.length > 0) {
+        // Codex's asynchronous `request_user_input` questions share the SAME
+        // tool name as a genuinely blocking one — `arguments.isBlocking:
+        // false` is the only thing that tells them apart, carried as
+        // `nonBlocking` on each ref. The agent keeps working through one of
+        // these without pausing, so it must not move the session into
+        // Blocked or fire an arrival alert; it still shows on the ordinary
+        // per-row attention dot via `pendingRequestKinds`, untouched here.
+        const blockingRefs = refs.filter(ref => !ref.nonBlocking)
         const unackedRefs = ack === null
-            ? refs
-            : refs.filter(ref => !isAcknowledgedBlocker(ack, requestBlockerKey(ref.id), ref.since))
+            ? blockingRefs
+            : blockingRefs.filter(ref => !isAcknowledgedBlocker(ack, requestBlockerKey(ref.id), ref.since))
         if (unackedRefs.length === 0) {
             return null
         }
@@ -206,9 +214,21 @@ function getPendingBlockedState(
     // Older hub: no uncapped descriptors, so fall back to the capped slice and
     // the aggregate fields. Nothing here can distinguish an overflow prompt
     // from a previewed one, which is exactly why the descriptors exist.
+    //
+    // Same `nonBlocking` exclusion as the refs branch above — filtered
+    // BEFORE the dismissal/overflow bookkeeping, which still reasons about
+    // the full `all`/`total`, since those describe "is there more data
+    // than this capped view shows", not "is any of it blocking".
+    const blockingAll = all.filter(request => !request.nonBlocking)
+    // Modern hub sent requests, but every one of them is an explicitly
+    // non-blocking async question — nothing is actually blocking here,
+    // independent of dismissal state.
+    if (all.length > 0 && blockingAll.length === 0) {
+        return null
+    }
     const unacked = ack === null
-        ? all
-        : all.filter(request => !isAcknowledgedBlocker(ack, requestBlockerKey(request.id), request.since))
+        ? blockingAll
+        : blockingAll.filter(request => !isAcknowledgedBlocker(ack, requestBlockerKey(request.id), request.since))
     const newestAt = summary.pendingRequestsNewestAt
         ?? (all.length > 0 ? all[all.length - 1]!.since : 0)
     const newerBeyondCap = total > all.length && newestAt > (ackAt ?? 0)
@@ -219,7 +239,7 @@ function getPendingBlockedState(
     const unackedKinds = unacked.map(request => request.kind)
     const contest = unackedKinds.length > 0
         ? unackedKinds
-        : (all.length === 0 ? kinds : [])
+        : (blockingAll.length === 0 ? kinds : [])
     const reason: SessionBlockedReason = contest.includes('input') ? 'question' : 'permission'
 
     const wantedKind = reason === 'question' ? 'input' : 'permission'
@@ -271,7 +291,14 @@ export function getSessionBlockedState(
     // queue-then-cancel cycle, so the arrival tracker never sees it disappear
     // and reappear and double-alert for the same blocker. Absent (older hubs,
     // or once the CLI confirms) behaves exactly as before.
-    if (summary.thinking && summary.thinkingConfirmed !== false) {
+    //
+    // Gated on `summary.active` too: a runner that sends a blocked footer and
+    // disconnects before its own idle tick leaves `thinking` stuck true on
+    // whatever patch the browser last saw, even once the hub independently
+    // marks the session inactive. An inactive session is never "working" by
+    // definition, so this guard must not be the thing still hiding a real,
+    // stored footer behind a stale flag the hub has already moved past.
+    if (summary.active && summary.thinking && summary.thinkingConfirmed !== false) {
         return null
     }
 

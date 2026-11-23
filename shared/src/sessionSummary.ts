@@ -89,12 +89,29 @@ export type PendingRequest = {
      *  `fallbackSince` (typically `session.updatedAt`) for older requests
      *  stored without `createdAt`. */
     since: number
+    /** True when the request itself declares `arguments.isBlocking: false` —
+     *  Codex's asynchronous `request_user_input` questions, which the agent
+     *  asked without pausing for an answer and keeps working through. Same
+     *  `tool` as a genuinely blocking question, so this is the only signal
+     *  that tells them apart; callers that decide whether the OPERATOR is
+     *  the one the agent is stuck waiting on (the Blocked section, arrival
+     *  alerts) must exclude these, while the ordinary per-row attention dot
+     *  still shows them. */
+    nonBlocking?: boolean
 }
 
 /** Whether a request asks the user to answer something (a question, a plan)
  *  or to allow a tool. */
 export function classifyKind(tool: string): PendingRequestKind {
     return INPUT_REQUEST_TOOLS.has(tool) ? 'input' : 'permission'
+}
+
+/** `arguments.isBlocking === false`, read defensively since `arguments` is
+ *  opaque (`unknown`) at this layer — only Codex's async question tool sets
+ *  it today, but nothing here should assume that stays true. */
+function isNonBlockingRequest(args: unknown): boolean {
+    return typeof args === 'object' && args !== null && !Array.isArray(args)
+        && (args as Record<string, unknown>).isBlocking === false
 }
 
 export type SessionSummaryMetadata = {
@@ -191,7 +208,7 @@ export type SessionSummary = {
      *  oldest few, so an overflow prompt had no identity and fell back to a
      *  synthetic one — a dismissal then stopped matching the moment the real
      *  request entered the capped slice. Ids are small; the bodies are not. */
-    pendingRequestRefs?: Array<{ id: string; kind: PendingRequestKind; since: number }>
+    pendingRequestRefs?: Array<{ id: string; kind: PendingRequestKind; since: number; nonBlocking?: boolean }>
     backgroundTaskCount: number
     /**
      * Hub-derived "open tool work exists in the transcript tail" (work-scoped
@@ -259,7 +276,8 @@ export function computePendingRequests(
             id,
             kind: classifyKind(request.tool),
             tool: request.tool,
-            since: typeof request.createdAt === 'number' ? request.createdAt : fallbackSince
+            since: typeof request.createdAt === 'number' ? request.createdAt : fallbackSince,
+            ...(isNonBlockingRequest(request.arguments) ? { nonBlocking: true as const } : {})
         })
     }
 
@@ -328,10 +346,10 @@ export function computePendingRequestRefs(
     agentState: AgentState | null | undefined,
     fallbackSince: number,
     dismissedKeys?: ReadonlySet<string>
-): Array<{ id: string; kind: PendingRequestKind; since: number }> {
+): Array<{ id: string; kind: PendingRequestKind; since: number; nonBlocking?: boolean }> {
     const all = computePendingRequests(agentState, fallbackSince, Number.MAX_SAFE_INTEGER)
     if (all.length <= PENDING_REQUEST_REFS_CAP) {
-        return all.slice(0, PENDING_REQUEST_REFS_CAP).map(({ id, kind, since }) => ({ id, kind, since }))
+        return all.slice(0, PENDING_REQUEST_REFS_CAP).map(({ id, kind, since, nonBlocking }) => ({ id, kind, since, ...(nonBlocking ? { nonBlocking } : {}) }))
     }
     // Oldest-first truncation alone drops whichever request happens to be
     // newest once the cap is full — even an undismissed QUESTION, if 200
@@ -363,7 +381,7 @@ export function computePendingRequestRefs(
     // prioritized selection) keeps the returned order chronological.
     return all
         .filter((request) => selectedIds.has(request.id))
-        .map(({ id, kind, since }) => ({ id, kind, since }))
+        .map(({ id, kind, since, nonBlocking }) => ({ id, kind, since, ...(nonBlocking ? { nonBlocking } : {}) }))
 }
 
 export function computePendingRequestsNewestAt(
