@@ -477,7 +477,7 @@ describe('claudeRemote in-process /clear', () => {
         'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout', 'result-eof',
         'unacknowledged-input-eof', 'acknowledged-input-eof', 'failed-clear-input-eof',
         'follow-up-result', 'legacy-follow-up-result', 'follow-up-after-compact',
-        'later-follow-up-result', 'idle-background-output', 'native-slash-follow-up', 'native-slash-follow-up-without-hook',
+        'later-follow-up-result', 'idle-background-output', 'native-slash-follow-up', 'native-slash-stale-result', 'native-slash-follow-up-without-hook',
         'native-slash-follow-up-init', 'native-slash-follow-up-init-eof', 'native-slash-follow-up-receipt-first',
         'native-slash-follow-up-untagged-hook', 'native-command-receipt-before-replay'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
@@ -498,7 +498,7 @@ describe('claudeRemote in-process /clear', () => {
         const aliasReceiptFirst = outcome === 'native-slash-follow-up-receipt-first';
         const aliasUntaggedHook = outcome === 'native-slash-follow-up-untagged-hook';
         const earlyCommandReceipt = outcome === 'native-command-receipt-before-replay';
-        const nativeSlashFollowUp = outcome === 'native-slash-follow-up' || outcome === 'native-slash-follow-up-without-hook'
+        const nativeSlashFollowUp = outcome === 'native-slash-follow-up' || outcome === 'native-slash-stale-result' || outcome === 'native-slash-follow-up-without-hook'
             || aliasInit || aliasReceiptFirst || aliasUntaggedHook;
         const hasFollowUpResult = outcome === 'follow-up-result' || legacyFollowUp || interveningCompact || hasLaterFollowUp;
         const success = outcome === 'success' || outcome === 'foreign-result' || outcome === 'eof' || outcome === 'hook'
@@ -590,7 +590,7 @@ describe('claudeRemote in-process /clear', () => {
                     if (!aliasInit && !aliasReceiptFirst) {
                         yield { type: 'user', isReplay: true, uuid: alias.value?.uuid };
                     }
-                    if (outcome === 'native-slash-follow-up' || aliasUntaggedHook) hookSessionId = 'native-alias-session';
+                    if (outcome === 'native-slash-follow-up' || outcome === 'native-slash-stale-result' || aliasUntaggedHook) hookSessionId = 'native-alias-session';
                     if (aliasInit) {
                         yield { type: 'system', subtype: 'init', session_id: 'native-alias-session' };
                         expect(order).not.toContain('session:native-alias-session');
@@ -598,7 +598,7 @@ describe('claudeRemote in-process /clear', () => {
                     }
                     nativeSlashResult = {
                         ...autonomousResult,
-                        session_id: 'native-alias-session',
+                        session_id: outcome === 'native-slash-stale-result' ? resultId : 'native-alias-session',
                         local_command: aliasUntaggedHook ? undefined : 'clear'
                     };
                     yield nativeSlashResult;
@@ -771,7 +771,10 @@ describe('claudeRemote in-process /clear', () => {
             const expectedResults = [firstResult, result];
             if (timesOut && outcome !== 'silent-timeout') expectedResults.push(unmatchedResult);
             if (compactResult) expectedResults.push({ ...compactResult, hapi_compact_turn: true });
-            if (nativeSlashResult) expectedResults.push(nativeSlashResult);
+            if (nativeSlashResult) {
+                expectedResults.push(outcome === 'native-slash-stale-result'
+                    ? { ...nativeSlashResult, hapi_skip_usage: true } : nativeSlashResult);
+            }
             if (nativeCommandResult) expectedResults.push(nativeCommandResult);
             if (followUpResult) expectedResults.push(...(legacyFollowUp ? [] : foreignResults), followUpResult);
             if (laterFollowUpResult) expectedResults.push(laterFollowUpResult);

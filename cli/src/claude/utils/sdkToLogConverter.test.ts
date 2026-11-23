@@ -594,6 +594,45 @@ describe('SDKToLogConverter', () => {
                 expect(summaryOf(next)?.modelUsage).toMatchObject({ 'claude-opus-5': { outputTokens: 50 } })
             })
 
+            it('keeps a stale-session result out of usage accounting', () => {
+                converter.startFreshProcessBaseline()
+                converter.updateSessionId('native-1')
+                converter.convert(result({
+                    total_cost_usd: 1,
+                    duration_api_ms: 1000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 100 } }
+                }))
+                converter.updateSessionId('native-2')
+
+                const stale = converter.convert(result({
+                    total_cost_usd: 1.2,
+                    duration_api_ms: 1100,
+                    usage: { input_tokens: 1, output_tokens: 1 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 120 } },
+                    hapi_skip_usage: true
+                }))
+                expect(summaryOf(stale)).not.toHaveProperty('total_cost_usd')
+                expect(summaryOf(stale)).not.toHaveProperty('generation_ms')
+                expect(summaryOf(stale)?.modelUsage).toBeUndefined()
+
+                // The first reply seeds the new session's baseline; the next reports its own delta.
+                converter.convert(result({
+                    total_cost_usd: 2,
+                    duration_api_ms: 2000,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 200 } }
+                }))
+                const next = converter.convert(result({
+                    total_cost_usd: 2.5,
+                    duration_api_ms: 2400,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 250 } }
+                }))
+                expect(summaryOf(next)?.total_cost_usd).toBeCloseTo(0.5, 9)
+                expect(summaryOf(next)?.modelUsage).toMatchObject({ 'claude-opus-5': { outputTokens: 50 } })
+            })
+
             it('clears the baseline when the native session id changes', () => {
                 converter.startFreshProcessBaseline()
                 converter.updateSessionId('native-1')

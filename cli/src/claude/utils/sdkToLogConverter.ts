@@ -687,7 +687,9 @@ export class SDKToLogConverter {
                 }
                 // These fields are cumulative across resumes; emit only a
                 // trustworthy per-round delta, never a lifetime total.
-                const perRound = this.consumeCumulativeDeltas(resultMsg)
+                const perRound = resultMsg.hapi_skip_usage === true
+                    ? { totalCostUsd: undefined, durationApiMs: undefined, modelUsage: undefined }
+                    : this.consumeCumulativeDeltas(resultMsg)
                 logMessage = {
                     ...baseFields,
                     type: 'system',

@@ -1050,7 +1050,11 @@ export async function claudeRemote(opts: {
                     updateThinking(false);
                     waitingForClearFollowUp = !inputEnded;
                     if (rotatedId) bindClearSession(rotatedId, clear.init);
-                    if (clear.nativeAlias) opts.onMessage(message);
+                    if (clear.nativeAlias) {
+                        // An alias result still carrying the previous session id must not rebase usage.
+                        const staleUsage = rotatedId && message.type === 'result' && message.session_id !== rotatedId;
+                        opts.onMessage(staleUsage ? { ...message, hapi_skip_usage: true } : message);
+                    }
                     else if (rotatedId && message.type === 'result' && message.session_id === rotatedId) {
                         // The suppressed /clear result rebases usage for the rotated session.
                         opts.onDroppedResult?.(message as SDKResultMessage);
