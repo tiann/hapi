@@ -13,17 +13,18 @@ import {
 import { MessageService } from './messageService'
 
 describe('needsTranslation', () => {
-    it('translates CJK prose and skips plain English', () => {
+    it('translates every prose message regardless of language', () => {
         expect(needsTranslation('帮我修复这个 bug')).toBe(true)
         expect(needsTranslation('Привет, исправь тест')).toBe(true)
-        expect(needsTranslation('fix the failing test in hub/src')).toBe(false)
+        expect(needsTranslation('corrige le test, s\'il te plaît')).toBe(true)
+        expect(needsTranslation('fix the failing test in hub/src')).toBe(true)
     })
 
-    it('skips slash commands, empty input, and non-Latin text only inside code', () => {
+    it('skips slash commands, empty or code-only input, and oversize prompts', () => {
         expect(needsTranslation('/compact 总结一下')).toBe(false)
         expect(needsTranslation('   ')).toBe(false)
-        expect(needsTranslation('rename `变量` please')).toBe(false)
-        expect(needsTranslation('x'.repeat(9_000) + '中')).toBe(false)
+        expect(needsTranslation('`变量` @src/a.ts')).toBe(false)
+        expect(needsTranslation('x'.repeat(9_000))).toBe(false)
     })
 })
 
@@ -167,14 +168,17 @@ describe('MessageService input translation', () => {
         let release!: () => void
         const gate = new Promise<void>((resolve) => { release = resolve })
         const { service, session, sentContents } = setup({
-            translate: async () => { await gate; return 'First' }
+            translate: async (text) => {
+                if (text === '第一条') { await gate; return 'First' }
+                return 'Second'
+            }
         })
         const first = service.sendMessage(session.id, { text: '第一条', localId: 'l1' })
-        const second = service.sendMessage(session.id, { text: 'second in English', localId: 'l2' })
+        const second = service.sendMessage(session.id, { text: '第二条', localId: 'l2' })
         await new Promise((resolve) => setTimeout(resolve, 20))
         expect(sentContents()).toHaveLength(0)
         release()
         await Promise.all([first, second])
-        expect(sentContents().map((c) => c.content.text)).toEqual(['First', 'second in English'])
+        expect(sentContents().map((c) => c.content.text)).toEqual(['First', 'Second'])
     })
 })

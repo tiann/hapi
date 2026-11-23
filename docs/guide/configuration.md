@@ -160,8 +160,9 @@ only. While it is on, the hub translates each prompt you send from the web
 app, native apps, or Telegram before the agent sees it. Your chat shows what
 you typed, and you can tap **Translated** to see the English that was sent.
 
-- The hub skips messages that are already in Latin script, slash commands
-  (`/compact`, ...), and messages over 8,000 characters.
+- Every message is translated, whatever its language. The only messages
+  skipped are slash commands (`/compact`, ...), messages made up only of
+  code or mentions, and messages over 8,000 characters.
 - Code blocks, inline code, URLs, and `@path` mentions are sent to the agent
   unchanged.
 - If the provider fails, times out, or garbles the protected spans, the
