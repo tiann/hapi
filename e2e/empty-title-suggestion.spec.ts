@@ -61,20 +61,25 @@ test('a generated draft reports a stale manual title without discarding the draf
 })
 
 
-test('title generation diagnostics do not expose an unrecognized proxy response', async ({ page }) => {
-    await page.route('**/api/sessions/fixture-title/title-suggestion', route => route.fulfill({
-        status: 502,
-        contentType: 'text/html',
-        body: '<html><p>Proxy fixture internal backend note</p></html>'
-    }))
-    await page.goto('/e2e-fixtures/rename-session-error-fixture.html?locale=en&apiResponse=1')
-    await page.getByRole('button', { name: 'Generate' }).click()
-    await page.getByRole('button', { name: 'Show error details' }).click()
-    await expect(page.getByTestId('title-suggestion-diagnostics')).toHaveText('HTTP 502')
-    await expect(page.getByRole('dialog')).not.toContainText('Proxy fixture internal backend note')
-    const screenshot = process.env.HAPI_TITLE_DIAGNOSTICS_PROXY_SCREENSHOT
-    if (screenshot) await page.screenshot({ path: screenshot })
-})
+for (const status of [502, 422]) {
+    test(`title generation diagnostics do not expose an unrecognized proxy response (HTTP ${status})`, async ({ page }) => {
+        await page.route('**/api/sessions/fixture-title/title-suggestion', route => route.fulfill({
+            status,
+            contentType: 'text/html',
+            body: '<html><p>Proxy fixture internal backend note</p></html>'
+        }))
+        await page.goto('/e2e-fixtures/rename-session-error-fixture.html?locale=en&apiResponse=1')
+        await page.getByRole('button', { name: 'Generate' }).click()
+        await expect(page.getByText('Failed to generate a title. Please try again.', { exact: true })).toBeVisible()
+        await page.getByRole('button', { name: 'Show error details' }).click()
+        await expect(page.getByTestId('title-suggestion-diagnostics')).toHaveText(`HTTP ${status}`)
+        await expect(page.getByRole('dialog')).not.toContainText('Proxy fixture internal backend note')
+        const screenshot = status === 422
+            ? process.env.HAPI_TITLE_DIAGNOSTICS_PROXY_422_SCREENSHOT
+            : process.env.HAPI_TITLE_DIAGNOSTICS_PROXY_SCREENSHOT
+        if (screenshot) await page.screenshot({ path: screenshot })
+    })
+}
 
 test('title generation diagnostics preserve only validated fields for a known provider error', async ({ page }) => {
     await page.route('**/api/sessions/fixture-title/title-suggestion', route => route.fulfill({

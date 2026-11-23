@@ -170,7 +170,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
             if (generation === generationRef.current) {
                 const detail = getTitleSuggestionDiagnostics(error)
                 setDiagnostics(detail)
-                if (detail?.code === 'empty' || detail?.httpStatus === 422) {
+                if (detail?.code === 'empty') {
                     setError(t('dialog.rename.generateEmpty'))
                 } else if (detail?.code === 'unavailable') {
                     setError(t('dialog.rename.generateUnavailable'))
