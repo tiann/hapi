@@ -92,7 +92,7 @@ export function HappyUserMessage() {
         )
     }
 
-    const isTurnInput = isTurnInputMessage(invokedAt, status)
+    const isTurnInput = !steered && isTurnInputMessage(invokedAt, status)
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
     const showStatus = shouldShowMessageStatus(status)

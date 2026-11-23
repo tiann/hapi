@@ -383,8 +383,8 @@ export function buildAssistantReplyTargets(
         const role = visibleBlockRole(block)
         if (role === 'user') {
             const isPending = block.invokedAt === null
-            const isFailed = block.kind === 'user-text' && block.status === 'failed'
-            if (!isPending && !isFailed) {
+            const isFailedOrSteered = block.kind === 'user-text' && (block.status === 'failed' || block.steered === true)
+            if (!isPending && !isFailedOrSteered) {
                 latestUserMessageId = block.kind === 'user-text' && isSystemNoteMeta(block.meta) ? null : threadMessageId
             }
             continue

@@ -361,20 +361,23 @@ describe('buildAssistantReplyTargets', () => {
         ])
     })
 
-    it('keeps queued and failed user rows from becoming response targets', () => {
+    it('keeps queued, failed, and steered user rows from becoming response targets', () => {
         const blocks = assignThreadMessageIds([
             userText('prompt', { invokedAt: 1_000 }),
             agentText('answer-1'),
             userText('queued', { invokedAt: null, status: 'queued' }),
             agentText('answer-2'),
             userText('failed', { invokedAt: null, status: 'failed' }),
-            agentText('answer-3')
+            agentText('answer-3'),
+            userText('steer', { invokedAt: 2_000, steered: true }),
+            agentText('answer-4')
         ])
 
         expect([...buildAssistantReplyTargets(blocks)]).toEqual([
             ['agent-text:answer-1', 'user-text:prompt'],
             ['agent-text:answer-2', 'user-text:prompt'],
-            ['agent-text:answer-3', 'user-text:prompt']
+            ['agent-text:answer-3', 'user-text:prompt'],
+            ['agent-text:answer-4', 'user-text:prompt']
         ])
     })
 })

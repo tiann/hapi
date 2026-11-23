@@ -13,7 +13,7 @@ const state = {
         content: [{ type: 'text', text: 'Interrupted prompt' }],
         metadata: { custom: { kind: 'user', localId: 'local-interrupted' as string | null, sourceMessageId: 'stored-message', invokedAt: 10 as number | null | undefined, isTranscriptEcho: false } as {
             kind: string; localId: string | null; sourceMessageId?: string; invokedAt?: number | null;
-            status?: HappyChatMessageMetadata['status']; isTranscriptEcho: boolean
+            status?: HappyChatMessageMetadata['status']; steered?: boolean; isTranscriptEcho: boolean
         } } },
     thread: { isRunning: true, messages: [] }
 }
@@ -87,6 +87,12 @@ describe('HappyUserMessage turn-input anchor', () => {
         const { container } = mount()
 
         expect(container.querySelector('[data-hapi-turn-input="true"]')).not.toBeNull()
+    })
+
+    it('leaves an invoked steer out of the navigable turn inputs', () => {
+        state.message.metadata.custom.steered = true
+        const { container } = mount()
+        expect(container.querySelector('[data-hapi-turn-input]')).toBeNull()
     })
 
     it('does not mark queued messages as turn inputs', () => {

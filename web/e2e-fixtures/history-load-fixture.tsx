@@ -256,6 +256,9 @@ const sessionMessagesById: Record<string, DecryptedMessage[]> = sessionSwitch
 const allMessages: DecryptedMessage[] = fixtureParams.has('jumpStartShort') ? [
     createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Short chat prompt' } }),
     createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'First short reply' } } }),
+    ...(fixtureParams.has('steer') ? [
+        { ...createFixtureMessage(3, { role: 'user', content: { type: 'text', text: 'Mid-turn steer' } }), steered: true },
+    ] : []),
     ...(fixtureParams.has('outlineResize') ? [
         createFixtureMessage(3, { role: 'user', content: { type: 'text', text: 'Prompt near the end' } }),
     ] : []),

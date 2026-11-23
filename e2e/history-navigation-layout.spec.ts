@@ -151,8 +151,8 @@ test('a reply to a job wake has no jump-to-input action', async ({ page }) => {
 
 
 test('keyboard prompt navigation focuses the destination input', async ({ page }) => {
-    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartShort=1')
-    await expect(page.getByText('First short reply', { exact: true })).toBeVisible()
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartShort=1&steer=1')
+    await expect(page.getByText('Mid-turn steer', { exact: true })).toBeVisible()
     await page.evaluate(() => window.__probe.appendReply())
     const lastLine = page.getByText('New reply line 25', { exact: true })
     await expect(lastLine).toBeInViewport()
