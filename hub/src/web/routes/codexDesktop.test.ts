@@ -1516,6 +1516,86 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('keeps a GENUINELY LATER blocker from a shorter duplicate over an older one from a longer sibling (#1717 cold-review round 32)', async () => {
+        // The representative used to be `survivors[0]` in the merge's own
+        // canonical-selection order (most messages, newest updatedAt) — a
+        // heuristic for "which session's OTHER metadata to keep," not
+        // "which blocker is most current." A duplicate with fewer messages
+        // can still be reporting the genuinely LATER real episode; picking
+        // the first survivor in merge order silently preferred an older
+        // blocker from a longer sibling over a newer one from a shorter
+        // sibling. The representative is now whichever survivor's own
+        // signal is newest by author time.
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-latest-wins', { codexSessionId: 'codex-thread-latest-wins', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const longerDup = store.sessions.getOrCreateSession(
+            'dup-latest-wins-longer', { codexSessionId: 'codex-thread-latest-wins', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const shorterDup = store.sessions.getOrCreateSession(
+            'dup-latest-wins-shorter', { codexSessionId: 'codex-thread-latest-wins', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const base = Date.now() - 600_000
+
+        // canonical: most messages of all, no signal of its own.
+        for (let i = 0; i < 20; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: `pad ${i}` }] } } }
+            }, `latest-wins-canon-pad-${i}`, base)
+        }
+
+        // longerDup: more messages than shorterDup, carries an OLDER, still
+        // genuinely unanswered blocker (nothing in ITS OWN history answers it).
+        const olderFooterText = 'Stuck.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs an OLDER key' })
+        for (let i = 0; i < 5; i++) {
+            store.messages.addImportedMessage(longerDup.id, {
+                role: 'agent',
+                content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: `longer-pad ${i}` }] } } }
+            }, `latest-wins-longer-pad-${i}`, base + 5_000)
+        }
+        store.messages.addImportedMessage(longerDup.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: olderFooterText }] } } }
+        }, 'latest-wins-older-footer', base + 10_000)
+
+        // shorterDup: a single message, a GENUINELY LATER, distinct
+        // unresolved blocker.
+        const laterFooterText = 'Stuck.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a LATER, different key' })
+        store.messages.addImportedMessage(shorterDup.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: laterFooterText }] } } }
+        }, 'latest-wins-later-footer', base + 50_000)
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-latest-wins'] })
+            })
+            expect(response.status).toBe(200)
+
+            const merged = store.sessions.getSessionByNamespace(canonical.id, 'default')
+            expect(merged?.lastNotifyStatus).toBe('blocked')
+            // The LATER footer, not the older one from the longer sibling.
+            expect(merged?.lastNotifyAt).toBe(base + 50_000)
+        } finally {
+            store.close()
+        }
+    })
+
     it('does not let an untimestamped import\'s own initiating prompt resolve its own still-open footer through a merge\'s cross-session override check (#1717)', async () => {
         // Within ONE session, the untimestamped-import tiebreak (seq) is
         // already proven correct (#1717 round 27). But the cross-session

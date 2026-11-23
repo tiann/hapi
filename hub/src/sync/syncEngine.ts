@@ -963,7 +963,40 @@ export class SyncEngine {
         // content) can hide a genuinely unanswered blocker instead, which
         // is the failure this entire subsystem exists to prevent.
         const survivors = perSession.filter((source) => source.derived.signal !== null)
-        const winner = survivors[0] ?? null
+        // When survivors report DIFFERENT content, the representative is
+        // whichever one's signal is newest by author time, not whichever
+        // sorts first in the merge's canonical-selection order (most
+        // messages, newest updatedAt) — that order answers "which
+        // session's OTHER metadata to keep," a different question from
+        // "which blocker is most current" (#1717 cold-review round 32). A
+        // session can have fewer messages and still be reporting the
+        // genuinely later real episode; picking the first survivor in
+        // merge order silently preferred an older blocker from a longer
+        // duplicate over a newer one from a shorter sibling.
+        //
+        // But when every survivor reports the IDENTICAL status+note, author
+        // time stops being a safe tie-break: an untimestamped Codex import
+        // stamps every row with the import's OWN wall-clock moment, not a
+        // real conversation timestamp (#1717 cold-review round 25's test
+        // scenario — two projections of the SAME event, each a duplicate's
+        // own import batch artifact). Comparing those as if "later" meant
+        // "more current" would just be cross-session content+timestamp
+        // matching again, wearing a tie-break's clothes. Identical content
+        // keeps the deterministic merge order instead — the question is
+        // genuinely undecidable from the data, same reasoning as declining
+        // to resolve by content above, so pick the SAME default that
+        // reasoning already settled on.
+        const distinctContents = new Set(
+            survivors.map((source) => `${source.derived.signal!.status} ${source.derived.signal!.note ?? ''}`)
+        )
+        const winner = distinctContents.size <= 1
+            ? (survivors[0] ?? null)
+            : survivors.reduce<typeof survivors[number] | null>(
+                (latest, candidate) => (
+                    latest === null || candidate.derived.signal!.at > latest.derived.signal!.at
+                ) ? candidate : latest,
+                null
+            )
 
         if (winner && winner.derived.signal !== null && winner.sessionId !== canonicalSessionId && winner.ackKeys.length > 0) {
             // Only the WINNER's own acknowledgement ever transfers — never
