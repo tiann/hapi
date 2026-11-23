@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
-import { followSessionTail, getSessionLastSeenAt } from '@/lib/sessionLastSeen'
+import { followSessionTail, getSessionLastSeenAt, observeSessionReadStates } from '@/lib/sessionLastSeen'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SESSION_REFERENCE_STEER_SUFFIX } from '@hapi/protocol/sessionCitation'
 
@@ -97,6 +97,14 @@ describe('SessionActionMenu - Mark unread action', () => {
             fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as read' }))
             expect(getSessionLastSeenAt('suppressed')).toBe(7)
         } finally { release() }
+    })
+
+    it.each(['Mark as read', 'Mark as unread', 'Rename'])('preserves menu focus on a remote acknowledgement: %s', focused => {
+        const id = 'focus-' + focused
+        renderMenu({ readTarget: { id, contentRevision: 2 } })
+        screen.getByRole('menuitem', { name: focused }).focus()
+        act(() => observeSessionReadStates([{ id, readState: { version: 1, readRevision: 2, manualUnread: false } }]))
+        expect(screen.getByRole('menuitem', { name: focused === 'Rename' ? 'Rename' : 'Mark as unread' })).toHaveFocus()
     })
 
     it('does not render the action when no handler is provided', () => {

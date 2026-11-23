@@ -1,4 +1,4 @@
-import { useId } from 'react'
+import { useCallback, useId, useRef } from 'react'
 import { useTranslation } from '@/lib/use-translation'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import { buildSessionReferenceText } from '@/lib/sessionReference'
@@ -21,19 +21,21 @@ function ReadAction({ session, className, onClose }: { session: ReadTarget; clas
     useSessionLastSeenVersion()
     const unread = sessionNeedsReadAction(session)
     const manual = getSessionManualUnreadAt(session.id, session.readState) !== null
+    const primary = useRef<HTMLButtonElement>(null)
+    const secondaryRef = useCallback((button: HTMLButtonElement | null) => {
+        if (!button) return
+        return () => { if (document.activeElement === button) primary.current?.focus() }
+    }, [])
+    const markUnread = () => { onClose(); markSessionUnread(session.id, session.readState) }
+    const markRead = () => { onClose(); markListedSessionSeen(session) }
+    const Icon = unread ? CheckIcon : UnreadIcon
     return (
         <>
-            {unread && <button type="button" role="menuitem" className={className} onClick={() => {
-                onClose()
-                markListedSessionSeen(session)
-            }}>
-                <CheckIcon className="text-[var(--app-hint)]" />
-                {t('session.action.markRead')}
-            </button>}
-            {!manual && <button type="button" role="menuitem" className={className} onClick={() => {
-                onClose()
-                markSessionUnread(session.id, session.readState)
-            }}>
+            <button ref={primary} type="button" role="menuitem" className={className} onClick={unread ? markRead : markUnread}>
+                <Icon className="text-[var(--app-hint)]" />
+                {t(unread ? 'session.action.markRead' : 'session.action.markUnread')}
+            </button>
+            {unread && !manual && <button ref={secondaryRef} type="button" role="menuitem" className={className} onClick={markUnread}>
                 <UnreadIcon className="text-[var(--app-hint)]" />
                 {t('session.action.markUnread')}
             </button>}
