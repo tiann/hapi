@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SearchHistoryProvider } from '@/lib/search-history'
 import { I18nProvider } from '@/lib/i18n-context'
 import { SearchHistorySettings } from '@/components/settings/SearchHistorySettings'
@@ -21,13 +21,17 @@ function Fixture() {
         <SearchHistorySettings />
     </I18nProvider></SearchHistoryProvider>
 }
-const history = () => JSON.parse(localStorage.getItem('test-history') ?? '{}')
+const history = () => ({ enabled: false, ...JSON.parse(localStorage.getItem('test-history') ?? '{}') })
 const input = () => screen.getByRole('textbox', { name: 'Find files' })
 const enter = () => fireEvent.keyDown(input(), { key: 'Enter' })
 beforeEach(() => {
     localStorage.clear()
     localStorage.setItem('test-history', JSON.stringify({ enabled: true }))
+    Object.defineProperty(navigator, 'locks', {
+        configurable: true, value: { request: (_name: string, callback: () => void) => Promise.resolve(callback()) },
+    })
 })
+afterEach(() => { Reflect.deleteProperty(navigator, 'locks'); vi.restoreAllMocks() })
 
 describe('search history interaction', () => {
     it('does not record a cleared query on blur, pagehide or unmount', () => {
@@ -79,6 +83,24 @@ describe('search history interaction', () => {
         fireEvent.click(screen.getByRole('button', { name: 'close' }))
         expect(history().files).toEqual(['two', 'one'])
     })
+    it('reports an unsaved opt-out, suspends recording locally, and supports retry', () => {
+        render(<Fixture />)
+        const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => { throw new Error('blocked') })
+        const toggle = screen.getByRole('checkbox', { name: 'Search history', exact: true })
+        fireEvent.click(toggle)
+        expect(toggle).not.toBeChecked()
+        expect(screen.getByRole('alert')).toHaveTextContent('Could not save this opt-out')
+        expect(history().enabled).toBe(true)
+        fireEvent.change(input(), { target: { value: 'not recorded' } })
+        enter()
+        expect(write).toHaveBeenCalledTimes(1)
+        write.mockRestore()
+        fireEvent.click(screen.getByRole('button', { name: 'Retry turning off' }))
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+        expect(history().enabled).toBe(false)
+        expect(history().files).toEqual([])
+    })
+
     it('hides without deleting on disable, skips disabled queries, and clears all while disabled', () => {
         render(<Fixture />)
         fireEvent.change(input(), { target: { value: 'saved' } }); enter()

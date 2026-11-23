@@ -4,6 +4,8 @@ export default {
   'searchHistory.description': '保存最近的会话、文件和大纲搜索。关闭后隐藏历史并停止保存，已有记录仍会保留。',
   'searchHistory.recent': '最近搜索',
   'searchHistory.clear': '清空历史',
+  'searchHistory.optOutNotSaved': '无法保存关闭设置。当前标签页已暂停记录，其他标签页仍可能继续保存搜索。',
+  'searchHistory.retryOptOut': '重试关闭',
   'searchHistory.clearAll': '清空搜索历史',
   'searchHistory.remove': '删除搜索：{query}',
   // Loading states

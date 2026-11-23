@@ -23,11 +23,11 @@ const click = (name: string) => fireEvent.click(screen.getByRole('button', { nam
 
 beforeEach(() => {
     localStorage.clear()
-    vi.stubGlobal('navigator', Object.create(navigator, {
-        locks: { value: { request: (_name: string, callback: () => void) => Promise.resolve(callback()) } },
-    }))
+    Object.defineProperty(navigator, 'locks', {
+        configurable: true, value: { request: (_name: string, callback: () => void) => Promise.resolve(callback()) },
+    })
 })
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => { Reflect.deleteProperty(navigator, 'locks'); vi.restoreAllMocks() })
 
 describe('search history parsing and identity', () => {
     it('isolates Hub, user and namespace but survives token refresh and trailing slashes', () => {
@@ -127,7 +127,7 @@ describe('scoped history provider', () => {
         expect(state()).toMatchObject({ enabled: true, sessions: [], outlines: ['中文'] })
     })
     it('does not use persisted data without a cross-tab lock', () => {
-        vi.stubGlobal('navigator', Object.create(navigator, { locks: { value: undefined } }))
+        Reflect.deleteProperty(navigator, 'locks')
         const saved = '{"enabled":true,"sessions":["other"]}'
         localStorage.setItem('a', saved)
         render(<SearchHistoryProvider storageKey="a"><Controls /></SearchHistoryProvider>)

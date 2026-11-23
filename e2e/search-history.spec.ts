@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test'
 const fixture = '/e2e-fixtures/search-history-fixture.html'
 const history = (page: Page) => page.evaluate(() => {
     const key = Object.keys(localStorage).find(key => key.startsWith('hapi.searchHistory.v1.'))
-    return key ? JSON.parse(localStorage.getItem(key)!) : null
+    return key ? { enabled: false, ...JSON.parse(localStorage.getItem(key)!) } : null
 })
 async function go(page: Page, name: string) {
     const labels: Record<string, string> = { Sessions: '会话', Files: '文件', Outline: '大纲', Settings: '设置' }
@@ -201,7 +201,7 @@ test('malformed stored history recovers, whitespace is ignored and only the late
     expect((await history(page)).sessions.at(-1)).toBe('query-2')
     await input.fill('query-10')
     await input.press('Enter')
-    expect((await history(page)).sessions.slice(0, 2)).toEqual(['query-10', 'query-21'])
+    await expect.poll(async () => (await history(page)).sessions.slice(0, 2)).toEqual(['query-10', 'query-21'])
 })
 
 test('the shared picker search neither sees nor writes the main session history', async ({ page }) => {
@@ -209,6 +209,7 @@ test('the shared picker search neither sees nor writes the main session history'
     await optIn(page)
     await page.getByRole('searchbox').fill('main-only')
     await page.getByRole('searchbox').press('Enter')
+    await expect.poll(async () => (await history(page)).sessions).toEqual(['main-only'])
     await page.goto(`${fixture}?sharePicker=1`)
     const input = page.getByRole('searchbox')
     await input.focus()
@@ -402,4 +403,48 @@ test('overlapping writes respect an opt-out and never restore cleared entries', 
         await expect.poll(pending).toBe(2)
     } finally { await unlock!() }
     await expect.poll(() => history(page)).toMatchObject({ enabled: true, sessions: ['after clear'] })
+})
+
+test('plain LAN-style HTTP retains opt-in and search history after reload', async ({ page, baseURL }) => {
+    const origin = 'http://search-history-lan.test'
+    // Serve the same fixture over a genuine non-secure browser origin without
+    // binding the isolated Vite fixture to a LAN interface.
+    await page.route(`${origin}/**`, async route => {
+        const url = new URL(route.request().url())
+        const response = await route.fetch({ url: new URL(url.pathname + url.search, baseURL).href })
+        await route.fulfill({ response })
+    })
+    await page.goto(origin + fixture)
+    expect(await page.evaluate(() => [isSecureContext, typeof navigator.locks, typeof indexedDB])).toEqual([false, 'undefined', 'object'])
+    await optIn(page)
+    const input = page.getByRole('searchbox')
+    await input.fill('saved over HTTP')
+    await input.press('Enter')
+    await expect.poll(async () => (await history(page)).sessions).toEqual(['saved over HTTP'])
+    await page.reload()
+    await input.focus()
+    await expect(recent(page).getByRole('button', { name: 'saved over HTTP', exact: true })).toBeVisible()
+})
+
+test('a denied opt-out write shows a warning and never records more queries locally', async ({ page }) => {
+    await page.goto(fixture)
+    await optIn(page)
+    await go(page, 'Settings')
+    await page.evaluate(() => {
+        const setItem = Storage.prototype.setItem
+        Storage.prototype.setItem = function (key, value) {
+            if (key.startsWith('hapi.searchHistory.v1.')) throw new DOMException('Test write blocked', 'QuotaExceededError')
+            return setItem.call(this, key, value)
+        }
+    })
+    const toggle = page.getByRole('checkbox', { name: 'Search history', exact: true })
+    await toggle.locator('..').click()
+    await expect(toggle).not.toBeChecked()
+    await expect(page.getByRole('alert')).toContainText('Could not save this opt-out')
+    if (process.env.HAPI_OPTOUT_SCREENSHOT) await page.screenshot({ path: process.env.HAPI_OPTOUT_SCREENSHOT })
+    await go(page, 'Sessions')
+    const input = page.getByRole('searchbox')
+    await input.fill('must not be written')
+    await input.press('Enter')
+    expect(await history(page)).toEqual({ enabled: true, sessions: [], outlines: [], files: [] })
 })

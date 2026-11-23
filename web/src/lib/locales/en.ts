@@ -4,6 +4,8 @@ export default {
   'searchHistory.description': 'Save recent session, file, and outline searches. Turning this off hides history and stops saving; existing entries are kept.',
   'searchHistory.recent': 'Recent searches',
   'searchHistory.clear': 'Clear history',
+  'searchHistory.optOutNotSaved': 'Could not save this opt-out. Recording is paused here, but other tabs may still be saving searches.',
+  'searchHistory.retryOptOut': 'Retry turning off',
   'searchHistory.clearAll': 'Clear search history',
   'searchHistory.remove': 'Remove search: {query}',
   // Loading states
