@@ -343,8 +343,11 @@ export default {
   'session.modelError.listIndicator': 'モデルエラー — クリックして表示',
 
   // セッション非アクティブ
-  'session.inactive.autoResume': 'このセッションは非アクティブです。メッセージを送信すると再開します。',
-  'session.inactive.cannotResume': 'このセッションは非アクティブで、再開できません。',
+  'session.inactive.checking': '接続を確認中…',
+  'session.inactive.disconnectedResume': 'エージェントは未接続です。メッセージを送ると再接続を試みます。',
+  'session.inactive.disconnected': 'エージェントは未接続です。',
+  'session.inactive.autoResume': 'このセッションはアーカイブされています。メッセージを送ると再開できます。',
+  'session.inactive.cannotResume': 'このセッションはアーカイブされており、再開できません。',
 
   // セッションヘッダー
   'session.title': 'ファイル',

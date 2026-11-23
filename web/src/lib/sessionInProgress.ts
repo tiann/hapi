@@ -6,11 +6,14 @@ export function hasRunningAttachedJob(session: SessionSummary): boolean {
     return session.attachedJob?.status === 'running'
 }
 
-export function hasInProgressJobSession(session: SessionSummary): boolean {
+export function hasUnarchivedJob(session: SessionSummary): boolean {
     // A process can outlive its session. Keep its meter on the project row,
     // but do not let it move an archived conversation back into Active.
-    return session.metadata?.lifecycleState !== 'archived' && session.attachedJob?.status === 'running'
-        && !isAttachedJobStale(session.attachedJob)
+    return session.metadata?.lifecycleState !== 'archived' && hasRunningAttachedJob(session)
+}
+
+export function hasInProgressJobSession(session: SessionSummary): boolean {
+    return hasUnarchivedJob(session) && !!session.attachedJob && !isAttachedJobStale(session.attachedJob)
 }
 
 /**

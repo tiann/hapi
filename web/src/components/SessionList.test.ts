@@ -917,6 +917,13 @@ describe('bucketRunningSessions', () => {
         expect(filterSessionsForListStatus(prepared, 'archived')).toEqual([archived])
     })
 
+    it('removes a stale job from In progress without archiving the session', () => {
+        const stale = { ...withJob, attachedJob: { ...withJob.attachedJob!, heartbeatAt: 1 } }
+        expect(bucketRunningSessions([stale], 'jobs').jobs).toEqual([])
+        expect(filterSessionsForListStatus([stale], 'active')).toEqual([stale])
+        expect(filterSessionsForListStatus([stale], 'archived')).toEqual([])
+    })
+
     it('puts running attachedJob into jobs under mode jobs', () => {
         const buckets = bucketRunningSessions([withJob, quiet], 'jobs')
         expect(buckets.jobs.map((s) => s.id)).toEqual(['job-1'])

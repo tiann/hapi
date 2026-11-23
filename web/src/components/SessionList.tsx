@@ -111,6 +111,7 @@ import {
     hasAgentForegroundWork,
     hasRunningAttachedJob,
     hasInProgressJobSession,
+    hasUnarchivedJob,
 } from '@/lib/sessionInProgress'
 import {
     compareDescWithKeyTiebreak,
@@ -482,7 +483,7 @@ export function filterActiveSessionsOnly(sessions: SessionSummary[], selectedSes
     return sessions.filter(session =>
         session.active
         || session.id === selectedSessionId
-        || hasInProgressJobSession(session)
+        || hasUnarchivedJob(session)
     )
 }
 
@@ -499,7 +500,7 @@ export function filterSessionsForListStatus(
     if (status === 'active') return filterActiveSessionsOnly(sessions, selectedSessionId)
     return sessions.filter(session =>
         session.id === selectedSessionId
-        || (!session.active && !hasInProgressJobSession(session))
+        || (!session.active && !hasUnarchivedJob(session))
     )
 }
 
@@ -2268,7 +2269,7 @@ export function SessionList(props: {
     // stay an empty intersection instead of falling back to another machine.
     const allSessions = useMemo(
         () => filterSessionsForListStatus(sidebarSessions, listView.status, selectedSessionId),
-        [sidebarSessions, selectedSessionId, listView.status, listClockTick]
+        [sidebarSessions, selectedSessionId, listView.status]
     )
     const unreadSessionCount = useMemo(
         () => getUnreadSessionCount(readableSessions),
@@ -2322,7 +2323,7 @@ export function SessionList(props: {
             }
             return matched
         },
-        [listClockTick, allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchMatchMode, searchScoreIndex, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread, machineLabelsById, timeScopedSessions, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
+        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchMatchMode, searchScoreIndex, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread, machineLabelsById, timeScopedSessions, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const contentSnippetBySessionId = useMemo(() => {
         const snippets = new Map<string, string>()
@@ -2432,7 +2433,6 @@ export function SessionList(props: {
         selectedSessionId,
         showScratchlistOnly,
         showActiveOnly,
-        listClockTick,
         showWorkingOnly,
         listView.unreadOnly,
         timeRange?.start,
@@ -2530,7 +2530,6 @@ export function SessionList(props: {
         selectedSessionId,
         showScratchlistOnly,
         showActiveOnly,
-        listClockTick,
         showWorkingOnly,
         listView.unreadOnly,
         visibleSessions
@@ -2638,12 +2637,12 @@ export function SessionList(props: {
         // Keep matching groups open by default while filtering. Explicit
         // header clicks use a temporary override for the active filter.
         if (isFiltering) return false
+        if (savedFolds.has(group.key)) return true
         // Archived-only would otherwise collapse every group (none has an
         // active session), hiding exactly what was asked for.
         if (listView.status === 'archived') return false
         // Unread-only would otherwise fold unread rows into quiet collapsed groups.
         if (listView.unreadOnly) return false
-        if (savedFolds.has(group.key)) return true
         const hasSelectedSession = selectedSessionId
             ? group.sessions.some(session => session.id === selectedSessionId)
             : false
@@ -2651,7 +2650,7 @@ export function SessionList(props: {
     }
 
     const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
-        if (foldKey && !isFiltering && listView.status !== 'archived') {
+        if (foldKey && !isFiltering) {
             const closed = readClosedProjects(foldKey)
             if (isCollapsed) closed.delete(groupKey)
             else closed.add(groupKey)

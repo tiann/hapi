@@ -275,8 +275,11 @@ export default {
   'session.cursorMigration.bannerAmbiguous.body': 'Этот чат существует на диске в нескольких папках рабочего пространства, либо размер на диске не совпадает с синхронизированной историей, поэтому HAPI отказался переносить его автоматически. Проверьте логи хаба на предмет списка кандидатов (поиск по «[migrator] ambiguous legacy store» или «[migrator] size sanity check refused»), удалите устаревшие папки в ~/.cursor/chats/ и откройте сессию заново.',
 
   // Неактивная сессия
-  'session.inactive.autoResume': 'Эта сессия неактивна. Отправьте сообщение, чтобы возобновить.',
-  'session.inactive.cannotResume': 'Эта сессия неактивна и не может быть возобновлена.',
+  'session.inactive.checking': 'Проверяем соединение…',
+  'session.inactive.disconnectedResume': 'Агент не подключён. При отправке сообщения будет выполнена попытка переподключения.',
+  'session.inactive.disconnected': 'Агент не подключён.',
+  'session.inactive.autoResume': 'Сессия в архиве. Отправьте сообщение, чтобы открыть её снова.',
+  'session.inactive.cannotResume': 'Сессия в архиве и не может быть возобновлена.',
 
   // Шапка сессии
   'session.title': 'Файлы',

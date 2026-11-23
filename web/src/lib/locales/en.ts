@@ -376,8 +376,11 @@ export default {
   'session.modelError.listIndicator': 'Model error \u2014 click to view',
 
   // Session inactive
-  'session.inactive.autoResume': 'This session is inactive. Send a message to resume.',
-  'session.inactive.cannotResume': 'This session is inactive and cannot be resumed.',
+  'session.inactive.checking': 'Checking the session connection…',
+  'session.inactive.disconnectedResume': 'The agent is not connected. Sending a message will attempt to reconnect it.',
+  'session.inactive.disconnected': 'The agent is not connected.',
+  'session.inactive.autoResume': 'This session is archived. Send a message to reopen it.',
+  'session.inactive.cannotResume': 'This session is archived and cannot be resumed.',
 
   // Session header
   'session.title': 'Files',

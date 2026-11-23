@@ -66,8 +66,7 @@ export function formatAttachedJobProgress(
         const pct = Math.min(100, Math.round((job.done / job.total) * 100))
         base = `${pct}% · ${job.done}/${job.total}${job.unit ? ` ${job.unit}` : ''} · ${elapsed}`
     } else {
-        if (isAttachedJobStale(job, now)) return `${labels.noHeartbeat} · ${formatAttachedJobHeartbeatAge(job, now)}`
-        base = `${labels.running} · ${elapsed}`
+        base = isAttachedJobStale(job, now) ? elapsed : `${labels.running} · ${elapsed}`
     }
     if (isAttachedJobStale(job, now)) {
         return `${base} · ${labels.noHeartbeat} · ${formatAttachedJobHeartbeatAge(job, now)}`

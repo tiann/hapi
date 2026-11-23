@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest'
-import { isSessionNotFoundError, SESSION_DETAIL_STALE_TIME_MS } from './useSession'
+import { createElement, type ReactNode } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, renderHook, waitFor } from '@testing-library/react'
+import type { ApiClient } from '@/api/client'
+import type { Session } from '@/types/api'
+import { queryKeys } from '@/lib/query-keys'
+import { describe, expect, it, vi } from 'vitest'
+import { useSession, isSessionNotFoundError, SESSION_DETAIL_STALE_TIME_MS } from './useSession'
 
 describe('isSessionNotFoundError', () => {
     it('matches hub 404 session responses', () => {
@@ -20,4 +26,25 @@ describe('SESSION_DETAIL_STALE_TIME_MS', () => {
     it('is set to a value that suppresses focus/mount refetches', () => {
         expect(SESSION_DETAIL_STALE_TIME_MS).toBeGreaterThanOrEqual(10_000)
     })
+})
+
+it('checks a cached disconnected session on entry and keeps a newer reconnect during the fetch', async () => {
+    const client = new QueryClient()
+    const key = queryKeys.session('test')
+    const offline = { id: 'test', active: false, activeAt: 10, thinking: false, thinkingAt: 10, metadata: null } as Session
+    client.setQueryData(key, { session: offline })
+    let resolve!: (value: { session: Session }) => void
+    const getSession = vi.fn(() => new Promise<{ session: Session }>(done => { resolve = done }))
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const view = renderHook(() => useSession({ getSession } as unknown as ApiClient, 'test'), { wrapper })
+    expect(view.result.current.isFetching).toBe(true)
+    expect(getSession).toHaveBeenCalledTimes(1)
+    await act(async () => {
+        client.setQueryData(key, { session: { ...offline, active: true, thinking: true, thinkingAt: 20, activeAt: 20 } })
+        resolve({ session: offline })
+    })
+    await waitFor(() => expect(view.result.current.isFetching).toBe(false))
+    expect(view.result.current.session).toMatchObject({ active: true, thinking: true, activeAt: 20 })
+    view.unmount()
+    client.clear()
 })

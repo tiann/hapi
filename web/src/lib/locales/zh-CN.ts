@@ -376,8 +376,11 @@ export default {
   'session.modelError.listIndicator': '模型错误 — 点击查看',
 
   // Session inactive
-  'session.inactive.autoResume': '此会话已停止。发送消息即可恢复。',
-  'session.inactive.cannotResume': '此会话已停止，无法恢复。',
+  'session.inactive.checking': '正在确认会话连接…',
+  'session.inactive.disconnectedResume': '智能体尚未连接。发送消息时会尝试恢复连接。',
+  'session.inactive.disconnected': '智能体尚未连接。',
+  'session.inactive.autoResume': '此会话已归档。发送消息可重新打开。',
+  'session.inactive.cannotResume': '此会话已归档，无法恢复。',
 
   // Session header
   'session.title': '文件',
