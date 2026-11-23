@@ -1161,7 +1161,7 @@ export class SessionCache {
         }
         // The agent says it's idle: whatever it does next is a new turn.
         if (!requestedThinking) this.forgetInterruptedTurn(session.id)
-        this.recordTurn(session, wasThinking, hubNow, 'agent', 'idle')
+        const resumedInterruptedTurn = this.recordTurn(session, wasThinking, hubNow, 'agent', 'idle')
         if (payload.permissionMode !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'permissionMode', t)) {
             session.permissionMode = payload.permissionMode
             this.persistPreferredPermissionMode(session, payload.permissionMode)
@@ -1253,7 +1253,15 @@ export class SessionCache {
         // it said it was blocked on, it is now working. Done last because
         // `clearSessionLastNotify` re-seats the cached Session object, which
         // would strand the in-place mutations above.
-        if (!wasThinking && session.thinking) {
+        if (
+            !wasThinking && session.thinking
+            // The agent resuming a turn a hub restart left open is not a
+            // NEW turn (#1717 cold-review round 32) — `recordTurn` just
+            // above already recognized this exact rising edge as that
+            // resume, not a fresh prompt, so nothing it reports should
+            // invalidate whatever the session reported before the restart.
+            && !resumedInterruptedTurn
+        ) {
             // Same maintenance exemption as `applySessionPatch`: whichever
             // rising edge arrives first consumes the mark, so one maintenance
             // turn is protected and the next genuine prompt clears (#1717).
@@ -1371,6 +1379,12 @@ export class SessionCache {
      * Persists a change of `thinking` as the start or end of a turn, so how
      * long agents worked survives a hub restart. Never throws: losing a turn
      * row must not break the keepalive path.
+     *
+     * Returns whether THIS transition was recognized as the agent resuming
+     * a turn a hub restart left open, rather than starting a new one
+     * (#1717 cold-review round 32) — callers that clear the session's
+     * self-report on a rising edge need this: a turn resuming is not a
+     * new turn, so nothing it already reported is invalidated by it.
      */
     private recordTurn(
         session: Session,
@@ -1378,8 +1392,8 @@ export class SessionCache {
         at: number,
         trigger: SessionTurnTrigger,
         reason: SessionTurnEndReason
-    ): void {
-        if (wasThinking === session.thinking) return
+    ): boolean {
+        if (wasThinking === session.thinking) return false
         try {
             if (session.thinking) {
                 // Only the agent itself carrying on continues an interrupted
@@ -1391,12 +1405,13 @@ export class SessionCache {
                 if (!resumed) {
                     this.store.turns.open(session.id, session.namespace, at, trigger)
                 }
-            } else {
-                this.store.turns.close(session.id, at, reason)
+                return resumed
             }
+            this.store.turns.close(session.id, at, reason)
         } catch (error) {
             console.warn('[SessionCache] Failed to record turn', { sessionId: session.id, error })
         }
+        return false
     }
 
     /** The turn a restart interrupted can no longer continue. */
