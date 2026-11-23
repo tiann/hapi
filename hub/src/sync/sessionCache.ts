@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mergeClaudeSessionIdHistory, mergeReadState, notifyBlockerKey, requestBlockerKey } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
@@ -213,6 +214,22 @@ export class SessionCache {
     private readonly activeMaintenanceTurnSessionIds = new Set<string>()
     private readonly interruptedTurnSessionIds: Set<string> = new Set()
     private readonly sessionIdleTimeoutMs: number = resolveSessionIdleTimeoutMs()
+    /**
+     * One value per hub process, identifying the generation `thinkingRevision`
+     * resets within (#1717 cold-review round 29).
+     *
+     * `thinkingRevision` lives only in this cache's memory — a restart resets
+     * every session's counter to 0, closing the common case (an idle tab's
+     * cached revision is always higher than a fresh 0). But if ANY session's
+     * counter advances past 0 before a reconnecting tab's first post-restart
+     * list GET lands, that GET reports a small positive number which can
+     * still lose to the tab's stale, much higher pre-restart value — the
+     * zero-exception only ever covers the exact instant nothing has ticked
+     * yet. `hubGeneration` lets a client detect "this response came from a
+     * DIFFERENT process than the one my cached revision describes" and
+     * discard that cached revision outright, regardless of its number.
+     */
+    readonly hubGeneration: string = randomUUID()
 
     constructor(
         private readonly store: Store,

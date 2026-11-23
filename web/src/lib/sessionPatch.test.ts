@@ -171,6 +171,22 @@ describe('reconcileDelayedListSession', () => {
         expect(result.thinkingRevision).toBe(0)
     })
 
+    it('trusts a reported thinkingRevision after a hub restart even when it is a small POSITIVE number (#1717 cold-review round 29)', () => {
+        // The zero-exception above only covers the instant nothing has
+        // ticked yet. If some OTHER session's activity bumps the restarted
+        // hub's counter before this tab's first post-restart list GET
+        // lands, the reported revision is a small positive number that
+        // still loses to this tab's much higher pre-restart cached value —
+        // unless the caller tells this function a restart happened at all,
+        // via `hubRestarted`, regardless of what the number reads.
+        const prior = makeSummary({ id: 'session-1', thinking: true, thinkingConfirmed: true, thinkingRevision: 47 })
+        const postRestart = makeSummary({ id: 'session-1', thinking: false, thinkingConfirmed: true, thinkingRevision: 2 })
+
+        const result = reconcileDelayedListSession(prior, postRestart, true)
+        expect(result.thinking).toBe(false)
+        expect(result.thinkingRevision).toBe(2)
+    })
+
     it('still takes the incoming thinking state when it is genuinely newer', () => {
         const prior = makeSummary({ id: 'session-1', thinking: true, thinkingRevision: 1 })
         const incoming = makeSummary({ id: 'session-1', thinking: false, thinkingRevision: 2 })

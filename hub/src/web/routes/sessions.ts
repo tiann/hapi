@@ -272,7 +272,7 @@ export function createSessionsRoutes(
             }
         })
 
-        return c.json({ sessions, serverTime: Date.now() })
+        return c.json({ sessions, serverTime: Date.now(), hubGeneration: engine.hubGeneration })
     })
 
     app.get('/sessions/scratchlist-status', (c) => {

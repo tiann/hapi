@@ -145,7 +145,8 @@ export type AuthResponse = {
     }
 }
 
-export type SessionsResponse = { sessions: SessionSummary[]; serverTime?: number }
+/** `hubGeneration`: see `SessionCache.hubGeneration` (#1717 cold-review round 29). */
+export type SessionsResponse = { sessions: SessionSummary[]; serverTime?: number; hubGeneration?: string }
 export type ScratchlistSessionIdsResponse = { sessionIds: string[] }
 export type SessionContentMatch = {
     messageId: string

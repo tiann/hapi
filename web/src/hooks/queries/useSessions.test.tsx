@@ -40,3 +40,33 @@ it('does not let a delayed REST snapshot undo newer user input from SSE', async 
     expect(data.sessions.map(s => s.id)).toEqual(['a', 'b'])
     expect(data.sessions[0]!.lastUserMessageAt).toBe(300)
 })
+
+it('discards a cached thinkingRevision across a detected hub restart, even a small positive one (#1717 cold-review round 29)', async () => {
+    // `reconcileDelayedListSession`'s zero-exception alone only covers the
+    // instant nothing has ticked yet post-restart; a session whose counter
+    // already advanced before this tab's first post-restart GET lands
+    // needs the hook's own `hubGeneration` tracking to recognize the
+    // restart and discard the stale cached revision regardless of its
+    // number.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const getSessions = vi.fn()
+    const api = { getSessions } as unknown as ApiClient
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const { result } = renderHook(() => useSessions(api, { enabled: false }), { wrapper })
+
+    getSessions.mockResolvedValueOnce({
+        hubGeneration: 'process-a',
+        sessions: [{ ...row('a', 100), thinking: true, thinkingConfirmed: true, thinkingRevision: 47 }]
+    })
+    await act(async () => { await result.current.refetch() })
+
+    getSessions.mockResolvedValueOnce({
+        hubGeneration: 'process-b',
+        sessions: [{ ...row('a', 100), thinking: false, thinkingConfirmed: true, thinkingRevision: 2 }]
+    })
+    await act(async () => { await result.current.refetch() })
+
+    const data = client.getQueryData<SessionsResponse>(queryKeys.sessions)!
+    expect(data.sessions[0]!.thinking).toBe(false)
+    expect(data.sessions[0]!.thinkingRevision).toBe(2)
+})

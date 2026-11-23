@@ -154,7 +154,8 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
  */
 export function reconcileDelayedListSession(
     prior: SessionSummary | undefined,
-    incoming: SessionSummary
+    incoming: SessionSummary,
+    hubRestarted: boolean = false
 ): SessionSummary {
     // A list GET can be captured BEFORE a clear and land after SSE applied
     // it, which would re-block the row from a stale body.
@@ -211,7 +212,17 @@ export function reconcileDelayedListSession(
     // reset means the higher cached value describes a process that no
     // longer exists), so it must win outright rather than lose this
     // comparison.
+    //
+    // That exception only covers the instant nothing has ticked yet: if
+    // some OTHER session's activity bumps the hub's counter to a small
+    // positive number before this tab's first post-restart list GET lands,
+    // the comparison above is none the wiser and the stale pre-restart
+    // value still wins (#1717 cold-review round 29). `hubRestarted` — set
+    // by the caller when this response's `hubGeneration` differs from the
+    // last one it saw — closes that gap directly: a different hub process
+    // makes EVERY cached revision stale, not just a reported 0.
     const keepPriorThinking = prior !== undefined
+        && !hubRestarted
         && incomingThinkingRevision !== 0
         && priorThinkingRevision > incomingThinkingRevision
     return {

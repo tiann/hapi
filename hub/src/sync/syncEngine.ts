@@ -502,6 +502,11 @@ export class SyncEngine {
         return this.sessionCache.getSessions()
     }
 
+    /** See `SessionCache.hubGeneration` (#1717 cold-review round 29). */
+    get hubGeneration(): string {
+        return this.sessionCache.hubGeneration
+    }
+
     /**
      * Operator manually marks a session unblocked (#1717).
      *
