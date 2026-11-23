@@ -122,7 +122,6 @@ import {
     getSessionManualUnreadAt,
     getUnreadSessionCount,
     markAllSessionsSeen,
-    markSessionUnread,
     useSessionLastSeenVersion
 } from '@/lib/sessionLastSeen'
 import { useSessionRowTooltipIds } from '@/components/HoverTooltip'
@@ -1823,7 +1822,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
                 linkedPr={linkedPr}
                 onExport={() => setExportOpen(true)}
-                onMarkUnread={() => markSessionUnread(s.id, s.readState)}
+                readTarget={s}
                 onForkSession={api && ((supportsCurrentFork && (!s.thinking || supportsCompletedFork)) || supportsArchivedFork)
                     ? () => forkFlow.openFork()
                     : undefined}

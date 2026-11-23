@@ -407,6 +407,7 @@ export default {
   'session.action.pinFailed': 'Could not update pin',
   'sessions.pinnedSection': 'Pinned sessions',
   'session.action.export': 'Export conversation',
+  'session.action.markRead': 'Mark as read',
   'session.action.markUnread': 'Mark as unread',
   'session.action.translateInputOn': 'Translate my messages to English',
   'session.action.translateInputOff': 'Stop translating my messages',
