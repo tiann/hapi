@@ -23,6 +23,25 @@ type StoredAttachmentDraft = {
 const cache = new Map<string, File[]>()
 const restoredUploadMetadata = new WeakMap<File, RestoredUploadMetadata>()
 const pendingWrites = new Map<string, Promise<void>>()
+// Keep revisions only while a read is outstanding; empty cache entries can
+// be evicted and are not enough to detect a newer write.
+const draftReads = new Map<string, { readers: number; revision: number }>()
+
+function startDraftRead(sessionId: string) {
+    const state = draftReads.get(sessionId) ?? { readers: 0, revision: 0 }
+    state.readers++
+    draftReads.set(sessionId, state)
+    const revision = state.revision
+    return {
+        overwritten: () => state.revision !== revision,
+        finish: () => { if (--state.readers === 0) draftReads.delete(sessionId) },
+    }
+}
+
+function markDraftWrite(sessionId: string): void {
+    const state = draftReads.get(sessionId)
+    if (state) state.revision++
+}
 
 export type AttachmentDraftInput = {
     id: string
@@ -158,6 +177,23 @@ function setCachedFiles(sessionId: string, files: File[]): void {
     }
 }
 
+async function readStoredDraftAttachments(sessionId: string): Promise<File[]> {
+    const db = await openDb()
+    const record = await new Promise<StoredAttachmentDraft | undefined>((resolve, reject) => {
+        const transaction = db.transaction(STORE, 'readonly')
+        const request = transaction.objectStore(STORE).get(sessionId)
+        transaction.oncomplete = () => {
+            db.close()
+            resolve(request.result as StoredAttachmentDraft | undefined)
+        }
+        transaction.onerror = () => {
+            db.close()
+            reject(transaction.error ?? new Error('Composer draft transaction failed'))
+        }
+    })
+    return record?.files.map(toFile) ?? []
+}
+
 export async function getDraftAttachments(
     sessionId: string,
     options: { throwOnError?: boolean } = {},
@@ -165,30 +201,23 @@ export async function getDraftAttachments(
     const cached = cache.get(sessionId)
     if (cached) return cached.map(copyFile)
 
+    const read = startDraftRead(sessionId)
     try {
-        const db = await openDb()
-        const record = await new Promise<StoredAttachmentDraft | undefined>((resolve, reject) => {
-            const transaction = db.transaction(STORE, 'readonly')
-            const request = transaction.objectStore(STORE).get(sessionId)
-            transaction.oncomplete = () => {
-                db.close()
-                resolve(request.result as StoredAttachmentDraft | undefined)
-            }
-            transaction.onerror = () => {
-                db.close()
-                reject(transaction.error ?? new Error('Composer draft transaction failed'))
-            }
-        })
-        const files = record?.files.map(toFile) ?? []
+        const files = await readStoredDraftAttachments(sessionId)
+        if (read.overwritten()) return (cache.get(sessionId) ?? []).map(copyFile)
         if (files.length > 0) setCachedFiles(sessionId, files)
         return files
     } catch (error) {
+        if (read.overwritten()) return (cache.get(sessionId) ?? []).map(copyFile)
         if (options.throwOnError) throw error
         return []
+    } finally {
+        read.finish()
     }
 }
 
 export function saveDraftAttachments(sessionId: string, attachments: AttachmentDraftInput[]): void {
+    markDraftWrite(sessionId)
     if (attachments.length === 0) {
         // Keep an empty cache entry as a tombstone until the queued IndexedDB
         // delete completes, so a fast remount cannot read and restore stale files.
@@ -238,6 +267,8 @@ export async function moveDraftAttachments(
         ? (cache.get(targetSessionId) ?? []).map(copyFile)
         : null
 
+    markDraftWrite(targetSessionId)
+    markDraftWrite(sourceSessionId)
     setCachedFiles(targetSessionId, copies)
     // Tombstone the source immediately so unmount cleanup / remount cannot
     // re-read and re-persist the obsolete session id while the commit runs.
@@ -336,8 +367,18 @@ export function removeDraftAttachmentsById(
     const next = previous
         .catch(() => {})
         .then(async () => {
-            const files = await getDraftAttachments(sessionId)
+            const read = startDraftRead(sessionId)
+            let files: File[]
+            try {
+                files = await readStoredDraftAttachments(sessionId)
+                // A save updates the in-memory draft immediately and queues
+                // the newer durable write behind us. Neither may be replaced.
+                if (read.overwritten()) return
+            } finally {
+                read.finish()
+            }
             const remaining = toRemainingInputs(files)
+            markDraftWrite(sessionId)
             if (remaining.length === 0) {
                 setCachedFiles(sessionId, [])
                 await writeDraft(null, sessionId)

@@ -61,6 +61,52 @@ describe('composer-attachment-drafts', () => {
         expect(open).not.toHaveBeenCalled()
     })
 
+    it('keeps the newer cached and durable draft when an older cleanup read finishes later', async () => {
+        const mod = await import('./composer-attachment-drafts')
+        const readStarted = Promise.withResolvers<void>()
+        const writeFinished = Promise.withResolvers<void>()
+        let finishRead: () => void = () => {}
+        const stored = { files: [{ id: 'sent', name: 'old.txt', type: 'text/plain', lastModified: 1, blob: new Blob(['old']) }] }
+        const put = vi.fn()
+        const remove = vi.fn()
+        const db = {
+            close: vi.fn(),
+            transaction(_name: string, mode: string) {
+                let oncomplete: (() => void) | undefined
+                return {
+                    set oncomplete(callback: () => void) {
+                        oncomplete = callback
+                        if (mode === 'readwrite') queueMicrotask(() => { callback(); writeFinished.resolve() })
+                    },
+                    objectStore: () => ({
+                        get: () => {
+                            finishRead = () => oncomplete?.()
+                            readStarted.resolve()
+                            return { result: stored }
+                        },
+                        put,
+                        delete: remove,
+                        getAll: () => ({}),
+                    }),
+                }
+            },
+        }
+        vi.stubGlobal('indexedDB', { open: () => {
+            const request = { result: db, onsuccess: null as (() => void) | null }
+            queueMicrotask(() => request.onsuccess?.())
+            return request
+        } })
+
+        mod.removeDraftAttachmentsById('s1', ['sent'])
+        await readStarted.promise
+        mod.saveDraftAttachments('s1', [{ id: 'new', file: new File(['new'], 'new.txt') }])
+        finishRead()
+        await writeFinished.promise
+        expect(remove).not.toHaveBeenCalled()
+        expect(put).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ files: [expect.objectContaining({ id: 'new' })] }))
+        expect((await mod.getDraftAttachments('s1')).map(file => file.name)).toEqual(['new.txt'])
+    })
+
     it('retains completed upload metadata on restored files', async () => {
         const mod = await import('./composer-attachment-drafts')
         const file = new File(['image'], 'ready.png', { type: 'image/png' })

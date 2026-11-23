@@ -14,6 +14,8 @@ export type PendingComposerSend = {
 const pendingComposerSends = new Map<string, PendingComposerSend>()
 const composerProgrammaticEditRevisions = new Map<string, number>()
 const composerDraftRevisions = new Map<string, number>()
+const lastSuccessfulComposerClears = new Map<string, { text: string; revision: number }>()
+const MAX_RECENT_CLEARS = 128
 const composerSendSettlements = new Map<string, Map<string, SendMessageSettlement>>()
 const listeners = new Set<() => void>()
 
@@ -22,6 +24,7 @@ export function resetComposerSendStateForTests(): void {
     pendingComposerSends.clear()
     composerProgrammaticEditRevisions.clear()
     composerDraftRevisions.clear()
+    lastSuccessfulComposerClears.clear()
     composerSendSettlements.clear()
     notify()
 }
@@ -58,6 +61,20 @@ export function getComposerProgrammaticEditRevision(sessionId: string): number {
 
 export function getComposerDraftRevision(sessionId: string): number {
     return composerDraftRevisions.get(sessionId) ?? 0
+}
+
+export function getSuccessfulComposerClear(sessionId: string) {
+    return lastSuccessfulComposerClears.get(sessionId)
+}
+
+export function recordSuccessfulComposerClear(sessionId: string, text: string): void {
+    if (!text) return
+    lastSuccessfulComposerClears.delete(sessionId)
+    lastSuccessfulComposerClears.set(sessionId, { text, revision: getComposerDraftRevision(sessionId) })
+    if (lastSuccessfulComposerClears.size > MAX_RECENT_CLEARS) {
+        const oldest = lastSuccessfulComposerClears.keys().next().value
+        if (oldest !== undefined) lastSuccessfulComposerClears.delete(oldest)
+    }
 }
 
 export function recordComposerDraftChange(sessionId: string): void {

@@ -46,7 +46,7 @@ import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
 import type { AttachmentDraftInput } from '@/lib/composer-attachment-drafts'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
-import { consumePendingComposerSend, getComposerDraftRevision, recordComposerDraftChange } from '@/lib/composer-send-state'
+import { consumePendingComposerSend, getComposerDraftRevision, recordSuccessfulComposerClear, recordComposerDraftChange } from '@/lib/composer-send-state'
 import { persistInactiveComposerAttachments, setComposerDraftSnapshot, updateComposerDraftTextSnapshot, attachmentDraftRevision, resetInactiveComposerAttachmentVisibility } from '@/lib/composer-draft-transfer'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
@@ -624,7 +624,6 @@ export function HappyComposer(props: {
     })
     const [isExpanded, setIsExpanded] = useState(false)
     const lastSendAcceptanceRef = useRef(props.sendAcceptance)
-    const pendingSendAttemptIdRef = useRef<string | null>(null)
     const pendingSendEditGenerationRef = useRef<number | null>(null)
     const pendingSendAttachmentGenerationRef = useRef<number | null>(null)
     const pendingSendScheduleGenerationRef = useRef<number | null>(null)
@@ -654,7 +653,6 @@ export function HappyComposer(props: {
         if (!acceptance || acceptance === lastSendAcceptanceRef.current) return
         lastSendAcceptanceRef.current = acceptance
         if (acceptance.attemptId === null) {
-            pendingSendAttemptIdRef.current = null
             pendingSendEditGenerationRef.current = null
             pendingSendAttachmentGenerationRef.current = null
             pendingSendScheduleGenerationRef.current = null
@@ -666,7 +664,6 @@ export function HappyComposer(props: {
             setIsExpanded(false)
             return
         }
-        pendingSendAttemptIdRef.current = acceptance.attemptId
         const pendingGeneration = pendingSendEditGenerationRef.current
         const pendingAttachmentGeneration = pendingSendAttachmentGenerationRef.current
         const pendingScheduleGeneration = pendingSendScheduleGenerationRef.current
@@ -684,21 +681,7 @@ export function HappyComposer(props: {
         pendingSendAttachmentGenerationRef.current = null
         pendingSendScheduleGenerationRef.current = null
         pendingSendAttachmentIdsRef.current = null
-        const settlement = props.sendSettlement
-        if (!settlement || settlement.attemptId !== acceptance.attemptId) return
-        pendingSendAttemptIdRef.current = null
-        if (settlement.status === 'success') setIsExpanded(false)
-    }, [props.sendAcceptance, props.sendSettlement])
-
-    // Match the terminal mutation result to the exact accepted attempt. Text
-    // failures also expose sendError for draft restoration, while attachment
-    // failures intentionally do not, so settlement must be the outcome source.
-    useEffect(() => {
-        const settlement = props.sendSettlement
-        if (!settlement || settlement.attemptId !== pendingSendAttemptIdRef.current) return
-        pendingSendAttemptIdRef.current = null
-        if (settlement.status === 'success') setIsExpanded(false)
-    }, [props.sendSettlement])
+    }, [props.sendAcceptance])
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const richInputRef = useRef<RichComposerInputHandle>(null)
@@ -968,6 +951,7 @@ export function HappyComposer(props: {
         }
 
         if (composerText === submittedText) {
+            recordSuccessfulComposerClear(sessionId, composerText)
             api.composer().setText('')
         }
         const submittedAttachmentIds = settlement.attachmentIds

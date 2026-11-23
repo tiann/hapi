@@ -585,6 +585,16 @@ describe('HappyComposer send-error atomic restore', () => {
         expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded')
     })
 
+    it('does not collapse an editor reopened by the user while an accepted send settles', () => {
+        const controls = renderComposer('original draft', null)
+        fireEvent.click(screen.getByRole('button', { name: 'expand' }))
+        send()
+        acceptAndClearSchedule(controls)
+        fireEvent.click(screen.getByRole('button', { name: 'expand' }))
+        act(() => controls.current!.settleSend())
+        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
+    })
+
     it('keeps the composer collapsed when a submitted send later fails', async () => {
         const controls = renderComposer('message', null)
         fireEvent.click(screen.getByRole('button', { name: 'expand' }))

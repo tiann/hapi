@@ -1,3 +1,4 @@
+import { recordSuccessfulComposerClear, resetComposerSendStateForTests } from '@/lib/composer-send-state'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -262,6 +263,18 @@ describe('QueuedMessagesBar layout', () => {
 })
 
 describe('QueuedMessagesBar edit restore', () => {
+    it('restores the cancelled edit after a successful send automatically clears the remounted composer', async () => {
+        resetComposerSendStateForTests()
+        const { onEdit } = renderQueuedMessage(Date.now() + 60_000)
+        mocks.composerText = 'stale submitted text'
+        fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }))
+        recordSuccessfulComposerClear('session-1', mocks.composerText)
+        mocks.composerText = ''
+        await resolveCancel({ status: 'cancelled' })
+        expect(onEdit).toHaveBeenCalledOnce()
+        expect(mocks.composerSetText).toHaveBeenCalledOnce()
+    })
+
     it('keeps a newly typed draft and its schedule when the deferred cancel succeeds', async () => {
         const scheduledAt = Date.now() + 60_000
         const { onEdit } = renderQueuedMessage(scheduledAt)
