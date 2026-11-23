@@ -345,12 +345,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         || rawAssistantPayload.is_api_error_message === true
                         || typeof rawAssistantPayload.error === 'string';
                     if (!isSyntheticApiError) {
-                        const model = assistantMessage.model ?? (typeof rawMessage.model === 'string' ? rawMessage.model : lastSystemModel);
+                        const model = assistantMessage.model ?? (typeof rawAssistantPayload.model === 'string' ? rawAssistantPayload.model : null);
+                        const windowModel = model ?? (typeof rawMessage.model === 'string' ? rawMessage.model : lastSystemModel);
                         const details = buildClaudeContextDetails({
                             contextUsage: assistantMessage.context_usage ?? rawAssistantPayload.context_usage,
                             messageUsage: rawMessage.usage,
                             model,
-                            effectiveContextWindow: effectiveLimitFor(model)
+                            effectiveContextWindow: effectiveLimitFor(windowModel)
                         });
                         if (details) {
                             publishContextDetails(session.client, details);
