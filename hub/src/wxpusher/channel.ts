@@ -85,13 +85,13 @@ export class WxPusherChannel implements NotificationChannel {
         ))
     }
 
-    async sendPermissionRequest(session: Session): Promise<void> {
+    async sendPermissionRequest(session: Session, ctx?: NotificationSendContext): Promise<void> {
         if (!session.active || this.shouldSuppress(session)) {
             return
         }
 
         const name = getSessionName(session)
-        const pending = getFirstPendingRequest(session)
+        const pending = getFirstPendingRequest(session, ctx?.pendingRequestIds)
         if (!pending) return
         const inputNotification = composeInputRequestNotification(session, pending)
         const url = buildSessionUrl(this.publicUrl, session.id)

@@ -12,4 +12,5 @@ export type NativeDeliveryGate = {
 export type NotificationSendContext = {
     nativeGate?: NativeDeliveryGate
     readyReason?: 'reactive-polling-paused'
+    pendingRequestIds?: ReadonlySet<string>
 }

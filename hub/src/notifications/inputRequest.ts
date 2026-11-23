@@ -17,8 +17,8 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 export type PendingNotificationRequest = { requestId: string; request: AgentStateRequest }
 
 /** Keep the existing first-pending selection; text and actions must use the same request. */
-export function getFirstPendingRequest(session: Session): PendingNotificationRequest | null {
-    const entry = Object.entries(session.agentState?.requests ?? {})[0]
+export function getFirstPendingRequest(session: Session, allowed?: ReadonlySet<string>): PendingNotificationRequest | null {
+    const entry = Object.entries(session.agentState?.requests ?? {}).find(([id]) => !allowed || allowed.has(id))
     return entry ? { requestId: entry[0], request: entry[1] } : null
 }
 

@@ -14,6 +14,7 @@ export class NotificationHub {
     private readonly permissionDebounceMs: number
     private readonly modelErrorRetryDelaysMs: number[]
     private readonly lastKnownRequests: Map<string, Set<string>> = new Map()
+    private readonly pendingPermissionNotifications = new Map<string, Set<string>>()
     private readonly notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
     private readonly lastReadyNotificationAt: Map<string, number> = new Map()
     private readonly lastGenuineReadyAt: Map<string, number> = new Map()
@@ -80,6 +81,7 @@ export class NotificationHub {
         }
         this.notificationDebounce.clear()
         this.lastKnownRequests.clear()
+        this.pendingPermissionNotifications.clear()
         this.lastReadyNotificationAt.clear()
         this.lastModelErrorNotifiedId.clear()
         for (const timer of this.modelErrorRetryTimers.values()) {
@@ -150,6 +152,7 @@ export class NotificationHub {
             this.notificationDebounce.delete(sessionId)
         }
         this.lastKnownRequests.delete(sessionId)
+        this.pendingPermissionNotifications.delete(sessionId)
         this.lastReadyNotificationAt.delete(sessionId)
         this.lastGenuineReadyAt.delete(sessionId)
         if (removeModelErrorWatermark) {
@@ -341,28 +344,15 @@ export class NotificationHub {
     }
 
     private checkForPermissionNotification(session: Session): void {
-        const requests = session.agentState?.requests
-
-        if (requests == null) {
-            return
-        }
-
-        const newRequestIds = new Set(Object.keys(requests))
-        const oldRequestIds = this.lastKnownRequests.get(session.id) || new Set()
-
-        let hasNewRequests = false
-        for (const requestId of newRequestIds) {
-            if (!oldRequestIds.has(requestId)) {
-                hasNewRequests = true
-                break
-            }
-        }
-
-        this.lastKnownRequests.set(session.id, newRequestIds)
-
-        if (!hasNewRequests) {
-            return
-        }
+        const current = new Set(Object.keys(session.agentState?.requests ?? {}))
+        const previous = this.lastKnownRequests.get(session.id) ?? new Set()
+        this.lastKnownRequests.set(session.id, current)
+        const pending = this.pendingPermissionNotifications.get(session.id) ?? new Set<string>()
+        for (const id of pending) if (!current.has(id)) pending.delete(id)
+        const added = [...current].filter(id => !previous.has(id))
+        if (!added.length) return
+        for (const id of added) pending.add(id)
+        this.pendingPermissionNotifications.set(session.id, pending)
 
         const existingTimer = this.notificationDebounce.get(session.id)
         if (existingTimer) {
@@ -371,7 +361,10 @@ export class NotificationHub {
 
         const timer = setTimeout(() => {
             this.notificationDebounce.delete(session.id)
-            this.sendPermissionNotification(session.id).catch((error) => {
+            const added = this.pendingPermissionNotifications.get(session.id)
+            this.pendingPermissionNotifications.delete(session.id)
+            if (!added?.size) return
+            this.sendPermissionNotification(session.id, added).catch((error) => {
                 console.error('[NotificationHub] Failed to send permission notification:', error)
             })
         }, this.permissionDebounceMs)
@@ -379,13 +372,14 @@ export class NotificationHub {
         this.notificationDebounce.set(session.id, timer)
     }
 
-    private async sendPermissionNotification(sessionId: string): Promise<void> {
+    private async sendPermissionNotification(sessionId: string, requestIds: ReadonlySet<string>): Promise<void> {
         const session = this.getNotifiableSession(sessionId)
         if (!session) {
             return
         }
 
-        await this.notifyPermission(session)
+        const pending = new Set([...requestIds].filter(id => Object.hasOwn(session.agentState?.requests ?? {}, id)))
+        if (pending.size) await this.notifyPermission(session, pending)
     }
 
     private async sendReadyNotification(sessionId: string, reason?: NotificationSendContext['readyReason']): Promise<void> {
@@ -450,9 +444,9 @@ export class NotificationHub {
         })
     }
 
-    private async notifyPermission(session: Session): Promise<void> {
-        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
-        await this.dispatchNotification('permission', channel => channel.sendPermissionRequest(session, channel.independent ? undefined : ctx))
+    private async notifyPermission(session: Session, pendingRequestIds: ReadonlySet<string>): Promise<void> {
+        const ctx: NotificationSendContext = { nativeGate: { sent: false }, pendingRequestIds }
+        await this.dispatchNotification('permission', channel => channel.sendPermissionRequest(session, channel.independent ? { pendingRequestIds } : ctx))
     }
 
     private async notifySessionCompletion(session: Session, reason: SessionEndReason): Promise<void> {

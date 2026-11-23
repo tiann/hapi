@@ -135,6 +135,34 @@ function createSession(overrides: Partial<Session> = {}): Session {
 }
 
 describe('NotificationHub', () => {
+    it('WxPusher notifies a new input request without repeating an older approval', async () => {
+        const engine = new FakeSyncEngine()
+        const previousFetch = globalThis.fetch
+        const outgoing: Array<{ content: string }> = []
+        globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+            outgoing.push(JSON.parse(String(init?.body)))
+            return new Response('{"code":1000}')
+        }) as typeof fetch
+        const hub = new NotificationHub(engine as unknown as SyncEngine,
+            [new WxPusherChannel('fixture-app', ['fixture-uid'], [], 'https://hapi.example.com')], { permissionDebounceMs: 5 })
+        const approval = { tool: 'Bash', arguments: {} }
+        const event = { type: 'session-updated' as const, sessionId: 'session-1' }
+        try {
+            engine.setSession(createSession({ agentState: { requests: { approval } } }))
+            engine.emit(event)
+            await sleep(25)
+            engine.setSession(createSession({ agentState: { requests: { approval, question: { tool: 'request_user_input',
+                arguments: { questions: [{ question: 'Pick one option' }] },
+            } } } }))
+            engine.emit(event)
+            await sleep(25)
+            expect(outgoing).toHaveLength(2)
+            expect(outgoing[0]?.content).toContain('Bash')
+            expect(outgoing[1]?.content).toContain('Pick one option')
+            expect(outgoing[1]?.content).not.toContain('Bash')
+        } finally { globalThis.fetch = previousFetch; hub.stop() }
+    })
+
     it('debounces permission notifications and triggers when request IDs change', async () => {
         const engine = new FakeSyncEngine()
         const channel = new StubChannel()
