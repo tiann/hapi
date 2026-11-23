@@ -471,7 +471,8 @@ describe('QueuedMessagesBar edit restore', () => {
 
         const persisted = JSON.parse(sessionStorage.getItem('hapi:queued-edit-recovery')!)
         expect(persisted['session-1']).toMatchObject({
-            composerTextAtEdit: '',
+            composerTextAtEdit: 'Previously submitted',
+            automaticallyCleared: true,
             text: 'Queued request',
             pendingSchedule: { type: 'absolute', ms: scheduledAt },
         })
@@ -480,6 +481,26 @@ describe('QueuedMessagesBar edit restore', () => {
         const { onEdit } = renderQueuedMessage(scheduledAt)
         await waitFor(() => expect(mocks.composerSetText).toHaveBeenCalledWith('Queued request'))
         expect(onEdit).toHaveBeenCalledWith({
+            text: 'Queued request',
+            pendingSchedule: { type: 'absolute', ms: scheduledAt },
+        })
+    })
+
+    it('recovers on a stale remount before slower composer hydration clears the submitted text', async () => {
+        const raf = installManualAnimationFrames()
+        const scheduledAt = Date.now() + 60_000
+        mocks.composerText = 'Previously submitted'
+        const first = renderQueuedMessage(scheduledAt)
+        fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }))
+        first.unmount()
+        const remount = renderQueuedMessage(scheduledAt)
+        await resolveCancel({ status: 'cancelled' })
+        recordSuccessfulComposerClear('session-1', 'Previously submitted')
+        // Durable send settlement has happened, but the visible composer has
+        // not finished attachment hydration and still shows the submitted text.
+        raf.flushPending()
+        await waitFor(() => expect(mocks.composerSetText).toHaveBeenCalledWith('Queued request'))
+        expect(remount.onEdit).toHaveBeenCalledWith({
             text: 'Queued request',
             pendingSchedule: { type: 'absolute', ms: scheduledAt },
         })

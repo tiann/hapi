@@ -19,6 +19,7 @@ import {
     clearQueuedEditRecovery,
     endQueuedOperation,
     getQueuedEditRecovery,
+    getQueuedEditRecoveryTextRevision,
     isQueuedOperationPending,
     saveQueuedEditRecovery,
     subscribeQueuedEditRecovery,
@@ -266,10 +267,9 @@ export function QueuedMessagesBar({
         const currentText = assistantApi.composer().getState().text
         // A new session starts at revision 0. Any schedule interaction, even
         // select-then-clear back to null, increments it and wins over recovery.
-        const lastClear = getSuccessfulComposerClear(sessionId)
-        const textCompatible = currentText === recovery.composerTextAtEdit
-            || (currentText === '' && lastClear?.text === recovery.composerTextAtEdit
-                && lastClear.revision === getComposerTextRevision(sessionId))
+        const expectedRevision = getQueuedEditRecoveryTextRevision(sessionId)
+        const textCompatible = (expectedRevision === undefined || expectedRevision === getComposerTextRevision(sessionId))
+            && (currentText === recovery.composerTextAtEdit || (currentText === '' && recovery.automaticallyCleared))
         const scheduleCompatible = pendingScheduleRevisionRef.current === 0
         if (!textCompatible || !scheduleCompatible) {
             if (mountedRef.current) {
@@ -509,7 +509,8 @@ export function QueuedMessagesBar({
                                     saveQueuedEditRecovery(sessionId, {
                                         text: editText,
                                         pendingSchedule: restoredPendingSchedule,
-                                        composerTextAtEdit: matchingClear ? '' : composerTextAtEdit,
+                                        composerTextAtEdit,
+                                        automaticallyCleared: matchingClear,
                                         pendingScheduleAtEdit,
                                     }, draftRevisionAtEdit)
                                     return

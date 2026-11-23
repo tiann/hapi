@@ -53,7 +53,7 @@ for (const scenario of ['delayed send', 'durable recovery'] as const) {
                     [id]: {
                         id: 'fixture-recovery', text: 'Canceled queued draft',
                         pendingSchedule: { type: 'absolute', ms: Date.now() + 30 * 60_000 },
-                        composerTextAtEdit: '', pendingScheduleAtEdit: null,
+                        composerTextAtEdit: 'Previously submitted', automaticallyCleared: true, pendingScheduleAtEdit: null,
                     },
                 }))
             }, session.id)
