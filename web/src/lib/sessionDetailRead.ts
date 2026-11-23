@@ -37,7 +37,9 @@ export async function readSessionWithLiveUpdates<T extends { session: Session }>
         // Expiry and its preceding keepalive deliberately share the Hub clock.
         // Refetch *after* seeing both contradictory observations; the answer no
         // longer depends on which stream was delayed. Bound this to one retry.
-        if (live && live.at === result.session.activeAt && live.fields.active !== result.session.active) {
+        const unclockedConflict = [...seen].some(([key, observation]) => observation.at === undefined
+            && observation.fields[key] !== result.session[key])
+        if (unclockedConflict || (live && live.at === result.session.activeAt && live.fields.active !== result.session.active)) {
             seen.clear()
             result = await read()
         }
@@ -48,7 +50,9 @@ export async function readSessionWithLiveUpdates<T extends { session: Session }>
         // over an indistinguishable replayed keepalive until a fresh connect.
         if (!session.active && repeated?.at === session.activeAt && repeated?.fields.active === true) return result
         for (const { at, fields } of seen.values()) {
-            if (at === undefined || at >= result.session.activeAt) Object.assign(session, fields)
+            // Contradictory unclocked observations already triggered verification.
+            // A replay during that verification cannot outrank its snapshot.
+            if (at !== undefined && at >= result.session.activeAt) Object.assign(session, fields)
         }
         // A queued-turn or tool update may carry no presence clock. It cannot
         // reopen a turn after expiry; only an observed reconnect can do that.

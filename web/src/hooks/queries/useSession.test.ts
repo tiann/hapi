@@ -117,3 +117,15 @@ it('does not let a replayed queued-turn event reopen a stopped turn', async () =
     })
     expect(result.session).toMatchObject({ active: false, thinking: false, activeTurnStartedAt: null })
 })
+
+it('verifies a connected idle snapshot after a delayed queued-turn patch, even on repeated replay', async () => {
+    const client = new QueryClient()
+    const idle = { id: 'idle', active: true, activeAt: 10, thinking: false, activeTurnStartedAt: null } as Session
+    const read = vi.fn(async () => {
+        observeSessionDetail(client, 'idle', { thinking: true, activeTurnStartedAt: 9, updatedAt: 9 })
+        return { session: idle }
+    })
+    const result = await readSessionWithLiveUpdates(client, 'idle', read)
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(result.session).toMatchObject({ active: true, thinking: false, activeTurnStartedAt: null })
+})
