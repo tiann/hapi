@@ -11,9 +11,11 @@ let authAttempts = 0
 let closeGlobalOnce = false
 let skewedRunner = false
 const now = Date.now()
+// Keep the project group open: inactive-only folders start collapsed and, since
+// #2564, no longer peek unread rows. These cases navigate the rows directly.
 const sessions = ['A', 'B'].map(letter => ({
     id: 'network-chat-' + letter, namespace: 'fixture', seq: 1, createdAt: now, updatedAt: now,
-    active: false, activeAt: now, thinking: false, thinkingAt: 0,
+    active: true, activeAt: now, thinking: false, thinkingAt: 0,
     hasConversationContent: true, contentRevision: 1,
     metadata: { name: 'Offline fixture ' + letter, path: '/fixture', host: 'fixture', flavor: 'claude' },
     metadataVersion: 1, agentState: null, agentStateVersion: 1,
