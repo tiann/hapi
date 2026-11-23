@@ -1051,6 +1051,10 @@ export async function claudeRemote(opts: {
                     waitingForClearFollowUp = !inputEnded;
                     if (rotatedId) bindClearSession(rotatedId, clear.init);
                     if (clear.nativeAlias) opts.onMessage(message);
+                    else if (rotatedId && message.type === 'result' && message.session_id === rotatedId) {
+                        // The suppressed /clear result rebases usage for the rotated session.
+                        opts.onDroppedResult?.(message as SDKResultMessage);
+                    }
                     const completion = clear.nativeAlias ? undefined : rotatedId ? 'Context was reset' : 'Could not reset context';
                     await opts.onReady(completion, undefined, rotatedId ? 0 : undefined);
                     scheduleNextMessage();

@@ -543,7 +543,60 @@ describe('SDKToLogConverter', () => {
                 })
             })
 
-            it('clears the baseline on resetParentChain', () => {
+            it('keeps the baseline across a same-id restart after a fresh launch', () => {
+                converter.startFreshProcessBaseline()
+                converter.resetParentChain()
+                converter.updateSessionId('native-1')
+                converter.convert(result({
+                    total_cost_usd: 1,
+                    duration_api_ms: 1000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 100 } }
+                }))
+
+                converter.resetParentChain()
+                converter.updateSessionId('native-1')
+                const next = converter.convert(result({
+                    total_cost_usd: 1.5,
+                    duration_api_ms: 1400,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 150 } }
+                }))
+                expect(summaryOf(next)?.total_cost_usd).toBeCloseTo(0.5, 9)
+                expect(summaryOf(next)).toMatchObject({ generation_ms: 400, generation_output_tokens: 20 })
+                expect(summaryOf(next)?.modelUsage).toMatchObject({ 'claude-opus-5': { outputTokens: 50 } })
+            })
+
+            it('rebases a /clear result consumed for the newly bound session', () => {
+                converter.startFreshProcessBaseline()
+                converter.updateSessionId('native-1')
+                converter.convert(result({
+                    total_cost_usd: 1,
+                    duration_api_ms: 1000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 100 } }
+                }))
+
+                converter.updateSessionId('native-2')
+                converter.consumeResultForAccounting(result({
+                    total_cost_usd: 1.2,
+                    duration_api_ms: 1100,
+                    usage: { input_tokens: 1, output_tokens: 1 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 120 } }
+                }))
+                const next = converter.convert(result({
+                    total_cost_usd: 1.7,
+                    duration_api_ms: 1600,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 170 } }
+                }))
+                expect(summaryOf(next)?.total_cost_usd).toBeCloseTo(0.5, 9)
+                expect(summaryOf(next)?.modelUsage).toMatchObject({ 'claude-opus-5': { outputTokens: 50 } })
+            })
+
+            it('clears the baseline when the native session id changes', () => {
+                converter.startFreshProcessBaseline()
+                converter.updateSessionId('native-1')
                 converter.convert(result({
                     total_cost_usd: 100,
                     duration_api_ms: 50_000,
@@ -552,6 +605,7 @@ describe('SDKToLogConverter', () => {
                 }))
 
                 converter.resetParentChain()
+                converter.updateSessionId('native-2')
 
                 // No baseline after a new session: the first result omits all
                 // cumulative fields, even though their values look like deltas.

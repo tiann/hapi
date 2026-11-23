@@ -170,6 +170,8 @@ export class SDKToLogConverter {
     // Cumulative cost/modelUsage/duration_api_ms survive --resume, so emit only
     // deltas against a known baseline and omit fields when none is available.
     private previousCumulative: CumulativeUsageBaseline | null = null
+    // Native session id that owns previousCumulative; null until learned.
+    private usageSessionId: string | null = null
 
     constructor(
         context: Omit<ConversionContext, 'parentUuid'>,
@@ -252,6 +254,12 @@ export class SDKToLogConverter {
      */
     updateSessionId(sessionId: string): void {
         this.context.sessionId = sessionId
+        // The usage baseline belongs to one native session: a different id
+        // (new session, /clear rotation, fork) cannot be differenced against it.
+        if (this.usageSessionId !== null && this.usageSessionId !== sessionId) {
+            this.previousCumulative = null
+        }
+        this.usageSessionId = sessionId
     }
 
     /**
@@ -274,15 +282,15 @@ export class SDKToLogConverter {
     resetParentChain(): void {
         this.lastUuid = null
         this.context.parentUuid = null
-        // A new Claude session has no trustworthy baseline yet. Limit: a fresh
-        // session's first restart also lands here, so the next round omits cost and tok/s.
-        this.previousCumulative = null
+        // The usage baseline is kept: updateSessionId clears it when the native session id changes.
     }
 
     /**
      * Seed a zero baseline for a process started without a prior transcript.
      */
     startFreshProcessBaseline(): void {
+        // A fresh process owns whatever session id it reports next.
+        this.usageSessionId = null
         this.previousCumulative = {
             totalCostUsd: 0,
             durationApiMs: 0,

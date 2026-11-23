@@ -472,7 +472,7 @@ describe('claudeRemote async message handling', () => {
 
 describe('claudeRemote in-process /clear', () => {
     it.each([
-        'success', 'failure', 'untagged-failure', 'eof', 'no-result',
+        'success', 'foreign-result', 'failure', 'untagged-failure', 'eof', 'no-result',
         'autonomous-eof', 'acknowledged', 'hook', 'late-result', 'late-init',
         'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout', 'result-eof',
         'unacknowledged-input-eof', 'acknowledged-input-eof', 'failed-clear-input-eof',
@@ -485,6 +485,7 @@ describe('claudeRemote in-process /clear', () => {
         const { claudeRemote } = await import('./claudeRemote');
         const order: string[] = [];
         const forwarded: SDKMessage[] = [];
+        const dropped: SDKMessage[] = [];
         const priorId = 'previous-native-session';
         const lateRotation = outcome === 'late-result' || outcome === 'late-init' || outcome === 'late-stale-result' || outcome === 'late-hook';
         const timesOut = lateRotation || outcome === 'untagged-failure' || outcome === 'tagged-timeout' || outcome === 'silent-timeout';
@@ -500,7 +501,7 @@ describe('claudeRemote in-process /clear', () => {
         const nativeSlashFollowUp = outcome === 'native-slash-follow-up' || outcome === 'native-slash-follow-up-without-hook'
             || aliasInit || aliasReceiptFirst || aliasUntaggedHook;
         const hasFollowUpResult = outcome === 'follow-up-result' || legacyFollowUp || interveningCompact || hasLaterFollowUp;
-        const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook'
+        const success = outcome === 'success' || outcome === 'foreign-result' || outcome === 'eof' || outcome === 'hook'
             || outcome === 'result-eof' || exitsAfterFollowUp || hasFollowUpResult || idleBackgroundOutput || nativeSlashFollowUp
             || earlyCommandReceipt;
         const resultId = success || lateRotation ? 'fresh-native-session' : priorId;
@@ -559,8 +560,8 @@ describe('claudeRemote in-process /clear', () => {
                     yield {
                         ...result,
                         is_error: !success,
-                        ...(outcome === 'success' ? { local_command: 'clear' } : {}),
-                        session_id: resultId,
+                        ...(outcome === 'success' || outcome === 'foreign-result' ? { local_command: 'clear' } : {}),
+                        session_id: outcome === 'foreign-result' ? 'foreign-native-session' : resultId,
                         user_message_uuid: outcome === 'hook' ? undefined : clear.value?.uuid
                     };
                 }
@@ -709,6 +710,7 @@ describe('claudeRemote in-process /clear', () => {
                     expect(message.type === 'user' && message.isReplay === true).toBe(false);
                     forwarded.push(message);
                 },
+                onDroppedResult: (message) => { dropped.push(message); },
                 onCompletionEvent: outcome === 'acknowledged' || lateRotation ? (event) => { order.push(event); } : undefined,
                 getClearHookSessionId: () => hookSessionId,
                 onSessionReset: () => order.push('reset')
@@ -755,6 +757,11 @@ describe('claudeRemote in-process /clear', () => {
                         ...(hasLaterFollowUp ? ['later follow-up', 'ready'] : [])]
                     : [`session:${priorId}`, 'ready', '/clear', 'accepted', completion, 'follow-up']);
             }
+            // Only the accepted /clear result of the newly bound session is fed to accounting.
+            if (outcome === 'success') {
+                expect(dropped.map((m) => (m as { session_id?: string }).session_id)).toEqual([resultId]);
+            }
+            if (outcome === 'foreign-result') expect(dropped).toEqual([]);
             expect(clearContextTokens).toEqual(nativeSlashFollowUp ? [0, 0] : success || lateRotation ? [0] : []);
             if (outcome === 'result-eof' || outcome === 'unacknowledged-input-eof' || outcome === 'failed-clear-input-eof') {
                 expect(inputs).toEqual(['follow-up']);
