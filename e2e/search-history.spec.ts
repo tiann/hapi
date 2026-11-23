@@ -441,7 +441,7 @@ test('a denied opt-out write shows a warning and never records more queries loca
     await toggle.locator('..').click()
     await expect(toggle).not.toBeChecked()
     await expect(page.getByRole('alert')).toContainText('Could not save this opt-out')
-    if (process.env.HAPI_OPTOUT_SCREENSHOT) await page.screenshot({ path: process.env.HAPI_OPTOUT_SCREENSHOT })
+    if (process.env.HAPI_OPTOUT_SCREENSHOT) await page.screenshot({ path: process.env.HAPI_OPTOUT_SCREENSHOT, animations: 'disabled' })
     await go(page, 'Sessions')
     const input = page.getByRole('searchbox')
     await input.fill('must not be written')
