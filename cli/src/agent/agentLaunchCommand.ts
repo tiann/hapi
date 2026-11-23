@@ -93,12 +93,24 @@ export function resolveExecutable(
 
 export type LaunchCommand = { command: string; args: string[] }
 
-/** Script a Windows npm/pnpm `.cmd` shim runs with node, e.g. `"%dp0%\\node_modules\\pkg\\cli.js" %*`. */
-export function parseNodeShimScript(shimPath: string, shim: string): string | null {
-    const match = /"(%~?dp0%?\\)?([^"%]+\.[cm]?js)"\s+%\*/i.exec(shim)
-    if (!match) return null
-    if (match[1]) return win32.resolve(win32.dirname(shimPath), match[2])
-    return win32.isAbsolute(match[2]) ? win32.normalize(match[2]) : null
+export type NodeShim = { script: string; node: string | null }
+
+/**
+ * What a Windows npm/pnpm `.cmd` shim runs, e.g.
+ * `"%_prog%"  "%dp0%\\node_modules\\pkg\\cli.js" %*`. `node` is the interpreter
+ * the shim names explicitly (pnpm), or null when it picks one at run time.
+ */
+export function parseNodeShimScript(shimPath: string, shim: string): NodeShim | null {
+    const shimDir = win32.dirname(shimPath)
+    const resolveShimPath = (path: string): string | null => {
+        const relative = /^%~?dp0%?\\(.+)$/i.exec(path)
+        if (relative) return win32.resolve(shimDir, relative[1])
+        return win32.isAbsolute(path) ? win32.normalize(path) : null
+    }
+    const match = /(?:"([^"]+\.exe)"\s+)?"([^"]+\.[cm]?js)"\s+%\*/i.exec(shim)
+    const script = match && resolveShimPath(match[2])
+    if (!script) return null
+    return { script, node: match[1] ? resolveShimPath(match[1]) : null }
 }
 
 /**
@@ -121,16 +133,15 @@ export function resolveNodeCliLaunch(
     const executable = win32.resolve(found)
     if (!/\.(cmd|bat)$/i.test(executable)) return { command: executable, args: [] }
 
-    let script: string | null
+    let shim: NodeShim | null
     try {
-        script = parseNodeShimScript(executable, readFileSync(executable, 'utf8'))
+        shim = parseNodeShimScript(executable, readFileSync(executable, 'utf8'))
     } catch {
         return null
     }
-    if (!script || !existsSync(script)) return null
+    if (!shim || !existsSync(shim.script)) return null
     const bundledNode = win32.join(win32.dirname(executable), 'node.exe')
-    const node = existsSync(bundledNode)
-        ? bundledNode
-        : resolveExecutable('node', { platform, pathValue, pathExt: '.EXE' })
-    return node ? { command: win32.resolve(node), args: [script] } : null
+    const node = [shim.node, bundledNode].find((path): path is string => !!path && existsSync(path))
+        ?? resolveExecutable('node', { platform, pathValue, pathExt: '.EXE' })
+    return node ? { command: win32.resolve(node), args: [shim.script] } : null
 }

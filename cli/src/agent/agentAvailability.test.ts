@@ -46,19 +46,32 @@ describe('agent executable resolution', () => {
             '  SET PATHEXT=%PATHEXT:;.JS;=;%', ')', '',
             'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js" %*',
         ].join('\r\n')
-        expect(parseNodeShimScript('C:\\Users\\Han Feng\\AppData\\Roaming\\npm\\pi.cmd', npmShim))
-            .toBe('C:\\Users\\Han Feng\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js')
+        expect(parseNodeShimScript('C:\\Users\\Han Feng\\AppData\\Roaming\\npm\\pi.cmd', npmShim)).toEqual({
+            script: 'C:\\Users\\Han Feng\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js',
+            node: null,
+        })
     })
 
     it('reads the script a pnpm Windows shim runs', () => {
         const pnpmShim = '@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\global\\5\\node_modules\\pi\\dist\\cli.mjs" %*\r\n) ELSE (\r\n  node  "%~dp0\\global\\5\\node_modules\\pi\\dist\\cli.mjs" %*\r\n)'
-        expect(parseNodeShimScript('D:\\pnpm\\pi.cmd', pnpmShim)).toBe('D:\\pnpm\\global\\5\\node_modules\\pi\\dist\\cli.mjs')
+        expect(parseNodeShimScript('D:\\pnpm\\pi.cmd', pnpmShim)).toEqual({
+            script: 'D:\\pnpm\\global\\5\\node_modules\\pi\\dist\\cli.mjs',
+            node: 'D:\\pnpm\\node.exe',
+        })
     })
 
     it('reads an absolute script a pnpm shim on another drive runs', () => {
         const shim = '@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "E:\\pnpm-store\\pi\\dist\\cli.js" %*\r\n)'
-        expect(parseNodeShimScript('C:\\pnpm\\pi.cmd', shim)).toBe('E:\\pnpm-store\\pi\\dist\\cli.js')
+        expect(parseNodeShimScript('C:\\pnpm\\pi.cmd', shim)?.script).toBe('E:\\pnpm-store\\pi\\dist\\cli.js')
         expect(parseNodeShimScript('C:\\pnpm\\pi.cmd', '"node" "pi\\cli.js" %*')).toBeNull()
+    })
+
+    it('keeps the absolute node.exe a pnpm shim pins', () => {
+        const shim = '@"C:\\pnpm\\nodejs\\22.19.0\\node.exe"  "C:\\pnpm\\global\\pi\\cli.js" %*'
+        expect(parseNodeShimScript('C:\\pnpm\\pi.cmd', shim)).toEqual({
+            script: 'C:\\pnpm\\global\\pi\\cli.js',
+            node: 'C:\\pnpm\\nodejs\\22.19.0\\node.exe',
+        })
     })
 
     it('rejects a shim that does not run a node script', () => {

@@ -66,6 +66,22 @@ describe('Windows asynchronous tree stop', () => {
         expect(kills).toEqual([])
     })
 
+    it('never signals by PID again for a child whose handle closed during an earlier stop', async () => {
+        const { killProcessByChildProcess } = await import('./process')
+        const child = { pid: 100, exitCode: null as number | null, signalCode: null }
+        execFileMock.mockImplementationOnce((_file, _args, _options, callback) => {
+            queueMicrotask(() => {
+                child.exitCode = 0
+                rows = [row(0, 0, null), row(100, 0, 'gen-replacement'), row(300, 100)]
+                callback(null, JSON.stringify({ complete: true, processes: rows }), '')
+            })
+            return { kill: vi.fn() }
+        })
+        expect(await killProcessByChildProcess(child as never, false)).toBe(false)
+        expect(await killProcessByChildProcess(child as never, true)).toBe(false)
+        expect(kills).toEqual([])
+    })
+
     it('stops the tree normally while the root handle stays open', async () => {
         await expect(killProcessTreeByPid(100, true, 'SIGTERM', undefined, undefined, () => true)).resolves.toBe(true)
         expect(kills.map(k => k.pid)).toEqual([100, 200])

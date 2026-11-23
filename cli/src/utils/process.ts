@@ -553,6 +553,14 @@ export async function killProcessByChildProcess(
   // Both platforms: tree-kill + full-tree verify (win32 must not trust
   // root-only). The soft signal rides along on POSIX so job Ctrl-C stays
   // exit 130 (#1424).
+  // Once a stop saw this child exit mid-stop, its PID may name another
+  // process; later stops of the same child must not signal by PID.
+  if (rootIdentityLost.has(child)) return false;
   const isRootLive = () => child.exitCode === null && child.signalCode === null;
-  return killProcessTreeByPid(pid, force, signalOrReport, deadlineOrFallbackReport, fallbackReport, isRootLive);
+  const wasLive = isRootLive();
+  const stopped = await killProcessTreeByPid(pid, force, signalOrReport, deadlineOrFallbackReport, fallbackReport, isRootLive);
+  if (!stopped && wasLive && !isRootLive()) rootIdentityLost.add(child);
+  return stopped;
 }
+
+const rootIdentityLost = new WeakSet<ChildProcess>();
