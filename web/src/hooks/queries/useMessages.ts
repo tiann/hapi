@@ -49,6 +49,15 @@ export function useMessages(
     isSyncingTail: boolean
     /** Cached re-entry: the authoritative latest-page fetch is still in flight. */
     isCatchingUpFromCache: boolean
+    /**
+     * Cached re-entry fast path: activation kept a hydrated tail window with a
+     * usable cursor (viewMode 'tail', no requiresLatestReset). The rendered
+     * rows are the best available tail, so the thread's first frame can land
+     * at the bottom without waiting for the initial sync key. A retained
+     * history window being re-activated keeps requiresLatestReset and is
+     * deliberately excluded — its rows may sit mid-history.
+     */
+    cachedTailFirstFrame: boolean
     isLoadingMore: boolean
     hasMore: boolean
     hasMoreNewer: boolean
@@ -174,6 +183,9 @@ export function useMessages(
             || (state.requiresLatestReset && state.viewMode === 'tail')
             || (initialSyncKey !== null && initialSyncReadyKey !== initialSyncKey),
         isCatchingUpFromCache: state.preferLatestOnActivation,
+        cachedTailFirstFrame: state.preferLatestOnActivation
+            && state.viewMode === 'tail'
+            && !state.requiresLatestReset,
         isLoadingMore: state.isLoadingMore,
         hasMore: state.hasMore,
         hasMoreNewer: state.hasMoreNewer,
