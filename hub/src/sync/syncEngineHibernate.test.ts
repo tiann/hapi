@@ -178,6 +178,23 @@ describe('SyncEngine hibernation', () => {
         expect(await engine.uploadFile(id, 'file', 'YQ==', 'text/plain')).toMatchObject({ success: false, code: 'upload_conflict' })
     })
 
+    it('reserves the worker while a text prompt waits on input translation', async () => {
+        const id = insertIdleSession('translating')
+        type Sent = { actualSessionId: string; createdAt: number }
+        let finish!: () => void
+        const messageService = (engine as unknown as { messageService: { sendMessage: (...args: unknown[]) => Promise<Sent> } }).messageService
+        const send = spyOn(messageService, 'sendMessage').mockImplementation(() => new Promise<Sent>(resolve => {
+            finish = () => resolve({ actualSessionId: id, createdAt: Date.now() })
+        }))
+        const delivery = engine.sendMessage(id, { text: 'hola', sentFrom: 'webapp' })
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
+        expect(killCalls).toEqual([])
+        finish()
+        await delivery
+        send.mockRestore()
+        expect(killCalls).toEqual([])
+    })
+
     it('excludes a chunked upload during initialization and between chunks', async () => {
         const id = insertIdleSession('upload')
         let initialized!: () => void

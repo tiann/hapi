@@ -2451,7 +2451,8 @@ export class SyncEngine {
         if (this.historyActionsInFlight.has(sessionId) || this.openCodeRewindPending(sessionId)) {
             throw new Error(HISTORY_ACTION_IN_PROGRESS_MESSAGE)
         }
-        if (!payload.attachments?.length) return this.deliverMessage(sessionId, payload)
+        // A text send can wait on input translation; keep the worker reserved meanwhile.
+        if (!payload.attachments?.length) return this.withPendingDelivery(sessionId, () => this.deliverMessage(sessionId, payload))
         const attachments = payload.attachments
         return this.withPendingDelivery(sessionId, async () => {
             try {
