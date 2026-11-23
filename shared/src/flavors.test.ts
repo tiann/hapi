@@ -159,7 +159,9 @@ describe('permission mode membership', () => {
                 expect(Flavors[flavor].allowsPermissionMode(mode)).toBe(modes.includes(mode))
             }
         }
-        expect(isPermissionModeAllowedForFlavor('not-a-mode', flavor)).toBe(false)
+        if (isKnownFlavor(flavor)) {
+            expect(Flavors[flavor].allowsPermissionMode('not-a-mode')).toBe(false)
+        }
     })
 
     test('a flavor without modes allows none', () => {
