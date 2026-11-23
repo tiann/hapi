@@ -188,7 +188,10 @@ function enqueue(sessionId: string, request: SessionReadStateRequest): void {
     const entry = store[sessionId] ?? { server: EMPTY_READ_STATE }
     const previous = entry.pending?.request
     if (request.type === 'read' && previous?.type === 'read') {
-        request = { ...request, readRevision: Math.max(request.readRevision, previous.readRevision) }
+        // Coalesce independent monotonic observations: the furthest rendered
+        // revision and the newest manual choice either read actually observed.
+        request = { type: 'read', readRevision: Math.max(request.readRevision, previous.readRevision),
+            expectedVersion: Math.max(request.expectedVersion, previous.expectedVersion) }
     }
     const manualReadFrom = request.type === 'read' && entry.server.manualUnread && request.expectedVersion === entry.server.version
         ? entry.server.readRevision : undefined

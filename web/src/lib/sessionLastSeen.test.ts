@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     configureSessionReadState, flushSessionReadState, followSessionTail, getSessionLastSeenAt,
     getSessionManualUnreadAt, getUnreadSessionCount, markAllSessionsSeen,
-    markListedSessionSeen, markSessionSeen, markSessionUnread, observeSessionReadStates,
+    markListedSessionSeen, markRenderedSessionSeen, markSessionSeen, markSessionUnread, observeSessionReadStates,
 } from './sessionLastSeen'
 import type { SessionReadState, SessionReadStateRequest } from '@hapi/protocol'
 
@@ -174,6 +174,18 @@ describe('durable session read state', () => {
         await flushSessionReadState()
         expect(sent.map(r => r.expectedVersion)).toEqual(version === 2 ? [1, 2] : [1])
         expect(getSessionManualUnreadAt('s')).toBe(version === 2 ? null : 0)
+    })
+
+    it.each([5, 6])('a stale rendered receipt preserves the queued explicit clear, without consuming a later marker (v%s)', async version => {
+        markListedSessionSeen({ id: 's', contentRevision: 41, readState: server(40, 5, true) })
+        markRenderedSessionSeen('s', 42, 4, undefined)
+        const send = vi.fn(async (_id: string, request: SessionReadStateRequest) => ({
+            readState: server(42, version + 1, request.expectedVersion !== version),
+        }))
+        cleanup = configureSessionReadState('hub-a:alice', send)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(send).toHaveBeenCalledExactlyOnceWith('s', { type: 'read', readRevision: 42, expectedVersion: 5 })
+        expect(getSessionManualUnreadAt('s')).toBe(version === 5 ? null : 0)
     })
 
     it('syncs other receipts while one session keeps returning 500', async () => {
