@@ -1,3 +1,4 @@
+import { useHubClock } from '@/lib/app-context'
 import { useMemo, useRef, useSyncExternalStore } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
@@ -195,7 +196,7 @@ export function SessionRowSummary(props: {
     const scheduleId = scheduleTooltipIdProp ?? ownedIds.scheduleId
     // Rows are memoized, so the label keeps itself current (also advances job elapsed).
     useMinuteTick()
-    const nowMs = Date.now()
+    const nowMs = useHubClock()?.now() ?? Date.now()
     const codexSessionId = s.metadata?.flavor === 'codex' ? s.metadata?.agentSessionId : null
     const legacyImportedAt = useSyncExternalStore(subscribeCodexImportedSessions, () => getCodexImportedAt(codexSessionId))
     const importedAt = s.metadata?.codexImportedAt !== undefined ? s.metadata.codexImportedAt : legacyImportedAt

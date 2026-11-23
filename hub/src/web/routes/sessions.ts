@@ -271,7 +271,7 @@ export function createSessionsRoutes(
             }
         })
 
-        return c.json({ sessions })
+        return c.json({ sessions, serverTime: Date.now() })
     })
 
     app.get('/sessions/scratchlist-status', (c) => {

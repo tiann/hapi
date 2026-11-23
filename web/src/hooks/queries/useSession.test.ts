@@ -76,7 +76,9 @@ it.each([true, false])('keeps equal-time expiry over a live snapshot (cached act
     const active = { id: 'expiry', active: true, activeAt: 10, thinking: true, metadataVersion: 0 } as Session
     client.setQueryData(key, { session: { ...active, active: cachedActive } }, { updatedAt: 1 })
     let resolve!: (value: { session: Session }) => void
-    const api = { getSession: () => new Promise(done => { resolve = done }) } as unknown as ApiClient
+    const getSession = vi.fn().mockImplementationOnce(() => new Promise(done => { resolve = done }))
+        .mockResolvedValue({ session: { ...active, active: false, thinking: false, activeTurnStartedAt: null } })
+    const api = { getSession } as unknown as ApiClient
     const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
     const view = renderHook(() => useSession(api, 'expiry'), { wrapper })
     await act(async () => {
@@ -86,6 +88,23 @@ it.each([true, false])('keeps equal-time expiry over a live snapshot (cached act
     })
     await waitFor(() => expect(view.result.current.isFetching).toBe(false))
     expect(view.result.current.session).toMatchObject({ active: false, thinking: false, activeAt: 10, activeTurnStartedAt: null })
+    expect(getSession).toHaveBeenCalledTimes(2)
     view.unmount()
     client.clear()
+})
+
+it('does not resurrect a stopped session from its pre-expiry heartbeat replay', async () => {
+    const client = new QueryClient()
+    const key = queryKeys.session('replay')
+    const offline = { id: 'replay', active: false, activeAt: 10, thinking: false, metadataVersion: 0 } as Session
+    client.setQueryData(key, { session: offline })
+    let resolve!: (value: { session: Session }) => void
+    const getSession = vi.fn().mockImplementationOnce(() => new Promise(done => { resolve = done })).mockResolvedValue({ session: offline })
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const view = renderHook(() => useSession({ getSession } as unknown as ApiClient, 'replay'), { wrapper })
+    await act(async () => { observeSessionDetail(client, 'replay', { active: true, thinking: true, activeAt: 10 }); resolve({ session: offline }) })
+    await waitFor(() => expect(view.result.current.isFetching).toBe(false))
+    expect(getSession).toHaveBeenCalledTimes(2)
+    expect(view.result.current.session).toMatchObject({ active: false, thinking: false })
+    view.unmount(); client.clear()
 })

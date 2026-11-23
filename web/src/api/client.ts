@@ -1,3 +1,4 @@
+import { HubClock } from '@/lib/hubClock'
 import type { AttachedJob } from '@hapi/protocol'
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
 import type {
@@ -257,6 +258,7 @@ export class ApiError extends Error {
 }
 
 export class ApiClient {
+    readonly hubClock = new HubClock()
     private token: string
     private readonly baseUrl: string | null
     private readonly getToken: (() => string | null) | null
@@ -417,7 +419,9 @@ export class ApiClient {
     }
 
     async getSessions(): Promise<SessionsResponse> {
-        return await this.request<SessionsResponse>('/api/sessions')
+        const response = await this.request<SessionsResponse>('/api/sessions')
+        if (response.serverTime !== undefined) this.hubClock.observe(response.serverTime)
+        return response
     }
 
     async getScratchlistSessionIds(): Promise<string[]> {

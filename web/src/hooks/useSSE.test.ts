@@ -481,7 +481,9 @@ describe('useSSE user-activity ordering', () => {
     it('observes an expiry even without a detail row to patch during a cold fetch', async () => {
         const { queryClient, unmount } = renderUseSSE()
         let resolve!: (value: { session: Session }) => void
-        const read = readSessionWithLiveUpdates(queryClient, 'cold', () => new Promise<{ session: Session }>(done => { resolve = done }))
+        const stopped = { active: false, activeAt: 10, thinking: false, activeTurnStartedAt: null } as Session
+        const fetch = vi.fn().mockImplementationOnce(() => new Promise(done => { resolve = done })).mockResolvedValue({ session: stopped })
+        const read = readSessionWithLiveUpdates(queryClient, 'cold', fetch)
         act(() => FakeEventSource.instances[0]?.simulateMessage({ type: 'session-updated', sessionId: 'cold',
             data: { active: false, activeAt: 10, thinking: false, activeTurnStartedAt: null } }))
         resolve({ session: { active: true, activeAt: 10, thinking: true, activeTurnStartedAt: 5 } as Session })

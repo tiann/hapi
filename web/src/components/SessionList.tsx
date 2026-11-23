@@ -242,7 +242,8 @@ export function emptyRunningBuckets(): Record<RunningBucketKey, SessionSummary[]
 export function bucketRunningSessions(
     sessions: SessionSummary[],
     pinInProgressMode: PinInProgressMode,
-    compare: (a: SessionSummary, b: SessionSummary) => number = compareSessionsByOrderKeyDesc
+    compare: (a: SessionSummary, b: SessionSummary) => number = compareSessionsByOrderKeyDesc,
+    now = Date.now()
 ): Record<RunningBucketKey, SessionSummary[]> {
     const buckets = emptyRunningBuckets()
     if (pinInProgressMode === 'off') {
@@ -252,7 +253,7 @@ export function bucketRunningSessions(
         if (session.globalPinned || session.pinned) {
             continue
         }
-        if (!isPinnedInProgressSession(session, pinInProgressMode)) {
+        if (!isPinnedInProgressSession(session, pinInProgressMode, now)) {
             continue
         }
         const agentWorking = hasAgentForegroundWork(session)
@@ -284,15 +285,16 @@ export function bucketRunningSessions(
  */
 export function isPinnedInProgressSession(
     session: SessionSummary,
-    mode: PinInProgressMode
+    mode: PinInProgressMode,
+    now = Date.now()
 ): boolean {
     if (mode === 'off') {
         return false
     }
     if (mode === 'jobs') {
-        return hasInProgressJobSession(session)
+        return hasInProgressJobSession(session, now)
     }
-    return hasInProgressJobSession(session) || hasAgentInProgressActivity(session)
+    return hasInProgressJobSession(session, now) || hasAgentInProgressActivity(session)
 }
 
 
@@ -2559,8 +2561,8 @@ export function SessionList(props: {
             }
             return listComparator(a, b)
         }
-        return bucketRunningSessions(machineFilteredSessions, effectivePinInProgressMode, byRelevanceOrRecent)
-    }, [listClockTick, machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
+        return bucketRunningSessions(machineFilteredSessions, effectivePinInProgressMode, byRelevanceOrRecent, api?.hubClock?.now())
+    }, [api, listClockTick, machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
     // Stopped rows show their stop time only where the list orders them by it:
     // Active first, and no text query (which orders rows by relevance or, for
     // project rows in either search mode, by the legacy comparator).

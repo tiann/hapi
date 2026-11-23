@@ -239,6 +239,7 @@ export function useSSE(options: {
     baseUrl: string
     subscription?: SSESubscription
     scope?: SSEScope
+    hubClock?: import('@/lib/hubClock').HubClock
     onEvent: (event: SyncEvent) => void
     /**
      * Fires on the server's connection-changed handshake. `resumed` is true
@@ -678,6 +679,7 @@ export function useSSE(options: {
             lastActivityAtRef.current = Date.now()
 
             if (event.type === 'heartbeat') {
+                if (event.data) options.hubClock?.observe(event.data.timestamp)
                 return
             }
 
@@ -971,7 +973,7 @@ export function useSSE(options: {
             }
             setSubscriptionId(null)
         }
-    }, [options.baseUrl, options.enabled, options.scope, options.token, scope, subscriptionKey, queryClient, reconnectNonce])
+    }, [options.baseUrl, options.enabled, options.scope, options.token, options.hubClock, scope, subscriptionKey, queryClient, reconnectNonce])
 
     return { subscriptionId }
 }

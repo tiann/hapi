@@ -433,6 +433,7 @@ function AppInner() {
         baseUrl,
         subscription: globalEventSubscription,
         scope: 'global',
+        hubClock: api?.hubClock,
         onConnect: handleSseConnect,
         onDisconnect: handleSseDisconnect,
         onEvent: () => {},

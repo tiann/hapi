@@ -32,8 +32,20 @@ export async function readSessionWithLiveUpdates<T extends { session: Session }>
     }
     observers.add(observe)
     try {
-        const result = await read()
+        let result = await read()
+        const live = seen.get('active')
+        // Expiry and its preceding keepalive deliberately share the Hub clock.
+        // Refetch *after* seeing both contradictory observations; the answer no
+        // longer depends on which stream was delayed. Bound this to one retry.
+        if (live && live.at === result.session.activeAt && live.fields.active !== result.session.active) {
+            seen.clear()
+            result = await read()
+        }
         const session = { ...result.session }
+        const repeated = seen.get('active')
+        // If the exact tie recurs during verification, retain a confirmed stop
+        // over an indistinguishable replayed keepalive until a fresh connect.
+        if (!session.active && repeated?.at === session.activeAt && repeated?.fields.active === true) return result
         for (const { at, fields } of seen.values()) {
             if (at === undefined || at >= result.session.activeAt) Object.assign(session, fields)
         }

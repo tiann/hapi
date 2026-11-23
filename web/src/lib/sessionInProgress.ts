@@ -12,9 +12,9 @@ export function hasUnarchivedJob(session: SessionSummary): boolean {
     return session.metadata?.lifecycleState !== 'archived' && hasRunningAttachedJob(session)
 }
 
-export function hasInProgressJobSession(session: SessionSummary): boolean {
+export function hasInProgressJobSession(session: SessionSummary, now = Date.now()): boolean {
     const job = session.attachedJob
-    return hasUnarchivedJob(session) && !!job && !isAttachedJobStale({ heartbeatAt: job.latestRunningHeartbeatAt ?? job.heartbeatAt })
+    return hasUnarchivedJob(session) && !!job && !isAttachedJobStale({ heartbeatAt: job.latestRunningHeartbeatAt ?? job.heartbeatAt }, now)
 }
 
 /**
