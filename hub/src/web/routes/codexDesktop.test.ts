@@ -1202,17 +1202,102 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
-    it('keeps a later dismissal keyed to its OWN timestamp across a THREE-session merge, independent of which row survives (#1717)', async () => {
-        // The winning notify signal is the LATEST non-superseded footer
-        // across every pre-merge session, not whichever row the transcript
-        // merge happens to keep — those are independent questions now that
-        // reconciliation runs BEFORE the merge touches anything. Here the
-        // transcript keeps the FIRST duplicate's copy (base+1000, processed
-        // first and copied into the canonical, which had none of its own),
-        // but the SECOND duplicate's footer (base+2000) is the later one, so
-        // it is the one the derivation reports as current — and its own
-        // dismissal, already keyed to base+2000, needs no remap at all to
-        // keep applying.
+    it('does not let an untimestamped Desktop import outrank a live session that already answered the exact same footer (#1717)', async () => {
+        // Every row of a genuinely untimestamped Codex Desktop import batch
+        // is stamped with THAT import's own wall-clock moment
+        // (`importLocalTranscript.ts`'s `message.createdAt ?? importedAt`
+        // fallback) — which necessarily lands after whatever a live session
+        // did in the past, regardless of which one is conversationally more
+        // current. Picking "whichever footer's raw timestamp is latest"
+        // across sessions would always let a stale, already-answered
+        // import's footer win over a live session that resolved the exact
+        // same blocker, purely because importing happens later in
+        // wall-clock terms than the original conversation did.
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const live = store.sessions.getOrCreateSession(
+            'live-answered', { codexSessionId: 'codex-thread-untimestamped', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const stale = store.sessions.getOrCreateSession(
+            'stale-import', { codexSessionId: 'codex-thread-untimestamped', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const base = Date.now() - 600_000
+        const footerText = 'Stuck.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs creds' })
+
+        // Live session: padding (wins canonical selection), the footer, then
+        // a REAL reply that answers it — all genuinely timestamped, in the
+        // past.
+        for (let i = 0; i < 6; i++) {
+            store.messages.addImportedMessage(live.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `pad ${i}` }] } }
+                }
+            }, `untimestamped-pad-${i}`, base)
+        }
+        store.messages.addMessage(live.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } } }
+        }, undefined, null, base + 1_000, base + 1_000)
+        store.messages.addMessage(live.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'untimestamped-live-reply', null, base + 1_500, base + 1_500)
+        store.messages.markMessagesInvoked(live.id, ['untimestamped-live-reply'], base + 2_000)
+
+        // Stale import: its OWN projection of the SAME footer, with no
+        // explicit timestamp of its own — exactly like a real Codex
+        // transcript, which carries none — so it is stamped with the
+        // import's own `Date.now()`, necessarily after `base`.
+        store.messages.addImportedMessage(stale.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } } }
+        }, 'untimestamped-import-footer', Date.now())
+
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-untimestamped'] })
+            })
+            expect(response.status).toBe(200)
+            const body = await response.json() as { merged: Array<{ canonicalSessionId?: string }> }
+            const survivorId = body.merged[0]?.canonicalSessionId
+            expect(survivorId).toBe(live.id)
+
+            const merged = store.sessions.getSessionByNamespace(survivorId!, 'default')
+            // The live session's own already-answered state wins — the
+            // import's later wall-clock stamp never gets to compare against
+            // it at all.
+            expect(merged?.lastNotifyStatus).toBeNull()
+        } finally {
+            store.close()
+        }
+    })
+
+    it('remaps a LATER dismissal onto the representative the deterministic session order picks, across a THREE-session merge (#1717)', async () => {
+        // Neither duplicate's footer is answered anywhere, so the overall
+        // status is unambiguously blocked either way — what's under test is
+        // which occurrence becomes the session-level REPRESENTATIVE (and so
+        // which key a dismissal needs to end up matching). Picking "whichever
+        // footer's raw timestamp is latest" is unsound here: a Codex Desktop
+        // import carries no per-row timestamp at all, so `base + 1_000` and
+        // `base + 2_000` reflect nothing but each duplicate's own import
+        // batch stamp, not which one is conversationally more current. The
+        // representative is instead the first survivor in the SAME
+        // deterministic order the merge sorts sessions into for canonical
+        // selection — which also means the second duplicate's dismissal,
+        // keyed to its own (losing) occurrence, needs the remap to keep
+        // applying.
         const store = new Store(':memory:')
         const io = { of: () => ({ to: () => ({ emit() {} }) }) }
         const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
@@ -1298,13 +1383,14 @@ describe('Codex Desktop import routes', () => {
             expect(footers[0]!.createdAt).toBe(base + 1_000)
 
             const merged = store.sessions.getSessionByNamespace(canonical.id, 'default')
-            // But the NOTIFY signal — a session-level fact, derived directly
-            // from both duplicates' own pre-merge messages — reports the
-            // later occurrence as current, so the dismissal that was always
-            // keyed to it carries straight across.
-            expect(merged?.lastNotifyAt).toBe(base + 2_000)
-            expect(merged?.blockedAckKeys).toContain(notifyBlockerKey(base + 2_000))
-            expect(merged?.blockedAckKeys).not.toContain(notifyBlockerKey(base + 1_000))
+            // The representative is the FIRST duplicate's occurrence — same
+            // deterministic order the merge itself used to decide which row
+            // the content-dedup keeps — so the second duplicate's dismissal,
+            // keyed to its own (losing) occurrence, needed the remap to
+            // still apply.
+            expect(merged?.lastNotifyAt).toBe(base + 1_000)
+            expect(merged?.blockedAckKeys).toContain(notifyBlockerKey(base + 1_000))
+            expect(merged?.blockedAckKeys).not.toContain(notifyBlockerKey(base + 2_000))
         } finally {
             store.close()
         }
