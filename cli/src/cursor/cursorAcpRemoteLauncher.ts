@@ -1255,9 +1255,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             this.pendingRetryableError = error instanceof Error ? error.message : String(error);
                         }
 
+                        // Wait for any overlapping soft-steer before deciding between
+                        // prompt replay and post-tool Continue (#2509): tool updates
+                        // emitted by the settling steer set attemptProducedToolActivity.
+                        if (!await this.drainSoftSteerWaitersBeforeRetry()) break;
+
                         if (this.attemptProducedToolActivity) {
                             if (!postToolAutoContinueUsed) {
-                                if (!await this.drainSoftSteerWaitersBeforeRetry()) break;
                                 postToolAutoContinueUsed = true;
                                 promptContent = [{
                                     type: 'text',
@@ -1309,7 +1313,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             break;
                         }
                         if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
-                            if (!await this.drainSoftSteerWaitersBeforeRetry()) break;
                             this.surfaceRetry(retryAttempt + 1);
                             continue;
                         }

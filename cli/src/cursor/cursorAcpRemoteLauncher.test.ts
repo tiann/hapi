@@ -1457,14 +1457,58 @@ describe('cursorAcpRemoteLauncher', () => {
         await new Promise((resolve) => setTimeout(resolve, 15));
         expect(harness.promptCalls).toBe(1);
         expect(session.client.sendAgentMessage).not.toHaveBeenCalled();
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
 
         await handlers.get(RPC_METHODS.Abort)!();
         expect(harness.promptCalls).toBe(1);
         expect(session.client.sendAgentMessage).not.toHaveBeenCalled();
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
 
         session.queue.close();
         await runPromise;
     }, 10_000);
+
+    it('switches from replay to post-tool auto-continue when a soft steer emits tool activity during the retry drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+
+        harness.activeOnMessage!({
+            type: 'tool_call',
+            id: 'steer-tool-1',
+            name: 'shell',
+            input: { command: 'ls' },
+            status: 'completed'
+        });
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+        session.queue.close();
+        await runPromise;
+    });
 
     it('releases an in-loop retry soft-steer wait on Switch without sending a retry', async () => {
         let releasePrompt!: () => void;
