@@ -110,6 +110,10 @@ export function recordComposerProgrammaticEdit(sessionId: string): void {
     recordComposerTextChange(sessionId)
 }
 
+export function getComposerSendSettlements(sessionId: string | undefined): ReadonlyMap<string, SendMessageSettlement> | null {
+    return sessionId ? composerSendSettlements.get(sessionId) ?? null : null
+}
+
 export function getComposerSendSettlement(sessionId: string | null): SendMessageSettlement | null {
     if (!sessionId) return null
     const byAttempt = composerSendSettlements.get(sessionId)
@@ -127,7 +131,7 @@ export function getComposerSendSettlement(sessionId: string | null): SendMessage
 }
 
 export function publishComposerSendSettlement(settlement: SendMessageSettlement): void {
-    const byAttempt = composerSendSettlements.get(settlement.sessionId) ?? new Map<string, SendMessageSettlement>()
+    const byAttempt = new Map(composerSendSettlements.get(settlement.sessionId))
     byAttempt.set(settlement.attemptId, settlement)
     composerSendSettlements.set(settlement.sessionId, byAttempt)
     reconcileSuccessfulSend(settlement.sessionId, settlement.attemptId)
@@ -163,8 +167,9 @@ function reconcileSuccessfulSend(sessionId: string, attemptId: string): void {
 }
 
 export function consumeComposerSendSettlement(sessionId: string, attemptId: string): void {
-    const byAttempt = composerSendSettlements.get(sessionId)
-    if (!byAttempt?.delete(attemptId)) return
+    const byAttempt = new Map(composerSendSettlements.get(sessionId))
+    if (!byAttempt.delete(attemptId)) return
     if (byAttempt.size === 0) composerSendSettlements.delete(sessionId)
+    else composerSendSettlements.set(sessionId, byAttempt)
     notify()
 }

@@ -16,6 +16,7 @@ import {
     Fragment,
     useCallback,
     useEffect,
+    useSyncExternalStore,
     useImperativeHandle,
     useMemo,
     useRef,
@@ -46,7 +47,7 @@ import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
 import type { AttachmentDraftInput } from '@/lib/composer-attachment-drafts'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
-import { consumePendingComposerSend, getPendingComposerSend, getComposerDraftRevision, recordSuccessfulComposerClear, getComposerProgrammaticEditRevision, recordComposerProgrammaticEdit, recordComposerTextChange, recordComposerDraftChange } from '@/lib/composer-send-state'
+import { consumePendingComposerSend, getPendingComposerSend, getComposerSendSettlements, subscribeComposerSendState, getComposerDraftRevision, recordSuccessfulComposerClear, getComposerProgrammaticEditRevision, recordComposerProgrammaticEdit, recordComposerTextChange, recordComposerDraftChange } from '@/lib/composer-send-state'
 import { persistInactiveComposerAttachments, setComposerDraftSnapshot, updateComposerDraftTextSnapshot, attachmentDraftRevision, resetInactiveComposerAttachmentVisibility } from '@/lib/composer-draft-transfer'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
@@ -934,6 +935,43 @@ export function HappyComposer(props: {
         }
     }, [sendError, api, attachments, composerText, draftHydration, onClearSendError, onScheduleProp, pendingSchedule, sessionId])
 
+    const releaseSentChips = useCallback((ids: readonly string[]) => {
+        const sentLiveAttachmentIds = ids.filter(id => !clearedSentAttachmentIdsRef.current.has(id))
+        if (sentLiveAttachmentIds.length > 0) {
+            for (const id of sentLiveAttachmentIds) {
+                clearedSentAttachmentIdsRef.current.add(id)
+            }
+            attachmentDraftsRef.current = attachmentDraftsRef.current.filter(
+                (attachment) => !clearedSentAttachmentIdsRef.current.has(attachment.id),
+            )
+            props.onReleaseSentAttachments?.(sentLiveAttachmentIds)
+            const composer = api.composer()
+            // A new attachment may still be preparing its preview. Clearing the
+            // whole composer would cancel it before its chip is visible.
+            if (typeof composer.attachment === 'function') {
+                for (const id of sentLiveAttachmentIds) {
+                    void composer.attachment({ id }).remove()
+                }
+            }
+        }
+    }, [api, props.onReleaseSentAttachments])
+    const activeSettlements = useSyncExternalStore(
+        subscribeComposerSendState, () => getComposerSendSettlements(sessionId), () => null,
+    )
+    useEffect(() => {
+        if (!sessionId || !activeSettlements || !attachments.length) return
+        const sent = new Set<string>()
+        for (const [attemptId, settlement] of activeSettlements) {
+            if (settlement.status !== 'success' || settlement.source !== 'send') continue
+            const acceptance = getPendingComposerSend(sessionId, attemptId)
+            if (!acceptance) continue
+            for (const id of settlement.attachmentIds ?? acceptance.attachmentIds ?? []) sent.add(id)
+        }
+        // Clean chips from every settled attempt, even if text reconciliation
+        // for the first attempt is still waiting for hydration to finish.
+        releaseSentChips(attachments.filter(item => sent.has(item.id)).map(item => item.id))
+    }, [activeSettlements, attachments, props.sendAcceptance, releaseSentChips, sessionId])
+
     // A keyed session remount can hydrate the text that assistant-ui cleared
     // before the POST settled. Once that exact send succeeds, clear only an
     // untouched matching draft; a new user edit must win over settlement.
@@ -1015,23 +1053,7 @@ export function HappyComposer(props: {
                 .filter((attachment) => submittedAttachmentIdSet.has(attachment.id))
                 .map((attachment) => attachment.id)
             : attachments.map((attachment) => attachment.id)
-        if (sentLiveAttachmentIds.length > 0) {
-            for (const id of sentLiveAttachmentIds) {
-                clearedSentAttachmentIdsRef.current.add(id)
-            }
-            attachmentDraftsRef.current = attachmentDraftsRef.current.filter(
-                (attachment) => !clearedSentAttachmentIdsRef.current.has(attachment.id),
-            )
-            props.onReleaseSentAttachments?.(sentLiveAttachmentIds)
-            const composer = api.composer()
-            // A new attachment may still be preparing its preview. Clearing the
-            // whole composer would cancel it before its chip is visible.
-            if (typeof composer.attachment === 'function') {
-                for (const id of sentLiveAttachmentIds) {
-                    void composer.attachment({ id }).remove()
-                }
-            }
-        }
+        releaseSentChips(sentLiveAttachmentIds)
         // Revisit the settlement when another attachment arrives or the read
         // completes. Already-visible submitted chips are not safe to resend.
         if (!draftHydration.complete) return
@@ -1052,7 +1074,7 @@ export function HappyComposer(props: {
             )
         }
         consumeSettlement()
-    }, [api, attachments, composerText, draftHydration.complete, draftHydration.sessionId, props.onConsumeSendSettlement, props.onReleaseSentAttachments, props.programmaticEditRevision, props.sendAcceptance, props.sendSettlement, sessionId])
+    }, [api, attachments, composerText, draftHydration.complete, draftHydration.sessionId, props.onConsumeSendSettlement, releaseSentChips, props.programmaticEditRevision, props.sendAcceptance, props.sendSettlement, sessionId])
 
     // Failed sends use the separate sendError recovery path, so their terminal
     // settlement can be consumed immediately and must not remain in the

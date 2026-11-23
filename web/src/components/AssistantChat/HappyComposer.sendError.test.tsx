@@ -17,7 +17,7 @@ import {
     saveDraftAttachments,
 } from '@/lib/composer-attachment-drafts'
 import { clearDraft, getDraft, saveDraft } from '@/lib/composer-drafts'
-import { recordPendingComposerSend, consumePendingComposerSend,  getComposerDraftRevision, resetComposerSendStateForTests } from '@/lib/composer-send-state'
+import { recordPendingComposerSend, consumePendingComposerSend, publishComposerSendSettlement, consumeComposerSendSettlement,  getComposerDraftRevision, resetComposerSendStateForTests } from '@/lib/composer-send-state'
 import { appendFileReferenceToComposerDraft } from '@/lib/file-composer'
 import { appendTerminalExcerptToComposerDraft } from '@/lib/terminal-composer'
 
@@ -1042,6 +1042,38 @@ describe('HappyComposer send-error atomic restore', () => {
         await waitFor(() => expect(runtime.snapshot.composer.attachments.map(item => item.id)).toEqual(['keep-attachment']))
         expect(input()).toHaveValue('New queued edit')
         expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, 'submitted', ['new-attachment'], true)
+    })
+
+    it('cleans chips from the second success while the first attempt still waits for hydration', async () => {
+        const controls = renderComposer('draft', null)
+        const sessionId = 'session-a'
+        let finishHydration!: () => void
+        runtime.pendingHydration = new Promise<void>(resolve => { finishHydration = resolve })
+        try {
+            act(() => controls.current!.remount())
+            act(() => {
+                for (const attemptId of ['first', 'second']) {
+                    recordPendingComposerSend({ sessionId, attemptId, text: '', attachmentIds: [attemptId],
+                        draftRevision: 0, programmaticEditRevision: 0 })
+                    publishComposerSendSettlement({ sessionId, attemptId, text: '', status: 'success', source: 'send' })
+                }
+                runtime.restoredAttachmentIds?.(['second'])
+                runtime.setSnapshot!(current => ({
+                    ...current, composer: { ...current.composer, attachments: [{ id: 'second', status: { type: 'complete' } }] },
+                }))
+            })
+            await waitFor(() => expect(runtime.snapshot.composer.attachments).toEqual([]))
+            expect(input()).toHaveValue('draft')
+        } finally {
+            runtime.pendingHydration = null
+            await act(async () => {
+                for (const id of ['first', 'second']) {
+                    consumePendingComposerSend(sessionId, id)
+                    consumeComposerSendSettlement(sessionId, id)
+                }
+                finishHydration()
+            })
+        }
     })
 
     it('cleans an earlier attempt chip that hydrates after a second submission', async () => {

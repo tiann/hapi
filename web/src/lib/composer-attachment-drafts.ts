@@ -25,22 +25,26 @@ const restoredUploadMetadata = new WeakMap<File, RestoredUploadMetadata>()
 const pendingWrites = new Map<string, Promise<void>>()
 // Keep revisions only while a read is outstanding; empty cache entries can
 // be evicted and are not enough to detect a newer write.
-const draftReads = new Map<string, { readers: number; revision: number }>()
+const draftReads = new Map<string, { readers: number; revision: number; replacement: number }>()
 
 function startDraftRead(sessionId: string) {
-    const state = draftReads.get(sessionId) ?? { readers: 0, revision: 0 }
+    const state = draftReads.get(sessionId) ?? { readers: 0, revision: 0, replacement: 0 }
     state.readers++
     draftReads.set(sessionId, state)
     const revision = state.revision
+    const replacement = state.replacement
     return {
         overwritten: () => state.revision !== revision,
+        replaced: () => state.replacement !== replacement,
         finish: () => { if (--state.readers === 0) draftReads.delete(sessionId) },
     }
 }
 
-function markDraftWrite(sessionId: string): void {
+function markDraftWrite(sessionId: string, replacement = true): void {
     const state = draftReads.get(sessionId)
-    if (state) state.revision++
+    if (!state) return
+    state.revision++
+    if (replacement) state.replacement++
 }
 
 export type AttachmentDraftInput = {
@@ -357,9 +361,16 @@ export function removeDraftAttachmentsById(
             uploadSessionId: metadata?.uploadSessionId,
         }]
     })
+    const persistRemoval = (files: readonly File[]): StoredAttachmentDraft | null => {
+        const remaining = toRemainingInputs(files)
+        const storedFiles = remaining.map(toStoredFile)
+        markDraftWrite(sessionId, false)
+        setCachedFiles(sessionId, storedFiles.map(toFile))
+        return storedFiles.length ? { sessionId, files: storedFiles, updatedAt: Date.now() } : null
+    }
     const cached = cache.get(sessionId)
     if (cached) {
-        saveDraftAttachments(sessionId, toRemainingInputs(cached))
+        queueWrite(persistRemoval(cached), sessionId)
         return
     }
 
@@ -368,25 +379,12 @@ export function removeDraftAttachmentsById(
     const next = previous
         .catch(() => {})
         .then(async () => {
-            // The replacement may arrive either before the read starts or
-            // while the read is pending. Never publish the old row in either case.
-            if (read.overwritten()) return
+            // Later replacements supersede the old row; an earlier ID removal
+            // does not. Filter the latest cache after prior removals finish.
+            if (read.replaced()) return
             const files = cache.get(sessionId) ?? await readStoredDraftAttachments(sessionId)
-            if (read.overwritten()) return
-            const remaining = toRemainingInputs(files)
-            markDraftWrite(sessionId)
-            if (remaining.length === 0) {
-                setCachedFiles(sessionId, [])
-                await writeDraft(null, sessionId)
-                return
-            }
-            const storedFiles = remaining.map(toStoredFile)
-            setCachedFiles(sessionId, storedFiles.map(toFile))
-            await writeDraft({
-                sessionId,
-                files: storedFiles,
-                updatedAt: Date.now(),
-            }, sessionId)
+            if (read.replaced()) return
+            await writeDraft(persistRemoval(files), sessionId)
         }).finally(read.finish)
     pendingWrites.set(sessionId, next)
     void next.catch(() => {}).finally(() => {

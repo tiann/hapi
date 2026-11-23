@@ -71,6 +71,34 @@ describe('composer-attachment-drafts', () => {
         expect((await mod.getDraftAttachments('s1')).map(file => file.name)).toEqual(['replacement.txt'])
     })
 
+    it('combines two cold-cache removals and keeps an unsent sibling', async () => {
+        const mod = await import('./composer-attachment-drafts')
+        let stored = { files: ['first', 'second', 'keep'].map(id => ({
+            id, name: `${id}.txt`, type: 'text/plain', lastModified: 1, blob: new Blob([id]),
+        })) }
+        const writes = vi.fn()
+        const db = { close() {}, transaction() {
+            return {
+                set oncomplete(callback: () => void) { queueMicrotask(callback) },
+                objectStore: () => ({
+                    get: () => ({ result: stored }),
+                    put: (record: typeof stored) => { stored = record; writes() },
+                    getAll: () => ({}),
+                }),
+            }
+        } }
+        vi.stubGlobal('indexedDB', { open: () => {
+            const request = { result: db, onsuccess: null as (() => void) | null }
+            queueMicrotask(() => request.onsuccess?.())
+            return request
+        } })
+        mod.removeDraftAttachmentsById('s1', ['first'])
+        mod.removeDraftAttachmentsById('s1', ['second'])
+        await vi.waitFor(() => expect(writes).toHaveBeenCalledTimes(2))
+        expect(stored.files.map(file => file.id)).toEqual(['keep'])
+        expect((await mod.getDraftAttachments('s1')).map(file => file.name)).toEqual(['keep.txt'])
+    })
+
     it('keeps the newer cached and durable draft when an older cleanup read finishes later', async () => {
         const mod = await import('./composer-attachment-drafts')
         const readStarted = Promise.withResolvers<void>()
