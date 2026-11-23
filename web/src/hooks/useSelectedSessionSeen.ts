@@ -36,26 +36,30 @@ export function useSelectedSessionSeen(
         if (!enabled || !sessionId || !viewport || !messages) return
         let stopFollowing: (() => void) | undefined
         let frame: number | undefined
+        let observed: { revision: number; version: number | undefined } | undefined
         let acknowledged: number | undefined
         const update = () => {
             if (!tailIsVisible(viewport, messages)) {
-                if (frame !== undefined) cancelAnimationFrame(frame)
-                frame = undefined
+                // Streaming layout can briefly move the tail below the viewport
+                // before auto-scroll corrects it. Let the pending frame decide.
                 stopFollowing?.()
                 stopFollowing = undefined
                 return
             }
             stopFollowing ??= followSessionTail(sessionId)
-            const { renderedRevision: revision, stateVersion: version } = latest.current
-            if (frame !== undefined || revision === undefined || acknowledged === revision) return
+            const revision = latest.current.renderedRevision
+            if (revision === undefined || acknowledged === revision) return
+            if (observed?.revision !== revision) observed = { revision, version: latest.current.stateVersion }
+            if (frame !== undefined) return
+            const receipt = observed
             // Wait for committed message rows and scroll correction. Coalesce
             // events instead of restarting the wait on every streaming mutation.
             frame = requestAnimationFrame(() => {
                 frame = requestAnimationFrame(() => {
                     frame = undefined
                     if (!tailIsVisible(viewport, messages)) { update(); return }
-                    acknowledged = revision
-                    markSessionSeen(sessionId, revision, version)
+                    acknowledged = receipt.revision
+                    markSessionSeen(sessionId, receipt.revision, receipt.version)
                     if (latest.current.renderedRevision !== revision) update()
                 })
             })

@@ -10,7 +10,7 @@ function setVisibility(state: DocumentVisibilityState): void {
 function viewport(atBottom = true) {
     const element = document.createElement('div')
     Object.defineProperty(element, 'clientHeight', { configurable: true, value: 100 })
-    Object.defineProperty(element, 'scrollHeight', { value: 200 })
+    Object.defineProperty(element, 'scrollHeight', { configurable: true, value: 200 })
     element.scrollTop = atBottom ? 100 : 0
     return { current: element }
 }
@@ -133,6 +133,34 @@ describe('rendered read receipt', () => {
         await settle()
         expect(getSessionLastSeenAt('s')).toBe(3)
         expect(getSessionManualUnreadAt('s')).toBe(0)
+    })
+
+    it('keeps the observed version of a revision waiting behind another frame', async () => {
+        const view = viewport()
+        observeSessionReadStates([{ id: 's', readState: { readRevision: 41, version: 3, manualUnread: false } }])
+        const { rerender } = renderHook(({ revision, version }) => useSelectedSessionSeen('s', revision, version, view, content), {
+            initialProps: { revision: 41, version: 3 },
+        })
+        rerender({ revision: 42, version: 3 })
+        observeSessionReadStates([{ id: 's', readState: { readRevision: 41, version: 4, manualUnread: true } }])
+        rerender({ revision: 42, version: 4 })
+        await settle()
+        expect(getSessionLastSeenAt('s')).toBe(42)
+        expect(getSessionManualUnreadAt('s')).toBe(0)
+    })
+
+    it('keeps a pending check across streaming growth and automatic scroll correction', async () => {
+        const view = viewport()
+        renderHook(() => useSelectedSessionSeen('s', 3, 0, view, content))
+        for (let n = 1; n <= 10; n++) {
+            Object.defineProperty(view.current, 'scrollHeight', { value: 200 + n * 40 })
+            content.current.textContent = String(n)
+            await act(async () => { await Promise.resolve() })
+            view.current.scrollTop = view.current.scrollHeight - view.current.clientHeight
+            act(() => view.current.dispatchEvent(new Event('scroll')))
+            await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+        }
+        expect(getSessionLastSeenAt('s')).toBe(3)
     })
 
     it('read-state SSE alone cannot clear a manual unread choice', async () => {
