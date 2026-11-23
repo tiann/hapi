@@ -214,6 +214,22 @@ describe('WxPusherChannel', () => {
         }
     })
 
+    it('reports mixed recipient task results without exposing recipient identifiers', async () => {
+        const originalFetch = globalThis.fetch
+        const fetchMock = mock(async () => new Response(JSON.stringify({ code: 1000, data: [
+            { code: 1000, uid: 'UID_ACCEPTED' }, { code: 1001, uid: 'UID_PRIVATE', status: 'rejected' },
+        ] })))
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+        try {
+            const channel = new WxPusherChannel('AT_TEST', ['UID_ACCEPTED', 'UID_PRIVATE'], [], 'https://hapi.example.com')
+            await expect(channel.sendSessionCompletion(createSession(), 'completed'))
+                .rejects.toThrow(/^WxPusher send failed: 1 of 2 recipient tasks not accepted$/)
+            expect(fetchMock).toHaveBeenCalledTimes(1)
+        } finally {
+            globalThis.fetch = originalFetch
+        }
+    })
+
     it('rejects unsuccessful WxPusher API responses', async () => {
         const fetchMock = mock(async () => new Response(JSON.stringify({ code: 1001, msg: 'invalid token' }), {
             status: 200,

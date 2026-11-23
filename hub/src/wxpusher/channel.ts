@@ -14,6 +14,7 @@ type WxPusherResponse = {
     code?: number
     msg?: string
     message?: string
+    data?: unknown
 }
 
 export type WxPusherMessage = {
@@ -97,6 +98,15 @@ export class WxPusherChannel implements NotificationChannel {
                 ? result.msg ?? result.message
                 : undefined
             throw new Error(`WxPusher send failed: ${(message ?? responseText) || 'unknown error'}`)
+        }
+        if (result.data !== undefined) {
+            if (!Array.isArray(result.data)) throw new Error('WxPusher send failed: invalid recipient results')
+            const rejected = result.data.filter(entry => !isWxPusherResponse(entry) || entry.code !== 1000).length
+            if (rejected > 0) {
+                // Do not log recipient identifiers or provider-supplied text, and do not
+                // retry the batch: some recipients may already have an accepted task.
+                throw new Error(`WxPusher send failed: ${rejected} of ${result.data.length} recipient tasks not accepted`)
+            }
         }
     }
 }

@@ -10,6 +10,7 @@
 
 import { getSettingsFile, updateSettings } from './settings'
 import {
+    assertWxPusherRecipientLimits,
     readDestinationBackgroundOnly,
     readDestinationCredential,
     readNamespaceDestinations,
@@ -348,10 +349,12 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             throw new Error('wxPusherBackgroundOnly must be a boolean')
         }
 
+        assertWxPusherRecipientLimits(wxPusherUids, wxPusherTopicIds, 'Legacy WxPusher configuration')
         const wxPusherDestinations = readNamespaceDestinations(settings.wxPusherByNamespace, 'wxPusherByNamespace', (entry, field) => {
             const appToken = readDestinationCredential(entry.appToken, `${field}.appToken`)
             const uids = entry.uids === undefined ? [] : readStringArraySetting(entry.uids, `${field}.uids`)
             const topicIds = entry.topicIds === undefined ? [] : readTopicIdArraySetting(entry.topicIds, `${field}.topicIds`)
+            assertWxPusherRecipientLimits(uids, topicIds, field)
             if (uids.length === 0 && topicIds.length === 0) {
                 throw new Error(`${field} must specify at least one UID or topic ID`)
             }
