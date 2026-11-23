@@ -236,7 +236,11 @@ export const CLAUDE_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
 // Delivery metadata differs between native and live messages. Keep the complete
 // payload, including attachments, tool identities, results and exit codes.
 function agyLiveCompareKey(content: unknown): string | null {
-    if (!content || typeof content !== 'object' || !('role' in content) || !('content' in content)) return null
+    if (!content || typeof content !== 'object' || !('role' in content) || !('content' in content)) return stableSerializeContent(content)
+    const body = content.content
+    if (content.role === 'agent' && body && typeof body === 'object' && 'type' in body && body.type === 'event'
+        && 'data' in body && body.data && typeof body.data === 'object' && 'type' in body.data
+        && body.data.type === 'round-summary') return null
     return stableSerializeContent({ role: content.role, content: content.content })
 }
 

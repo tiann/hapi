@@ -585,6 +585,7 @@ describe('generic local session routes', () => {
         const prompt = { type: 'text', text: 'live follow-up' } as const
         store.messages.addMessage(hapiId, { role: 'user', content: prompt, meta: { sentFrom: 'web' } }, 'live')
         store.messages.markMessagesInvoked(hapiId, ['live'], 20)
+        store.messages.addMessage(hapiId, { role: 'agent', content: { type: 'event', data: { type: 'round-summary', summary: { provider: 'agy' } } } })
         const native = (id: string, text: string) => ({
             id: `agy:agy-continued:${id}`, createdAt: 20,
             content: { role: 'user', content: { type: 'text', text }, meta: { sentFrom: 'cli' } } as const

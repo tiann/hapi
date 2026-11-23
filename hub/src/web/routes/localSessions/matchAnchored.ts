@@ -95,11 +95,13 @@ export function matchAnchored(options: {
             const source = sourceMessages[index]
             const isImported = stored.localId?.startsWith(importPrefix)
             if (!source && !isImported) continue
+            const liveKey = isImported ? null : options.liveCompareKey(stored.content)
+            if (!isImported && liveKey === null) continue
             const nativeContent = source && sourceContentById.get(source.id)
             const payload = stored.content as { role?: unknown } | null
             const undelivered = payload?.role === 'user' && (stored.deliveryState === 'indeterminate'
                 || (stored.localId != null && stored.invokedAt == null))
-            const key = undelivered ? null : options.liveCompareKey(stored.content)
+            const key = undelivered ? null : liveKey
             const matches = source && (isImported
                 ? stored.localId === source.id && sameContent(nativeContent, stored.content)
                 : key !== null && key === options.liveCompareKey(nativeContent))
