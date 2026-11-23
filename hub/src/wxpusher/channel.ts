@@ -57,6 +57,7 @@ function truncateWxPusherSummary(summary: string): string {
 
 export class WxPusherChannel implements NotificationChannel {
     readonly independent = true
+    readonly requiresGenuineReady = true
 
     constructor(
         private readonly appToken: string,

@@ -6341,7 +6341,7 @@ export class SyncEngine {
             })
             return false
         }
-        if (session?.active) this.handleSessionEnd({ sid: sessionId, time: Date.now(), reason: 'error' })
+        if (session?.active) this.handleSessionEnd({ sid: sessionId, time: Date.now(), reason: 'terminated' })
         const remaining = this.sessionCache.getSession(sessionId)
         if (remaining && !remaining.active) {
             await this.sessionCache.deleteSession(sessionId)

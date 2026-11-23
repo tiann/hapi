@@ -16,6 +16,7 @@ export class NotificationHub {
     private readonly lastKnownRequests: Map<string, Set<string>> = new Map()
     private readonly notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
     private readonly lastReadyNotificationAt: Map<string, number> = new Map()
+    private readonly lastGenuineReadyAt: Map<string, number> = new Map()
     /**
      * sessionId -> the `eventId` of the last `lastModelError` we already
      * notified for. Fire ONCE per distinct error event; subsequent
@@ -150,6 +151,7 @@ export class NotificationHub {
         }
         this.lastKnownRequests.delete(sessionId)
         this.lastReadyNotificationAt.delete(sessionId)
+        this.lastGenuineReadyAt.delete(sessionId)
         if (removeModelErrorWatermark) {
             this.lastModelErrorNotifiedId.delete(sessionId)
             this.clearModelErrorRetry(sessionId)
@@ -393,13 +395,13 @@ export class NotificationHub {
         }
 
         const now = Date.now()
-        const last = this.lastReadyNotificationAt.get(sessionId) ?? 0
-        if (now - last < this.readyCooldownMs) {
-            return
-        }
-        this.lastReadyNotificationAt.set(sessionId, now)
-
-        await this.notifyReady(session, reason)
+        const ordinaryReady = now - (this.lastReadyNotificationAt.get(sessionId) ?? 0) >= this.readyCooldownMs
+        const genuineReady = reason === undefined
+            && now - (this.lastGenuineReadyAt.get(sessionId) ?? 0) >= this.readyCooldownMs
+        if (!ordinaryReady && !genuineReady) return
+        if (ordinaryReady) this.lastReadyNotificationAt.set(sessionId, now)
+        if (genuineReady) this.lastGenuineReadyAt.set(sessionId, now)
+        await this.notifyReady(session, reason, ordinaryReady, genuineReady)
     }
 
     private async sendSessionCompletion(sessionId: string, reason: SessionEndReason): Promise<void> {
@@ -440,9 +442,12 @@ export class NotificationHub {
         await Promise.all(independent)
     }
 
-    private async notifyReady(session: Session, reason?: NotificationSendContext['readyReason']): Promise<void> {
+    private async notifyReady(session: Session, reason: NotificationSendContext['readyReason'], ordinary: boolean, genuine: boolean): Promise<void> {
         const ctx: NotificationSendContext = { nativeGate: { sent: false } }
-        await this.dispatchNotification('ready', channel => channel.sendReady(session, channel.independent ? { readyReason: reason } : ctx))
+        await this.dispatchNotification('ready', channel => {
+            if (channel.requiresGenuineReady ? !genuine : !ordinary) return undefined
+            return channel.sendReady(session, channel.independent ? { readyReason: reason } : ctx)
+        })
     }
 
     private async notifyPermission(session: Session): Promise<void> {

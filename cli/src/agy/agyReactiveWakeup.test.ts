@@ -1287,7 +1287,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
 
         // First window hits reactiveMaxIdleMs (60ms): pauses to ready WITHOUT calling resumeSession.
         await vi.waitFor(() => {
-            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready', reason: 'reactive-polling-paused' });
         });
         expect(backend.resumeCalls).toEqual([]);
         client.sendSessionEvent.mockClear();

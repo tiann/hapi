@@ -34,6 +34,8 @@ export type ModelErrorSendOutcome = 'delivered' | 'unavailable' | 'failed'
 export type NotificationChannel = {
     /** This provider does not participate in native/Web Push coordination. */
     readonly independent?: boolean
+    /** Ignore temporary polling pauses without consuming a genuine ready cooldown. */
+    readonly requiresGenuineReady?: boolean
     sendReady: (session: Session, ctx?: NotificationSendContext) => Promise<void>
     sendPermissionRequest: (session: Session, ctx?: NotificationSendContext) => Promise<void>
     sendSessionCompletion?: (session: Session, reason: SessionEndReason) => Promise<void>
