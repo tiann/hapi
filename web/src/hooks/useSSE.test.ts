@@ -538,6 +538,21 @@ describe('applySessionDetailPatch (PR #897 review, Copilot keep-alive)', () => {
         expect(next?.thinkingRevision).toBe(2)
         expect(next?.hubGeneration).toBe('process-b')
     })
+
+    it('rejects a reported thinkingRevision of 0 when hubGeneration CONFIRMS no restart happened (#1717 cold-review round 32)', () => {
+        // Same generation means a reported 0 is just a number — a
+        // genuinely stale, delayed patch from earlier in this same
+        // process must not roll back a later revision already applied.
+        const thinkingSession = {
+            ...session, thinking: true, thinkingRevision: 47, hubGeneration: 'process-a'
+        } as unknown as Session
+        const next = applySessionDetailPatch(thinkingSession, {
+            thinking: false,
+            thinkingRevision: 0,
+            hubGeneration: 'process-a'
+        })
+        expect(next).toBeNull()
+    })
 })
 
 describe('useSSE user-activity ordering', () => {
@@ -786,6 +801,33 @@ describe('useSSE user-activity ordering', () => {
         unmount()
     })
 
+    it('rejects a reported thinkingRevision of 0 in a full-session snapshot when hubGeneration CONFIRMS no restart happened (#1717 cold-review round 32)', () => {
+        // The revision-0 exception exists for when a restart cannot be
+        // ruled out. When `hubGeneration` confirms the opposite — the
+        // cached row and the snapshot are the SAME process — a reported 0
+        // is just a number: a genuinely stale, delayed snapshot from
+        // earlier in this same process must not roll back a later
+        // revision already applied.
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
+            id: 'session-1', thinking: true, thinkingConfirmed: true, thinkingRevision: 47, hubGeneration: 'process-a'
+        })] })
+
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: {
+                ...makeSummary(), id: 'session-1', namespace: 'default', seq: 1,
+                createdAt: 1, agentState: null, thinkingAt: 0,
+                thinking: false, thinkingConfirmed: true, thinkingRevision: 0, hubGeneration: 'process-a'
+            }
+        }))
+
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        expect(data?.sessions[0]?.thinking).toBe(true)
+        expect(data?.sessions[0]?.thinkingRevision).toBe(47)
+        unmount()
+    })
+
     it('does not get fooled by an identical thinkingAt across two distinct transitions in a full-session snapshot (cold-review round 27)', () => {
         const { queryClient, unmount } = renderUseSSE()
         queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
@@ -862,6 +904,23 @@ describe('useSSE user-activity ordering', () => {
         const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
         expect(data?.sessions[0]?.thinking).toBe(false)
         expect(data?.sessions[0]?.thinkingRevision).toBe(2)
+        unmount()
+    })
+
+    it('rejects a reported thinkingRevision of 0 in an incremental patch when hubGeneration CONFIRMS no restart happened (#1717 cold-review round 32)', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
+            id: 'session-1', thinking: true, thinkingConfirmed: true, thinkingRevision: 47, hubGeneration: 'process-a'
+        })] })
+
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: { thinking: false, thinkingConfirmed: true, thinkingRevision: 0, hubGeneration: 'process-a' }
+        }))
+
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        expect(data?.sessions[0]?.thinking).toBe(true)
+        expect(data?.sessions[0]?.thinkingRevision).toBe(47)
         unmount()
     })
 

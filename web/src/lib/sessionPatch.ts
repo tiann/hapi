@@ -93,10 +93,19 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
     const differentHubGeneration = patch.hubGeneration !== undefined
         && session.hubGeneration !== undefined
         && patch.hubGeneration !== session.hubGeneration
+    // Within a CONFIRMED same generation, a reported 0 is just a number —
+    // trusting it unconditionally would let a genuinely stale, delayed
+    // patch from EARLIER in this same process roll back a LATER revision
+    // already applied (#1717 cold-review round 32). Known-same-generation
+    // is strictly more informative than "unknown" and should always defer
+    // to the ordinary `>=` comparison instead of the restart heuristic.
+    const sameHubGeneration = patch.hubGeneration !== undefined
+        && session.hubGeneration !== undefined
+        && patch.hubGeneration === session.hubGeneration
     if (
         differentHubGeneration
         || patch.thinkingRevision === undefined
-        || patch.thinkingRevision === 0
+        || (patch.thinkingRevision === 0 && !sameHubGeneration)
         || patch.thinkingRevision >= (session.thinkingRevision ?? 0)
     ) {
         if (patch.thinking !== undefined) assign('thinking', patch.thinking)
@@ -243,9 +252,21 @@ export function reconcileDelayedListSession(
     const differentHubGeneration = prior?.hubGeneration !== undefined
         && incoming.hubGeneration !== undefined
         && prior.hubGeneration !== incoming.hubGeneration
+    // The revision-0 exception above only covers the case where we cannot
+    // RULE OUT a restart (generation unknown on either side). Within a
+    // CONFIRMED same generation, revision 0 is just a number — trusting it
+    // unconditionally would let a genuinely stale, delayed snapshot from
+    // EARLIER in this same process roll back a LATER revision this tab
+    // already applied (#1717 cold-review round 32). Known-same-generation
+    // is strictly more informative than "unknown" and should always defer
+    // to the ordinary comparison instead of the restart heuristic.
+    const sameHubGeneration = prior?.hubGeneration !== undefined
+        && incoming.hubGeneration !== undefined
+        && prior.hubGeneration === incoming.hubGeneration
+    const trustIncomingRevisionZero = incomingThinkingRevision === 0 && !sameHubGeneration
     const keepPriorThinking = prior !== undefined
         && !differentHubGeneration
-        && incomingThinkingRevision !== 0
+        && !trustIncomingRevisionZero
         && priorThinkingRevision > incomingThinkingRevision
     return {
         ...incoming,

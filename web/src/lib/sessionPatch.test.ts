@@ -187,6 +187,21 @@ describe('reconcileDelayedListSession', () => {
         expect(result.thinkingRevision).toBe(2)
     })
 
+    it('rejects a reported thinkingRevision of 0 when the generation CONFIRMS no restart happened (#1717 cold-review round 32)', () => {
+        // The revision-0 exception exists for when a restart cannot be
+        // ruled out. When `hubGeneration` confirms the opposite — prior
+        // and incoming are the SAME process — a reported 0 is just a
+        // number: a genuinely stale, delayed snapshot from earlier in
+        // this same process must not roll back a later revision this tab
+        // already applied.
+        const prior = makeSummary({ id: 'session-1', thinking: true, thinkingConfirmed: true, thinkingRevision: 47, hubGeneration: 'process-a' })
+        const delayed = makeSummary({ id: 'session-1', thinking: false, thinkingConfirmed: true, thinkingRevision: 0, hubGeneration: 'process-a' })
+
+        const result = reconcileDelayedListSession(prior, delayed)
+        expect(result.thinking).toBe(true)
+        expect(result.thinkingRevision).toBe(47)
+    })
+
     it('still takes the incoming thinking state when it is genuinely newer', () => {
         const prior = makeSummary({ id: 'session-1', thinking: true, thinkingRevision: 1 })
         const incoming = makeSummary({ id: 'session-1', thinking: false, thinkingRevision: 2 })

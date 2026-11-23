@@ -571,9 +571,20 @@ export function useSSE(options: {
                 const differentHubGeneration = session.hubGeneration !== undefined
                     && existing?.hubGeneration !== undefined
                     && session.hubGeneration !== existing.hubGeneration
+                // Within a CONFIRMED same generation, a reported 0 is just
+                // a number — trusting it unconditionally would let a
+                // genuinely stale, delayed snapshot from EARLIER in this
+                // same process roll back a LATER revision already applied
+                // (#1717 cold-review round 32). Known-same-generation is
+                // strictly more informative than "unknown" and should
+                // always defer to the ordinary comparison instead of the
+                // restart heuristic.
+                const sameHubGeneration = session.hubGeneration !== undefined
+                    && existing?.hubGeneration !== undefined
+                    && session.hubGeneration === existing.hubGeneration
                 const keepExistingThinking = existing !== undefined
                     && !differentHubGeneration
-                    && incomingThinkingRevision !== 0
+                    && !(incomingThinkingRevision === 0 && !sameHubGeneration)
                     && existingThinkingRevision > incomingThinkingRevision
                 const summary = {
                     ...toSessionSummary(session),
@@ -670,9 +681,20 @@ export function useSSE(options: {
                 const differentHubGeneration = patch.hubGeneration !== undefined
                     && current.hubGeneration !== undefined
                     && patch.hubGeneration !== current.hubGeneration
+                // Within a CONFIRMED same generation, a reported 0 is just
+                // a number — trusting it unconditionally would let a
+                // genuinely stale, delayed patch from EARLIER in this same
+                // process roll back a LATER revision already applied
+                // (#1717 cold-review round 32). Known-same-generation is
+                // strictly more informative than "unknown" and should
+                // always defer to the ordinary comparison instead of the
+                // restart heuristic.
+                const sameHubGeneration = patch.hubGeneration !== undefined
+                    && current.hubGeneration !== undefined
+                    && patch.hubGeneration === current.hubGeneration
                 const keepCurrentThinking = !differentHubGeneration
                     && patch.thinkingRevision !== undefined
-                    && patch.thinkingRevision !== 0
+                    && !(patch.thinkingRevision === 0 && !sameHubGeneration)
                     && patch.thinkingRevision < (current.thinkingRevision ?? 0)
                 const nextSummary: SessionSummary = {
                     ...current,
