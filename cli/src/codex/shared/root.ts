@@ -94,6 +94,8 @@ export class SharedCodexRoot {
     private readonly settingsListeners = new Set<() => void>();
     private availableSlashCommands?: string[];
     private availableSkills?: SkillMetadata[];
+    private skillRequestSequence = 0;
+    private appliedSkillSequence = 0;
     private configuredMcpServerInventory?: CodexMcpServerInventory[];
     private statusMcpServerInventory?: CodexMcpServerInventory[];
     private mcpInventoryLoaded = false;
@@ -358,7 +360,8 @@ export class SharedCodexRoot {
             .map(entry => entry.name));
         const savedFallback = (savedMcpServers ?? []).filter(entry =>
             this.statusMcpServerInventory === undefined || currentNames.has(entry.name))
-            .map(entry => entry.status === 'unavailable' && recovered.has(entry.name) ? { ...entry, status: undefined } : entry);
+            .map(entry => (entry.status === 'unavailable' || entry.status === 'disabled') && recovered.has(entry.name)
+                ? { ...entry, status: undefined } : entry);
         const inventory = this.mcpInventoryLoaded
             ? mergeCodexMcpInventories(bridgeInventory, savedFallback, configured, runtime)
             : includeBridge && bridgeInventory.length > 0
@@ -426,10 +429,12 @@ export class SharedCodexRoot {
 
     private async refreshContextSkills(forceReload = false): Promise<void> {
         const cwd = this.bootstrap.workingDirectory;
+        const sequence = ++this.skillRequestSequence;
         const response = await this.client.listSkills({ cwds: [cwd], forceReload });
-        if (this.closed || this.stopping) return;
+        if (this.closed || this.stopping || sequence < this.appliedSkillSequence) return;
         const entry = response.data?.find(item => item.cwd === cwd) ?? response.data?.[0];
         if (!entry || (!entry.skills.length && (entry.errors?.length ?? 0) > 0)) return;
+        this.appliedSkillSequence = sequence;
         this.availableSkills = entry.skills.filter(skill => skill.enabled);
         this.publishRootContextDetails();
     }

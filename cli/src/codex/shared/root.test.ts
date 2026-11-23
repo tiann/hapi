@@ -180,10 +180,10 @@ describe('thread MCP inventory', () => {
         expect(sharedHarness.inventoryExecutable).toEqual({ command: 'resolved-codex', args: ['launcher.js'] });
     });
 
-    it('clears a saved unavailable status after a runtime catalog recovers', async () => {
+    it.each(['unavailable', 'disabled'])('clears saved %s status after a runtime catalog recovers', async status => {
         sharedHarness.runtimeInventory = Promise.resolve({ data: [{ name: 'qmd', authStatus: 'unsupported', tools: { current: {} } }] });
         const f = await fixture({ contextDetails: { version: 1, provider: 'codex', updatedAt: 10,
-            codex: { mcpServers: [{ name: 'qmd', status: 'unavailable', toolNames: ['old'] }] },
+            codex: { mcpServers: [{ name: 'qmd', status, toolNames: ['old'] }] },
         } });
         await f.root.activate();
         await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers)
@@ -985,6 +985,20 @@ describe('shared steering availability', () => {
         await vi.waitFor(() => expect(sharedHarness.mcpInventoryArgs).toEqual([
             '-c', 'mcp_servers.qmd.enabled=false'
         ]));
+    });
+
+    it('discards older successful skill discovery after a newer response is applied', async () => {
+        const f = await fixture();
+        const first = Promise.withResolvers<Awaited<ReturnType<CodexAppServerClient['listSkills']>>>();
+        const request = vi.spyOn(f.root.client, 'listSkills').mockReturnValueOnce(first.promise)
+            .mockResolvedValueOnce({ data: [{ cwd: '/tmp', skills: [], errors: [] }] });
+        await f.root.activate();
+        f.native.notify('skills/changed', { threadId: 'thread' });
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.skills).toEqual([]));
+        first.resolve({ data: [{ cwd: '/tmp', skills: sharedHarness.skills as never, errors: [] }] });
+        await first.promise;
+        expect(request).toHaveBeenCalledTimes(2);
+        expect(f.metadata().contextDetails?.codex?.skills).toEqual([]);
     });
 
     it('refreshes shared skills on skills/changed and preserves them on failure', async () => {

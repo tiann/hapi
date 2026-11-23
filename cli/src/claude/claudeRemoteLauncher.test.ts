@@ -797,6 +797,22 @@ describe('claudeRemoteLauncher resume anchor', () => {
             session.stopKeepAlive()
         }
     })
+    it('keeps the effective window when a later assistant snapshot reports a larger raw maximum', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        try {
+            const model = 'claude-opus[1m]'
+            harness.contextForLaunch = callbacks => callbacks.onContextUsage({ model, maxTokens: 200_000 })
+            harness.messages = [{ type: 'assistant', context_usage: { raw_max_tokens: 1_000_000, total_tokens: 100 },
+                message: { role: 'assistant', model, content: [{ type: 'text', text: 'Visible answer' }] } }]
+            queue.push('hello', { permissionMode: 'default', model }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails).toMatchObject({ contextWindow: 200_000, usage: { contextTokens: 100 } })
+        } finally { session.stopKeepAlive() }
+    })
+
     it('uses the result window on a new launch and ignores late context from the old launch', async () => {
         const client = createClientStub()
         const { session, queue } = createSession(client, undefined)
