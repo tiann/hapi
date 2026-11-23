@@ -480,32 +480,46 @@ export function getHistoryCoverageRetryDelay(deadline: number, now: number): num
     return Math.max(0, deadline - now) + 16
 }
 
+type PromptAnchorState = { current: boolean; nextAnchorId: string | null; blockedBySystemTurn?: boolean }
+
+function findPromptBefore(messages: HTMLElement[], end: number, state?: PromptAnchorState): HTMLElement | null {
+    for (let index = end - 1; index >= 0; index -= 1) {
+        const message = messages[index]
+        if (message.dataset.hapiSystemTurn === 'true') {
+            if (state) state.blockedBySystemTurn = true
+            return null
+        }
+        if (message.dataset.hapiTurnInput === 'true') return message
+    }
+    return null
+}
+
 export function findPreviousUserMessage(
     viewport: HTMLElement,
-    messageId: string
+    messageId: string,
+    state?: PromptAnchorState
 ): HTMLElement | null {
     const messageAnchorId = getConversationMessageAnchorId(messageId)
     const messages = Array.from(viewport.querySelectorAll<HTMLElement>(MESSAGE_ANCHOR_SELECTOR))
     const messageIndex = messages.findIndex((message) => message.id === messageAnchorId)
-    if (messageIndex < 0) return null
-    for (let index = messageIndex - 1; index >= 0; index -= 1) {
-        if (messages[index].dataset.hapiTurnInput === 'true') {
-            return messages[index]
-        }
-    }
-    return null
+    return messageIndex < 0 ? null : findPromptBefore(messages, messageIndex, state)
 }
 
 export function findPromptTarget(
     viewport: HTMLElement,
     messageId: string,
-    assistantAnchorState: { current: boolean; nextAnchorId: string | null },
+    assistantAnchorState: PromptAnchorState,
     replyToMessageId?: string
 ): HTMLElement | null {
+    if (assistantAnchorState.blockedBySystemTurn) return null
     if (replyToMessageId) {
         const replyTargetAnchorId = getConversationMessageAnchorId(replyToMessageId)
         const replyTarget = Array.from(viewport.querySelectorAll<HTMLElement>(MESSAGE_ANCHOR_SELECTOR))
             .find((message) => message.id === replyTargetAnchorId)
+        if (replyTarget?.dataset.hapiSystemTurn === 'true') {
+            assistantAnchorState.blockedBySystemTurn = true
+            return null
+        }
         if (replyTarget?.dataset.hapiTurnInput === 'true') return replyTarget
     }
 
@@ -519,28 +533,21 @@ export function findPromptTarget(
                 : null
     }
 
-    const target = findPreviousUserMessage(viewport, messageId)
-    if (target) return target
+    const target = findPreviousUserMessage(viewport, messageId, assistantAnchorState)
+    if (target || assistantAnchorState.blockedBySystemTurn) return target
     if (!assistantAnchorState.current || assistantAnchor) return null
 
     const messages = Array.from(viewport.querySelectorAll<HTMLElement>(MESSAGE_ANCHOR_SELECTOR))
     const boundaryIndex = assistantAnchorState.nextAnchorId
         ? messages.findIndex((message) => message.id === assistantAnchorState.nextAnchorId)
         : messages.length
-    if (boundaryIndex >= 0) {
-        for (let index = boundaryIndex - 1; index >= 0; index -= 1) {
-            if (messages[index].dataset.hapiTurnInput === 'true') return messages[index]
-        }
-        return null
-    }
-
-    return messages.filter((message) => message.dataset.hapiTurnInput === 'true').at(-1) ?? null
+    return findPromptBefore(messages, boundaryIndex >= 0 ? boundaryIndex : messages.length, assistantAnchorState)
 }
 
 export function capturePromptAnchorState(
     viewport: HTMLElement | null,
     messageId: string
-): { current: boolean; nextAnchorId: string | null } {
+): PromptAnchorState {
     if (!viewport) return { current: false, nextAnchorId: null }
     const anchor = document.getElementById(getConversationMessageAnchorId(messageId))
     if (!(anchor instanceof HTMLElement) || !viewport.contains(anchor)) {
@@ -557,12 +564,12 @@ export function capturePromptAnchorState(
 async function findPreviousUserMessageAfterRender(
     viewport: HTMLElement,
     messageId: string,
-    assistantAnchorState: { current: boolean; nextAnchorId: string | null },
+    assistantAnchorState: PromptAnchorState,
     replyToMessageId?: string
 ): Promise<HTMLElement | null> {
     for (let attempt = 0; attempt < 4; attempt += 1) {
         const target = findPromptTarget(viewport, messageId, assistantAnchorState, replyToMessageId)
-        if (target) return target
+        if (target || assistantAnchorState.blockedBySystemTurn) return target
         await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
     }
     return findPromptTarget(viewport, messageId, assistantAnchorState, replyToMessageId)
@@ -2875,7 +2882,7 @@ export function HappyThread(props: {
     const scrollToPromptForMessage = useCallback(async (
         messageId: string,
         replyToMessageId: string | undefined,
-        assistantAnchorState: { current: boolean; nextAnchorId: string | null },
+        assistantAnchorState: PromptAnchorState,
         isCancelled: () => boolean
     ): Promise<boolean> => {
         if (promptNavigationTimerRef.current !== null) {
@@ -2895,7 +2902,7 @@ export function HappyThread(props: {
             let loadedOlderHistory = false
             let target = await findPreviousUserMessageAfterRender(viewport, messageId, assistantAnchorState, replyToMessageId)
             if (isCancelled()) return false
-            while (!target && hasMoreMessagesRef.current) {
+            while (!target && !assistantAnchorState.blockedBySystemTurn && hasMoreMessagesRef.current) {
                 const loaded = await loadOlderForNavigation()
                 if (isCancelled()) return false
                 if (!loaded) throw new Error('Could not load older messages')
@@ -2907,6 +2914,10 @@ export function HappyThread(props: {
                 if (isCancelled()) return false
             }
             if (isCancelled()) return false
+            if (assistantAnchorState.blockedBySystemTurn) {
+                setPromptNavigationStatus('idle')
+                return false
+            }
             if (!target) throw new Error('No preceding user message found')
             target.scrollIntoView({ block: 'start', behavior: 'smooth' })
             const completionStatus = getPromptNavigationCompletionStatus(loadedOlderHistory)

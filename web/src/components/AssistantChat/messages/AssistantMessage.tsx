@@ -130,7 +130,7 @@ export function HappyAssistantMessage() {
     const turnCount = useAuiState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.turnCount)
     const roundSummary = useAuiState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.roundSummary)
     const replyToMessageId = useAuiState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.replyToMessageId)
-    const promptInputVisible = usePromptInputVisible(replyToMessageId)
+    const promptInputVisible = usePromptInputVisible(replyToMessageId ?? undefined)
 
     const metadata = { durationMs, usage, model: messageModel ?? null, turnCount, roundSummary }
 
@@ -182,9 +182,9 @@ export function HappyAssistantMessage() {
                     : showHistoricalFork
                         ? () => ctx.onForkConversation!(historicalForkLocalId!)
                         : undefined}
-                onJumpToPrompt={() => { void ctx.jumpToPrompt(messageId, replyToMessageId) }}
+                onJumpToPrompt={replyToMessageId === null ? undefined : () => { void ctx.jumpToPrompt(messageId, replyToMessageId) }}
                 onJumpToConversationStart={() => { void ctx.scrollToConversationStart() }}
-                showPromptNavigation={!promptInputVisible}
+                showPromptNavigation={replyToMessageId !== null && !promptInputVisible}
                 isLoadingConversationStart={ctx.isLoadingConversationStart}
                 isLoadingPrompt={ctx.loadingPromptMessageId === messageId}
                 isNavigationInFlight={ctx.isNavigationInFlight}

@@ -144,6 +144,24 @@ describe('assistant prompt lookup', () => {
             .toBe('hapi-message-user-text:second')
     })
 
+    it('does not cross an invoked system turn, including after a paginated prepend', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-user-text:earlier" data-hapi-turn-input="true"></div>
+                <div id="hapi-message-user-text:wake" data-hapi-system-turn="true"></div>
+                <div id="hapi-message-agent-text:answer"></div>
+            </div>
+        `
+        document.body.append(viewport)
+        const state = capturePromptAnchorState(viewport, 'agent-text:answer')
+        expect(findPreviousUserMessage(viewport, 'agent-text:answer')).toBeNull()
+        viewport.firstElementChild?.lastElementChild?.remove()
+        expect(findPromptTarget(viewport, 'agent-text:answer', state)).toBeNull()
+        expect(state.blockedBySystemTurn).toBe(true)
+        viewport.remove()
+    })
+
     it('returns null when the prompt is outside the loaded history window', () => {
         const viewport = document.createElement('div')
         viewport.innerHTML = `

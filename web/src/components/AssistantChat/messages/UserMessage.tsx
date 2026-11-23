@@ -78,6 +78,7 @@ export function HappyUserMessage() {
             <MessagePrimitive.Root
                 id={elementId}
                 data-hapi-message-role="system-note"
+                data-hapi-system-turn={isTurnInputMessage(invokedAt, status) ? 'true' : undefined}
                 className="happy-message scroll-mt-4 px-1"
             >
                 <div className="mx-auto w-fit max-w-[92%] px-2 text-center text-xs text-[var(--app-hint)] opacity-80">

@@ -55,8 +55,8 @@ export type HappyChatMessageMetadata = {
      * per-message footer is rendered unchanged.
      */
     turnCount?: number
-    /** Thread message id of the user prompt that precedes this assistant response. */
-    replyToMessageId?: string
+    /** Operator prompt ID, null for an invoked system turn, or absent if not loaded. */
+    replyToMessageId?: string | null
     /** Raw HAPI message ids represented by this rendered assistant-ui card. */
     sourceMessageIds?: string[]
 }
@@ -368,16 +368,16 @@ export type BlockWithThreadMessageId = {
 }
 
 /**
- * Associate every assistant-role block with the latest real user prompt.
+ * Associate every assistant-role block with the latest invoked turn. System turns have no operator prompt.
  * The converter may join adjacent assistant blocks into one card and keeps
  * metadata from its first block, so assigning the target to every block keeps
  * the relationship intact regardless of where a joined response starts.
  */
 export function buildAssistantReplyTargets(
     blocks: readonly BlockWithThreadMessageId[]
-): Map<string, string> {
-    const targets = new Map<string, string>()
-    let latestUserMessageId: string | null = null
+): Map<string, string | null> {
+    const targets = new Map<string, string | null>()
+    let latestUserMessageId: string | null | undefined
 
     for (const { block, threadMessageId } of blocks) {
         const role = visibleBlockRole(block)
@@ -385,11 +385,11 @@ export function buildAssistantReplyTargets(
             const isPending = block.invokedAt === null
             const isFailed = block.kind === 'user-text' && block.status === 'failed'
             if (!isPending && !isFailed) {
-                latestUserMessageId = threadMessageId
+                latestUserMessageId = block.kind === 'user-text' && isSystemNoteMeta(block.meta) ? null : threadMessageId
             }
             continue
         }
-        if (role === 'assistant' && latestUserMessageId !== null) {
+        if (role === 'assistant' && latestUserMessageId !== undefined) {
             targets.set(threadMessageId, latestUserMessageId)
         }
     }
@@ -1082,7 +1082,7 @@ export function useHappyRuntime(props: {
             const aggregate = aggregates.get(block.id)
             const replyToMessageId = replyTargets.get(threadMessageId)
             const sourceMessageIds = sourceMessageIdsByBlock.get(block)
-            if (!aggregate && !replyToMessageId && (!sourceMessageIds || sourceMessageIds.length === 0)) return message
+            if (!aggregate && replyToMessageId === undefined && (!sourceMessageIds || sourceMessageIds.length === 0)) return message
             const existing = message.metadata?.custom as HappyChatMessageMetadata | undefined
             return {
                 ...message,

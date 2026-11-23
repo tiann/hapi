@@ -325,6 +325,23 @@ describe('buildAssistantReplyTargets', () => {
         ])
     })
 
+    it('marks an invoked system wake as a response with no operator input', () => {
+        const blocks = assignThreadMessageIds([
+            userText('first'), agentText('first-reply'),
+            userText('pending-wake', { invokedAt: null, status: 'queued', meta: { sentFrom: 'hapi-system' } }),
+            agentText('still-first-turn'),
+            userText('wake', { invokedAt: 2_000, meta: { sentFrom: 'hapi-system' } }),
+            agentText('wake-reply'),
+            userText('next'), agentText('next-reply')
+        ])
+        expect([...buildAssistantReplyTargets(blocks)]).toEqual([
+            ['agent-text:first-reply', 'user-text:first'],
+            ['agent-text:still-first-turn', 'user-text:first'],
+            ['agent-text:wake-reply', null],
+            ['agent-text:next-reply', 'user-text:next']
+        ])
+    })
+
     it('does not invent a target when loaded history starts with an assistant response', () => {
         const blocks = assignThreadMessageIds([agentText('answer')])
         expect(buildAssistantReplyTargets(blocks).size).toBe(0)

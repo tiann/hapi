@@ -135,3 +135,16 @@ for (const [locale, action, success] of [
         }
     })
 }
+
+
+test('a reply to a job wake has no jump-to-input action', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartShort=1&jobWake=1')
+    const reply = page.getByText('Job-wake reply', { exact: true })
+    await reply.hover()
+    const row = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Job-wake reply' })
+    await expect(row.getByRole('button', { name: 'Jump to conversation start' })).toBeVisible()
+    await expect(row.getByRole('button', { name: 'Jump to turn input' })).toHaveCount(0)
+    if (process.env.HAPI_REVIEW_SCREENSHOT_DIR) {
+        await row.screenshot({ path: `${process.env.HAPI_REVIEW_SCREENSHOT_DIR}/response-navigation-job-wake.png` })
+    }
+})

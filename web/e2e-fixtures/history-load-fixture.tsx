@@ -256,6 +256,10 @@ const sessionMessagesById: Record<string, DecryptedMessage[]> = sessionSwitch
 const allMessages: DecryptedMessage[] = fixtureParams.has('jumpStartShort') ? [
     createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Short chat prompt' } }),
     createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'First short reply' } } }),
+    ...(fixtureParams.has('jobWake') ? [
+        createFixtureMessage(3, { role: 'user', content: { type: 'text', text: 'A job woke the agent' }, meta: { sentFrom: 'hapi-system' } }),
+        createFixtureMessage(4, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Job-wake reply' } } }),
+    ] : []),
 ] : Array.from({ length: TOTAL_MESSAGES }, (_, index) => {
     const seq = index + 1
     const filtered = filteredOlder && seq <= TOTAL_MESSAGES - 200
