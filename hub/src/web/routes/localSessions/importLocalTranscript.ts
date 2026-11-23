@@ -376,7 +376,7 @@ export function runLocalImportSync(options: {
                     transcript,
                     importPrefix,
                     canonicalContent: source.match.canonicalContent,
-                    reconcileLiveContinuation: source.match.reconcileLiveContinuation,
+                    liveCompareKey: source.match.liveCompareKey,
                     cursor: target && cursorKey
                         ? (typeof storedMetadata(target)[cursorKey] === 'string' ? storedMetadata(target)[cursorKey] as string : null)
                         : null

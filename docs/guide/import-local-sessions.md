@@ -57,6 +57,8 @@ Importing the same native session again does not create a duplicate. HAPI finds 
 
 Messages you sent from HAPI after the import stay in place — re-importing merges, it never replaces. A HAPI rename of the session is also preserved.
 
+For Antigravity, after continuing in HAPI, a re-import appends new native messages only when the stored conversation matches the native history in order. If the histories conflict, HAPI reports divergence and keeps the existing conversation.
+
 An import is refused when:
 
 - **The HAPI session is active** and the native history has new messages. Stop the HAPI session first; HAPI never interleaves imported messages into a live session.

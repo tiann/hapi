@@ -54,8 +54,7 @@ export type HubLocalSessionSource = {
         cursorKey?: 'piHistoryLeafEntryId'
         /** Maps stored and transcript content to the fields that must stay equal. */
         canonicalContent?: (content: unknown) => unknown
-        /** Reconciles non-imported live HAPI turns after the imported prefix against native transcript turns. */
-        reconcileLiveContinuation?: boolean
+        liveCompareKey?: (content: unknown) => string | null
     }
         | { strategy: 'contentPrefix'; compareKey?: (content: unknown) => string | null }
     /** Lifecycle stamped on create. */
@@ -234,13 +233,20 @@ export const CLAUDE_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport
 }
 
+// Delivery metadata differs between native and live messages. Keep the complete
+// payload, including attachments, tool identities, results and exit codes.
+function agyLiveCompareKey(content: unknown): string | null {
+    if (!content || typeof content !== 'object' || !('role' in content) || !('content' in content)) return null
+    return stableSerializeContent({ role: content.role, content: content.content })
+}
+
 export const AGY_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     flavor: 'agy',
     displayName: 'Antigravity',
     importTimestampKey: 'agyImportedAt',
     routeBase: 'agy',
     nativeIdKeys: ['agySessionId'],
-    match: { strategy: 'anchored', reconcileLiveContinuation: true },
+    match: { strategy: 'anchored', liveCompareKey: agyLiveCompareKey },
     lifecycleOnCreate: 'archived',
     requireWorkingDirectory: true,
     batch: 'continue',
