@@ -110,6 +110,8 @@ See [Notifications](./notifications.md) for setup.
 | `APNS_ENV` | `apnsEnv` | `production` | `production` or `sandbox` for direct APNs. |
 | `HAPI_NOTIFY_DEBUG` | – | – | `1` logs push delivery decisions. |
 
+For the legacy `default` WxPusher destination, overriding `WXPUSHER_APP_TOKEN` with a different app requires `WXPUSHER_UIDS` or `WXPUSHER_TOPIC_IDS` in the environment. The Hub neither reuses the other app's saved recipients nor saves the temporary app's recipients under the saved token. Explicit `wxPusherByNamespace.default` still replaces the entire legacy destination.
+
 ### Voice and dictation
 
 Provider keys can also be entered in the web app under **Settings → Voice**,

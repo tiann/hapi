@@ -95,6 +95,7 @@ export async function setup() {
         CLI_API_TOKEN: token,
         TELEGRAM_NOTIFICATION: 'false',
         SERVERCHAN_NOTIFICATION: 'false',
+        WXPUSHER_NOTIFICATION: 'false',
     }
 
     // Write config so setupFile.ts can inject env vars into each test worker
