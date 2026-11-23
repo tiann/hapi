@@ -26,6 +26,7 @@ import { useToast } from '@/lib/toast-context'
 import { queryKeys } from '@/lib/query-keys'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
 import { useFeatures } from '@/hooks/queries/useFeatures'
+import { useSessionInputTranslation } from '@/hooks/useSessionInputTranslation'
 import {
     DEFAULT_PR_CHIP_DISPLAY,
     getPrimaryGithubPrRef,
@@ -302,13 +303,10 @@ export function SessionHeader(props: {
             })
         }
     }
-    const inputTranslationAvailable = Boolean(features?.inputTranslation?.available)
-    const translateInputEnabled = session.metadata?.translateInput === true
+    const inputTranslation = useSessionInputTranslation(api, session)
     const handleToggleTranslateInput = async () => {
-        if (!api) return
         try {
-            await api.setSessionTranslateInput(session.id, !translateInputEnabled)
-            await queryClient.invalidateQueries({ queryKey: queryKeys.session(session.id) })
+            await inputTranslation.toggle()
         } catch (error) {
             addToast({
                 title: t('dialog.error.default'),
@@ -619,8 +617,8 @@ export function SessionHeader(props: {
                 onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
                 linkedPr={linkedPr}
                 onMarkUnread={() => markSessionUnread(session.id, session.readState)}
-                onToggleTranslateInput={api && (inputTranslationAvailable || translateInputEnabled) ? () => void handleToggleTranslateInput() : undefined}
-                translateInputEnabled={translateInputEnabled}
+                onToggleTranslateInput={inputTranslation.visible ? () => void handleToggleTranslateInput() : undefined}
+                translateInputEnabled={inputTranslation.enabled}
                 onSetPinMode={api ? (mode) => void handleSetPinMode(mode) : undefined}
                 onExport={() => setExportOpen(true)}
                 onSyncCodex={api && codexSessionId && !session.active ? handleSyncCodex : undefined}
