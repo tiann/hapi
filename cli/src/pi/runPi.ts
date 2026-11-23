@@ -314,7 +314,7 @@ export async function runPi(opts: {
         onAfterClose: () => {
             piSession.stopKeepAlive();
             killedByCleanup = true;
-            transport.kill();
+            return transport.kill();
         }
     });
 

@@ -1,4 +1,4 @@
-import { accessSync, existsSync, statSync } from 'node:fs'
+import { accessSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { constants } from 'node:fs'
 import { delimiter, posix, win32 } from 'node:path'
 import type { AgentFlavor } from '@hapi/protocol'
@@ -65,6 +65,8 @@ export function executableCandidates(
     const pathDelimiter = isWindows ? ';' : delimiter
     return pathValue
         .split(pathDelimiter)
+        // Windows accepts quoted PATH entries such as "C:\Program Files\npm".
+        .map((directory) => isWindows ? directory.replace(/^"(.*)"$/, '$1') : directory)
         .filter(Boolean)
         .flatMap((directory) => extensions.map((extension) => pathApi.join(directory, command + extension)))
 }
@@ -87,4 +89,48 @@ export function resolveExecutable(
     })
 
     return executableCandidates(command, options).find(isExecutable) ?? null
+}
+
+export type LaunchCommand = { command: string; args: string[] }
+
+/** Script a Windows npm/pnpm `.cmd` shim runs with node, e.g. `"%dp0%\\node_modules\\pkg\\cli.js" %*`. */
+export function parseNodeShimScript(shimPath: string, shim: string): string | null {
+    const match = /"(%~?dp0%?\\)?([^"%]+\.[cm]?js)"\s+%\*/i.exec(shim)
+    if (!match) return null
+    if (match[1]) return win32.resolve(win32.dirname(shimPath), match[2])
+    return win32.isAbsolute(match[2]) ? win32.normalize(match[2]) : null
+}
+
+/**
+ * How to start a Node-based agent CLI without a shell. On Windows a `.cmd`
+ * shim would run through cmd.exe, which also searches the working directory
+ * for the shim and for `node`, cannot use a UNC working directory, and is the
+ * process a kill reaches instead of the agent. So the shim's script is run with
+ * node directly. Null when Windows has no runnable command; POSIX leaves lookup
+ * to spawn.
+ */
+export function resolveNodeCliLaunch(
+    command: string,
+    env: LaunchEnvironment = process.env,
+    platform: NodeJS.Platform = process.platform,
+): LaunchCommand | null {
+    if (platform !== 'win32') return { command, args: [] }
+    const pathValue = env.PATH ?? env.Path
+    const found = resolveExecutable(command, { platform, pathValue, pathExt: env.PATHEXT })
+    if (!found) return null
+    const executable = win32.resolve(found)
+    if (!/\.(cmd|bat)$/i.test(executable)) return { command: executable, args: [] }
+
+    let script: string | null
+    try {
+        script = parseNodeShimScript(executable, readFileSync(executable, 'utf8'))
+    } catch {
+        return null
+    }
+    if (!script || !existsSync(script)) return null
+    const bundledNode = win32.join(win32.dirname(executable), 'node.exe')
+    const node = existsSync(bundledNode)
+        ? bundledNode
+        : resolveExecutable('node', { platform, pathValue, pathExt: '.EXE' })
+    return node ? { command: win32.resolve(node), args: [script] } : null
 }

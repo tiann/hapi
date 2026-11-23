@@ -7,6 +7,19 @@ vi.mock('node:child_process', () => ({
     get spawn() { return mockSpawn; }
 }));
 
+type Launch = { command: string; args: string[] } | null;
+const mockResolveNodeCliLaunch = vi.fn((command: string, _env?: unknown): Launch => ({ command, args: [] }));
+vi.mock('@/agent/agentLaunchCommand', () => ({
+    resolveNodeCliLaunch: (command: string, env?: unknown) => mockResolveNodeCliLaunch(command, env)
+}));
+
+const mockIsWindows = vi.fn(() => false);
+const mockKillProcessByChildProcess = vi.fn(async (..._args: unknown[]) => true);
+vi.mock('@/utils/process', () => ({
+    isWindows: () => mockIsWindows(),
+    killProcessByChildProcess: (...args: unknown[]) => mockKillProcessByChildProcess(...args)
+}));
+
 vi.mock('@/ui/logger', () => ({
     logger: {
         debug: vi.fn(),
@@ -42,6 +55,9 @@ describe('PiTransport', () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        mockIsWindows.mockReturnValue(false);
+        mockResolveNodeCliLaunch.mockImplementation((command: string) => ({ command, args: [] }));
+        mockKillProcessByChildProcess.mockResolvedValue(true);
         mockProcess = createMockProcess();
         mockSpawn.mockReturnValue(mockProcess);
     });
@@ -55,6 +71,39 @@ describe('PiTransport', () => {
                 cwd: '/work',
                 stdio: ['pipe', 'pipe', 'pipe']
             }));
+        });
+
+        it('starts the resolved launcher with its script ahead of the Pi args', () => {
+            mockIsWindows.mockReturnValue(true);
+            mockResolveNodeCliLaunch.mockReturnValue({
+                command: 'C:\\Program Files\\nodejs\\node.exe',
+                args: ['C:\\npm\\node_modules\\pi\\cli.js']
+            });
+            const env = { Path: 'C:\\npm' };
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '\\\\server\\share', env });
+            transport.start();
+
+            expect(mockResolveNodeCliLaunch).toHaveBeenCalledWith('pi', env);
+            expect(mockSpawn).toHaveBeenCalledWith(
+                'C:\\Program Files\\nodejs\\node.exe',
+                ['C:\\npm\\node_modules\\pi\\cli.js', '--mode', 'rpc'],
+                expect.objectContaining({ cwd: '\\\\server\\share', env, windowsHide: true })
+            );
+        });
+
+        it('reports not-found without spawning when no runnable Pi is found', async () => {
+            mockResolveNodeCliLaunch.mockReturnValue(null);
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
+            const errorSpy = vi.fn();
+            transport.onError(errorSpy);
+            transport.start();
+            transport.send({ type: 'get_state' });
+
+            expect(mockSpawn).not.toHaveBeenCalled();
+            await new Promise((resolve) => process.nextTick(resolve));
+            expect(errorSpy).toHaveBeenCalledTimes(1);
+            expect(errorSpy.mock.calls[0][0].message).toContain('not found');
+            await expect(transport.kill()).resolves.toBeUndefined();
         });
 
         it('should emit error event on ENOENT', () => {
@@ -176,6 +225,68 @@ describe('PiTransport', () => {
 
             transport.kill();
             expect(mockProcess.kill).toHaveBeenCalledWith('SIGTERM');
+            expect(mockKillProcessByChildProcess).not.toHaveBeenCalled();
+        });
+
+        it('stops Pi together with its tools on Windows and resolves only after the stop settles', async () => {
+            mockIsWindows.mockReturnValue(true);
+            let finishStop!: (stopped: boolean) => void;
+            mockKillProcessByChildProcess.mockReturnValue(new Promise<boolean>((resolve) => { finishStop = resolve; }));
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
+            transport.start();
+
+            let settled = false;
+            const stopping = transport.kill().then(() => { settled = true; });
+            await transport.kill();
+            expect(mockKillProcessByChildProcess).toHaveBeenCalledTimes(1);
+            expect(mockKillProcessByChildProcess).toHaveBeenCalledWith(mockProcess, true);
+            expect(mockProcess.kill).not.toHaveBeenCalled();
+
+            await Promise.resolve();
+            expect(settled).toBe(false);
+            finishStop(true);
+            await stopping;
+            expect(settled).toBe(true);
+        });
+
+        it('still terminates Pi through its handle when the Windows tree stop is not confirmed', async () => {
+            mockIsWindows.mockReturnValue(true);
+            mockKillProcessByChildProcess.mockResolvedValue(false);
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
+            transport.start();
+
+            await transport.kill();
+            expect(mockProcess.kill).toHaveBeenCalledTimes(1);
+        });
+
+        it('still terminates Pi through its handle when the Windows tree stop throws', async () => {
+            mockIsWindows.mockReturnValue(true);
+            mockKillProcessByChildProcess.mockRejectedValue(new Error('powershell blocked'));
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
+            transport.start();
+
+            await transport.kill();
+            expect(mockProcess.kill).toHaveBeenCalledTimes(1);
+        });
+
+        it('does not signal a Pi process that has already exited (PID may be reused)', async () => {
+            mockIsWindows.mockReturnValue(true);
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
+            transport.start();
+            mockProcess.emit('close', 0, null);
+
+            await transport.kill();
+            expect(mockKillProcessByChildProcess).not.toHaveBeenCalled();
+            expect(mockProcess.kill).not.toHaveBeenCalled();
+        });
+
+        it('does not signal a child that reported exit before close', async () => {
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
+            transport.start();
+            (mockProcess as any).exitCode = 1;
+
+            await transport.kill();
+            expect(mockProcess.kill).not.toHaveBeenCalled();
         });
 
         it('should be a no-op when process is not running', () => {
