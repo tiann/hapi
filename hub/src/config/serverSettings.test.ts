@@ -312,6 +312,26 @@ describe('loadServerSettings', () => {
         expect(result.sources.wxPusherTopicIds).toBe('file')
     })
 
+    it('does not save temporary recipients under a different saved app token', async () => {
+        dir = makeTempDir()
+        const file = join(dir, 'settings.json')
+        writeFileSync(file, JSON.stringify({ wxPusherAppToken: 'saved-app' }))
+        process.env.WXPUSHER_APP_TOKEN = 'temporary-app'
+        process.env.WXPUSHER_UIDS = 'temporary-uid'
+        process.env.WXPUSHER_TOPIC_IDS = '42'
+        expect((await loadServerSettings(dir)).settings.wxPusherDestinations.get('default')).toMatchObject({
+            appToken: 'temporary-app', uids: ['temporary-uid'], topicIds: [42],
+        })
+        delete process.env.WXPUSHER_APP_TOKEN
+        delete process.env.WXPUSHER_UIDS
+        delete process.env.WXPUSHER_TOPIC_IDS
+        const saved = JSON.parse(readFileSync(file, 'utf8'))
+        expect(saved).toMatchObject({ wxPusherAppToken: 'saved-app' })
+        expect(saved.wxPusherUids).toBeUndefined()
+        expect(saved.wxPusherTopicIds).toBeUndefined()
+        expect((await loadServerSettings(dir)).settings.wxPusherDestinations.has('default')).toBe(false)
+    })
+
     it('does not parse or persist flat recipient settings without a usable app token', async () => {
         dir = makeTempDir()
         const file = join(dir, 'settings.json')
