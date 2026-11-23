@@ -1522,6 +1522,49 @@ describe('startup notify backfill (#1717)', () => {
         expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
     })
 
+    it('pages past the fixed 6-row window to find a footer buried behind trailing sidechain noise (#1717 cold-review round 30)', async () => {
+        // The fixed-depth scan only ever read the newest 6 rows — a footer
+        // sitting behind 6+ rows that report neither a status nor a reply
+        // (sidechain narration, plain tool chatter) sat entirely outside
+        // that window. The session never backfilled at all, and restarting
+        // the hub kept re-missing it every time.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'backfill-buried-footer',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const now = Date.now()
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, undefined, null, now - 10_000, now - 10_000)
+        // 8 trailing rows that report neither a status nor a reply —
+        // more than the fixed 6-row window, nothing decisive in any of them.
+        for (let i = 0; i < 8; i += 1) {
+            store.messages.addMessage(session.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `sidechain note ${i}` }] } }
+                }
+            }, undefined, null, now - 9_000 + i * 1_000, now - 9_000 + i * 1_000)
+        }
+
+        expect(engine.backfillRecentNotifySignals({ now })).toBe(1)
+        expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+    })
+
     it('does not let a locally handled command answer a footer during reconciliation', async () => {
         // The live path already skips the clear for a command the CLI handled
         // itself, but the store still stamps the row's `invoked_at`, so every

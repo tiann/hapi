@@ -107,6 +107,10 @@ import { getSettingsFile, readSettingsOrThrowCached } from '../config/settings'
 /** Startup notify backfill bounds (#1717) — see `backfillRecentNotifySignals`. */
 const NOTIFY_BACKFILL_MAX_SESSIONS = 200
 const NOTIFY_BACKFILL_MESSAGE_SCAN = 6
+/** Ceiling for `findNotifySignalInTranscript`'s paging retry (#1717
+ *  cold-review round 30) — matches `getMessages`'s own hard cap, so paging
+ *  past it would just re-read the identical last-200 rows forever. */
+const NOTIFY_BACKFILL_MESSAGE_SCAN_MAX = 200
 /** Rewind reconciliation scans deeper than the startup backfill: the retained
  *  footer can sit behind a run of sidechain or tool rows, and missing it there
  *  does not merely delay the signal — the replacement write clears it. */
@@ -637,12 +641,32 @@ export class SyncEngine {
         return true
     }
 
-    /** Newest eligible footer in the retained transcript, or null. */
+    /**
+     * Newest eligible footer in the retained transcript, or null.
+     *
+     * Pages the scan window outward when the first page is genuinely
+     * inconclusive — neither a footer nor a reply anywhere in it (#1717
+     * cold-review round 30). A recent unanswered footer followed by six-plus
+     * sidechain/tool rows that report neither sat entirely outside the
+     * fixed 6-row window, so the session never backfilled at all and kept
+     * re-missing it on every restart. `signal === null && boundaryAt ===
+     * null` is the right trigger, not just `signal === null`: a footer that
+     * WAS found but fully answered also returns a null signal, with
+     * `boundaryAt` set from the reply that answered it — a genuinely
+     * conclusive idle result that paging further would only waste work on.
+     */
     private findNotifySignalInTranscript(
         sessionId: string,
         scanDepth: number | null = NOTIFY_BACKFILL_MESSAGE_SCAN
     ): { status: string; at: number; note: string | null; seq?: number | null } | null {
-        return this.deriveNotifyStateFromTranscript(sessionId, scanDepth).signal
+        if (scanDepth === null) return this.deriveNotifyStateFromTranscript(sessionId, null).signal
+        let depth = scanDepth
+        for (;;) {
+            const result = this.deriveNotifyStateFromTranscript(sessionId, depth)
+            if (result.signal !== null || result.boundaryAt !== null) return result.signal
+            if (depth >= NOTIFY_BACKFILL_MESSAGE_SCAN_MAX) return null
+            depth = Math.min(depth * 4, NOTIFY_BACKFILL_MESSAGE_SCAN_MAX)
+        }
     }
 
     /**
