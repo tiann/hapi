@@ -62,7 +62,7 @@ describe('agent executable resolution', () => {
 
     it('reads an absolute script a pnpm shim on another drive runs', () => {
         const shim = '@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "E:\\pnpm-store\\pi\\dist\\cli.js" %*\r\n)'
-        expect(parseNodeShimScript('C:\\pnpm\\pi.cmd', shim)?.script).toBe('E:\\pnpm-store\\pi\\dist\\cli.js')
+        expect(parseNodeShimScript('C:\\pnpm\\pi.cmd', shim)).toMatchObject({ script: 'E:\\pnpm-store\\pi\\dist\\cli.js' })
         expect(parseNodeShimScript('C:\\pnpm\\pi.cmd', '"node" "pi\\cli.js" %*')).toBeNull()
     })
 
@@ -74,8 +74,12 @@ describe('agent executable resolution', () => {
         })
     })
 
-    it('rejects a shim that does not run a node script', () => {
-        expect(parseNodeShimScript('C:\\bin\\pi.cmd', '@echo off\r\n"%~dp0\\pi.exe" %*')).toBeNull()
+    it('reads the executable a shim only forwards to', () => {
+        expect(parseNodeShimScript('C:\\bin\\pi.cmd', '@echo off\r\n"%~dp0\\pi.exe" %*')).toEqual({ executable: 'C:\\bin\\pi.exe' })
+    })
+
+    it('rejects a shim that runs neither a node script nor an executable', () => {
+        expect(parseNodeShimScript('C:\\bin\\pi.cmd', '@echo off\r\ncall other.bat %*')).toBeNull()
     })
 
     it('leaves command lookup to spawn on POSIX', () => {

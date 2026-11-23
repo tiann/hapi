@@ -92,12 +92,13 @@ export function resolveExecutable(
 
 export type LaunchCommand = { command: string; args: string[] }
 
-export type NodeShim = { script: string; node: string | null }
+export type NodeShim = { script: string; node: string | null } | { executable: string }
 
 /**
  * What a Windows npm/pnpm `.cmd` shim runs, e.g.
  * `"%_prog%"  "%dp0%\\node_modules\\pkg\\cli.js" %*`. `node` is the interpreter
- * the shim names explicitly (pnpm), or null when it picks one at run time.
+ * the shim names explicitly (pnpm), or null when it picks one at run time. A
+ * shim that only forwards to an `.exe` yields that executable.
  */
 export function parseNodeShimScript(shimPath: string, shim: string): NodeShim | null {
     const shimDir = win32.dirname(shimPath)
@@ -107,9 +108,13 @@ export function parseNodeShimScript(shimPath: string, shim: string): NodeShim | 
         return win32.isAbsolute(path) ? win32.normalize(path) : null
     }
     const match = /(?:"([^"]+\.exe)"\s+)?"([^"]+\.[cm]?js)"\s+%\*/i.exec(shim)
-    const script = match && resolveShimPath(match[2])
-    if (!script) return null
-    return { script, node: match[1] ? resolveShimPath(match[1]) : null }
+    if (match) {
+        const script = resolveShimPath(match[2])
+        return script ? { script, node: match[1] ? resolveShimPath(match[1]) : null } : null
+    }
+    const forward = /"([^"]+\.exe)"\s+%\*/i.exec(shim)
+    const executable = forward && resolveShimPath(forward[1])
+    return executable ? { executable } : null
 }
 
 /**
@@ -138,6 +143,7 @@ export function resolveNodeCliLaunch(
     } catch {
         return null
     }
+    if (shim && 'executable' in shim) return existsSync(shim.executable) ? { command: shim.executable, args: [] } : null
     if (!shim || !existsSync(shim.script)) return null
     const bundledNode = win32.join(win32.dirname(executable), 'node.exe')
     const node = [shim.node, bundledNode].find((path): path is string => !!path && existsSync(path))

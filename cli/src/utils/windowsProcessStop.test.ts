@@ -53,19 +53,35 @@ describe('Windows asynchronous tree stop', () => {
         expect(syncMock).not.toHaveBeenCalled()
     })
 
-    it('sends no signal when the root handle closes during the initial snapshot (PID may be reused)', async () => {
+    it('leaves a process that reused the root PID during the initial snapshot alone', async () => {
         let live = true
+        const fresh = '2099-01-01T00:00:00.0000000Z'
         execFileMock.mockImplementationOnce((_file, _args, _options, callback) => {
             queueMicrotask(() => {
                 live = false
+                rows = [row(0, 0, null), row(100, 0, fresh), row(300, 100, fresh)]
                 callback(null, JSON.stringify({ complete: true, processes: rows }), '')
             })
             return { kill: vi.fn() }
         })
-        // The handle closing proves the root exited; resolving true also keeps
-        // callers from retrying by a PID that may now name another process.
         await expect(killProcessTreeByPid(100, true, 'SIGTERM', undefined, undefined, () => live)).resolves.toBe(true)
         expect(kills).toEqual([])
+    })
+
+    it('still stops the original tree when the root exits during the initial snapshot', async () => {
+        let live = true
+        const old = '2020-01-01T00:00:00.0000000Z'
+        rows = [row(0, 0, null), row(100, 0, old), row(200, 100, old)]
+        execFileMock.mockImplementationOnce((_file, _args, _options, callback) => {
+            queueMicrotask(() => {
+                live = false
+                rows = rows.filter(p => p.ProcessId !== 100)
+                callback(null, JSON.stringify({ complete: true, processes: rows }), '')
+            })
+            return { kill: vi.fn() }
+        })
+        await expect(killProcessTreeByPid(100, true, 'SIGTERM', undefined, undefined, () => live)).resolves.toBe(true)
+        expect(kills.map(k => k.pid)).toEqual([200])
     })
 
     it('stops the tree normally while the root handle stays open', async () => {

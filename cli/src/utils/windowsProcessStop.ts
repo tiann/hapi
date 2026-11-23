@@ -81,9 +81,9 @@ export type WindowsStopReport = { confirmed: boolean; phase: string; elapsedMs: 
  * `isRootLive` reports whether the caller still holds an open handle to the
  * root (a ChildProcess that has not reported exit). Windows never reuses a PID
  * while a handle is open, so the initial snapshot only identifies the original
- * root if the handle stayed open across it. If it closed, the root has exited
- * and its PID may already name another process: nothing is signalled and the
- * stop resolves true, as it does for a root missing from the snapshot.
+ * root if the handle stayed open across it. If it closed, a process reusing a
+ * tree PID was created after the stop began, so only processes created before
+ * then are treated as the tree.
  */
 export async function stopWindowsProcessTree(rootPid: number, force: boolean, report?: (result: WindowsStopReport) => void,
     callerDeadlineMs?: number, isRootLive?: () => boolean): Promise<boolean> {
@@ -108,9 +108,14 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
     }
     if (!remaining()) return finish(false)
     const rootWasLive = isRootLive?.() === true
+    const startedWallMs = Date.now()
     const rootIdentityLost = () => rootWasLive && !isRootLive!()
+    const createdBeforeStop = (entry: WindowsProcessEntry | undefined) =>
+        Boolean(entry?.marker && Date.parse(entry.marker) < startedWallMs)
     const initial = await readWindowsProcessTable(Math.min(15_000, remaining()))
-    if (rootIdentityLost()) return finish(true)
+    if (initial && rootIdentityLost()) {
+        for (const [pid, entry] of initial) if (!createdBeforeStop(entry)) initial.delete(pid)
+    }
     if (!initial) {
         // A transient CIM failure must not leave the cancellation path with no
         // termination attempt. A direct process probe still supplies a
@@ -118,7 +123,8 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
         // unverified, so the result stays unconfirmed.
         phase = 'root-fallback-probe'; snapshots++
         const rootProbe = await readWindowsProcessTable(Math.min(5_000, remaining()), [rootPid])
-        if (rootProbe?.get(rootPid) && !rootIdentityLost()) await signal(rootPid, force, true)
+        const root = rootProbe?.get(rootPid)
+        if (root && (!rootIdentityLost() || createdBeforeStop(root))) await signal(rootPid, force, true)
         return finish(false)
     }
     const members = new Map<number, string | null>()
