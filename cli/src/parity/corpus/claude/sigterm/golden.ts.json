@@ -387,6 +387,121 @@
                 },
                 "terminal": true
               },
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "startingMode": "remote",
+              "version": "<version>"
+            },
+            "result": "success",
+            "version": 6
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "expectedVersion": 5,
+            "metadata": {
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "startingMode": "remote",
+              "version": "<version>"
+            },
+            "sid": "<uuid:1>"
+          }
+        ]
+      },
+      {
+        "event": "update-metadata",
+        "connection": 1,
+        "ack": [
+          {
+            "metadata": {
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
@@ -413,13 +528,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 6
+            "version": 7
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 5,
+            "expectedVersion": 6,
             "metadata": {
               "capabilities": {
                 "conversationHistory": {
@@ -428,6 +543,20 @@
                   "rewindToMessage": true
                 },
                 "terminal": true
+              },
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
               },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
@@ -550,6 +679,20 @@
                 },
                 "terminal": true
               },
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
@@ -576,13 +719,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 7
+            "version": 8
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 6,
+            "expectedVersion": 7,
             "metadata": {
               "archiveReason": "Hub restart",
               "archivedBy": "cli",
@@ -593,6 +736,20 @@
                   "rewindToMessage": true
                 },
                 "terminal": true
+              },
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
               },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",

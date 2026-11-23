@@ -387,6 +387,20 @@
                 },
                 "terminal": true
               },
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
@@ -401,15 +415,9 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
-              "slashCommands": [
-                "compact"
-              ],
               "startedBy": "runner",
               "startedFromRunner": true,
               "startingMode": "remote",
-              "tools": [
-                "Bash"
-              ],
               "version": "<version>"
             },
             "result": "success",
@@ -429,6 +437,20 @@
                 },
                 "terminal": true
               },
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
@@ -443,15 +465,9 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
-              "slashCommands": [
-                "compact"
-              ],
               "startedBy": "runner",
               "startedFromRunner": true,
               "startingMode": "remote",
-              "tools": [
-                "Bash"
-              ],
               "version": "<version>"
             },
             "sid": "<uuid:1>"
@@ -610,11 +626,19 @@
                 },
                 "terminal": true
               },
-              "conversationHistoryEntryIds": {
-                "local-1": "<uuid:6>"
-              },
-              "conversationHistoryPoints": {
-                "local-1": true
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
               },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
@@ -657,6 +681,139 @@
                   "rewindToMessage": true
                 },
                 "terminal": true
+              },
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "slashCommands": [
+                "compact"
+              ],
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "startingMode": "remote",
+              "tools": [
+                "Bash"
+              ],
+              "version": "<version>"
+            },
+            "sid": "<uuid:1>"
+          }
+        ]
+      },
+      {
+        "event": "update-metadata",
+        "connection": 1,
+        "ack": [
+          {
+            "metadata": {
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
+              "conversationHistoryEntryIds": {
+                "local-1": "<uuid:6>"
+              },
+              "conversationHistoryPoints": {
+                "local-1": true
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "slashCommands": [
+                "compact"
+              ],
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "startingMode": "remote",
+              "tools": [
+                "Bash"
+              ],
+              "version": "<version>"
+            },
+            "result": "success",
+            "version": 8
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "expectedVersion": 7,
+            "metadata": {
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
               },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:6>"
@@ -708,6 +865,20 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:6>"
               },
@@ -740,13 +911,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 8
+            "version": 9
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 7,
+            "expectedVersion": 8,
             "metadata": {
               "capabilities": {
                 "conversationHistory": {
@@ -757,6 +928,20 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:6>"
               },
@@ -1073,6 +1258,20 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:6>"
               },
@@ -1109,13 +1308,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 9
+            "version": 10
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 8,
+            "expectedVersion": 9,
             "metadata": {
               "capabilities": {
                 "conversationHistory": {
@@ -1126,6 +1325,20 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:6>"
               },
@@ -1335,6 +1548,20 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:6>"
               },
@@ -1371,13 +1598,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 10
+            "version": 11
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 9,
+            "expectedVersion": 10,
             "metadata": {
               "archiveReason": "Hub restart",
               "archivedBy": "cli",
@@ -1390,6 +1617,20 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:6>"
               },
