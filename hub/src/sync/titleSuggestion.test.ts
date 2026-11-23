@@ -1,3 +1,4 @@
+import { extractProviderText } from './titleSuggestion'
 import { describe, expect, it } from 'bun:test'
 import type { StoredMessage } from '../store'
 import { Store } from '../store'
@@ -455,4 +456,10 @@ describe('TitleSuggestionService', () => {
             reason: 'invalid-response'
         })
     })
+})
+
+it.each(['text', 'input_text'])('accepts a single %s part for titles and translations', type => {
+    const payload = { choices: [{ message: { content: { type, text: '  fixture result  ' } } }] }
+    expect(extractProviderText(payload, true)).toBe('fixture result')
+    expect(extractProviderText(payload)).toBe('fixture result')
 })

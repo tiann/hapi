@@ -275,7 +275,9 @@ export function extractProviderText(value: unknown, strict = false): string | nu
     }
     const content = choice.message.content
     if (content === null) return null
-    if (typeof content !== 'string' && !Array.isArray(content)) {
+    const singleTextPart = isObject(content)
+        && (content.type === 'text' || content.type === 'input_text') && typeof content.text === 'string'
+    if (typeof content !== 'string' && !Array.isArray(content) && !singleTextPart) {
         if (!strict) return null
         throw new TitleProviderRequestError('Title provider returned invalid message content', 'invalid-response')
     }
