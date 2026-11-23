@@ -69,6 +69,7 @@ const runtime = vi.hoisted(() => ({
     cancelRun: () => {},
     composerEnterBehavior: 'send' as 'send' | 'newline',
     pendingHydration: null as Promise<void> | null,
+    cancelPendingPreview: null as (() => void) | null,
     useRealDraftLifecycle: false,
     dictationEnabled: false,
     dictation: { status: 'connected', supported: true, partialTranscript: '', error: null, toggle: vi.fn(), stopAndSend: vi.fn() },
@@ -86,6 +87,7 @@ vi.mock('@assistant-ui/react', async () => {
                 }))
             },
             clearAttachments: async () => {
+                runtime.cancelPendingPreview?.()
                 runtime.setSnapshot!((current) => ({
                     ...current,
                     composer: { ...current.composer, attachments: [] },
@@ -689,6 +691,23 @@ describe('HappyComposer send-error atomic restore', () => {
         expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
     })
 
+    it('clears submitted text when a simultaneous abort recovery is rejected', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.programmaticSetText('foo'))
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+
+        act(() => {
+            controls.current!.abortRestore('foo')
+            controls.current!.settleSend()
+        })
+
+        await waitFor(() => expect(input()).toHaveValue(''))
+        expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, 'foo')
+    })
+
     it('clears an untouched remounted send draft with surrounding whitespace', async () => {
         const controls = renderComposer(' foo\n', null)
         send()
@@ -977,6 +996,23 @@ describe('HappyComposer send-error atomic restore', () => {
             runtime.useRealDraftLifecycle = false
             clearDraft(sessionId)
             clearDraftAttachments(sessionId)
+        }
+    })
+
+    it('does not cancel an in-flight preview when all visible attachments were sent', async () => {
+        const controls = renderComposer('foo', null)
+        act(() => controls.current!.addAttachment())
+        send()
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.hydrateSubmittedAttachment())
+        const cancelPreview = vi.fn()
+        runtime.cancelPendingPreview = cancelPreview
+        try {
+            act(() => controls.current!.settleSend())
+            await waitFor(() => expect(runtime.snapshot.composer.attachments).toEqual([]))
+            expect(cancelPreview).not.toHaveBeenCalled()
+        } finally {
+            runtime.cancelPendingPreview = null
         }
     })
 

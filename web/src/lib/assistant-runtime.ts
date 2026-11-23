@@ -38,6 +38,10 @@ export type HappyChatMessageMetadata = {
     sourceMessageId?: string
     isTranscriptEcho?: boolean
     originalText?: string
+    /** What the user typed when the hub translated the prompt; message text is the English sent. */
+    translatedFrom?: string
+    /** The hub's translation provider failed, so the original text reached the agent. */
+    translationFailed?: boolean
     toolCallId?: string
     event?: AgentEvent
     source?: CliOutputBlock['source']
@@ -636,6 +640,12 @@ function toThreadMessageLike(
                     attachments: block.attachments,
                     invokedAt: block.invokedAt,
                     steered: block.steered,
+                    ...(isObject(block.meta) && typeof block.meta.translatedFrom === 'string'
+                        ? { translatedFrom: block.meta.translatedFrom }
+                        : {}),
+                    ...(isObject(block.meta) && block.meta.translationFailed === true
+                        ? { translationFailed: true }
+                        : {}),
                     ...(isSystemNoteMeta(block.meta) ? { kind: 'system-note' as const } : {})
                 } satisfies HappyChatMessageMetadata
             }

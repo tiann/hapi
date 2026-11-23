@@ -458,6 +458,33 @@ describe('QueuedMessagesBar edit restore', () => {
         expect(getQueuedEditRecovery('session-1')).toBeNull()
     })
 
+    it.each(['before', 'after'] as const)('persists the cleared draft baseline when the send settles %s the cancel', async (order) => {
+        const scheduledAt = Date.now() + 60_000
+        mocks.composerText = 'Previously submitted'
+        const { unmount } = renderQueuedMessage(scheduledAt)
+        fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }))
+        unmount()
+        const settle = () => recordSuccessfulComposerClear('session-1', 'Previously submitted')
+        if (order === 'before') settle()
+        await resolveCancel({ status: 'cancelled' })
+        if (order === 'after') settle()
+
+        const persisted = JSON.parse(sessionStorage.getItem('hapi:queued-edit-recovery')!)
+        expect(persisted['session-1']).toMatchObject({
+            composerTextAtEdit: '',
+            text: 'Queued request',
+            pendingSchedule: { type: 'absolute', ms: scheduledAt },
+        })
+        resetComposerSendStateForTests()
+        mocks.composerText = ''
+        const { onEdit } = renderQueuedMessage(scheduledAt)
+        await waitFor(() => expect(mocks.composerSetText).toHaveBeenCalledWith('Queued request'))
+        expect(onEdit).toHaveBeenCalledWith({
+            text: 'Queued request',
+            pendingSchedule: { type: 'absolute', ms: scheduledAt },
+        })
+    })
+
     it('keeps a remounted session busy until its queued-edit recovery is consumed', async () => {
         const raf = installManualAnimationFrames()
         const scheduledAt = Date.now() + 60_000

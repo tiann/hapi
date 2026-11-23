@@ -1,3 +1,4 @@
+import { reconcileQueuedEditRecoveryClear } from './queued-edit-recovery'
 import type { SendMessageSettlement } from '@/hooks/mutations/useSendMessage'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
 import { getDraft } from '@/lib/composer-drafts'
@@ -82,7 +83,9 @@ export function getSuccessfulComposerClear(sessionId: string) {
 export function recordSuccessfulComposerClear(sessionId: string, text: string): void {
     if (!text) return
     lastSuccessfulComposerClears.delete(sessionId)
-    lastSuccessfulComposerClears.set(sessionId, { text, revision: getComposerTextRevision(sessionId) })
+    const revision = getComposerTextRevision(sessionId)
+    lastSuccessfulComposerClears.set(sessionId, { text, revision })
+    reconcileQueuedEditRecoveryClear(sessionId, text, revision)
     if (lastSuccessfulComposerClears.size > MAX_RECENT_CLEARS) {
         const oldest = lastSuccessfulComposerClears.keys().next().value
         if (oldest !== undefined) lastSuccessfulComposerClears.delete(oldest)

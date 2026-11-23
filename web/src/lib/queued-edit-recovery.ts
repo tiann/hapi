@@ -16,6 +16,7 @@ export type QueuedOperationToken = symbol
 
 let cache: RecoveryMap | null = null
 let recoverySequence = 0
+const recoveryTextRevisions = new Map<string, number>()
 const listeners = new Map<string, Set<() => void>>()
 const pendingOperationTokens = new Map<string, QueuedOperationToken>()
 const pendingOperationListeners = new Map<string, Set<() => void>>()
@@ -141,7 +142,9 @@ export function getQueuedEditRecovery(sessionId: string): QueuedEditRecovery | n
     }
 }
 
-export function saveQueuedEditRecovery(sessionId: string, recovery: QueuedEditRecoveryInput): void {
+export function saveQueuedEditRecovery(sessionId: string, recovery: QueuedEditRecoveryInput, textRevision?: number): void {
+    if (textRevision === undefined) recoveryTextRevisions.delete(sessionId)
+    else recoveryTextRevisions.set(sessionId, textRevision)
     const recoveries = hydrate()
     delete recoveries[sessionId]
     recoveries[sessionId] = {
@@ -156,7 +159,18 @@ export function saveQueuedEditRecovery(sessionId: string, recovery: QueuedEditRe
     notifyPendingOperation(sessionId)
 }
 
+// This is only an automatic clear if no later draft edit has superseded the
+// baseline captured by the cancellation. Persist the new baseline, not a
+// page-local revision, so a reload still knows an empty draft is expected.
+export function reconcileQueuedEditRecoveryClear(sessionId: string, text: string, revision: number): void {
+    const recovery = hydrate()[sessionId]
+    if (recovery?.composerTextAtEdit !== text || recoveryTextRevisions.get(sessionId) !== revision) return
+    recovery.composerTextAtEdit = ''
+    persist()
+}
+
 export function clearQueuedEditRecovery(sessionId: string): void {
+    recoveryTextRevisions.delete(sessionId)
     const recoveries = hydrate()
     if (!recoveries[sessionId]) return
     delete recoveries[sessionId]

@@ -94,6 +94,8 @@ import {
     type AttachmentDraftInput,
 } from '@/lib/composer-attachment-drafts'
 import { useTranslation } from '@/lib/use-translation'
+import { useOptionalAddToast } from '@/lib/toast-context'
+import { useSessionInputTranslation } from '@/hooks/useSessionInputTranslation'
 import type { SendMessageAcceptance, SendMessageSettlement } from '@/hooks/mutations/useSendMessage'
 import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import {
@@ -1483,6 +1485,19 @@ function SessionChatInner(props: SessionChatProps) {
         enabled: agentFlavor === 'cursor' && props.session.active
     })
     const sessionMachineId = props.session.metadata?.machineId ?? null
+    const addToast = useOptionalAddToast()
+    const inputTranslation = useSessionInputTranslation(props.api, props.session)
+    const inputTranslationToggle = inputTranslation.toggle
+    const handleToggleInputTranslation = useCallback(() => {
+        void inputTranslationToggle().catch((error: unknown) => {
+            addToast?.({
+                title: t('dialog.error.default'),
+                body: error instanceof Error ? error.message : t('dialog.error.default'),
+                sessionId: props.session.id,
+                url: `/sessions/${props.session.id}`
+            })
+        })
+    }, [addToast, inputTranslationToggle, props.session.id, t])
     // A running session discovers its models over its own connection (kimi
     // provider list --json), so this works without a background runner;
     // switching itself still goes through the existing ACP setModel path.
@@ -2593,15 +2608,7 @@ function SessionChatInner(props: SessionChatProps) {
                 ) : null}
                 <AbortRestoreConsumer
                     messages={normalizedMessages}
-                    onAbortRestore={(text) => {
-                        // Abort restore is a new composer draft, even though
-                        // HappyComposer applies it through the send-error
-                        // recovery path instead of a text input event. Mark it
-                        // before a delayed send settlement can clear matching
-                        // text from the old submission.
-                        props.onProgrammaticEdit?.()
-                        props.onAbortRestore?.(text)
-                    }}
+                    onAbortRestore={(text) => props.onAbortRestore?.(text)}
                 />
                 <DragDropZone disabled={(!props.session.active && !inactiveCanResume) || props.isSending || pendingSchedule != null || isScratchlistParking}>
                     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -2802,6 +2809,12 @@ function SessionChatInner(props: SessionChatProps) {
                         effort={agentFlavor === 'agy' ? agyCurrentEffort : props.session.effort}
                         agentFlavor={agentFlavor}
                         machineId={sessionMachineId}
+                        inputTranslation={inputTranslation.visible ? {
+                            enabled: inputTranslation.enabled,
+                            fromDefault: inputTranslation.fromDefault,
+                            pending: inputTranslation.pending,
+                            onToggle: handleToggleInputTranslation
+                        } : undefined}
                         availableModelOptions={
                             agentFlavor === 'codex'
                                 ? codexModelOptions

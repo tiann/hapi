@@ -46,12 +46,12 @@ import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
 import type { AttachmentDraftInput } from '@/lib/composer-attachment-drafts'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
-import { consumePendingComposerSend, getComposerDraftRevision, recordSuccessfulComposerClear, recordComposerTextChange, recordComposerDraftChange } from '@/lib/composer-send-state'
+import { consumePendingComposerSend, getComposerDraftRevision, recordSuccessfulComposerClear, getComposerProgrammaticEditRevision, recordComposerProgrammaticEdit, recordComposerTextChange, recordComposerDraftChange } from '@/lib/composer-send-state'
 import { persistInactiveComposerAttachments, setComposerDraftSnapshot, updateComposerDraftTextSnapshot, attachmentDraftRevision, resetInactiveComposerAttachmentVisibility } from '@/lib/composer-draft-transfer'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
-import { StatusBar } from '@/components/AssistantChat/StatusBar'
+import { StatusBar, type StatusBarInputTranslation } from '@/components/AssistantChat/StatusBar'
 import {
     ComposerButtons,
     UnifiedButton,
@@ -314,6 +314,8 @@ export function HappyComposer(props: {
     thinking?: boolean
     agentState?: AgentState | null
     onPendingRequestClick?: (requestId: string) => void
+    /** Quick toggle for hub input translation; omitted when the hub has no provider. */
+    inputTranslation?: StatusBarInputTranslation
     backgroundTaskCount?: number
     contextSize?: number
     contextCacheRead?: number
@@ -454,6 +456,7 @@ export function HappyComposer(props: {
         thinking = false,
         agentState,
         onPendingRequestClick,
+        inputTranslation,
         backgroundTaskCount,
         contextSize,
         contextCacheRead,
@@ -850,174 +853,6 @@ export function HappyComposer(props: {
         }
     }, [attachments, sessionId])
 
-    // A keyed session remount can hydrate the text that assistant-ui cleared
-    // before the POST settled. Once that exact send succeeds, clear only an
-    // untouched matching draft; a new user edit must win over settlement.
-    useEffect(() => {
-        const settlement = props.sendSettlement
-        if (
-            !settlement
-            || settlement.status !== 'success'
-            || settlement.sessionId !== sessionId
-            || !sessionId
-        ) return
-        const settlementKey = `${settlement.sessionId}:${settlement.attemptId}`
-        if (handledSuccessfulSendRef.current === settlementKey) return
-        const consumeSettlement = () => {
-            handledSuccessfulSendRef.current = settlementKey
-            props.onConsumeSendSettlement?.(settlement.attemptId)
-            consumePendingComposerSend(sessionId, settlement.attemptId)
-        }
-
-        // Retry settlements reuse the failed message's local id and do not
-        // represent a composer-accepted send. Consume them without touching a
-        // matching draft that belongs to the operator.
-        if (
-            settlement.source !== 'send'
-            || (
-                props.sendAcceptance?.sessionId !== undefined
-                && props.sendAcceptance.sessionId !== sessionId
-            )
-            || props.sendAcceptance?.attemptId !== settlement.attemptId
-        ) {
-            consumeSettlement()
-            return
-        }
-        if (draftHydration.sessionId !== sessionId || !draftHydration.complete) return
-
-        const submittedText = settlement.originalText
-            ?? props.sendAcceptance?.originalText
-            ?? settlement.text
-
-        if (
-            props.sendAcceptance?.draftRevision !== undefined
-            && getComposerDraftRevision(sessionId) > props.sendAcceptance.draftRevision
-        ) {
-            consumeSettlement()
-            return
-        }
-
-        const acceptedSend = acceptedSendEditGenerationRef.current
-        const sendEditGeneration = acceptedSend?.attemptId === settlement.attemptId
-            ? acceptedSend.generation
-            : pendingSendEditGenerationRef.current
-        const userEditedAfterSend = sendEditGeneration !== null
-            ? userEditGenerationRef.current > sendEditGeneration
-            : userEditGenerationRef.current > 0
-        if (userEditedAfterSend) {
-            consumeSettlement()
-            return
-        }
-
-        if (composerText !== submittedText && composerText !== '') {
-            consumeSettlement()
-            return
-        }
-
-        const editedProgrammaticallyAfterSend =
-            (props.programmaticEditRevision ?? 0)
-            > (props.sendAcceptance?.programmaticEditRevision ?? 0)
-
-        // Queued-message Edit restores text through the assistant-ui store and
-        // does not fire the composer input handlers. Its external revision is
-        // the only signal that an exact-text replacement is newer state. A
-        // same-session resume can rehydrate the submitted text without that
-        // revision, so it must remain clearable.
-        if (editedProgrammaticallyAfterSend) {
-            consumeSettlement()
-            return
-        }
-
-        const attachmentGeneration = acceptedSend?.attemptId === settlement.attemptId
-            ? acceptedSend.attachmentGeneration
-            : pendingSendAttachmentGenerationRef.current
-        const attachmentsChangedAfterSend = attachmentGeneration !== null
-            ? userAttachmentGenerationRef.current > attachmentGeneration
-            : userAttachmentGenerationRef.current > 0
-        if (attachmentsChangedAfterSend) {
-            consumeSettlement()
-            return
-        }
-
-        const scheduleGeneration = acceptedSend?.attemptId === settlement.attemptId
-            ? acceptedSend.scheduleGeneration
-            : pendingSendScheduleGenerationRef.current
-        const scheduleChangedAfterSend = scheduleGeneration !== null
-            ? userScheduleGenerationRef.current > scheduleGeneration
-            : userScheduleGenerationRef.current > 0
-        if (scheduleChangedAfterSend) {
-            consumeSettlement()
-            return
-        }
-
-        if (composerText === submittedText) {
-            recordSuccessfulComposerClear(sessionId, composerText)
-            api.composer().setText('')
-        }
-        const submittedAttachmentIds = settlement.attachmentIds
-            ?? props.sendAcceptance?.attachmentIds
-            ?? (
-                acceptedSend?.attemptId === settlement.attemptId
-                    ? acceptedSend.attachmentIds
-                    : pendingSendAttachmentIdsRef.current ?? undefined
-            )
-        const submittedAttachmentIdSet = submittedAttachmentIds
-            ? new Set(submittedAttachmentIds)
-            : null
-        const sentLiveAttachmentIds = submittedAttachmentIdSet
-            ? attachments
-                .filter((attachment) => submittedAttachmentIdSet.has(attachment.id))
-                .map((attachment) => attachment.id)
-            : attachments.map((attachment) => attachment.id)
-        if (sentLiveAttachmentIds.length > 0) {
-            for (const id of sentLiveAttachmentIds) {
-                clearedSentAttachmentIdsRef.current.add(id)
-            }
-            attachmentDraftsRef.current = attachmentDraftsRef.current.filter(
-                (attachment) => !clearedSentAttachmentIdsRef.current.has(attachment.id),
-            )
-            props.onReleaseSentAttachments?.(sentLiveAttachmentIds)
-            const composer = api.composer()
-            if (sentLiveAttachmentIds.length === attachments.length) {
-                void composer.clearAttachments()
-            } else if (typeof composer.attachment === 'function') {
-                for (const id of sentLiveAttachmentIds) {
-                    void composer.attachment({ id }).remove()
-                }
-            }
-        }
-        if (submittedAttachmentIds !== undefined) {
-            clearDraftsAfterSend(
-                settlement.sessionId,
-                null,
-                submittedText,
-                submittedAttachmentIds,
-            )
-        } else {
-            clearDraftsAfterSend(
-                settlement.sessionId,
-                null,
-                submittedText,
-            )
-        }
-        consumeSettlement()
-    }, [api, attachments, composerText, draftHydration.complete, draftHydration.sessionId, props.onConsumeSendSettlement, props.onReleaseSentAttachments, props.programmaticEditRevision, props.sendAcceptance, props.sendSettlement, sessionId])
-
-    // Failed sends use the separate sendError recovery path, so their terminal
-    // settlement can be consumed immediately and must not remain in the
-    // module-level store after a later send succeeds.
-    useEffect(() => {
-        const settlement = props.sendSettlement
-        if (
-            !settlement
-            || settlement.status !== 'error'
-            || settlement.sessionId !== sessionId
-            || !sessionId
-        ) return
-        props.onConsumeSendSettlement?.(settlement.attemptId)
-        consumePendingComposerSend(sessionId, settlement.attemptId)
-    }, [props.onConsumeSendSettlement, props.sendSettlement, sessionId])
-
     // assistant-ui clears `composer.text` synchronously the moment a send is
     // invoked AND `SessionChat.handleSend` clears `pendingSchedule` after the
     // mutation is accepted. A failure must put the text and absolute schedule
@@ -1088,7 +923,7 @@ export function HappyComposer(props: {
         // Abort recovery can restore the same text as a still-pending
         // successful send. Record it as newer draft state before the delayed
         // settlement arrives so both live and durable cleanup preserve it.
-        if (sessionId) recordComposerTextChange(sessionId)
+        if (sessionId && sendError.text !== composerText) recordComposerProgrammaticEdit(sessionId)
         api.composer().setText(sendError.text)
         // `scheduledAt` is already absolute (presets resolve at send time), so
         // restore it through the normal controlled schedule path in the same
@@ -1098,6 +933,174 @@ export function HappyComposer(props: {
             onScheduleProp({ type: 'absolute', ms: sendError.scheduledAt })
         }
     }, [sendError, api, attachments, composerText, draftHydration, onClearSendError, onScheduleProp, pendingSchedule, sessionId])
+
+    // A keyed session remount can hydrate the text that assistant-ui cleared
+    // before the POST settled. Once that exact send succeeds, clear only an
+    // untouched matching draft; a new user edit must win over settlement.
+    useEffect(() => {
+        const settlement = props.sendSettlement
+        if (
+            !settlement
+            || settlement.status !== 'success'
+            || settlement.sessionId !== sessionId
+            || !sessionId
+        ) return
+        const settlementKey = `${settlement.sessionId}:${settlement.attemptId}`
+        if (handledSuccessfulSendRef.current === settlementKey) return
+        const consumeSettlement = () => {
+            handledSuccessfulSendRef.current = settlementKey
+            props.onConsumeSendSettlement?.(settlement.attemptId)
+            consumePendingComposerSend(sessionId, settlement.attemptId)
+        }
+
+        // Retry settlements reuse the failed message's local id and do not
+        // represent a composer-accepted send. Consume them without touching a
+        // matching draft that belongs to the operator.
+        if (
+            settlement.source !== 'send'
+            || (
+                props.sendAcceptance?.sessionId !== undefined
+                && props.sendAcceptance.sessionId !== sessionId
+            )
+            || props.sendAcceptance?.attemptId !== settlement.attemptId
+        ) {
+            consumeSettlement()
+            return
+        }
+        if (draftHydration.sessionId !== sessionId || !draftHydration.complete) return
+
+        const submittedText = settlement.originalText
+            ?? props.sendAcceptance?.originalText
+            ?? settlement.text
+
+        if (
+            props.sendAcceptance?.draftRevision !== undefined
+            && getComposerDraftRevision(sessionId) > props.sendAcceptance.draftRevision
+        ) {
+            consumeSettlement()
+            return
+        }
+
+        const acceptedSend = acceptedSendEditGenerationRef.current
+        const sendEditGeneration = acceptedSend?.attemptId === settlement.attemptId
+            ? acceptedSend.generation
+            : pendingSendEditGenerationRef.current
+        const userEditedAfterSend = sendEditGeneration !== null
+            ? userEditGenerationRef.current > sendEditGeneration
+            : userEditGenerationRef.current > 0
+        if (userEditedAfterSend) {
+            consumeSettlement()
+            return
+        }
+
+        if (composerText !== submittedText && composerText !== '') {
+            consumeSettlement()
+            return
+        }
+
+        const editedProgrammaticallyAfterSend =
+            Math.max(props.programmaticEditRevision ?? 0, getComposerProgrammaticEditRevision(sessionId))
+            > (props.sendAcceptance?.programmaticEditRevision ?? 0)
+
+        // Queued-message Edit restores text through the assistant-ui store and
+        // does not fire the composer input handlers. Its external revision is
+        // the only signal that an exact-text replacement is newer state. A
+        // same-session resume can rehydrate the submitted text without that
+        // revision, so it must remain clearable.
+        if (editedProgrammaticallyAfterSend) {
+            consumeSettlement()
+            return
+        }
+
+        const attachmentGeneration = acceptedSend?.attemptId === settlement.attemptId
+            ? acceptedSend.attachmentGeneration
+            : pendingSendAttachmentGenerationRef.current
+        const attachmentsChangedAfterSend = attachmentGeneration !== null
+            ? userAttachmentGenerationRef.current > attachmentGeneration
+            : userAttachmentGenerationRef.current > 0
+        if (attachmentsChangedAfterSend) {
+            consumeSettlement()
+            return
+        }
+
+        const scheduleGeneration = acceptedSend?.attemptId === settlement.attemptId
+            ? acceptedSend.scheduleGeneration
+            : pendingSendScheduleGenerationRef.current
+        const scheduleChangedAfterSend = scheduleGeneration !== null
+            ? userScheduleGenerationRef.current > scheduleGeneration
+            : userScheduleGenerationRef.current > 0
+        if (scheduleChangedAfterSend) {
+            consumeSettlement()
+            return
+        }
+
+        if (composerText === submittedText) {
+            recordSuccessfulComposerClear(sessionId, composerText)
+            api.composer().setText('')
+        }
+        const submittedAttachmentIds = settlement.attachmentIds
+            ?? props.sendAcceptance?.attachmentIds
+            ?? (
+                acceptedSend?.attemptId === settlement.attemptId
+                    ? acceptedSend.attachmentIds
+                    : pendingSendAttachmentIdsRef.current ?? undefined
+            )
+        const submittedAttachmentIdSet = submittedAttachmentIds
+            ? new Set(submittedAttachmentIds)
+            : null
+        const sentLiveAttachmentIds = submittedAttachmentIdSet
+            ? attachments
+                .filter((attachment) => submittedAttachmentIdSet.has(attachment.id))
+                .map((attachment) => attachment.id)
+            : attachments.map((attachment) => attachment.id)
+        if (sentLiveAttachmentIds.length > 0) {
+            for (const id of sentLiveAttachmentIds) {
+                clearedSentAttachmentIdsRef.current.add(id)
+            }
+            attachmentDraftsRef.current = attachmentDraftsRef.current.filter(
+                (attachment) => !clearedSentAttachmentIdsRef.current.has(attachment.id),
+            )
+            props.onReleaseSentAttachments?.(sentLiveAttachmentIds)
+            const composer = api.composer()
+            // A new attachment may still be preparing its preview. Clearing the
+            // whole composer would cancel it before its chip is visible.
+            if (typeof composer.attachment === 'function') {
+                for (const id of sentLiveAttachmentIds) {
+                    void composer.attachment({ id }).remove()
+                }
+            }
+        }
+        if (submittedAttachmentIds !== undefined) {
+            clearDraftsAfterSend(
+                settlement.sessionId,
+                null,
+                submittedText,
+                submittedAttachmentIds,
+            )
+        } else {
+            clearDraftsAfterSend(
+                settlement.sessionId,
+                null,
+                submittedText,
+            )
+        }
+        consumeSettlement()
+    }, [api, attachments, composerText, draftHydration.complete, draftHydration.sessionId, props.onConsumeSendSettlement, props.onReleaseSentAttachments, props.programmaticEditRevision, props.sendAcceptance, props.sendSettlement, sessionId])
+
+    // Failed sends use the separate sendError recovery path, so their terminal
+    // settlement can be consumed immediately and must not remain in the
+    // module-level store after a later send succeeds.
+    useEffect(() => {
+        const settlement = props.sendSettlement
+        if (
+            !settlement
+            || settlement.status !== 'error'
+            || settlement.sessionId !== sessionId
+            || !sessionId
+        ) return
+        props.onConsumeSendSettlement?.(settlement.attemptId)
+        consumePendingComposerSend(sessionId, settlement.attemptId)
+    }, [props.onConsumeSendSettlement, props.sendSettlement, sessionId])
 
     // A successful automatic restore keeps its inline error visible so the
     // operator understands why the draft returned. If another path replaces
@@ -2619,6 +2622,7 @@ export function HappyComposer(props: {
                         thinking={thinking}
                         agentState={agentState}
                         onPendingRequestClick={onPendingRequestClick}
+                        inputTranslation={inputTranslation}
                         backgroundTaskCount={backgroundTaskCount}
                         contextSize={contextSize}
                         contextCacheRead={contextCacheRead}

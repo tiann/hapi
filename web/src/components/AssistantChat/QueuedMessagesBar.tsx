@@ -483,10 +483,10 @@ export function QueuedMessagesBar({
                                     : composerTextRef.current
                                 const currentRevision = getComposerTextRevision(sessionId)
                                 const latestClear = getSuccessfulComposerClear(sessionId)
-                                const clearedBySend = currentText === '' && latestClear !== clearAtEdit
+                                const matchingClear = latestClear !== clearAtEdit
                                     && latestClear?.text === composerTextAtEdit && latestClear.revision === draftRevisionAtEdit
                                 const composerChanged = currentRevision !== draftRevisionAtEdit
-                                    || (currentText !== composerTextAtEdit && !clearedBySend)
+                                    || (currentText !== composerTextAtEdit && !(currentText === '' && matchingClear))
                                 const scheduleChanged = pendingScheduleRevisionRef.current !== pendingScheduleRevisionAtEdit
                                     || !pendingSchedulesEqual(pendingScheduleRef.current, pendingScheduleAtEdit)
                                 // Restore text and schedule as one unit. If either changed while the
@@ -509,9 +509,9 @@ export function QueuedMessagesBar({
                                     saveQueuedEditRecovery(sessionId, {
                                         text: editText,
                                         pendingSchedule: restoredPendingSchedule,
-                                        composerTextAtEdit,
+                                        composerTextAtEdit: matchingClear ? '' : composerTextAtEdit,
                                         pendingScheduleAtEdit,
-                                    })
+                                    }, draftRevisionAtEdit)
                                     return
                                 }
                                 if (editText) {
