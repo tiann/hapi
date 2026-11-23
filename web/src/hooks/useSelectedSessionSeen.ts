@@ -1,5 +1,5 @@
-import { useEffect, useRef, type RefObject } from 'react'
-import { followSessionTail, markSessionSeen } from '@/lib/sessionLastSeen'
+import { useCallback, useEffect, useRef, type RefObject } from 'react'
+import { followSessionTail, markSessionSeen, pendingUnreadId } from '@/lib/sessionLastSeen'
 import { useDocumentVisibility } from './useDocumentVisibility'
 
 function tailIsVisible(viewport: HTMLElement, messages: HTMLElement): boolean {
@@ -18,7 +18,7 @@ export function useSelectedSessionSeen(
     stateVersion: number | undefined,
     viewportRef: RefObject<HTMLElement | null>,
     messagesRef: RefObject<HTMLElement | null>
-): void {
+): () => void {
     const visible = useDocumentVisibility()
     const enabled = visible && renderedRevision !== undefined
     const latest = useRef({ renderedRevision, stateVersion })
@@ -36,31 +36,40 @@ export function useSelectedSessionSeen(
         if (!enabled || !sessionId || !viewport || !messages) return
         let stopFollowing: (() => void) | undefined
         let frame: number | undefined
-        let observed: { revision: number; version: number | undefined } | undefined
+        type Receipt = { revision: number; version: number | undefined; localUnread: string | undefined }
+        let observed: Receipt | undefined
+        let ready: Receipt | undefined
         let acknowledged: number | undefined
         const update = () => {
             if (!tailIsVisible(viewport, messages)) {
-                // Streaming layout can briefly move the tail below the viewport
-                // before auto-scroll corrects it. Let the pending frame decide.
                 stopFollowing?.()
                 stopFollowing = undefined
                 return
             }
             stopFollowing ??= followSessionTail(sessionId)
             const revision = latest.current.renderedRevision
-            if (revision === undefined || acknowledged === revision) return
-            if (observed?.revision !== revision) observed = { revision, version: latest.current.stateVersion }
-            if (frame !== undefined) return
+            if (revision === undefined) return
+            if (observed?.revision !== revision) {
+                observed = { revision, version: latest.current.stateVersion, localUnread: pendingUnreadId(sessionId) }
+            }
+            if (ready) {
+                const receipt = ready
+                ready = undefined
+                acknowledged = receipt.revision
+                const pending = pendingUnreadId(sessionId)
+                // Never replace a newer explicit local action in the durable outbox.
+                if (!pending || pending === receipt.localUnread) markSessionSeen(sessionId, receipt.revision, receipt.version)
+            }
+            if (frame !== undefined || acknowledged === revision) return
             const receipt = observed
-            // Wait for committed message rows and scroll correction. Coalesce
-            // events instead of restarting the wait on every streaming mutation.
+            // Wait for committed rows to lay out. Once ready, a temporarily
+            // offscreen receipt can finish on the next scroll correction; it
+            // does not need another pair of frames to prove the same layout.
             frame = requestAnimationFrame(() => {
                 frame = requestAnimationFrame(() => {
                     frame = undefined
-                    if (!tailIsVisible(viewport, messages)) { update(); return }
-                    acknowledged = receipt.revision
-                    markSessionSeen(sessionId, receipt.revision, receipt.version)
-                    if (latest.current.renderedRevision !== revision) update()
+                    ready = receipt
+                    update()
                 })
             })
         }
@@ -81,4 +90,7 @@ export function useSelectedSessionSeen(
             stopFollowing?.()
         }
     }, [enabled, sessionId, viewportRef, messagesRef])
+    // Called immediately after an instant pin, even if the browser coalesces
+    // its scroll event with the next streaming layout change.
+    return useCallback(() => schedule.current?.(), [])
 }

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
+import { followSessionTail, getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SESSION_REFERENCE_STEER_SUFFIX } from '@hapi/protocol/sessionCitation'
 
@@ -86,6 +87,15 @@ describe('SessionActionMenu - Mark unread action', () => {
         fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as unread' }))
         expect(screen.getByRole('menuitem', { name: 'Mark as read' })).toBeInTheDocument()
         expect(onClose).toHaveBeenCalledTimes(2)
+    })
+
+    it('offers an explicit read even while a followed tail suppresses the ordinary dot', () => {
+        const release = followSessionTail('suppressed')
+        try {
+            renderMenu({ readTarget: { id: 'suppressed', contentRevision: 7 } })
+            fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as read' }))
+            expect(getSessionLastSeenAt('suppressed')).toBe(7)
+        } finally { release() }
     })
 
     it('does not render the action when no handler is provided', () => {

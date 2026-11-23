@@ -203,6 +203,22 @@ export function getSessionManualUnreadSnapshot(sessions: readonly SessionInput[]
     const store = readStore()
     return Object.fromEntries(sessions.map(session => [session.id, effective(store[session.id], session.readState).manualUnread ? 0 : null]))
 }
+/** A local unread choice can be newer than the Hub version while its write is queued. */
+export function pendingUnreadId(sessionId: string): string | undefined {
+    const pending = readStore()[sessionId]?.pending
+    return pending?.request.type === 'unread' ? pending.id : undefined
+}
+
+export function sessionNeedsReadAction(session: SessionInput): boolean {
+    const state = effective(readStore()[session.id], session.readState)
+    return state.manualUnread || (session.contentRevision ?? 0) > state.readRevision
+}
+
+export function markListedSessionSeen(session: SessionInput): void {
+    observeSessionReadStates([session])
+    markSessionSeen(session.id, session.contentRevision ?? 0)
+}
+
 export function markSessionSeen(sessionId: string, readRevision: number, observedVersion?: number): void {
     if (!Number.isSafeInteger(readRevision) || readRevision < 0) return
     const entry = readStore()[sessionId]

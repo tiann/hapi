@@ -909,7 +909,7 @@ export function HappyThread(props: {
     )
     const startHistoryLoadAttemptRef = useRef<(runId: number) => void>(() => {})
     const needsViewportCoverageRef = useRef<(options?: { includePreloadMargin?: boolean }) => boolean>(() => false)
-    useSelectedSessionSeen(props.sessionId,
+    const checkVisibleReceipt = useSelectedSessionSeen(props.sessionId,
         !props.isSyncingTail && !props.messagesWarning ? props.readThroughRevision : undefined,
         props.session.readState?.version, viewportRef, messagesRef)
     const atBottomRef = useRef(true)
@@ -1741,8 +1741,9 @@ export function HappyThread(props: {
         if (viewport) {
             viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' })
             lastScrollTopRef.current = viewport.scrollTop
+            checkVisibleReceipt()
         }
-    }, [])
+    }, [checkVisibleReceipt])
 
     const scrollToBottomSmooth = useCallback(() => {
         const viewport = viewportRef.current

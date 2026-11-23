@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { getSessionLastSeenAt, getSessionManualUnreadAt, getUnreadSessionCount, observeSessionReadStates } from '@/lib/sessionLastSeen'
+import type { SessionReadState, SessionReadStateRequest } from '@hapi/protocol'
+import { configureSessionReadState, markSessionUnread, getSessionLastSeenAt, getSessionManualUnreadAt, getUnreadSessionCount, observeSessionReadStates } from '@/lib/sessionLastSeen'
 import { useSelectedSessionSeen } from './useSelectedSessionSeen'
 
 function setVisibility(state: DocumentVisibilityState): void {
@@ -161,6 +162,42 @@ describe('rendered read receipt', () => {
             await act(async () => { await vi.advanceTimersByTimeAsync(10) })
         }
         expect(getSessionLastSeenAt('s')).toBe(3)
+    })
+
+    it('finishes a mature receipt when the tail is repinned after the animation callbacks', async () => {
+        const view = viewport()
+        const { result } = renderHook(() => useSelectedSessionSeen('s', 3, 0, view, content))
+        view.current.scrollTop = 0
+        await settle()
+        expect(getSessionLastSeenAt('s')).toBe(0)
+        view.current.scrollTop = 100
+        act(() => result.current())
+        expect(getSessionLastSeenAt('s')).toBe(3)
+    })
+
+    it('sends an explicit local unread queued behind an in-flight read', async () => {
+        const view = viewport()
+        const sent: SessionReadStateRequest[] = []
+        let resolve!: (value: { readState: SessionReadState }) => void
+        const disconnect = configureSessionReadState('local-race', async (_id, request) => {
+            sent.push({ ...request })
+            if (request.type === 'read') return new Promise(r => { resolve = r })
+            return { readState: { readRevision: 41, version: 2, manualUnread: true } }
+        })
+        try {
+            const { rerender } = renderHook(({ revision }) => useSelectedSessionSeen('s', revision, 0, view, content), {
+                initialProps: { revision: 41 },
+            })
+            rerender({ revision: 42 })
+            await act(async () => { await vi.advanceTimersByTimeAsync(40) })
+            expect(sent.map(r => r.type)).toEqual(['read'])
+            act(() => markSessionUnread('s'))
+            await settle()
+            resolve({ readState: { readRevision: 41, version: 1, manualUnread: false } })
+            await settle()
+            expect(sent).toEqual([{ type: 'read', readRevision: 41, expectedVersion: 0 }, { type: 'unread', expectedVersion: 1 }])
+            expect(getSessionManualUnreadAt('s')).toBe(0)
+        } finally { disconnect() }
     })
 
     it('read-state SSE alone cannot clear a manual unread choice', async () => {

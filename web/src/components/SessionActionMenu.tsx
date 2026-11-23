@@ -7,8 +7,7 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu'
 import { ArchiveIcon, CopyIcon, ForkIcon } from '@/components/icons'
 import { buildSessionWindowPath } from '@/lib/sessionNavigation'
-
-import { getUnreadSessionCount, markAllSessionsSeen, markSessionUnread, useSessionLastSeenVersion } from '@/lib/sessionLastSeen'
+import { sessionNeedsReadAction, markListedSessionSeen, markSessionUnread, useSessionLastSeenVersion } from '@/lib/sessionLastSeen'
 import type { SessionSummary } from '@/types/api'
 
 type ReadTarget = Pick<SessionSummary, 'id' | 'contentRevision' | 'readState'>
@@ -16,11 +15,11 @@ type ReadTarget = Pick<SessionSummary, 'id' | 'contentRevision' | 'readState'>
 function ReadAction({ session, className, onClose }: { session: ReadTarget; className: string; onClose: () => void }) {
     const { t } = useTranslation()
     useSessionLastSeenVersion()
-    const unread = getUnreadSessionCount([session]) > 0
+    const unread = sessionNeedsReadAction(session)
     return (
         <button type="button" role="menuitem" className={className} onClick={() => {
             onClose()
-            if (unread) markAllSessionsSeen([session])
+            if (unread) markListedSessionSeen(session)
             else markSessionUnread(session.id, session.readState)
         }}>
             <UnreadIcon className="text-[var(--app-hint)]" />
