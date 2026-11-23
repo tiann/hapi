@@ -935,6 +935,7 @@ describe('claudeRemote /compact result reporting', () => {
 
     it.each([
         { identity: 'uuid', next: 'follow-up' },
+        { identity: 'foreign-uuid', next: 'follow-up' },
         { identity: 'name', next: 'follow-up' },
         { identity: 'untagged', next: 'follow-up' },
         { identity: 'absent', next: '/compact' }
@@ -962,8 +963,9 @@ describe('claudeRemote /compact result reporting', () => {
                 if (identity !== 'absent') {
                     yield {
                         ...resultMessage,
+                        session_id: identity === 'foreign-uuid' ? 'other-session' : 'session-1',
                         local_command: identity === 'name' ? 'compact' : undefined,
-                        user_message_uuid: identity === 'uuid' ? compact.value?.uuid : undefined
+                        user_message_uuid: identity === 'uuid' || identity === 'foreign-uuid' ? compact.value?.uuid : undefined
                     };
                 }
                 expect(events).toEqual(['ready', timeoutNotice]);

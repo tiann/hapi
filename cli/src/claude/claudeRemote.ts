@@ -883,7 +883,10 @@ export async function claudeRemote(opts: {
                 && (!timedOutCommand || message.user_message_uuid === clear.uuid || matchesClearSession);
             if (timedOutCommand && !isClearResult
                 && isCommandResult(message, timedOutCommand.uuid, timedOutCommand.command, false)) {
-                if (message.type === 'result') opts.onDroppedResult?.(message as SDKResultMessage);
+                // Only the active session's counters belong to this process baseline.
+                if (message.type === 'result' && currentSessionId && message.session_id === currentSessionId) {
+                    opts.onDroppedResult?.(message as SDKResultMessage);
+                }
                 continue;
             }
             const initialClearSessionId = !clear && message.type === 'result' && resultSeq === 0
