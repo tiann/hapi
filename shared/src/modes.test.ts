@@ -46,6 +46,7 @@ describe('getPermissionModesForFlavor', () => {
         expect(getPermissionModesForFlavor('agy')).toEqual([
             'request-review',
             'acceptEdits',
+            'auto',
             'plan',
             'always-proceed'
         ])

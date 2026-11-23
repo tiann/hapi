@@ -856,9 +856,9 @@ export class MessageQueue2<T> {
     }
 
     /**
-     * Wait for messages to arrive
+     * Wait for messages to arrive without consuming them.
      */
-    private waitForMessages(abortSignal?: AbortSignal): Promise<boolean> {
+    waitForMessages(abortSignal?: AbortSignal): Promise<boolean> {
         return new Promise((resolve) => {
             let settled = false;
             let abortHandler: (() => void) | null = null;
