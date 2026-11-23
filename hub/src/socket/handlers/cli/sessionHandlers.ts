@@ -252,7 +252,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 todos,
                 { at: msg.invokedAt ?? msg.createdAt, seq: msg.seq },
                 session.namespace,
-                { allowSameSource: stored.updated }
+                { allowSameSource: stored.updated, touchUpdatedAt: false }
             )
             if (updated) {
                 const stored = store.sessions.getSession(sid)

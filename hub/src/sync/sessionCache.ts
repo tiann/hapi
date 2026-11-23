@@ -6,14 +6,13 @@ import type { SessionTurnEndReason, SessionTurnTrigger, Store, StoredSession } f
 import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
-import { extractSessionTodosFromMessageContent, TodosSchema } from './todos'
+import { findLatestStructuredTodos, TodosSchema } from './todos'
 import { InvalidExternalRefsError } from './externalRefErrors'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
 
 export { InvalidExternalRefsError } from './externalRefErrors'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
-const STRUCTURED_TODOS_BACKFILL_PAGE_SIZE = 200
 export const STRUCTURED_TODOS_BACKFILL_MIGRATION_ID = 'structured-session-todos-v1'
 // A turn the hub closed when it restarted is picked up again if the agent
 // carries on with it this soon after the restart, instead of starting a new one.
@@ -345,29 +344,9 @@ export class SessionCache {
         if (!stored) return
 
         this.todoBackfillAttemptedSessionIds.delete(sessionId)
-        const messages = this.store.messages.getAllMessages(sessionId).sort((a, b) => {
-            const byTime = (a.invokedAt ?? a.createdAt) - (b.invokedAt ?? b.createdAt)
-            return byTime || a.seq - b.seq
-        })
-        let foundTodos: unknown | null = null
-        let foundSource: { at: number; seq: number } | null = null
-        for (let i = messages.length - 1; i >= 0; i -= 1) {
-            const message = messages[i]
-            if (!message) continue
-            const todos = extractSessionTodosFromMessageContent(message.content)
-            if (todos) {
-                foundTodos = todos
-                foundSource = { at: message.invokedAt ?? message.createdAt, seq: message.seq }
-                break
-            }
-        }
-        this.store.sessions.replaceSessionTodos(
-            sessionId,
-            foundTodos,
-            stored.namespace,
-            foundSource,
-            options
-        )
+        const latest = findLatestStructuredTodos(this.store, sessionId)
+        this.store.sessions.replaceSessionTodos(sessionId, latest?.todos ?? null, stored.namespace,
+            latest?.source, options)
         this.todoBackfillAttemptedSessionIds.add(sessionId)
         this.refreshSession(sessionId)
     }
@@ -498,7 +477,7 @@ export class SessionCache {
     }
 
     private backfillStructuredTodosForSession(stored: StoredSession): StoredSession {
-        const latest = this.findLatestStructuredTodos(stored.id)
+        const latest = findLatestStructuredTodos(this.store, stored.id)
         if (!latest || !this.isNewerTodoSource(latest.source, stored)) {
             return stored
         }
@@ -517,36 +496,6 @@ export class SessionCache {
             return stored
         }
         return this.store.sessions.getSession(stored.id) ?? stored
-    }
-
-    private findLatestStructuredTodos(
-        sessionId: string
-    ): { todos: NonNullable<ReturnType<typeof extractSessionTodosFromMessageContent>>; source: { at: number; seq: number } } | null {
-        let before: { at: number; seq: number } | undefined
-
-        while (true) {
-            const page = this.store.messages.getMessagesByPosition(
-                sessionId,
-                STRUCTURED_TODOS_BACKFILL_PAGE_SIZE,
-                before
-            )
-            for (let i = page.length - 1; i >= 0; i -= 1) {
-                const message = page[i]
-                if (!message) continue
-                const todos = extractSessionTodosFromMessageContent(message.content)
-                if (todos) {
-                    return {
-                        todos,
-                        source: { at: message.invokedAt ?? message.createdAt, seq: message.seq }
-                    }
-                }
-            }
-
-            if (page.length < STRUCTURED_TODOS_BACKFILL_PAGE_SIZE) return null
-            const oldest = page[0]
-            if (!oldest) return null
-            before = { at: oldest.invokedAt ?? oldest.createdAt, seq: oldest.seq }
-        }
     }
 
     private isNewerTodoSource(source: { at: number; seq: number }, stored: StoredSession): boolean {
@@ -2367,7 +2316,19 @@ export class SessionCache {
             }
         }
 
-        if (oldStored.todos !== null && oldStored.todosUpdatedAt !== null) {
+        const mergedTasks = findLatestStructuredTodos(this.store, newSessionId)
+        if (mergedTasks) {
+            // A rewound source can retain a high replay barrier even though the
+            // plan it displays is older. Select visible todos from actual merged
+            // history; carry the barrier independently of that selection.
+            const oldBarrier = oldStored.todosSourceAt === null ? null
+                : { at: oldStored.todosSourceAt, seq: oldStored.todosSourceSeq ?? -1 }
+            const source = oldBarrier && (oldBarrier.at > mergedTasks.source.at
+                || (oldBarrier.at === mergedTasks.source.at && oldBarrier.seq > mergedTasks.source.seq))
+                ? oldBarrier : mergedTasks.source
+            this.store.sessions.replaceSessionTodos(newSessionId, mergedTasks.todos, namespace, source,
+                { touchUpdatedAt: false })
+        } else if (oldStored.todos !== null && oldStored.todosUpdatedAt !== null) {
             this.store.sessions.setSessionTodos(
                 newSessionId,
                 oldStored.todos,

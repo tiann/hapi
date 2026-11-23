@@ -267,6 +267,29 @@ describe('SessionCache structured task backfill', () => {
         expect(store.sessions.getSession(target.id)?.todosSourceSeq).toBe(sourcePlan.seq + targetPlan.seq)
     })
 
+    it('keeps the newest surviving merged plan while retaining a rewound source replay barrier', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        try {
+            const source = cache.getOrCreateSession('rewound-merge-source', { path: '/tmp', host: 'h' }, null, 'default')
+            const target = cache.getOrCreateSession('rewound-merge-target', { path: '/tmp', host: 'h' }, null, 'default')
+            const plan = (id: string, label: string, time: number) => store.messages.addMessage(id, {
+                role: 'agent', content: { type: 'codex', data: {
+                    type: 'tool-call', name: 'update_plan', input: { plan: [{ step: label, status: 'in_progress' }] },
+                } },
+            }, undefined, undefined, time)
+            plan(source.id, 'Old surviving plan', 100)
+            plan(target.id, 'New surviving plan', 200)
+            store.sessions.replaceSessionTodos(source.id,
+                [{ content: 'Old surviving plan', priority: 'medium', status: 'in_progress', id: 'plan-1' }],
+                'default', { at: 300, seq: 3 })
+            await cache.mergeSessionHistory(source.id, target.id, 'default', { mergeAgentState: false })
+            const result = store.sessions.getSession(target.id)
+            expect(result?.todos).toEqual([{ content: 'New surviving plan', priority: 'medium', status: 'in_progress', id: 'plan-1' }])
+            expect(result?.todosSourceAt).toBe(300)
+        } finally { store.close() }
+    })
+
     it('persists the one-time backfill marker and skips the scan after restart', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-structured-todos-backfill-'))
         tempDirs.push(dir)

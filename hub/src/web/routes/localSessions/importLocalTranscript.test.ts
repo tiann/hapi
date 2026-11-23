@@ -147,6 +147,31 @@ describe('generic local import', () => {
         ])
     })
 
+    it('rolls back an import if task persistence fails and repairs an already imported plan on retry', async () => {
+        const { store, engine } = harness()
+        stores.push(store)
+        const transcript = codexTranscript('atomic-plan', [{
+            role: 'agent', content: { type: 'codex', data: {
+                type: 'tool-call', name: 'update_plan', input: { plan: [{ step: 'Durable plan', status: 'pending' }] },
+            } },
+        }])
+        const importPlan = () => importLocalTranscript({ store, engine, namespace: 'default',
+            source: CODEX_LOCAL_SESSION_SOURCE, transcript, machine: machine() })
+        const replace = store.sessions.replaceSessionTodos.bind(store.sessions)
+        store.sessions.replaceSessionTodos = () => false
+        expect(await importPlan()).toMatchObject({ error: { code: 'import_failed' } })
+        expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(0)
+        store.sessions.replaceSessionTodos = replace
+        const first = await importPlan()
+        expect(first).toMatchObject({ action: 'created', appended: 1 })
+        const id = first.hapiSessionId!
+        store.sessions.replaceSessionTodos(id, null, 'default')
+        expect(await importPlan()).toMatchObject({ action: 'unchanged', appended: 0, hapiSessionId: id })
+        expect(store.sessions.getSession(id)?.todos).toEqual([
+            { content: 'Durable plan', priority: 'medium', status: 'pending', id: 'plan-1' },
+        ])
+    })
+
     it('is idempotent: the second import reports unchanged', async () => {
         const { store, engine } = harness()
         stores.push(store)

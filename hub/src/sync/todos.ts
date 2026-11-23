@@ -1,3 +1,4 @@
+import type { Store } from '../store'
 import { isObject } from '@hapi/protocol'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import { TodoItemSchema, TodosSchema } from '@hapi/protocol/schemas'
@@ -183,4 +184,37 @@ export function extractSessionTodosFromMessageContent(messageContent: unknown): 
     return extractTodosFromClaudeOutput(record.content)
         ?? extractTodosFromCodexMessage(record.content)
         ?? extractTodosFromAcpMessage(record.content)
+}
+
+const STRUCTURED_TODOS_BACKFILL_PAGE_SIZE = 200
+
+export function findLatestStructuredTodos(
+    store: Store,
+    sessionId: string
+): { todos: NonNullable<ReturnType<typeof extractSessionTodosFromMessageContent>>; source: { at: number; seq: number } } | null {
+    let before: { at: number; seq: number } | undefined
+
+    while (true) {
+        const page = store.messages.getMessagesByPosition(
+            sessionId,
+            STRUCTURED_TODOS_BACKFILL_PAGE_SIZE,
+            before
+        )
+        for (let i = page.length - 1; i >= 0; i -= 1) {
+            const message = page[i]
+            if (!message) continue
+            const todos = extractSessionTodosFromMessageContent(message.content)
+            if (todos) {
+                return {
+                    todos,
+                    source: { at: message.invokedAt ?? message.createdAt, seq: message.seq }
+                }
+            }
+        }
+
+        if (page.length < STRUCTURED_TODOS_BACKFILL_PAGE_SIZE) return null
+        const oldest = page[0]
+        if (!oldest) return null
+        before = { at: oldest.invokedAt ?? oldest.createdAt, seq: oldest.seq }
+    }
 }
