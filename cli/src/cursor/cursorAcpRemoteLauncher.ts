@@ -92,10 +92,16 @@ import {
 } from './cursorPostToolInterruptContinue';
 
 const CURSOR_ABORT_DRAIN_TIMEOUT_MS = 5_000;
+const CURSOR_EXHAUSTED_RETRY_STEER_WAIT_TIMEOUT_MS = 5_000;
+
+export type CursorAcpRemoteLauncherOptions = {
+    exhaustedRetrySteerWaitTimeoutMs?: number;
+};
 
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
     private readonly titleSync: ReturnType<typeof createAcpSessionTitleSync>;
+    private readonly exhaustedRetrySteerWaitTimeoutMs: number;
     private backend: ReturnType<typeof createCursorAcpBackend> | null = null;
     private shutdownRequested = false;
     private replacementBackend: AcpSdkBackend | null = null;
@@ -198,10 +204,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         bridgeable?: boolean;
     } | null = null;
 
-    constructor(session: CursorSession) {
+    constructor(session: CursorSession, options?: CursorAcpRemoteLauncherOptions) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
         this.titleSync = createAcpSessionTitleSync(session.client);
+        this.exhaustedRetrySteerWaitTimeoutMs =
+            options?.exhaustedRetrySteerWaitTimeoutMs ?? CURSOR_EXHAUSTED_RETRY_STEER_WAIT_TIMEOUT_MS;
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -1260,10 +1268,20 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         // emitted by the settling steer set attemptProducedToolActivity.
                         // Skip once one-shot Continue has already been spent so give-up
                         // publishes Blocked immediately before cleanup drains waiters.
-                        if (!postToolAutoContinueUsed && !await this.drainSoftSteerWaitersBeforeRetry()) break;
+                        // On the final ordinary attempt, bound this wait so a stalled
+                        // steer still surfaces exhausted retries + Blocked without
+                        // dropping softSteerWaiters before turn cleanup.
+                        let drainOutcome: 'drained' | 'timed_out' | 'aborted' = 'drained';
+                        if (!postToolAutoContinueUsed) {
+                            const decisionTimeoutMs = retryAttempt >= CURSOR_AUTO_RETRY_LIMIT
+                                ? this.exhaustedRetrySteerWaitTimeoutMs
+                                : undefined;
+                            drainOutcome = await this.drainSoftSteerWaitersBeforeRetry(decisionTimeoutMs);
+                            if (drainOutcome === 'aborted') break;
+                        }
 
                         if (this.attemptProducedToolActivity) {
-                            if (!postToolAutoContinueUsed) {
+                            if (!postToolAutoContinueUsed && drainOutcome !== 'timed_out') {
                                 postToolAutoContinueUsed = true;
                                 promptContent = [{
                                     type: 'text',
@@ -2798,43 +2816,68 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
      * primary prompt handler (for an in-loop retry, the next turn, or ready),
      * releasing on Abort so an unbounded steer cannot stall recovery or exit.
      */
-    private async drainSoftSteerWaiters(): Promise<boolean> {
+    private async drainSoftSteerWaiters(timeoutMs?: number): Promise<'drained' | 'timed_out' | 'aborted'> {
+        const deadline = timeoutMs !== undefined ? Date.now() + timeoutMs : null;
         while (this.softSteerWaiters.length > 0 && !this.shouldExit) {
             const waitSignal = this.abortController.signal;
             if (waitSignal.aborted) {
                 this.softSteerWaiters = [];
-                return false;
+                return 'aborted';
+            }
+            const remainingMs = deadline !== null ? Math.max(0, deadline - Date.now()) : null;
+            if (remainingMs !== null && remainingMs === 0) {
+                return 'timed_out';
             }
             const pending = [...this.softSteerWaiters];
             let releaseWait!: () => void;
-            const drainOrAbort = new Promise<void>((resolve) => { releaseWait = resolve; });
+            const drainOrAbort = new Promise<'aborted'>((resolve) => {
+                releaseWait = () => resolve('aborted');
+            });
             const abortListener = () => releaseWait();
             waitSignal.addEventListener('abort', abortListener, { once: true });
+            let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+            const racers: Promise<'drained' | 'timed_out' | 'aborted'>[] = [
+                Promise.allSettled(pending).then(() => 'drained' as const),
+                drainOrAbort
+            ];
+            if (remainingMs !== null) {
+                racers.push(new Promise<'timed_out'>((resolve) => {
+                    timeoutTimer = setTimeout(() => resolve('timed_out'), remainingMs);
+                    timeoutTimer.unref?.();
+                }));
+            }
+            let outcome: 'drained' | 'timed_out' | 'aborted';
             try {
-                await Promise.race([
-                    Promise.allSettled(pending),
-                    drainOrAbort
-                ]);
+                outcome = await Promise.race(racers);
             } finally {
-                // Repeated waits must not accumulate abort listeners.
+                // Repeated waits must not accumulate abort listeners or timers.
                 waitSignal.removeEventListener('abort', abortListener);
+                if (timeoutTimer) clearTimeout(timeoutTimer);
             }
             if (waitSignal.aborted || this.shouldExit) {
                 this.softSteerWaiters = [];
-                return false;
+                return 'aborted';
+            }
+            if (outcome === 'timed_out') {
+                // Keep softSteerWaiters intact so finally cleanup still blocks
+                // ready / the next queued prompt behind the stalled steer.
+                return 'timed_out';
             }
             const drained = new Set(pending);
             this.softSteerWaiters = this.softSteerWaiters.filter((waiter) => !drained.has(waiter));
         }
-        return !this.shouldExit && !this.abortController.signal.aborted;
+        return this.shouldExit || this.abortController.signal.aborted ? 'aborted' : 'drained';
     }
 
-    private async drainSoftSteerWaitersBeforeRetry(): Promise<boolean> {
+    private async drainSoftSteerWaitersBeforeRetry(timeoutMs?: number): Promise<'drained' | 'timed_out' | 'aborted'> {
         if (this.shouldExit || this.userAbortRequested) {
-            return false;
+            return 'aborted';
         }
-        const drained = await this.drainSoftSteerWaiters();
-        return drained && !this.shouldExit && !this.userAbortRequested;
+        const outcome = await this.drainSoftSteerWaiters(timeoutMs);
+        if (this.shouldExit || this.userAbortRequested) {
+            return 'aborted';
+        }
+        return outcome;
     }
 }
 
@@ -2937,7 +2980,10 @@ function syncCursorModelsFromAcp(backend: AcpSdkBackend, acpSessionId: string): 
     seedCursorModelsCache(payload);
 }
 
-export async function cursorAcpRemoteLauncher(session: CursorSession): Promise<'switch' | 'exit'> {
-    const launcher = new CursorAcpRemoteLauncher(session);
+export async function cursorAcpRemoteLauncher(
+    session: CursorSession,
+    options?: CursorAcpRemoteLauncherOptions
+): Promise<'switch' | 'exit'> {
+    const launcher = new CursorAcpRemoteLauncher(session, options);
     return launcher.launch();
 }
