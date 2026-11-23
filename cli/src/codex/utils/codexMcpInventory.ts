@@ -60,6 +60,8 @@ function asToolNames(value: unknown): string[] | undefined {
     return names.length > 0 ? Array.from(new Set(names)) : undefined
 }
 
+const RUNTIME_CONNECTION_STATUSES = new Set(['notStarted', 'starting', 'connected', 'authenticationRequired', 'failed', 'cancelled', 'disabled'])
+
 function parseInventoryEntries(value: unknown): CodexMcpServerInventory[] | undefined {
     const record = asRecord(value)
     const entries = Array.isArray(value)
@@ -74,9 +76,10 @@ function parseInventoryEntries(value: unknown): CodexMcpServerInventory[] | unde
         const name = asString(item?.name ?? item?.serverName ?? item?.server_name)
         if (!name) return []
         const enabled = item?.enabled
+        const runtimeStatus = asString(item?.runtimeStatus ?? item?.runtime_status)
         const status = enabled === false
             ? 'disabled'
-            : asString(
+            : runtimeStatus && RUNTIME_CONNECTION_STATUSES.has(runtimeStatus) ? runtimeStatus : asString(
                 item?.status
                 ?? item?.state
                 ?? item?.authStatus

@@ -39,6 +39,15 @@ describe('Claude static context catalog', () => {
         })
     })
 
+    it.each([{ skills: ['automatic-skill'] }, { skills: [] }])('preserves the SDK skill list independently of slash commands: $skills', ({ skills }) => {
+        const details = buildClaudeStaticContextDetails({
+            sdkMetadata: { slashCommands: ['/compact'], skills },
+            catalog: { commands: ['/compact'], skills: [{ name: 'composer-catalog-only' }] }
+        })
+        expect(details?.claude?.skills).toEqual(skills.map(name => ({ name })))
+        expect(details?.claude?.slashCommands).toEqual(['/compact'])
+    })
+
     it('does not overwrite the resolved runtime model or context window', () => {
         const previous = {
             version: 1 as const,

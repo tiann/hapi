@@ -21,7 +21,8 @@ const sharedHarness = vi.hoisted(() => ({
     mcpStatusThreadId: undefined as string | undefined,
     configuredInventory: [] as unknown[],
     runtimeInventory: null as Promise<unknown> | null,
-    inventoryExecutable: undefined as unknown
+    inventoryExecutable: undefined as unknown,
+    slashCommands: ['/compact']
 }));
 
 vi.mock('../codexAppServerClient', () => ({
@@ -79,7 +80,7 @@ vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: vi.fn(async 
     toolNames: ['change_title'], server: { stop() {} }
 })) }));
 vi.mock('@/modules/common/slashCommands', () => ({
-    listSlashCommands: async () => [{ name: '/compact' }]
+    listSlashCommands: async () => sharedHarness.slashCommands.map(name => ({ name }))
 }));
 vi.mock('../utils/codexMcpInventory', async (importOriginal) => ({
     ...await importOriginal<typeof import('../utils/codexMcpInventory')>(),
@@ -96,6 +97,7 @@ afterEach(async () => {
     finally {
         sharedHarness.configuredInventory = [];
         sharedHarness.runtimeInventory = null;
+        sharedHarness.slashCommands = ['/compact'];
         sharedHarness.inventoryExecutable = undefined;
         vi.useRealTimers();
     }
@@ -230,6 +232,25 @@ describe('shared root startup collaboration mode', () => {
 });
 
 describe('externally attached root', () => {
+    it('reports the runtime disabled status for an attached MCP server', async () => {
+        sharedHarness.runtimeInventory = Promise.resolve({ data: [{
+            name: 'runtime-only', runtimeStatus: 'disabled', authStatus: 'unsupported', tools: {}
+        }] });
+        const f = await fixture({ attached: true });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([
+            { name: 'runtime-only', status: 'disabled', toolNames: [] }
+        ]));
+    });
+
+    it.each([false, true])('publishes only supported built-in commands for attached=%s', async (attached) => {
+        sharedHarness.slashCommands = ['/compact', '/clear', '/new', '/agent'];
+        const f = await fixture({ attached });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.slashCommands)
+            .toEqual(attached ? ['/compact'] : ['/compact', '/clear', '/new']));
+    });
+
     it('queries MCP status for the bound thread without reading the wrapper config', async () => {
         sharedHarness.mcpInventoryArgs = undefined;
         sharedHarness.mcpStatusThreadId = undefined;

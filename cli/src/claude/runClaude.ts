@@ -56,13 +56,12 @@ export function buildClaudeStaticContextDetails(args: {
     catalog: { commands: string[]; skills: SkillSummary[] }
 }): ReturnType<typeof buildClaudeContextDetails> {
     const catalogAvailable = args.sdkMetadata.slashCommands !== undefined;
+    const skills = args.sdkMetadata.skills ?? (catalogAvailable ? args.catalog.skills : undefined);
     return buildClaudeContextDetails({
         system: {
             tools: args.sdkMetadata.tools,
-            ...(catalogAvailable ? {
-                skills: args.catalog.skills,
-                slash_commands: args.catalog.commands
-            } : {})
+            skills,
+            ...(catalogAvailable ? { slash_commands: args.catalog.commands } : {})
         }
     });
 }
