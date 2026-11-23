@@ -4,7 +4,7 @@ import { randomId } from '@/lib/randomId'
 
 type SessionInput = { id: string; contentRevision?: number; readState?: SessionReadState }
 type ReadRequest = Extract<SessionReadStateRequest, { type: 'read' }>
-type Pending = { id: string; request: SessionReadStateRequest; onUnreadConflict?: ReadRequest }
+type Pending = { id: string; request: SessionReadStateRequest; onUnreadConflict?: ReadRequest; manualReadFrom?: number }
 type Entry = { server: SessionReadState; pending?: Pending }
 type Store = Record<string, Entry>
 type Sender = (id: string, request: SessionReadStateRequest) => Promise<{ readState: SessionReadState }>
@@ -116,6 +116,15 @@ export async function flushSessionReadState(): Promise<void> {
                     // A newer local intent follows our own acknowledged write.
                     // Do not rebase across another client's manual-unread change.
                     current.pending.request.expectedVersion = response.readState.version
+                } else if (current.pending?.manualReadFrom !== undefined && pending.request.type === 'read'
+                    && response.readState.manualUnread && response.readState.version === current.server.version
+                    && response.readState.version === current.pending.request.expectedVersion + 1
+                    && response.readState.readRevision === pending.request.readRevision
+                    && response.readState.readRevision > current.pending.manualReadFrom) {
+                    // The single intervening write advanced the watermark without
+                    // changing the manual flag the newer read intended to clear.
+                    current.pending.request.expectedVersion = response.readState.version
+                    current.pending.manualReadFrom = response.readState.readRevision
                 }
                 store[id] = current
                 if (!save(store, key)) failed = true
@@ -180,7 +189,9 @@ function enqueue(sessionId: string, request: SessionReadStateRequest): void {
     if (request.type === 'read' && previous?.type === 'read') {
         request = { ...request, readRevision: Math.max(request.readRevision, previous.readRevision) }
     }
-    store[sessionId] = { ...entry, pending: { id: randomId(), request } }
+    const manualReadFrom = request.type === 'read' && entry.server.manualUnread && request.expectedVersion === entry.server.version
+        ? entry.server.readRevision : undefined
+    store[sessionId] = { ...entry, pending: { id: randomId(), request, manualReadFrom } }
     // Persistence failure must not claim a successful local read.
     if (save(store)) { notify(); void flushSessionReadState() }
 }
