@@ -31,12 +31,14 @@ import {
     parseCodexMcpStatusResponse
 } from '../utils/codexMcpInventory';
 import type { SkillMetadata } from '../appServerTypes';
+import type { CodexCommand } from '../utils/codexExecutable';
 import { planImplementationMessageId, planProposalForItem, planProposalForTurn } from './plan';
 
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
 export type RootHost = {
     directory: string; generation: string; endpoint: string; token?: string;
     codexInventoryArgs?: readonly string[];
+    codexCommand?: CodexCommand;
     attached?: boolean;
     beforeSubscribe?(threadId: string): Promise<void>;
     validateHistory?(threadId: string, thread: unknown): Promise<void>;
@@ -346,10 +348,16 @@ export class SharedCodexRoot {
         const savedMcpServers = this.session.getMetadata()?.contextDetails?.codex?.mcpServers;
         const includeBridge = this.mcpInventoryLoaded
             || ((savedMcpServers?.length ?? 0) === 0 && Object.keys(bridgeServers).length > 0);
-        const availableInventories = [this.configuredMcpServerInventory, this.statusMcpServerInventory]
-            .filter((inventory): inventory is CodexMcpServerInventory[] => inventory !== undefined);
+        const configured = this.configuredMcpServerInventory ?? [];
+        const runtime = this.statusMcpServerInventory ?? [];
+        // Configuration alone cannot prove that a server from the previous
+        // runtime is gone. Once the thread responds, only fill gaps for
+        // servers still present, without overriding even an empty tool list.
+        const currentNames = new Set([...bridgeInventory, ...configured, ...runtime].map(entry => entry.name));
+        const savedFallback = (savedMcpServers ?? []).filter(entry =>
+            this.statusMcpServerInventory === undefined || currentNames.has(entry.name));
         const inventory = this.mcpInventoryLoaded
-            ? mergeCodexMcpInventories(...availableInventories, bridgeInventory)
+            ? mergeCodexMcpInventories(bridgeInventory, savedFallback, configured, runtime)
             : includeBridge && bridgeInventory.length > 0
                 ? bridgeInventory
                 : undefined;
@@ -393,8 +401,8 @@ export class SharedCodexRoot {
         void this.refreshContextSkills().catch(error => logger.debug('[Codex shared] skill inventory', error));
         // An attached app-server may use a different home and launch flags.
         // Its bound thread is authoritative; never merge in the wrapper's local MCP config.
-        if (!this.host.attached) {
-            void listConfiguredCodexMcpServers(cwd, this.host.codexInventoryArgs)
+        if (!this.host.attached && this.host.codexCommand) {
+            void listConfiguredCodexMcpServers(this.host.codexCommand, cwd, this.host.codexInventoryArgs)
                 .then(inventory => {
                     if (this.closed || this.stopping || inventory === undefined) return;
                     this.configuredMcpServerInventory = inventory;

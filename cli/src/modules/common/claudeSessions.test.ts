@@ -62,6 +62,30 @@ describe('local Claude session reader', () => {
         return projectDir
     }
 
+    it('imports the assistant message but not its raw context snapshot or undeclared fields', async () => {
+        const projectDir = makeProject()
+        writeMainTranscript(projectDir, SESSION_ID, [
+            userEntry('u1', 'hello'),
+            assistantEntry('a1', 'Visible answer', {
+                requestId: 'fixture-request',
+                context_usage: { total_tokens: 10, memory_files: [{ path: '/private/fixture/MEMORY.md' }] },
+                undeclaredSnapshot: { path: '/private/fixture/internal.json' },
+            }),
+        ])
+        const [session] = await listLocalClaudeSessionsWithMessagesByIds(new Set([SESSION_ID]))
+        const message = session?.messages.find(entry => entry.uuid === 'a1')
+        expect(message).toMatchObject({
+            content: { role: 'agent', content: { type: 'output', data: {
+                type: 'assistant', requestId: 'fixture-request',
+                message: { content: [{ type: 'text', text: 'Visible answer' }] },
+            } } },
+        })
+        const serialized = JSON.stringify(message)
+        expect(serialized).not.toContain('context_usage')
+        expect(serialized).not.toContain('undeclaredSnapshot')
+        expect(serialized).not.toContain('/private/fixture/')
+    })
+
     it('splices subagent batches before their tool_result and filters meta and injected rows', async () => {
         const projectDir = makeProject()
         writeMainTranscript(projectDir, SESSION_ID, [

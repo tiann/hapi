@@ -18,7 +18,10 @@ type NativeRequest = { id: string | number; method: string; params: unknown };
 const sharedHarness = vi.hoisted(() => ({
     skills: [{ name: 'find-docs', description: 'Find docs', path: '/tmp/SKILL.md', scope: 'user', enabled: true }],
     mcpInventoryArgs: undefined as readonly string[] | undefined,
-    mcpStatusThreadId: undefined as string | undefined
+    mcpStatusThreadId: undefined as string | undefined,
+    configuredInventory: [] as unknown[],
+    runtimeInventory: null as Promise<unknown> | null,
+    inventoryExecutable: undefined as unknown
 }));
 
 vi.mock('../codexAppServerClient', () => ({
@@ -43,7 +46,7 @@ vi.mock('../codexAppServerClient', () => ({
         }
         async listMcpServerStatuses(threadId: string) {
             sharedHarness.mcpStatusThreadId = threadId;
-            return { data: [] };
+            return sharedHarness.runtimeInventory ?? { data: [] };
         }
         async disconnect() { this.initialized = false; }
         async request(method: string, params: Record<string, unknown> = {}) {
@@ -78,28 +81,31 @@ vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: vi.fn(async 
 vi.mock('@/modules/common/slashCommands', () => ({
     listSlashCommands: async () => [{ name: '/compact' }]
 }));
-vi.mock('../utils/codexMcpInventory', () => ({
-    listConfiguredCodexMcpServers: async (_cwd: string, args?: readonly string[]) => {
+vi.mock('../utils/codexMcpInventory', async (importOriginal) => ({
+    ...await importOriginal<typeof import('../utils/codexMcpInventory')>(),
+    listConfiguredCodexMcpServers: async (resolved: unknown, _cwd: string, args?: readonly string[]) => {
+        sharedHarness.inventoryExecutable = resolved;
         sharedHarness.mcpInventoryArgs = args;
-        return [];
+        return sharedHarness.configuredInventory;
     },
-    mergeCodexMcpInventories: (...inventories: Array<Array<unknown>>) => inventories.flat(),
-    parseCodexMcpStatusResponse: (value: unknown) => value && typeof value === 'object' && 'data' in value
-        ? (value as { data: unknown[] }).data
-        : undefined
 }));
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
     try { for (const cleanup of cleanups.splice(0)) await cleanup(); }
-    finally { vi.useRealTimers(); }
+    finally {
+        sharedHarness.configuredInventory = [];
+        sharedHarness.runtimeInventory = null;
+        sharedHarness.inventoryExecutable = undefined;
+        vi.useRealTimers();
+    }
 });
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
-    attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
+    attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState; contextDetails?: Metadata['contextDetails'] }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
     let state: AgentState = opts?.initialState ?? { steeringActive: true };
-    let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
+    let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex', contextDetails: opts?.contextDetails };
     if (opts?.attached) metadata.codexRuntime = { kind: 'attached', bindingId: '11111111-1111-4111-8111-111111111111', state: 'attached' };
     let reconnect: (() => void) | null = null;
     let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;
@@ -133,6 +139,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     const root = new SharedCodexRoot({ session, sessionInfo: { agentState: state }, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
         codexInventoryArgs: ['-c', 'mcp_servers.qmd.enabled=false'],
+        codexCommand: opts?.attached ? undefined : { command: 'resolved-codex', args: ['launcher.js'] },
         create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
         attached: opts?.attached, beforeSubscribe: opts?.beforeSubscribe, validateHistory: opts?.validateHistory,
         end
@@ -161,6 +168,35 @@ session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
         end,
     };
 }
+
+describe('thread MCP inventory', () => {
+    it.each([{ tools: ['only_runtime_tool'] }, { tools: [] as string[] }])('prefers the bound catalog ($tools) over bridge tool names', async ({ tools }) => {
+        sharedHarness.runtimeInventory = Promise.resolve({ data: [{ name: 'hapi', tools }] });
+        const f = await fixture();
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers)
+            .toContainEqual({ name: 'hapi', toolNames: tools }));
+        expect(sharedHarness.inventoryExecutable).toEqual({ command: 'resolved-codex', args: ['launcher.js'] });
+    });
+
+    it('keeps the saved runtime catalog while configuration arrives and after discovery fails', async () => {
+        const pending = Promise.withResolvers<unknown>();
+        sharedHarness.runtimeInventory = pending.promise;
+        sharedHarness.configuredInventory = [{ name: 'configured' }];
+        const f = await fixture({ contextDetails: {
+            version: 1, provider: 'codex', updatedAt: 10,
+            codex: { mcpServers: [{ name: 'runtime-only', toolNames: ['last_known'] }] },
+        } });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual(expect.arrayContaining([
+            { name: 'configured' }, { name: 'runtime-only', toolNames: ['last_known'] },
+        ])));
+        pending.resolve({ data: [{ name: 'runtime-only', tools: {}, toolsError: 'fixture internal error' }] });
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toContainEqual({
+            name: 'runtime-only', status: 'unavailable', toolNames: ['last_known'],
+        }));
+    });
+});
 
 describe('externally attached root', () => {
     it('queries MCP status for the bound thread without reading the wrapper config', async () => {

@@ -1,6 +1,6 @@
 import spawn from 'cross-spawn'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
-import { resolveCodexCommand } from './codexExecutable'
+import type { CodexCommand } from './codexExecutable'
 import type { CodexMcpServerInventory } from '@/agent/contextDetails'
 
 export const CODEX_MCP_LIST_TIMEOUT_MS = 5_000
@@ -82,11 +82,15 @@ function parseInventoryEntries(value: unknown): CodexMcpServerInventory[] | unde
                 ?? item?.authStatus
                 ?? item?.auth_status
             )
-        const toolNames = asToolNames(item?.toolNames ?? item?.tool_names ?? item?.tools)
+        // The server can send an empty tools object alongside an error.
+        // Omit toolNames in that case so callers can retain the last known list.
+        const toolsUnavailable = Boolean(item?.toolsError ?? item?.tools_error)
+        const toolNames = toolsUnavailable ? undefined : asToolNames(item?.toolNames ?? item?.tool_names ?? item?.tools)
+        const inventoryStatus = toolsUnavailable && status !== 'disabled' ? 'unavailable' : status
         return [{
             name,
             ...(toolNames ? { toolNames } : {}),
-            ...(status && status !== 'unsupported' ? { status } : {})
+            ...(inventoryStatus && inventoryStatus !== 'unsupported' ? { status: inventoryStatus } : {})
         }]
     })
 }
@@ -126,10 +130,10 @@ export function mergeCodexMcpInventories(
 }
 
 export function listConfiguredCodexMcpServers(
+    resolved: CodexCommand,
     cwd?: string,
     args?: readonly string[]
 ): Promise<CodexMcpServerInventory[] | undefined> {
-    const resolved = resolveCodexCommand()
     return new Promise((resolveInventory) => {
         let stdout = ''
         let settled = false

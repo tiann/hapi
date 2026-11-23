@@ -87,6 +87,12 @@ describe('codex MCP inventory', () => {
         expect(details.codex?.mcpServers).toEqual([{ name: 'qmd', toolNames: [] }])
     })
 
+    it('marks tool discovery errors without serializing the error or replacing saved names', () => {
+        expect(parseCodexMcpStatusResponse({ data: [{
+            name: 'qmd', tools: {}, toolsError: 'fixture-private path',
+        }] })).toEqual([{ name: 'qmd', status: 'unavailable' }])
+    })
+
     it('merges resolved fields over configured server names', () => {
         expect(mergeCodexMcpInventories(
             [{ name: 'qmd' }, { name: 'other' }],

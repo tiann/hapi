@@ -78,7 +78,7 @@ describe("RawJSONLinesSchema", () => {
             expect((parsed.message as Record<string, unknown> | undefined)?.futureField).toEqual({ nested: "value" });
         });
 
-        it("preserves top-level context_usage for local context details", () => {
+        it("drops top-level context_usage from the shared transcript schema", () => {
             const contextUsage = {
                 total_tokens: 26_697,
                 raw_max_tokens: 262_144,
@@ -94,7 +94,7 @@ describe("RawJSONLinesSchema", () => {
                 }
             });
             if (parsed.type !== "assistant") throw new Error("expected assistant record");
-            expect(parsed.context_usage).toEqual(contextUsage);
+            expect(parsed).not.toHaveProperty("context_usage");
         });
     });
 

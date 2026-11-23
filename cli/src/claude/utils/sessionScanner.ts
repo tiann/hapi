@@ -1,4 +1,4 @@
-import { RawJSONLines, RawJSONLinesSchema } from "../types";
+import { type RawJSONLines, RawJSONLinesSchema } from "../types";
 import { basename, dirname } from "node:path";
 import { open, stat } from "node:fs/promises";
 import { logger } from "@/ui/logger";
@@ -17,10 +17,14 @@ const INTERNAL_CLAUDE_EVENT_TYPES = new Set([
     'queue-operation',
 ]);
 
+// Local-only sidecar data. The shared transcript parser deliberately strips
+// these fields so history import cannot serialize them to the Hub.
+type ScannedClaudeEntry = RawJSONLines & { context_usage?: unknown };
+
 export async function createSessionScanner(opts: {
     sessionId: string | null;
     workingDirectory: string;
-    onMessage: (message: RawJSONLines) => void;
+    onMessage: (message: ScannedClaudeEntry) => void;
 }) {
     const scanner = new ClaudeSessionScanner({
         sessionId: opts.sessionId,
@@ -43,9 +47,9 @@ export async function createSessionScanner(opts: {
 export type SessionScanner = ReturnType<typeof createSessionScanner>;
 
 
-class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
+class ClaudeSessionScanner extends BaseSessionScanner<ScannedClaudeEntry> {
     private readonly projectDir: string;
-    private readonly onMessage: (message: RawJSONLines) => void;
+    private readonly onMessage: (message: ScannedClaudeEntry) => void;
     private readonly finishedSessions = new Set<string>();
     private readonly pendingSessions = new Set<string>();
     private currentSessionId: string | null;
@@ -55,7 +59,7 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     // Session id → transcript path, once Claude Code has relocated it.
     private readonly sessionFiles = new Map<string, string>();
 
-    constructor(opts: { sessionId: string | null; workingDirectory: string; onMessage: (message: RawJSONLines) => void }) {
+    constructor(opts: { sessionId: string | null; workingDirectory: string; onMessage: (message: ScannedClaudeEntry) => void }) {
         super({ intervalMs: 3000 });
         this.projectDir = getProjectPath(opts.workingDirectory);
         this.onMessage = opts.onMessage;
@@ -123,7 +127,7 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
         return [...files];
     }
 
-    protected async parseSessionFile(filePath: string, cursor: number): Promise<SessionFileScanResult<RawJSONLines>> {
+    protected async parseSessionFile(filePath: string, cursor: number): Promise<SessionFileScanResult<ScannedClaudeEntry>> {
         if (isSubagentFile(filePath)) {
             const { events, nextCursor } = await readSessionLog(filePath, cursor);
             const parentToolUseId = await this.subagentParentToolUseId(filePath);
@@ -151,7 +155,7 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
         return messageKey(event);
     }
 
-    protected async handleFileScan(stats: SessionFileScanStats<RawJSONLines>): Promise<void> {
+    protected async handleFileScan(stats: SessionFileScanStats<ScannedClaudeEntry>): Promise<void> {
         for (const message of stats.events) {
             const id = message.type === 'summary' ? message.leafUuid : message.uuid;
             logger.debug(`[SESSION_SCANNER] Sending new message: type=${message.type}, uuid=${id}`);
@@ -249,7 +253,7 @@ function isCompleteJsonLine(segment: Buffer): boolean {
  * and the whole file is re-read (dedup by uuid in the base scanner absorbs any
  * re-sent events).
  */
-export async function readSessionLog(filePath: string, startByte: number): Promise<{ events: SessionFileScanEntry<RawJSONLines>[]; nextCursor: number }> {
+export async function readSessionLog(filePath: string, startByte: number): Promise<{ events: SessionFileScanEntry<ScannedClaudeEntry>[]; nextCursor: number }> {
     let size: number;
     try {
         size = (await stat(filePath)).size;
@@ -312,7 +316,7 @@ export async function readSessionLog(filePath: string, startByte: number): Promi
     const nextCursor = from + readableEnd;
     const text = chunk.subarray(0, readableEnd).toString('utf-8');
 
-    const messages: SessionFileScanEntry<RawJSONLines>[] = [];
+    const messages: SessionFileScanEntry<ScannedClaudeEntry>[] = [];
     for (const l of text.split('\n')) {
         if (l.trim() === '') {
             continue;
@@ -328,7 +332,10 @@ export async function readSessionLog(filePath: string, startByte: number): Promi
                 // Unknown message types are silently skipped.
                 continue;
             }
-            messages.push({ event: parsed.data });
+            const event = parsed.data.type === 'assistant' && Object.hasOwn(message, 'context_usage')
+                ? { ...parsed.data, context_usage: message.context_usage as unknown }
+                : parsed.data;
+            messages.push({ event });
         } catch (e) {
             logger.debug(`[SESSION_SCANNER] Error processing message: ${e}`);
             continue;

@@ -38,7 +38,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
     const scanner = await createSessionScanner({
         sessionId: session.sessionId,
         workingDirectory: session.path,
-        onMessage: (message) => {
+        onMessage: ({ context_usage: contextUsage, ...message }) => {
             const rawMessage = message as unknown as Record<string, unknown>;
             const isSidechain = rawMessage.isSidechain === true;
             if (!isSidechain) {
@@ -50,7 +50,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                     const nestedMessage = rawMessage.message as Record<string, unknown> | undefined;
                     const nestedModel = typeof nestedMessage?.model === 'string' ? nestedMessage.model : undefined;
                     const details = buildClaudeContextDetails({
-                        contextUsage: rawMessage.context_usage,
+                        contextUsage,
                         system: rawMessage.type === 'system' ? rawMessage : undefined,
                         result: rawMessage.type === 'result' ? rawMessage : undefined,
                         messageUsage: nestedMessage?.usage ?? rawMessage.usage,
@@ -93,12 +93,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             }
             stampContextWindow(message, session.localContextModel)
             const processed = toolResultImages.process(message)
-            if (processed.message.type === 'assistant') {
-                const { context_usage: _contextUsage, ...outboundMessage } = processed.message
-                session.client.sendClaudeSessionMessage(outboundMessage)
-            } else {
-                session.client.sendClaudeSessionMessage(processed.message)
-            }
+            session.client.sendClaudeSessionMessage(processed.message)
             for (const image of processed.images) session.client.sendAgentMessage(image)
         }
     });
