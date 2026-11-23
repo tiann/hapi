@@ -1,7 +1,20 @@
 import type { SessionSummary } from '@hapi/protocol'
 
+import { isAttachedJobStale } from './attachedJob'
+
 export function hasRunningAttachedJob(session: SessionSummary): boolean {
     return session.attachedJob?.status === 'running'
+}
+
+export function hasUnarchivedJob(session: SessionSummary): boolean {
+    // A process can outlive its session. Keep its meter on the project row,
+    // but do not let it move an archived conversation back into Active.
+    return session.metadata?.lifecycleState !== 'archived' && hasRunningAttachedJob(session)
+}
+
+export function hasInProgressJobSession(session: SessionSummary, now = Date.now()): boolean {
+    const job = session.attachedJob
+    return hasUnarchivedJob(session) && !!job && !isAttachedJobStale({ heartbeatAt: job.latestRunningHeartbeatAt ?? job.heartbeatAt }, now)
 }
 
 /**

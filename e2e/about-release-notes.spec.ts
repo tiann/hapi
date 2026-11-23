@@ -70,11 +70,16 @@ test('a missing release-history chunk leaves About and settings backup usable', 
     if (screenshots) await page.screenshot({ path: `${screenshots}/about-history-chunk-unavailable.png` })
 })
 
-for (const locale of ['ja', 'ru']) {
+for (const [locale, heading, linkLabel] of [
+    ['ja', '更新履歴', `v${latestRelease.version} のリリースページを開く`],
+    ['ru', 'Что нового', `Открыть страницу выпуска v${latestRelease.version}`],
+]) {
     test(`fallback release text carries its own language (${locale})`, async ({ page }) => {
         await page.addInitScript(lang => localStorage.setItem('hapi-lang', lang), locale)
         await page.goto(fixture)
         await expect(page.locator('html')).toHaveAttribute('lang', locale)
+        await expect(page.getByRole('heading', { name: heading })).toBeVisible()
+        await expect(page.getByRole('link', { name: linkLabel })).toBeVisible()
         const release = page.locator('details').first()
         await expect(release.getByText(latestRelease.summary.en)).toHaveAttribute('lang', 'en')
         await expect(release.getByRole('heading', { name: latestRelease.groups[0].title.en })).toHaveAttribute('lang', 'en')

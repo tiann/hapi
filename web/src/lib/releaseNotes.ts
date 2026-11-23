@@ -76,6 +76,18 @@ function releaseNote(
  * guide and reusable authoring prompt.
  */
 export const RELEASE_NOTES = [
+    releaseNote('0.36.6', '2026-11-23',
+        'Translate session prompts into English, improve Web session filters and read state, and keep Claude running when compacting or clearing a conversation.',
+        '支持将会话输入翻译为英语，改进网页会话筛选和已读状态，并让 Claude 在压缩或清空会话时继续运行。',
+        [
+            group('Input translation', '输入翻译', [
+                change('feature', 'Optionally translate prompts into English for a session and view the translated text in chat on Web, iOS, and Android.', '可按会话选择将输入翻译为英语，并在网页、iOS 和 Android 的对话中查看译文。'),
+            ]),
+            group('Session workflow and reliability', '会话流程与稳定性', [
+                change('feature', 'Combine Web session filters, including Active and Working, and show the open session on the scrollbar.', '支持组合网页会话筛选（包括活跃和工作中），并在滚动条上标出当前会话的位置。'),
+                change('fix', 'Persist Web read state and keep Claude alive through compact and clear.', '保存网页会话已读状态，并让 Claude 在压缩或清空会话时继续运行。'),
+            ]),
+        ]),
     releaseNote('0.36.5', '2026-11-18',
         'Preview conversation boundaries, link sessions to GitHub pull requests, and improve chat, connection, and Windows Runner reliability.',
         '预览对话分支与回退的边界、关联 GitHub 拉取请求，并提升聊天、连接和 Windows Runner 的稳定性。',
@@ -373,6 +385,7 @@ export const RELEASE_NOTES = [
                 change('feature', 'Add persistent Android permission-mode controls, settled permission verdict details, and a session-list date-range filter.', '增加 Android 持久化权限模式控件、已确定权限结果详情，以及会话列表日期范围筛选。'),
             ]),
             group('Permission and session fixes', '权限与会话修复', [
+                change('fix', 'Finalize canceled permission requests and return an error for late answers.', '正确结算已取消的权限请求，并对迟到的回答返回错误。'),
                 change('fix', 'Keep Claude permission downgrades effective and pass the selected permission mode to the local TUI.', '确保 Claude 权限降级持续生效，并将选定的权限模式传递给本地 TUI。'),
                 change('fix', 'Remove composer attachments without waiting for cleanup, prevent released image previews from dragging, and keep session history loading coherent.', '移除输入框附件时无需等待清理；避免释放后的图片预览继续拖动；保持会话历史加载一致。'),
                 change('fix', 'Ignore pending requests on archived sessions and show Claude sessions waiting on background tasks.', '忽略已归档会话中的待处理请求，并显示正在等待后台任务的 Claude 会话。'),
@@ -391,7 +404,7 @@ export const RELEASE_NOTES = [
                 change('feature', 'Add compatibility support for macOS 27.', '增加对 macOS 27 的兼容支持。'),
             ]),
             group('Permission, pairing, and unread state', '权限、配对与未读状态', [
-                change('fix', 'Preserve AskUserQuestion draft answers across session switches and finalize canceled permission requests without surfacing stale answers.', '在切换会话时保留 AskUserQuestion 草稿答案，并完成已取消的权限请求，避免显示过期答案。'),
+                change('fix', 'Preserve AskUserQuestion draft answers across session switches.', '在切换会话时保留 AskUserQuestion 草稿答案。'),
                 change('fix', 'Filter the unread badge count through the same sidebar eligibility rules used by the session list.', '让未读徽章数量使用与会话列表相同的侧栏可见性规则进行过滤。'),
                 change('fix', 'Correct the iOS pairing setup guide link.', '修复 iOS 配对设置指南链接。'),
             ]),

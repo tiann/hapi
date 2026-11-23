@@ -31,6 +31,7 @@ jobs:
                   composer-attachment-controls.spec.ts
                   image-preview-back.spec.ts
                   opencode-fork-buttons.spec.ts
+                  auth-network-recovery.spec.ts
                   about-release-notes.spec.ts
 
     unit-cli:
