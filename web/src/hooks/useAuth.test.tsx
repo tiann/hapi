@@ -8,7 +8,7 @@ import { AUTH_PROXY_REDIRECT_MESSAGE, AuthProxyRedirectError } from '@/api/authP
 const h = vi.hoisted(() => {
     let idSeq = 0
     let authCount = 0
-    let authenticateImpl: ((count: number) => Promise<{ token: string; user: { id: string } }>) | null = null
+    let authenticateImpl: ((count: number, signal?: AbortSignal) => Promise<{ token: string; user: { id: string } }>) | null = null
     class MockApiClient {
         token: string
         options: { getToken?: () => string | null; onUnauthorized?: () => unknown; baseUrl?: string } | undefined
@@ -18,10 +18,10 @@ const h = vi.hoisted(() => {
             this.options = options
             this.id = ++idSeq
         }
-        async authenticate(): Promise<{ token: string; user: { id: string } }> {
+        async authenticate(_payload?: unknown, options?: { signal?: AbortSignal }): Promise<{ token: string; user: { id: string } }> {
             authCount += 1
             if (authenticateImpl) {
-                return authenticateImpl(authCount)
+                return authenticateImpl(authCount, options?.signal)
             }
             return { token: `token-${authCount}`, user: { id: 'u1' } }
         }
@@ -44,7 +44,7 @@ const h = vi.hoisted(() => {
             authenticateImpl = null
         },
         setAuthenticateImpl: (
-            impl: ((count: number) => Promise<{ token: string; user: { id: string } }>) | null
+            impl: ((count: number, signal?: AbortSignal) => Promise<{ token: string; user: { id: string } }>) | null
         ) => {
             authenticateImpl = impl
         }
@@ -529,4 +529,144 @@ describe('useAuth — weak-network and JWT expiry resilience', () => {
         expect(result.current.token).toBe(freshJwt)
         expect(result.current.error).toBeNull()
     })
+})
+
+describe('useAuth connection failure classification', () => {
+    it.each(['network', 'server', 'rejected'])('separates %s failures from invalid saved credentials', async kind => {
+        const failure = kind === 'network' ? new TypeError('Failed to fetch') : new h.MockApiError('Unavailable', kind === 'server' ? 503 : 401)
+        h.setAuthenticateImpl(async () => { throw failure })
+        const source = { type: 'accessToken' as const, token: 'saved-fixture-credential' }
+        const { result } = renderHook(() => useAuth(source, 'https://hub.test'))
+        await waitFor(() => expect(result.current.isLoading).toBe(false))
+        expect(result.current.token).toBeNull()
+        expect(result.current.connectionError).toEqual(kind === 'rejected' ? null : kind === 'server' ? { status: 503 } : {})
+        if (kind === 'rejected') return
+        h.setAuthenticateImpl(async () => ({ token: 'recovered-token', user: { id: 'u1' } }))
+        act(() => result.current.retryConnection())
+        await waitFor(() => expect(result.current.token).toBe('recovered-token'))
+        expect(result.current.connectionError).toBeNull()
+        expect(result.current.error).toBeNull()
+    })
+    it('does not carry a connection failure to another hub or auth source', async () => {
+        h.setAuthenticateImpl(async () => { throw new TypeError('Failed to fetch') })
+        const oldSource = { type: 'accessToken' as const, token: 'old-fixture-credential' }
+        const { result, rerender } = renderHook(({ source, base }) => useAuth(source, base), { initialProps: { source: oldSource, base: 'https://old.test' } })
+        await waitFor(() => expect(result.current.connectionError).toEqual({}))
+        h.setAuthenticateImpl(() => new Promise(() => {}))
+        rerender({ source: { type: 'accessToken', token: 'new-fixture-credential' }, base: 'https://new.test' })
+        expect(result.current.connectionError).toBeNull()
+        expect(result.current.api).toBeNull()
+    })
+})
+
+it('bounds a stalled authentication attempt and treats its timeout as a connection failure', async () => {
+    vi.useFakeTimers()
+    let signal: AbortSignal | undefined
+    h.setAuthenticateImpl((_count, current) => new Promise((_resolve, reject) => {
+        signal = current
+        current?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+    }))
+    const source = { type: 'accessToken' as const, token: 'fixture' }
+    const { result, unmount } = renderHook(() => useAuth(source, 'https://hub.test'))
+    await flushMicrotasks()
+    expect(result.current.isLoading).toBe(true)
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(signal?.aborted).toBe(true)
+    expect(result.current.isLoading).toBe(false)
+    expect(result.current.connectionError).toEqual({})
+    expect(result.current.token).toBeNull()
+    unmount()
+})
+it('cancels a stalled automatic attempt when Retry now is requested', async () => {
+    vi.useFakeTimers()
+    let stalled: AbortSignal | undefined
+    h.setAuthenticateImpl((count, signal) => {
+        if (count === 1) return Promise.reject(new h.MockApiError('Unavailable', 503))
+        if (count === 2) return new Promise((_resolve, reject) => {
+            stalled = signal
+            signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+        })
+        return Promise.resolve({ token: 'recovered-token', user: { id: 'u1' } })
+    })
+    const source = { type: 'accessToken' as const, token: 'fixture' }
+    const { result, unmount } = renderHook(() => useAuth(source, 'https://hub.test'))
+    await flushMicrotasks()
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+    expect(h.getAuthCount()).toBe(2)
+    act(() => result.current.retryConnection())
+    await flushMicrotasks()
+    expect(stalled?.aborted).toBe(true)
+    expect(h.getAuthCount()).toBe(3)
+    expect(result.current.token).toBe('recovered-token')
+    expect(result.current.connectionError).toBeNull()
+    unmount()
+})
+it('keeps the explicit Telegram-disabled diagnostic actionable', async () => {
+    const diagnostic = 'Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.'
+    h.setAuthenticateImpl(async () => { throw new h.MockApiError('Unavailable', 503, diagnostic) })
+    const source = { type: 'telegram' as const, initData: 'fixture' }
+    const { result } = renderHook(() => useAuth(source, 'https://hub.test'))
+    await waitFor(() => expect(result.current.connectionError?.diagnostic).toBe(diagnostic))
+})
+
+it.each([400, 401, 403, 404, 408, 429, 503])('preserves the active session when a deadline abort interrupts HTTP %s', async status => {
+    vi.useFakeTimers()
+    const token = makeJwtWithExp(Math.floor(Date.now() / 1000) + 3600)
+    h.setAuthenticateImpl((count, signal) => count === 1 ? Promise.resolve({ token, user: { id: 'u1' } }) : new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new h.MockApiError('body aborted', status)), { once: true })
+    }))
+    const source = { type: 'accessToken' as const, token: 'fixture' }
+    const { result, unmount } = renderHook(() => useAuth(source, 'https://hub.test'))
+    await flushMicrotasks()
+    const api = result.current.api as unknown as ApiWithOptions
+    let refresh!: Promise<unknown>
+    act(() => { refresh = Promise.resolve(api.options?.onUnauthorized?.()) })
+    await flushMicrotasks()
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); await refresh })
+    expect(result.current.token).toBe(token)
+    expect(result.current.connectionError).toEqual([400, 401, 403].includes(status) ? {} : { status })
+    expect(result.current.error).toBeNull()
+    unmount()
+})
+
+it('ignores a rejected result from an authentication attempt canceled by Retry now', async () => {
+    vi.useFakeTimers()
+    const token = makeJwtWithExp(Math.floor(Date.now() / 1000) + 3600)
+    let finish!: (value: { token: string; user: { id: string } }) => void
+    h.setAuthenticateImpl((count, signal) => {
+        if (count === 1) return Promise.resolve({ token, user: { id: 'u1' } })
+        if (count === 2) return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(new h.MockApiError('canceled body', 401)), { once: true }))
+        return new Promise(resolve => { finish = resolve })
+    })
+    const source = { type: 'accessToken' as const, token: 'fixture' }
+    const { result, unmount } = renderHook(() => useAuth(source, 'https://hub.test'))
+    await flushMicrotasks()
+    const api = result.current.api as unknown as ApiWithOptions
+    act(() => { void api.options?.onUnauthorized?.() })
+    await flushMicrotasks()
+    act(() => result.current.retryConnection())
+    await flushMicrotasks()
+    expect(h.getAuthCount()).toBe(3)
+    expect(result.current.token).toBe(token)
+    expect(result.current.error).toBeNull()
+    await act(async () => { finish({ token: 'fresh', user: { id: 'u1' } }) })
+    expect(result.current.token).toBe('fresh')
+    unmount()
+})
+
+it('aborts an abandoned recovery and ignores its late credential response', async () => {
+    vi.useFakeTimers()
+    let finish!: (value: { token: string; user: { id: string } }) => void
+    let signal: AbortSignal | undefined
+    h.setAuthenticateImpl((_count, value) => { signal = value; return new Promise(resolve => { finish = resolve }) })
+    const source = { type: 'accessToken' as const, token: 'fixture' }
+    const { result, rerender, unmount } = renderHook(({ enabled }) => useAuth(enabled ? source : null, 'https://hub.test'), { initialProps: { enabled: true } })
+    await flushMicrotasks()
+    act(() => { result.current.cancelRecovery(); rerender({ enabled: false }) })
+    expect(signal?.aborted).toBe(true)
+    await act(async () => { finish({ token: 'late', user: { id: 'u1' } }); await vi.advanceTimersByTimeAsync(30_000) })
+    expect(result.current.token).toBeNull()
+    expect(result.current.connectionError).toBeNull()
+    expect(h.getAuthCount()).toBe(1)
+    unmount()
 })
