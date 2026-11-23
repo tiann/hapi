@@ -139,6 +139,7 @@ export function HappyUserMessage() {
                 id={elementId}
                 data-hapi-message-role="user"
                 data-hapi-turn-input={isTurnInput ? 'true' : undefined}
+                tabIndex={isTurnInput ? -1 : undefined}
                 data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
                 className="happy-message scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
             >
@@ -163,6 +164,7 @@ export function HappyUserMessage() {
             id={elementId}
             data-hapi-message-role="user"
             data-hapi-turn-input={isTurnInput ? 'true' : undefined}
+            tabIndex={isTurnInput ? -1 : undefined}
             data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
             className="happy-message flex flex-col items-end scroll-mt-4"
         >

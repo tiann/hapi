@@ -148,3 +148,20 @@ test('a reply to a job wake has no jump-to-input action', async ({ page }) => {
         await row.screenshot({ path: `${process.env.HAPI_REVIEW_SCREENSHOT_DIR}/response-navigation-job-wake.png` })
     }
 })
+
+
+test('keyboard prompt navigation focuses the destination input', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartShort=1')
+    await expect(page.getByText('First short reply', { exact: true })).toBeVisible()
+    await page.evaluate(() => window.__probe.appendReply())
+    const lastLine = page.getByText('New reply line 25', { exact: true })
+    await expect(lastLine).toBeInViewport()
+    await lastLine.hover()
+    await page.getByRole('button', { name: 'Jump to turn input' }).press('Enter')
+    const prompt = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Short chat prompt' })
+    await expect(prompt).toBeFocused()
+    await expect(prompt).toBeInViewport({ ratio: 0.9 })
+    if (process.env.HAPI_REVIEW_SCREENSHOT_DIR) {
+        await page.screenshot({ path: `${process.env.HAPI_REVIEW_SCREENSHOT_DIR}/response-navigation-keyboard-focus.png` })
+    }
+})

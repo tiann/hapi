@@ -11,7 +11,10 @@ const onFork = vi.fn(async (_localId?: string) => {})
 const state = {
     message: { id: 'user-text:interrupted', role: 'user', createdAt: new Date(10),
         content: [{ type: 'text', text: 'Interrupted prompt' }],
-        metadata: { custom: { kind: 'user', localId: 'local-interrupted' as string | null, sourceMessageId: 'stored-message', invokedAt: 10 as number | null | undefined, status: undefined as HappyChatMessageMetadata['status'], isTranscriptEcho: false } } },
+        metadata: { custom: { kind: 'user', localId: 'local-interrupted' as string | null, sourceMessageId: 'stored-message', invokedAt: 10 as number | null | undefined, isTranscriptEcho: false } as {
+            kind: string; localId: string | null; sourceMessageId?: string; invokedAt?: number | null;
+            status?: HappyChatMessageMetadata['status']; isTranscriptEcho: boolean
+        } } },
     thread: { isRunning: true, messages: [] }
 }
 type ContextMetadata = NonNullable<HappyChatContextValue['metadata']>

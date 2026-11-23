@@ -2883,7 +2883,8 @@ export function HappyThread(props: {
         messageId: string,
         replyToMessageId: string | undefined,
         assistantAnchorState: PromptAnchorState,
-        isCancelled: () => boolean
+        isCancelled: () => boolean,
+        focusTarget: boolean
     ): Promise<boolean> => {
         if (promptNavigationTimerRef.current !== null) {
             window.clearTimeout(promptNavigationTimerRef.current)
@@ -2919,6 +2920,7 @@ export function HappyThread(props: {
                 return false
             }
             if (!target) throw new Error('No preceding user message found')
+            if (focusTarget) target.focus({ preventScroll: true })
             target.scrollIntoView({ block: 'start', behavior: 'smooth' })
             const completionStatus = getPromptNavigationCompletionStatus(loadedOlderHistory)
             setPromptNavigationStatus(completionStatus)
@@ -2939,7 +2941,7 @@ export function HappyThread(props: {
         }
     }, [clearInitialScrollTimers, loadOlderForNavigation, markExplicitNavigationAwayFromBottom])
 
-    const jumpToPrompt = useCallback(async (messageId: string, replyToMessageId?: string): Promise<boolean> => {
+    const jumpToPrompt = useCallback(async (messageId: string, replyToMessageId?: string, focusTarget = false): Promise<boolean> => {
         if (navigationInFlightRef.current) return false
         const runId = navigationRunRef.current
         const isCancelled = () => navigationRunRef.current !== runId
@@ -2957,7 +2959,7 @@ export function HappyThread(props: {
                 pendingLoadPromiseRef.current,
                 () => {
                     if (isCancelled()) return false
-                    return scrollToPromptForMessage(messageId, replyToMessageId, assistantAnchorState, isCancelled)
+                    return scrollToPromptForMessage(messageId, replyToMessageId, assistantAnchorState, isCancelled, focusTarget)
                 },
                 () => {
                     if (promptNavigationTimerRef.current !== null) {

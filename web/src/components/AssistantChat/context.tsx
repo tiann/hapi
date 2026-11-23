@@ -36,7 +36,7 @@ export type HappyChatContextValue = {
     isLoadingMoreMessages: boolean
     onNestedScrollFollowChange?: (followLatest: boolean) => void
     loadOlderMessagesPreservingScroll: () => Promise<OlderHistoryLoadResult>
-    jumpToPrompt: (messageId: string, replyToMessageId?: string) => Promise<boolean>
+    jumpToPrompt: (messageId: string, replyToMessageId?: string, focusTarget?: boolean) => Promise<boolean>
     loadingPromptMessageId: string | null
     scrollToConversationStart: () => Promise<boolean>
     isLoadingConversationStart: boolean

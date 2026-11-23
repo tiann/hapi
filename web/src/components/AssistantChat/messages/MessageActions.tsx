@@ -1,5 +1,5 @@
 import * as Popover from '@radix-ui/react-popover'
-import { useState, type ReactNode } from 'react'
+import { useState, type MouseEventHandler, type ReactNode } from 'react'
 import { useAuiState } from '@assistant-ui/react'
 import { CheckIcon, ConversationStartIcon, CopyIcon, ForkIcon, InfoIcon, ReplyPromptIcon, RewindIcon } from '@/components/icons'
 import { Spinner } from '@/components/Spinner'
@@ -40,7 +40,7 @@ type MessageActionsProps = {
     historyActionPending?: boolean
     onFork?: () => Promise<void>
     onRewind?: () => Promise<void>
-    onJumpToPrompt?: () => void
+    onJumpToPrompt?: (focusTarget: boolean) => void
     onJumpToConversationStart?: () => void
     showPromptNavigation?: boolean
     isLoadingConversationStart?: boolean
@@ -171,7 +171,7 @@ onClick={() => { void onFork() }}
                         {onJumpToPrompt && showPromptNavigation ? (
                             <NavigationButton
                                 title={t('message.jumpToPrompt')}
-                                onClick={onJumpToPrompt}
+                                onClick={(event) => onJumpToPrompt(event.detail === 0)}
                                 disabled={isNavigationInFlight || isLoadingPrompt || isLoadingConversationStart}
                             >
                                 {isLoadingPrompt
@@ -188,7 +188,7 @@ onClick={() => { void onFork() }}
 
 function NavigationButton(props: {
     title: string
-    onClick: () => void
+    onClick: MouseEventHandler<HTMLButtonElement>
     disabled?: boolean
     children: ReactNode
 }) {

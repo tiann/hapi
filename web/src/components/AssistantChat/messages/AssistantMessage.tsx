@@ -182,7 +182,7 @@ export function HappyAssistantMessage() {
                     : showHistoricalFork
                         ? () => ctx.onForkConversation!(historicalForkLocalId!)
                         : undefined}
-                onJumpToPrompt={replyToMessageId === null ? undefined : () => { void ctx.jumpToPrompt(messageId, replyToMessageId) }}
+                onJumpToPrompt={replyToMessageId === null ? undefined : (focusTarget) => { void ctx.jumpToPrompt(messageId, replyToMessageId, focusTarget) }}
                 onJumpToConversationStart={() => { void ctx.scrollToConversationStart() }}
                 showPromptNavigation={replyToMessageId !== null && !promptInputVisible}
                 isLoadingConversationStart={ctx.isLoadingConversationStart}
