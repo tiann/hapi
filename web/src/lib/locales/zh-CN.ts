@@ -494,6 +494,9 @@ export default {
   'dialog.reopen.dismiss': '关闭',
 
   'dialog.delete.title': '删除会话',
+  'dialog.delete.clearMeter': '移除失联的任务记录',
+  'dialog.delete.clearMeterDetail': '“{job}”超过 15 分钟没有心跳。请先确认进程已结束。此操作只移除进度记录，不会停止进程或删除会话。',
+  'dialog.delete.liveMeter': '后台任务“{job}”仍有心跳。请等待任务结束后再删除会话，无需再次归档。',
   'dialog.delete.description': '确定要删除 "{name}" 吗？此操作无法撤销。',
   'dialog.delete.scratchlist.one': '这也将删除 1 条草稿清单条目。',
   'dialog.delete.scratchlist.other': '这也将删除 {n} 条草稿清单条目。',
@@ -1156,7 +1159,7 @@ export default {
   'settings.display.pinInProgressMode.jobs': '长时间任务',
   'settings.display.pinInProgressMode.all': '工作中与待处理',
   'settings.display.keepUnreadSessionsVisible': '保持未读会话可见',
-  'settings.display.keepUnreadSessionsVisible.desc': '自动折叠的项目会显示未读会话；手动收起项目会隐藏所有会话。开启后，预览数量限制也不会隐藏未读会话。',
+  'settings.display.keepUnreadSessionsVisible.desc': '展开项目时，未读会话不受预览数量限制。收起项目会隐藏所有会话。',
   'settings.display.appBadge': '任务栏未读角标',
   'settings.notifications.title': '通知',
   'settings.notifications.push': '在此设备上接收推送通知',

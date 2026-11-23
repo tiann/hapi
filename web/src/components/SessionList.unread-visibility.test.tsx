@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
+import type { ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
@@ -51,7 +52,7 @@ function renderWithProviders(children: ReactNode) {
     )
 }
 
-function renderSessionList(sessions: SessionSummary[], headerActions?: ReactNode) {
+function renderSessionList(sessions: SessionSummary[], headerActions?: ReactNode, api: ApiClient | null = null) {
     return renderWithProviders(
         <SessionList
             sessions={sessions}
@@ -62,7 +63,7 @@ function renderSessionList(sessions: SessionSummary[], headerActions?: ReactNode
             isLoading={false}
             renderHeader
             headerActions={headerActions}
-            api={null}
+            api={api}
         />
     )
 }
@@ -76,22 +77,19 @@ describe('SessionList unread visibility', () => {
         localStorage.clear()
     })
 
-    it('peeks unread rows until the operator explicitly closes the project', () => {
+    it('hides unread rows on first load, after collapsing, and on remount', () => {
         seedReads({ read: 1000, unread: 1000 })
-        renderSessionList([
+        const sessions = [
             makeSession({ id: 'read', updatedAt: 1000, metadata: { path: '/work/quiet', name: 'Read row' } }),
             makeSession({ id: 'unread', updatedAt: 2000, metadata: { path: '/work/quiet', name: 'Unread row' } })
-        ])
+        ]
 
-        // Inactive projects start collapsed; only the unread row peeks out.
-        const unreadRow = screen.getByRole('button', { name: /Unread row/ })
-        expect(screen.queryByRole('button', { name: /Read row/ })).toBeNull()
-
+        const first = renderSessionList(sessions)
+        expect(screen.getByTitle('/work/quiet')).toHaveAttribute('aria-expanded', 'false')
+        expect(screen.queryByRole('button', { name: /Unread row/ })).toBeNull()
         fireEvent.click(screen.getByTitle('/work/quiet'))
         expect(screen.getByRole('button', { name: /Read row/ })).toBeInTheDocument()
-        // Toggling the group keeps the unread row mounted in place instead of
-        // moving it between lists, which restarted its icon and spinner.
-        expect(screen.getByRole('button', { name: /Unread row/ })).toBe(unreadRow)
+        const unreadRow = screen.getByRole('button', { name: /Unread row/ })
 
         fireEvent.click(screen.getByTitle('/work/quiet'))
         const panel = unreadRow.closest('.collapsible-panel')!
@@ -100,6 +98,22 @@ describe('SessionList unread visibility', () => {
         expect(screen.queryByRole('button', { name: /Unread row/ })).toBeNull()
         fireEvent.click(screen.getByTitle('/work/quiet'))
         expect(screen.getByRole('button', { name: /Unread row/ })).toBeInTheDocument()
+        first.unmount()
+        renderSessionList(sessions)
+        expect(screen.queryByRole('button', { name: /Unread row/ })).toBeNull()
+    })
+
+    it('restores an explicit fold on an active project after reload, isolated by account', () => {
+        const sessions = [makeSession({ id: 'busy', active: true, updatedAt: 42, metadata: { path: '/work/busy', name: 'Busy row' } })]
+        const api = (ns: string) => ({ getReadStateScope: () => ns } as ApiClient)
+        const first = renderSessionList(sessions, undefined, api('a'))
+        fireEvent.click(screen.getByTitle('/work/busy'))
+        first.unmount()
+        const second = renderSessionList(sessions, undefined, api('a'))
+        expect(screen.queryByText('Busy row')).toBeNull()
+        second.unmount()
+        renderSessionList(sessions, undefined, api('b'))
+        expect(screen.getByText('Busy row')).toBeInTheDocument()
     })
 
     it('shows nothing under a collapsed project once everything is read', () => {

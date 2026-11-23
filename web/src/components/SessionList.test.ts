@@ -894,7 +894,7 @@ describe('bucketRunningSessions', () => {
             key: 'batch',
             label: 'batch',
             status: 'running',
-            heartbeatAt: 1,
+            heartbeatAt: Date.now(),
             startedAt: 1,
             updatedAt: 1,
         },
@@ -1043,7 +1043,7 @@ describe('filterSessionsForListStatus', () => {
         const job = base('job', {
             attachedJob: {
                 key: 'drain', label: 'drain', status: 'running',
-                heartbeatAt: 1, startedAt: 1, updatedAt: 1
+                heartbeatAt: Date.now(), startedAt: 1, updatedAt: 1
             }
         })
         const idle = base('idle')
@@ -1055,7 +1055,7 @@ describe('filterSessionsForListStatus', () => {
         const job = base('job', {
             attachedJob: {
                 key: 'drain', label: 'drain', status: 'running',
-                heartbeatAt: 1, startedAt: 1, updatedAt: 1
+                heartbeatAt: Date.now(), startedAt: 1, updatedAt: 1
             }
         })
         const archived = base('archived')

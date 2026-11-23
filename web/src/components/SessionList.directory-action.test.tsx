@@ -1233,7 +1233,7 @@ describe('SessionList collapse behavior', () => {
                     label: 'beets import',
                     status: 'running',
                     remaining: 12,
-                    heartbeatAt: 1,
+                    heartbeatAt: Date.now(),
                     startedAt: 1,
                     updatedAt: 1,
                 },
@@ -1256,6 +1256,27 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Thinking agent/ })).toBeInTheDocument()
     })
 
+    it('moves a disconnected job back to its project when its heartbeat expires without an SSE event', () => {
+        vi.useFakeTimers()
+        try {
+            const now = Date.now()
+            localStorage.setItem('hapi-pin-in-progress-sessions', 'jobs')
+            const sessions = [makeSession({ id: 'stale', active: false, updatedAt: now,
+                metadata: { path: '/batch', name: 'History' }, attachedJob: {
+                    key: 'job', label: 'Batch', status: 'running', startedAt: now - 900_000,
+                    heartbeatAt: now - 899_999, updatedAt: now,
+                } })]
+            render(renderSessionList(sessions, null))
+            expect(screen.getByTitle('In progress')).toBeInTheDocument()
+            act(() => vi.advanceTimersByTime(60_000))
+            expect(screen.queryByTitle('In progress')).toBeNull()
+            fireEvent.click(screen.getByTitle('/batch'))
+            expect(screen.getByTestId('attached-job-status')).toHaveTextContent('no heartbeat')
+            expect(screen.getByTestId('attached-job-status')).not.toHaveTextContent('running')
+            expect(screen.queryByTestId('session-activity')).toBeNull()
+        } finally { vi.useRealTimers() }
+    })
+
     it('keeps a real agent turn in Running when a job is also attached (#1553)', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
@@ -1270,7 +1291,7 @@ describe('SessionList collapse behavior', () => {
                     label: 'Animate stills',
                     status: 'running',
                     remaining: 16,
-                    heartbeatAt: 1,
+                    heartbeatAt: Date.now(),
                     startedAt: 1,
                     updatedAt: 1,
                 },
@@ -1300,7 +1321,7 @@ describe('SessionList collapse behavior', () => {
                     label: 'beets import',
                     status: 'running',
                     remaining: 8,
-                    heartbeatAt: 1,
+                    heartbeatAt: Date.now(),
                     startedAt: 1,
                     updatedAt: 1,
                 },

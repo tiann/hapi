@@ -671,6 +671,7 @@ export function SessionHeader(props: {
             />
 
             <DeleteSessionDialog
+                api={api}
                 isOpen={deleteOpen}
                 sessionId={session.id}
                 onClose={() => setDeleteOpen(false)}

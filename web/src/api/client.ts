@@ -1,3 +1,4 @@
+import type { AttachedJob } from '@hapi/protocol'
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
 import type {
     AttachmentMetadata,
@@ -1531,6 +1532,12 @@ export class ApiClient {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/pin`, {
             method: 'PUT',
             body: JSON.stringify({ mode })
+        })
+    }
+
+    async clearStaleSessionJob(sessionId: string, job: AttachedJob): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/jobs/${encodeURIComponent(job.key)}/clear-stale`, {
+            method: 'POST', body: JSON.stringify({ runId: job.runId, startedAt: job.startedAt, heartbeatAt: job.heartbeatAt })
         })
     }
 
