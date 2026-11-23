@@ -88,7 +88,8 @@ import { formatUnexpectedStopBlockedFooter } from './unexpectedStopBlockedFooter
 import {
     CURSOR_POST_TOOL_INTERRUPT_AUTO_CONTINUE_STATUS,
     CURSOR_POST_TOOL_INTERRUPT_CONTINUE,
-    CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE
+    CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE,
+    CURSOR_POST_TOOL_INTERRUPT_STEER_TIMEOUT_MESSAGE
 } from './cursorPostToolInterruptContinue';
 
 const CURSOR_ABORT_DRAIN_TIMEOUT_MS = 5_000;
@@ -1296,7 +1297,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                 retryAttempt = -1;
                                 continue;
                             }
-                            this.surfacePromptFailure(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE, { deferFooter: true });
+                            const giveUpMessage = drainOutcome === 'timed_out'
+                                ? CURSOR_POST_TOOL_INTERRUPT_STEER_TIMEOUT_MESSAGE
+                                : CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE;
+                            this.surfacePromptFailure(giveUpMessage, { deferFooter: true });
                             const failure = settleFailure(
                                 this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
                             );
@@ -1308,7 +1312,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             const { bridgeQueued } = failure
                                 ? this.recordModelError(failure)
                                 : { bridgeQueued: false };
-                            if (!bridgeQueued) this.stampBlockedFooter(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE);
+                            if (!bridgeQueued) this.stampBlockedFooter(giveUpMessage);
                             break;
                         }
                         if (postToolAutoContinueUsed) {
