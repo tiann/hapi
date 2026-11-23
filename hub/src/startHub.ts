@@ -26,7 +26,7 @@ import { TunnelManager } from './tunnel'
 import { refreshRejectedRelayAuthKey, resolveRelayAuthKey } from './tunnel/relayAuth'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import { ServerChanChannel } from './serverchan/channel'
-import { WxPusherChannel } from './wxpusher/channel'
+import { createWxPusherChannels } from './wxpusher/channel'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -170,17 +170,10 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     } else {
         console.log('[Hub] ServerChan: disabled (no SERVERCHAN_SENDKEY)')
     }
-    if (config.wxPusherAppToken) {
-        const source = formatSource(config.sources.wxPusherAppToken)
-        const notificationSource = formatSource(config.sources.wxPusherNotification)
-        const backgroundOnlySource = formatSource(config.sources.wxPusherBackgroundOnly)
-        const recipientCount = config.wxPusherUids.length + config.wxPusherTopicIds.length
-        console.log(`[Hub] WxPusher: ${recipientCount > 0 ? 'configured' : 'disabled (no WXPUSHER_UIDS or WXPUSHER_TOPIC_IDS)'} (${source})`)
-        console.log(`[Hub] WxPusher notifications: ${config.wxPusherNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
-        console.log(`[Hub] WxPusher background-only: ${config.wxPusherBackgroundOnly ? 'enabled' : 'disabled'} (${backgroundOnlySource})`)
-    } else {
-        console.log('[Hub] WxPusher: disabled (no WXPUSHER_APP_TOKEN)')
-    }
+    const wxPusherDestinationCount = config.wxPusherNotification ? config.wxPusherDestinations.size : 0
+    console.log(`[Hub] WxPusher: ${wxPusherDestinationCount > 0
+        ? `enabled for ${wxPusherDestinationCount} namespace(s)`
+        : 'disabled (no enabled namespace destinations)'}`)
 
     // Display tunnel status
     if (relayFlag.enabled) {
@@ -274,19 +267,8 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         ))
     }
 
-    if (
-        config.wxPusherAppToken
-        && config.wxPusherNotification
-        && (config.wxPusherUids.length > 0 || config.wxPusherTopicIds.length > 0)
-    ) {
-        notificationChannels.push(new WxPusherChannel(
-            config.wxPusherAppToken,
-            config.wxPusherUids,
-            config.wxPusherTopicIds,
-            config.publicUrl,
-            visibilityTracker,
-            config.wxPusherBackgroundOnly
-        ))
+    if (config.wxPusherNotification) {
+        notificationChannels.push(...createWxPusherChannels(config.wxPusherDestinations, config.publicUrl, visibilityTracker))
     }
 
     // Initialize Telegram bot (optional)

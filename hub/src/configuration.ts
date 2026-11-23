@@ -107,6 +107,7 @@ class Configuration {
 
     /** Only send WxPusher notifications when no visible HAPI client exists */
     public readonly wxPusherBackgroundOnly: boolean
+    public readonly wxPusherDestinations: ServerSettings['wxPusherDestinations']
 
     /** CLI auth token (shared secret) */
     public cliApiToken: string
@@ -182,6 +183,7 @@ class Configuration {
         this.wxPusherTopicIds = serverSettings.wxPusherTopicIds
         this.wxPusherNotification = serverSettings.wxPusherNotification
         this.wxPusherBackgroundOnly = serverSettings.wxPusherBackgroundOnly
+        this.wxPusherDestinations = serverSettings.wxPusherDestinations
         this.listenHost = serverSettings.listenHost
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl

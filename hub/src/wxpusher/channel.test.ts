@@ -2,7 +2,7 @@ import { describe, expect, it, mock } from 'bun:test'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { Session } from '../sync/syncEngine'
 import { VisibilityTracker } from '../visibility/visibilityTracker'
-import { WXPUSHER_SEND_URL, WXPUSHER_SUMMARY_LIMIT, WxPusherChannel } from './channel'
+import { createWxPusherChannels, WXPUSHER_SEND_URL, WXPUSHER_SUMMARY_LIMIT, WxPusherChannel } from './channel'
 
 function createSession(overrides: Partial<Session> = {}): Session {
     return {
@@ -32,6 +32,37 @@ function createSession(overrides: Partial<Session> = {}): Session {
 }
 
 describe('WxPusherChannel', () => {
+    it('routes completion to its exact destination and never to the default or another namespace', async () => {
+        const fetchMock = mock(async (_url: string, _init: RequestInit) => new Response('{"code":1000}'))
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+        const visibility = new VisibilityTracker()
+        try {
+            const channels = createWxPusherChannels(new Map([
+                ['default', { appToken: 'AT_DEFAULT', uids: ['UID_DEFAULT'], topicIds: [], backgroundOnly: false }],
+                ['team-a', { appToken: 'AT_TEAM_A', uids: [], topicIds: [42], backgroundOnly: true }],
+                ['team-b', { appToken: 'AT_TEAM_B', uids: ['UID_TEAM_B'], topicIds: [], backgroundOnly: true }],
+            ]), 'https://hapi.example.com', visibility)
+            const sendCompletion = async (namespace: string) => {
+                await Promise.all(channels.map(channel => channel.sendSessionCompletion(createSession({ namespace }), 'completed')))
+            }
+            visibility.registerConnection('connection-a', 'team-a', 'visible')
+            await sendCompletion('team-a')
+            await sendCompletion('Team-b')
+            await sendCompletion('unknown')
+            expect(fetchMock).not.toHaveBeenCalled()
+
+            await sendCompletion('default')
+            await sendCompletion('team-b')
+            expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init.body)))).toEqual([
+                expect.objectContaining({ appToken: 'AT_DEFAULT', uids: ['UID_DEFAULT'] }),
+                expect.objectContaining({ appToken: 'AT_TEAM_B', uids: ['UID_TEAM_B'] }),
+            ])
+        } finally {
+            globalThis.fetch = originalFetch
+        }
+    })
+
     it('sends session completion notifications to configured recipients', async () => {
         const fetchMock = mock(async () => new Response(JSON.stringify({ code: 1000, msg: '处理成功' }), {
             status: 200,

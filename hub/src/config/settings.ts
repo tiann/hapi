@@ -24,6 +24,13 @@ export interface Settings {
     wxPusherTopicIds?: number[]
     wxPusherNotification?: boolean
     wxPusherBackgroundOnly?: boolean
+    /** Explicit destinations keyed by the exact session namespace. */
+    wxPusherByNamespace?: Record<string, {
+        appToken: string
+        uids?: string[]
+        topicIds?: number[]
+        backgroundOnly?: boolean
+    }>
     listenHost?: string
     listenPort?: number
     publicUrl?: string

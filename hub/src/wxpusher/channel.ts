@@ -1,9 +1,11 @@
+import type { WxPusherDestination } from '../config/notificationDestinations'
 import type { Session } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { NotificationChannel } from '../notifications/notificationTypes'
 import { shouldSuppressBackgroundNotification } from '../notifications/backgroundOnly'
 import { buildSessionUrl, getAgentName, getSessionName } from '../notifications/sessionInfo'
 import { composeInputRequestNotification, getFirstPendingRequest } from '../notifications/inputRequest'
+import { DEFAULT_NAMESPACE } from '../utils/accessToken'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 
 export const WXPUSHER_SEND_URL = 'https://wxpusher.zjiecode.com/api/send/message'
@@ -59,7 +61,8 @@ export class WxPusherChannel implements NotificationChannel {
         private readonly publicUrl: string,
         private readonly visibilityTracker: VisibilityTracker | null = null,
         private readonly backgroundOnly = false,
-        private readonly requestTimeoutMs = WXPUSHER_REQUEST_TIMEOUT_MS
+        private readonly requestTimeoutMs = WXPUSHER_REQUEST_TIMEOUT_MS,
+        private readonly namespace = DEFAULT_NAMESPACE
     ) {}
 
     async sendReady(session: Session): Promise<void> {
@@ -121,7 +124,8 @@ export class WxPusherChannel implements NotificationChannel {
     }
 
     private shouldSuppress(session: Session): boolean {
-        return shouldSuppressBackgroundNotification(session, this.visibilityTracker, this.backgroundOnly)
+        return session.namespace !== this.namespace
+            || shouldSuppressBackgroundNotification(session, this.visibilityTracker, this.backgroundOnly)
     }
 
     private createMessage(summary: string, content: string, url: string): WxPusherMessage {
@@ -169,4 +173,21 @@ export class WxPusherChannel implements NotificationChannel {
             throw new Error(`WxPusher send failed: ${(message ?? responseText) || 'unknown error'}`)
         }
     }
+}
+
+export function createWxPusherChannels(
+    destinations: ReadonlyMap<string, WxPusherDestination>,
+    publicUrl: string,
+    visibilityTracker: VisibilityTracker | null
+): WxPusherChannel[] {
+    return Array.from(destinations, ([namespace, destination]) => new WxPusherChannel(
+        destination.appToken,
+        destination.uids,
+        destination.topicIds,
+        publicUrl,
+        visibilityTracker,
+        destination.backgroundOnly,
+        WXPUSHER_REQUEST_TIMEOUT_MS,
+        namespace
+    ))
 }

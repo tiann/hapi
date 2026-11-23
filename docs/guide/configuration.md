@@ -99,7 +99,8 @@ See [Notifications](./notifications.md) for setup.
 | `WXPUSHER_UIDS` | `wxPusherUids` | – | Comma-separated WxPusher recipient UIDs. |
 | `WXPUSHER_TOPIC_IDS` | `wxPusherTopicIds` | – | Comma-separated WxPusher topic IDs. |
 | `WXPUSHER_NOTIFICATION` | `wxPusherNotification` | `true` | Enable WxPusher notifications. |
-| `WXPUSHER_BACKGROUND_ONLY` | `wxPusherBackgroundOnly` | `false` | Only send WxPusher notifications when no visible HAPI connection exists in the namespace. |
+| `WXPUSHER_BACKGROUND_ONLY` | `wxPusherBackgroundOnly` | `false` | Background-only delivery for the legacy `default` destination. |
+| – | `wxPusherByNamespace` | – | Explicit WxPusher destinations by namespace. See [WxPusher setup](./notifications.md#wxpusher-app-setup). |
 | `VAPID_SUBJECT` | – | `mailto:admin@hapi.run` | Web Push contact. VAPID keys are generated into `vapidKeys`. |
 | `HAPI_ANDROID_PUSH` | `androidPushMode` | `auto` | `auto` (direct FCM when `fcmServiceAccountPath` is set, otherwise the push relay), `relay`, `fcm`, or `off`. Unknown values disable Android push. |
 | `FCM_SERVICE_ACCOUNT_PATH` | `fcmServiceAccountPath` | – | Firebase service-account JSON for private builds of the Android app. |
