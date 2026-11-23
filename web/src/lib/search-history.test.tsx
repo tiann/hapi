@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getSearchHistoryKey, parseSearchHistory, SearchHistoryProvider, useSearchHistory } from './search-history'
 
 function jwt(uid = 1, ns = 'default', exp = 1) {
@@ -21,7 +21,13 @@ function Controls() {
 const state = () => JSON.parse(screen.getByTestId('state').textContent!)
 const click = (name: string) => fireEvent.click(screen.getByRole('button', { name }))
 
-beforeEach(() => { localStorage.clear(); vi.restoreAllMocks() })
+beforeEach(() => {
+    localStorage.clear()
+    vi.stubGlobal('navigator', Object.create(navigator, {
+        locks: { value: { request: (_name: string, callback: () => void) => Promise.resolve(callback()) } },
+    }))
+})
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('search history parsing and identity', () => {
     it('isolates Hub, user and namespace but survives token refresh and trailing slashes', () => {
@@ -119,6 +125,16 @@ describe('scoped history provider', () => {
         expect(state()).toMatchObject({ enabled: false, sessions: ['alpha'], files: [] })
         click('clear all'); click('toggle'); click('outline')
         expect(state()).toMatchObject({ enabled: true, sessions: [], outlines: ['中文'] })
+    })
+    it('does not use persisted data without a cross-tab lock', () => {
+        vi.stubGlobal('navigator', Object.create(navigator, { locks: { value: undefined } }))
+        const saved = '{"enabled":true,"sessions":["other"]}'
+        localStorage.setItem('a', saved)
+        render(<SearchHistoryProvider storageKey="a"><Controls /></SearchHistoryProvider>)
+        expect(state()).toMatchObject({ enabled: false, sessions: [] })
+        click('toggle'); click('session'); click('clear all')
+        expect(state()).toMatchObject({ enabled: true, sessions: [] })
+        expect(localStorage.getItem('a')).toBe(saved)
     })
     it('does not store anything without an authenticated scope', () => {
         render(<SearchHistoryProvider storageKey={null}><Controls /></SearchHistoryProvider>)

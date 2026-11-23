@@ -15,6 +15,7 @@ async function optIn(page: Page) {
     const toggle = page.getByRole('checkbox', { name: /^(Search history|搜索历史)$/ })
     await expect(toggle).not.toBeChecked()
     await toggle.locator('..').click()
+    await expect(toggle).toBeChecked()
     await go(page, 'Sessions')
 }
 
@@ -26,7 +27,7 @@ test('fresh browser defaults off and only records after enabling in settings', a
     await optIn(page)
     await page.getByRole('searchbox').fill('saved')
     await page.getByRole('searchbox').press('Enter')
-    expect((await history(page)).sessions).toEqual(['saved'])
+    await expect.poll(async () => (await history(page)).sessions).toEqual(['saved'])
     await page.reload()
     await page.getByRole('searchbox').focus()
     await expect(recent(page).getByRole('button', { name: 'saved', exact: true })).toBeVisible()
@@ -39,7 +40,7 @@ test('all three production fields persist separate histories, file preview resto
     await optIn(page)
     const sessions = page.getByRole('searchbox', { name: /^Search sessions/ })
     await sessions.fill('history*')
-    expect(await history(page)).toMatchObject({ sessions: [], files: [], outlines: [] })
+    await expect.poll(() => history(page)).toMatchObject({ sessions: [], files: [], outlines: [] })
     await sessions.press('Enter')
     await go(page, 'Files')
     const files = page.getByPlaceholder('Search files')
@@ -54,7 +55,7 @@ test('all three production fields persist separate histories, file preview resto
     await expect(page.getByRole('button', { name: /Implement history/ })).toBeVisible()
     await expect(page.getByRole('button', { name: /Test 中文/ })).toHaveCount(0)
     await page.getByRole('button', { name: 'Close', exact: true }).click()
-    expect(await history(page)).toMatchObject({ sessions: ['history*'], files: ['README'], outlines: ['*history*'] })
+    await expect.poll(() => history(page)).toMatchObject({ sessions: ['history*'], files: ['README'], outlines: ['*history*'] })
     await page.reload()
     await sessions.focus()
     await expect(recent(page).getByRole('button', { name: 'history*', exact: true })).toBeVisible()
@@ -67,22 +68,24 @@ test('all three production fields persist separate histories, file preview resto
     await expect(toggle).toBeChecked()
     if (process.env.HAPI_TEST_ARTIFACT_DIR) await page.screenshot({ path: `${process.env.HAPI_TEST_ARTIFACT_DIR}/search-history-settings.png`, fullPage: true })
     await toggle.locator('..').click()
+    await expect(toggle).not.toBeChecked()
     await go(page, 'Files')
     await files.fill('ignored')
     await files.press('Enter')
-    expect((await history(page)).files).toEqual(['README'])
+    await expect.poll(async () => (await history(page)).files).toEqual(['README'])
     await files.fill('')
     await expect(recent(page)).toHaveCount(0)
     await go(page, 'Settings')
     await toggle.locator('..').click()
+    await expect(toggle).toBeChecked()
     await go(page, 'Files')
     await files.focus()
     await recent(page).getByRole('button', { name: 'Remove search: README' }).click()
-    expect((await history(page)).files).toEqual([])
-    expect((await history(page)).sessions).toEqual(['history*'])
+    await expect.poll(async () => (await history(page)).files).toEqual([])
+    await expect.poll(async () => (await history(page)).sessions).toEqual(['history*'])
     await go(page, 'Settings')
     await page.getByRole('button', { name: 'Clear search history', exact: true }).click()
-    expect(await history(page)).toEqual({ enabled: true, sessions: [], files: [], outlines: [] })
+    await expect.poll(() => history(page)).toEqual({ enabled: true, sessions: [], files: [], outlines: [] })
     await page.reload()
     await sessions.focus()
     await expect(recent(page)).toHaveCount(0)
@@ -94,6 +97,7 @@ test('Hub/account/namespace partitioning survives token refresh', async ({ page 
     await optIn(page)
     await page.getByRole('searchbox').fill('private')
     await page.getByRole('searchbox').press('Enter')
+    await expect.poll(async () => (await history(page)).sessions).toEqual(['private'])
     for (const suffix of ['?uid=2', '?ns=other', '?hub=https://other.test']) {
         await page.goto(fixture + suffix)
         await page.getByRole('searchbox').focus()
@@ -114,12 +118,12 @@ test('clearing the field cancels pending recording and cleared history stays emp
     await page.getByRole('button', { name: 'Clear search', exact: true }).click()
     await recent(page).getByRole('button', { name: 'Clear history', exact: true }).click()
     await go(page, 'Settings')
-    expect((await history(page)).sessions).toEqual([])
+    await expect.poll(async () => (await history(page)).sessions).toEqual([])
     await go(page, 'Sessions')
     await input.fill('also discarded')
     await page.getByRole('button', { name: 'Clear search', exact: true }).click()
     await page.evaluate(() => window.dispatchEvent(new Event('pagehide')))
-    expect((await history(page)).sessions).toEqual([])
+    await expect.poll(async () => (await history(page)).sessions).toEqual([])
 })
 
 test('file search clear restores focus and outside clicks dismiss history', async ({ page }) => {
@@ -131,7 +135,7 @@ test('file search clear restores focus and outside clicks dismiss history', asyn
     await input.press('Enter')
     await input.fill('discarded file query')
     await page.getByRole('button', { name: 'Clear search', exact: true }).click()
-    expect((await history(page)).files).toEqual(['README'])
+    await expect.poll(async () => (await history(page)).files).toEqual(['README'])
     await expect(input).toBeFocused()
     await expect(recent(page)).toBeVisible()
     await page.getByRole('button', { name: 'Refresh filesystem view' }).click()
@@ -147,11 +151,11 @@ test('composition Enter does not save fragments; completed input and outline clo
     // Start after fill: Firefox's native fill operation can end a composition.
     await input.dispatchEvent('compositionstart', { data: '' })
     await input.press('Enter')
-    expect(await history(page)).toMatchObject({ sessions: [], files: [], outlines: [] })
+    await expect.poll(() => history(page)).toMatchObject({ sessions: [], files: [], outlines: [] })
     await input.fill('中文')
     await input.dispatchEvent('compositionend', { data: '中文' })
     await page.getByRole('button', { name: 'Close', exact: true }).click()
-    expect((await history(page)).outlines).toEqual(['中文'])
+    await expect.poll(async () => (await history(page)).outlines).toEqual(['中文'])
 })
 
 test('blocked storage leaves searching and settings usable', async ({ page }) => {
@@ -193,7 +197,7 @@ test('malformed stored history recovers, whitespace is ignored and only the late
         await input.fill(`query-${index}`)
         await input.press('Enter')
     }
-    expect((await history(page)).sessions).toHaveLength(20)
+    await expect.poll(async () => (await history(page)).sessions).toHaveLength(20)
     expect((await history(page)).sessions.at(-1)).toBe('query-2')
     await input.fill('query-10')
     await input.press('Enter')
@@ -211,7 +215,7 @@ test('the shared picker search neither sees nor writes the main session history'
     await expect(recent(page)).toHaveCount(0)
     await input.fill('picker-only')
     await input.press('Enter')
-    expect((await history(page)).sessions).toEqual(['main-only'])
+    await expect.poll(async () => (await history(page)).sessions).toEqual(['main-only'])
 })
 
 test('keyboard clear discards the uncommitted session query', async ({ page }) => {
@@ -228,7 +232,7 @@ test('keyboard clear discards the uncommitted session query', async ({ page }) =
     await expect(clear).toBeFocused()
     await page.keyboard.press('Enter')
     await expect(input).toBeFocused()
-    expect((await history(page)).sessions).toEqual(['saved session'])
+    await expect.poll(async () => (await history(page)).sessions).toEqual(['saved session'])
 })
 
 test('keyboard clear discards the uncommitted file query', async ({ page }) => {
@@ -244,7 +248,7 @@ test('keyboard clear discards the uncommitted file query', async ({ page }) => {
     await page.keyboard.press('Enter')
     await expect(input).toBeFocused()
     await expect(recent(page).getByRole('button', { name: 'README', exact: true })).toBeVisible()
-    expect((await history(page)).files).toEqual(['README'])
+    await expect.poll(async () => (await history(page)).files).toEqual(['README'])
     if (process.env.HAPI_REVIEW_SCREENSHOT) await page.screenshot({ path: process.env.HAPI_REVIEW_SCREENSHOT })
 })
 
@@ -263,7 +267,7 @@ test('a delayed storage event cannot resurrect locally cleared history', async (
     }, old)
     await go(page, 'Sessions')
     await expect(recent(page)).toHaveCount(0)
-    expect((await history(page)).sessions).toEqual([])
+    await expect.poll(async () => (await history(page)).sessions).toEqual([])
 })
 
 test('another tab receives preference changes and history clearing', async ({ page, context }) => {
@@ -327,4 +331,75 @@ test.describe('mobile touch', () => {
         await expect(page.getByRole('button', { name: '清空搜索历史' })).toBeVisible()
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     })
+})
+
+test('scope options stay selectable with recent searches open', async ({ page }) => {
+    await page.goto(fixture)
+    await optIn(page)
+    const input = page.getByRole('searchbox')
+    await input.fill('saved query')
+    await input.press('Enter')
+    await expect.poll(async () => (await history(page)).sessions).toEqual(['saved query'])
+    await input.fill('')
+    await expect(recent(page)).toBeVisible()
+    const scope = page.getByRole('button', { name: 'Search scope' })
+    await scope.click()
+    await expect(recent(page)).toHaveCount(0)
+    const exclude = page.getByRole('button', { name: 'Exclude', exact: true })
+    await expect(exclude).toBeVisible()
+    if (process.env.HAPI_REVIEW_SCREENSHOT) await page.screenshot({ path: process.env.HAPI_REVIEW_SCREENSHOT })
+    await exclude.click()
+    await expect(scope).toContainText('Exclude')
+})
+
+test('overlapping writes respect an opt-out and never restore cleared entries', async ({ page, context }) => {
+    await page.goto(fixture)
+    await optIn(page)
+    const input = page.getByRole('searchbox')
+    await input.fill('old entry')
+    await input.press('Enter')
+    await expect.poll(async () => (await history(page)).sessions).toEqual(['old entry'])
+    const settings = await context.newPage()
+    await settings.goto(fixture)
+    await go(settings, 'Settings')
+    const toggle = settings.getByRole('checkbox', { name: 'Search history', exact: true })
+    const key = await page.evaluate(() => Object.keys(localStorage).find(key => key.startsWith('hapi.searchHistory.v1.'))!)
+    let unlock: () => Promise<void>
+    const hold = async () => {
+        const holder = await context.newPage()
+        await holder.goto(fixture)
+        await holder.evaluate(lockName => new Promise<void>(acquired => {
+            void navigator.locks.request(lockName, () => new Promise<void>(release => {
+                Object.assign(window, { releaseSearchHistoryTestLock: release })
+                acquired()
+            }))
+        }), key)
+        unlock = async () => {
+            await holder.evaluate(() => (window as Window & { releaseSearchHistoryTestLock: () => void }).releaseSearchHistoryTestLock())
+            await holder.close()
+        }
+    }
+    const pending = () => page.evaluate(async lockName => (await navigator.locks.query()).pending?.filter(lock => lock.name === lockName).length, key)
+    await hold()
+    try {
+        await expect(toggle).toBeChecked()
+        await toggle.locator('..').click()
+        await expect.poll(pending).toBe(1)
+        await input.fill('must not be saved')
+        await input.press('Enter')
+        await expect.poll(pending).toBe(2)
+    } finally { await unlock!() }
+    await expect.poll(() => history(page)).toMatchObject({ enabled: false, sessions: ['old entry'] })
+    await expect(toggle).not.toBeChecked()
+    await toggle.locator('..').click()
+    await expect(toggle).toBeChecked()
+    await hold()
+    try {
+        await settings.getByRole('button', { name: 'Clear search history', exact: true }).click()
+        await expect.poll(pending).toBe(1)
+        await input.fill('after clear')
+        await input.press('Enter')
+        await expect.poll(pending).toBe(2)
+    } finally { await unlock!() }
+    await expect.poll(() => history(page)).toMatchObject({ enabled: true, sessions: ['after clear'] })
 })

@@ -65,24 +65,43 @@ function readHistory(key: string): SearchHistoryState | null {
 }
 
 function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: string; children: ReactNode }) {
-    const [state, setState] = useState(() => readHistory(storageKey) ?? emptyHistory())
-    const current = useRef(state)
-    const storageFailed = useRef(false)
+    const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
+    const [state, setState] = useState(() => (locks ? readHistory(storageKey) : null) ?? emptyHistory())
+    const memoryFallback = useRef<SearchHistoryState | null>(null)
     const value = useMemo<HistoryContextValue>(() => {
-        const update = (change: (previous: SearchHistoryState) => SearchHistoryState) => {
-            // Read the latest persisted state so writes in another tab aren't overwritten.
-            const previous = storageFailed.current ? current.current : readHistory(storageKey) ?? current.current
-            const next = change(previous)
-            if (next === previous) return
-            current.current = next
+        const show = (next: SearchHistoryState) => {
             setState(next)
-            try {
-                window.localStorage.setItem(storageKey, JSON.stringify(next))
-                storageFailed.current = false
-            } catch {
-                // Keep the setting and history usable in memory when storage is blocked/full.
-                storageFailed.current = true
+        }
+        const updateInMemory = (change: (previous: SearchHistoryState) => SearchHistoryState) => {
+            // No cross-tab lock means no access to the persisted history. A
+            // stale tab must never write it back after an opt-out or clear.
+            const next = change(memoryFallback.current ?? emptyHistory())
+            memoryFallback.current = next
+            show(next)
+        }
+        const update = (change: (previous: SearchHistoryState) => SearchHistoryState) => {
+            if (!locks) {
+                updateInMemory(change)
+                return
             }
+            void locks.request(storageKey, () => {
+                // Read and write under the same exclusive origin/scope lock.
+                const previous = readHistory(storageKey)
+                if (!previous) {
+                    updateInMemory(change)
+                    return
+                }
+                const next = change(previous)
+                try {
+                    if (next !== previous) window.localStorage.setItem(storageKey, JSON.stringify(next))
+                    memoryFallback.current = null
+                    show(next)
+                } catch {
+                    // Storage is full/blocked. Never make this unsaved state an
+                    // authoritative input to a future persisted mutation.
+                    updateInMemory(change)
+                }
+            }).catch(() => updateInMemory(change))
         }
         return {
             state,
@@ -97,22 +116,22 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
                 : { ...emptyHistory(), enabled: previous.enabled }),
             setEnabled: enabled => update(previous => ({ ...previous, enabled })),
         }
-    }, [state, storageKey])
+    }, [locks, state, storageKey])
 
     useEffect(() => {
+        if (!locks) return
         const onStorage = (event: StorageEvent) => {
             if (event.key !== storageKey && event.key !== null) return
             // A storage event describes the write that queued it, not necessarily
             // the value still on disk after a more recent write in this tab.
             const next = readHistory(storageKey)
             if (!next) return
-            current.current = next
-            storageFailed.current = false
+            memoryFallback.current = null
             setState(next)
         }
         window.addEventListener('storage', onStorage)
         return () => window.removeEventListener('storage', onStorage)
-    }, [storageKey])
+    }, [locks, storageKey])
 
     return <HistoryContext.Provider value={value}>{children}</HistoryContext.Provider>
 }

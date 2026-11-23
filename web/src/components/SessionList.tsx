@@ -1001,7 +1001,7 @@ export function SessionListSearch(props: {
 
     const inputRef = useRef<HTMLInputElement>(null)
     const history = useSearchHistoryField('sessions', props.value, props.onChange, inputRef, {
-        enabled: props.enableHistory === true, wrapperHandlesBlur: true,
+        enabled: props.enableHistory === true, wrapperHandlesBlur: true, suppressSuggestions: searchMatchModeOpen,
     })
     const collapsedButtonRef = useRef<HTMLButtonElement>(null)
     const scopeButtonRef = useRef<HTMLButtonElement>(null)
@@ -1178,7 +1178,10 @@ export function SessionListSearch(props: {
                 type="button"
                 aria-label={t('sessions.search.scope.toggle')}
                 aria-expanded={searchMatchModeOpen}
-                onClick={() => setSearchMatchModeOpen(open => !open)}
+                onClick={() => {
+                    history.dismissSuggestions()
+                    setSearchMatchModeOpen(open => !open)
+                }}
                 className="flex h-full w-auto items-center gap-0.5 border-r border-[var(--app-border)] px-1.5 text-xs leading-none text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)]"
             >
                 <span className="shrink-0 whitespace-nowrap leading-none">

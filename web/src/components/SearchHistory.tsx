@@ -8,7 +8,7 @@ export function useSearchHistoryField(
     query: string,
     onChange: (query: string) => void,
     inputRef: RefObject<HTMLInputElement | null>,
-    options: { enabled?: boolean; wrapperHandlesBlur?: boolean; clearButtonRef?: RefObject<HTMLButtonElement | null> } = {}
+    options: { enabled?: boolean; wrapperHandlesBlur?: boolean; suppressSuggestions?: boolean; clearButtonRef?: RefObject<HTMLButtonElement | null> } = {}
 ) {
     const history = useSearchHistory()
     const enabled = options.enabled !== false && history.state.enabled
@@ -47,7 +47,7 @@ export function useSearchHistoryField(
         if (!enabled) dirty.current = false
     }, [enabled])
 
-    const visible = open && !composing && enabled && query.length === 0 && history.state[type].length > 0
+    const visible = open && !options.suppressSuggestions && !composing && enabled && query.length === 0 && history.state[type].length > 0
     const focusEntry = (last = false) => {
         const entries = panelRef.current?.querySelectorAll<HTMLButtonElement>('[data-history-query]')
         entries?.[last ? entries.length - 1 : 0]?.focus()
@@ -59,6 +59,7 @@ export function useSearchHistoryField(
         setOpen(false)
     }
     return {
+        dismissSuggestions: () => setOpen(false),
         onClearButtonBlur: blur,
         clearQuery: () => {
             cancelPending()

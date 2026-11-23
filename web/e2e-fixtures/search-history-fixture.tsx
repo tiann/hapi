@@ -41,8 +41,10 @@ function SessionSearch() {
     const chinese = locale === 'zh-CN'
     const [value, setValue] = useState('')
     const [expanded, setExpanded] = useState(true)
+    const [matchMode, setMatchMode] = useState<'default' | 'exclude'>('default')
     return <section className="relative mx-auto max-w-xl p-3" aria-label="Session search fixture">
         <SessionListSearch value={value} onChange={setValue} expanded={expanded} onExpandedChange={setExpanded}
+            searchMode="metadata" searchMatchMode={matchMode} onSearchMatchModeChange={setMatchMode}
             enableHistory={!new URLSearchParams(location.search).has('sharePicker')}
             customStart="" customEnd="" sessionActivityDates={new Set()} onDateRangeChange={() => {}} />
         <p data-fixture-control="" className="mt-4">{chinese ? (value ? `筛选会话：${value}` : '全部会话') : (value ? `Filtered sessions: ${value}` : 'All sessions')}</p>
