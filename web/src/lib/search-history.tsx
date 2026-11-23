@@ -95,7 +95,9 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
     const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
     const hasIndexedDb = typeof indexedDB !== 'undefined'
     const canCoordinate = Boolean(locks || hasIndexedDb)
-    const [state, setState] = useState(() => (canCoordinate ? readHistory(storageKey) : null) ?? emptyHistory())
+    const [initialHistory] = useState(() => canCoordinate ? readHistory(storageKey) : null)
+    const [state, setState] = useState(() => initialHistory ?? emptyHistory())
+    const lastKnownPersisted = useRef(initialHistory)
     const [optOutNotSaved, setOptOutNotSaved] = useState(false)
     const [failedWrite, setFailedWrite] = useState<HistoryContextValue['failedWrite']>(null)
     const suspendedRecording = useRef(false)
@@ -116,6 +118,21 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
             setFailedWrite(null)
             setState({ ...previous, enabled: false })
         }
+        const onUnavailable = (change: Change, action: Action) => {
+            const saved = lastKnownPersisted.current
+            if (!saved) {
+                updateInMemory(change)
+                return
+            }
+            if (action === 'disable' && saved.enabled) {
+                handleUnsavedOptOut(saved)
+                return
+            }
+            // Don't replace saved entries with a memory-only result when the
+            // coordinator, a read, or a write stops working mid-session.
+            if (action === 'delete' || action === 'enable') setFailedWrite(action)
+            setState(suspendedRecording.current ? { ...saved, enabled: false } : saved)
+        }
         const update = (change: Change, action: Action) => {
             if (action === 'record' && suspendedRecording.current) return
             if (!canCoordinate) {
@@ -126,10 +143,10 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
                 if (action === 'record' && suspendedRecording.current) return
                 const previous = readHistory(storageKey)
                 if (!previous) {
-                    if (action === 'disable' && state.enabled && !memoryFallback.current) handleUnsavedOptOut(state)
-                    else updateInMemory(change)
+                    onUnavailable(change, action)
                     return
                 }
+                lastKnownPersisted.current = previous
                 const next = change(previous)
                 try {
                     if (next !== previous) {
@@ -139,6 +156,7 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
                         window.localStorage.setItem(storageKey, JSON.stringify(enabled ? next : lists))
                         if (action !== 'record') setFailedWrite(null)
                     }
+                    lastKnownPersisted.current = next
                     memoryFallback.current = null
                     if (action === 'enable' || !next.enabled) {
                         suspendedRecording.current = false
@@ -146,21 +164,11 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
                     }
                     setState(suspendedRecording.current ? { ...next, enabled: false } : next)
                 } catch {
-                    if (action === 'disable' && previous.enabled) {
-                        handleUnsavedOptOut(previous)
-                    } else {
-                        // If we can read persisted state, don't pretend an
-                        // unsuccessful mutation took effect in localStorage.
-                        if (action === 'delete' || action === 'enable') setFailedWrite(action)
-                        setState(suspendedRecording.current ? { ...previous, enabled: false } : previous)
-                    }
+                    onUnavailable(change, action)
                 }
             }
             const coordination = locks ? locks.request(storageKey, mutate) : withIndexedDbLock(storageKey, mutate)
-            void coordination.catch(() => {
-                if (action === 'disable' && state.enabled && !memoryFallback.current) handleUnsavedOptOut(state)
-                else updateInMemory(change)
-            })
+            void coordination.catch(() => onUnavailable(change, action))
         }
         return {
             state, optOutNotSaved, failedWrite,
@@ -185,6 +193,7 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
             // the value still on disk after a more recent write in this tab.
             const next = readHistory(storageKey)
             if (!next) return
+            lastKnownPersisted.current = next
             memoryFallback.current = null
             if (!next.enabled) {
                 suspendedRecording.current = false

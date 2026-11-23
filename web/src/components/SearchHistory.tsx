@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FocusEvent, type KeyboardEvent, type RefObject } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type RefObject } from 'react'
 import { useSearchHistory, type SearchHistoryType } from '@/lib/search-history'
 import { useTranslation } from '@/lib/use-translation'
 import { CloseIcon } from '@/components/icons'
@@ -19,6 +19,7 @@ export function useSearchHistoryField(
     const pendingQuery = useRef('')
     const panelId = useId()
     const panelRef = useRef<HTMLDivElement>(null)
+    const focusedSuggestion = useRef<HTMLElement | null>(null)
     const record = useRef(history.record)
     record.current = history.record
 
@@ -48,6 +49,14 @@ export function useSearchHistoryField(
     }, [enabled])
 
     const visible = open && !options.suppressSuggestions && !composing && enabled && query.length === 0 && history.state[type].length > 0
+    useLayoutEffect(() => {
+        const previous = focusedSuggestion.current
+        if (!previous || previous.isConnected) return
+        focusedSuggestion.current = null
+        // Chromium drops focus onto body if another tab clears (or hides)
+        // the selected suggestion. Don't undo a deliberate focus change.
+        if (document.activeElement === document.body) inputRef.current?.focus()
+    })
     const focusEntry = (last = false) => {
         const entries = panelRef.current?.querySelectorAll<HTMLButtonElement>('[data-history-query]')
         entries?.[last ? entries.length - 1 : 0]?.focus()
@@ -92,6 +101,8 @@ export function useSearchHistoryField(
         },
         suggestions: visible ? <SearchHistorySuggestions
             id={panelId} panelRef={panelRef} entries={history.state[type]} deleteNotSaved={history.failedWrite === 'delete'}
+            onFocusCapture={event => { focusedSuggestion.current = event.target as HTMLElement }}
+            onBlurCapture={event => { if (event.relatedTarget || event.target.isConnected) focusedSuggestion.current = null }}
             onBlur={options.wrapperHandlesBlur ? undefined : blur}
             onSelect={entry => {
                 dirty.current = false
@@ -116,13 +127,15 @@ function SearchHistorySuggestions(props: {
     onRemove: (query: string) => void
     onClear: () => void
     onClose: () => void
+    onFocusCapture: (event: FocusEvent<HTMLElement>) => void
+    onBlurCapture: (event: FocusEvent<HTMLElement>) => void
     onBlur?: (event: FocusEvent<HTMLElement>) => void
 }) {
     const { t } = useTranslation()
     return <div
         id={props.id} ref={props.panelRef} role="region" aria-label={t('searchHistory.recent')}
         className="absolute inset-x-0 top-full z-40 mt-1 max-h-[min(20rem,45dvh)] overflow-y-auto rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] shadow-lg"
-        onBlur={props.onBlur}
+        onBlur={props.onBlur} onFocusCapture={props.onFocusCapture} onBlurCapture={props.onBlurCapture}
         onMouseDown={event => {
             // WebKit does not focus buttons on pointer activation. Keep the field
             // focused until click runs so blur cannot remove a touch/click target.
