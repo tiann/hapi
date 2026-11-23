@@ -140,6 +140,12 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         // window while only this field moves (#1717 cold-review round 22) —
         // skipping the render here would leave the blocked chip stale.
         && current.thinkingConfirmed === next.thinkingConfirmed
+        // Treating a revision-only move as irrelevant would skip writing the
+        // patched summary into the cache (#1717 cold-review round 28) — a
+        // later, out-of-order patch with a revision in between the two would
+        // then compare against the STALE cached revision and win a fight it
+        // should have lost, able to drag `thinking` back to a stale value.
+        && (current.thinkingRevision ?? 0) === (next.thinkingRevision ?? 0)
         && current.updatedAt === next.updatedAt
         && current.lastUserMessageAt === next.lastUserMessageAt
         && current.backgroundTaskCount === next.backgroundTaskCount

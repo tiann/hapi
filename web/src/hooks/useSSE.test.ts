@@ -324,6 +324,18 @@ describe('isRenderIrrelevantPatch', () => {
         expect(isRenderIrrelevantPatch(current, next)).toBe(false)
     })
 
+    it('reports a thinkingRevision-only move as relevant even when thinking itself is unchanged (#1717)', () => {
+        // A revision bump with no visible change still has to persist into
+        // the cache: skipping it here leaves the cache holding a STALE
+        // revision, which lets a later, out-of-order patch (dated between
+        // the two) win a comparison it should have lost and drag `thinking`
+        // back to a stale value.
+        const current = makeSummary({ thinking: false, thinkingRevision: 10 })
+        const next = makeSummary({ thinking: false, thinkingRevision: 12, activeAt: 11_000 })
+
+        expect(isRenderIrrelevantPatch(current, next)).toBe(false)
+    })
+
     it('reports attachedJob.startedAt changes as relevant', () => {
         const job = {
             key: 'beets',
