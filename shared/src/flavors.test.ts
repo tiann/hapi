@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
     Capabilities,
+    Flavors,
     getFlavorLabel,
     hasCapability,
     isKnownFlavor,
@@ -14,16 +15,7 @@ import {
 } from './flavors'
 import {
     AGENT_FLAVORS,
-    AGY_PERMISSION_MODES,
-    CLAUDE_PERMISSION_MODES,
-    CODEX_PERMISSION_MODES,
-    COPILOT_PERMISSION_MODES,
     CREATABLE_AGENT_FLAVORS,
-    CURSOR_PERMISSION_MODES,
-    GEMINI_PERMISSION_MODES,
-    GROK_PERMISSION_MODES,
-    KIMI_PERMISSION_MODES,
-    OPENCODE_PERMISSION_MODES,
     STEERING_SUPPORTED_FLAVORS
 } from './modes'
 import type { AgentFlavor, PermissionMode } from './modes'
@@ -325,16 +317,11 @@ describe('steering-supported flavors', () => {
     })
 })
 
-describe('per-flavor permission mode constants', () => {
-    test('each constant holds its flavor list', () => {
-        expect([...AGY_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.agy)
-        expect([...CLAUDE_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.claude)
-        expect([...CODEX_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.codex)
-        expect([...COPILOT_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.copilot)
-        expect([...CURSOR_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.cursor)
-        expect([...GEMINI_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.gemini)
-        expect([...GROK_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.grok)
-        expect([...KIMI_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.kimi)
-        expect([...OPENCODE_PERMISSION_MODES]).toEqual(PERMISSION_MODES_BY_FLAVOR.opencode)
+describe('allowsPermissionMode', () => {
+    test.each(AGENT_FLAVORS)('%s allows exactly its declared modes', (flavor) => {
+        for (const mode of PERMISSION_MODES) {
+            expect(Flavors[flavor].allowsPermissionMode(mode)).toBe(PERMISSION_MODES_BY_FLAVOR[flavor].some((m) => m === mode))
+        }
+        expect(Flavors[flavor].allowsPermissionMode('not-a-mode')).toBe(false)
     })
 })

@@ -4,7 +4,7 @@
  */
 
 import type { Readable } from 'node:stream'
-import type { ClaudePermissionMode } from '@hapi/protocol/types'
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types'
 
 /**
  * SDK message types
@@ -139,7 +139,7 @@ export interface InterruptRequest extends ControlRequest {
 
 export interface SetPermissionModeRequest extends ControlRequest {
     subtype: 'set_permission_mode'
-    mode: ClaudePermissionMode
+    mode: PermissionModeOf<typeof Flavors.claude>
 }
 
 export interface ApplyFlagSettingsRequest extends ControlRequest {
@@ -213,7 +213,7 @@ export interface QueryOptions {
     maxTurns?: number
     mcpServers?: Record<string, unknown>
     pathToClaudeCodeExecutable?: string
-    permissionMode?: ClaudePermissionMode
+    permissionMode?: PermissionModeOf<typeof Flavors.claude>
     continue?: boolean
     resume?: string
     /**

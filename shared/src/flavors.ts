@@ -16,6 +16,8 @@ type FlavorTraits = {
     readonly permissionReplyStyle: PermissionReplyStyle
     /** Permission modes offered for the flavor; empty when the flavor has none. */
     readonly permissionModes: readonly PermissionMode[]
+    /** Whether the mode is one of the flavor's permission modes. */
+    allowsPermissionMode(mode: string): mode is PermissionMode
     /** New-session form permission mode: `shared` selectable in the shared form state, `separate` selectable in the flavor's own state, `managed` not selectable. */
     readonly permissionCreateFormModeSource: 'shared' | 'separate' | 'managed'
     /** Mode a saved YOLO toggle migrates to in the new-session form; null if it is not migrated. */
@@ -48,7 +50,10 @@ const AUTO_APPROVE_MODES: readonly PermissionMode[] = ['yolo', 'bypassPermission
 
 function defineFlavor<const TModes extends readonly PermissionMode[]>(
     spec: FlavorSpec<TModes>
-): FlavorTraits & { readonly permissionModes: TModes } {
+): Omit<FlavorTraits, 'permissionModes' | 'allowsPermissionMode'> & {
+    readonly permissionModes: TModes
+    allowsPermissionMode(mode: string): mode is TModes[number]
+} {
     const autoApproveModes = spec.permissionModes.filter((mode) => AUTO_APPROVE_MODES.includes(mode))
     if (autoApproveModes.length > 1) {
         throw new Error(`Flavor ${spec.label} lists more than one auto-approve mode: ${autoApproveModes.join(', ')}`)
@@ -59,6 +64,7 @@ function defineFlavor<const TModes extends readonly PermissionMode[]>(
         capabilities: spec.capabilities,
         permissionReplyStyle: spec.permissionReplyStyle,
         permissionModes: spec.permissionModes,
+        allowsPermissionMode: (mode): mode is TModes[number] => (spec.permissionModes as readonly string[]).includes(mode),
         permissionCreateFormModeSource: spec.permissionModes.length === 0
             ? 'managed'
             : spec.ownPermissionFormState ? 'separate' : 'shared',
@@ -186,45 +192,29 @@ const pi = defineFlavor({
 })
 
 // One entry per flavor; the key is the flavor id stored in session metadata.
-const FLAVOR_TRAITS = {
+export const Flavors = {
     agy, claude, codex, dsh, copilot, cursor, gemini, grok, kimi, opencode, pi,
 } satisfies Record<string, FlavorTraits>
 
-export type AgentFlavor = keyof typeof FLAVOR_TRAITS
+export type AgentFlavor = keyof typeof Flavors
 
 // Object.keys is not typed per key and z.enum needs a non-empty tuple.
-export const AGENT_FLAVORS = Object.keys(FLAVOR_TRAITS) as unknown as readonly [AgentFlavor, ...AgentFlavor[]]
+export const AGENT_FLAVORS = Object.keys(Flavors) as unknown as readonly [AgentFlavor, ...AgentFlavor[]]
 
 export const CREATABLE_AGENT_FLAVORS: readonly AgentFlavor[] = AGENT_FLAVORS.filter(
-    (flavor) => FLAVOR_TRAITS[flavor].creatable
+    (flavor) => Flavors[flavor].creatable
 )
 
-// Per-flavor names kept for existing importers; a new flavor does not need one.
-export const AGY_PERMISSION_MODES = FLAVOR_TRAITS.agy.permissionModes
-export type AgyPermissionMode = typeof AGY_PERMISSION_MODES[number]
-export const CLAUDE_PERMISSION_MODES = FLAVOR_TRAITS.claude.permissionModes
-export type ClaudePermissionMode = typeof CLAUDE_PERMISSION_MODES[number]
-export const CODEX_PERMISSION_MODES = FLAVOR_TRAITS.codex.permissionModes
-export type CodexPermissionMode = typeof CODEX_PERMISSION_MODES[number]
-export const COPILOT_PERMISSION_MODES = FLAVOR_TRAITS.copilot.permissionModes
-export type CopilotPermissionMode = typeof COPILOT_PERMISSION_MODES[number]
-export const CURSOR_PERMISSION_MODES = FLAVOR_TRAITS.cursor.permissionModes
-export type CursorPermissionMode = typeof CURSOR_PERMISSION_MODES[number]
-export const GEMINI_PERMISSION_MODES = FLAVOR_TRAITS.gemini.permissionModes
-export type GeminiPermissionMode = typeof GEMINI_PERMISSION_MODES[number]
-export const GROK_PERMISSION_MODES = FLAVOR_TRAITS.grok.permissionModes
-export type GrokPermissionMode = typeof GROK_PERMISSION_MODES[number]
-export const KIMI_PERMISSION_MODES = FLAVOR_TRAITS.kimi.permissionModes
-export type KimiPermissionMode = typeof KIMI_PERMISSION_MODES[number]
-export const OPENCODE_PERMISSION_MODES = FLAVOR_TRAITS.opencode.permissionModes
-export type OpencodePermissionMode = typeof OPENCODE_PERMISSION_MODES[number]
+/** Permission mode union declared by a flavor, for example `PermissionModeOf<typeof Flavors.codex>`. */
+export type PermissionModeOf<T extends { readonly permissionModes: readonly PermissionMode[] }> = T['permissionModes'][number]
 
 const UNKNOWN_FLAVOR_TRAITS: FlavorTraits = {
     label: 'Unknown',
     capabilities: new Set<Capability>(),
     permissionReplyStyle: 'generic',
     // Unknown flavors fall back to the Claude list.
-    permissionModes: FLAVOR_TRAITS.claude.permissionModes,
+    permissionModes: claude.permissionModes,
+    allowsPermissionMode: claude.allowsPermissionMode,
     permissionCreateFormModeSource: 'managed',
     yoloToggleMigrationMode: null,
     yoloPermissionMode: null,
@@ -234,12 +224,12 @@ const UNKNOWN_FLAVOR_TRAITS: FlavorTraits = {
 }
 
 function traitsOf(flavor: string | null | undefined): FlavorTraits {
-    return isKnownFlavor(flavor) ? FLAVOR_TRAITS[flavor] : UNKNOWN_FLAVOR_TRAITS
+    return isKnownFlavor(flavor) ? Flavors[flavor] : UNKNOWN_FLAVOR_TRAITS
 }
 
 // --- Query functions ---
 export function isKnownFlavor(flavor: string | null | undefined): flavor is AgentFlavor {
-    return typeof flavor === 'string' && Object.hasOwn(FLAVOR_TRAITS, flavor)
+    return typeof flavor === 'string' && Object.hasOwn(Flavors, flavor)
 }
 
 export function hasCapability(flavor: string | null | undefined, cap: Capability): boolean {
@@ -259,7 +249,7 @@ export function supportsEffort(flavor: string | null | undefined): boolean {
     return hasCapability(flavor, Capabilities.Effort)
 }
 
-const DECISION_TOOL_NAME_PREFIXES: readonly string[] = Object.values(FLAVOR_TRAITS)
+const DECISION_TOOL_NAME_PREFIXES: readonly string[] = Object.values(Flavors)
     .map((traits) => traits.decisionToolNamePrefix)
     .filter((prefix): prefix is string => prefix !== null)
 
@@ -291,7 +281,7 @@ export function resolveHapiYoloPermissionMode(flavor: string | null | undefined)
 
 /** Flavors that can deliver a queued message into an active turn without waiting for the turn to end; the UI hides Steer for the others. */
 export const STEERING_SUPPORTED_FLAVORS: readonly AgentFlavor[] = AGENT_FLAVORS.filter(
-    (flavor) => FLAVOR_TRAITS[flavor].steering !== null
+    (flavor) => Flavors[flavor].steering !== null
 )
 
 function getSteeringCapability(flavor?: string | null): SteeringCapability | null {

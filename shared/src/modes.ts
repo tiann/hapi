@@ -4,16 +4,8 @@ import { AGENT_FLAVORS, getPermissionModesForFlavor } from './flavors'
 // Re-exported for importers of '@hapi/protocol/modes'.
 export {
     AGENT_FLAVORS,
-    AGY_PERMISSION_MODES,
-    CLAUDE_PERMISSION_MODES,
-    CODEX_PERMISSION_MODES,
-    COPILOT_PERMISSION_MODES,
     CREATABLE_AGENT_FLAVORS,
-    CURSOR_PERMISSION_MODES,
-    GEMINI_PERMISSION_MODES,
-    GROK_PERMISSION_MODES,
-    KIMI_PERMISSION_MODES,
-    OPENCODE_PERMISSION_MODES,
+    Flavors,
     STEERING_SUPPORTED_FLAVORS,
     getPermissionModesForFlavor,
     hasActiveSteeringTurn,
@@ -21,18 +13,7 @@ export {
     isSteeringSupportedForFlavor,
     isSteeringSupportedForSession
 } from './flavors'
-export type {
-    AgentFlavor,
-    AgyPermissionMode,
-    ClaudePermissionMode,
-    CodexPermissionMode,
-    CopilotPermissionMode,
-    CursorPermissionMode,
-    GeminiPermissionMode,
-    GrokPermissionMode,
-    KimiPermissionMode,
-    OpencodePermissionMode
-} from './flavors'
+export type { AgentFlavor, PermissionModeOf } from './flavors'
 
 /**
  * @description The legacy payload type identifier used for all generic agent messages.
