@@ -253,7 +253,13 @@ const sessionMessagesById: Record<string, DecryptedMessage[]> = sessionSwitch
     }
     : {}
 
-const allMessages: DecryptedMessage[] = fixtureParams.has('jumpStartShort') ? [
+const rekeyReply = fixtureParams.has('rekeyReply')
+if (rekeyReply) window.__probe.holdBefore()
+const allMessages: DecryptedMessage[] = rekeyReply ? [
+    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Prompt from the older page' } }),
+    createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Earlier part of the reply' } } }),
+    createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Last part of the reply' } } }),
+] : fixtureParams.has('jumpStartShort') ? [
     createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Short chat prompt' } }),
     createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'First short reply' } } }),
     ...(fixtureParams.has('steer') ? [
@@ -348,7 +354,8 @@ const fakeApi = {
         let direction = 'latest'
         if (query.beforeSeq != null || query.beforeAt != null) direction = 'before'
         else if (query.afterSeq != null || query.afterAt != null) direction = 'after'
-        const limit = direction === 'latest' && !coldInitial && !cachedReentry && !sessionSwitch ? 200 : requestedLimit
+        const limit = direction === 'latest' && rekeyReply ? 1
+            : direction === 'latest' && !coldInitial && !cachedReentry && !sessionSwitch ? 200 : requestedLimit
         const responseGate = direction === 'before' ? beforeResponseGate : null
         window.__probe.requests.push({
             sessionId: requestedSessionId,

@@ -480,7 +480,24 @@ export function getHistoryCoverageRetryDelay(deadline: number, now: number): num
     return Math.max(0, deadline - now) + 16
 }
 
-type PromptAnchorState = { current: boolean; nextAnchorId: string | null; blockedBySystemTurn?: boolean }
+type PromptAnchorState = {
+    current: boolean
+    nextAnchorId: string | null
+    sourceMessageIds?: readonly string[]
+    blockedBySystemTurn?: boolean
+}
+
+function getPromptAnchorSourceMessageIds(anchor: HTMLElement): string[] {
+    return anchor.dataset.hapiSourceMessageIds?.split(/\s+/).filter(Boolean) ?? []
+}
+
+function findRekeyedReply(messages: HTMLElement[], sourceIds: readonly string[]): HTMLElement | undefined {
+    if (sourceIds.length === 0) return
+    const ids = new Set(sourceIds)
+    const candidates = messages.filter(message => message.dataset.hapiMessageRole === 'assistant'
+        && getPromptAnchorSourceMessageIds(message).some(id => ids.has(id)))
+    return candidates.length === 1 ? candidates[0] : undefined
+}
 
 function findPromptBefore(messages: HTMLElement[], end: number, state?: PromptAnchorState): HTMLElement | null {
     for (let index = end - 1; index >= 0; index -= 1) {
@@ -512,10 +529,10 @@ export function findPromptTarget(
     replyToMessageId?: string
 ): HTMLElement | null {
     if (assistantAnchorState.blockedBySystemTurn) return null
+    const messages = Array.from(viewport.querySelectorAll<HTMLElement>(MESSAGE_ANCHOR_SELECTOR))
     if (replyToMessageId) {
         const replyTargetAnchorId = getConversationMessageAnchorId(replyToMessageId)
-        const replyTarget = Array.from(viewport.querySelectorAll<HTMLElement>(MESSAGE_ANCHOR_SELECTOR))
-            .find((message) => message.id === replyTargetAnchorId)
+        const replyTarget = messages.find(message => message.id === replyTargetAnchorId)
         if (replyTarget?.dataset.hapiSystemTurn === 'true') {
             assistantAnchorState.blockedBySystemTurn = true
             return null
@@ -524,20 +541,19 @@ export function findPromptTarget(
     }
 
     const assistantAnchorId = getConversationMessageAnchorId(messageId)
-    const assistantAnchor = document.getElementById(assistantAnchorId)
+    const assistantAnchor = messages.find(message => message.id === assistantAnchorId)
+        ?? findRekeyedReply(messages, assistantAnchorState.sourceMessageIds ?? [])
     if (assistantAnchor) {
         assistantAnchorState.current = true
+        assistantAnchorState.sourceMessageIds ??= getPromptAnchorSourceMessageIds(assistantAnchor)
         assistantAnchorState.nextAnchorId ??=
             assistantAnchor.nextElementSibling instanceof HTMLElement
                 ? assistantAnchor.nextElementSibling.id
                 : null
     }
 
-    const target = findPreviousUserMessage(viewport, messageId, assistantAnchorState)
-    if (target || assistantAnchorState.blockedBySystemTurn) return target
-    if (!assistantAnchorState.current || assistantAnchor || !assistantAnchorState.nextAnchorId) return null
-
-    const messages = Array.from(viewport.querySelectorAll<HTMLElement>(MESSAGE_ANCHOR_SELECTOR))
+    if (assistantAnchor) return findPromptBefore(messages, messages.indexOf(assistantAnchor), assistantAnchorState)
+    if (!assistantAnchorState.current || !assistantAnchorState.nextAnchorId) return null
     const boundaryIndex = messages.findIndex((message) => message.id === assistantAnchorState.nextAnchorId)
     // The transcript may grow at the tail while we load older pages. Never
     // search past the selected reply when its boundary can no longer be found.
@@ -555,6 +571,7 @@ export function capturePromptAnchorState(
     }
     return {
         current: true,
+        sourceMessageIds: getPromptAnchorSourceMessageIds(anchor),
         nextAnchorId: anchor.nextElementSibling instanceof HTMLElement
             ? anchor.nextElementSibling.id
             : null

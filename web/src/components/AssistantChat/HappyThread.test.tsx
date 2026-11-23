@@ -250,6 +250,24 @@ describe('assistant prompt lookup', () => {
         viewport.remove()
     })
 
+    it('recovers a re-keyed last reply by its source identity after a prepend', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-agent-text:tail" data-hapi-message-role="assistant" data-hapi-source-message-ids="raw-tail"></div>
+            </div>
+        `
+        document.body.append(viewport)
+        const state = capturePromptAnchorState(viewport, 'agent-text:tail')
+        viewport.firstElementChild!.innerHTML = `
+            <div id="hapi-message-user-text:prompt" data-hapi-turn-input="true"></div>
+            <div id="hapi-message-agent-text:head" data-hapi-message-role="assistant" data-hapi-source-message-ids="raw-head raw-tail"></div>
+            <div id="hapi-message-user-text:newer" data-hapi-turn-input="true"></div>
+        `
+        expect(findPromptTarget(viewport, 'agent-text:tail', state)?.id).toBe('hapi-message-user-text:prompt')
+        viewport.remove()
+    })
+
     it('does not mistake a newly appended prompt for the input of a re-keyed tail reply', () => {
         const viewport = document.createElement('div')
         viewport.innerHTML = '<div class="happy-thread-messages"><div id="hapi-message-agent-text:answer"></div></div>'
