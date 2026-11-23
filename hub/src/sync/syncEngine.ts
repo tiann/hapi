@@ -961,7 +961,13 @@ export class SyncEngine {
                 if (source.derived.signal.status !== winningSignal.status
                     || source.derived.signal.note !== winningSignal.note) continue
                 const ownKey = notifyBlockerKey(source.derived.signal.at)
-                if (ownKey === winningKey) continue
+                // NOT a no-op skip (#1717 cold-review round 29): when the
+                // WINNER itself is a non-canonical duplicate, its own key
+                // trivially equals `winningKey` — exactly the case where its
+                // ack is the one that must land on canonical, since nothing
+                // else carries it forward once the merge deletes this row.
+                // A same-value remap is still a real UNION write on
+                // `transferBlockedAck`'s target side, not a true no-op.
                 this.transferBlockedAck(source.sessionId, canonicalSessionId, namespace, new Map([[ownKey, winningKey]]))
             }
         }

@@ -1204,6 +1204,76 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('carries a dismissed duplicate\'s ack forward when ITS OWN footer is the one the merge keeps as canonical\'s representative (#1717 cold-review round 29)', async () => {
+        // The canonical row has no footer of its own; the only blocker in
+        // the whole duplicate group comes from a dismissed duplicate, which
+        // becomes the winning representative. The transfer loop's own key
+        // equals the winning key in exactly this case (the winner IS the
+        // key's source) — skipping the transfer there specifically skipped
+        // it exactly when it mattered most: nothing else carries the ack
+        // forward once the merge deletes the duplicate's row, so the
+        // already-dismissed blocker would reappear live on canonical.
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-ack-carries', { codexSessionId: 'codex-thread-ack-carries', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const duplicate = store.sessions.getOrCreateSession(
+            'dup-ack-carries', { codexSessionId: 'codex-thread-ack-carries', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const base = Date.now() - 600_000
+        const footerText = 'Stuck.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs creds' })
+
+        // Canonical: padding only, no signal of its own.
+        for (let i = 0; i < 6; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `pad ${i}` }] } }
+                }
+            }, `ack-carries-pad-${i}`, base)
+        }
+
+        // Duplicate: the only footer in the group, already dismissed.
+        store.messages.addImportedMessage(duplicate.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } } }
+        }, 'ack-carries-footer', base + 1_000)
+        const { notifyBlockerKey: notifyBlockerKeyFn } = await import('@hapi/protocol')
+        store.sessions.setSessionBlockedAck(duplicate.id, {
+            at: base + 1_000,
+            reason: 'already handled',
+            keys: [notifyBlockerKeyFn(base + 1_000)]
+        }, 'default')
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-ack-carries'] })
+            })
+            expect(response.status).toBe(200)
+
+            const merged = store.sessions.getSessionByNamespace(canonical.id, 'default')
+            expect(merged?.lastNotifyStatus).toBe('blocked')
+            // The dismissal must have carried forward onto canonical's own
+            // key for the signal it just inherited.
+            expect(merged?.blockedAckKeys ?? []).toContain(notifyBlockerKeyFn(base + 1_000))
+        } finally {
+            store.close()
+        }
+    })
+
     it('does not transfer a dismissal of an OLD blocker onto a distinct, still-open one with the same status and note (#1717)', async () => {
         // A source session can hold two DISTINCT real episodes that happen
         // to repeat the same status+note (e.g. "needs creds" recurring) —
