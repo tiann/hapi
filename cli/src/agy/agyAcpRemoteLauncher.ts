@@ -1101,9 +1101,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             transcriptNumTurns: undefined,
             usage: null,
             sawActivity: false,
-            // AgySession does not acknowledge on dequeue: a message counts as
-            // delivered once agy takes it (echo, output, or answer), or when
-            // it goes back to the composer.
+            // AgySession does not acknowledge on dequeue so startup failures
+            // leave messages queued. A prompt counts as delivered once
+            // `session/prompt` is dispatched (agy 1.5.11 suppresses
+            // `user_message_chunk` for the client's own prompts), or when it
+            // goes back to the composer.
             acknowledge: () => {
                 if (acknowledged || localIds.length === 0) return;
                 acknowledged = true;
@@ -1219,7 +1221,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 await backend.prompt(acpSessionId, prompt, (update) => this.handleTurnUpdate(turn, update), {
                     ...(live ? { beforeHandlerSwap: beginWindow } : {}),
                     timing: {
-                        onSent: () => { turn.sentAt = Date.now(); },
+                        onSent: () => {
+                            turn.sentAt = Date.now();
+                            // agy 1.5.11 suppresses `user_message_chunk` for
+                            // the client's own `session/prompt`, so waiting for
+                            // an echo or first output leaves the message stuck
+                            // in `Queued` while the model is thinking.
+                            if (!turn.aborted) turn.acknowledge();
+                        },
                         onAnswered: () => {
                             turn.answeredAt = Date.now();
                             turn.answerMain();

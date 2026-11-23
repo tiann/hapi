@@ -884,12 +884,24 @@ export class AcpSdkBackend implements AgentBackend {
             this.promptRequestInFlight = true;
             let response: unknown;
             try {
-                const request = this.transport.sendRequest('session/prompt', {
-                    sessionId,
-                    prompt: content
-                }, { timeoutMs: Infinity });
-                options?.timing?.onSent?.();
-                response = await request;
+                if (typeof this.transport.sendRequestWithDispatch === 'function') {
+                    const request = this.transport.sendRequestWithDispatch('session/prompt', {
+                        sessionId,
+                        prompt: content
+                    }, { timeoutMs: Infinity });
+                    // Avoid an unhandled rejection if `completed` settles while awaiting `dispatched`.
+                    void request.completed.catch(() => {});
+                    await request.dispatched;
+                    options?.timing?.onSent?.();
+                    response = await request.completed;
+                } else {
+                    const request = this.transport.sendRequest('session/prompt', {
+                        sessionId,
+                        prompt: content
+                    }, { timeoutMs: Infinity });
+                    options?.timing?.onSent?.();
+                    response = await request;
+                }
             } finally {
                 this.promptRequestInFlight = false;
                 options?.timing?.onAnswered?.();
