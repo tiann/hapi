@@ -309,7 +309,11 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             if (envWxPusherToken) {
                 wxPusherAppToken = envWxPusherToken
                 sources.wxPusherAppToken = 'env'
-                if (settings.wxPusherAppToken === undefined) {
+                // An existing recipient list without a saved token does not
+                // establish ownership. Do not assign it to a new app by
+                // persisting the temporary token during startup.
+                if (settings.wxPusherAppToken === undefined
+                    && settings.wxPusherUids === undefined && settings.wxPusherTopicIds === undefined) {
                     settings.wxPusherAppToken = wxPusherAppToken
                     needsSave = true
                 }
