@@ -151,12 +151,13 @@ describe('assistant prompt lookup', () => {
                 <div id="hapi-message-user-text:earlier" data-hapi-turn-input="true"></div>
                 <div id="hapi-message-user-text:wake" data-hapi-system-turn="true"></div>
                 <div id="hapi-message-agent-text:answer"></div>
+                <div id="hapi-message-user-text:later" data-hapi-turn-input="true"></div>
             </div>
         `
         document.body.append(viewport)
         const state = capturePromptAnchorState(viewport, 'agent-text:answer')
         expect(findPreviousUserMessage(viewport, 'agent-text:answer')).toBeNull()
-        viewport.firstElementChild?.lastElementChild?.remove()
+        document.getElementById('hapi-message-agent-text:answer')?.remove()
         expect(findPromptTarget(viewport, 'agent-text:answer', state)).toBeNull()
         expect(state.blockedBySystemTurn).toBe(true)
         viewport.remove()
@@ -246,6 +247,19 @@ describe('assistant prompt lookup', () => {
 
         expect(findPromptTarget(viewport, 'agent-text:answer', assistantAnchorState)?.id)
             .toBe('hapi-message-user-text:prompt')
+        viewport.remove()
+    })
+
+    it('does not mistake a newly appended prompt for the input of a re-keyed tail reply', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = '<div class="happy-thread-messages"><div id="hapi-message-agent-text:answer"></div></div>'
+        document.body.append(viewport)
+        const state = capturePromptAnchorState(viewport, 'agent-text:answer')
+        viewport.firstElementChild!.innerHTML = `
+            <div id="hapi-message-agent-text:rekeyed-answer"></div>
+            <div id="hapi-message-user-text:newer" data-hapi-turn-input="true"></div>
+        `
+        expect(findPromptTarget(viewport, 'agent-text:answer', state)).toBeNull()
         viewport.remove()
     })
 

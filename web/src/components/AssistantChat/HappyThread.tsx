@@ -535,13 +535,13 @@ export function findPromptTarget(
 
     const target = findPreviousUserMessage(viewport, messageId, assistantAnchorState)
     if (target || assistantAnchorState.blockedBySystemTurn) return target
-    if (!assistantAnchorState.current || assistantAnchor) return null
+    if (!assistantAnchorState.current || assistantAnchor || !assistantAnchorState.nextAnchorId) return null
 
     const messages = Array.from(viewport.querySelectorAll<HTMLElement>(MESSAGE_ANCHOR_SELECTOR))
-    const boundaryIndex = assistantAnchorState.nextAnchorId
-        ? messages.findIndex((message) => message.id === assistantAnchorState.nextAnchorId)
-        : messages.length
-    return findPromptBefore(messages, boundaryIndex >= 0 ? boundaryIndex : messages.length, assistantAnchorState)
+    const boundaryIndex = messages.findIndex((message) => message.id === assistantAnchorState.nextAnchorId)
+    // The transcript may grow at the tail while we load older pages. Never
+    // search past the selected reply when its boundary can no longer be found.
+    return boundaryIndex < 0 ? null : findPromptBefore(messages, boundaryIndex, assistantAnchorState)
 }
 
 export function capturePromptAnchorState(
@@ -2809,23 +2809,20 @@ export function HappyThread(props: {
     const handleOutlineSelect = useCallback(async (item: ConversationOutlineItem) => {
         if (navigationInFlightRef.current) return
         const currentViewport = viewportRef.current
-        if (!hasMoreMessagesRef.current && currentViewport
-            && currentViewport.scrollHeight - currentViewport.clientHeight <= 1) {
-            const target = document.getElementById(getConversationMessageAnchorId(item.targetMessageId))
-            if (target && currentViewport.contains(target)) {
-                props.onOutlineItemClick?.(item)
-                props.onOutlineOpenChange(false)
-                return
-            }
-        }
+        const renderedTarget = document.getElementById(getConversationMessageAnchorId(item.targetMessageId))
+        const preserveTailIfVisible = !hasMoreMessagesRef.current && currentViewport && renderedTarget
+            && currentViewport.contains(renderedTarget) && currentViewport.scrollHeight - currentViewport.clientHeight <= 1
         const runId = navigationRunRef.current
         const isCancelled = () => navigationRunRef.current !== runId
         navigationInFlightRef.current = true
-        historyNavigationRef.current = true
         setIsNavigationInFlight(true)
-        initialScrollDeadlineRef.current = 0
-        clearInitialScrollTimers()
-        markExplicitNavigationAwayFromBottom()
+        const enterHistoryMode = () => {
+            historyNavigationRef.current = true
+            initialScrollDeadlineRef.current = 0
+            clearInitialScrollTimers()
+            markExplicitNavigationAwayFromBottom()
+        }
+        if (!preserveTailIfVisible) enterHistoryMode()
         try {
             const target = await locateOutlineTargetMessage({
                 targetMessageId: item.targetMessageId,
@@ -2847,6 +2844,10 @@ export function HappyThread(props: {
                 if (viewport && viewport.contains(target)) {
                     const viewportRect = viewport.getBoundingClientRect()
                     const targetRect = target.getBoundingClientRect()
+                    if (preserveTailIfVisible) {
+                        if (targetRect.top >= viewportRect.top - 1 && targetRect.bottom <= viewportRect.bottom + 1) return
+                        enterHistoryMode()
+                    }
                     viewport.scrollTo({
                         top: Math.max(0, viewport.scrollTop + targetRect.top - viewportRect.top - 16),
                         behavior: 'smooth'

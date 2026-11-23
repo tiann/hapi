@@ -165,3 +165,24 @@ test('keyboard prompt navigation focuses the destination input', async ({ page }
         await page.screenshot({ path: `${process.env.HAPI_REVIEW_SCREENSHOT_DIR}/response-navigation-keyboard-focus.png` })
     }
 })
+
+
+test('selecting an outline item reveals it after the mobile composer returns', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 780 })
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartShort=1&outlineResize=1')
+    await page.addStyleTag({ content: '[data-testid="navigation-composer"] { height: 450px }' })
+    await page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'First short reply' }).evaluate(element => {
+        element.style.minHeight = '355px'
+    })
+    await page.getByRole('button', { name: 'Open history' }).click()
+    const chat = page.locator('.chat-scroll-y')
+    await expect.poll(() => chat.evaluate(el => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(1)
+    await page.getByRole('button', { name: /Prompt near the end/ }).click()
+    await expect(page.getByTestId('navigation-composer')).toBeVisible()
+    await expect.poll(() => chat.evaluate(el => el.scrollTop)).toBeGreaterThan(60)
+    const prompt = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Prompt near the end' })
+    await expect(prompt).toBeInViewport({ ratio: 0.9 })
+    if (process.env.HAPI_REVIEW_SCREENSHOT_DIR) {
+        await page.screenshot({ path: `${process.env.HAPI_REVIEW_SCREENSHOT_DIR}/response-navigation-mobile-outline.png` })
+    }
+})
