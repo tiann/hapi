@@ -16,7 +16,7 @@ const state = {
 }
 type ContextMetadata = NonNullable<HappyChatContextValue['metadata']>
 type UserMessageTestContext = Pick<HappyChatContextValue,
-    'disabled' | 'historyActionPending' | 'allowInactiveFork' | 'isLatestCompletedBoundary'
+    'disabled' | 'historyActionPending' | 'inputTranslationEnabled' | 'allowInactiveFork' | 'isLatestCompletedBoundary'
     | 'onBranchConversation' | 'onForkConversation' | 'onRewindConversation'
 > & {
     metadata: Pick<ContextMetadata,
@@ -242,6 +242,38 @@ describe('translated user prompt', () => {
             fireEvent.click(screen.getByRole('button', { name: /Show English sent to agent/ }))
             expect(screen.getByText('Fix the login bug')).toBeTruthy()
         } finally {
+            state.message = previous
+        }
+    })
+
+    it('marks a prompt the provider could not translate', () => {
+        const previous = state.message
+        state.message = {
+            id: 'user-text:fallback', role: 'user', createdAt: new Date(10),
+            content: [{ type: 'text', text: '修复登录 bug' }],
+            metadata: { custom: { kind: 'user', localId: 'local-fallback', sourceMessageId: 'stored-fallback', invokedAt: 10, isTranscriptEcho: false, translationFailed: true } as typeof previous.metadata.custom }
+        }
+        try {
+            mount()
+            expect(screen.getByText('Not translated')).toBeTruthy()
+        } finally {
+            state.message = previous
+        }
+    })
+
+    it('labels an in-flight send as translating while translation is on', () => {
+        const previous = state.message
+        state.message = {
+            id: 'user-text:sending', role: 'user', createdAt: new Date(10),
+            content: [{ type: 'text', text: '修复登录 bug' }],
+            metadata: { custom: { kind: 'user', localId: 'local-sending', sourceMessageId: undefined, invokedAt: null, isTranscriptEcho: false, status: 'sending' } as unknown as typeof previous.metadata.custom }
+        }
+        try {
+            ctx.inputTranslationEnabled = true
+            mount()
+            expect(screen.getByText('Translating…')).toBeTruthy()
+        } finally {
+            ctx.inputTranslationEnabled = undefined
             state.message = previous
         }
     })

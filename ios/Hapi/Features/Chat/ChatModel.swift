@@ -302,6 +302,11 @@ final class ChatModel {
                     return
                 }
                 self?.inputTranslationAvailable = features.isInputTranslationAvailable
+                // Sessions without an explicit choice follow the hub default.
+                if features.isInputTranslationAvailable,
+                   let settings = try? await api.hubSettings() {
+                    self?.interactor.translateInputByDefault = settings.isTranslateInputByDefault
+                }
             }
         }
         dictation.onEvent = { [weak self] event in

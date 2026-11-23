@@ -112,11 +112,15 @@ function makeIo(cliEmitted: unknown[]): Server {
     } as unknown as Server
 }
 
-function setup(provider: InputTranslationProvider | null, translateInput = true) {
+function setup(
+    provider: InputTranslationProvider | null,
+    translateInput: boolean | 'unset' = true,
+    readTranslateInputDefault?: () => Promise<boolean>
+) {
     const store = new Store(':memory:')
     const session = store.sessions.getOrCreateSession(
         'translate',
-        { path: '/tmp/translate', host: 'localhost', translateInput },
+        { path: '/tmp/translate', host: 'localhost', ...(translateInput !== 'unset' ? { translateInput } : {}) },
         null,
         'default'
     )
@@ -127,7 +131,8 @@ function setup(provider: InputTranslationProvider | null, translateInput = true)
         makeIo(cliEmitted),
         publisher as never,
         undefined,
-        new InputTranslationService(provider)
+        new InputTranslationService(provider),
+        readTranslateInputDefault
     )
     const sentContents = () => store.messages.getMessages(session.id, 50).map((m) => m.content as {
         content: { text: string }
@@ -152,6 +157,40 @@ describe('MessageService input translation', () => {
         const [content] = sentContents()
         expect(content.content.text).toBe('修复登录 bug')
         expect(content.meta.translatedFrom).toBeUndefined()
+        expect(content.meta.translationFailed).toBe(true)
+    })
+
+    it('does not flag skipped inputs as failed translations', async () => {
+        const { service, session, sentContents } = setup({ translate: async () => 'X' })
+        await service.sendMessage(session.id, { text: '/compact', localId: 'l1' })
+        expect(sentContents()[0].meta.translationFailed).toBeUndefined()
+    })
+
+    it('follows the hub default when the session has no explicit choice', async () => {
+        const on = setup({ translate: async () => 'Hello' }, 'unset', async () => true)
+        await on.service.sendMessage(on.session.id, { text: '你好', localId: 'l1' })
+        expect(on.sentContents()[0].content.text).toBe('Hello')
+
+        const off = setup({ translate: async () => 'Hello' }, 'unset', async () => false)
+        await off.service.sendMessage(off.session.id, { text: '你好', localId: 'l1' })
+        expect(off.sentContents()[0].content.text).toBe('你好')
+
+        const unreadable = setup({ translate: async () => 'Hello' }, 'unset', async () => { throw new Error('bad settings') })
+        await unreadable.service.sendMessage(unreadable.session.id, { text: '你好', localId: 'l1' })
+        expect(unreadable.sentContents()[0].content.text).toBe('你好')
+    })
+
+    it('lets an explicit per-session choice override the hub default', async () => {
+        let defaultReads = 0
+        const readDefault = async () => { defaultReads += 1; return true }
+        const off = setup({ translate: async () => 'Hello' }, false, readDefault)
+        await off.service.sendMessage(off.session.id, { text: '你好', localId: 'l1' })
+        expect(off.sentContents()[0].content.text).toBe('你好')
+        expect(defaultReads).toBe(0)
+
+        const on = setup({ translate: async () => 'Hello' }, true, async () => false)
+        await on.service.sendMessage(on.session.id, { text: '你好', localId: 'l1' })
+        expect(on.sentContents()[0].content.text).toBe('Hello')
     })
 
     it('does not translate when the session toggle is off, or for peer pings', async () => {

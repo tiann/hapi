@@ -229,7 +229,9 @@ export class MessageService {
         private readonly io: Server,
         private readonly publisher: EventPublisher,
         private readonly onSessionActivity?: (sessionId: string, updatedAt: number) => void,
-        private readonly inputTranslation?: InputTranslationService
+        private readonly inputTranslation?: InputTranslationService,
+        /** Hub-wide `translateInputByDefault`, used when a session has no explicit choice. */
+        private readonly readTranslateInputDefault?: () => Promise<boolean>
     ) {
     }
 
@@ -973,20 +975,29 @@ export class MessageService {
         }
     ): Promise<{ actualSessionId: string; createdAt: number }> {
         const metadata = this.store.sessions.getSession(sessionId)?.metadata
-        const translateInput = isObject(metadata) && metadata.translateInput === true
-        if (!translateInput && !this.translationSendChains.has(sessionId)) {
+        // An explicit per-session choice wins; otherwise the hub-wide default
+        // decides (read inside the chain so it cannot reorder prompts).
+        const explicit = isObject(metadata) && typeof metadata.translateInput === 'boolean'
+            ? metadata.translateInput
+            : undefined
+        const mayTranslate = explicit
+            ?? (this.inputTranslation?.available === true && this.readTranslateInputDefault !== undefined)
+        if (!mayTranslate && !this.translationSendChains.has(sessionId)) {
             return await this.sendMessageNow(sessionId, payload)
         }
 
         const previous = this.translationSendChains.get(sessionId) ?? Promise.resolve()
         const run = previous.catch(() => undefined).then(async () => {
+            const translateInput = explicit ?? (mayTranslate && await this.resolveTranslateInputDefault())
             const translation = translateInput && this.shouldTranslate(payload)
                 ? await this.inputTranslation!.translate(payload.text, payload.localId ? `${sessionId}:${payload.localId}` : null)
                 : null
             return await this.sendMessageNow(
                 sessionId,
                 translation?.translated ? { ...payload, text: translation.text } : payload,
-                translation?.translated ? translation.original : undefined
+                translation?.translated
+                    ? { translatedFrom: translation.original }
+                    : translation?.reason !== undefined ? { translationFailed: true } : undefined
             )
         })
         this.translationSendChains.set(sessionId, run)
@@ -996,6 +1007,14 @@ export class MessageService {
             if (this.translationSendChains.get(sessionId) === run) {
                 this.translationSendChains.delete(sessionId)
             }
+        }
+    }
+
+    private async resolveTranslateInputDefault(): Promise<boolean> {
+        try {
+            return (await this.readTranslateInputDefault?.()) === true
+        } catch {
+            return false
         }
     }
 
@@ -1018,7 +1037,7 @@ export class MessageService {
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
         },
-        translatedFrom?: string
+        translation?: { translatedFrom: string } | { translationFailed: true }
     ): Promise<{ actualSessionId: string; createdAt: number }> {
         // Defence-in-depth invariant for non-REST callers (Telegram bot, MCP,
         // internal callers).  Attachment paths live under the CLI session's
@@ -1049,8 +1068,10 @@ export class MessageService {
             meta: {
                 sentFrom,
                 deliveryMode,
-                // What the user typed; `content.text` holds the English sent to the agent.
-                ...(translatedFrom !== undefined ? { translatedFrom } : {})
+                // `translatedFrom`: what the user typed; `content.text` holds the English
+                // sent to the agent. `translationFailed`: the provider failed, so the
+                // original text was sent as-is.
+                ...translation
             }
         }
 

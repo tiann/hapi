@@ -375,6 +375,17 @@ data class TranscriptionProviderInfo(
     val modes: List<String>,
 )
 
+/**
+ * `GET /api/hub-settings` — only what the app reads (readable by every
+ * namespace). [translateInputByDefault] is the hub-wide input-translation
+ * default for sessions without an explicit `metadata.translateInput`;
+ * absent (older hub) ⇒ off.
+ */
+@Serializable
+data class HubSettingsResponse(
+    val translateInputByDefault: Boolean = false,
+)
+
 /** `inputTranslation` in `GET /api/features` — true when the hub has a translation provider. */
 @Serializable
 data class InputTranslationFeature(

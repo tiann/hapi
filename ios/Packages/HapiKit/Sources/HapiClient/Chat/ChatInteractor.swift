@@ -1229,9 +1229,15 @@ public final class ChatInteractor {
         }
     }
 
-    /// Hub-owned `metadata.translateInput` of the loaded detail (absent = off).
+    /// Hub-wide `translateInputByDefault` (`GET /api/hub-settings`), set by
+    /// the chat shell once the hub reports a translation provider.
+    public var translateInputByDefault = false
+
+    /// Effective input translation: the session's explicit hub-owned
+    /// `metadata.translateInput` wins; absent ⇒ the hub default (web
+    /// `resolveInputTranslationEnabled`).
     public var translateInputEnabled: Bool {
-        sessionStore.detail(for: sessionId)?.metadata?.translateInput == true
+        sessionStore.detail(for: sessionId)?.metadata?.translateInput ?? translateInputByDefault
     }
 
     /// `PATCH /sessions/:id {translateInput}` (web `SessionHeader`

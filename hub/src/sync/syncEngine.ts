@@ -102,6 +102,7 @@ import {
     writeAutoBridgeTransientModelErrorsEnabled
 } from '../config/autoBridgeTransientModelErrors'
 import { getConfiguration } from '../configuration'
+import { getSettingsFile, readSettingsOrThrowCached } from '../config/settings'
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
 type PtyResumeAttempt = NonNullable<NonNullable<Session['metadata']>['ptyResumeAttempt']>
@@ -363,7 +364,13 @@ export class SyncEngine {
             io,
             this.eventPublisher,
             (sessionId, updatedAt) => this.recordSessionActivity(sessionId, updatedAt),
-            this.inputTranslationService
+            this.inputTranslationService,
+            async () => {
+                const dataDir = this.resolveSettingsDataDir()
+                if (!dataDir) return false
+                const settings = await readSettingsOrThrowCached(getSettingsFile(dataDir))
+                return settings.translateInputByDefault === true
+            }
         )
         this.titleSuggestionService = createTitleSuggestionService(store)
         this.automaticTitleSuggestionService = new AutomaticTitleSuggestionService(

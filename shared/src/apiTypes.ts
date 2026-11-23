@@ -87,6 +87,8 @@ export const HubSettingsResponseSchema = z.object({
     /** Show compact AGENT_NOTIFY_SUMMARY in chat (default off / hide). */
     sessionSummaryInChat: z.boolean(),
     autoBridgeTransientModelErrors: z.boolean(),
+    /** Translate user prompts to English in sessions without an explicit per-session choice. */
+    translateInputByDefault: z.boolean(),
     peerSpawnDefaults: ResolvedPeerSpawnDefaultsSchema
 })
 
@@ -97,6 +99,7 @@ export const UpdateHubSettingsRequestSchema = z
         sessionSummaryContract: z.boolean().optional(),
         sessionSummaryInChat: z.boolean().optional(),
         autoBridgeTransientModelErrors: z.boolean().optional(),
+        translateInputByDefault: z.boolean().optional(),
         peerSpawnDefaults: PeerSpawnDefaultsSchema.optional()
     })
     .refine(
@@ -104,6 +107,7 @@ export const UpdateHubSettingsRequestSchema = z
             data.sessionSummaryContract !== undefined
             || data.sessionSummaryInChat !== undefined
             || data.autoBridgeTransientModelErrors !== undefined
+            || data.translateInputByDefault !== undefined
             || data.peerSpawnDefaults !== undefined,
         { message: 'At least one hub setting field is required' }
     )
