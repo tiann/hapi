@@ -23,6 +23,7 @@ import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import { EventPublisher } from './eventPublisher'
 import { JOB_WAKE_MESSAGE_LOCAL_ID_PREFIX } from './sessionJobWake'
+import type { InputTranslationService } from './inputTranslation'
 
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
 type MessagePosition = { at: number; seq: number }
@@ -217,12 +218,18 @@ export class MessageService {
     /** One scheduled-matured SSE per localId per hub process (cleared on cancel/consume paths here). */
     private readonly scheduledMatureNotifiedLocalIds = new Set<string>()
     private readonly activeIndeterminateRetries = new Set<string>()
+    /**
+     * Per-session send chain used while input translation is on, so a slow
+     * translation cannot let a later prompt overtake an earlier one.
+     */
+    private readonly translationSendChains = new Map<string, Promise<unknown>>()
 
     constructor(
         private readonly store: Store,
         private readonly io: Server,
         private readonly publisher: EventPublisher,
-        private readonly onSessionActivity?: (sessionId: string, updatedAt: number) => void
+        private readonly onSessionActivity?: (sessionId: string, updatedAt: number) => void,
+        private readonly inputTranslation?: InputTranslationService
     ) {
     }
 
@@ -965,6 +972,54 @@ export class MessageService {
             deliveryMode?: MessageDeliveryMode
         }
     ): Promise<{ actualSessionId: string; createdAt: number }> {
+        const metadata = this.store.sessions.getSession(sessionId)?.metadata
+        const translateInput = isObject(metadata) && metadata.translateInput === true
+        if (!translateInput && !this.translationSendChains.has(sessionId)) {
+            return await this.sendMessageNow(sessionId, payload)
+        }
+
+        const previous = this.translationSendChains.get(sessionId) ?? Promise.resolve()
+        const run = previous.catch(() => undefined).then(async () => {
+            const translation = translateInput && this.shouldTranslate(payload)
+                ? await this.inputTranslation!.translate(payload.text, payload.localId ? `${sessionId}:${payload.localId}` : null)
+                : null
+            return await this.sendMessageNow(
+                sessionId,
+                translation?.translated ? { ...payload, text: translation.text } : payload,
+                translation?.translated ? translation.original : undefined
+            )
+        })
+        this.translationSendChains.set(sessionId, run)
+        try {
+            return await run
+        } finally {
+            if (this.translationSendChains.get(sessionId) === run) {
+                this.translationSendChains.delete(sessionId)
+            }
+        }
+    }
+
+    /** Only human-authored prompts are translated; peer pings and system rows pass through. */
+    private shouldTranslate(payload: { text: string; localId?: string | null; sentFrom?: string }): boolean {
+        if (!this.inputTranslation?.available) return false
+        const sentFrom = payload.sentFrom ?? 'webapp'
+        if (sentFrom !== 'webapp' && sentFrom !== 'telegram-bot') return false
+        if (payload.localId?.startsWith(PEER_MESSAGE_LOCAL_ID_PREFIX)) return false
+        return payload.text.trim().length > 0
+    }
+
+    private async sendMessageNow(
+        sessionId: string,
+        payload: {
+            text: string
+            localId?: string | null
+            attachments?: AttachmentMetadata[]
+            sentFrom?: 'telegram-bot' | 'webapp' | 'hapi-system'
+            scheduledAt?: number | null
+            deliveryMode?: MessageDeliveryMode
+        },
+        translatedFrom?: string
+    ): Promise<{ actualSessionId: string; createdAt: number }> {
         // Defence-in-depth invariant for non-REST callers (Telegram bot, MCP,
         // internal callers).  Attachment paths live under the CLI session's
         // upload directory which `cleanupUploadDir` purges on session end; a
@@ -993,7 +1048,9 @@ export class MessageService {
             },
             meta: {
                 sentFrom,
-                deliveryMode
+                deliveryMode,
+                // What the user typed; `content.text` holds the English sent to the agent.
+                ...(translatedFrom !== undefined ? { translatedFrom } : {})
             }
         }
 
