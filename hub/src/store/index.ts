@@ -581,8 +581,6 @@ export class Store {
                 seq INTEGER NOT NULL,
                 local_id TEXT,
                 invoked_at INTEGER,
-                reconciled_invoked_at INTEGER,
-                imported INTEGER,
                 received_at INTEGER,
                 agent_delivered INTEGER,
                 swept_at INTEGER,
@@ -1429,31 +1427,6 @@ export class Store {
         // permissive reading, so an upgrade does not un-answer historical work.
         if (messageColumns.size > 0 && !messageColumns.has('agent_delivered')) {
             this.db.exec('ALTER TABLE messages ADD COLUMN agent_delivered INTEGER')
-        }
-        // `invoked_at` drives BOTH blocker-reconciliation timing and display
-        // position (`COALESCE(invoked_at, created_at)` in
-        // idx_messages_session_position / getMessagesByPosition). Recovering
-        // a duplicate's genuine delivery time into `invoked_at` during a
-        // session merge therefore also moved the row's conversation position
-        // — a reply could then display before the footer it answered. This
-        // column carries the recovered time for reconciliation ONLY;
-        // `invoked_at` itself, and hence display order, is never touched by
-        // the recovery (#1717 cold-review round 23).
-        if (messageColumns.size > 0 && !messageColumns.has('reconciled_invoked_at')) {
-            this.db.exec('ALTER TABLE messages ADD COLUMN reconciled_invoked_at INTEGER')
-        }
-        // Explicit provenance, set once at insert time by whichever path
-        // created the row. Every prior attempt at this distinction inferred
-        // it from a clock coincidence instead — `invoked_at === created_at`
-        // (true for every live FOOTER too, since `addMessage` stamps a
-        // footer's `invoked_at` immediately) and then `received_at ===
-        // created_at` (Codex can assign both in the same millisecond for a
-        // genuine live message) — and each one collided with a real case the
-        // reviewer then had to find. The fact was always available at write
-        // time; this stores it instead of recovering it at read time
-        // (#1717 cold-review round 23).
-        if (messageColumns.size > 0 && !messageColumns.has('imported')) {
-            this.db.exec('ALTER TABLE messages ADD COLUMN imported INTEGER')
         }
     }
 
