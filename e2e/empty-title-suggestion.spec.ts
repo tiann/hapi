@@ -114,3 +114,20 @@ test('JSON with an unknown error code cannot add diagnostic fields', async ({ pa
     await expect(page.getByTestId('title-suggestion-diagnostics')).toHaveText('HTTP 503')
     await expect(page.getByRole('dialog')).not.toContainText(/proxy-internal|rate-limited|429|arbitrary proxy fixture note/i)
 })
+
+
+for (const error of ['unavailable', 'empty']) {
+    test(`proxy JSON with error=${error} does not select Hub-specific guidance`, async ({ page }) => {
+        await page.route('**/api/sessions/fixture-title/title-suggestion', route => route.fulfill({
+            status: 503,
+            json: { error }
+        }))
+        await page.goto('/e2e-fixtures/rename-session-error-fixture.html?locale=en&apiResponse=1')
+        await page.getByRole('button', { name: 'Generate' }).click()
+        await expect(page.getByText('Failed to generate a title. Please try again.', { exact: true })).toBeVisible()
+        await page.getByRole('button', { name: 'Show error details' }).click()
+        await expect(page.getByTestId('title-suggestion-diagnostics')).toHaveText('HTTP 503')
+        const screenshot = process.env.HAPI_TITLE_DIAGNOSTICS_GENERIC_JSON_SCREENSHOT
+        if (error === 'unavailable' && screenshot) await page.screenshot({ path: screenshot })
+    })
+}

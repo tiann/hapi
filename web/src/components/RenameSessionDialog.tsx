@@ -51,19 +51,18 @@ function isHttpStatus(value: unknown): value is number {
 function getTitleSuggestionDiagnostics(error: unknown): TitleSuggestionDiagnostics | null {
     if (!(error instanceof ApiError) || !isHttpStatus(error.status)) return null
     const diagnostics: TitleSuggestionDiagnostics = { httpStatus: error.status }
-    const code = error.code
-    if (code === 'unavailable' || code === 'empty' || code === 'rate-limited' || code === 'provider') {
-        diagnostics.code = code
-    }
-    if (code !== 'provider' || !error.body) return diagnostics
+    if (!error.body) return diagnostics
 
-    // ApiError.message embeds the response body. Never render it or arbitrary
-    // JSON fields: a reverse proxy can return its own HTML or diagnostic text.
+    // ApiError.code can fall back to the free-form `error` field. Only an
+    // explicit Hub code may select specialized guidance or diagnostics.
     try {
         const body: unknown = JSON.parse(error.body)
         if (!body || typeof body !== 'object' || Array.isArray(body)) return diagnostics
-        const { code: bodyCode, reason, providerStatus } = body as Record<string, unknown>
-        if (bodyCode === 'provider' && typeof reason === 'string' && Object.hasOwn(titleSuggestionProviderReasonKeys, reason)) {
+        const { code, reason, providerStatus } = body as Record<string, unknown>
+        if (code === 'unavailable' || code === 'empty' || code === 'rate-limited' || code === 'provider') {
+            diagnostics.code = code
+        }
+        if (code === 'provider' && typeof reason === 'string' && Object.hasOwn(titleSuggestionProviderReasonKeys, reason)) {
             diagnostics.reason = reason as TitleSuggestionProviderReason
             if (isHttpStatus(providerStatus)) diagnostics.providerStatus = providerStatus
         }

@@ -74,7 +74,7 @@ describe('session dialog title alignment', () => {
                 currentName="Session"
                 onRename={vi.fn(async () => {})}
                 onSuggestTitle={async () => {
-                    throw new ApiError('not configured', 503, 'unavailable')
+                    throw new ApiError('not configured', 503, 'unavailable', JSON.stringify({ code: 'unavailable' }))
                 }}
                 isPending={false}
             />
