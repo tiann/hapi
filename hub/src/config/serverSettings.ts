@@ -271,16 +271,6 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             throw new Error('serverChanBackgroundOnly must be a boolean')
         }
 
-        const wxPusherDestinations = readNamespaceDestinations(settings.wxPusherByNamespace, 'wxPusherByNamespace', (entry, field) => {
-            const appToken = readDestinationCredential(entry.appToken, `${field}.appToken`)
-            const uids = entry.uids === undefined ? [] : readStringArraySetting(entry.uids, `${field}.uids`)
-            const topicIds = entry.topicIds === undefined ? [] : readTopicIdArraySetting(entry.topicIds, `${field}.topicIds`)
-            assertWxPusherRecipientLimits(uids, topicIds, field)
-            if (uids.length === 0 && topicIds.length === 0) {
-                throw new Error(`${field} must specify at least one UID or topic ID`)
-            }
-            return { appToken, uids, topicIds, backgroundOnly: readDestinationBackgroundOnly(entry.backgroundOnly, `${field}.backgroundOnly`) }
-        })
         // wxPusherNotification: env > file > true
         let wxPusherNotification = true
         if (process.env.WXPUSHER_NOTIFICATION !== undefined) {
@@ -298,11 +288,22 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             sources.wxPusherNotification = 'file'
         }
 
+        const wxPusherDestinations = wxPusherNotification ? readNamespaceDestinations(settings.wxPusherByNamespace, 'wxPusherByNamespace', (entry, field) => {
+            const appToken = readDestinationCredential(entry.appToken, `${field}.appToken`)
+            const uids = entry.uids === undefined ? [] : readStringArraySetting(entry.uids, `${field}.uids`)
+            const topicIds = entry.topicIds === undefined ? [] : readTopicIdArraySetting(entry.topicIds, `${field}.topicIds`)
+            assertWxPusherRecipientLimits(uids, topicIds, field)
+            if (uids.length === 0 && topicIds.length === 0) {
+                throw new Error(`${field} must specify at least one UID or topic ID`)
+            }
+            return { appToken, uids, topicIds, backgroundOnly: readDestinationBackgroundOnly(entry.backgroundOnly, `${field}.backgroundOnly`) }
+        }) : new Map<string, WxPusherDestination>()
+
         let wxPusherAppToken: string | null = null
         let wxPusherUids: string[] = []
         let wxPusherTopicIds: number[] = []
         let wxPusherBackgroundOnly = false
-        if (!wxPusherDestinations.has('default')) {
+        if (wxPusherNotification && !wxPusherDestinations.has('default')) {
             // wxPusherAppToken: env > file > null
             if (process.env.WXPUSHER_APP_TOKEN) {
                 wxPusherAppToken = process.env.WXPUSHER_APP_TOKEN

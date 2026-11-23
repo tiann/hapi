@@ -185,7 +185,7 @@ describe('loadServerSettings', () => {
         process.env.WXPUSHER_APP_TOKEN = 'AT_TEST'
         process.env.WXPUSHER_UIDS = ' UID_ONE,UID_TWO,UID_ONE '
         process.env.WXPUSHER_TOPIC_IDS = '12, 34,12'
-        process.env.WXPUSHER_NOTIFICATION = 'false'
+        process.env.WXPUSHER_NOTIFICATION = 'true'
         process.env.WXPUSHER_BACKGROUND_ONLY = 'true'
 
         const result = await loadServerSettings(dir)
@@ -193,13 +193,34 @@ describe('loadServerSettings', () => {
         expect(result.settings.wxPusherAppToken).toBe('AT_TEST')
         expect(result.settings.wxPusherUids).toEqual(['UID_ONE', 'UID_TWO'])
         expect(result.settings.wxPusherTopicIds).toEqual([12, 34])
-        expect(result.settings.wxPusherNotification).toBe(false)
+        expect(result.settings.wxPusherNotification).toBe(true)
         expect(result.settings.wxPusherBackgroundOnly).toBe(true)
         expect(result.sources.wxPusherAppToken).toBe('env')
         expect(result.sources.wxPusherUids).toBe('env')
         expect(result.sources.wxPusherTopicIds).toBe('env')
         expect(result.sources.wxPusherNotification).toBe('env')
         expect(result.sources.wxPusherBackgroundOnly).toBe('env')
+    })
+
+    it.each(['env', 'file'] as const)('skips destination validation and preserves saved values when disabled by %s', async source => {
+        dir = makeTempDir()
+        if (source === 'env') process.env.WXPUSHER_NOTIFICATION = 'false'
+        process.env.WXPUSHER_TOPIC_IDS = 'invalid'
+        const saved = {
+            wxPusherNotification: source === 'file' ? false : true,
+            wxPusherByNamespace: { team: { appToken: 'fixture', topicIds: ['42'] } },
+            wxPusherUids: ['saved-recipient'],
+        }
+        const file = join(dir, 'settings.json')
+        writeFileSync(file, JSON.stringify(saved))
+        const { settings, sources } = await loadServerSettings(dir)
+        expect(settings.wxPusherNotification).toBe(false)
+        expect(settings.wxPusherDestinations.size).toBe(0)
+        expect(settings.wxPusherTopicIds).toEqual([])
+        expect(sources.wxPusherNotification).toBe(source)
+        expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject(saved)
+        process.env.WXPUSHER_NOTIFICATION = 'true'
+        await expect(loadServerSettings(dir)).rejects.toThrow(/wxPusherByNamespace/)
     })
 
     it('limits legacy WxPusher settings to default and never fills other namespace entries', async () => {
@@ -275,7 +296,7 @@ describe('loadServerSettings', () => {
             wxPusherAppToken: 'AT_FILE',
             wxPusherUids: ['UID_FILE'],
             wxPusherTopicIds: [99],
-            wxPusherNotification: false,
+            wxPusherNotification: true,
             wxPusherBackgroundOnly: true,
         }))
 
@@ -284,7 +305,7 @@ describe('loadServerSettings', () => {
         expect(result.settings.wxPusherAppToken).toBe('AT_FILE')
         expect(result.settings.wxPusherUids).toEqual(['UID_FILE'])
         expect(result.settings.wxPusherTopicIds).toEqual([99])
-        expect(result.settings.wxPusherNotification).toBe(false)
+        expect(result.settings.wxPusherNotification).toBe(true)
         expect(result.settings.wxPusherBackgroundOnly).toBe(true)
         expect(result.sources.wxPusherAppToken).toBe('file')
         expect(result.sources.wxPusherUids).toBe('file')
