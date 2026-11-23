@@ -35,11 +35,14 @@ export function useSelectedSessionSeen(
         const messages = messagesRef.current
         if (!enabled || !sessionId || !viewport || !messages) return
         let stopFollowing: (() => void) | undefined
-        let frame: number | undefined
         type Receipt = { revision: number; version: number | undefined; localUnread: string | undefined }
-        let observed: Receipt | undefined
+        let scheduledRevision: number | undefined
         let ready: Receipt | undefined
-        let acknowledged: number | undefined
+        const frames = new Set<number>()
+        const nextFrame = (callback: () => void) => {
+            const frame = requestAnimationFrame(() => { frames.delete(frame); callback() })
+            frames.add(frame)
+        }
         const update = () => {
             if (!tailIsVisible(viewport, messages)) {
                 stopFollowing?.()
@@ -49,27 +52,20 @@ export function useSelectedSessionSeen(
             stopFollowing ??= followSessionTail(sessionId)
             const revision = latest.current.renderedRevision
             if (revision === undefined) return
-            if (observed?.revision !== revision) {
-                observed = { revision, version: latest.current.stateVersion, localUnread: pendingUnreadId(sessionId) }
-            }
             if (ready) {
                 const receipt = ready
                 ready = undefined
-                acknowledged = receipt.revision
                 markRenderedSessionSeen(sessionId, receipt.revision, receipt.version, receipt.localUnread)
             }
-            if (frame !== undefined || acknowledged === revision) return
-            const receipt = observed
-            // Wait for committed rows to lay out. Once ready, a temporarily
-            // offscreen receipt can finish on the next scroll correction; it
-            // does not need another pair of frames to prove the same layout.
-            frame = requestAnimationFrame(() => {
-                frame = requestAnimationFrame(() => {
-                    frame = undefined
-                    ready = receipt
-                    update()
-                })
-            })
+            if (scheduledRevision === revision) return
+            scheduledRevision = revision
+            const receipt = { revision, version: latest.current.stateVersion, localUnread: pendingUnreadId(sessionId) }
+            // Each rendered revision matures after its own two frames. Layout
+            // events never restart that wait or serialize successive revisions.
+            nextFrame(() => nextFrame(() => {
+                if (!ready || receipt.revision > ready.revision) ready = receipt
+                update()
+            }))
         }
         schedule.current = update
         const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update)
@@ -81,7 +77,7 @@ export function useSelectedSessionSeen(
         update()
         return () => {
             schedule.current = undefined
-            if (frame !== undefined) cancelAnimationFrame(frame)
+            for (const frame of frames) cancelAnimationFrame(frame)
             resize?.disconnect()
             mutations.disconnect()
             viewport.removeEventListener('scroll', update)

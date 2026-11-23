@@ -95,6 +95,18 @@ describe('rendered read receipt', () => {
         expect(getSessionLastSeenAt('s')).toBe(16)
     })
 
+    it('does not lose a newly visible revision on navigation after its own two frames', async () => {
+        const view = viewport()
+        const { rerender, unmount } = renderHook(({ revision }) => useSelectedSessionSeen('s', revision, 0, view, content), {
+            initialProps: { revision: 41 },
+        })
+        await act(async () => { await vi.advanceTimersByTimeAsync(20) })
+        rerender({ revision: 42 })
+        await act(async () => { await vi.advanceTimersByTimeAsync(32) })
+        unmount()
+        expect(getSessionLastSeenAt('s')).toBe(42)
+    })
+
     it('rechecks a viewport resize without waiting for a scroll or a message', async () => {
         let resize!: () => void
         const observe = vi.fn()
@@ -193,8 +205,9 @@ describe('rendered read receipt', () => {
             const { rerender } = renderHook(({ revision }) => useSelectedSessionSeen('s', revision, 0, view, content), {
                 initialProps: { revision: 41 },
             })
+            await act(async () => { await vi.advanceTimersByTimeAsync(20) })
             rerender({ revision: 42 })
-            await act(async () => { await vi.advanceTimersByTimeAsync(40) })
+            await act(async () => { await vi.advanceTimersByTimeAsync(16) })
             expect(sent.map(r => r.type)).toEqual(['read'])
             act(() => markSessionUnread('s'))
             await settle()
