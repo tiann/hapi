@@ -1276,6 +1276,21 @@ describe('collectOffscreenBlockers (#1717 one list for arrow and target)', () =>
         })).toEqual({ above: ['dup'], below: [] })
     })
 
+    it('orders a collapsed section against mounted rows by actual position, not by which pass found them (#1717 cold-review round 30)', () => {
+        // A collapsed Pinned section sitting ABOVE an expanded Blocked
+        // section, both off-screen: appending every collapsed section's
+        // ids after all mounted ones put Pinned last in `above` regardless
+        // of its header's real position, so the "up" jump (which takes
+        // `above`'s LAST entry as nearest the viewport) picked Pinned over
+        // the mounted Blocked row that actually sits closer.
+        const result = collectOffscreenBlockers({
+            bounds,
+            mounted: [row('blocked-row', 60)],
+            collapsedSections: [{ ids: ['pinned-header'], headerRect: { top: 10, bottom: 30 } }]
+        })
+        expect(result.above).toEqual(['pinned-header', 'blocked-row'])
+    })
+
     it('gives a header already on screen no direction', () => {
         expect(collectOffscreenBlockers({
             bounds,

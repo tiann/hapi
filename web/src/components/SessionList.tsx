@@ -828,15 +828,22 @@ export function collectOffscreenBlockers(options: {
     mounted: Array<{ id: string; top: number; bottom: number; height: number; collapsed: boolean }>
     collapsedSections: Array<{ ids: string[]; headerRect: { top: number; bottom: number } | null }>
 }): { above: string[]; below: string[] } {
-    const above: string[] = []
-    const below: string[] = []
+    // Collected into ONE position-ordered list before splitting into
+    // above/below (#1717 cold-review round 30) — appending every collapsed
+    // section's ids after all mounted ones (the previous two-pass shape)
+    // put them last in `above` regardless of where their header actually
+    // sits. A collapsed Pinned section above an expanded Blocked section
+    // (both off-screen) made `chooseBlockedJumpTarget`'s "up" branch —
+    // `above[above.length - 1]`, nearest the viewport — pick Pinned's id
+    // over Blocked's, even though Blocked's mounted rows sit CLOSER to the
+    // viewport than Pinned's collapsed header.
     const seen = new Set<string>()
+    const positioned: Array<{ id: string; top: number; bottom: number }> = []
     for (const row of options.mounted) {
         if (row.collapsed) continue
         if (row.height <= 0) continue
         seen.add(row.id)
-        if (row.bottom <= options.bounds.top) above.push(row.id)
-        else if (row.top >= options.bounds.bottom) below.push(row.id)
+        positioned.push({ id: row.id, top: row.top, bottom: row.bottom })
     }
     for (const section of options.collapsedSections) {
         const rect = section.headerRect
@@ -844,9 +851,15 @@ export function collectOffscreenBlockers(options: {
         for (const id of section.ids) {
             if (seen.has(id)) continue
             seen.add(id)
-            if (rect.bottom <= options.bounds.top) above.push(id)
-            else if (rect.top >= options.bounds.bottom) below.push(id)
+            positioned.push({ id, top: rect.top, bottom: rect.bottom })
         }
+    }
+    positioned.sort((a, b) => a.top - b.top)
+    const above: string[] = []
+    const below: string[] = []
+    for (const item of positioned) {
+        if (item.bottom <= options.bounds.top) above.push(item.id)
+        else if (item.top >= options.bounds.bottom) below.push(item.id)
     }
     return { above, below }
 }
