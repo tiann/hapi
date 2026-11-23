@@ -97,8 +97,11 @@ hapi hub
 Multiple UIDs can be separated by commas. Topic recipients can be configured with `WXPUSHER_TOPIC_IDS` instead:
 
 ```bash
+export WXPUSHER_UIDS=""
 export WXPUSHER_TOPIC_IDS="123,456"
 ```
+
+If UIDs were saved from an earlier launch, unsetting `WXPUSHER_UIDS` does not clear them. For a persistent topic-only setup, also remove the saved `wxPusherUids` field or set it to `[]` in `settings.json`. If both recipient lists are configured, WxPusher sends to both.
 
 The current WxPusher channel sends session completion notifications only. It remains disabled unless an app token and at least one UID or topic ID are configured.
 
