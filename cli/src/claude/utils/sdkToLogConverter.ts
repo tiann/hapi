@@ -98,6 +98,9 @@ type CumulativeUsageBaseline = {
     // Models whose baseline predates a result that omitted modelUsage; their
     // counters may have advanced unseen until they are rebased.
     staleModels: ReadonlySet<string>
+    // True once a result omitted modelUsage; an unseen model may then hold
+    // earlier counters, so only startFreshProcessBaseline restores zero.
+    modelGapSeen: boolean
 }
 
 const TOKEN_COUNTER_KEYS: readonly CumulativeModelUsageKey[] = [
@@ -271,7 +274,8 @@ export class SDKToLogConverter {
     resetParentChain(): void {
         this.lastUuid = null
         this.context.parentUuid = null
-        // A new Claude session has no trustworthy baseline yet.
+        // A new Claude session has no trustworthy baseline yet. Limit: a fresh
+        // session's first restart also lands here, so the next round omits cost and tok/s.
         this.previousCumulative = null
     }
 
@@ -284,8 +288,17 @@ export class SDKToLogConverter {
             durationApiMs: 0,
             modelUsage: {},
             modelSnapshotKnown: true,
-            staleModels: new Set()
+            staleModels: new Set(),
+            modelGapSeen: false
         }
+    }
+
+    /**
+     * Advance the cumulative baseline for a result that produces no transcript
+     * entry, so the next round does not absorb its cost, tokens and API time.
+     */
+    consumeResultForAccounting(resultMsg: SDKResultMessage): void {
+        this.consumeCumulativeDeltas(resultMsg)
     }
 
     /**
@@ -324,7 +337,9 @@ export class SDKToLogConverter {
                 const isNewModel = modelBaseline === undefined && previous?.modelSnapshotKnown === true
                 // A snapshot gap or a stale baseline means this model cannot be
                 // differenced; rebase on its raw values and fall back to usage.
-                const untrusted = snapshotUnknown || staleModels.has(model)
+                const untrusted = snapshotUnknown
+                    || staleModels.has(model)
+                    || (modelBaseline === undefined && previous?.modelGapSeen === true)
                 if (untrusted) tokenDeltaIncomplete = true
                 staleModels.delete(model)
                 const counters: ModelUsageCounters = untrusted ? {} : { ...(modelBaseline ?? {}) }
@@ -386,7 +401,8 @@ export class SDKToLogConverter {
             modelUsage: nextModelUsage,
             // A result without modelUsage may hide advanced counters.
             modelSnapshotKnown: resultMsg.modelUsage !== undefined,
-            staleModels
+            staleModels,
+            modelGapSeen: previous?.modelGapSeen === true || resultMsg.modelUsage === undefined
         }
 
         return { totalCostUsd, durationApiMs, modelUsage }

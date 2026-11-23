@@ -945,6 +945,7 @@ describe('claudeRemote /compact result reporting', () => {
         const events: string[] = [];
         const timeoutNotice = '📦 Claude did not identify the /compact result. Waiting for Claude to exit so background tasks can finish.';
         let accepted = 0;
+        const dropped: unknown[] = [];
         queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string; message: { content: string } }> }) => ({
             async *[Symbol.asyncIterator]() {
                 const input = prompt[Symbol.asyncIterator]();
@@ -986,9 +987,11 @@ describe('claudeRemote /compact result reporting', () => {
                 onResultAccepted: () => { accepted += 1; },
                 isAborted: () => false,
                 onSessionFound: () => {},
-                onMessage: () => {}
+                onMessage: () => {},
+                onDroppedResult: (message) => { dropped.push(message); }
             };
             await claudeRemote(options);
+            expect(dropped).toHaveLength(identity === 'uuid' || identity === 'name' ? 1 : 0);
             expect(inputs).toEqual([next]);
             queryMock.mockReturnValueOnce(createAsyncStream(next === '/compact'
                 ? [{ type: 'system', subtype: 'status', status: 'compacting' }, { ...resultMessage, local_command: 'compact' }]

@@ -1,5 +1,5 @@
 import { EnhancedMode, PermissionMode } from "./loop";
-import { query, type QueryOptions as Options, type SDKAssistantMessage, type SDKMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
+import { query, type QueryOptions as Options, type SDKAssistantMessage, type SDKMessage, type SDKResultMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
 import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -121,6 +121,8 @@ export async function claudeRemote(opts: {
     onSessionFound: (id: string, extras?: { forkedFrom?: string }) => void,
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
+    /** Called with a late result of a timed-out command that is dropped from the transcript. */
+    onDroppedResult?: (message: SDKResultMessage) => void,
     /** Called once per spawn with whether the process starts fresh, before SDK messages arrive. */
     onSpawn?: (fresh: boolean) => void,
     onContextUsage?: (usage: { model?: string, maxTokens?: number }) => void,
@@ -881,6 +883,7 @@ export async function claudeRemote(opts: {
                 && (!timedOutCommand || message.user_message_uuid === clear.uuid || matchesClearSession);
             if (timedOutCommand && !isClearResult
                 && isCommandResult(message, timedOutCommand.uuid, timedOutCommand.command, false)) {
+                if (message.type === 'result') opts.onDroppedResult?.(message as SDKResultMessage);
                 continue;
             }
             const initialClearSessionId = !clear && message.type === 'result' && resultSeq === 0
