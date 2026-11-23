@@ -47,7 +47,13 @@ test.describe('#1717 blocked session-list chrome', () => {
         await page.screenshot({ path: 'test-results/blocked-2-scrolled-away.png' })
 
         await pill.click()
-        await expect(page.locator('[data-session-blocked="active"]').first()).toBeInViewport()
+        // `chooseBlockedJumpTarget`'s "up" branch picks `above[above.length -
+        // 1]` — nearest the (scrolled-to-bottom) viewport, which is the LAST
+        // blocked row in document order, not the first (#1717 cold-review
+        // round 29). Asserting `.first()` here checked an element the jump
+        // never targets and could pass or fail independent of whether the
+        // jump itself worked.
+        await expect(page.locator('[data-session-blocked="active"]').last()).toBeInViewport()
         await page.screenshot({ path: 'test-results/blocked-3-after-jump.png' })
     })
 
@@ -78,7 +84,9 @@ test.describe('#1717 blocked session-list chrome', () => {
         // panel cannot be jumped into) and scrolls the target row into view.
         await pill.click()
         await expect(section.locator('[role="button"]').first()).toHaveAttribute('aria-expanded', 'true')
-        await expect(page.locator('[data-session-blocked="active"]').first()).toBeInViewport()
+        // Same "up" target as the non-collapsed case: the LAST blocked row
+        // in document order (#1717 cold-review round 29).
+        await expect(page.locator('[data-session-blocked="active"]').last()).toBeInViewport()
     })
 
     test('the lens toggle narrows the list to blocked work only', async ({ page }) => {
