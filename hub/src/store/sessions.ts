@@ -93,6 +93,7 @@ const HUB_OWNED_METADATA_FIELDS = [
     'forkTitleSeed',
     'forkTitleGenerationAttemptedAt',
     'promptTitle',
+    'translateInput',
     'forkedFrom',
     'conversationBranch'
 ] as const

@@ -128,6 +128,8 @@ data class ChatHeaderUi(
     val name: String? = null,
     val active: Boolean,
     val thinking: Boolean,
+    /** Hub-owned `metadata.translateInput` from the detail (the list summary does not carry it). */
+    val translateInput: Boolean = false,
 )
 
 /** Optimistic-permission UI state layered over the reduced blocks (M3b). */
@@ -274,6 +276,7 @@ sealed interface ChatNotice {
     data class ModelsLoadFailed(val detail: String?) : ChatNotice
     data class ReadStateFailed(val detail: String?) : ChatNotice
     data class ConfigUpdateFailed(val detail: String?) : ChatNotice
+    data class TranslateInputFailed(val detail: String?) : ChatNotice
 }
 
 /** A permission decision the UI can request (bodies mirror `PermissionFooter.tsx`). */
@@ -555,6 +558,17 @@ class ChatViewModel(
 
     private val slashFetch = MutableStateFlow<SlashFetch>(SlashFetch.Idle)
     private val sessionOpPending = MutableStateFlow(false)
+    private val translateTogglePending = AtomicBoolean(false)
+    private var featuresRequested = false
+    private val mutableInputTranslationAvailable = MutableStateFlow(false)
+
+    /**
+     * `GET /api/features` `inputTranslation.available` — the hub has a
+     * translation provider. With [ChatHeaderUi.translateInput] it gates the
+     * menu toggle (web: `available || metadata.translateInput === true`, so a
+     * session left on can still be switched off).
+     */
+    val inputTranslationAvailable: StateFlow<Boolean> = mutableInputTranslationAvailable.asStateFlow()
 
     private val _events = MutableSharedFlow<ChatEvent>(extraBufferCapacity = 16)
 
@@ -781,6 +795,10 @@ class ChatViewModel(
                 runCatching { store.reconcileQueuedState() }
             }
             launch(workerContext) { restoreDraft() }
+            if (!featuresRequested) {
+                featuresRequested = true
+                launch(workerContext) { loadFeatures() }
+            }
             withContext(workerContext) { loadDetail() }
         }
 
@@ -1503,6 +1521,50 @@ class ChatViewModel(
                 throw cancellation
             } catch (error: Exception) {
                 _events.tryEmit(ChatEvent.Notice(ChatNotice.RenameFailed(error.message)))
+            }
+        }
+    }
+
+    /** Best-effort feature discovery; a failure (or an older hub) leaves the toggle hidden. */
+    private suspend fun loadFeatures() {
+        try {
+            mutableInputTranslationAvailable.value = api.getFeatures().inputTranslationAvailable
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            // Hidden unless the session already has translation on.
+        }
+    }
+
+    /**
+     * Flips hub-owned `metadata.translateInput` (`PATCH /sessions/:id`). On
+     * success the cached detail is updated locally, then refetched (web
+     * invalidates the session query); the session-updated SSE carries the
+     * same truth. Failures (e.g. 400 without a provider) surface as
+     * [ChatNotice.TranslateInputFailed].
+     */
+    fun toggleTranslateInput() {
+        if (!translateTogglePending.compareAndSet(false, true)) return
+        val enabled = currentDetail()?.metadata?.translateInput != true
+        scope.launch {
+            try {
+                api.setSessionTranslateInput(sessionId, enabled)
+                sessionStore.updateDetailLocal(sessionId) { detail ->
+                    detail.metadata?.let { detail.copy(metadata = it.copy(translateInput = enabled)) } ?: detail
+                }
+                try {
+                    sessionStore.loadSessionDetail(sessionId)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    // The local update stands until SSE/next load brings server truth.
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                _events.tryEmit(ChatEvent.Notice(ChatNotice.TranslateInputFailed(error.message)))
+            } finally {
+                translateTogglePending.set(false)
             }
         }
     }
@@ -2297,6 +2359,7 @@ class ChatViewModel(
             name = detail?.metadata?.name ?: summary?.metadata?.name,
             active = detail?.active ?: summary?.active ?: false,
             thinking = detail?.thinking ?: summary?.thinking ?: false,
+            translateInput = detail?.metadata?.translateInput == true,
         )
     }
 

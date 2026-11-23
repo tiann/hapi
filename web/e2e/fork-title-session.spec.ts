@@ -188,7 +188,9 @@ test.describe('fork title (real Hub, Runner and installed Codex)', () => {
         const runtime = records.find(record => record.sessions?.[sourceId]?.active)
         expect(runtime).toBeTruthy()
         const WebSocket = createRequire(new URL('../../cli/package.json', import.meta.url))('ws')
-        const socket = new WebSocket(runtime.endpoint, { headers: {
+        const endpoint: string = runtime.endpoint.startsWith('unix://')
+            ? `ws+unix://${runtime.endpoint.slice('unix://'.length)}` : runtime.endpoint
+        const socket = new WebSocket(endpoint, { headers: {
             Host: 'localhost', Authorization: `Bearer ${runtime.token}`
         } })
         let nextId = 0

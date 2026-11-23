@@ -224,12 +224,12 @@ export function normalizeTitleSuggestion(value: string): string | null {
     return title.slice(0, TITLE_SUGGESTION_MAX_TITLE_CHARS).trim() || null
 }
 
-function chatCompletionsUrl(baseUrl: string): string {
+export function chatCompletionsUrl(baseUrl: string): string {
     const base = baseUrl.replace(/\/+$/, '')
     return base.endsWith('/chat/completions') ? base : `${base}/chat/completions`
 }
 
-function extractProviderText(value: unknown): string | null {
+export function extractProviderText(value: unknown): string | null {
     if (!isObject(value) || !Array.isArray(value.choices)) return null
     const choice = value.choices[0]
     if (!isObject(choice) || !isObject(choice.message)) return null

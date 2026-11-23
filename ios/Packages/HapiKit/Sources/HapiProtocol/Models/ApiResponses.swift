@@ -59,6 +59,30 @@ public struct HubHealthResponse: Codable, Equatable, Sendable {
     }
 }
 
+/// `inputTranslation` of `GET /api/features`.
+public struct InputTranslationFeature: Codable, Equatable, Sendable {
+    public var available: Bool
+
+    public init(available: Bool) {
+        self.available = available
+    }
+}
+
+/// Typed subset of `GET /api/features` — only what the app reads. Fields are
+/// optional so older hubs (and the ones natives ignore) decode cleanly.
+public struct HubFeaturesResponse: Codable, Equatable, Sendable {
+    public var inputTranslation: InputTranslationFeature?
+
+    public init(inputTranslation: InputTranslationFeature? = nil) {
+        self.inputTranslation = inputTranslation
+    }
+
+    /// The hub has a translation provider configured (missing ⇒ false).
+    public var isInputTranslationAvailable: Bool {
+        inputTranslation?.available == true
+    }
+}
+
 // MARK: - Envelopes
 
 /// Envelope of `GET /api/sessions`.

@@ -59,6 +59,21 @@ Configure `HAPI_TITLE_PROVIDER_BASE_URL`, `HAPI_TITLE_PROVIDER_API_KEY`, and
 fork attempt are persisted across restarts. No automatic request is made
 without a configured provider.
 
+### Optional (translate input to English)
+
+The per-session `metadata.translateInput` toggle is owned by the hub. The CLI
+cannot set or clear it, and it is changed through `PATCH /api/sessions/:id`
+with `{ "translateInput": boolean }`. While it is on, `MessageService.sendMessage`
+translates user-authored prompts (web/native and Telegram, but not peer pings
+or system rows) before storing them. It stores the English in `content.text`
+and the original in `meta.translatedFrom`. Sends for that session are queued
+in order, so a slow translation cannot reorder prompts. If translation fails,
+the original text is sent. `GET /api/features` reports
+`inputTranslation.available`. The provider comes from
+`HAPI_TRANSLATION_PROVIDER_*`; if those are unset, the hub uses the title
+provider. See the
+[configuration guide](../docs/guide/configuration.md#translating-input-to-english).
+
 ### Optional
 
 - `HAPI_LISTEN_HOST` - HTTP bind address (default: 127.0.0.1).

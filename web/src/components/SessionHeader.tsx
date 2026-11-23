@@ -302,6 +302,22 @@ export function SessionHeader(props: {
             })
         }
     }
+    const inputTranslationAvailable = Boolean(features?.inputTranslation?.available)
+    const translateInputEnabled = session.metadata?.translateInput === true
+    const handleToggleTranslateInput = async () => {
+        if (!api) return
+        try {
+            await api.setSessionTranslateInput(session.id, !translateInputEnabled)
+            await queryClient.invalidateQueries({ queryKey: queryKeys.session(session.id) })
+        } catch (error) {
+            addToast({
+                title: t('dialog.error.default'),
+                body: error instanceof Error ? error.message : t('dialog.error.default'),
+                sessionId: session.id,
+                url: `/sessions/${session.id}`
+            })
+        }
+    }
     // tiann/hapi#893: surface the scratchlist entry count in the
     // delete-confirm copy so the operator knows what cascades when they
     // confirm. Read-only hook reuses the cache filled by SessionChat -
@@ -603,6 +619,8 @@ export function SessionHeader(props: {
                 onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
                 linkedPr={linkedPr}
                 onMarkUnread={() => markSessionUnread(session.id, session.readState)}
+                onToggleTranslateInput={api && (inputTranslationAvailable || translateInputEnabled) ? () => void handleToggleTranslateInput() : undefined}
+                translateInputEnabled={translateInputEnabled}
                 onSetPinMode={api ? (mode) => void handleSetPinMode(mode) : undefined}
                 onExport={() => setExportOpen(true)}
                 onSyncCodex={api && codexSessionId && !session.active ? handleSyncCodex : undefined}
