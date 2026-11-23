@@ -145,17 +145,17 @@ describe('durable session read state', () => {
         expect(JSON.parse(localStorage.getItem('hapi.sessionReadState.v1:hub-a:alice')!).s.pending).toBeUndefined()
     })
 
-    it.each([2, 4])('keeps an explicit read only across a single watermark advance (v%s)', async returnedVersion => {
+    it.each([[2, 6], [2, 7], [4, 7]])('keeps an explicit read only across a single watermark advance (v%s, revision %s)', async (returnedVersion, watermark) => {
         markSessionSeen('s', 6, 0)
         let resolve!: (value: { readState: SessionReadState }) => void
         const requests: SessionReadStateRequest[] = []
         cleanup = configureSessionReadState('hub-a:alice', async (_id, request) => {
             requests.push({ ...request })
             if (requests.length === 1) return new Promise(r => { resolve = r })
-            return { readState: server(6, returnedVersion + 1, request.expectedVersion !== returnedVersion) }
+            return { readState: server(watermark, returnedVersion + 1, request.expectedVersion !== returnedVersion) }
         })
         markListedSessionSeen({ id: 's', contentRevision: 6, readState: server(2, 1, true) })
-        resolve({ readState: server(6, returnedVersion, true) })
+        resolve({ readState: server(watermark, returnedVersion, true) })
         await vi.advanceTimersByTimeAsync(0)
         await flushSessionReadState()
         expect(requests[1]).toEqual({ type: 'read', readRevision: 6, expectedVersion: returnedVersion === 2 ? 2 : 1 })

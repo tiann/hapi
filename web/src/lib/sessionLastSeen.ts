@@ -119,7 +119,6 @@ export async function flushSessionReadState(): Promise<void> {
                 } else if (current.pending?.manualReadFrom !== undefined && pending.request.type === 'read'
                     && response.readState.manualUnread && response.readState.version === current.server.version
                     && response.readState.version === current.pending.request.expectedVersion + 1
-                    && response.readState.readRevision === pending.request.readRevision
                     && response.readState.readRevision > current.pending.manualReadFrom) {
                     // The single intervening write advanced the watermark without
                     // changing the manual flag the newer read intended to clear.
