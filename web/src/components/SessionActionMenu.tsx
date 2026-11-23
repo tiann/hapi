@@ -1,12 +1,57 @@
-import { useId } from 'react'
+import { useCallback, useId, useLayoutEffect, useRef } from 'react'
 import { useTranslation } from '@/lib/use-translation'
-import { HoverTooltip } from '@/components/HoverTooltip'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import { buildSessionReferenceText } from '@/lib/sessionReference'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu'
-import { ArchiveIcon, CopyIcon, ForkIcon } from '@/components/icons'
+import { ArchiveIcon, CheckIcon, CopyIcon, ForkIcon } from '@/components/icons'
 import { buildSessionWindowPath } from '@/lib/sessionNavigation'
+import { getSessionManualUnreadAt, sessionNeedsReadAction, markListedSessionSeen, markSessionUnread, useSessionLastSeenVersion } from '@/lib/sessionLastSeen'
+import type { SessionSummary } from '@/types/api'
+
+// Keep recovery instructions in the scrolling menu, including on touch screens.
+function MenuHint({ id, text }: { id: string; text?: string }) {
+    return text ? <p id={id} className="max-w-72 px-3 pb-2 text-sm leading-snug text-[var(--app-hint)]">{text}</p> : null
+}
+
+type ReadTarget = Pick<SessionSummary, 'id' | 'contentRevision' | 'readState'>
+
+function ReadAction({ session, className, onClose }: { session: ReadTarget; className: string; onClose: () => void }) {
+    const { t } = useTranslation()
+    useSessionLastSeenVersion()
+    const unread = sessionNeedsReadAction(session)
+    const manual = getSessionManualUnreadAt(session.id, session.readState) !== null
+    const actions = useRef(new Set<HTMLButtonElement>())
+    const restoreFocus = useRef(false)
+    const actionRef = useCallback((button: HTMLButtonElement | null) => {
+        if (!button) return
+        actions.current.add(button)
+        return () => {
+            if (document.activeElement === button) restoreFocus.current = true
+            actions.current.delete(button)
+        }
+    }, [])
+    useLayoutEffect(() => {
+        if (restoreFocus.current && document.activeElement === document.body) {
+            actions.current.values().next().value?.focus()
+        }
+        restoreFocus.current = false
+    }, [unread, manual])
+    const markUnread = () => { onClose(); markSessionUnread(session.id, session.readState) }
+    const markRead = () => { onClose(); markListedSessionSeen(session) }
+    return (
+        <>
+            {unread && <button ref={actionRef} type="button" role="menuitem" className={className} onClick={markRead}>
+                <CheckIcon className="text-[var(--app-hint)]" />
+                {t('session.action.markRead')}
+            </button>}
+            {!manual && <button ref={actionRef} type="button" role="menuitem" className={className} onClick={markUnread}>
+                <UnreadIcon className="text-[var(--app-hint)]" />
+                {t('session.action.markUnread')}
+            </button>}
+        </>
+    )
+}
 
 export type SessionActionMenuLinkedPr = {
     /** Chip glyph (emoji / `PR` / `?`) — leading the status explanation. */
@@ -22,6 +67,7 @@ type SessionActionMenuProps = {
     sessionId: string
     sessionTitle: string
     sessionActive: boolean
+    canArchive?: boolean
     onRename: () => void
     onLinkPr?: () => void
     /** When linked, shown at the top of the long-press / more menu. */
@@ -30,7 +76,7 @@ type SessionActionMenuProps = {
     sessionGlobalPinned?: boolean
     onSetPinMode?: (mode: 'none' | 'project' | 'global') => void
     onExport?: () => void
-    onMarkUnread?: () => void
+    readTarget?: ReadTarget
     /** Present only when the hub has a translation provider configured. */
     onToggleTranslateInput?: () => void
     translateInputEnabled?: boolean
@@ -225,6 +271,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         sessionId,
         sessionTitle,
         sessionActive,
+        canArchive = sessionActive,
         onRename,
         onLinkPr,
         linkedPr,
@@ -232,7 +279,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         sessionGlobalPinned = false,
         onSetPinMode,
         onExport,
-        onMarkUnread,
+        readTarget,
         onToggleTranslateInput,
         translateInputEnabled = false,
         onForkSession,
@@ -292,11 +339,6 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         onExport?.()
     }
 
-    const handleMarkUnread = () => {
-        onClose()
-        onMarkUnread?.()
-    }
-
     const handleToggleTranslateInput = () => {
         onClose()
         onToggleTranslateInput?.()
@@ -334,7 +376,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     return (
         <div
             ref={menuRef}
-            className="fixed z-50 box-border w-max max-w-[calc(100vw-16px)] rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-lg animate-menu-pop"
+            className="fixed z-50 box-border w-max max-w-[calc(100vw-16px)] max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-16px)] overflow-y-auto rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-lg animate-menu-pop"
             style={menuStyle}
         >
             {linkedPr ? (
@@ -405,29 +447,22 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                 </button>
 
                 {onForkSession || forkDisabledReason ? (
-                    <HoverTooltip
-                        id={`${resolvedMenuId}-fork-tooltip`}
-                        className="w-full [&>span:first-child]:w-full"
-                        align="start"
-                        revealOnParentFocusClass="group-focus-within:opacity-100 group-focus-within:visible"
-                        target={(
-                            <button
-                                type="button"
-                                role="menuitem"
-                                aria-disabled={forkDisabledReason ? true : undefined}
-                                aria-describedby={forkDisabledReason ? `${resolvedMenuId}-fork-tooltip` : undefined}
-                                className={`${baseItemClassName} ${forkDisabledReason
-                                    ? 'cursor-not-allowed opacity-50'
-                                    : 'hover:bg-[var(--app-subtle-bg)]'}`}
-                                onClick={forkDisabledReason ? undefined : handleForkSession}
-                            >
-                                <ForkIcon className="h-[18px] w-[18px] text-[var(--app-hint)]" />
-                                {t('session.action.fork')}
-                            </button>
-                        )}
-                    >
-                        {forkDisabledReason ?? t('session.action.fork')}
-                    </HoverTooltip>
+                    <>
+                        <button
+                            type="button"
+                            role="menuitem"
+                            aria-disabled={forkDisabledReason ? true : undefined}
+                            aria-describedby={forkDisabledReason ? `${resolvedMenuId}-fork-hint` : undefined}
+                            className={`${baseItemClassName} ${forkDisabledReason
+                                ? 'cursor-not-allowed opacity-50'
+                                : 'hover:bg-[var(--app-subtle-bg)]'}`}
+                            onClick={forkDisabledReason ? undefined : handleForkSession}
+                        >
+                            <ForkIcon className="h-[18px] w-[18px] text-[var(--app-hint)]" />
+                            {t('session.action.fork')}
+                        </button>
+                        <MenuHint id={`${resolvedMenuId}-fork-hint`} text={forkDisabledReason} />
+                    </>
                 ) : null}
 
                 {!isTelegram ? (
@@ -444,17 +479,8 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     </a>
                 ) : null}
 
-                {onMarkUnread ? (
-                    <button
-                        type="button"
-                        role="menuitem"
-                        className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
-                        onClick={handleMarkUnread}
-                    >
-                        <UnreadIcon className="text-[var(--app-hint)]" />
-                        {t('session.action.markUnread')}
-                    </button>
-                ) : null}
+                {readTarget ? <ReadAction session={readTarget} onClose={onClose}
+                    className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`} /> : null}
 
                 {onToggleTranslateInput ? (
                     <button
@@ -528,7 +554,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     </button>
                 ) : null}
 
-                {sessionActive ? (
+                {canArchive ? (
                     <button
                         type="button"
                         role="menuitem"
@@ -538,36 +564,30 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                         <ArchiveIcon className="h-[18px] w-[18px] text-red-500" />
                         {t('session.action.archive')}
                     </button>
-                ) : (
+                ) : null}
+                {!sessionActive && (
                     <>
                         {onReopen || reopenDisabledReason || reopenHint ? (
-                            <HoverTooltip
-                                id={`${resolvedMenuId}-reopen-tooltip`}
-                                className="w-full [&>span:first-child]:w-full"
-                                align="start"
-                                revealOnParentFocusClass="group-focus-within:opacity-100 group-focus-within:visible"
-                                target={(
-                                    <button
-                                        type="button"
-                                        role="menuitem"
-                                        aria-disabled={reopenDisabledReason ? true : undefined}
-                                        aria-describedby={
-                                            reopenDisabledReason || reopenHint
-                                                ? `${resolvedMenuId}-reopen-tooltip`
-                                                : undefined
-                                        }
-                                        className={`${baseItemClassName} ${reopenDisabledReason
-                                            ? 'cursor-not-allowed opacity-50'
-                                            : 'hover:bg-[var(--app-subtle-bg)]'}`}
-                                        onClick={reopenDisabledReason ? undefined : handleReopen}
-                                    >
-                                        <ReopenIcon className="text-[var(--app-hint)]" />
-                                        {t('session.action.reopen')}
-                                    </button>
-                                )}
-                            >
-                                {reopenDisabledReason ?? reopenHint ?? t('session.action.reopen')}
-                            </HoverTooltip>
+                            <>
+                                <button
+                                    type="button"
+                                    role="menuitem"
+                                    aria-disabled={reopenDisabledReason ? true : undefined}
+                                    aria-describedby={
+                                        reopenDisabledReason || reopenHint
+                                            ? `${resolvedMenuId}-reopen-hint`
+                                            : undefined
+                                    }
+                                    className={`${baseItemClassName} ${reopenDisabledReason
+                                        ? 'cursor-not-allowed opacity-50'
+                                        : 'hover:bg-[var(--app-subtle-bg)]'}`}
+                                    onClick={reopenDisabledReason ? undefined : handleReopen}
+                                >
+                                    <ReopenIcon className="text-[var(--app-hint)]" />
+                                    {t('session.action.reopen')}
+                                </button>
+                                <MenuHint id={`${resolvedMenuId}-reopen-hint`} text={reopenDisabledReason ?? reopenHint} />
+                            </>
                         ) : null}
                         <button
                             type="button"

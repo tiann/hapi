@@ -70,7 +70,9 @@ describe('expireInactive thinking grace', () => {
             expect(expired).toEqual([sessionId])
             expect(cache.getSession(sessionId)?.active).toBe(false)
             expect(cache.getSession(sessionId)?.thinking).toBe(false)
-            expect(events.some((event) => event.type === 'session-updated')).toBe(true)
+            expect(events).toContainEqual(expect.objectContaining({ type: 'session-updated',
+                data: expect.objectContaining({ active: false, thinking: false, activeTurnStartedAt: null }) }))
+            expect(cache.getSession(sessionId)?.activeTurnStartedAt).toBeNull()
         })
     })
 

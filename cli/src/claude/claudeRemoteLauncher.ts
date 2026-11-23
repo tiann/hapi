@@ -317,6 +317,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         let lastSystemModel = session.getModel();
         let effectiveContextModel: string | undefined;
         let effectiveContextWindow: number | undefined;
+        let activeContextLaunch: symbol | null = null;
         const effectiveLimitFor = (model: string | null | undefined): number | undefined => {
             if (effectiveContextWindow === undefined) return undefined;
             if (!effectiveContextModel || !model) return effectiveContextWindow;
@@ -678,6 +679,12 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     }
                     return true;
                 };
+                const contextLaunch = Symbol('Claude launch');
+                activeContextLaunch = contextLaunch;
+                // The SDK may report usage later, or not at all, on the new
+                // process. Never seed it with the previous launch's limit.
+                effectiveContextModel = undefined;
+                effectiveContextWindow = undefined;
                 try {
                     await claudeRemote({
                         sessionId: session.sessionId,
@@ -839,8 +846,11 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         },
                         onThinkingChange: session.onThinkingChange,
                         claudeEnvVars: session.claudeEnvVars,
-                        onMessage,
+                        onMessage: (message) => {
+                            if (activeContextLaunch === contextLaunch) onMessage(message);
+                        },
                         onContextUsage: (usage) => {
+                            if (activeContextLaunch !== contextLaunch) return;
                             sdkToLogConverter.applyContextUsage(usage.model, usage.maxTokens);
                             if (usage.maxTokens !== undefined && usage.maxTokens > 0) {
                                 effectiveContextModel = usage.model;
@@ -1068,6 +1078,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         restoreInFlightMessage();
                     }
                 } finally {
+                    activeContextLaunch = null;
                     session.handleRemoteClearHook = null;
                     logger.debug('[remote]: launch finally');
 

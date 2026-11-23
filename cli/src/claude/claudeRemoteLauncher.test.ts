@@ -11,12 +11,17 @@ import { claudeBatchModeHash, type EnhancedMode } from './loop'
 // remote Claude session has until Claude reports a session id back, so it must
 // survive launch attempts that never reached Claude, and must be dropped both
 // when it has been used and when the user explicitly discards the context.
+type ContextCallbacks = {
+    onContextUsage: (usage: { model: string; maxTokens: number }) => void
+    onMessage: (message: Record<string, unknown>) => void
+}
 const harness = vi.hoisted(() => ({
     callCount: 0,
     claudeArgsPerCall: [] as (string[] | undefined)[],
     bootstrapModePerCall: [] as unknown[],
     initialMessages: [] as string[],
     messages: [] as Array<Record<string, unknown>>,
+    contextForLaunch: null as ((callbacks: ContextCallbacks, launch: number) => void) | null,
     inputSubmittedCalls: [] as string[],
     metadataWrites: [] as Record<string, any>,
     metadata: {} as Record<string, any>,
@@ -75,6 +80,7 @@ vi.mock('./claudeRemote', () => ({
         const nativePromptUuid = `native-uuid-${harness.callCount}`
         opts.onInputSubmitted?.(nativePromptUuid)
         harness.inputSubmittedCalls.push(nativePromptUuid)
+        harness.contextForLaunch?.(opts, harness.callCount)
         for (const message of harness.messages) {
             opts.onMessage(message)
         }
@@ -121,6 +127,7 @@ vi.mock('./utils/sdkToLogConverter', () => ({
         convert(): null { return null }
         convertSidechainUserMessage(): null { return null }
         updateSelectedModel(): void {}
+        applyContextUsage(): void {}
         generateInterruptedToolResult(): null { return null }
     }
 }))
@@ -227,6 +234,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
         harness.bootstrapModePerCall = []
         harness.initialMessages = []
         harness.messages = []
+        harness.contextForLaunch = null
         harness.inputSubmittedCalls = []
         harness.metadataWrites = []
         harness.metadata = {}
@@ -789,6 +797,35 @@ describe('claudeRemoteLauncher resume anchor', () => {
             session.stopKeepAlive()
         }
     })
+    it('uses the result window on a new launch and ignores late context from the old launch', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        let previous: ContextCallbacks | undefined
+        try {
+            const model = 'claude-opus'
+            const expanded = `${model}[1m]`
+            harness.contextForLaunch = (callbacks, launch) => {
+                if (launch === 1) {
+                    previous = callbacks
+                    callbacks.onContextUsage({ model, maxTokens: 200_000 })
+                    return
+                }
+                previous?.onContextUsage({ model, maxTokens: 200_000 })
+                callbacks.onMessage({ type: 'result', subtype: 'success', model: expanded,
+                    total_cost_usd: 0, duration_ms: 1, num_turns: 1,
+                    usage: { input_tokens: 5, output_tokens: 1 },
+                    modelUsage: { [expanded]: { contextWindow: 1_000_000 } },
+                })
+            }
+            queue.push('first launch', { permissionMode: 'default', model }, 'local-1')
+            harness.afterFirstCall = () => queue.push('second launch', { permissionMode: 'default', model: expanded }, 'local-2')
+            harness.switchAfterCall = 2
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails).toMatchObject({ model: expanded, contextWindow: 1_000_000 })
+        } finally { session.stopKeepAlive() }
+    })
+
     it('does not replace context details with synthetic API errors or failed empty results', async () => {
         const client = createClientStub()
         const { session, queue } = createSession(client, undefined)

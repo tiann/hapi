@@ -443,6 +443,7 @@ export function StatusBar(props: {
         : null
     const codexFastMode = shouldShowCodexFastBadge(props.agentFlavor, props.serviceTier)
     const supportsContextDetails = (props.agentFlavor ?? 'claude') === 'claude' || props.agentFlavor === 'codex'
+    const hasPendingRequestAction = connectionStatus.hasPendingRequests && Boolean(props.onPendingRequestClick)
     const contextStatusContent = (
         <>
             <span
@@ -458,7 +459,7 @@ export function StatusBar(props: {
     return (
         <div className="flex min-w-0 items-baseline justify-between gap-2 px-2 pb-1">
             <div className="flex min-w-0 items-baseline gap-2">
-                {connectionStatus.hasPendingRequests && props.onPendingRequestClick ? (
+                {hasPendingRequestAction ? (
                     pendingRequests.length === 1 ? (
                         <button
                             type="button"
@@ -548,14 +549,7 @@ export function StatusBar(props: {
                             </Popover.Portal>
                         </Popover.Root>
                     )
-                ) : supportsContextDetails ? (
-                    <ContextDetailsDialog
-                        details={displayContextDetails}
-                        triggerAriaLabel={`${t('misc.contextAgentDetails')}: ${connectionStatus.text}`}
-                        triggerClassName="relative top-px sm:top-0.5 flex shrink-0 cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent p-0 text-left outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-link)]"
-                        triggerContent={contextStatusContent}
-                    />
-                ) : (
+                ) : !supportsContextDetails ? (
                     <span
                         role="status"
                         aria-label={connectionStatus.text}
@@ -563,7 +557,17 @@ export function StatusBar(props: {
                     >
                         {contextStatusContent}
                     </span>
-                )}
+                ) : null}
+                {supportsContextDetails ? (
+                    <ContextDetailsDialog
+                        details={displayContextDetails}
+                        triggerAriaLabel={`${t('misc.contextAgentDetails')}: ${connectionStatus.text}`}
+                        triggerClassName="relative top-px sm:top-0.5 flex shrink-0 cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent p-0 text-left outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-link)]"
+                        triggerContent={hasPendingRequestAction
+                            ? <svg aria-hidden="true" className="h-4 w-4 text-[var(--app-hint)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="9" /><path d="M12 11v5m0-8h.01" /></svg>
+                            : contextStatusContent}
+                    />
+                ) : null}
                 {contextUsageLabel ? (
                     <Popover.Root>
                         <Popover.Trigger asChild>

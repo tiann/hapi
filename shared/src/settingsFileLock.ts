@@ -5,6 +5,8 @@
  */
 
 import lockfile from 'proper-lockfile'
+import { mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
 
 const LOCK_RETRY_INTERVAL_MS = 100
 const MAX_LOCK_ATTEMPTS = 50
@@ -33,6 +35,18 @@ export async function withSettingsFileLock<T>(
     // Distinct from earlier file-shaped `*.lock` sidecars in this PR so a
     // leftover empty file cannot block mkdir-based acquisition.
     const lockfilePath = `${settingsFile}.hapi.lock`
+
+    // proper-lockfile mkdirs the lockfile path NON-recursively, so a missing
+    // parent surfaces as `ENOENT: ... mkdir '<dir>/settings.json.hapi.lock'`,
+    // which names the lock rather than the real cause. That is reachable in
+    // production on first run into a fresh HAPI_HOME, and in any test that
+    // points at a temp home it has not created yet.
+    // mode 0o700 matches hub/cli settings writers so a group-writable umask
+    // cannot leave a newly created parent group-writable before the lock.
+    // Newly created parents only; recursive mkdir is a no-op on an existing
+    // home and does not chmod — an older 0o755 HAPI_HOME keeps the mode the
+    // operator gave it.
+    mkdirSync(dirname(lockfilePath), { recursive: true, mode: 0o700 })
 
     const release = await lockfile.lock(settingsFile, {
         realpath: false,

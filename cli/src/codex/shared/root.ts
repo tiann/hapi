@@ -354,8 +354,11 @@ export class SharedCodexRoot {
         // runtime is gone. Once the thread responds, only fill gaps for
         // servers still present, without overriding even an empty tool list.
         const currentNames = new Set([...bridgeInventory, ...configured, ...runtime].map(entry => entry.name));
+        const recovered = new Set(runtime.filter(entry => entry.toolNames !== undefined && entry.status !== 'unavailable')
+            .map(entry => entry.name));
         const savedFallback = (savedMcpServers ?? []).filter(entry =>
-            this.statusMcpServerInventory === undefined || currentNames.has(entry.name));
+            this.statusMcpServerInventory === undefined || currentNames.has(entry.name))
+            .map(entry => entry.status === 'unavailable' && recovered.has(entry.name) ? { ...entry, status: undefined } : entry);
         const inventory = this.mcpInventoryLoaded
             ? mergeCodexMcpInventories(bridgeInventory, savedFallback, configured, runtime)
             : includeBridge && bridgeInventory.length > 0
@@ -730,7 +733,10 @@ export class SharedCodexRoot {
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
     }
     async initialSettings(options: SharedLaunchOptions): Promise<void> {
-        if (options.collaborationMode) await this.applySettings({ collaborationMode: options.collaborationMode });
+        const mode = options.collaborationMode;
+        const nativeMode = record(this.settingsNative.collaborationMode).mode;
+        // Codex may acknowledge a no-op without broadcasting a settings update.
+        if (mode && mode !== nativeMode) await this.applySettings({ collaborationMode: mode });
     }
     private async implementPlan(planId: string): Promise<ImplementCodexPlanResult> {
         const unavailable = (): ImplementCodexPlanResult => ({ ok: false, code: 'unavailable', error: 'Codex is disconnected or stopping. Reconnect before implementing the plan.' });
