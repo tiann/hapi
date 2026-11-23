@@ -99,9 +99,15 @@ describe('scoped history provider', () => {
         render(<SearchHistoryProvider storageKey="a"><Controls /></SearchHistoryProvider>)
         act(() => window.dispatchEvent(new StorageEvent('storage', { key: 'b', newValue: '{"enabled":false}' })))
         expect(state().enabled).toBe(false)
-        act(() => window.dispatchEvent(new StorageEvent('storage', { key: 'a', newValue: '{"enabled":false,"files":["other"]}' })))
+        act(() => {
+            localStorage.setItem('a', '{"enabled":false,"files":["other"]}')
+            window.dispatchEvent(new StorageEvent('storage', { key: 'a' }))
+        })
         expect(state()).toMatchObject({ enabled: false, files: ['other'] })
-        act(() => window.dispatchEvent(new StorageEvent('storage', { key: null })))
+        act(() => {
+            localStorage.clear()
+            window.dispatchEvent(new StorageEvent('storage', { key: null }))
+        })
         expect(state()).toEqual({ enabled: false, sessions: [], files: [], outlines: [] })
     })
     it('keeps operating in memory if localStorage reads and writes throw', () => {

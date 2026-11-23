@@ -214,6 +214,23 @@ test('the shared picker search neither sees nor writes the main session history'
     expect((await history(page)).sessions).toEqual(['main-only'])
 })
 
+test('keyboard clear discards the uncommitted session query', async ({ page }) => {
+    await page.goto(fixture)
+    await optIn(page)
+    const input = page.getByRole('searchbox')
+    await input.fill('saved session')
+    await input.press('Enter')
+    await input.fill('discarded session')
+    const clear = page.getByRole('button', { name: 'Clear search', exact: true })
+    // Tab through the embedded date filter before reaching the clear button.
+    await input.press('Tab')
+    if (!(await clear.evaluate(el => el === document.activeElement))) await page.keyboard.press('Tab')
+    await expect(clear).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect(input).toBeFocused()
+    expect((await history(page)).sessions).toEqual(['saved session'])
+})
+
 test('keyboard clear discards the uncommitted file query', async ({ page }) => {
     await page.goto(fixture)
     await optIn(page)

@@ -8,7 +8,7 @@ export function useSearchHistoryField(
     query: string,
     onChange: (query: string) => void,
     inputRef: RefObject<HTMLInputElement | null>,
-    options: { enabled?: boolean; clearButtonRef?: RefObject<HTMLButtonElement | null> } = {}
+    options: { enabled?: boolean; wrapperHandlesBlur?: boolean; clearButtonRef?: RefObject<HTMLButtonElement | null> } = {}
 ) {
     const history = useSearchHistory()
     const enabled = options.enabled !== false && history.state.enabled
@@ -69,7 +69,7 @@ export function useSearchHistoryField(
             autoComplete: 'off',
             'aria-controls': visible ? panelId : undefined,
             onFocus: () => setOpen(true),
-            onBlur: blur,
+            onBlur: options.wrapperHandlesBlur ? undefined : blur,
             onChange: (event: { target: { value: string } }) => {
                 dirty.current = enabled
                 // Keep unmount/pagehide recording in sync even before React commits a render.
@@ -91,7 +91,7 @@ export function useSearchHistoryField(
         },
         suggestions: visible ? <SearchHistorySuggestions
             id={panelId} panelRef={panelRef} entries={history.state[type]}
-            onBlur={blur}
+            onBlur={options.wrapperHandlesBlur ? undefined : blur}
             onSelect={entry => {
                 dirty.current = false
                 history.record(type, entry)
@@ -114,7 +114,7 @@ function SearchHistorySuggestions(props: {
     onRemove: (query: string) => void
     onClear: () => void
     onClose: () => void
-    onBlur: (event: FocusEvent<HTMLElement>) => void
+    onBlur?: (event: FocusEvent<HTMLElement>) => void
 }) {
     const { t } = useTranslation()
     return <div

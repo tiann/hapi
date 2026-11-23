@@ -1000,7 +1000,9 @@ export function SessionListSearch(props: {
     const [searchMatchModeOpen, setSearchMatchModeOpen] = useState(false)
 
     const inputRef = useRef<HTMLInputElement>(null)
-    const history = useSearchHistoryField('sessions', props.value, props.onChange, inputRef, { enabled: props.enableHistory === true })
+    const history = useSearchHistoryField('sessions', props.value, props.onChange, inputRef, {
+        enabled: props.enableHistory === true, wrapperHandlesBlur: true,
+    })
     const collapsedButtonRef = useRef<HTMLButtonElement>(null)
     const scopeButtonRef = useRef<HTMLButtonElement>(null)
     const scopeFue = useFue('session-list-search-scope')
@@ -1324,6 +1326,7 @@ export function SessionListSearch(props: {
                 // and collapses the search bar out from under it.
                 if (related?.closest('[data-fue-callout]')) return
                 if (!event.currentTarget.contains(related as Node | null)) {
+                    history.onClearButtonBlur(event)
                     props.onExpandedChange(false)
                 }
             }}
