@@ -99,3 +99,14 @@ test('v0.7.0 identifies the website change as a fix to the CLI install instructi
     const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
     if (screenshots) await release.screenshot({ path: `${screenshots}/about-cli-install-release-note.png` })
 })
+
+
+test('v0.4.2 describes dismissing the existing Chrome and Edge PWA prompt', async ({ page }) => {
+    await page.goto(fixture)
+    const release = page.locator('details').filter({ has: page.getByRole('link', { name: 'Open release page for v0.4.2' }) })
+    await release.locator('summary time').click()
+    await expect(release.getByText('Fixed', { exact: true })).toBeVisible()
+    await expect(release.getByText('Allow users to dismiss the existing PWA install prompt in Chrome and Edge.', { exact: true })).toBeVisible()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await release.screenshot({ path: `${screenshots}/about-pwa-release-note.png` })
+})

@@ -1393,11 +1393,11 @@ export const RELEASE_NOTES = [
             ]),
         ]),
     releaseNote('0.4.2', '2026-01-03',
-        'Add a dismissible PWA installation prompt alongside a large internal refactor.',
-        '增加可关闭的 PWA 安装提示，并完成一次较大规模的内部重构。',
+        'Let Chrome and Edge users dismiss the existing PWA install prompt.',
+        'Chrome 和 Edge 用户现在可以关闭已有的 PWA 安装提示。',
         [
             group('PWA installation', 'PWA 安装', [
-                change('feature', 'Show a PWA installation prompt that users can dismiss.', '显示用户可以关闭的 PWA 安装提示。'),
+                change('fix', 'Allow users to dismiss the existing PWA install prompt in Chrome and Edge.', 'Chrome 和 Edge 用户现在可以关闭已有的 PWA 安装提示。'),
             ]),
             group('Internal maintenance', '内部维护', [
                 change('note', 'Refactor internal code without a separately listed user-facing behavior change.', '重构内部代码，官方未单独列出面向用户的行为变化。'),
