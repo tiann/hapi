@@ -28,6 +28,7 @@ export const ResumableSessionSchema = LocalResumeTargetSchema.extend({
     updatedAt: z.number(),
     name: z.string().optional(),
     summary: z.string().optional(),
+    promptTitle: z.string().optional(),
     firstUserMessage: z.string().optional()
 })
 

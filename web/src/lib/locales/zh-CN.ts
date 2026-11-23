@@ -378,8 +378,11 @@ export default {
   'session.modelError.listIndicator': '模型错误 — 点击查看',
 
   // Session inactive
-  'session.inactive.autoResume': '此会话已停止。发送消息即可恢复。',
-  'session.inactive.cannotResume': '此会话已停止，无法恢复。',
+  'session.inactive.checking': '正在确认会话连接…',
+  'session.inactive.disconnectedResume': '智能体尚未连接。发送消息时会尝试恢复连接。',
+  'session.inactive.disconnected': '智能体尚未连接。',
+  'session.inactive.autoResume': '此会话已归档。发送消息可重新打开。',
+  'session.inactive.cannotResume': '此会话已归档，无法恢复。',
 
   // Session header
   'session.title': '文件',
@@ -409,6 +412,7 @@ export default {
   'session.action.pinFailed': '无法更新置顶状态',
   'sessions.pinnedSection': '置顶会话',
   'session.action.export': '导出对话',
+  'session.action.markRead': '标为已读',
   'session.action.markUnread': '标为未读',
   'session.action.translateInputOn': '将我的消息翻译为英文',
   'session.action.translateInputOff': '停止翻译我的消息',
@@ -510,6 +514,10 @@ export default {
   'dialog.reopen.dismiss': '关闭',
 
   'dialog.delete.title': '删除会话',
+  'dialog.delete.clearMeter': '移除失联的任务记录',
+  'dialog.delete.clearMeterDetail': '“{job}”超过 15 分钟没有心跳。请先确认进程已结束。此操作只移除进度记录，不会停止进程或删除会话。',
+  'dialog.delete.jobChanged': '任务状态已变化，记录未移除。可再次点击“删除”核实当前状态。',
+  'dialog.delete.liveMeter': '后台任务“{job}”仍有心跳。请等待任务结束后再删除会话，无需再次归档。',
   'dialog.delete.description': '确定要删除 "{name}" 吗？此操作无法撤销。',
   'dialog.delete.scratchlist.one': '这也将删除 1 条草稿清单条目。',
   'dialog.delete.scratchlist.other': '这也将删除 {n} 条草稿清单条目。',
@@ -1172,7 +1180,7 @@ export default {
   'settings.display.pinInProgressMode.jobs': '长时间任务',
   'settings.display.pinInProgressMode.all': '工作中与待处理',
   'settings.display.keepUnreadSessionsVisible': '保持未读会话可见',
-  'settings.display.keepUnreadSessionsVisible.desc': '折叠的项目会在标题下列出其未读会话，会话预览数量限制也不会隐藏未读行。关闭后，折叠的项目将完全折叠，预览数量限制也适用于未读行。',
+  'settings.display.keepUnreadSessionsVisible.desc': '展开项目时，未读会话不受预览数量限制。收起项目会隐藏所有会话。',
   'settings.display.appBadge': '任务栏未读角标',
   'settings.notifications.title': '通知',
   'settings.notifications.push': '在此设备上接收推送通知',

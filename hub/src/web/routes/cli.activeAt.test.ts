@@ -1,7 +1,10 @@
-import { beforeAll, describe, expect, it } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Database } from 'bun:sqlite'
 import { Hono } from 'hono'
-import { createConfiguration } from '../../configuration'
+import { createConfiguration, resetConfigurationForTests } from '../../configuration'
 import { Store } from '../../store'
 import { RpcRegistry } from '../../socket/rpcRegistry'
 import { SyncEngine } from '../../sync/syncEngine'
@@ -29,9 +32,25 @@ function nullOutActiveAt(store: Store, sessionId: string): void {
     db.prepare('UPDATE sessions SET active_at = NULL WHERE id = ?').run(sessionId)
 }
 
+let homeDir = ''
+let previousHapiHome: string | undefined
+
 beforeAll(async () => {
+    previousHapiHome = process.env.HAPI_HOME
+    homeDir = mkdtempSync(join(tmpdir(), 'hapi-cli-active-at-test-'))
+    process.env.HAPI_HOME = homeDir
+    resetConfigurationForTests()
     const config = await createConfiguration()
     config._setCliApiToken('test-token', 'env', false)
+})
+
+afterAll(() => {
+    if (previousHapiHome === undefined) delete process.env.HAPI_HOME
+    else process.env.HAPI_HOME = previousHapiHome
+    if (homeDir) {
+        resetConfigurationForTests(homeDir)
+        rmSync(homeDir, { recursive: true, force: true })
+    }
 })
 
 describe('CLI GET /sessions/:id with null active_at', () => {

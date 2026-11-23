@@ -722,6 +722,12 @@ export function HappyThread(props: {
     isSyncingTail: boolean
     /** Cached re-entry: rendering the persisted window while the authoritative latest-page fetch is in flight. */
     isCatchingUpFromCache?: boolean
+    /**
+     * Cached re-entry of a hydrated tail window (viewMode 'tail', no
+     * requiresLatestReset): the rendered rows are the best available tail and
+     * the initial bottom scroll must not wait for the authoritative fetch.
+     */
+    cachedTailFirstFrame?: boolean
     messagesWarning: string | null
     hasMoreMessages: boolean
     /** A context window still has messages between it and the session head. */
@@ -858,6 +864,7 @@ export function HappyThread(props: {
     const viewportRef = useRef<HTMLDivElement | null>(null)
     useTransientScrollbar(viewportRef, 'right')
     const contentRef = useRef<HTMLDivElement | null>(null)
+    const messagesRef = useRef<HTMLDivElement | null>(null)
     const [pullToLoadState, setPullToLoadState] = useState<PullToLoadState>('idle')
     const [searchTargetRetryVersion, setSearchTargetRetryVersion] = useState(0)
     const [isLocatingSearchTarget, setIsLocatingSearchTarget] = useState(false)
@@ -910,9 +917,9 @@ export function HappyThread(props: {
     )
     const startHistoryLoadAttemptRef = useRef<(runId: number) => void>(() => {})
     const needsViewportCoverageRef = useRef<(options?: { includePreloadMargin?: boolean }) => boolean>(() => false)
-    useSelectedSessionSeen(props.sessionId,
+    const checkVisibleReceipt = useSelectedSessionSeen(props.sessionId,
         !props.isSyncingTail && !props.messagesWarning ? props.readThroughRevision : undefined,
-        props.session.readState?.version, viewportRef, contentRef)
+        props.session.readState?.version, viewportRef, messagesRef)
     const atBottomRef = useRef(true)
     const onViewModeChangeRef = useRef(props.onViewModeChange)
     const forceScrollTokenRef = useRef(props.forceScrollToken)
@@ -1742,8 +1749,9 @@ export function HappyThread(props: {
         if (viewport) {
             viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' })
             lastScrollTopRef.current = viewport.scrollTop
+            checkVisibleReceipt()
         }
-    }, [])
+    }, [checkVisibleReceipt])
 
     const scrollToBottomSmooth = useCallback(() => {
         const viewport = viewportRef.current
@@ -1850,11 +1858,20 @@ export function HappyThread(props: {
     ])
 
     useLayoutEffect(() => {
+        // Cached re-entry fast path: a hydrated tail window (usable cursor
+        // kept; not a retained history window — those carry
+        // requiresLatestReset and keep the settle-first gate) already renders
+        // the best available tail rows. Land the initial bottom scroll on the
+        // first frame instead of waiting for the authoritative latest-page
+        // fetch to settle (a 350-450ms network leg), which painted the top of
+        // the window first and then jumped to the bottom. Search-target opens
+        // and history/cold windows keep the original gate below.
+        const cachedTailReady = props.cachedTailFirstFrame === true
         if (
             props.initialTargetMessageId?.trim()
             || searchTargetHistoryLockRef.current
             || initialScrollSessionRef.current === props.sessionId
-            || props.isSyncingTail
+            || (props.isSyncingTail && !cachedTailReady)
             || props.rawMessagesCount === 0
             || appliedMessagesVersion !== props.messagesVersion
             || hasBlockingScrollRestore()
@@ -1890,6 +1907,7 @@ export function HappyThread(props: {
         props.sessionId,
         props.initialTargetMessageId,
         props.isSyncingTail,
+        props.cachedTailFirstFrame,
         props.rawMessagesCount,
         props.messagesVersion,
         appliedMessagesVersion,
@@ -2924,7 +2942,7 @@ export function HappyThread(props: {
                                     ) : null}
                                 </>
                             )}
-                            <div className="happy-thread-messages flex flex-col gap-3">
+                            <div ref={messagesRef} className="happy-thread-messages flex flex-col gap-3">
                                 <ThreadMessagesById components={THREAD_MESSAGE_COMPONENTS} />
                             </div>
                         </div>

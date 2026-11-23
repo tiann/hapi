@@ -17,6 +17,7 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { getOpencodeNativeToolInstruction } from './utils/systemPrompt';
 import type { PromptContent } from '@/agent/types';
 import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport';
+import { OPENCODE_PROVIDER_TEXT_MAX_LENGTH } from './utils/opencodeErrorText';
 import { hashObject } from '@/utils/deterministicJson';
 
 
@@ -4675,6 +4676,72 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }]);
     });
 
+    it('settles a successful prompt after a rejected foreground prompt and inline model switch', async () => {
+        harness.promptImpl = async () => {
+            if (harness.promptCount === 1) {
+                throw Object.assign(new Error('Internal error: fixture model retired'), { code: -32603 });
+            }
+        };
+        const { session, agentMessages } = createSessionStub([
+            { message: 'try this', mode: createMode('ollama/a') },
+            { message: 'try this', mode: createMode('ollama/b') }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(harness.events.filter(event => event.startsWith('prompt:') || event.startsWith('setModel:'))).toEqual([
+            'prompt:start', 'setModel:ollama/b', 'prompt:start', 'prompt:end'
+        ]);
+        const errors = agentMessages.filter(message =>
+            typeof message === 'object' && message !== null && 'type' in message && message.type === 'error'
+        );
+        expect(errors).toEqual([
+            { type: 'error', message: 'OpenCode prompt failed: fixture model retired' }
+        ]);
+    });
+
+    it.each([
+        ['a code-less error', new Error('No ACP response code')],
+        ['an indeterminate transport error', Object.assign(indeterminateError('ACP prompt timed out'), { code: -32603 })]
+    ])('keeps the foreground writer unresolved after %s', async (_label, error) => {
+        const { logger } = await import('@/ui/logger');
+        vi.mocked(logger.warn).mockClear();
+        harness.promptImpl = async () => {
+            if (harness.promptCount === 1) throw error;
+        };
+        const { session } = createSessionStub([
+            { message: 'first', mode: createMode('ollama/a') },
+            { message: 'second', mode: createMode('ollama/b') }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(logger.warn).toHaveBeenCalledWith('[opencode-remote] prompt failed', expect.objectContaining({
+            message: 'OpenCode input outcome is unresolved'
+        }));
+    });
+
+    it('logs the prompt error name, message and code', async () => {
+        const { logger } = await import('@/ui/logger');
+        const prefix = 'Internal error: fixture model retired ';
+        const longMessage = prefix + 'x'.repeat(OPENCODE_PROVIDER_TEXT_MAX_LENGTH);
+        harness.promptImpl = async () => {
+            throw Object.assign(new Error(longMessage), {
+                code: -32603,
+                data: { errorName: 'provider.invalid-request' }
+            });
+        };
+        const { session } = createSessionStub([{ message: 'first', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(logger.warn).toHaveBeenCalledWith('[opencode-remote] prompt failed', {
+            errorName: 'provider.invalid-request',
+            message: `${longMessage.slice(0, OPENCODE_PROVIDER_TEXT_MAX_LENGTH - 1)}…`,
+            code: -32603
+        });
+    });
+
     it('delivers both the raw stderr dump and the readable sentence on a hard error', async () => {
         // Measured (isolated E2E, stub provider answering 400): OpenCode
         // dumps the JSON-RPC error onto stderr, the shared ACP reader splits
@@ -4712,8 +4779,9 @@ describe('opencodeRemoteLauncher inline model switch', () => {
     });
 
     it('falls back to the original wording when the failure carries no message at all', async () => {
+        const { logger } = await import('@/ui/logger');
         harness.promptImpl = async () => {
-            throw new Error('');
+            throw new TypeError('');
         };
         const { session, agentMessages } = createSessionStub([
             { message: 'first', mode: createMode() }
@@ -4721,6 +4789,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
 
         await opencodeRemoteLauncher(session as never);
 
+        expect(logger.warn).toHaveBeenCalledWith('[opencode-remote] prompt failed', expect.objectContaining({ errorName: 'TypeError' }));
         expect(agentMessages).toEqual([{
             type: 'error',
             message: 'OpenCode prompt failed. Check logs for details.'
@@ -7421,7 +7490,7 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         await stopTurn(stub, releasePrompt, runPromise);
     });
 
-    it('keeps a provider failure indeterminate when native receipts are unavailable', async () => {
+    it('settles the soft-steer writer on a provider response while holding the row without a receipt', async () => {
         const receipts = await import('./utils/opencodeInputReceipt');
         const receipt = vi.spyOn(receipts, 'fetchOpencodeUserMessages').mockResolvedValue(null);
         let rejectSteer!: (error: Error) => void;
@@ -7430,11 +7499,14 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         try {
             stub.session.queue.push('correction', createMode(), 'steer');
             await steerHandlerOf(stub)({ localId: 'steer' });
-            rejectSteer(new Error('provider failed after persisting input'));
+            rejectSteer(Object.assign(new Error('provider failed after persisting input'), { code: -32603 }));
             await vi.waitFor(() => expect(stub.steerIndeterminateCalls).toEqual([['steer']]));
             expect(stub.session.queue.peekByLocalId('steer')).toBeNull();
             expect(harness.steerStateCalls).not.toContainEqual({ localIds: ['steer'], state: 'queued' });
             expect(stub.emitMessagesConsumedCalls).toEqual([]);
+            releasePrompt();
+            await vi.waitFor(() => expect(stub.session.thinking).toBe(false));
+            expect(harness.refreshSessionInfoCalls).toHaveLength(1);
         } finally {
             receipt.mockRestore(); harness.deferSoftSteer = null;
             await stopTurn(stub, releasePrompt, runPromise);

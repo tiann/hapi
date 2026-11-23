@@ -4245,7 +4245,7 @@ describe('session model', () => {
         }
     })
 
-    it('includes first user message in local resumable sessions', () => {
+    it('includes title metadata and the first user message in local resumable sessions', () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
@@ -4263,7 +4263,8 @@ describe('session model', () => {
                     machineId: 'machine-1',
                     flavor: 'codex',
                     codexSessionId: 'codex-thread-1',
-                    name: 'Generated title'
+                    name: 'Generated title',
+                    promptTitle: 'Build the picker'
                 },
                 null,
                 'default'
@@ -4281,6 +4282,7 @@ describe('session model', () => {
 
             expect(sessions.find((item) => item.sessionId === session.id)).toMatchObject({
                 name: 'Generated title',
+                promptTitle: 'Build the picker',
                 firstUserMessage: 'Build the picker with search'
             })
         } finally {

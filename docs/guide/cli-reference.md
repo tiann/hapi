@@ -130,8 +130,9 @@ See [Installation → Runner setup](./installation.md#runner-setup).
 ### `hapi resume [session-id]`
 
 Reopens an existing HAPI session on this machine in the terminal, with its
-original agent and settings. Without an id it shows a picker; in a
-non-interactive shell it prints the resumable sessions and exits. If the
+original agent and settings. Without an ID, it opens a picker where you can
+search by title, first message, or directory. In a non-interactive shell,
+it prints the resumable sessions and exits. If the
 session is running remotely, control is handed back to this terminal.
 
 ### `hapi set-mode <session> <mode>`

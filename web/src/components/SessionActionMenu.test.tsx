@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
+import { followSessionTail, getSessionLastSeenAt, observeSessionReadStates } from '@/lib/sessionLastSeen'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SESSION_REFERENCE_STEER_SUFFIX } from '@hapi/protocol/sessionCitation'
 
@@ -44,6 +45,13 @@ beforeEach(() => {
     platformState.isTelegram = false
 })
 
+it('offers archive on a disconnected live lifecycle without hiding inactive-row actions', () => {
+    const { props } = renderMenu({ sessionActive: false, canArchive: true })
+    expect(screen.getByRole('menuitem', { name: 'Reopen' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }))
+    expect(props.onArchive).toHaveBeenCalledOnce()
+})
+
 describe('SessionActionMenu - Pin action', () => {
     it('renders project and global pin actions', () => {
         const onSetPinMode = vi.fn()
@@ -79,15 +87,43 @@ describe('SessionActionMenu - Pin action', () => {
 })
 
 describe('SessionActionMenu - Mark unread action', () => {
-    it('fires the mark-unread handler and closes the menu', () => {
-        const onMarkUnread = vi.fn()
+    it('can mark one unread session read and reverse that choice', () => {
         const onClose = vi.fn()
-        renderMenu({ onMarkUnread, onClose })
-
+        renderMenu({ readTarget: { id: 'read-toggle', contentRevision: 7 }, onClose })
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as read' }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as unread' }))
+        expect(screen.getByRole('menuitem', { name: 'Mark as read' })).toBeInTheDocument()
+        expect(onClose).toHaveBeenCalledTimes(2)
+    })
 
-        expect(onMarkUnread).toHaveBeenCalledTimes(1)
-        expect(onClose).toHaveBeenCalledTimes(1)
+    it('offers an explicit read even while a followed tail suppresses the ordinary dot', () => {
+        const release = followSessionTail('suppressed')
+        try {
+            renderMenu({ readTarget: { id: 'suppressed', contentRevision: 7 } })
+            expect(screen.getByRole('menuitem', { name: 'Mark as unread' })).toBeInTheDocument()
+            fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as read' }))
+            expect(getSessionLastSeenAt('suppressed')).toBe(7)
+        } finally { release() }
+    })
+
+    it.each(['Mark as read', 'Mark as unread', 'Rename'])('preserves menu focus on a remote acknowledgement: %s', focused => {
+        const id = 'focus-' + focused
+        renderMenu({ readTarget: { id, contentRevision: 2 } })
+        screen.getByRole('menuitem', { name: focused }).focus()
+        act(() => observeSessionReadStates([{ id, readState: { version: 1, readRevision: 2, manualUnread: false } }]))
+        expect(screen.getByRole('menuitem', { name: focused === 'Rename' ? 'Rename' : 'Mark as unread' })).toHaveFocus()
+    })
+
+    it('does not reinterpret a pending click as the opposite action after remote acknowledgement', () => {
+        const id = 'read-during-press'
+        const onClose = vi.fn()
+        renderMenu({ readTarget: { id, contentRevision: 3 }, onClose })
+        const pressed = screen.getByRole('menuitem', { name: 'Mark as read' })
+        fireEvent.pointerDown(pressed)
+        act(() => observeSessionReadStates([{ id, readState: { version: 1, readRevision: 3, manualUnread: false } }]))
+        expect(pressed).not.toBeInTheDocument()
+        fireEvent.pointerUp(screen.getByRole('menuitem', { name: 'Mark as unread' }))
+        expect(onClose).not.toHaveBeenCalled()
     })
 
     it('does not render the action when no handler is provided', () => {
@@ -98,23 +134,32 @@ describe('SessionActionMenu - Mark unread action', () => {
 })
 
 describe('SessionActionMenu - positioning', () => {
+    it('repositions when an open menu gains a read action at the bottom edge', () => {
+        let reflow!: () => void
+        vi.stubGlobal('ResizeObserver', class {
+            constructor(callback: () => void) { reflow = callback }
+            observe() {}
+            disconnect() {}
+        })
+        const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(160)
+        try {
+            const anchorPoint = { x: 160, y: window.innerHeight - 20 }
+            const { props, rerender } = renderMenu({ anchorPoint, readTarget: { id: 'growing-menu', contentRevision: 0 } })
+            const menu = screen.getByRole('menu').parentElement!
+            expect(menu.style.top).toContain(`${anchorPoint.y - 168}px`)
+            height.mockReturnValue(200)
+            rerender(<I18nProvider><SessionActionMenu {...props} readTarget={{ id: 'growing-menu', contentRevision: 1 }} /></I18nProvider>)
+            expect(screen.getByRole('menuitem', { name: 'Mark as read' })).toBeInTheDocument()
+            act(() => reflow())
+            expect(menu.style.top).toContain(`${anchorPoint.y - 208}px`)
+        } finally { height.mockRestore(); vi.unstubAllGlobals() }
+    })
+
     it('centers the menu on the supplied anchor', () => {
         const originalInnerWidth = window.innerWidth
         Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
-        const menuRect = {
-            bottom: 320,
-            height: 320,
-            left: 0,
-            right: 240,
-            top: 0,
-            width: 240,
-            x: 0,
-            y: 0,
-            toJSON: () => ({})
-        } as DOMRect
-        const getBoundingClientRect = vi
-            .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
-            .mockReturnValue(menuRect)
+        const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(320)
+        const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(240)
 
         try {
             renderMenu({ anchorPoint: { x: 160, y: 100 } })
@@ -124,7 +169,8 @@ describe('SessionActionMenu - positioning', () => {
             expect(menu).toHaveStyle({ left: '40px' })
             expect(screen.getAllByRole('menuitem')[0]).toHaveClass('pl-3', 'pr-[42px]')
         } finally {
-            getBoundingClientRect.mockRestore()
+            height.mockRestore()
+            width.mockRestore()
             Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth })
         }
     })
@@ -132,27 +178,16 @@ describe('SessionActionMenu - positioning', () => {
     it('clamps the trigger-centered menu at the viewport edge', () => {
         const originalInnerWidth = window.innerWidth
         Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
-        const menuRect = {
-            bottom: 320,
-            height: 320,
-            left: 0,
-            right: 240,
-            top: 0,
-            width: 240,
-            x: 0,
-            y: 0,
-            toJSON: () => ({})
-        } as DOMRect
-        const getBoundingClientRect = vi
-            .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
-            .mockReturnValue(menuRect)
+        const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(320)
+        const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(240)
 
         try {
             renderMenu({ anchorPoint: { x: 100, y: 100 } })
 
             expect(screen.getByRole('menu').parentElement).toHaveStyle({ left: '8px' })
         } finally {
-            getBoundingClientRect.mockRestore()
+            height.mockRestore()
+            width.mockRestore()
             Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth })
         }
     })
@@ -190,7 +225,7 @@ describe('SessionActionMenu - Reopen action', () => {
 
         const reopen = screen.getByRole('menuitem', { name: /Reopen/ })
         expect(reopen).toHaveAttribute('aria-disabled', 'true')
-        expect(screen.getByRole('tooltip')).toHaveTextContent('Cursor chat data is no longer available')
+        expect(reopen).toHaveAccessibleDescription('Cursor chat data is no longer available on this machine.')
 
         fireEvent.click(reopen)
         expect(onClose).not.toHaveBeenCalled()
@@ -206,7 +241,7 @@ describe('SessionActionMenu - Reopen action', () => {
 
         const reopen = screen.getByRole('menuitem', { name: /Reopen/ })
         expect(reopen).not.toHaveAttribute('aria-disabled', 'true')
-        expect(screen.getByRole('tooltip')).toHaveTextContent('Could not verify Cursor chat data')
+        expect(reopen).toHaveAccessibleDescription('Could not verify Cursor chat data (runner may be outdated).')
 
         fireEvent.click(reopen)
         expect(onReopen).toHaveBeenCalledTimes(1)

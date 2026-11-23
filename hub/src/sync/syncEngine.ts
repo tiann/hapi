@@ -894,7 +894,11 @@ export class SyncEngine {
         serviceTier?: string | null
         collaborationMode?: CodexCollaborationMode
     }): void {
-        const before = this.sessionCache.getSession(payload.sid)
+        const before = this.sessionCache.getSession(payload.sid) ?? this.sessionCache.refreshSession(payload.sid)
+        // A buffered keepalive is not a reopen. Hub-archived rows can only be
+        // revived after clearSessionArchiveMetadata; self-archived CLIs keep
+        // their existing reconnect path. Drop before replaying queued prompts.
+        if (before?.metadata?.lifecycleState === 'archived' && before.metadata.archivedBy === 'hub') return
         const wasActive = before?.active === true
         const wasThinking = before?.thinking === true
         if (!wasThinking && payload.thinking === true) {
@@ -5541,6 +5545,7 @@ export class SyncEngine {
                     updatedAt: session?.updatedAt ?? 0,
                     name: session?.metadata?.name,
                     summary: session?.metadata?.summary?.text,
+                    promptTitle: session?.metadata?.promptTitle,
                     firstUserMessage: this.resolveFirstUserMessage(target.sessionId)
                 }
             })
