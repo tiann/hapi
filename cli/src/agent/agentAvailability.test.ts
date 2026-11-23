@@ -82,6 +82,16 @@ describe('agent executable resolution', () => {
         expect(resolveNodeCliLaunch('pi', { PATH: '' }, 'linux')).toEqual({ command: 'pi', args: [] })
     })
 
+    it('resolves a bare command without reading an unavailable cwd', () => {
+        const cwdSpy = vi.spyOn(process, 'cwd').mockImplementation(() => { throw new Error('ENOENT: uv_cwd') })
+        try {
+            expect(executableCandidates('pi', { platform: 'win32', pathValue: 'C:\\npm', pathExt: '.CMD' }))
+                .toEqual(['C:\\npm\\pi.CMD'])
+        } finally {
+            cwdSpy.mockRestore()
+        }
+    })
+
     it('unquotes quoted Windows PATH entries', () => {
         expect(executableCandidates('pi', {
             platform: 'win32',

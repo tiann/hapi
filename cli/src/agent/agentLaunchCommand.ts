@@ -42,12 +42,11 @@ export function executableCandidates(
     const platform = options.platform ?? process.platform
     const isWindows = platform === 'win32'
     const pathApi = isWindows ? win32 : posix
-    const cwd = options.cwd ?? process.cwd()
     const hasPathSeparator = command.includes('/') || command.includes('\\')
     const commandPath = pathApi.isAbsolute(command)
         ? command
         : hasPathSeparator
-            ? pathApi.resolve(cwd, command)
+            ? pathApi.resolve(options.cwd ?? process.cwd(), command)
             : null
 
     const extensions = isWindows && pathApi.extname(command) === ''

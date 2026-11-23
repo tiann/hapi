@@ -81,7 +81,9 @@ export type WindowsStopReport = { confirmed: boolean; phase: string; elapsedMs: 
  * `isRootLive` reports whether the caller still holds an open handle to the
  * root (a ChildProcess that has not reported exit). Windows never reuses a PID
  * while a handle is open, so the initial snapshot only identifies the original
- * root if the handle stayed open across it.
+ * root if the handle stayed open across it. If it closed, the root has exited
+ * and its PID may already name another process: nothing is signalled and the
+ * stop resolves true, as it does for a root missing from the snapshot.
  */
 export async function stopWindowsProcessTree(rootPid: number, force: boolean, report?: (result: WindowsStopReport) => void,
     callerDeadlineMs?: number, isRootLive?: () => boolean): Promise<boolean> {
@@ -108,7 +110,7 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
     const rootWasLive = isRootLive?.() === true
     const rootIdentityLost = () => rootWasLive && !isRootLive!()
     const initial = await readWindowsProcessTable(Math.min(15_000, remaining()))
-    if (rootIdentityLost()) return finish(false)
+    if (rootIdentityLost()) return finish(true)
     if (!initial) {
         // A transient CIM failure must not leave the cancellation path with no
         // termination attempt. A direct process probe still supplies a
