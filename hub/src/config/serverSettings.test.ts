@@ -244,10 +244,10 @@ describe('loadServerSettings', () => {
         await expect(loadServerSettings(dir)).rejects.toThrow(error)
     })
 
-    it('ignores a superseded oversized legacy topic list when default is explicit', async () => {
+    it.each(['1,2,3,4,5,6', '12,nope'])('ignores superseded legacy topic IDs: %s', async topicIds => {
         dir = makeTempDir()
         process.env.WXPUSHER_APP_TOKEN = 'AT_LEGACY'
-        process.env.WXPUSHER_TOPIC_IDS = '1,2,3,4,5,6'
+        process.env.WXPUSHER_TOPIC_IDS = topicIds
         writeFileSync(join(dir, 'settings.json'), JSON.stringify({ wxPusherByNamespace: {
             default: { appToken: 'AT_EXPLICIT', topicIds: [42] },
         } }))
