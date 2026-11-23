@@ -6,8 +6,13 @@ import {
     isKnownFlavor,
     supportsEffort,
     supportsModelChange,
-    isCodexFamilyFlavor,
+    getPermissionReplyStyle,
+    getYoloToggleMigrationMode,
+    resolveHapiYoloPermissionMode,
+    usesNativePermissionSelect,
+    usesSharedPermissionModeState,
 } from './flavors'
+import { AGENT_FLAVORS, type AgentFlavor, type PermissionMode } from './modes'
 
 describe('hasCapability', () => {
     test('agy supports model-change and effort', () => {
@@ -126,17 +131,6 @@ describe('isKnownFlavor', () => {
 })
 
 describe('convenience functions', () => {
-    test('treats Grok as a generic ACP/Codex-family permission flow', () => {
-        expect(isCodexFamilyFlavor('grok')).toBe(true)
-    })
-
-    test('excludes non-family, unknown, and nullish flavors from the Codex family', () => {
-        expect(isCodexFamilyFlavor('claude')).toBe(false)
-        expect(isCodexFamilyFlavor('unknown-flavor')).toBe(false)
-        expect(isCodexFamilyFlavor(null)).toBe(false)
-        expect(isCodexFamilyFlavor(undefined)).toBe(false)
-    })
-
     test('supportsModelChange matches hasCapability', () => {
         expect(supportsModelChange('agy')).toBe(true)
         expect(supportsModelChange('claude')).toBe(true)
@@ -158,5 +152,83 @@ describe('convenience functions', () => {
         expect(supportsEffort('grok')).toBe(true)
         expect(supportsEffort('kimi')).toBe(true)
         expect(supportsEffort(null)).toBe(false)
+    })
+})
+
+type PermissionTraits = {
+    replyStyle: 'decision' | 'allowTools' | 'generic'
+    nativeSelect: boolean
+    sharedState: boolean
+    yoloToggleMigration: PermissionMode | null
+    yolo: PermissionMode | null
+}
+
+const PERMISSION_TRAITS = {
+    agy: { replyStyle: 'generic', nativeSelect: true, sharedState: true, yoloToggleMigration: 'always-proceed', yolo: 'always-proceed' },
+    claude: { replyStyle: 'allowTools', nativeSelect: true, sharedState: true, yoloToggleMigration: 'bypassPermissions', yolo: 'bypassPermissions' },
+    codex: { replyStyle: 'decision', nativeSelect: true, sharedState: true, yoloToggleMigration: 'yolo', yolo: 'yolo' },
+    dsh: { replyStyle: 'generic', nativeSelect: false, sharedState: false, yoloToggleMigration: null, yolo: null },
+    copilot: { replyStyle: 'decision', nativeSelect: true, sharedState: true, yoloToggleMigration: null, yolo: 'yolo' },
+    cursor: { replyStyle: 'decision', nativeSelect: true, sharedState: true, yoloToggleMigration: 'yolo', yolo: 'yolo' },
+    gemini: { replyStyle: 'decision', nativeSelect: true, sharedState: true, yoloToggleMigration: null, yolo: 'yolo' },
+    grok: { replyStyle: 'decision', nativeSelect: true, sharedState: false, yoloToggleMigration: null, yolo: 'bypassPermissions' },
+    kimi: { replyStyle: 'decision', nativeSelect: true, sharedState: true, yoloToggleMigration: null, yolo: 'yolo' },
+    opencode: { replyStyle: 'decision', nativeSelect: true, sharedState: true, yoloToggleMigration: null, yolo: 'yolo' },
+    pi: { replyStyle: 'generic', nativeSelect: false, sharedState: false, yoloToggleMigration: null, yolo: null },
+} as const satisfies Record<AgentFlavor, PermissionTraits>
+
+describe('permission traits', () => {
+    test('the expectations cover exactly the known flavors', () => {
+        expect(Object.keys(PERMISSION_TRAITS).sort()).toEqual([...AGENT_FLAVORS].sort())
+    })
+
+    test.each(AGENT_FLAVORS)('%s declares its permission reply style', (flavor) => {
+        expect(getPermissionReplyStyle(flavor)).toBe(PERMISSION_TRAITS[flavor].replyStyle)
+    })
+
+    test.each(AGENT_FLAVORS)('%s declares whether the new-session form offers a native permission select', (flavor) => {
+        expect(usesNativePermissionSelect(flavor)).toBe(PERMISSION_TRAITS[flavor].nativeSelect)
+    })
+
+    test.each(AGENT_FLAVORS)('%s declares whether the new-session form keeps its mode in the shared state', (flavor) => {
+        expect(usesSharedPermissionModeState(flavor)).toBe(PERMISSION_TRAITS[flavor].sharedState)
+    })
+
+    test.each(AGENT_FLAVORS)('%s declares the mode a saved YOLO toggle migrates to', (flavor) => {
+        expect(getYoloToggleMigrationMode(flavor)).toBe(PERMISSION_TRAITS[flavor].yoloToggleMigration)
+    })
+
+    test.each(AGENT_FLAVORS)('%s declares its auto-approve mode', (flavor) => {
+        expect(resolveHapiYoloPermissionMode(flavor)).toBe(PERMISSION_TRAITS[flavor].yolo)
+    })
+
+    test.each([null, undefined, 'unknown-flavor'])('%p gets generic replies and no permission-mode controls', (flavor) => {
+        expect(getPermissionReplyStyle(flavor)).toBe('generic')
+        expect(usesNativePermissionSelect(flavor)).toBe(false)
+        expect(usesSharedPermissionModeState(flavor)).toBe(false)
+        expect(getYoloToggleMigrationMode(flavor)).toBeNull()
+        expect(resolveHapiYoloPermissionMode(flavor)).toBeNull()
+    })
+})
+
+describe('getPermissionReplyStyle with a tool name', () => {
+    test.each(['CodexSearch', 'GeminiAsk', 'OpenCodeRead', 'CopilotChat', 'CursorList'])(
+        'a %s tool is answered with decisions in any flavor',
+        (toolName) => {
+            for (const flavor of [...AGENT_FLAVORS, null, 'unknown-flavor']) {
+                expect(getPermissionReplyStyle(flavor, toolName)).toBe('decision')
+            }
+        }
+    )
+
+    test('other tool names keep the flavor style', () => {
+        expect(getPermissionReplyStyle('claude', 'Bash')).toBe('allowTools')
+        expect(getPermissionReplyStyle('codex', 'Bash')).toBe('decision')
+        expect(getPermissionReplyStyle('agy', 'Edit')).toBe('generic')
+    })
+
+    test('the prefix match is case-sensitive and anchored at the start', () => {
+        expect(getPermissionReplyStyle('claude', 'codexSearch')).toBe('allowTools')
+        expect(getPermissionReplyStyle('claude', 'MyCodexTool')).toBe('allowTools')
     })
 })

@@ -2,8 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
     AgentConfigDescriptorSchema,
     getAgentConfigDescriptor,
-    getBuiltinAgentConfigDescriptors,
-    resolveHapiYoloPermissionMode
+    getBuiltinAgentConfigDescriptors
 } from './agentConfig'
 
 describe('agent config descriptors', () => {
@@ -39,7 +38,6 @@ describe('agent config descriptors', () => {
             kind: 'status',
             availability: 'managed'
         })])
-        expect(resolveHapiYoloPermissionMode('dsh')).toBeNull()
     })
 
     test('reports Pi permission as managed rather than pretending YOLO applies', () => {
@@ -60,19 +58,6 @@ describe('agent config descriptors', () => {
             optionSource: 'static',
             availability: 'both'
         }))
-        expect(resolveHapiYoloPermissionMode('pi')).toBeNull()
-    })
-
-    test('maps HAPI YOLO to each supported agent native permission mode', () => {
-        expect(resolveHapiYoloPermissionMode('claude')).toBe('bypassPermissions')
-        expect(resolveHapiYoloPermissionMode('grok')).toBe('bypassPermissions')
-        expect(resolveHapiYoloPermissionMode('codex')).toBe('yolo')
-        expect(resolveHapiYoloPermissionMode('cursor')).toBe('yolo')
-        expect(resolveHapiYoloPermissionMode('opencode')).toBe('yolo')
-        expect(resolveHapiYoloPermissionMode('kimi')).toBe('yolo')
-        expect(resolveHapiYoloPermissionMode('gemini')).toBe('yolo')
-        expect(resolveHapiYoloPermissionMode('copilot')).toBe('yolo')
-        expect(resolveHapiYoloPermissionMode('agy')).toBe('always-proceed')
     })
 
     test('validates descriptors received from a runner', () => {
