@@ -83,6 +83,7 @@ function projectOutcome(outcome: OlderLoadOutcome): ProjectedOlderOutcome {
 
 function projectMessage(message: DecryptedMessage): ProjectedWindowMessage {
     return {
+        ...(message.contentRevision !== undefined ? { contentRevision: message.contentRevision } : {}),
         id: message.id,
         localId: message.localId ?? null,
         seq: message.seq ?? null,
@@ -116,6 +117,7 @@ export function projectWindowState(sessionId: string): ProjectedWindowState {
     }
     return {
         messages: state.messages.map(projectMessage),
+        readThroughRevision: state.readThroughRevision ?? null,
         hasMore: state.hasMore,
         epoch: state.epoch,
         viewMode: state.viewMode,

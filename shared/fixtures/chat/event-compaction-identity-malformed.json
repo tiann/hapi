@@ -1,0 +1,124 @@
+{
+    "description": "Malformed compaction identities cannot collide or throw across clients.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "summary": "Visible",
+                    "type": "compact-summary"
+                },
+                "id": "object",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000000100,
+                "event": {
+                    "summary": "Also visible",
+                    "type": "compact-summary"
+                },
+                "id": "array",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000000200,
+                "id": "custom:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "{\n  \"compactionId\": {\n    \"bad\": true\n  },\n  \"type\": \"custom\"\n}"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "summary": "Visible",
+                    "type": "compact-summary"
+                },
+                "id": "object",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000000100,
+                "event": {
+                    "summary": "Also visible",
+                    "type": "compact-summary"
+                },
+                "id": "array",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000000200,
+                "id": "custom:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "{\n  \"compactionId\": {\n    \"bad\": true\n  },\n  \"type\": \"custom\"\n}"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "compactionId": {
+                                "bad": true
+                            },
+                            "summary": "Visible",
+                            "type": "compact-summary"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "object",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "compactionId": [
+                                "bad"
+                            ],
+                            "summary": "Also visible",
+                            "type": "compact-summary"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000100,
+                "id": "array",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "compactionId": {
+                            "bad": true
+                        },
+                        "type": "custom"
+                    },
+                    "role": "event"
+                },
+                "createdAt": 1755000000200,
+                "id": "custom",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-compaction-identity-malformed"
+}

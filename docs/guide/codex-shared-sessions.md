@@ -1,8 +1,13 @@
+---
+description: "Share one Codex app-server between the official Codex terminal UI and HAPI web and native clients, including usage limits and attaching to desktop runtimes."
+---
+
 # Codex shared sessions
 
 Codex **0.154.0 or newer**: the official terminal UI and HAPI Web / native
 clients share one app-server. No local/remote ownership switch. Both can send
-messages, approve tools and answer `request_user_input`.
+messages, approve tools and answer `request_user_input`. Codex versions with
+`request_user_input_async` also expose their queued follow-up questions in HAPI.
 
 ```bash
 hapi codex                          # launch an execution owned by this terminal
@@ -17,6 +22,83 @@ service. Reattaching uses the **same executable** as the running app-server, eve
 has since changed. A compatible runner is required when one is already running.
 Update CLI, Runner and Hub together: the Hub must preserve shared pending input
 on execution exit rather than applying the legacy session-end queue sweep.
+
+## Experimental external desktop bridge (macOS)
+
+An **owned** execution (`hapi codex`) and an **attached** worker can coexist.
+They are independent: the attached worker connects to an explicitly selected,
+externally owned app-server and never starts or stops that server. This path is
+off by default; starting HAPI or its Runner does not discover or adopt desktop
+threads.
+
+```bash
+# The desktop/owner must already expose a compatible WebSocket-over-Unix socket.
+hapi attach --socket /absolute/private/engine.sock --list
+hapi attach <native-thread-id> --socket /absolute/private/engine.sock
+# In another shell; this is the HAPI ID printed by attach, not the native ID:
+hapi detach <hapi-session-id>
+```
+
+`attach` is a **foreground worker**, not a launcher for the official App. The
+socket must belong to the current user, have owner-only permissions, and be in
+a same-user directory not writable by others. Official daemon-style symlinks
+are supported. TCP/remote endpoints and configuration/permission injection
+flags are rejected. The worker reads the server's actual `CODEX_HOME`; it does
+not use a different local engine as a fallback. Update CLI, Hub and Runner
+together; startup refuses a Hub that drops the attached identity marker.
+
+Only persistent user-root threads **already loaded in that external engine**
+are eligible. There is a loaded-thread preflight immediately before subscription;
+current native protocols do not offer an atomic "subscribe only if still loaded"
+operation, so an external unload racing that check is not fully fenced. HAPI
+does not intentionally cold-resume an unloaded desktop thread. A thread with an
+owned HAPI binding cannot be implicitly migrated into an attached binding; fork
+it in the external owner and attach the new thread instead.
+
+- Messages, native queue, explicit settings changes, approvals and questions
+  use the external engine. HAPI does **not** inject its system instructions,
+  MCP server, environment variables or default permission settings at attach.
+- Ctrl-C, `hapi detach`, and **End session** disconnect the HAPI worker only.
+  They do not interrupt the native turn, delete native queued input, archive the
+  native thread, or kill the App/server. **Stop** remains an explicit turn
+  interrupt. A native archive ends the bridge and archives its HAPI view.
+- Native transport loss ends the worker; it never launches a replacement
+  engine. Run `hapi attach` again after the owner has restored the thread.
+  Reattachment in the same HAPI home, Hub and auth namespace reuses the HAPI
+  session and projection identity. An inactive attached view cannot use
+  ordinary `hapi resume`, Runner resume-on-send, or an archived-history fork.
+- Terminal attachment and HAPI create/fork/rewind actions are unavailable for
+  these views. Create/fork/revert in the owning desktop, then attach explicitly.
+- A native revert notification or a changed history checkpoint freezes
+  the old HAPI view. Checkpoints fence observed turn IDs and seal completed
+  content, including changes missed while detached. Use
+  `hapi attach <native-id> --socket <path> --new-view` to explicitly
+  create a fresh HAPI projection; old transcripts/queues are not merged into it.
+  Unverifiable history/checkpoints fail closed rather than silently resetting.
+
+Private local state uses the existing runtime registry and native-store
+ownership directory, plus `$HAPI_HOME/codex-runtimes/attached-history` for history
+checkpoints. Only HAPI's local detach control endpoint is registered; the
+external PID is never recorded as owned. Native endpoints/tokens are not
+published in session metadata or SSE.
+
+**Acceptance boundary:** isolated native-protocol and CLI → Hub integration
+tests use blank homes and a local mock model; those automated tests alone are
+not GUI acceptance. On 2026-11-16, a separate manual desktop smoke test with
+ChatGPT App **26.1111.21308** (build 27194) and its bundled Codex
+**0.169.0-alpha.11.1** verified WebSocket initialization, desktop-origin messages
+mirrored into HAPI, HAPI-origin messages processed by the same engine, desktop
+messages after HAPI detached, and reattachment to the same HAPI session with
+detached-period history backfilled. The upgraded binary also passed all 12
+external-engine protocol and CLI → Hub integration tests. The GUI smoke test
+used an isolated App profile and a local Responses mock, without copying account
+credentials; production login, real-model requests and long-running desktop
+use remain unverified. The earlier App 26.908.31748 frontend startup failure
+did not recur in this upgraded test.
+
+This phase does **not** configure `launchctl`, login items, a production App
+launcher or automatic Runner attachment, and does not change your original App
+configuration. It requires a separately configured, compatible external endpoint.
 
 ## Lifecycle
 
@@ -70,18 +152,52 @@ Native pending queue text is mirrored to HAPI. Native edits and acknowledged
 removals update it. Losing a queue entry during transport recovery is not proof
 that it was canceled or executed.
 
-Codex arbitrates terminal/Web answers. A submitted Web answer is only a
+During live context compaction, Web may show **Compacting context — waiting for
+message acceptance** for input just removed from the native queue. This is not
+an acceptance acknowledgement: only the native user-message event or history
+confirms consumption. Compaction completion, turn completion/interruption or a
+native disconnect withdraws this temporary status. Unconfirmed input retains
+the existing unknown-delivery recovery controls and is never automatically replayed.
+
+For blocking `request_user_input`, Codex arbitrates terminal/Web answers. A submitted Web answer is only a
 candidate. Native `serverRequest/resolved` closes the prompt with neutral
 **Resolved in Codex** status; HAPI does not invent the winner or their answer.
 Disconnect withdraws the old controls; reconnect replays native pending requests.
-Canceling a question interrupts its native turn instead of sending an empty
+Canceling a blocking question interrupts its native turn instead of sending an empty
 fabricated answer. Unknown side-client request types remain terminal-only.
+
+`request_user_input_async` uses a separate path: Codex publishes structured
+questions in an async assistant message and continues working. HAPI shows each
+question as an answerable card, including choices and free text. Answers are
+sent as native user input during the active turn or in a new turn when idle;
+native input/history confirms completion. Unanswered questions survive turn
+completion and reconnect. Dismissing one in HAPI does not interrupt Codex or
+dismiss the terminal's local question.
 
 Each root has its own HAPI socket, MCP bridge and shell `HAPI_SESSION_ID`.
 Child-agent traces/permissions are attributed by native ancestry, not merely by
 being received on the same app-server connection.
 
 ## Recovery and local data
+
+### Fork an archived conversation
+
+With an online Runner that advertises archived Codex forks, the Web chat can
+fork an inactive Codex conversation directly. The source stays inactive and
+archived in HAPI. A historical fork excludes the selected user message's native
+turn and all later turns; Fork current retains the whole persisted conversation.
+
+The Runner reads the native history, temporarily unarchives the native source
+when required, creates an independent branch, and restores the source archive.
+No prompt is sent to the source and no model turn is started by the fork itself.
+The new branch uses its own HAPI identity and Codex execution.
+
+If an operation is interrupted, retry the same fork boundary so HAPI can reconcile
+its persisted reservation. Reopen, archive and delete are blocked while that
+reservation is pending. An unconfirmed native fork without a returned thread id
+is never automatically repeated: inspect the Runner's operation journal under
+`$CODEX_HOME/hapi-archived-forks` before recovery. Missing history, an offline
+machine, a loaded native source, or a Runner needing an upgrade produces an error.
 
 - Hub outage: existing native threads continue. Reconnect reconciles history,
   queue and pending state with stable IDs.
@@ -112,9 +228,10 @@ endpoints/tokens never go into HAPI session metadata or SSE.
 
 - Cold resume accepts root threads only. To revisit a child agent, resume its
   parent HAPI session; HAPI does not independently start a child execution.
-- HAPI's legacy `safe-yolo` auto-approval policy is not a native Codex mode;
-  shared sessions reject it instead of silently weakening or misreporting it.
-  Use `default`, `read-only`, `yolo`, or native `--approve-for-me`.
+- Codex permission modes are `default`, `read-only`, `autoReview`, and
+  `yolo`; HAPI's `safe-yolo` is not a native Codex mode. `autoReview` keeps the
+  workspace-write sandbox and routes escalations to Codex's native auto-review
+  (`approvals_reviewer = "auto_review"`, same as `--approve-for-me`).
 - Web-created new/fork roots preserve the standard native sandbox restrictions.
   Named permission profiles and external sandboxes must be created in the
   native TUI; HAPI never converts them silently to workspace-write.
@@ -125,6 +242,11 @@ endpoints/tokens never go into HAPI session metadata or SSE.
   sessions: a native mutation plus hub transcript truncation needs a commit
   barrier across every sender. Use **Fork at message** instead. Cuts inside a
   steered turn are rejected; select its first user message.
+- **Fork at message** can branch from a finished historical turn while a later
+  turn is still running. It excludes the selected user message's native turn
+  and all later turns; the source keeps running. The selected turn and retained
+  prefix must have finished, and queued messages or conflicting history actions
+  still block the operation. **Fork current** continues to require an idle session.
 - `--worktree` and unsupported launch flags fail explicitly; create/select the
   working directory before launch. `--oss` requires an explicit
   `--local-provider`. Bare resume pickers use `hapi resume` or the attached TUI.
@@ -158,3 +280,18 @@ not a fake Codex executable. Coverage includes keyboard/Web answers, sibling
 question isolation, native queue editing/deletion, fork, primary-terminal exit,
 secondary attachment/detachment, Web→Runner resume with the same HAPI/native
 identity, and safe pending-message recovery.
+
+### Fork the latest completed turn from the session list
+
+For an updated Shared Codex runtime, **Fork session** remains available while a
+turn is running if a completed turn is known. The confirmation explains that the
+unfinished turn is excluded and the source continues running. A first running
+turn without completed history is disabled; older runtimes retain the busy guard.
+
+The Hub requests an explicit latest-completed boundary. The Runner reads native
+history and forks inclusively through the selected completed turn with
+`lastTurnId`. That cutoff is fixed before the native mutation, so later source
+progress cannot widen the child. Shared children hydrate from the native fork;
+the Hub does not copy the source's changing message tail. Unsupported or
+unverified boundaries are rejected rather than falling back to a current fork.
+Manual **Fork at message** keeps its existing exclusive boundary semantics.

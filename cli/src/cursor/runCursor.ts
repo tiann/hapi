@@ -16,6 +16,7 @@ import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { enqueueCursorUserMessage } from './cursorUserMessageQueue';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { setAutoBridgeTransientModelErrors } from './cursorModelErrorBridgePrefs';
 
 const formatFailureReason = (message: string): string => {
     const maxLength = 200;
@@ -79,10 +80,15 @@ export async function runCursor(opts: {
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let currentModel = opts.model;
 
+    let shuttingDown = false;
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'cursor',
-        stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive()
+        stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive(),
+        onBeforeClose: () => {
+            shuttingDown = true;
+            return sessionWrapperRef.current?.kill().catch((error) => logger.debug('[cursor] Launcher kill failed', error));
+        }
     });
 
     lifecycle.registerProcessHandlers();
@@ -126,14 +132,22 @@ export async function runCursor(opts: {
             permissionMode?: unknown;
             model?: unknown;
             modelReasoningEffort?: unknown;
+            autoBridgeTransientModelErrors?: unknown;
         };
         const applied: {
             permissionMode?: PermissionMode;
             model?: string | null;
+            autoBridgeTransientModelErrors?: boolean;
         } = {};
 
         if (config.modelReasoningEffort !== undefined) {
             throw new Error('Invalid model reasoning effort');
+        }
+
+        if (config.autoBridgeTransientModelErrors !== undefined) {
+            const enabled = config.autoBridgeTransientModelErrors === true;
+            setAutoBridgeTransientModelErrors(enabled);
+            applied.autoBridgeTransientModelErrors = enabled;
         }
 
         const nextPermissionMode = config.permissionMode !== undefined
@@ -211,7 +225,7 @@ export async function runCursor(opts: {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${formatFailureReason(localFailure.message)}`);
             lifecycle.setSessionEndReason('error');
-        } else if (!crashed) {
+        } else if (!crashed && !shuttingDown) {
             lifecycle.setSessionEndReason('completed');
         }
         await lifecycle.cleanupAndExit();

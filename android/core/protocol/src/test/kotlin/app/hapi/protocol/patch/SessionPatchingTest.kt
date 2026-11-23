@@ -373,6 +373,18 @@ class SessionPatchingTest {
     }
 
     @Test
+    fun `parse accepts background task patches`() {
+        val patch = assertNotNull(
+            SessionPatches.parse(
+                HapiJson.parseToJsonElement(
+                    """{"backgroundTaskCount":1,"backgroundTasks":[{"id":"b1","type":"local_bash","description":"Run tests"}]}"""
+                )
+            )
+        )
+        assertEquals(1, patch.backgroundTaskCount)
+    }
+
+    @Test
     fun `parse rejects an empty patch`() {
         assertNull(SessionPatches.parse(HapiJson.parseToJsonElement("{}")))
         assertNull(SessionPatches.parse(null))

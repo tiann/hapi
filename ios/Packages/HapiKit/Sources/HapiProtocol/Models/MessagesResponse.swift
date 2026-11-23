@@ -12,6 +12,7 @@ public struct MessagesPage: Codable, Equatable, Sendable {
         case after
     }
 
+    public var readThroughRevision: Int?
     public var direction: Direction
     public var limit: Int
     /// Server's current epoch for this session; a mismatch on your next
@@ -30,6 +31,7 @@ public struct MessagesPage: Codable, Equatable, Sendable {
     public var hasMore: Bool
 
     public init(
+        readThroughRevision: Int? = nil,
         direction: Direction,
         limit: Int,
         epoch: Int,
@@ -42,6 +44,7 @@ public struct MessagesPage: Codable, Equatable, Sendable {
         snapshotHeadAt: Int? = nil,
         hasMore: Bool
     ) {
+        self.readThroughRevision = readThroughRevision
         self.direction = direction
         self.limit = limit
         self.epoch = epoch

@@ -173,6 +173,76 @@ private fun isOrphanAgentRunBlock(block: ToolCallBlock): Boolean {
     return true
 }
 
+private fun codexTurnIdOf(block: ChatBlock): String? =
+    asObject(block.meta)?.let { asString(it["codexTurnId"]) }
+
+/**
+ * Merge a native round summary onto the trailing (or turn-id-targeted)
+ * summary-target block group. A summary whose turn id matches an older
+ * revision of the same group never overwrites a newer merge, and summaries
+ * for turns that landed in a LATER group are ignored so rewind/replay does
+ * not smear totals backwards.
+ */
+internal fun attachCodexRoundSummaryToLatestGroup(blocks: MutableList<ChatBlock>, summary: RoundSummary) {
+    var targetIndex = if (summary.turnId != null) {
+        blocks.indexOfLast { isRoundSummaryTarget(it) && codexTurnIdOf(it) == summary.turnId }
+    } else {
+        blocks.size - 1
+    }
+    // Persisted replies from earlier versions have no native turn ids.
+    if (targetIndex == -1 && summary.usage != null) {
+        var index = blocks.size - 1
+        while (index >= 0 && isRoundSummaryTarget(blocks[index])) {
+            if (codexTurnIdOf(blocks[index]) != null) return
+            index -= 1
+        }
+        targetIndex = blocks.size - 1
+    }
+    var firstIndex = -1
+    var index = targetIndex
+    while (index >= 0) {
+        if (!isRoundSummaryTarget(blocks[index])) break
+        firstIndex = index
+        index -= 1
+    }
+    if (firstIndex == -1) return
+
+    val firstBlock = blocks[firstIndex]
+    val previousSummary = roundSummaryOf(firstBlock)
+    if (previousSummary?.turnId != null && summary.turnId != null && previousSummary.turnId != summary.turnId) {
+        var laterIndex = targetIndex + 1
+        while (laterIndex < blocks.size && isRoundSummaryTarget(blocks[laterIndex])) {
+            if (codexTurnIdOf(blocks[laterIndex]) == previousSummary.turnId) return
+            laterIndex += 1
+        }
+    }
+    val previous = if (
+        previousSummary?.provider == "codex" &&
+        (summary.turnId == null || previousSummary.turnId == summary.turnId)
+    ) {
+        previousSummary
+    } else {
+        null
+    }
+    setRoundSummary(
+        firstBlock,
+        RoundSummary(
+            provider = summary.provider ?: previous?.provider,
+            turnId = summary.turnId ?: previous?.turnId,
+            usage = summary.usage ?: previous?.usage,
+            modelUsage = if (summary.usage != null) {
+                summary.modelUsage
+            } else {
+                previous?.modelUsage ?: summary.modelUsage
+            },
+            totalCostUsd = summary.totalCostUsd ?: previous?.totalCostUsd,
+            numTurns = summary.numTurns ?: previous?.numTurns,
+            durationMs = summary.durationMs ?: previous?.durationMs,
+        )
+    )
+}
+
+
 private fun prefixAgentTraceId(agentId: String, kind: String, id: String): String {
     val prefix = "codex-agent:$agentId:"
     return if (id.startsWith(prefix)) id else "$prefix$kind:$id"
@@ -486,14 +556,73 @@ fun reduceTimeline(
                 continue
             }
             if (eventType == "token-count") {
+                val raw = msg.event.raw
+                if (asString(raw["provider"]) == "codex" && msg.usage != null && msg.usage.scopeRole != "child") {
+                    val usage = msg.usage ?: continue
+                    val model = asString(raw["model"])
+                    // Without a model id the cache counters cannot be
+                    // attributed, so they are dropped from the display copy.
+                    val displayUsage = if (model != null) {
+                        usage
+                    } else {
+                        usage.copy(cacheCreationInputTokens = null, cacheReadInputTokens = null)
+                    }
+                    attachCodexRoundSummaryToLatestGroup(
+                        blocks,
+                        RoundSummary(
+                            provider = "codex",
+                            turnId = asString(raw["turnId"]),
+                            usage = displayUsage,
+                            modelUsage = if (model != null) {
+                                linkedMapOf(
+                                    model to RoundModelUsage(
+                                        inputTokens = usage.inputTokens,
+                                        outputTokens = usage.outputTokens,
+                                    )
+                                )
+                            } else {
+                                linkedMapOf()
+                            },
+                            numTurns = 1.0,
+                        )
+                    )
+                }
                 continue
             }
             // abort-restore is a composer side-effect signal, not a chat event.
             if (eventType == "abort-restore") {
                 continue
             }
+            if (eventType == "turn-summary") {
+                val summary = (msg.event as? AgentEvent.TurnSummary)?.summary
+                if (summary != null) {
+                    var firstIndex = -1
+                    var index = blocks.size - 1
+                    while (index >= 0 && isRoundSummaryTarget(blocks[index])) {
+                        firstIndex = index
+                        index -= 1
+                    }
+                    if (firstIndex != -1) {
+                        setRoundSummary(blocks[firstIndex], summary)
+                    }
+                }
+                continue
+            }
             if (eventType == "turn-duration") {
                 val raw = msg.event.raw
+                if (asString(raw["provider"]) == "codex") {
+                    attachCodexRoundSummaryToLatestGroup(
+                        blocks,
+                        RoundSummary(
+                            provider = "codex",
+                            turnId = asString(raw["turnId"]),
+                            modelUsage = linkedMapOf(),
+                            numTurns = 1.0,
+                            durationMs = asNumber(raw["durationMs"]),
+                        )
+                    )
+                    continue
+                }
                 val targetId = asString(raw["targetMessageId"])
                 val durationMs = asNumber(raw["durationMs"])
                 fun isDurationTarget(b: ChatBlock): Boolean =
@@ -940,6 +1069,17 @@ fun reduceTimeline(
                                 agentTimestamp = msg.agentTimestamp,
                             )
                         )
+
+                        // A tool_use re-stamped with a different native turn id
+                        // invalidates any summary previously attached to the
+                        // block; the new turn's summary (if any) reattaches later.
+                        val msgCodexTurnId = asObject(msg.meta)?.let { meta -> asString(meta["codexTurnId"]) }
+                        if (msgCodexTurnId != null) {
+                            if (asObject(block.meta) == null || codexTurnIdOf(block) != msgCodexTurnId) {
+                                block.roundSummary = null
+                            }
+                            block.meta = msg.meta
+                        }
 
                         if (block.tool.state == ToolState.PENDING) {
                             block.tool = block.tool.copy(state = ToolState.RUNNING)

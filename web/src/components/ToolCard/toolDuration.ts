@@ -2,7 +2,9 @@ import type { ChatToolCall } from '@/chat/types'
 
 /**
  * Wall-clock duration of a tool call in milliseconds, or null when it cannot be
- * derived. Uses the Claude entry's own execution-machine timestamps
+ * derived. A validated native command duration takes precedence over delivery
+ * timing. Result-only commands without one have unknown duration. Otherwise uses
+ * the Claude entry's own execution-machine timestamps
  * (`execStartedAt`/`execCompletedAt`) — which reflect the true tool execution
  * time without the hub receive/queue overhead — but only when *both* are
  * present. This both-or-neither rule is deliberate: mixing one real Claude
@@ -19,6 +21,8 @@ export function toolDurationMs(tool: ChatToolCall): number | null {
     const useExec = tool.execStartedAt != null && tool.execCompletedAt != null
     const end = useExec ? tool.execCompletedAt : tool.completedAt
     if (end == null) return null
+    if (tool.executionDurationMs != null) return tool.executionDurationMs
+    if (tool.startUnavailable) return null
     const start = useExec ? tool.execStartedAt : (tool.startedAt ?? tool.createdAt)
     if (start == null) return null
     const duration = end - start

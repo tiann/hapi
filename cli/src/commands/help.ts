@@ -18,12 +18,16 @@ ${agents}
 Commands:
   hapi auth                  Manage authentication
   hapi resume [id]           Choose or resume an existing HAPI session
+  hapi attach …              Experimental bridge to an external Codex thread
+  hapi detach <id>           Detach HAPI without stopping the external engine
   hapi hub [--relay]         Start the API + web hub
   hapi server                Alias for hapi hub
   hapi runner                Manage the background runner
   hapi doctor                Run diagnostics and troubleshooting
   hapi ping-peer             List peers or message another session
   hapi inspect-peer <id>     Read another session's metadata and messages
+  hapi set-mode <id> <mode>  Change a session's permission mode
+  hapi usage [--json]        When agents were working, across machines
   hapi mcp                   Start the MCP stdio bridge
 
 Options:

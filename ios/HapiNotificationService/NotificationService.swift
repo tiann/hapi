@@ -88,14 +88,16 @@ final class NotificationService: UNNotificationServiceExtension {
         let supportsActions = knownVersion && (
             (type == "permission-request" && !isBlank(fields["requestId"] ?? ""))
                 || type == "ready"
-                || type == "task-notification"
         )
         // input-request is tap-to-open only. Clear any inherited category so
         // a question (or unknown contract) can never offer Allow/Deny or Reply.
         content.categoryIdentifier = supportsActions ? type : ""
         // Coalescing (Android `type-<sessionId>` tag): a newer push of the
         // same type for the same session replaces the previous one.
-        content.threadIdentifier = "\(type.isEmpty ? "unknown" : type)-\(fields["sessionId"] ?? "")"
+        content.threadIdentifier = {
+            if let tag = fields["tag"], !isBlank(tag) { return tag }
+            return "\(type.isEmpty ? "unknown" : type)-\(fields["sessionId"] ?? "")"
+        }()
         // Decrypted plaintext for the app-side tap/action handlers — key name
         // is `PushCoordinator.decryptedUserInfoKey`.
         var userInfo = content.userInfo

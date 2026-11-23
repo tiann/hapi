@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
+import { CodexAppServerClient } from '../codexAppServerClient';
 import { startCodexGateway, type Envelope } from './gateway';
 
 async function fixture(after: (request: Envelope, response: Envelope, connection: string) => Promise<void>) {
@@ -24,13 +25,46 @@ async function fixture(after: (request: Envelope, response: Envelope, connection
         const client = new WebSocket(gateway.endpoint, { headers: { Authorization: 'Bearer secret' } }); clients.push(client);
         await new Promise<void>((resolve, reject) => { client.once('open', resolve); client.once('error', reject); }); return client;
     };
-    return { gateway, connect, before, async close() {
+    return { gateway, connect, before, connections, async close() {
         for (const client of clients) client.terminate(); await gateway.close();
         for (const client of engine.clients) client.terminate();
         await new Promise<void>(resolve => engine.close(() => resolve()));
     } };
 }
 describe('native gateway barriers', () => {
+    it('returns an owned queue mutation response without forwarding or running after twice', async () => {
+        const after = vi.fn(async () => {}); const f = await fixture(after);
+        const response = { id: 7, result: { deleted: true } };
+        f.before.mockImplementation(async () => response);
+        try {
+            const client = await f.connect();
+            const reply = new Promise<Envelope>(resolve => client.once('message', data => resolve(JSON.parse(data.toString()))));
+            client.send(JSON.stringify({ id: 7, method: 'thread/queue/delete', params: { threadId: 'thread', queuedSubmissionId: 'n' } }));
+            expect(await reply).toEqual(response);
+            expect([...f.connections.values()].flat()).toEqual([]);
+            expect(after).not.toHaveBeenCalled();
+        } finally { await f.close(); }
+    });
+    it('round-trips payloads larger than 64 MiB through the gateway and app-server client', async () => {
+        const f = await fixture(async () => {});
+        const client = new CodexAppServerClient({ endpoint: f.gateway.endpoint, token: 'secret' });
+        try {
+            await client.connect();
+            await client.initialize({ clientInfo: { name: 'large-history-test', version: '1.0.0' }, capabilities: null });
+            // Exercises all three receivers: gateway downstream, gateway upstream,
+            // and CodexAppServerClient. A small request afterwards checks usability.
+            const payload = 'x'.repeat(65 * 1024 * 1024);
+            const response = await client.request<{ thread: { id: string } }>('thread/read', payload);
+            expect(response.thread.id.length).toBe(payload.length);
+            expect(response.thread.id === payload).toBe(true);
+            const next = await client.request<{ thread: { id: string } }>('thread/read', 'small');
+            expect(next.thread.id).toBe('small');
+        } finally {
+            await client.disconnect();
+            await f.close();
+        }
+    }, 30_000);
+
     it('namespaces colliding native request IDs by connection and withholds replies until binding', async () => {
         let release!: () => void; const barrier = new Promise<void>(resolve => { release = resolve; });
         const after = vi.fn(async () => { await barrier; }); const f = await fixture(after);

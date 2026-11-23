@@ -196,28 +196,27 @@ export class MachineCache {
     }
 
     handleMachineAlive(payload: MachineAlivePayload): void {
-        const t = clampAliveTime(payload.time)
-        if (!t) return
+        if (!clampAliveTime(payload.time)) return
 
         const machine = this.machines.get(payload.machineId) ?? this.refreshMachine(payload.machineId)
         if (!machine) return
 
         const wasActive = machine.active
         const previousHealth = machine.health ?? null
+        const now = Date.now()
         machine.active = true
-        machine.activeAt = Math.max(machine.activeAt, t)
+        machine.activeAt = Math.max(machine.activeAt, now)
 
         if (payload.health !== undefined) {
             machine.health = parseMachineHealth(payload.health)
         }
 
-        const now = Date.now()
         const lastBroadcastAt = this.lastBroadcastAtByMachineId.get(machine.id) ?? 0
         const healthChanged = payload.health !== undefined
             && healthDisplayChanged(previousHealth, machine.health)
         const shouldBroadcast = (!wasActive && machine.active)
             || healthChanged
-            || (now - lastBroadcastAt > 10_000)
+            || (now - lastBroadcastAt > 60_000)
         if (shouldBroadcast) {
             this.lastBroadcastAtByMachineId.set(machine.id, now)
             this.publisher.emit({ type: 'machine-updated', machineId: machine.id, data: machine })

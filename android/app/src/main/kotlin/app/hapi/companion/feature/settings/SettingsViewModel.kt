@@ -2,6 +2,7 @@ package app.hapi.companion.feature.settings
 
 import app.hapi.data.auth.JwtPeek
 import app.hapi.protocol.wire.HubHealthResponse
+import app.hapi.companion.ui.theme.ColorThemePreset
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,7 +34,9 @@ sealed interface HubInfoState {
 /**
  * Settings-home state: appearance + language prefs (DataStore-backed), the
  * owner gate, and the About hub probe. Plain constructor for JVM tests;
- * Navigation hosts it behind a per-hub lifecycle holder.
+ * Navigation hosts it behind a per-hub lifecycle holder. The hub directory
+ * passes [probeHealth] = false — it needs only the owner gate, so opening the
+ * hub itself fires no `/health` request (the General subpage's holder does).
  */
 class SettingsViewModel(
     private val themePrefs: ThemePrefs,
@@ -44,6 +47,8 @@ class SettingsViewModel(
     private val currentJwt: suspend () -> String?,
     private val fetchHealth: suspend () -> HubHealthResponse,
     private val scope: CoroutineScope,
+    /** Kick off the About hub probe eagerly (default) or skip it. */
+    probeHealth: Boolean = true,
 ) {
 
     val themeSettings: StateFlow<ThemeSettings> = themePrefs.settings
@@ -63,7 +68,9 @@ class SettingsViewModel(
 
     init {
         scope.launch { mutableIsOwner.value = isOwnerNamespace(runCatching { currentJwt() }.getOrNull()) }
-        scope.launch { loadHubInfo() }
+        if (probeHealth) {
+            scope.launch { loadHubInfo() }
+        }
     }
 
     fun setThemeMode(mode: ThemeMode) {
@@ -72,6 +79,10 @@ class SettingsViewModel(
 
     fun setDynamicColor(enabled: Boolean) {
         scope.launch { themePrefs.setDynamicColor(enabled) }
+    }
+
+    fun setPreset(preset: ColorThemePreset) {
+        scope.launch { themePrefs.setPreset(preset) }
     }
 
     fun setLanguage(language: AppLanguage) {

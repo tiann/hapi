@@ -10,7 +10,7 @@ import SwiftUI
 ///   when installed (the chat routes them into the A-M4a session file
 ///   viewer, full mode, cited line as a hint), else an explanatory alert;
 /// - `https` (and, after confirmation, `http`) → in-app
-///   `SFSafariViewController`;
+///   `SFSafariViewController` (the default browser on Mac);
 /// - other `HrefPolicy.allowed` schemes (`mailto`, …) → the system open;
 /// - `HrefPolicy.confirmFirst` schemes → alert first, then open.
 ///
@@ -108,12 +108,17 @@ struct LinkOpenHandling: ViewModifier {
 
     @MainActor
     private func open(_ url: URL) {
+        #if targetEnvironment(macCatalyst)
+        // Mac users expect their default browser, not an in-app sheet.
+        systemOpenURL(url)
+        #else
         let scheme = url.scheme?.lowercased()
         if scheme == "https" || scheme == "http" {
             safariURL = IdentifiedURL(url: url)
         } else {
             systemOpenURL(url)
         }
+        #endif
     }
 }
 

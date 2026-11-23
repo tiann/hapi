@@ -68,6 +68,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
     const ctx = useHappyChatContext()
     const { t } = useTranslation()
     const [objectUrl, setObjectUrl] = useState<string | null>(null)
+    const [fileSize, setFileSize] = useState<number | undefined>(undefined)
     const [error, setError] = useState<string | null>(null)
     const [imageStyle, setImageStyle] = useState<CSSProperties | undefined>(undefined)
     const [loadMedia, setLoadMedia] = useState(false)
@@ -102,6 +103,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
             objectUrlRef.current = null
         }
         setObjectUrl(null)
+        setFileSize(undefined)
         setImageStyle(undefined)
         setError(null)
 
@@ -114,6 +116,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
                 }
                 objectUrlRef.current = nextObjectUrl
                 setObjectUrl(nextObjectUrl)
+                setFileSize(blob.size)
                 if (isImage) {
                     setImageStyle(undefined)
                     const probe = new Image()
@@ -136,7 +139,12 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
     }, [ctx.api, ctx.sessionId, props.block.imageId, isImage, shouldFetch])
 
     return (
-        <div className="max-w-[92%] rounded-2xl border border-[var(--app-border)] bg-[var(--app-tool-card-bg)] p-3">
+        <div
+            className="max-w-[92%] rounded-2xl border border-[var(--app-border)] bg-[var(--app-tool-card-bg)] p-3"
+            data-hapi-generated-media-id={props.block.imageId}
+            data-hapi-generated-media-file-name={props.block.fileName}
+            data-hapi-generated-media-loaded={isFile && objectUrl ? 'true' : undefined}
+        >
             <div className="mb-2 min-w-0 truncate text-xs font-medium text-[var(--app-hint)]">
                 {mediaHeader}
             </div>
@@ -161,6 +169,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
                     <a
                         href={objectUrl}
                         download={props.block.fileName}
+                        data-hapi-generated-media-download="true"
                         className="flex items-center gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-4 py-3 text-sm font-medium text-[var(--app-fg)]"
                     >
                         <FileIcon fileName={props.block.fileName} size={24} />
@@ -172,6 +181,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
                             src={objectUrl}
                             fileName={props.block.fileName}
                             label={props.block.fileName}
+                            fileSize={fileSize}
                             buttonClassName="block max-h-[min(28rem,60vh)] max-w-full cursor-zoom-in rounded-xl text-left"
                             imageClassName="max-h-[min(28rem,60vh)] max-w-full rounded-xl object-contain"
                             imageStyle={imageStyle}
@@ -186,6 +196,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
                 <button
                     type="button"
                     onClick={() => setLoadMedia(true)}
+                    data-hapi-generated-media-download={isFile ? 'true' : undefined}
                     className="flex h-48 w-72 max-w-full items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-subtle-bg)] text-sm font-medium text-[var(--app-fg)]"
                 >
                     {isVideo ? 'Load video' : isAudio ? 'Load audio' : 'Prepare download'}

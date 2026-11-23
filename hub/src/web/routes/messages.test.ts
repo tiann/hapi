@@ -12,6 +12,7 @@ import type { WebAppEnv } from '../middleware/auth'
 import { createMessagesRoutes } from './messages'
 
 type GetMessagesPage = SyncEngine['getMessagesPage']
+type GetMessageContext = SyncEngine['getMessageContext']
 
 // TS note: engine is cast to unknown→SyncEngine so test helpers don't need to
 // satisfy the full SyncEngine shape (only the subset the route under test uses).
@@ -24,6 +25,7 @@ function createApp(opts: {
     active?: boolean
     sendMessage?: (sessionId: string, payload: unknown) => Promise<void>
     getMessagesPage?: GetMessagesPage
+    getMessageContext?: GetMessageContext
     getQueuedState?: (sessionId: string, localIds: string[]) => {
         queuedLocalIds: string[]
         indeterminateLocalIds: string[]
@@ -62,6 +64,7 @@ function createApp(opts: {
             hasMore: false
         }
     }))
+    const getMessageContext = opts.getMessageContext ?? (() => null)
 
     const engine = {
         resolveSessionAccess: () => ({
@@ -74,6 +77,7 @@ function createApp(opts: {
         cancelQueuedMessage: async () => ({ status: 'cancelled' }),
         steerQueuedMessage: opts.steerQueuedMessage ?? (async () => ({ status: 'failed', error: 'Steer failed', localId: null })),
         getMessagesPage,
+        getMessageContext,
     } as unknown as SyncEngine
 
     const app = new Hono<WebAppEnv>()
@@ -193,6 +197,45 @@ describe('GET /api/sessions/:id/messages', () => {
         expect(response.status).toBe(400)
         expect(await response.json()).toMatchObject({ error: 'Invalid query' })
         expect(called).toBe(false)
+    })
+})
+
+describe('GET /api/sessions/:id/messages/:messageId/context', () => {
+    it('returns a bounded message context for an authorized session', async () => {
+        const context = {
+            messages: [],
+            targetMessageId: 'message-target',
+            page: {
+                epoch: 3,
+                nextBeforeSeq: 10,
+                nextBeforeAt: 1_000,
+                snapshotHeadSeq: 20,
+                snapshotHeadAt: 2_000,
+                hasMore: true
+            }
+        }
+        const calls: Array<{ sessionId: string; messageId: string }> = []
+        const { app } = createApp({
+            getMessageContext: (sessionId, messageId) => {
+                calls.push({ sessionId, messageId })
+                return context
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/messages/message-target/context')
+
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([{ sessionId: 'session-1', messageId: 'message-target' }])
+        expect(await response.json()).toEqual(context)
+    })
+
+    it('returns null when the target message no longer exists', async () => {
+        const { app } = createApp({ getMessageContext: () => null })
+
+        const response = await app.request('/api/sessions/session-1/messages/missing/context')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toBeNull()
     })
 })
 

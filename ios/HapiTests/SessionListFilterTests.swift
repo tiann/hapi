@@ -36,14 +36,15 @@ final class SessionListFilterTests: XCTestCase {
         XCTAssertTrue(model.hasRefreshedOnce)
     }
 
-    func testEmptyAndSingleMachineHaveNoFilterAffordance() {
+    func testEmptyAndSingleMachineHaveNoMachineFilter() {
         let sessions = HomeFilterTestSessions()
         let model = HomeFilterTestData.model(sessions: sessions)
         XCTAssertFalse(model.showsFilterMenu)
         XCTAssertFalse(model.filters.isActive)
         sessions.sessions = [HomeFilterTestData.summary("a", machine: "mac")]
         model.selectMachine("mac")
-        XCTAssertFalse(model.showsFilterMenu)
+        XCTAssertTrue(model.showsFilterMenu, "The unread lens applies to a single machine too")
+        XCTAssertFalse(model.showsMachineFilter)
         XCTAssertNil(model.activeMachineFilter)
         XCTAssertNil(model.filterSummary)
         XCTAssertEqual(model.rows.count, 1)
@@ -151,8 +152,8 @@ final class SessionListFilterTests: XCTestCase {
         XCTAssertTrue(model.hasLoaded)
         XCTAssertTrue(model.rows.allSatisfy { !$0.unread })
         sessions.sessions[0].updatedAt += 1
-        model.onSessionOpened("a")
-        XCTAssertEqual(seen.lastSeenAt("a"), sessions.sessions[0].updatedAt)
+        model.selectedSessionId = "a"
+        XCTAssertEqual(seen.lastSeenAt("a"), 0, "Navigation and metadata are not reading")
         model.setPinMode(sessionId: "b", mode: .global)
         try await Task.sleep(for: .milliseconds(20))
         XCTAssertEqual(model.rows.first?.id, "b")
@@ -164,6 +165,122 @@ final class SessionListFilterTests: XCTestCase {
         await model.refresh()
         XCTAssertTrue(model.isOffline)
         XCTAssertEqual(model.rows.count, 1)
+    }
+
+    func testUnreadLensKeepsTheSelectedSessionAndMarkAllReadClearsIt() async throws {
+        var stale = HomeFilterTestData.summary("seen", machine: "mac")
+        stale.contentRevision = 10
+        var fresh = HomeFilterTestData.summary("fresh", machine: "mac")
+        fresh.contentRevision = 20
+        let sessions = HomeFilterTestSessions([fresh, stale])
+        let lastSeen = LastSeenStore()
+        await lastSeen.markSeen(sessionId: "seen", revision: 10)
+        let model = SessionListModel(sessionStore: sessions, machineStore: HomeFilterTestMachines(),
+                                     lastSeenStore: lastSeen, hubUrl: "test")
+        XCTAssertEqual(model.unreadCount, 1)
+
+        model.setUnreadOnly(true)
+        XCTAssertEqual(model.rows.map(\.id), ["fresh"])
+        XCTAssertEqual(model.filterSummary, String(localized: "Unread only"))
+        model.selectedSessionId = "seen"
+        XCTAssertEqual(model.rows.map(\.id), ["fresh", "seen"])
+
+        model.markAllRead()
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(model.unreadCount, 0)
+        XCTAssertEqual(model.rows.map(\.id), ["seen"])
+        model.clearFilters()
+        XCTAssertFalse(model.filters.unreadOnly)
+    }
+
+    func testStatusFilterKeepsTheSelectedSessionAndClearsWithTheOthers() {
+        var stopped = HomeFilterTestData.summary("stopped", machine: "mac")
+        stopped.active = false
+        let sessions = HomeFilterTestSessions([HomeFilterTestData.summary("live", machine: "mac"), stopped])
+        let model = HomeFilterTestData.model(sessions: sessions)
+
+        model.setStatus(.active)
+        XCTAssertEqual(model.rows.map(\.id), ["live"])
+        XCTAssertTrue(model.hasActiveFilters)
+        XCTAssertEqual(model.filterSummary, "Active only")
+        model.setStatus(.archived)
+        XCTAssertEqual(model.rows.map(\.id), ["stopped"])
+        model.setUnreadOnly(true)
+        XCTAssertEqual(model.filterSummary, "Archived only · Unread only")
+        model.setUnreadOnly(false)
+        model.selectedSessionId = "live"
+        XCTAssertEqual(model.rows.map(\.id), ["live", "stopped"], "The open session never disappears")
+
+        // An idle session with a running job is still live work (web #1404).
+        model.selectedSessionId = nil
+        sessions.sessions[1].attachedJob = AttachedJob(key: "k", label: "Import", heartbeatAt: 0, startedAt: 0, updatedAt: 0)
+        XCTAssertEqual(model.rows.map(\.id), [])
+        model.setStatus(.active)
+        XCTAssertEqual(model.rows.map(\.id), ["live", "stopped"])
+        sessions.sessions[1].attachedJob?.status = .failed
+        XCTAssertEqual(model.rows.map(\.id), ["live"])
+
+        sessions.sessions = []
+        XCTAssertTrue(model.showsFilterMenu, "An applied filter stays reachable over an empty list")
+        model.clearFilters()
+        XCTAssertEqual(model.filters.status, .all)
+        XCTAssertFalse(model.showsFilterMenu)
+    }
+
+    func testActiveFirstIsTheDefaultOrderAndPinsStillLead() {
+        var oldLive = HomeFilterTestData.summary("old-live", machine: "mac")
+        oldLive.createdAt = 3
+        oldLive.lastUserMessageAt = 100
+        var newStopped = HomeFilterTestData.summary("new-stopped", machine: "mac")
+        newStopped.active = false
+        newStopped.createdAt = 1
+        newStopped.lastUserMessageAt = 200
+        var pinnedStopped = HomeFilterTestData.summary("pinned-stopped", machine: "mac")
+        pinnedStopped.active = false
+        pinnedStopped.pinned = true
+        let sessions = HomeFilterTestSessions(sortSessionSummaries([oldLive, newStopped, pinnedStopped]))
+        let prefs = SessionListOrderPrefs(defaults: nil)
+        let model = SessionListModel(sessionStore: sessions, machineStore: HomeFilterTestMachines(),
+                                     lastSeenStore: LastSeenStore(), orderPrefs: prefs, hubUrl: "test")
+
+        XCTAssertEqual(model.rows.map(\.id), ["pinned-stopped", "old-live", "new-stopped"])
+        XCTAssertFalse(model.isCustomized)
+        model.setActiveFirst(false)
+        XCTAssertEqual(model.rows.map(\.id), ["pinned-stopped", "new-stopped", "old-live"])
+        model.setSort(.created)
+        XCTAssertEqual(model.rows.map(\.id), ["pinned-stopped", "old-live", "new-stopped"])
+        XCTAssertEqual(SessionListModel.pinnedCount(of: model.rows), 1)
+        XCTAssertTrue(model.isCustomized)
+        XCTAssertFalse(model.hasActiveFilters, "Ordering is a preference, not a filter")
+        XCTAssertNil(model.filterSummary)
+        model.clearFilters()
+        XCTAssertEqual(prefs.order, SessionListOrder(sort: .created, activeFirst: false))
+        XCTAssertEqual(HomeFilterTestData.model(sessions: sessions).order, .default,
+                       "Tests and previews never share the stored choice")
+
+        // Search keeps relevance with the base order as tie-break, as on web.
+        model.setActiveFirst(true)
+        model.searchQuery = "review"
+        XCTAssertEqual(model.rows.map(\.id), ["pinned-stopped", "new-stopped", "old-live"])
+    }
+
+    func testSearchRanksTitlesWithinPinSections() {
+        var pinned = HomeFilterTestData.summary("pinned", machine: "mac")
+        pinned.pinned = true
+        pinned.metadata?.name = "deploy notes"
+        var exact = HomeFilterTestData.summary("exact", machine: "mac")
+        exact.metadata?.name = "deploy"
+        var other = HomeFilterTestData.summary("other", machine: "mac")
+        other.metadata?.name = "refactor"
+        let sessions = HomeFilterTestSessions(sortSessionSummaries([other, exact, pinned]))
+        let model = HomeFilterTestData.model(sessions: sessions)
+
+        model.searchQuery = "deploy"
+        XCTAssertTrue(model.isSearching)
+        XCTAssertEqual(model.rows.map(\.id), ["pinned", "exact"])
+        XCTAssertEqual(SessionListModel.pinnedCount(of: model.rows), 1)
+        model.searchQuery = "   "
+        XCTAssertEqual(model.rows.count, 3)
     }
 
     func testConnectionNoticeHasOneMessageAndHealthyStateIsEmpty() {
@@ -201,6 +318,22 @@ final class HomeFilterTestSessions: SessionListStoring {
         sessions = sortSessionSummaries(sessions)
     }
     func archiveSession(sessionId: String) async throws { sessions.removeAll { $0.id == sessionId } }
+    func renameSession(sessionId: String, name: String) async throws {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
+        sessions[index].metadata?.name = name
+    }
+    /// Scripted lifecycle answers for `SessionLifecycleActionTests`.
+    var deleteError: (any Error)?
+    var reopenError: (any Error)?
+    var reopenTarget: String?
+    func deleteSession(sessionId: String) async throws {
+        if let deleteError { throw deleteError }
+        sessions.removeAll { $0.id == sessionId }
+    }
+    func reopenSession(sessionId: String) async throws -> ReopenSessionResponse {
+        if let reopenError { throw reopenError }
+        return ReopenSessionResponse(ok: true, sessionId: reopenTarget ?? sessionId, resumed: true)
+    }
 }
 
 @MainActor @Observable

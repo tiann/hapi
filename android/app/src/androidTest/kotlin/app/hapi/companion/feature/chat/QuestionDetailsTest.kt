@@ -48,12 +48,12 @@ class QuestionDetailsTest {
             HapiTheme { PendingPermissionFooter(tool = otherTool(), requestId = "reply", flavor = "codex", override = null,
                 onAction = { id, action -> submitted += id to action }) }
         }
-        compose.onNodeWithTag("request-input-target-option-0").performClick()
-        compose.onNodeWithTag("request-input-target-option-2").performClick().assertIsSelected()
-        compose.onNodeWithTag("request-input-target-option-0").assertIsNotSelected()
-        compose.onNodeWithTag("request-input-target-note").assertIsFocused()
+        compose.onNodeWithTag("question-0-choice-0").performClick()
+        compose.onNodeWithTag("question-0-choice-2").performClick().assertIsSelected()
+        compose.onNodeWithTag("question-0-choice-0").assertIsNotSelected()
+        compose.onNodeWithTag("question-0-text").assertIsFocused()
         compose.runOnIdle { assertEquals(emptyList<Pair<String, PermissionAction>>(), submitted) }
-        compose.onNodeWithText("Submit").performClick()
+        compose.onNodeWithTag("question-submit").performClick()
         compose.runOnIdle {
             assertEquals(listOf("reply" to PermissionAction.NestedAnswers(mapOf("target" to listOf("None of the above")))), submitted)
         }
@@ -66,17 +66,17 @@ class QuestionDetailsTest {
             HapiTheme { PendingPermissionFooter(tool = otherTool(multiple = true), requestId = "reply", flavor = "codex", override = null,
                 onAction = { _, action -> submitted = action }) }
         }
-        compose.onNodeWithTag("request-input-target-option-0").performClick()
-        compose.onNodeWithTag("request-input-target-option-1").performClick()
-        compose.onNodeWithTag("request-input-target-option-2").performClick()
-        compose.onNodeWithTag("request-input-target-note").performTextInput("  自定义\n说明  ")
-        compose.onNodeWithTag("request-input-target-option-1").performClick().assertIsSelected()
-        compose.onNodeWithTag("request-input-target-option-2").assertIsNotSelected().performClick()
-        compose.onNodeWithTag("request-input-target-option-0").assertIsNotSelected()
-        compose.onNodeWithTag("request-input-target-option-1").assertIsNotSelected()
+        compose.onNodeWithTag("question-0-choice-0").performClick()
+        compose.onNodeWithTag("question-0-choice-1").performClick()
+        compose.onNodeWithTag("question-0-choice-2").performClick()
+        compose.onNodeWithTag("question-0-text").performTextInput("  自定义\n说明  ")
+        compose.onNodeWithTag("question-0-choice-1").performClick().assertIsSelected()
+        compose.onNodeWithTag("question-0-choice-2").assertIsNotSelected().performClick()
+        compose.onNodeWithTag("question-0-choice-0").assertIsNotSelected()
+        compose.onNodeWithTag("question-0-choice-1").assertIsNotSelected()
         restoration.emulateSavedInstanceStateRestore()
-        compose.onNodeWithTag("request-input-target-option-2").assertIsSelected()
-        compose.onNodeWithText("Submit").performClick()
+        compose.onNodeWithTag("question-0-choice-2").assertIsSelected()
+        compose.onNodeWithTag("question-submit").performClick()
         compose.runOnIdle {
             assertEquals(PermissionAction.NestedAnswers(mapOf("target" to listOf("None of the above", "user_note: 自定义\n说明"))), submitted)
         }
@@ -101,7 +101,7 @@ class QuestionDetailsTest {
         }
         compose.waitUntil(10_000) { compose.onAllNodesWithText("staging").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("question-0-option-1").assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected))
-        compose.onNodeWithText("Submit").assertDoesNotExist()
+        compose.onNodeWithTag("question-submit").assertDoesNotExist()
         compose.runOnIdle {
             tool.value = tool.value.copy(state = "completed", result = JsonPrimitive("duplicate result"),
                 permission = ToolPermission(id = "reply", status = "approved", presence = emptySet(),
@@ -121,7 +121,7 @@ class QuestionDetailsTest {
         compose.runOnIdle { tool.value = tool.value.copy(state = "error", result = JsonPrimitive("answer delivery failed")) }
         compose.waitUntil(10_000) { compose.onAllNodesWithText("answer delivery failed", substring = true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("answer delivery failed", substring = true).performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Submit").assertDoesNotExist()
+        compose.onNodeWithTag("question-submit").assertDoesNotExist()
     }
 
     @Test fun existingPendingAnswerFormStillSubmitsNestedAnswers() {
@@ -133,8 +133,8 @@ class QuestionDetailsTest {
             }
         }
         compose.onNodeWithText("staging").performClick()
-        compose.onNodeWithTag("request-input-target-option-2").assertDoesNotExist()
-        compose.onNodeWithText("Submit").performClick()
+        compose.onNodeWithTag("question-0-choice-2").assertDoesNotExist()
+        compose.onNodeWithTag("question-submit").performClick()
         compose.runOnIdle {
             assertEquals("reply" to PermissionAction.NestedAnswers(mapOf("target" to listOf("staging", "user_note: production"))), resolved)
         }

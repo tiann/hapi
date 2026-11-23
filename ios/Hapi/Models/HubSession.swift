@@ -56,6 +56,15 @@ final class HubSession {
     }
     private(set) var sessionRemoval: SessionRemoval?
 
+    private struct ComposerHandoff {
+        let sourceSessionId: String
+        let sessionId: String
+        let source: ChatInteractor
+    }
+    @ObservationIgnored private var composerHandoff: ComposerHandoff?
+    @ObservationIgnored private var attachmentRecoverySessionIds: Set<String> = []
+    @ObservationIgnored private var deferredAttachmentRemovals: Set<String> = []
+
     /// Fired once when the hub terminally rejects the stored credentials
     /// (access token rotated/revoked). `AppModel` reacts by dropping the hub
     /// back to pairing with a banner.
@@ -66,6 +75,8 @@ final class HubSession {
     @ObservationIgnored private var consumeTask: Task<Void, Never>?
     @ObservationIgnored private var reportedAuthFailure = false
     @ObservationIgnored private var isShutDown = false
+    @ObservationIgnored private var readStateTask: Task<Void, Never>?
+    @ObservationIgnored private let readNamespace: String?
 
     /// The chat currently on screen (at most one in this UI), forwarded the
     /// scene-phase transitions so its session-scope SSE parks in background.
@@ -100,7 +111,11 @@ final class HubSession {
         let machineStore = MachineStore(api: api, snapshotDirectory: snapshotDirectory)
         self.sessionStore = sessionStore
         self.machineStore = machineStore
-        self.lastSeenStore = LastSeenStore(snapshotDirectory: snapshotDirectory)
+        let storedJWT = (try? credentialStore.credentials(forHub: hubUrl))?.jwt
+        let readNamespace = storedJWT.flatMap { JWT.claims(from: $0)?.ns }
+        self.readNamespace = readNamespace
+        self.lastSeenStore = LastSeenStore(snapshotDirectory: snapshotDirectory,
+                                          namespace: readNamespace)
         self.windows = MessageWindowControllers(
             provider: api,
             snapshots: WindowSnapshotStore(
@@ -121,7 +136,16 @@ final class HubSession {
         })
         self.router = SyncEventRouter(sessions: sessionStore, machines: machineStore)
         sessionStore.onSessionRemoved = { [weak self] sessionId in
-            self?.sessionRemoval = SessionRemoval(sessionId: sessionId)
+            guard let self else { return }
+            if self.composerHandoff?.sourceSessionId == sessionId { return }
+            // A resume may merge/delete the source before its HTTP response
+            // arrives. Let the upload handoff navigate instead of popping the
+            // chat and losing the still-pending composer.
+            if self.attachmentRecoverySessionIds.contains(sessionId) {
+                self.deferredAttachmentRemovals.insert(sessionId)
+            } else {
+                self.sessionRemoval = SessionRemoval(sessionId: sessionId)
+            }
         }
     }
 
@@ -171,13 +195,37 @@ final class HubSession {
     /// sheet — all against this hub's client, stores, and window registry.
     /// Drafts persist per hub + session in `UserDefaults`.
     func makeChatInteractor(sessionId: String) -> ChatInteractor {
+        let handoff = composerHandoff?.sessionId == sessionId ? composerHandoff : nil
+        if handoff != nil { composerHandoff = nil }
+        let composer = handoff?.source.prepareComposerHandoff()
         let interactor = ChatInteractor(
             sessionId: sessionId,
             api: api,
             sessionStore: sessionStore,
             windows: windows,
-            drafts: UserDefaultsChatDrafts(scope: hubUrl)
+            drafts: UserDefaultsChatDrafts(scope: hubUrl),
+            machineStore: machineStore,
+            attachments: composer?.attachments
         )
+        if let composer { interactor.setComposerText(composer.text) }
+        var didSupersede = false
+        interactor.onAttachmentSessionSuperseded = { [weak self] target, source in
+            didSupersede = true
+            guard let self, !self.isShutDown else { return }
+            self.composerHandoff = ComposerHandoff(sourceSessionId: sessionId, sessionId: target, source: source)
+        }
+        interactor.onAttachmentSessionRecovery = { [weak self] recovering in
+            guard let self, !self.isShutDown else { return }
+            if recovering {
+                didSupersede = false
+                self.attachmentRecoverySessionIds.insert(sessionId)
+            } else {
+                self.attachmentRecoverySessionIds.remove(sessionId)
+                if self.deferredAttachmentRemovals.remove(sessionId) != nil, !didSupersede {
+                    self.sessionRemoval = SessionRemoval(sessionId: sessionId)
+                }
+            }
+        }
         // Scratchlist seams (A-M4b): toolbar badge count + park/insert.
         interactor.scratchlist = scratchlist
         return interactor
@@ -196,6 +244,27 @@ final class HubSession {
         }
         activeChat?.enterForeground()
         visibility.setForeground(true)
+        lastSeenStore.setForeground(true)
+        readStateTask?.cancel()
+        readStateTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let namespace: String
+                if let known = readNamespace { namespace = known }
+                else {
+                    let token = try await authManager.validToken()
+                    guard let resolved = JWT.claims(from: token)?.ns else { return }
+                    namespace = resolved
+                }
+                guard !Task.isCancelled else { return }
+                let api = self.api
+                await lastSeenStore.configure(namespace: namespace) { id, state in
+                    let token = try await api.authManager.validToken()
+                    guard JWT.claims(from: token)?.ns == namespace else { throw AuthError.reauthenticationRequired }
+                    return try await api.updateSessionReadState(id: id, state: state).readState
+                }
+            } catch { /* Offline: persisted reads remain queued for the next foreground. */ }
+        }
     }
 
     /// Parks the SSE retry loop; a live connection is left to the OS. Also
@@ -207,6 +276,7 @@ final class HubSession {
         }
         activeChat?.enterBackground()
         visibility.setForeground(false)
+        lastSeenStore.setForeground(false)
         let sessionStore = sessionStore
         let machineStore = machineStore
         let lastSeenStore = lastSeenStore
@@ -220,6 +290,9 @@ final class HubSession {
     /// Tears everything down. The session is unusable afterwards.
     func shutdown() {
         isShutDown = true
+        composerHandoff = nil
+        readStateTask?.cancel()
+        lastSeenStore.shutdown()
         onTerminalAuthFailure = nil
         // Hub switch can outrun the chat view's disappear; stop is idempotent.
         activeChat?.stop()

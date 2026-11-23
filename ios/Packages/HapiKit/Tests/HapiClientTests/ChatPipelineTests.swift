@@ -144,6 +144,29 @@ struct ChatPipelineTests {
         )
     }
 
+    @Test func directSendRowsRenderInTheThreadWhileUninvoked() async throws {
+        let document = try Self.loadFixture("claude-assistant-text.json")
+        var rows = Self.windowRows(document)
+        rows.append(
+            buildOptimisticMessage(
+                localId: "local-direct-1",
+                text: "idle send",
+                createdAt: 1_755_000_999_000,
+                status: .sent
+            )
+        )
+        let pipeline = ChatPipeline()
+
+        let visible = await pipeline.run(
+            messages: rows,
+            agentState: nil,
+            hasMoreMessages: false,
+            directSendLocalIds: ["local-direct-1"]
+        )
+
+        #expect(Self.blockIds(visible).contains { $0.contains("local-direct-1") })
+    }
+
     // MARK: - Group-id stability via previousGroups
 
     @Test func groupIdSurvivesOlderHistoryArrival() async throws {

@@ -5,6 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.test.assertFalse
 
 /**
  * Full-payload decoding for [Session], [SessionSummary] and [MessagesResponse]
@@ -172,6 +173,37 @@ class SessionDecodingTest {
     }
 
     @Test
+    fun `hasConversationContent decodes present flags and defaults to false when absent or null`() {
+        // The mention eligibility gate reads the flag as `== true` — an old
+        // hub omitting the field (or sending JSON null, coerced by
+        // [HapiJson]) decodes to the `false` default (not mentionable),
+        // while a present flag rides through verbatim.
+        val present = HapiJson.decodeFromString(
+            SessionSummary.serializer(),
+            """{"id":"s-1","active":false,"hasConversationContent":true}""",
+        )
+        assertTrue(present.hasConversationContent == true)
+
+        val absent = HapiJson.decodeFromString(
+            SessionSummary.serializer(),
+            """{"id":"s-1","active":false}""",
+        )
+        assertFalse(absent.hasConversationContent)
+
+        val nullFlag = HapiJson.decodeFromString(
+            SessionSummary.serializer(),
+            """{"id":"s-1","active":false,"hasConversationContent":null}""",
+        )
+        assertFalse(nullFlag.hasConversationContent)
+
+        val falseFlag = HapiJson.decodeFromString(
+            SessionSummary.serializer(),
+            """{"id":"s-1","active":false,"hasConversationContent":false}""",
+        )
+        assertTrue(falseFlag.hasConversationContent == false)
+    }
+
+    @Test
     fun `decodes a messages page envelope`() {
         val response = HapiJson.decodeFromString(
             MessagesResponse.serializer(),
@@ -211,5 +243,44 @@ class SessionDecodingTest {
         assertEquals(1L, response.page.nextBeforeSeq)
         assertNull(response.page.nextAfterSeq)
         assertTrue(response.page.hasMore)
+    }
+
+    @Test
+    fun `decodes hub-owned translateInput, absent means off`() {
+        val on = HapiJson.decodeFromString(
+            SessionMetadata.serializer(),
+            """{"path":"/repo","host":"devbox","translateInput":true}""",
+        )
+        assertEquals(true, on.translateInput)
+        val absent = HapiJson.decodeFromString(SessionMetadata.serializer(), """{"path":"/repo","host":"devbox"}""")
+        assertNull(absent.translateInput)
+    }
+
+    @Test
+    fun `features inputTranslation is optional and defaults to unavailable`() {
+        val available = HapiJson.decodeFromString(
+            FeaturesResponse.serializer(),
+            """
+            {
+              "githubPrAwareness": {"enabled": true, "source": "default"},
+              "prChipDisplay": {"mode": "compact"},
+              "inputTranslation": {"available": true}
+            }
+            """,
+        )
+        assertTrue(available.inputTranslationAvailable)
+        val older = HapiJson.decodeFromString(
+            FeaturesResponse.serializer(),
+            """{"githubPrAwareness": {"enabled": false, "source": "default"}}""",
+        )
+        assertFalse(older.inputTranslationAvailable)
+    }
+
+    @Test
+    fun `translate toggle request encodes only the flag`() {
+        assertEquals(
+            """{"translateInput":false}""",
+            HapiJson.encodeToString(SetSessionTranslateInputRequest.serializer(), SetSessionTranslateInputRequest(false)),
+        )
     }
 }

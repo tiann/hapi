@@ -11,7 +11,8 @@ const ReplySchema = z.object({
     reason: z.string().optional(),
     answers: z.union([z.record(z.string(), z.array(z.string())), z.record(z.string(), z.object({ answers: z.array(z.string()) }))]).optional()
 });
-type Reply = z.infer<typeof ReplySchema>;
+export type PermissionReply = z.infer<typeof ReplySchema>;
+type Reply = PermissionReply;
 type Pending = { nativeId: string | number; threadId: string; turnId?: string; toolCallId: string; userInput: boolean; input: unknown; submitted: boolean; answer(reply: Reply): void; cancel(error: Error): void };
 
 /** No winner is inferred from submitting a Web candidate: only native resolution closes it. */
@@ -30,9 +31,12 @@ export class SharedCodexPermissions {
             scope: { role: 'child', threadId: request.threadId, parentThreadId: rootThreadId }, scope_role: 'child'
         } : message, id);
     }
-    constructor(private readonly session: ApiSessionClient, private readonly client: CodexAppServerClient, private readonly generation: string) {
+    constructor(private readonly session: ApiSessionClient, private readonly client: CodexAppServerClient, private readonly generation: string,
+        answerAsyncQuestion?: (reply: Reply) => Promise<boolean>,
+        private readonly onUserWait?: (threadId: string) => ((endedAt: number) => void) | undefined) {
         session.rpcHandlerManager.registerHandler(RPC_METHODS.Permission, async (raw: unknown) => {
             const reply = ReplySchema.parse(raw);
+            if (await answerAsyncQuestion?.(reply)) return;
             const request = this.pending.get(reply.id);
             if (!request || request.submitted) throw new Error('Request already resolved or submitted');
             const questions = record(request.input).questions;
@@ -86,9 +90,14 @@ export class SharedCodexPermissions {
         });
         const handler = handlers.get(request.method);
         if (!handler) return;
+        // The wait for the user starts here and ends when the answer reached
+        // Codex (or the request was withdrawn); hosts time it for the round
+        // footer's tok/s, which must not count user waits as generation.
+        const endWait = this.onUserWait?.(threadId) ?? null;
         let response: unknown;
-        try { response = handler(request.params); } catch { return; }
+        try { response = handler(request.params); } catch { endWait?.(Date.now()); return; }
         void Promise.resolve(response).then(result => {
+            endWait?.(Date.now());
             if (result === IGNORE_SHARED_REQUEST) return;
             if (this.closed || this.retired.has(key)) return;
             // No pending entry means a native client already resolved the displayed request.
@@ -102,7 +111,7 @@ export class SharedCodexPermissions {
                     this.client.respond(request.id, { answers });
                 } else this.client.respond(request.id, result);
             }
-        }).catch(() => { /* Native resolution/disconnection withdraws, never responds with an error. */ });
+        }).catch(() => { endWait?.(Date.now()); /* Native resolution/disconnection withdraws, never responds with an error. */ });
     }
 
     resolved(threadId: string, nativeId: unknown, status: 'resolved' | 'canceled' = 'resolved'): void {

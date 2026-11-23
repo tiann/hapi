@@ -10,14 +10,14 @@ export type Capability = typeof Capabilities[keyof typeof Capabilities]
 
 // --- Per-flavor capability sets ---
 const FLAVOR_CAPS: Record<AgentFlavor, ReadonlySet<Capability>> = {
-    agy: new Set([Capabilities.ModelChange]),
+    agy: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     claude: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     gemini: new Set([Capabilities.ModelChange]),
-    kimi: new Set([Capabilities.ModelChange]),
-    copilot: new Set([Capabilities.ModelChange]),
+    kimi: new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    copilot: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     grok: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     codex: new Set([Capabilities.ModelChange]),
-    dsh: new Set(),
+    dsh: new Set([Capabilities.ModelChange]),
     cursor: new Set([Capabilities.ModelChange]),
     opencode: new Set([Capabilities.ModelChange]),
     pi: new Set([Capabilities.ModelChange, Capabilities.Effort]),
@@ -62,11 +62,18 @@ export function supportsEffort(flavor: string | null | undefined): boolean {
     return hasCapability(flavor, Capabilities.Effort)
 }
 
-export function isCodexFamilyFlavor(flavor: string | null | undefined): boolean {
-    return flavor === 'codex'
-        || flavor === 'gemini'
-        || flavor === 'grok'
-        || flavor === 'kimi'
-        || flavor === 'copilot'
-        || flavor === 'opencode'
+const CODEX_FAMILY_FLAVORS = [
+    'codex',
+    'gemini',
+    'grok',
+    'kimi',
+    'copilot',
+    'opencode',
+] as const satisfies readonly AgentFlavor[]
+
+export function isCodexFamilyFlavor(
+    flavor: string | null | undefined
+): flavor is typeof CODEX_FAMILY_FLAVORS[number] {
+    return typeof flavor === 'string'
+        && (CODEX_FAMILY_FLAVORS as readonly string[]).includes(flavor)
 }

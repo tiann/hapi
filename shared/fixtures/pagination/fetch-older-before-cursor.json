@@ -31,6 +31,7 @@
             "at": 9000,
             "seq": 9
         },
+        "readThroughRevision": 0,
         "viewMode": "tail"
     },
     "fixtureVersion": 1,

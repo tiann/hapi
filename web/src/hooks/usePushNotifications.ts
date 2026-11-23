@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 
 function isPushSupported(): boolean {
@@ -28,6 +28,36 @@ function base64UrlToUint8Array(base64Url: string): Uint8Array {
  * VapidPkHashMismatch), so we compare and re-create them on the next load.
  */
 const PUSH_VAPID_KEY_STORAGE = 'hapi.push.vapidKey'
+const PUSH_DISABLED_STORAGE = 'hapi.push.disabled'
+const PUSH_SUBSCRIPTION_CHANGED = 'hapi.push.subscriptionChanged'
+
+// Subscription hooks are mounted independently in the app and settings.
+// A later unsubscribe invalidates an earlier recovery, even while the hub
+// request is in flight. Registrations are ordered so a stale registration's
+// cleanup cannot remove a newer registration for the same endpoint.
+let unsubscribeVersion = 0
+let registrationTail: Promise<void> = Promise.resolve()
+
+function queueRegistration<T>(work: () => Promise<T>): Promise<T> {
+    const result = registrationTail.then(work)
+    registrationTail = result.then(() => {}, () => {})
+    return result
+}
+
+function notifySubscriptionChanged(): void {
+    window.dispatchEvent(new Event(PUSH_SUBSCRIPTION_CHANGED))
+}
+
+export function pushNotificationsDisabled(): boolean {
+    try { return localStorage.getItem(PUSH_DISABLED_STORAGE) === 'true' } catch { return false }
+}
+
+function setPushNotificationsDisabled(disabled: boolean): void {
+    try {
+        if (disabled) localStorage.setItem(PUSH_DISABLED_STORAGE, 'true')
+        else localStorage.removeItem(PUSH_DISABLED_STORAGE)
+    } catch { /* Browser subscription remains the source of truth. */ }
+}
 
 function readStoredVapidKey(): string | null {
     try {
@@ -49,8 +79,10 @@ export function usePushNotifications(api: ApiClient | null) {
     const [isSupported, setIsSupported] = useState(false)
     const [permission, setPermission] = useState<NotificationPermission>('default')
     const [isSubscribed, setIsSubscribed] = useState(false)
+    const refreshVersion = useRef(0)
 
     const refreshSubscription = useCallback(async () => {
+        const version = ++refreshVersion.current
         if (!isPushSupported()) {
             setIsSupported(false)
             setIsSubscribed(false)
@@ -77,11 +109,19 @@ export function usePushNotifications(api: ApiClient | null) {
                 // the doubt rather than showing a false "off" state.
             }
         }
-        setIsSubscribed(Boolean(subscription) && keyMatches)
+        if (version === refreshVersion.current) {
+            setIsSubscribed(Boolean(subscription) && keyMatches)
+        }
     }, [api])
 
     useEffect(() => {
+        const onChange = () => { void refreshSubscription() }
+        window.addEventListener(PUSH_SUBSCRIPTION_CHANGED, onChange)
         void refreshSubscription()
+        return () => {
+            window.removeEventListener(PUSH_SUBSCRIPTION_CHANGED, onChange)
+            refreshVersion.current += 1
+        }
     }, [refreshSubscription])
 
     const requestPermission = useCallback(async (): Promise<boolean> => {
@@ -107,10 +147,12 @@ export function usePushNotifications(api: ApiClient | null) {
             return false
         }
 
+        const version = unsubscribeVersion
         try {
             const registration = await navigator.serviceWorker.ready
             const existing = await registration.pushManager.getSubscription()
             const { publicKey } = await api.getPushVapidPublicKey()
+            if (version !== unsubscribeVersion) return false
             const applicationServerKey = base64UrlToUint8Array(publicKey).buffer as ArrayBuffer
             // A subscription created against a previous hub or VAPID key can
             // never receive notifications from the current hub. Detect the
@@ -120,6 +162,7 @@ export function usePushNotifications(api: ApiClient | null) {
                 const staleEndpoint = existing.endpoint
                 const unsubscribed = await existing.unsubscribe()
                 if (!unsubscribed) return false
+                if (version !== unsubscribeVersion) return false
                 // Prune the obsolete endpoint from the hub so it stops
                 // receiving failed sends (VapidPkHashMismatch) for a
                 // subscription that can no longer be reached.
@@ -138,6 +181,12 @@ export function usePushNotifications(api: ApiClient | null) {
                     userVisibleOnly: true,
                     applicationServerKey
                 })
+                if (version !== unsubscribeVersion) {
+                    // A disable may have run before the browser finished
+                    // creating this subscription.
+                    if (pushNotificationsDisabled()) await subscription.unsubscribe()
+                    return false
+                }
             }
 
             const json = subscription.toJSON()
@@ -145,24 +194,34 @@ export function usePushNotifications(api: ApiClient | null) {
             if (!json.endpoint || !keys?.p256dh || !keys.auth) {
                 return false
             }
+            const endpoint = json.endpoint
+            const { p256dh, auth } = keys
 
-            await api.subscribePushNotifications({
-                endpoint: json.endpoint,
-                keys: {
-                    p256dh: keys.p256dh,
-                    auth: keys.auth
+            return await queueRegistration(async () => {
+                if (version !== unsubscribeVersion) return false
+                await api.subscribePushNotifications({
+                    endpoint,
+                    keys: { p256dh, auth }
+                })
+                if (version !== unsubscribeVersion) {
+                    // The delete may have reached the hub before this older
+                    // registration. Remove it again before newer registrations.
+                    if (pushNotificationsDisabled()) {
+                        await api.unsubscribePushNotifications({ endpoint })
+                    }
+                    return false
                 }
+                // Persist the key only after the hub registration succeeds.
+                writeStoredVapidKey(publicKey)
+                setPushNotificationsDisabled(false)
+                setIsSubscribed(true)
+                return true
             })
-            // Only record the key after the hub registration succeeded. A
-            // failed registration must leave the previous key in place so the
-            // next load retries the replacement instead of reusing a
-            // subscription the hub never learned about.
-            writeStoredVapidKey(publicKey)
-            setIsSubscribed(true)
-            return true
         } catch (error) {
             console.error('[PushNotifications] Failed to subscribe:', error)
             return false
+        } finally {
+            notifySubscriptionChanged()
         }
     }, [api])
 
@@ -171,10 +230,12 @@ export function usePushNotifications(api: ApiClient | null) {
             return false
         }
 
+        unsubscribeVersion += 1
         try {
             const registration = await navigator.serviceWorker.ready
             const subscription = await registration.pushManager.getSubscription()
             if (!subscription) {
+                setPushNotificationsDisabled(true)
                 setIsSubscribed(false)
                 return true
             }
@@ -182,12 +243,15 @@ export function usePushNotifications(api: ApiClient | null) {
             const endpoint = subscription.endpoint
             const success = await subscription.unsubscribe()
             if (!success) return false
-            await api.unsubscribePushNotifications({ endpoint })
+            setPushNotificationsDisabled(true)
             setIsSubscribed(false)
+            await api.unsubscribePushNotifications({ endpoint })
             return true
         } catch (error) {
             console.error('[PushNotifications] Failed to unsubscribe:', error)
             return false
+        } finally {
+            notifySubscriptionChanged()
         }
     }, [api])
 

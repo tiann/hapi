@@ -7,35 +7,57 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { isKnownFlavor, isLiveLifecycleState, isSteeringSupportedForSession, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
-import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
+import { FORK_PREVIEW_TAIL_ROWS, type ForkBoundary, type ForkBoundaryErrorCode, type ForkPreviewRequest, type ForkPreviewResponse, type ForkPreviewRow } from '@hapi/protocol/forkBoundary'
+import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
-import type { ImplementCodexPlanResult } from '@hapi/protocol/apiTypes'
-import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
+import type { CopilotReasoningEffortResponse, ImplementCodexPlanResult, KimiReasoningEffortResponse } from '@hapi/protocol/apiTypes'
+import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, ExternalRef, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import { branchSessionId, buildBranchPrompt } from './branchTranscript'
 import type { Store, CancelQueuedMessageResult } from '../store'
+import type { StoredMessage } from '../store/types'
+import type {
+    MessageContentSearchMatch,
+    SessionMessageContentSearchResult
+} from '../store/messageContentSearch'
 import type { HapiSessionExportResult } from '@hapi/protocol/sessionExport'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 import { clearAgentTerminalBuffer } from '../socket/agentTerminalBuffer'
 import type { SSEManager } from '../sse/sseManager'
 import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../cursor/cursorLegacyMigrator'
+import { toAttachedJob } from '../store/sessionJobs'
+import {
+    buildJobTerminalWakePrompt,
+    buildJobWakeLocalId,
+    isTerminalJobStatus,
+    waitUntilSessionActive,
+} from './sessionJobWake'
 
+import { isUserInputMessage } from '../store/sessionUserActivity'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService, type RetryIndeterminateMessageResult } from './messageService'
 import { createTitleSuggestionService, type TitleSuggestionService } from './titleSuggestion'
-import { selectForkTranscriptPrefix } from './forkTranscript'
+import { createInputTranslationService, type InputTranslationService } from './inputTranslation'
+import { createPromptTitle } from './promptTitle'
+import { resolveForkBoundary, resolveRewindBoundary, invokedTailSeq, type ResolvedBoundary } from './forkBoundary'
 import { buildForkSessionSummary } from './forkSessionSummary'
 import { isMachineSpawnPreallocatedStub } from '../store/sessions'
 import {
     RpcGateway,
     RpcTargetMissingError,
+    RunnerStopRpcError,
     type FileSearchOptions,
     type RpcCodexModel,
     type RpcCommandResponse,
@@ -45,13 +67,16 @@ import {
     type RpcStatFilesResponse,
     type RpcListAgyModelsResponse,
     type RpcListPiModelsResponse,
+    type RpcListClaudeModelsResponse,
     type RpcListCodexModelsResponse,
     type RpcListPiSessionsResponse,
+    type RpcListOpencodeSessionsResponse,
     type RpcArchiveCodexSessionResponse,
     type RpcListCursorModelsResponse,
     type RpcListOpencodeModelsResponse,
     type RpcListOpencodeModelVariantsResponse,
     type RpcListGrokModelsResponse,
+    type RpcListDshModelsResponse,
     type RpcListCopilotModelsResponse,
     type RpcListKimiModelsResponse,
     type RpcListGrokReasoningEffortOptionsResponse,
@@ -64,7 +89,20 @@ import {
     type RpcUploadFileResponse
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
+import { ArchiveCleanupError } from './archiveCleanupError'
+import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
+import { extractMessageEventType } from '../notifications/eventParsing'
+import { SessionEnumerationCache } from './sessionEnumerationCache'
 import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
+import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
+import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
+import { extractTodoWriteTodosFromMessageContent } from './todos'
+import {
+    readAutoBridgeTransientModelErrorsEnabled,
+    writeAutoBridgeTransientModelErrorsEnabled
+} from '../config/autoBridgeTransientModelErrors'
+import { getConfiguration } from '../configuration'
+import { getSettingsFile, readSettingsOrThrowCached } from '../config/settings'
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
 type PtyResumeAttempt = NonNullable<NonNullable<Session['metadata']>['ptyResumeAttempt']>
@@ -81,12 +119,14 @@ export type {
     RpcStatFilesResponse,
     RpcListAgyModelsResponse,
     RpcListPiModelsResponse,
+    RpcListClaudeModelsResponse,
     RpcListCodexModelsResponse,
     RpcListPiSessionsResponse,
     RpcListCursorModelsResponse,
     RpcListOpencodeModelsResponse,
     RpcListOpencodeModelVariantsResponse,
     RpcListGrokModelsResponse,
+    RpcListDshModelsResponse,
     RpcListCopilotModelsResponse,
     RpcListKimiModelsResponse,
     RpcListGrokReasoningEffortOptionsResponse,
@@ -111,6 +151,14 @@ export type ReopenSessionResult =
 export type LocalResumeTargetResult =
     | { type: 'success'; target: LocalResumeTarget }
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'resume_unavailable' }
+
+export type LocalResumeTargetByAgentResult =
+    | { type: 'success'; target: LocalResumeTarget | null; historical: boolean }
+    | { type: 'error'; message: string; code: 'resume_unavailable' }
+
+export type LocalResumePrepareResult =
+    | { type: 'success'; revived: boolean }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'session_active' }
 
 export type LocalHandoffResult =
     | { type: 'success' }
@@ -178,11 +226,21 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
 }
 
 export class SyncEngine {
+    private readonly archiveRequests = new Map<string, Promise<void>>()
+    // KillSession's beforeKill drain completes before the CLI's async cleanup
+    // closes the session socket, so a runner prepare-stop that loses that race
+    // can still be honored for the exact killed generation while its archive
+    // is in flight.
+    private readonly archiveDrainedGenerations = new Map<string, { machineId: string; pid: number; processStartMarker: string }>()
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
     private readonly machineCache: MachineCache
     private readonly messageService: MessageService
     private readonly titleSuggestionService: TitleSuggestionService
+    private readonly inputTranslationService: InputTranslationService
+    private readonly automaticTitleSuggestionService: AutomaticTitleSuggestionService
+    /** Completed turns whose final chat message may still be in transit. */
+    private readonly titleTurnCompletedIds = new Set<string>()
     private readonly rpcGateway: RpcGateway
     private inactivityTimer: NodeJS.Timeout | null = null
     /** Sessions that emitted `session-ready` (Cursor ACP or validated Pi get_state). */
@@ -201,13 +259,76 @@ export class SyncEngine {
     private readonly scratchlistUploadTails = new Map<string, Promise<unknown>>()
     /** Coalesce duplicate clear requests so retries cannot spawn two fresh sessions. */
     private readonly opencodeClearTails = new Map<string, Promise<ClearOpencodeSessionResult>>()
+    /** Coalesce concurrent resume/reopen requests so parallel callers share in-flight startup. */
+    private readonly resumeTails = new Map<string, Promise<ResumeSessionResult>>()
+    private readonly reopenTails = new Map<string, Promise<ReopenSessionResult>>()
     /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
     private readonly historyActionsInFlight = new Set<string>()
+    /** Track Claude rewind RPCs in flight on this hub process so live metadata writes wait for the RPC outcome. */
+    private readonly claudeRewindRpcsInFlight = new Map<string, string>()
+    /** Pending #1489 wake retries after recoverable pre-delivery failures. */
+    private readonly jobTerminalWakeRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+    private readonly jobTerminalWakeRetryAttempts = new Map<string, number>()
+    /** Debounced scan of DB-pending wakes after runner recovery / hub start. */
+    private jobWakeRequeueTimer: ReturnType<typeof setTimeout> | null = null
+    /** Base delay for wake retries; tests may lower this. */
+    private jobWakeRetryBaseMs = 1_000
+    private static readonly JOB_WAKE_RETRY_MAX_ATTEMPTS = 8
+    /**
+     * Single-flight + last-good caches for session enumerations. The backing
+     * RPCs can queue for tens of seconds behind a busy engine (mid-turn or
+     * reconnecting socket) while clients re-fetch on every session open;
+     * enumerations change rarely, so serve cached values and revalidate.
+     */
+    private readonly slashCommandsEnumeration = new SessionEnumerationCache({
+        ttlMs: 30_000,
+        fetchTimeoutMs: 8_000
+    })
+    private readonly skillsEnumeration = new SessionEnumerationCache({
+        ttlMs: 30_000,
+        fetchTimeoutMs: 8_000
+    })
+    /**
+     * Same single-flight + last-good treatment for machine/session model
+     * lists. The backing RPC round-trips even when healthy (observed ~1s
+     * floor, 3-13s under load) and every picker open re-fetches; a stalled
+     * engine stretches them past the web server's 30s request cap. Model
+     * catalogs change rarely, so serve cached values and revalidate. The
+     * 8s cold cap sits well under that request cap — callers get a typed
+     * error instead of an opaque gateway timeout.
+     */
+    private readonly modelListCache = new SessionEnumerationCache({
+        ttlMs: 30_000,
+        fetchTimeoutMs: 8_000
+    })
+
+    /** A model-list payload is only cacheable when the RPC actually
+     *  succeeded — error bodies must propagate, never get pinned. */
+    private static readonly modelListCacheable = (result: unknown): boolean =>
+        !!result && typeof result === 'object' && (result as { success?: unknown }).success === true
+
+    /** Drop cached enumeration RPCs for a session leaving the active set
+     *  (deleted or archived). The keys are never queried again; without this
+     *  the per-session entries would accumulate for the hub's lifetime. */
+    private releaseSessionEnumerations(sessionId: string): void {
+        this.slashCommandsEnumeration.releaseSession(sessionId)
+        this.skillsEnumeration.releaseSession(sessionId)
+        this.modelListCache.releaseSession(sessionId)
+    }
     /**
      * Hub owner id for accountable work-graph principals (A2A P1/P3).
      * Defaults to "1" for unit tests; startHub overwrites with getOrCreateOwnerId().
      */
     private hubOwnerUserId: string = '1'
+    /** Test-only settings root so session-ready reconcile can run without full hub boot. */
+    private settingsDataDirForTests: string | null = null
+    /** Serialize settings write/fanout with first-activation / session-ready reconcile. */
+    private autoBridgeConfigTail: Promise<unknown> = Promise.resolve()
+    /**
+     * Active Cursor sessions whose last auto-bridge Settings RPC failed.
+     * Heartbeats retry persisted desired state until reconcile succeeds.
+     */
+    private readonly pendingAutoBridgeReconcile = new Set<string>()
 
     constructor(
         private readonly store: Store,
@@ -216,9 +337,18 @@ export class SyncEngine {
         sseManager: SSEManager,
     ) {
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
-        this.sessionCache = new SessionCache(store, this.eventPublisher)
+        this.sessionCache = new SessionCache(store, this.eventPublisher, {
+            // mergeSessionData is the single choke point that deletes rows for
+            // merges — resume-id rotation here and sessionCache's internal
+            // dedup alike — so enumeration cleanup rides on one hook.
+            onSessionMergedAway: (oldSessionId) => this.releaseSessionEnumerations(oldSessionId)
+        })
         this.eventPublisher.subscribe((event) => {
             if (event.type === 'message-received') {
+                if (isUserInputMessage(event.message.content)) {
+                    this.sessionCache.refreshLastUserMessageAt(event.sessionId)
+                    this.recordPromptTitle(event.sessionId, event.message.content)
+                }
                 if (!this.sessionCache.getSession(event.sessionId)?.hasConversationContent
                     && hasConversationMessageContent(event.message.content)) {
                     this.sessionCache.refreshConversationContent(event.sessionId)
@@ -228,16 +358,32 @@ export class SyncEngine {
             }
         })
         this.machineCache = new MachineCache(store, this.eventPublisher)
+        this.inputTranslationService = createInputTranslationService()
         this.messageService = new MessageService(
             store,
             io,
             this.eventPublisher,
-            (sessionId, updatedAt) => this.recordSessionActivity(sessionId, updatedAt)
+            (sessionId, updatedAt) => this.recordSessionActivity(sessionId, updatedAt),
+            this.inputTranslationService,
+            async () => {
+                const dataDir = this.resolveSettingsDataDir()
+                if (!dataDir) return false
+                const settings = await readSettingsOrThrowCached(getSettingsFile(dataDir))
+                return settings.translateInputByDefault === true
+            }
         )
         this.titleSuggestionService = createTitleSuggestionService(store)
+        this.automaticTitleSuggestionService = new AutomaticTitleSuggestionService(
+            this.sessionCache,
+            this.titleSuggestionService
+        )
         this.rpcGateway = new RpcGateway(io, rpcRegistry)
+        this.sessionCache.closeTurnsLeftOpen()
         this.reloadAll()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
+        // Hub start: undelivered opt-in wakes survive process restart as eligible
+        // SQLite rows — requeue after caches are warm.
+        this.requeuePendingJobTerminalWakes()
     }
 
     setHubOwnerUserId(ownerUserId: string | number): void {
@@ -245,10 +391,21 @@ export class SyncEngine {
     }
 
     stop(): void {
+        this.automaticTitleSuggestionService.stop()
+        this.titleTurnCompletedIds.clear()
         if (this.inactivityTimer) {
             clearInterval(this.inactivityTimer)
             this.inactivityTimer = null
         }
+        if (this.jobWakeRequeueTimer) {
+            clearTimeout(this.jobWakeRequeueTimer)
+            this.jobWakeRequeueTimer = null
+        }
+        for (const timer of this.jobTerminalWakeRetryTimers.values()) {
+            clearTimeout(timer)
+        }
+        this.jobTerminalWakeRetryTimers.clear()
+        this.jobTerminalWakeRetryAttempts.clear()
     }
 
     subscribe(listener: SyncEventListener): () => void {
@@ -288,6 +445,57 @@ export class SyncEngine {
             if (hostMatch) return hostMatch
         }
         return null
+    }
+
+    /**
+     * Inactive sessions no longer have a session-scoped CLI socket, but their
+     * recorded machine may still have the long-lived runner online. In that
+     * case the runner can serve the current workspace without reviving the
+     * agent or taking a snapshot. Keep this gate strict: only an inactive row
+     * with matching machine metadata and the new read-only capability may use
+     * the fallback.
+     */
+    private getInactiveWorkspaceFallback(sessionId: string): { machineId: string; cwd: string } | null {
+        const session = this.sessionCache.getSession(sessionId)
+        const machineId = session?.metadata?.machineId
+        const cwd = session?.metadata?.path
+        if (!session || session.active || !machineId || !cwd) {
+            return null
+        }
+
+        const machine = this.resolveOnlineMachineForSession(session, session.namespace, { strictMachineId: true })
+        if (!machine?.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.WorkspaceFileAccess)) {
+            return null
+        }
+
+        return { machineId: machine.id, cwd }
+    }
+
+    private async withInactiveWorkspaceFallback<T>(
+        sessionId: string,
+        originalError: unknown,
+        action: (fallback: { machineId: string; cwd: string }) => Promise<T>
+    ): Promise<T> {
+        if (!(originalError instanceof RpcTargetMissingError)) {
+            throw originalError
+        }
+
+        const fallback = this.getInactiveWorkspaceFallback(sessionId)
+        if (!fallback) {
+            throw originalError
+        }
+
+        try {
+            return await action(fallback)
+        } catch (fallbackError) {
+            // An older runner may be online but not implement this capability
+            // yet. Preserve the original session-RPC diagnostic in that case;
+            // real fallback errors still propagate normally.
+            if (fallbackError instanceof RpcTargetMissingError) {
+                throw originalError
+            }
+            throw fallbackError
+        }
     }
 
     async getCursorChatStoreStatus(sessionId: string, namespace: string): Promise<CursorChatStoreStatusResult> {
@@ -339,6 +547,32 @@ export class SyncEngine {
         return this.sessionCache.getSessionsByNamespace(namespace)
     }
 
+    searchSessionContent(
+        query: string,
+        namespace: string,
+        limit: number = 50,
+        sessionIds?: readonly string[]
+    ): MessageContentSearchMatch[] {
+        return this.store.messages.searchContent(query, namespace, limit, sessionIds)
+    }
+
+    searchSessionContentMatches(
+        query: string,
+        namespace: string,
+        sessionId: string,
+        limit: number = 500
+    ): SessionMessageContentSearchResult {
+        return this.store.messages.searchContentInSession(query, namespace, sessionId, limit)
+    }
+
+    hasPotentiallyIncompleteSessionContent(
+        namespace: string,
+        query: string,
+        sessionIds?: readonly string[]
+    ): boolean {
+        return this.store.messages.hasPotentiallyIncompleteContent(namespace, query, sessionIds)
+    }
+
     setSessionPinned(sessionId: string, pinned: boolean): void {
         this.sessionCache.setSessionPinned(sessionId, pinned)
     }
@@ -368,11 +602,60 @@ export class SyncEngine {
         return session
     }
 
+    /**
+     * Session lookup for route handlers. With `followRedirects`, a merged-away
+     * id resolves to its surviving session and callers must continue with the
+     * returned `sessionId`; only clients that rebind to that id opt in (CLI
+     * REST always; web via FOLLOW_SESSION_REDIRECTS_HEADER).
+     */
     resolveSessionAccess(
         sessionId: string,
-        namespace: string
+        namespace: string,
+        opts?: { followRedirects?: boolean }
     ): { ok: true; sessionId: string; session: Session } | { ok: false; reason: 'not-found' | 'access-denied' } {
-        return this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        return opts?.followRedirects
+            ? this.sessionCache.resolveSessionAccessFollowingRedirects(sessionId, namespace)
+            : this.sessionCache.resolveSessionAccess(sessionId, namespace)
+    }
+
+    /** Follow job-owner redirects after merge/dedup (tiann/hapi#1404 cold review). */
+    resolveAttachedJobSessionId(sessionId: string, namespace: string): string {
+        return this.sessionCache.resolveAttachedJobSessionId(sessionId, namespace)
+    }
+
+    /** Follow dual-running same-key remaps after merge (tiann/hapi#1404). */
+    resolveAttachedJobKey(
+        requestedSessionId: string,
+        ownerSessionId: string,
+        jobKey: string,
+        namespace: string
+    ): string {
+        return this.sessionCache.resolveAttachedJobKey(
+            requestedSessionId,
+            ownerSessionId,
+            jobKey,
+            namespace
+        )
+    }
+
+    /**
+     * PUT path: follow existing remaps, or allocate one when a redirected late
+     * registration would overwrite a different running generation.
+     */
+    resolveAttachedJobKeyForUpsert(
+        requestedSessionId: string,
+        ownerSessionId: string,
+        jobKey: string,
+        namespace: string,
+        incomingRunId: string | undefined
+    ): string {
+        return this.sessionCache.resolveAttachedJobKeyForUpsert(
+            requestedSessionId,
+            ownerSessionId,
+            jobKey,
+            namespace,
+            incomingRunId
+        )
     }
 
     getActiveSessions(): Session[] {
@@ -420,6 +703,10 @@ export class SyncEngine {
         return this.messageService.getMessagesPage(sessionId, options)
     }
 
+    getMessageContext(sessionId: string, messageId: string): MessageContextResponse | null {
+        return this.messageService.getMessageContext(sessionId, messageId)
+    }
+
     getQueuedState(sessionId: string, localIds: string[]): QueuedStateResponse {
         return this.messageService.getQueuedState(sessionId, localIds)
     }
@@ -429,6 +716,7 @@ export class SyncEngine {
     }
 
     getDeliverableMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number; now: number }): DecryptedMessage[] {
+        if (this.openCodeRewindPending(sessionId)) return []
         return this.messageService.getDeliverableMessagesAfter(sessionId, options)
     }
 
@@ -462,6 +750,8 @@ export class SyncEngine {
             if (patchApplied) {
                 this.eventPublisher.emit(event)
                 const after = this.sessionCache.getSession(event.sessionId)
+                this.reconcileSteerDeliveryOwner(beforeMetadata, after)
+                this.reconcilePendingClaudeRewind(after)
                 if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                     if (!this.canRunCursorDedup(after)) {
                         return
@@ -478,6 +768,8 @@ export class SyncEngine {
             // legacy refresh-from-DB-and-broadcast path.
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
+            this.reconcileSteerDeliveryOwner(beforeMetadata, after)
+            this.reconcilePendingClaudeRewind(after)
             if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                 if (!this.canRunCursorDedup(after)) {
                     return
@@ -490,7 +782,23 @@ export class SyncEngine {
         }
 
         if (event.type === 'machine-updated' && event.machineId) {
-            this.machineCache.refreshMachine(event.machineId)
+            // Connect publishes machine-update-state (active=1 in SQLite) before the
+            // first heartbeat. Requeue here so wake recovery is not skipped when
+            // handleMachineAlive later sees wasActive already true.
+            const wasActive = this.machineCache.getMachine(event.machineId)?.active === true
+            const refreshed = this.machineCache.refreshMachine(event.machineId)
+            const nowActive = refreshed?.active === true
+            if (!wasActive && nowActive) {
+                this.requeuePendingJobTerminalWakes()
+            }
+            return
+        }
+
+        if (event.type === 'machine-agy-models-updated' && event.machineId) {
+            // The runner just reported its agy catalog moved; drop the
+            // cached list so the web's event-driven refetch sees it cold.
+            this.modelListCache.release(event.machineId)
+            this.eventPublisher.emit(event)
             return
         }
 
@@ -498,6 +806,7 @@ export class SyncEngine {
             if (!this.getSession(event.sessionId)) {
                 this.sessionCache.refreshSession(event.sessionId)
             }
+            this.sessionCache.syncReadState(event.sessionId)
         }
 
         // Emit chat updates before ledger capture so SSE is not blocked on
@@ -505,6 +814,13 @@ export class SyncEngine {
         this.eventPublisher.emit(event)
 
         if (event.type === 'message-received' && event.sessionId && 'message' in event && event.message) {
+            if (extractMessageEventType(event) === 'ready') {
+                this.titleTurnCompletedIds.add(event.sessionId)
+                void this.automaticTitleSuggestionService.onTurnCompleted(event.sessionId)
+            } else if (this.titleTurnCompletedIds.has(event.sessionId) && !this.getSession(event.sessionId)?.thinking) {
+                void this.automaticTitleSuggestionService.onTurnCompleted(event.sessionId)
+            }
+
             // A2A P3: well-formed AGENT_NOTIFY_SUMMARY → work-graph work_ad.
             // Capture is independent of chat display settings (#1462/#1464).
             const session = this.getSession(event.sessionId)
@@ -539,14 +855,48 @@ export class SyncEngine {
         serviceTier?: string | null
         collaborationMode?: CodexCollaborationMode
     }): void {
+        const before = this.sessionCache.getSession(payload.sid) ?? this.sessionCache.refreshSession(payload.sid)
+        // A buffered keepalive is not a reopen. Hub-archived rows can only be
+        // revived after clearSessionArchiveMetadata; self-archived CLIs keep
+        // their existing reconnect path. Drop before replaying queued prompts.
+        if (before?.metadata?.lifecycleState === 'archived' && before.metadata.archivedBy === 'hub') return
+        const wasActive = before?.active === true
+        const wasThinking = before?.thinking === true
+        if (!wasThinking && payload.thinking === true) {
+            this.automaticTitleSuggestionService.onTurnStarted(payload.sid)
+        }
         this.sessionCache.handleSessionAlive(payload)
+        if (wasThinking && !this.sessionCache.getSession(payload.sid)?.thinking) {
+            this.titleTurnCompletedIds.add(payload.sid)
+            void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
+        }
         this.messageService.replayImmediateQueuedMessages(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
+        // First inactive → active: catch toggles while inactive (fanout is
+        // active-only). Also retry sessions whose prior fanout/rollback RPC failed.
+        if (!wasActive || this.pendingAutoBridgeReconcile.has(payload.sid)) {
+            void this.reconcileCursorAutoBridgeSetting(payload.sid)
+        }
     }
 
     handleSessionReady(payload: { sid: string; time: number }): void {
-        this.sessionReadyIds.add(payload.sid)
         const session = this.sessionCache.getSession(payload.sid)
+        if (session?.metadata?.flavor === 'opencode' && session.metadata.opencodeForkPending) {
+            if (session.metadata.conversationHistoryDiverged
+                || session.metadata.opencodeHistoryCheckpoint?.sessionId !== session.metadata.opencodeSessionId
+                || session.metadata.opencodeHistoryCheckpoint?.localMessageIds?.length !== 0
+                || session.metadata.opencodeHistoryCheckpoint?.localPublicationPending) return
+            try {
+                this.completeOpencodeForkValidation(payload.sid, session.namespace)
+            } catch {
+                return
+            }
+        }
+        this.sessionReadyIds.add(payload.sid)
+        if (session?.active && session.metadata?.codexResumePending
+            && session.metadata.codexResumePending.nativeSessionId === session.metadata.codexSessionId) {
+            this.writeCodexResumePending(session.id, session.namespace, undefined)
+        }
         if (session?.metadata?.piResumeAttempt) {
             void this.writePiResumeAttempt(payload.sid, session.namespace, null)
                 .then(() => {
@@ -555,11 +905,147 @@ export class SyncEngine {
                 })
                 .catch(() => {})
         }
+        // session-ready fires after set-session-config is registered (alive can
+        // race earlier). Re-read under the same lock as Settings fanout.
+        void this.reconcileCursorAutoBridgeSetting(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
+    }
+
+    /** @internal test hook — hub settings dataDir without createConfiguration(). */
+    setSettingsDataDirForTests(dataDir: string | null): void {
+        this.settingsDataDirForTests = dataDir
+    }
+
+    /**
+     * Owner hub setting changed: push to every active default-namespace Cursor CLI.
+     * Serialized with first-activation / session-ready reconcile.
+     */
+    async fanoutAutoBridgeTransientModelErrors(enabled: boolean): Promise<void> {
+        await this.withAutoBridgeConfigLock(async () => {
+            await this.pushAutoBridgeSettingToActiveCursorSessions(enabled)
+        })
+    }
+
+    /**
+     * Persist the owner auto-bridge pref and fanout under one lock so concurrent
+     * Settings PUTs cannot interleave disk write / rollback / RPC push.
+     */
+    async applyAutoBridgeTransientModelErrorsSetting(
+        dataDir: string,
+        enabled: boolean
+    ): Promise<void> {
+        await this.withAutoBridgeConfigLock(async () => {
+            const previous = await readAutoBridgeTransientModelErrorsEnabled(dataDir)
+            await writeAutoBridgeTransientModelErrorsEnabled(dataDir, enabled)
+            try {
+                await this.pushAutoBridgeSettingToActiveCursorSessions(enabled)
+            } catch (error) {
+                await writeAutoBridgeTransientModelErrorsEnabled(dataDir, previous)
+                await this.pushAutoBridgeSettingToActiveCursorSessions(previous).catch(() => {})
+                throw error
+            }
+        })
+    }
+
+    private async pushAutoBridgeSettingToActiveCursorSessions(enabled: boolean): Promise<void> {
+        const targets = this.sessionCache.getSessions().filter(
+            (session) => session.active
+                && session.namespace === 'default'
+                && session.metadata?.flavor === 'cursor'
+        )
+        const results = await Promise.allSettled(
+            targets.map((session) => this.rpcGateway.requestSessionConfig(session.id, {
+                autoBridgeTransientModelErrors: enabled
+            }))
+        )
+        results.forEach((result, index) => {
+            const id = targets[index]!.id
+            if (result.status === 'rejected') {
+                this.pendingAutoBridgeReconcile.add(id)
+            } else {
+                this.pendingAutoBridgeReconcile.delete(id)
+            }
+        })
+        if (results.some((result) => result.status === 'rejected')) {
+            throw new Error('Failed to update every active Cursor session')
+        }
+    }
+
+    /**
+     * Push the current owner hub auto-bridge pref to one Cursor CLI.
+     * Best-effort: never throws into the socket path.
+     */
+    async reconcileCursorAutoBridgeSetting(sessionId: string): Promise<void> {
+        try {
+            await this.withAutoBridgeConfigLock(async () => {
+                const session = this.sessionCache.getSession(sessionId)
+                    ?? this.sessionCache.refreshSession(sessionId)
+                if (!session) {
+                    return
+                }
+                if (session.namespace !== 'default' || session.metadata?.flavor !== 'cursor') {
+                    return
+                }
+                const dataDir = this.resolveSettingsDataDir()
+                if (!dataDir) {
+                    return
+                }
+                const enabled = await readAutoBridgeTransientModelErrorsEnabled(dataDir)
+                await this.rpcGateway.requestSessionConfig(sessionId, {
+                    autoBridgeTransientModelErrors: enabled
+                })
+                this.pendingAutoBridgeReconcile.delete(sessionId)
+            })
+        } catch (error) {
+            this.pendingAutoBridgeReconcile.add(sessionId)
+            console.warn(
+                `[sync] failed to reconcile auto-bridge setting for session ${sessionId}`,
+                error
+            )
+        }
+    }
+
+    private withAutoBridgeConfigLock<T>(fn: () => Promise<T>): Promise<T> {
+        const run = this.autoBridgeConfigTail.then(fn, fn)
+        this.autoBridgeConfigTail = run.then(() => undefined, () => undefined)
+        return run
+    }
+
+    private resolveSettingsDataDir(): string | null {
+        if (this.settingsDataDirForTests) {
+            return this.settingsDataDirForTests
+        }
+        try {
+            return getConfiguration().dataDir
+        } catch {
+            return null
+        }
     }
 
     clearQueuedThinkingGrace(sessionId: string): void {
         this.sessionCache.clearQueuedThinkingGrace(sessionId)
+    }
+
+    private reconcileSteerDeliveryOwner(before: Session['metadata'], after: Session | undefined): void {
+        const current = after?.metadata
+        if ((before?.flavor !== 'opencode' && before?.flavor !== 'claude')
+            || current?.flavor !== before.flavor) return
+        // Steer admission closes before an existing request finishes draining.
+        // Only replacement of the owning worker ends its confirmation lease.
+        if (before.machineId !== current.machineId || before.hostPid !== current.hostPid
+            || before.hostStartMarker !== current.hostStartMarker) {
+            this.markSteerDispatchesUncertain(after)
+        }
+    }
+
+    private markSteerDispatchesUncertain(session: Session | undefined): void {
+        // These launchers own confirmation through a single worker. Shared-client
+        // runtimes have separate delivery ownership and are not fenced here.
+        if (session?.metadata?.flavor !== 'opencode' && session?.metadata?.flavor !== 'claude') return
+        const localIds = this.store.messages.markDispatchingMessagesIndeterminate(session.id)
+        if (localIds.length > 0) {
+            this.eventPublisher.emit({ type: 'messages-indeterminate', sessionId: session.id, localIds })
+        }
     }
 
     handleSessionEnd(payload: { sid: string; time: number; reason?: SessionEndReason }): void {
@@ -582,6 +1068,11 @@ export class SyncEngine {
         const shouldRetryDedup = !ownsPiAttempt && !isPiAttemptChild && (!isCursorAcp || this.sessionReadyIds.has(payload.sid))
 
         this.sessionCache.handleSessionEnd(payload)
+        this.markSteerDispatchesUncertain(this.sessionCache.getSession(payload.sid))
+        if (payload.reason === 'completed') {
+            this.titleTurnCompletedIds.add(payload.sid)
+            void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
+        }
         this.eventPublisher.emit({
             type: 'session-ended',
             sessionId: payload.sid,
@@ -615,8 +1106,55 @@ export class SyncEngine {
         clearAgentTerminalBuffer(payload.sid)
     }
 
-    handleBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
-        this.sessionCache.applyBackgroundTaskDelta(sessionId, delta)
+    /**
+     * A runner reported that one of its child processes exited without the
+     * CLI's normal session-end handshake (crash, SIGKILL, OOM). Accept the
+     * notice only while the reported OS generation still owns the session, so
+     * a late notice about a replaced process cannot flip a session that was
+     * already resumed elsewhere. Accepted notices reuse the existing crash
+     * path: active/thinking clear immediately, the row stays unarchived and
+     * resumable, and no second lifecycle event fires for an already-ended row.
+     */
+    handleSessionChildExited(payload: {
+        machineId: string
+        namespace: string
+        sid: string
+        pid: number
+        processStartMarker?: string
+        time: number
+    }): boolean {
+        const session = this.sessionCache.getSessionByNamespace(payload.sid, payload.namespace)
+        if (!session) return false
+        if (session.metadata?.machineId !== payload.machineId) return false
+        if (session.metadata?.hostPid !== payload.pid) return false
+        // A marker on either side binds the notice to one process generation:
+        // only an exact match proves the dying process is the registered owner.
+        // When BOTH sides lack a marker (the CLI's start-marker probe can fail),
+        // a pid-only match must still reject a notice older than the current
+        // owner's registration — a reused pid's late notice would otherwise
+        // deactivate the new owner. lifecycleStateSince is written by the CLI
+        // together with hostPid on every (re)spawn of the row.
+        const ownerStartMarker = session.metadata?.hostStartMarker
+        if (ownerStartMarker !== undefined || payload.processStartMarker !== undefined) {
+            if (ownerStartMarker !== payload.processStartMarker) return false
+        } else {
+            const ownerRegisteredAt = session.metadata?.lifecycleStateSince
+            if (ownerRegisteredAt === undefined || payload.time < ownerRegisteredAt) return false
+        }
+        if (!session.active && !session.thinking) return false
+
+        this.handleSessionEnd({ sid: session.id, time: payload.time, reason: 'error' })
+        return true
+    }
+
+    handleBackgroundTasks(sessionId: string, tasks: BackgroundTask[]): void {
+        this.sessionCache.setBackgroundTasks(sessionId, tasks)
+    }
+
+    updateReadState(sessionId: string, namespace: string, request: SessionReadStateRequest) {
+        const result = this.store.sessions.updateReadState(sessionId, namespace, request)
+        if (result?.status === 'ok') this.sessionCache.syncReadState(sessionId)
+        return result
     }
 
     recordSessionActivity(sessionId: string, updatedAt: number): void {
@@ -657,6 +1195,10 @@ export class SyncEngine {
 
     countScratchlistEntries(sessionId: string): number {
         return this.store.scratchlist.count(sessionId)
+    }
+
+    getScratchlistSessionIdsByNamespace(namespace: string): string[] {
+        return this.store.scratchlist.listSessionIdsByNamespace(namespace)
     }
 
     sumScratchlistAttachmentBytes(sessionId: string): number {
@@ -788,6 +1330,378 @@ export class SyncEngine {
         return removed
     }
 
+    listSessionJobs(sessionId: string) {
+        return this.store.sessionJobs.list(sessionId).map((job) => toAttachedJob(job))
+    }
+
+    getPrimaryAttachedJob(sessionId: string) {
+        return this.store.sessionJobs.getPrimaryRunning(sessionId)
+    }
+
+    getPrimaryAttachedJobsBySessionIds(sessionIds: string[]) {
+        return this.store.sessionJobs.getPrimaryRunningBySessionIds(sessionIds)
+    }
+
+    /** Move outliving jobs + redirects onto another session (pre-delete). */
+    transferAttachedJobs(fromSessionId: string, toSessionId: string, namespace: string): void {
+        this.sessionCache.transferAttachedJobs(fromSessionId, toSessionId, namespace)
+    }
+
+    /** Shared REST/SSE watermark allocator for attachedJob patches. */
+    allocateAttachedJobVersion(sessionId: string): number {
+        return this.sessionCache.allocateAttachedJobVersion(sessionId)
+    }
+
+    upsertSessionJob(
+        sessionId: string,
+        jobKey: string,
+        body: import('@hapi/protocol').AttachedJobUpsert
+    ):
+        | { outcome: 'upserted'; job: import('@hapi/protocol').AttachedJob }
+        | { outcome: 'session-not-found' } {
+        const result = this.store.sessionJobs.upsert(sessionId, jobKey, body)
+        if (result.outcome === 'session-not-found') {
+            return result
+        }
+        const primary = this.store.sessionJobs.getPrimaryRunning(sessionId)
+        this.sessionCache.emitAttachedJobChanged(sessionId, primary)
+        this.maybeScheduleJobTerminalWake(sessionId, jobKey)
+        return {
+            outcome: 'upserted',
+            job: toAttachedJob(result.job)
+        }
+    }
+
+    patchSessionJob(
+        sessionId: string,
+        jobKey: string,
+        patch: import('@hapi/protocol').AttachedJobPatch
+    ):
+        | { outcome: 'patched'; job: import('@hapi/protocol').AttachedJob }
+        | { outcome: 'not-found' }
+        | { outcome: 'run-mismatch' } {
+        const result = this.store.sessionJobs.patch(sessionId, jobKey, patch)
+        if (result.outcome !== 'patched') {
+            return result
+        }
+        const primary = this.store.sessionJobs.getPrimaryRunning(sessionId)
+        this.sessionCache.emitAttachedJobChanged(sessionId, primary)
+        this.maybeScheduleJobTerminalWake(sessionId, jobKey)
+        return {
+            outcome: 'patched',
+            job: toAttachedJob(result.job)
+        }
+    }
+
+    private jobTerminalWakeRetryKey(sessionId: string, jobKey: string): string {
+        return `${sessionId}\0${jobKey}`
+    }
+
+    /**
+     * Follow merge/OpenCode job-owner + key redirects before claim/release/retry
+     * so a deferred wake does not abandon a transferred row.
+     */
+    private resolveJobWakeLocation(
+        sessionId: string,
+        jobKey: string,
+        namespace: string
+    ): { sessionId: string; jobKey: string; namespace: string } {
+        const ownerId = this.resolveAttachedJobSessionId(sessionId, namespace)
+        const resolvedKey = this.resolveAttachedJobKey(sessionId, ownerId, jobKey, namespace)
+        return { sessionId: ownerId, jobKey: resolvedKey, namespace }
+    }
+
+    private clearJobTerminalWakeRetry(sessionId: string, jobKey: string): void {
+        const key = this.jobTerminalWakeRetryKey(sessionId, jobKey)
+        const timer = this.jobTerminalWakeRetryTimers.get(key)
+        if (timer) {
+            clearTimeout(timer)
+            this.jobTerminalWakeRetryTimers.delete(key)
+        }
+        this.jobTerminalWakeRetryAttempts.delete(key)
+    }
+
+    /**
+     * After a recoverable pre-delivery failure, drop the provisional claim and
+     * retry with capped rapid backoff. Exhausted budgets leave the row eligible
+     * in SQLite; {@link requeuePendingJobTerminalWakes} picks them up when a
+     * runner returns (or on hub start).
+     */
+    private scheduleJobTerminalWakeRetry(
+        sessionId: string,
+        jobKey: string,
+        namespace: string
+    ): void {
+        const key = this.jobTerminalWakeRetryKey(sessionId, jobKey)
+        const attempt = (this.jobTerminalWakeRetryAttempts.get(key) ?? 0) + 1
+        if (attempt > SyncEngine.JOB_WAKE_RETRY_MAX_ATTEMPTS) {
+            console.warn('[session-job-wake] rapid retry budget exhausted; awaiting runner recovery', {
+                sessionId,
+                jobKey,
+                attempt,
+            })
+            this.clearJobTerminalWakeRetry(sessionId, jobKey)
+            return
+        }
+        this.jobTerminalWakeRetryAttempts.set(key, attempt)
+        const existing = this.jobTerminalWakeRetryTimers.get(key)
+        if (existing) clearTimeout(existing)
+        const delayMs = Math.min(30_000, this.jobWakeRetryBaseMs * (2 ** (attempt - 1)))
+        const timer = setTimeout(() => {
+            this.jobTerminalWakeRetryTimers.delete(key)
+            const loc = this.resolveJobWakeLocation(sessionId, jobKey, namespace)
+            this.maybeScheduleJobTerminalWake(loc.sessionId, loc.jobKey)
+        }, delayMs)
+        this.jobTerminalWakeRetryTimers.set(key, timer)
+    }
+
+    /**
+     * Re-claim opted-in terminal wakes that are still undelivered. Called on
+     * hub start and when a machine flips offline→online. Resets rapid-retry
+     * budgets so a long outage can still complete after recovery.
+     */
+    requeuePendingJobTerminalWakes(): void {
+        if (this.jobWakeRequeueTimer) return
+        this.jobWakeRequeueTimer = setTimeout(() => {
+            this.jobWakeRequeueTimer = null
+            this.jobTerminalWakeRetryAttempts.clear()
+            let pending: import('../store/types').StoredSessionJob[] = []
+            try {
+                // Hub restart leaves pending:<claimId> markers with no in-flight
+                // deliverer — clear them so rows are reclaimable.
+                this.store.sessionJobs.clearAbandonedProvisionalWakeClaims()
+                pending = this.store.sessionJobs.listPendingTerminalWakes()
+            } catch (error) {
+                console.warn('[session-job-wake] list pending failed', {
+                    error: error instanceof Error ? error.message : String(error),
+                })
+                return
+            }
+            for (const job of pending) {
+                const session = this.sessionCache.getSession(job.sessionId)
+                if (!session) continue
+                const loc = this.resolveJobWakeLocation(job.sessionId, job.key, session.namespace)
+                this.maybeScheduleJobTerminalWake(loc.sessionId, loc.jobKey)
+            }
+        }, 250)
+    }
+
+    /**
+     * After a durable job write: claim one-shot terminal wake and fire-and-forget
+     * resume→send (same ordering as pingPeer). Heartbeats never reach here with
+     * a new terminal claim. Claim is provisional until send persists.
+     */
+    private maybeScheduleJobTerminalWake(sessionId: string, jobKey: string): void {
+        const session = this.sessionCache.getSession(sessionId)
+        const namespace = session?.namespace
+        const loc = namespace
+            ? this.resolveJobWakeLocation(sessionId, jobKey, namespace)
+            : { sessionId, jobKey }
+        const claimed = this.store.sessionJobs.claimTerminalWake(loc.sessionId, loc.jobKey)
+        if (!claimed || !isTerminalJobStatus(claimed.status)) {
+            return
+        }
+        void this.deliverJobTerminalWake(loc.sessionId, claimed, namespace).catch((error) => {
+            console.warn('[session-job-wake] deliver failed', {
+                sessionId: loc.sessionId,
+                jobKey: loc.jobKey,
+                status: claimed.status,
+                error: error instanceof Error ? error.message : String(error),
+            })
+        })
+    }
+
+    /**
+     * Resume inactive owner (if needed), wait for active, then POST a user message.
+     * Injectable seams live on sessionJobWake helpers for unit tests.
+     * Pre-delivery failures release the provisional claim and schedule a retry.
+     */
+    private async deliverJobTerminalWake(
+        sessionId: string,
+        job: import('../store/types').StoredSessionJob,
+        namespaceHint?: string
+    ): Promise<void> {
+        const claimId = job.runId ?? `norun:${job.startedAt}`
+        let ownerSessionId = sessionId
+        let ownerJobKey = job.key
+        let namespace = namespaceHint
+
+        const releaseAndRetry = (info: Record<string, unknown>): void => {
+            const ns = namespace
+                ?? this.sessionCache.getSession(ownerSessionId)?.namespace
+                ?? this.sessionCache.getSession(sessionId)?.namespace
+            if (ns) {
+                const loc = this.resolveJobWakeLocation(ownerSessionId, ownerJobKey, ns)
+                ownerSessionId = loc.sessionId
+                ownerJobKey = loc.jobKey
+                namespace = loc.namespace
+            }
+            console.warn('[session-job-wake] delivery deferred', {
+                sessionId: ownerSessionId,
+                jobKey: ownerJobKey,
+                ...info,
+            })
+            this.store.sessionJobs.releaseTerminalWake(ownerSessionId, ownerJobKey, claimId)
+            // Also clear a stale provisional claim left on the pre-transfer row.
+            if (ownerSessionId !== sessionId || ownerJobKey !== job.key) {
+                this.store.sessionJobs.releaseTerminalWake(sessionId, job.key, claimId)
+            }
+            if (namespace) {
+                this.scheduleJobTerminalWakeRetry(ownerSessionId, ownerJobKey, namespace)
+            }
+        }
+
+        try {
+            const session = this.sessionCache.getSession(ownerSessionId)
+            if (!session) {
+                releaseAndRetry({ reason: 'session_missing' })
+                return
+            }
+            namespace = session.namespace
+            let targetId = ownerSessionId
+
+            // A turn is running: the agent is present and can read `job list`.
+            // Injecting a message here would interrupt it, so drop the wake.
+            if (session.active && session.thinking) {
+                this.store.sessionJobs.markTerminalWakeDelivered(ownerSessionId, ownerJobKey, claimId)
+                this.clearJobTerminalWakeRetry(ownerSessionId, ownerJobKey)
+                this.clearJobTerminalWakeRetry(sessionId, job.key)
+                return
+            }
+
+            if (!session.active) {
+                const resume = await this.resumeSession(ownerSessionId, namespace)
+                if (resume.type !== 'success') {
+                    releaseAndRetry({
+                        reason: 'resume_failed',
+                        code: resume.code,
+                        message: resume.message,
+                    })
+                    return
+                }
+                targetId = resume.sessionId
+                // Resume/merge may have moved the job — follow redirects before release/send.
+                const loc = this.resolveJobWakeLocation(ownerSessionId, ownerJobKey, namespace)
+                ownerSessionId = loc.sessionId
+                ownerJobKey = loc.jobKey
+                const becameActive = await waitUntilSessionActive({
+                    getActive: () => this.sessionCache.getSession(targetId)?.active === true,
+                    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+                    now: Date.now,
+                    timeoutMs: 30_000,
+                    pollMs: 250,
+                })
+                if (!becameActive) {
+                    releaseAndRetry({ reason: 'not_active', sessionId: targetId })
+                    return
+                }
+            }
+
+            // Pi can be active before piSessionId lands (#1143) — wait briefly.
+            const live = this.sessionCache.getSession(targetId)
+            if (live?.metadata?.flavor === 'pi') {
+                const piReady = await waitUntilSessionActive({
+                    getActive: () => {
+                        const s = this.sessionCache.getSession(targetId)
+                        const id = s?.metadata?.piSessionId
+                        return typeof id === 'string' && id.length > 0
+                    },
+                    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+                    now: Date.now,
+                    timeoutMs: 30_000,
+                    pollMs: 250,
+                })
+                if (!piReady) {
+                    releaseAndRetry({ reason: 'pi_session_id_missing', sessionId: targetId })
+                    return
+                }
+                // Re-check active after pi wait (mid-wait flips).
+                if (this.sessionCache.getSession(targetId)?.active !== true) {
+                    const resume = await this.resumeSession(targetId, namespace)
+                    if (resume.type !== 'success') {
+                        releaseAndRetry({
+                            reason: 're_resume_failed',
+                            sessionId: targetId,
+                            code: resume.code,
+                        })
+                        return
+                    }
+                    targetId = resume.sessionId
+                    const loc = this.resolveJobWakeLocation(ownerSessionId, ownerJobKey, namespace)
+                    ownerSessionId = loc.sessionId
+                    ownerJobKey = loc.jobKey
+                }
+            }
+
+            // Fence to the claimed run — key reuse mid-resume must not describe run B.
+            const liveJob = this.store.sessionJobs.get(ownerSessionId, ownerJobKey)
+            const liveClaimId = liveJob
+                ? (liveJob.runId ?? `norun:${liveJob.startedAt}`)
+                : null
+            if (
+                !liveJob
+                || liveClaimId !== claimId
+                || !liveJob.wakeOnTerminal
+                || !isTerminalJobStatus(liveJob.status)
+            ) {
+                console.warn('[session-job-wake] claimed run superseded; dropping wake', {
+                    sessionId: ownerSessionId,
+                    jobKey: ownerJobKey,
+                    claimId,
+                    liveClaimId,
+                    liveStatus: liveJob?.status,
+                    liveWake: liveJob?.wakeOnTerminal,
+                })
+                this.store.sessionJobs.releaseTerminalWake(ownerSessionId, ownerJobKey, claimId)
+                this.clearJobTerminalWakeRetry(ownerSessionId, ownerJobKey)
+                this.clearJobTerminalWakeRetry(sessionId, job.key)
+                return
+            }
+
+            // Prompt text from the claimed snapshot (run A), not a newer live generation.
+            const text = buildJobTerminalWakePrompt({
+                key: job.key,
+                label: job.label,
+                status: job.status,
+                ...(job.detail !== undefined ? { detail: job.detail } : {}),
+                ...(job.wakePrompt !== undefined ? { wakePrompt: job.wakePrompt } : {}),
+                ...(job.runId !== undefined ? { runId: job.runId } : {}),
+            })
+            // Run-scoped localId so a rare double-send after persist dedupes.
+            // Prefix must stay exempt from session-end synthetic sweep (see
+            // MessageService.sweepImmediateQueuedOnSessionEnd).
+            await this.sendMessage(targetId, {
+                text,
+                sentFrom: 'hapi-system',
+                localId: buildJobWakeLocalId(ownerJobKey, claimId),
+            })
+            this.store.sessionJobs.markTerminalWakeDelivered(ownerSessionId, ownerJobKey, claimId)
+            this.clearJobTerminalWakeRetry(ownerSessionId, ownerJobKey)
+            this.clearJobTerminalWakeRetry(sessionId, job.key)
+        } catch (error) {
+            releaseAndRetry({
+                reason: 'exception',
+                error: error instanceof Error ? error.message : String(error),
+            })
+        }
+    }
+
+    deleteSessionJob(
+        sessionId: string,
+        jobKey: string,
+        expectedRunId?: string
+    ):
+        | { outcome: 'deleted' }
+        | { outcome: 'not-found' }
+        | { outcome: 'run-mismatch' } {
+        const result = this.store.sessionJobs.delete(sessionId, jobKey, expectedRunId)
+        if (result.outcome === 'deleted') {
+            const primary = this.store.sessionJobs.getPrimaryRunning(sessionId)
+            this.sessionCache.emitAttachedJobChanged(sessionId, primary)
+        }
+        return result
+    }
+
     private async withScratchlistUploadLock<T>(
         namespace: string,
         sessionId: string,
@@ -910,7 +1824,13 @@ export class SyncEngine {
     }
 
     handleMachineAlive(payload: { machineId: string; time: number; health?: unknown }): void {
+        const wasActive = this.machineCache.getMachine(payload.machineId)?.active === true
         this.machineCache.handleMachineAlive(payload)
+        const nowActive = this.machineCache.getMachine(payload.machineId)?.active === true
+        if (!wasActive && nowActive) {
+            // Runner recovery: requeue wakes whose rapid-retry budget expired.
+            this.requeuePendingJobTerminalWakes()
+        }
     }
 
     /**
@@ -958,6 +1878,7 @@ export class SyncEngine {
             .filter((s): s is NonNullable<typeof s> => s != null)
             .sort((a, b) => (b.activeAt - a.activeAt) || (b.updatedAt - a.updatedAt))
         for (const session of sorted) {
+            this.markSteerDispatchesUncertain(session)
             this.triggerDedupIfNeeded(session.id)
         }
         this.machineCache.expireInactive?.()
@@ -967,8 +1888,53 @@ export class SyncEngine {
         this.sessionCache.reconcileKeepaliveIdle()
         // Piggybacked on the inactivity tick; not a logical part of expireInactive
         // but shares its 5s cadence (avoids a second timer).
-        this.messageService.releaseMatureScheduledMessages(Date.now(), this.historyActionsInFlight)
+        const held = new Set(this.historyActionsInFlight)
+        for (const session of this.sessionCache.getSessions()) if (this.openCodeRewindPending(session.id)) held.add(session.id)
+        this.messageService.releaseMatureScheduledMessages(Date.now(), held)
         void this.reconcileOpenCodeClears()
+        this.reconcileDerivedToolWork()
+    }
+
+    /**
+     * Work-scoped liveness sweep, piggybacked on the 5s inactivity tick.
+     *
+     * `thinking` is turn-scoped: the CLI flips it false at the SDK result
+     * even while autonomous rounds (background tasks, scheduled follow-ups)
+     * keep streaming tool calls. For connected sessions that claim neither
+     * thinking nor background tasks nor an attached job, derive "open tool
+     * work" straight from the transcript tail and broadcast it as
+     * `derivedToolWork`, so the session row shows work instead of a stale
+     * "waiting". Sessions inside the queued-prompt thinking grace are left
+     * alone — their spinner is already accounted for. When a session stops
+     * being eligible while the flag is still set, clear it so the derived
+     * signal never outlives the state it vouched for.
+     */
+    private reconcileDerivedToolWork(): void {
+        const now = Date.now()
+        const candidates: Session[] = []
+        for (const session of this.sessionCache.getSessions()) {
+            if (this.isDerivedToolWorkCandidate(session)) {
+                candidates.push(session)
+            } else if (session.derivedToolWork === true) {
+                this.sessionCache.noteDerivedWork(session.id, false)
+            }
+        }
+        if (candidates.length === 0) return
+        // One batched primary-job read: a session with a running attached
+        // job already renders work; the sweep must not double-report.
+        const primaryJobs = this.getPrimaryAttachedJobsBySessionIds(candidates.map((session) => session.id))
+        for (const session of candidates) {
+            if ((primaryJobs.get(session.id) ?? null) !== null) continue
+            this.sessionCache.noteDerivedWork(session.id, this.store.messages.getLiveToolWork(session.id))
+        }
+    }
+
+    /** Eligibility for the derived-work sweep: connected, no thinking flag,
+     *  and no declared background tasks. */
+    private isDerivedToolWorkCandidate(session: Session): boolean {
+        if (!session.active || session.thinking) return false
+        if ((session.backgroundTaskCount ?? 0) > 0) return false
+        return true
     }
 
     private async reconcileOpenCodeClears(): Promise<void> {
@@ -998,6 +1964,26 @@ export class SyncEngine {
     private reloadAll(): void {
         this.sessionCache.reloadAll()
         this.machineCache.reloadAll()
+        this.reconcilePendingClaudeRewinds()
+        this.queuePersistedActiveCursorAutoBridgeReconcile()
+    }
+
+    /**
+     * Hub restart: in-memory pendingAutoBridgeReconcile is empty. If SQLite
+     * restored a Cursor row as already active, the first heartbeat is not an
+     * inactive→active transition — seed those ids so handleSessionAlive still
+     * pushes persisted settings.json.
+     */
+    private queuePersistedActiveCursorAutoBridgeReconcile(): void {
+        for (const session of this.sessionCache.getSessions()) {
+            if (
+                session.active
+                && session.namespace === 'default'
+                && session.metadata?.flavor === 'cursor'
+            ) {
+                this.pendingAutoBridgeReconcile.add(session.id)
+            }
+        }
     }
 
     getOrCreateSession(
@@ -1061,15 +2047,26 @@ export class SyncEngine {
                 path: string
                 previewUrl?: string
             }>
-            sentFrom?: 'telegram-bot' | 'webapp'
+            sentFrom?: 'telegram-bot' | 'webapp' | 'hapi-system'
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
         }
     ): Promise<void> {
-        if (this.historyActionsInFlight.has(sessionId)) {
+        if (this.historyActionsInFlight.has(sessionId) || this.openCodeRewindPending(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }
+        if (!this.sessionCache.getSession(sessionId)?.thinking) {
+            this.automaticTitleSuggestionService.onTurnStarted(sessionId)
+        }
         const { actualSessionId, createdAt: activeTurnStartedAt } = await this.messageService.sendMessage(sessionId, payload)
+        const current = this.store.sessions.getSession(actualSessionId)
+        const metadata = current?.metadata as Record<string, unknown> | null | undefined
+        if (current && typeof metadata?.codexImportedAt === 'number') {
+            this.store.sessions.updateSessionMetadata(actualSessionId,
+                { ...metadata, codexImportedAt: null }, current.metadataVersion, current.namespace,
+                { touchUpdatedAt: false })
+            this.sessionCache.refreshSession(actualSessionId)
+        }
         this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
         this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
     }
@@ -1085,13 +2082,14 @@ export class SyncEngine {
         sessionId: string,
         messageId: string
     ): Promise<RetryIndeterminateMessageResult> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         return this.messageService.retryIndeterminateMessage(sessionId, messageId)
     }
 
     /**
      * Ask the CLI to deliver one waiting-queue message into the active turn
-     * (native steer). Supported for Pi, Codex, and Cursor ACP sessions; the
-     * CLI's `steer-queued-message` handler is registered per flavor. Legacy
+     * (native steer). Supported for Claude, Pi, Codex, OpenCode, Antigravity,
+     * and Cursor ACP sessions; the CLI's handler is registered per flavor. Legacy
      * stream-json Cursor sessions and other flavors are rejected by the
      * capability gate.
      */
@@ -1099,35 +2097,41 @@ export class SyncEngine {
         sessionId: string,
         messageId: string
     ): Promise<SteerQueuedMessageResponse> {
+        if (this.openCodeRewindPending(sessionId)) return { status: 'failed', error: 'OpenCode rewind requires reconciliation', localId: null }
         const session = this.getSession(sessionId)
         if (!session) {
             return { status: 'failed', error: 'Session not found', localId: null }
         }
         if (!isSteeringSupportedForSession(session.metadata)) {
-            return { status: 'failed', error: 'Steering is only supported for Pi, Codex, and Cursor ACP sessions', localId: null }
+            // An agy session gets its ACP marker only once its CLI has picked
+            // the transport, a few seconds after spawn.
+            const error = session.metadata?.flavor === 'agy'
+                ? 'Antigravity is not running on agy acp (yet); Steer is not available'
+                : 'Steering is only supported for Claude, Pi, Codex, OpenCode, Antigravity, and Cursor ACP sessions'
+            return { status: 'failed', error, localId: null }
         }
         if (session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
             return { status: 'failed', error: 'Steering is only available for remote sessions', localId: null }
         }
 
+        const invokedResponse = (message: DecryptedMessage): SteerQueuedMessageResponse => ({
+            status: 'invoked',
+            message: {
+                id: message.id,
+                seq: message.seq,
+                localId: message.localId,
+                content: message.content,
+                createdAt: message.createdAt,
+                invokedAt: message.invokedAt,
+                scheduledAt: message.scheduledAt
+            }
+        })
         const lookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
         if (lookup.status === 'absent') {
             return { status: 'failed', error: 'Message not found', localId: null }
         }
         if (lookup.status === 'invoked') {
-            const message = lookup.message
-            return {
-                status: 'invoked',
-                message: {
-                    id: message.id,
-                    seq: message.seq,
-                    localId: message.localId,
-                    content: message.content,
-                    createdAt: message.createdAt,
-                    invokedAt: message.invokedAt,
-                    scheduledAt: message.scheduledAt
-                }
-            }
+            return invokedResponse(lookup.message)
         }
         const { localId, scheduledAt } = lookup
         if (!localId) {
@@ -1140,20 +2144,23 @@ export class SyncEngine {
             return { status: 'failed', error: 'Scheduled messages cannot be steered', localId }
         }
 
+        let failure: string
         try {
             const result = await this.rpcGateway.steerQueuedMessage(sessionId, localId)
+            const settled = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+            if (settled.status === 'invoked') return { status: 'invoked', message: settled.message }
             if (result.steered) {
                 return { status: 'steered', localId }
             }
-            return {
-                status: 'failed',
-                error: result.error ?? 'Steer failed',
-                localId
-            }
+            failure = result.error ?? 'Steer failed'
         } catch (error) {
-            const message = error instanceof Error ? error.message : 'Steer failed'
-            return { status: 'failed', error: message, localId }
+            failure = error instanceof Error ? error.message : 'Steer failed'
         }
+        // The consumed event can win the race against an RPC error or stale
+        // negative reply. Persisted invocation is authoritative in either case.
+        const current = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+        if (current.status === 'invoked') return invokedResponse(current.message)
+        return { status: 'failed', error: failure, localId }
     }
 
     sweepImmediateQueuedOnSessionEnd(sessionId: string, invokedAt: number): void {
@@ -1168,6 +2175,10 @@ export class SyncEngine {
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
         answers?: Record<string, string[]> | Record<string, { answers: string[] }>
     ): Promise<void> {
+        // Do not clear agentState.requests here on PermissionRequestNotFoundError.
+        // A concurrent first answer may still be finalizing asynchronously; hub-side
+        // cancel would race it into "canceled" and drop the real decision
+        // (tiann/hapi#2415 review). CLI orphan finalize owns sticky-badge cleanup.
         await this.rpcGateway.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
     }
 
@@ -1180,17 +2191,19 @@ export class SyncEngine {
     }
 
     async abortSession(sessionId: string): Promise<void> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         await this.rpcGateway.abortSession(sessionId)
     }
 
-    private assertConversationHistoryIdle(session: Session): void {
-        if (!session.active) {
+    private assertConversationHistoryIdle(session: Session, allowRunningHistoricalFork = false, requireActive = true): void {
+        if (this.openCodeRewindPending(session.id)) throw new Error('OpenCode rewind requires reconciliation')
+        if (requireActive && !session.active) {
             throw new Error('Session must be active')
         }
-        if (session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
+        if (session.active && session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
             throw new Error('Conversation history actions require a remote session')
         }
-        if (session.thinking) {
+        if (session.thinking && !allowRunningHistoricalFork) {
             throw new Error('Session is busy')
         }
         if (session.metadata?.conversationHistoryDiverged === true) {
@@ -1199,6 +2212,14 @@ export class SyncEngine {
         const queued = this.store.messages.getUninvokedLocalMessages(session.id)
         if (queued.length > 0) {
             throw new Error('Session has queued messages')
+        }
+        // A pending Claude rewind means the hub transcript and the native
+        // boundary are mid-handoff: the hub truncated at RPC success and the
+        // CLI is re-arming the native boundary. Forking or rewinding here
+        // would copy rows the native side already dropped (the #1673 class of
+        // drift), so history actions wait for the next prompt to settle it.
+        if (session.metadata?.claudeRewind) {
+            throw new Error('A Claude rewind is pending; send a message to settle it first')
         }
     }
 
@@ -1242,6 +2263,28 @@ export class SyncEngine {
         return false
     }
 
+    private restoreForkSummaryMetadata(
+        childId: string,
+        namespace: string,
+        summary: NonNullable<Session['metadata']>['summary']
+    ): void {
+        if (!summary) return
+        for (let retry = 0; retry < 5; retry++) {
+            const current = this.sessionCache.refreshSession(childId)
+            if (!current?.metadata) return
+            if (current.metadata.name?.trim()) return
+            const updated = this.store.sessions.updateSessionMetadata(
+                childId,
+                { ...current.metadata, summary },
+                current.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (updated.result === 'success') { this.sessionCache.refreshSession(childId); return }
+            if (updated.result === 'error') return
+        }
+    }
+
     /**
      * A native fork may be created before its runner child has loaded it. Wait
      * for the exact persisted native id; Pi additionally requires its
@@ -1250,7 +2293,7 @@ export class SyncEngine {
     private async waitForExactNativeForkBound(
         childId: string,
         expectedNativeSessionId: string,
-        metadataKey: 'grokSessionId' | 'piSessionId',
+        metadataKey: 'grokSessionId' | 'piSessionId' | 'opencodeSessionId' | 'codexSessionId',
         requireSessionReady: boolean,
         timeoutMs: number = 60_000
     ): Promise<boolean> {
@@ -1363,6 +2406,22 @@ export class SyncEngine {
         }
     }
 
+    private completeOpencodeForkValidation(sessionId: string, namespace: string): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.refreshSession(sessionId)
+            if (!session?.metadata || session.namespace !== namespace) throw new Error('OpenCode fork child disappeared')
+            if (!session.metadata.opencodeForkPending) return
+            const result = this.store.sessions.updateSessionMetadata(sessionId,
+                { ...session.metadata, opencodeForkPending: undefined }, session.metadataVersion, namespace, { touchUpdatedAt: false })
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') break
+        }
+        throw new Error('OpenCode fork child validation could not be committed')
+    }
+
     private markConversationHistoryDiverged(sessionId: string, namespace: string): void {
         for (let attempt = 0; attempt < 3; attempt += 1) {
             const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
@@ -1386,34 +2445,598 @@ export class SyncEngine {
         }
     }
 
-    async forkConversation(
+    private archivedForkPending(sessionId: string, namespace?: string): boolean {
+        const session = namespace ? this.sessionCache.getSessionByNamespace(sessionId, namespace) : this.sessionCache.getSession(sessionId)
+        if (!session) return false
+        if (session.metadata?.codexArchivedFork) return true
+        const parent = session.metadata?.forkedFrom
+            ? this.sessionCache.getSessionByNamespace(session.metadata.forkedFrom, session.namespace) : undefined
+        return parent?.metadata?.codexArchivedFork?.childSessionId === sessionId
+    }
+
+    private isPtySession(sessionId: string, namespace: string): boolean {
+        const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+        return (session?.agentState as { startingMode?: string } | null)?.startingMode === 'pty'
+    }
+
+    private writeCodexResumePending(sessionId: string, namespace: string,
+        pending: NonNullable<Session['metadata']>['codexResumePending']): void {
+        for (let retry = 0; retry < 5; retry++) {
+            const current = this.sessionCache.refreshSession(sessionId)
+            if (!current?.metadata || current.namespace !== namespace) throw new Error('Codex resume source changed')
+            const result = this.store.sessions.updateSessionMetadata(sessionId,
+                { ...current.metadata, codexResumePending: pending ?? null }, current.metadataVersion, namespace, { touchUpdatedAt: false })
+            if (result.result === 'success') { this.sessionCache.refreshSession(sessionId); return }
+            if (result.result === 'error') break
+        }
+        throw new Error('Failed to persist Codex resume state')
+    }
+
+    private async reconcileCodexResume(session: Session): Promise<boolean> {
+        const pending = session.metadata?.codexResumePending
+        if (!pending) return true
+        if (session.active && this.sessionReadyIds.has(session.id) && session.metadata?.codexSessionId === pending.nativeSessionId) {
+            this.writeCodexResumePending(session.id, session.namespace, undefined)
+            return true
+        }
+        const stopped = await this.rpcGateway.stopRunnerSession(pending.machineId, session.id)
+        if (stopped !== 'stopped' && stopped !== 'already_gone') return false
+        if (this.sessionCache.getSession(session.id)?.active) this.handleSessionEnd({ sid: session.id, time: Date.now(), reason: 'error' })
+        this.writeCodexResumePending(session.id, session.namespace, undefined)
+        return true
+    }
+
+    private setArchivedForkAttempt(sessionId: string, namespace: string,
+        attempt: NonNullable<Session['metadata']>['codexArchivedFork'], allowActiveClear = false): Session {
+        for (let retry = 0; retry < 5; retry++) {
+            const source = this.sessionCache.refreshSession(sessionId)
+            if (!source || source.namespace !== namespace || (source.active && !(allowActiveClear && !attempt)) || !source.metadata) throw new Error('Archived source changed during fork')
+            const result = this.store.sessions.updateSessionMetadata(sessionId,
+                { ...source.metadata, codexArchivedFork: attempt ?? null }, source.metadataVersion, namespace, { touchUpdatedAt: false })
+            if (result.result === 'success') return this.sessionCache.refreshSession(sessionId)!
+            if (result.result === 'error') break
+        }
+        throw new Error('Failed to persist archived fork reservation')
+    }
+
+    private async forkArchivedCodexSession(source: Session, namespace: string, messageLocalId?: string): Promise<
+        { type: 'success'; sessionId: string } | { type: 'error'; message: string }
+    > {
+        try {
+            const metadata = source.metadata!
+            const { machineId, codexSessionId, path } = this.assertArchivedForkEligible(source, namespace, messageLocalId)
+            let attempt = metadata.codexArchivedFork
+            if (attempt && attempt.boundaryLocalId !== messageLocalId) throw new Error('A previous archived fork is pending at another boundary; retry that fork first')
+            const turnId = attempt ? attempt.boundaryTurnId : messageLocalId ? metadata.conversationHistoryTurns?.[messageLocalId] : undefined
+            if (messageLocalId) {
+                if (!attempt) this.assertInvokedHistoryBoundary(source.id, messageLocalId)
+                if (!turnId) throw new Error('No native history point for this message')
+            }
+            if (!attempt) {
+                attempt = { operationId: randomUUID(), childSessionId: randomUUID(),
+                    ...(messageLocalId ? { boundaryLocalId: messageLocalId, boundaryTurnId: turnId! } : {}) }
+                this.setArchivedForkAttempt(source.id, namespace, attempt)
+            }
+            const childId = attempt.childSessionId
+            let child = this.sessionCache.refreshSession(childId)
+            if (child?.active) {
+                if (!attempt.nativeSessionId || child.metadata?.codexSessionId !== attempt.nativeSessionId
+                    || child.namespace !== namespace || child.metadata?.forkedFrom !== source.id) throw new Error('Archived fork child binding is unconfirmed')
+                if (!await this.waitForExactNativeForkBound(childId, attempt.nativeSessionId, 'codexSessionId', true, 90_000)
+                    || !this.sessionCache.getSession(childId)?.active) throw new Error('Archived fork child native startup is not confirmed')
+                this.setArchivedForkAttempt(source.id, namespace, undefined)
+                return { type: 'success', sessionId: childId }
+            }
+            if (!child) {
+                child = this.sessionCache.getOrCreateSession(`archived-fork:${attempt.operationId}`, {
+                    path: path, host: metadata.host, machineId: machineId, flavor: 'codex',
+                    forkedFrom: source.id, startedBy: 'runner',
+                    summary: buildForkSessionSummary(metadata)
+                }, null, namespace, source.model ?? undefined, source.effort ?? undefined, source.modelReasoningEffort ?? undefined, childId)
+            } else if (child.namespace !== namespace || child.metadata?.forkedFrom !== source.id) throw new Error('Invalid archived fork reservation')
+            if (attempt.spawnAttempted) {
+                const stopped = await this.rpcGateway.stopRunnerSession(machineId, childId)
+                if (stopped !== 'stopped' && stopped !== 'already_gone') throw new Error('Previous fork launcher outcome is unconfirmed; retry after cleanup')
+            }
+            if (!attempt.nativeSessionId) {
+                const result = await this.rpcGateway.forkArchivedCodex(machineId, {
+                    operationId: attempt.operationId, sourceSessionId: source.id,
+                    sourceThreadId: codexSessionId, directory: path,
+                    ...(messageLocalId ? { boundary: { localId: messageLocalId, turnId: turnId! } } : {})
+                })
+                if ('error' in result) {
+                    if (result.rollbackSafe) {
+                        this.setArchivedForkAttempt(source.id, namespace, undefined, true)
+                        await this.sessionCache.deleteSession(childId)
+                    }
+                    throw new Error(result.error)
+                }
+                if (result.nativeSessionId === codexSessionId) throw new Error('Native fork reused the source identity')
+                attempt = { ...attempt, nativeSessionId: result.nativeSessionId }
+                this.setArchivedForkAttempt(source.id, namespace, attempt)
+            }
+            child = this.sessionCache.refreshSession(childId)!
+            const updated = this.store.sessions.updateSessionMetadata(childId,
+                { ...child.metadata!, codexSessionId: attempt.nativeSessionId }, child.metadataVersion, namespace, { touchUpdatedAt: false })
+            if (updated.result !== 'success') throw new Error('Failed to bind native fork to its child')
+            this.sessionCache.refreshSession(childId)
+            attempt = { ...attempt, spawnAttempted: true }
+            this.setArchivedForkAttempt(source.id, namespace, attempt)
+            const spawn = await this.rpcGateway.spawnSession(machineId, path, 'codex',
+                source.model ?? undefined, source.modelReasoningEffort ?? undefined, undefined, 'simple', undefined,
+                attempt.nativeSessionId, source.effort ?? undefined, source.permissionMode, source.serviceTier ?? undefined,
+                childId, source.collaborationMode)
+            if (spawn.type === 'success' && spawn.sessionId !== childId) throw new Error('Fork launcher returned a different session')
+            if (spawn.type === 'error' && spawn.childStarted === false) throw new Error(spawn.message)
+            // A slow Runner can confirm its already-created child after the
+            // spawn RPC deadline. Observe the reserved binding; never spawn a
+            // second engine just because that acknowledgement was delayed.
+            const deadline = Date.now() + 90_000
+            let bound = false
+            do {
+                const ready = this.sessionCache.refreshSession(childId)
+                if (!ready || ready.metadata?.codexSessionId !== attempt.nativeSessionId) throw new Error('Fork child native binding changed')
+                bound = ready.active && this.sessionReadyIds.has(childId)
+                if (!bound) await new Promise(resolve => setTimeout(resolve, 250))
+            } while (!bound && Date.now() < deadline)
+            if (!bound) throw new Error(spawn.type === 'error' ? spawn.message : 'Archived fork child did not become ready')
+            this.setArchivedForkAttempt(source.id, namespace, undefined)
+            return { type: 'success', sessionId: childId }
+        } catch (error) {
+            return { type: 'error', message: `${error instanceof Error ? error.message : String(error)}. The source was not reopened; retry the same fork to reconcile a pending operation.` }
+        }
+    }
+
+    async branchConversation(
         sessionId: string,
         namespace: string,
-        messageLocalId?: string
-    ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
+        request: BranchConversationRequest
+    ): Promise<({ type: 'success' } & BranchConversationResponse) | { type: 'error'; message: string }> {
         if (this.historyActionsInFlight.has(sessionId)) {
             return { type: 'error', message: 'Conversation history action already in progress' }
         }
         this.historyActionsInFlight.add(sessionId)
         try {
-            return await this.forkConversationUnlocked(sessionId, namespace, messageLocalId)
+            const access = this.resolveSessionAccess(sessionId, namespace)
+            if (!access.ok) throw new Error('Session not found or access denied')
+            const source = access.session
+            const childId = branchSessionId(namespace, sessionId, request.requestId)
+            const fingerprint = createHash('sha256').update(JSON.stringify(request)).digest('hex')
+            const existing = this.getSessionByNamespace(childId, namespace)
+            if (existing) {
+                if (existing.metadata?.conversationBranch?.requestFingerprint !== fingerprint) {
+                    throw new Error('Branch request id was already used with different options')
+                }
+                return { type: 'success', sessionId: childId,
+                    ...(existing.metadata.conversationBranch.state !== 'started'
+                        ? { warning: 'Launch outcome is uncertain. Inspect this child before starting another branch.' } : {}) }
+            }
+            this.assertConversationHistoryIdle(source, false, false)
+            if (!['claude', 'codex'].includes(source.metadata?.flavor ?? 'claude')) {
+                throw new Error('Portable branches currently support Claude Code and Codex source sessions')
+            }
+            const machineId = source.metadata?.machineId
+            const directory = source.metadata?.path
+            const machine = machineId ? this.getMachineByNamespace(machineId, namespace) : undefined
+            if (!machineId || !directory || !machine?.active) throw new Error('Source machine must be online')
+            if (request.model) {
+                const catalog = request.agent === 'claude'
+                    ? await this.listClaudeModelsForMachine(machineId)
+                    : await this.listCodexModelsForMachine(machineId)
+                const models = 'availableModels' in catalog
+                    ? catalog.availableModels?.map(model => model.value)
+                    : 'models' in catalog ? catalog.models?.map(model => model.id) : []
+                if (!catalog.success || !models?.includes(request.model)) throw new Error('Selected model is not available on the source machine')
+            }
+            // Catalog discovery is asynchronous; reject if a new turn began meanwhile.
+            const latestSource = this.getSessionByNamespace(sessionId, namespace)
+            if (!latestSource) throw new Error('Source session no longer exists')
+            this.assertConversationHistoryIdle(latestSource, false, false)
+            if (latestSource.metadata?.machineId !== machineId || latestSource.metadata?.path !== directory) {
+                throw new Error('Source location changed; reopen the branch dialog')
+            }
+            // Freeze the invoked prefix before any asynchronous spawn work. Pending
+            // inputs and subsequent source events can never enter this reference.
+            const reference = buildBranchPrompt(this.store.messages.getAllMessages(sessionId), request)
+            const branch = {
+                sourceSessionId: sessionId, messageLocalId: request.messageLocalId, messageId: request.messageId,
+                boundary: request.boundary, mode: 'visible-text' as const,
+                requestFingerprint: fingerprint, state: 'launching' as const,
+                createdAt: Date.now(), messageCount: reference.messageCount, workspace: request.workspace
+            }
+            this.sessionCache.getOrCreateSession(`machine-spawn:${childId}`, {
+                path: directory, host: source.metadata?.host ?? 'unknown', machineId,
+                flavor: request.agent, startedBy: 'runner', startedFromRunner: true,
+                forkedFrom: sessionId, conversationBranch: branch,
+                summary: { text: `Branch: ${source.metadata?.name ?? source.metadata?.summary?.text ?? 'Conversation'}`, updatedAt: Date.now() }
+            }, null, namespace, request.model, undefined, undefined, childId)
+            // Persist before dispatch so a lost RPC response never loses the
+            // reference/instruction. A mature scheduled row is redelivered until
+            // CLI acknowledgement, including after hub restart. A retry returns
+            // this same child without spawning.
+            const localId = `branch-${request.requestId}`
+            const scheduledAt = Date.now()
+            this.store.messages.addMessage(childId, {
+                role: 'user', content: { type: 'text', text: reference.text },
+                meta: { sentFrom: 'webapp', deliveryMode: 'queue' }
+            }, localId, scheduledAt)
+            let warning: string | undefined
+            try {
+                const spawn = await this.rpcGateway.spawnSession(
+                    machineId, directory, request.agent, request.model,
+                    undefined, undefined, request.workspace === 'worktree' ? 'worktree' : 'simple',
+                    request.worktreeName, undefined, undefined, undefined, undefined,
+                    undefined, undefined, undefined, 'remote', undefined, childId
+                )
+                if (spawn.type !== 'success') {
+                    if (spawn.childStarted === false) {
+                        await this.deleteSession(childId)
+                        return { type: 'error', message: spawn.message }
+                    }
+                    throw new Error(spawn.message)
+                }
+                if (spawn.sessionId !== childId) throw new Error('Runner returned a different branch session id')
+                await this.sendMessage(childId, { text: reference.text, localId, scheduledAt, deliveryMode: 'queue' })
+            } catch (error) {
+                warning = `Launch outcome is uncertain. Inspect this child before retrying: ${error instanceof Error ? error.message : String(error)}`
+            }
+            // Merge with CLI metadata using version checks; never overwrite a native binding.
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const child = this.sessionCache.refreshSession(childId)
+                if (!child?.metadata) break
+                const result = this.store.sessions.updateSessionMetadata(childId, {
+                    ...child.metadata, conversationBranch: { ...branch, state: warning ? 'uncertain' : 'started' }
+                }, child.metadataVersion, namespace, { touchUpdatedAt: false })
+                if (result.result !== 'version-mismatch') break
+            }
+            this.sessionCache.refreshSession(childId)
+            return { type: 'success', sessionId: childId, ...(warning ? { warning } : {}) }
+        } catch (error) {
+            return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         } finally {
             this.historyActionsInFlight.delete(sessionId)
         }
     }
 
+    async forkConversation(
+        sessionId: string,
+        namespace: string,
+        messageLocalId?: string,
+        latestCompleted = false,
+        boundary?: ForkBoundary
+    ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string; code?: ForkBoundaryErrorCode }> {
+        const candidate = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+        if (candidate?.metadata?.codexResumePending) {
+            return { type: 'error', message: 'Codex resume startup is unconfirmed; retry resume or archive to confirm its process stopped before forking' }
+        }
+        if (this.archivedForkPending(sessionId, namespace) && (!candidate?.metadata?.codexArchivedFork || candidate.active)) {
+            return { type: 'error', message: 'Archived fork is pending; wait for its child binding before creating another branch' }
+        }
+        if (this.historyActionsInFlight.has(sessionId)) {
+            return { type: 'error', message: 'Conversation history action already in progress' }
+        }
+        this.historyActionsInFlight.add(sessionId)
+        try {
+            return await this.forkConversationUnlocked(sessionId, namespace, messageLocalId, latestCompleted, boundary)
+        } finally {
+            this.historyActionsInFlight.delete(sessionId)
+        }
+    }
+
+    /**
+     * Re-check a fork-preview boundary against the live transcript, right
+     * after the confirm lock is taken and before any flavor dispatch. Returns
+     * a human-readable reason when the source moved since the preview.
+     */
+    /** Admission guards shared by the archived-fork confirm and its preview:
+     *  a preview must never answer a boundary the confirm would refuse.
+     *  Returns the machine binding the guards verified. */
+    private assertArchivedForkEligible(source: Session, namespace: string, messageLocalId?: string): {
+        machineId: string
+        codexSessionId: string
+        path: string
+    } {
+        const metadata = source.metadata
+        // An attached runtime is the desktop's own thread: fork it there,
+        // not through HAPI.
+        if (metadata?.codexRuntime?.kind === 'attached') {
+            throw new Error('Fork external threads in the owning desktop, then use hapi attach')
+        }
+        if (metadata?.flavor !== 'codex' || !metadata.codexSessionId || !metadata.machineId || !metadata.path) {
+            throw new Error('Inactive fork requires a Codex session with native history and a machine binding')
+        }
+        if (metadata.conversationHistoryDiverged) throw new Error('Conversation history is diverged; refuse further fork/rewind')
+        if (this.store.messages.getUninvokedLocalMessages(source.id).length) throw new Error('Session has queued messages')
+        const machine = this.getMachine(metadata.machineId)
+        if (!machine?.active || machine.namespace !== namespace) throw new Error('Source machine is offline')
+        if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ForkArchivedCodex)) {
+            throw new Error('Upgrade the source Runner to fork archived Codex sessions')
+        }
+        const attempt = metadata.codexArchivedFork
+        if (attempt && attempt.boundaryLocalId !== messageLocalId) throw new Error('A previous archived fork is pending at another boundary; retry that fork first')
+        return { machineId: metadata.machineId, codexSessionId: metadata.codexSessionId, path: metadata.path }
+    }
+
+    private boundaryMovedReason(
+        sessionId: string,
+        source: Session,
+        boundary: ForkBoundary,
+        expectedMode: ForkBoundary['mode'],
+        messageLocalId?: string
+    ): string | null {
+        if (boundary.mode !== expectedMode) {
+            return `Boundary token describes a ${boundary.mode} boundary, not ${expectedMode}`
+        }
+        if ((expectedMode === 'message' || expectedMode === 'rewind') && boundary.messageLocalId !== messageLocalId) {
+            return 'Boundary token does not match the requested message'
+        }
+        // The preview chose its admission path (live guards vs archived-fork
+        // rules) from the source's active state; a transition between preview
+        // and confirm routes the confirm onto a path the token was not minted
+        // for: an inactive source fails the archived-fork admission (or forks
+        // archived state that ignores a live cut), a reopened one runs the
+        // live path with an archived cut.
+        if (boundary.sourceActive !== undefined && boundary.sourceActive !== source.active) {
+            return boundary.sourceActive
+                ? 'The source session stopped running since the preview'
+                : 'The source session was reopened since the preview'
+        }
+        if (boundary.epoch !== this.store.messages.getMessageEpoch(sessionId)) {
+            return 'Conversation history changed since the preview'
+        }
+        const rows = this.store.messages.getAllMessages(sessionId)
+        switch (boundary.mode) {
+            case 'current':
+                if (invokedTailSeq(rows) > boundary.tailSeq) {
+                    return 'New conversation rows appeared since the preview'
+                }
+                if (source.thinking) {
+                    return 'The source session started running since the preview'
+                }
+                break
+            case 'message': {
+                const boundaryRow = rows.find((row) => row.localId === boundary.messageLocalId)
+                if (!boundaryRow || boundaryRow.invokedAt == null) {
+                    return 'The boundary message is no longer part of the invoked history'
+                }
+                // A live non-Codex message fork must still be idle at confirm
+                // (Codex message forks legitimately run); without this the
+                // busy rejection surfaces as an uncoded dead end.
+                if (source.thinking && this.resolveFlavor(source) !== 'codex') {
+                    return 'The source session started running since the preview'
+                }
+                break
+            }
+            case 'latestCompleted':
+                // The pinned native turn is re-verified by the runner against
+                // native history; epoch covers hub-side truncation.
+                // A latestCompleted token is only minted for a running source,
+                // so an inactive source at confirm means the runner exited:
+                // refresh instead of confirming into the archived path, which
+                // ignores the pin.
+                if (!source.active) {
+                    return 'The source session stopped running since the preview'
+                }
+                break
+            case 'rewind':
+                if (invokedTailSeq(rows) > boundary.tailSeq) {
+                    return 'New conversation rows appeared since the preview'
+                }
+                // The rewind confirm demands an idle source; a thinking edge
+                // would otherwise fail as an uncoded 'Session is busy'.
+                if (source.thinking) {
+                    return 'The source session started running since the preview'
+                }
+                break
+        }
+        return null
+    }
+
+    /**
+     * Read-only fork/rewind preview answered by the boundary owner. Runs the
+     * same admission guards as confirm, without taking the history-action
+     * lock, so previewing never blocks or races a concurrent confirm.
+     */
+    async forkPreview(
+        sessionId: string,
+        namespace: string,
+        intent: ForkPreviewRequest['intent'],
+        messageLocalId?: string
+    ): Promise<{ type: 'success'; preview: ForkPreviewResponse } | { type: 'error'; message: string }> {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return { type: 'error', message: access.reason === 'not-found' ? 'Session not found' : 'Access denied' }
+        }
+        const source = access.session
+        const flavor = this.resolveFlavor(source)
+        const history = source.metadata?.capabilities?.conversationHistory
+        const guardError = (error: unknown) =>
+            ({ type: 'error' as const, message: error instanceof Error ? error.message : String(error) })
+
+        if (intent === 'rewind') {
+            if (!source.active) {
+                return { type: 'error', message: 'Rewind is not supported for this session' }
+            }
+            try {
+                this.assertConversationHistoryIdle(source)
+            } catch (error) {
+                return guardError(error)
+            }
+            if (history?.rewindToMessage !== true) {
+                return { type: 'error', message: 'Rewind is not supported for this session' }
+            }
+            try {
+                this.assertInvokedHistoryBoundary(sessionId, messageLocalId!)
+            } catch (error) {
+                return guardError(error)
+            }
+            return this.buildForkPreviewResponse(sessionId, source, flavor, 'rewind', messageLocalId)
+        }
+
+        // Mirror forkConversation's admission guards on the fork intents: the
+        // preview must never open a dialog whose confirm the engine refuses
+        // outright. (The rewind confirm runs its own guards, so rewind
+        // previews keep theirs.)
+        if (source.metadata?.codexResumePending) {
+            return { type: 'error', message: 'Codex resume startup is unconfirmed; retry resume or archive to confirm its process stopped before forking' }
+        }
+        if (this.archivedForkPending(sessionId, namespace) && (!source.metadata?.codexArchivedFork || source.active)) {
+            return { type: 'error', message: 'Archived fork is pending; wait for its child binding before creating another branch' }
+        }
+
+        if (!source.active) {
+            // Archived fork is hub-decided and the transcript is static; run
+            // the same admission guards as the confirm so the preview cannot
+            // answer a boundary the confirm would refuse.
+            try {
+                this.assertArchivedForkEligible(source, namespace, intent === 'message' ? messageLocalId : undefined)
+            } catch (error) {
+                return guardError(error)
+            }
+            if (intent === 'message') {
+                try {
+                    this.assertInvokedHistoryBoundary(sessionId, messageLocalId!)
+                } catch (error) {
+                    return guardError(error)
+                }
+                // forkArchivedCodexSession resolves the native turn from a
+                // pending attempt or the conversationHistoryTurns map and
+                // throws 'No native history point' without either; refuse the
+                // same message up front.
+                if (!source.metadata?.codexArchivedFork
+                    && !source.metadata?.conversationHistoryTurns?.[messageLocalId!]) {
+                    return { type: 'error', message: 'No native history point for this message' }
+                }
+            }
+            return this.buildForkPreviewResponse(sessionId, source, flavor, intent === 'message' ? 'message' : 'current', messageLocalId)
+        }
+
+        // The hub resolves the mode from the live session; a running Codex
+        // with a verified completed turn previews through that turn.
+        let mode: 'current' | 'message' | 'latestCompleted' = intent === 'message' ? 'message' : 'current'
+        if (intent === 'current' && flavor === 'codex' && source.thinking
+            && history?.forkLatestCompleted === true) {
+            mode = 'latestCompleted'
+        }
+
+        try {
+            this.assertConversationHistoryIdle(source,
+                (Boolean(messageLocalId) || mode === 'latestCompleted') && flavor === 'codex')
+        } catch (error) {
+            return guardError(error)
+        }
+
+        if (mode === 'message') {
+            if (history?.forkAtMessage !== true) {
+                return { type: 'error', message: 'Historical fork is not supported for this session' }
+            }
+            try {
+                this.assertInvokedHistoryBoundary(sessionId, messageLocalId!)
+            } catch (error) {
+                return guardError(error)
+            }
+        } else if (mode === 'latestCompleted') {
+            // latestCompleted is CLI-decided: an old runner cannot answer it
+            // without re-introducing the drift the preview exists to prevent.
+            if (history?.forkPreview !== true) {
+                return { type: 'error', message: 'Update the runner to preview this fork' }
+            }
+        } else if (history?.forkCurrent !== true) {
+            return { type: 'error', message: 'Fork current is not supported for this session' }
+        }
+
+        return this.buildForkPreviewResponse(sessionId, source, flavor, mode, messageLocalId)
+    }
+
+    private async buildForkPreviewResponse(
+        sessionId: string,
+        source: Session,
+        flavor: AgentFlavor,
+        mode: ForkBoundary['mode'],
+        messageLocalId?: string
+    ): Promise<{ type: 'success'; preview: ForkPreviewResponse } | { type: 'error'; message: string }> {
+        // A preview-capable shared runtime decides its own boundary: ask it
+        // where the native history cut sits instead of mirroring it from hub
+        // rows. Every other flavor is hub-decided and answered from rows.
+        let nativeCut: { nativeTurnId?: string; cutBeforeLocalId?: string } = {}
+        let rows = this.store.messages.getAllMessages(sessionId)
+        if (mode !== 'rewind' && source.active && flavor === 'codex'
+            && source.metadata?.capabilities?.conversationHistory?.forkPreview === true) {
+            // The native cut and the hub transcript must describe the same
+            // history: fingerprint the transcript before the boundary RPC and
+            // reject when a turn completes in between, so the token never pins
+            // a tail the sampled cut does not cover (same guard as the
+            // OpenCode rewind reservation).
+            const fingerprintBefore = createHash('sha256').update(JSON.stringify(rows)).digest('hex')
+            try {
+                nativeCut = await this.rpcGateway.previewForkBoundary(sessionId,
+                    mode === 'message' ? { mode, messageLocalId } : { mode })
+            } catch (error) {
+                return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+            }
+            rows = this.store.messages.getAllMessages(sessionId)
+            if (createHash('sha256').update(JSON.stringify(rows)).digest('hex') !== fingerprintBefore) {
+                return { type: 'error', message: 'The source conversation changed while the preview was prepared; try again' }
+            }
+        }
+        let resolved: ResolvedBoundary<StoredMessage>
+        try {
+            resolved = mode === 'rewind'
+                ? resolveRewindBoundary(rows, messageLocalId!)
+                : resolveForkBoundary(rows, { mode, messageLocalId, cutBeforeLocalId: nativeCut.cutBeforeLocalId })
+        } catch (error) {
+            return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+        }
+        const toRow = (message: StoredMessage): ForkPreviewRow =>
+            ({ id: message.id, seq: message.seq, localId: message.localId, content: message.content, createdAt: message.createdAt, invokedAt: message.invokedAt })
+        const keptTail = resolved.prefix.slice(-FORK_PREVIEW_TAIL_ROWS).map(toRow)
+        const excluded = mode === 'rewind'
+            ? resolved.excluded.slice(0, FORK_PREVIEW_TAIL_ROWS).map(toRow)
+            : resolved.excluded.slice(0, 1).map(toRow)
+        const preview: ForkPreviewResponse = {
+            mode,
+            boundary: {
+                v: 1,
+                mode,
+                ...(messageLocalId && (mode === 'message' || mode === 'rewind') ? { messageLocalId } : {}),
+                ...(nativeCut.nativeTurnId ? { nativeTurnId: nativeCut.nativeTurnId } : {}),
+                sourceActive: source.active,
+                epoch: this.store.messages.getMessageEpoch(sessionId),
+                tailSeq: resolved.tailSeq
+            },
+            keptTail,
+            excluded,
+            counts: { kept: resolved.prefix.length, excluded: resolved.excluded.length }
+        }
+        return { type: 'success', preview }
+    }
+
     private async forkConversationUnlocked(
         sessionId: string,
         namespace: string,
-        messageLocalId?: string
-    ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
+        messageLocalId?: string,
+        latestCompleted = false,
+        boundary?: ForkBoundary
+    ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string; code?: ForkBoundaryErrorCode }> {
         const access = this.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return { type: 'error', message: access.reason === 'not-found' ? 'Session not found' : 'Access denied' }
         }
         let source = access.session
+        if (boundary) {
+            const expectedMode: ForkBoundary['mode'] = messageLocalId ? 'message' : latestCompleted ? 'latestCompleted' : 'current'
+            const moved = this.boundaryMovedReason(sessionId, source, boundary, expectedMode, messageLocalId)
+            if (moved) {
+                return { type: 'error', message: moved, code: 'boundary_moved' }
+            }
+        }
+        if (latestCompleted && (messageLocalId || !source.active || this.resolveFlavor(source) !== 'codex'
+            || source.metadata?.capabilities?.conversationHistory?.forkLatestCompleted !== true)) {
+            return { type: 'error', message: 'No verified completed turn is available for this session' }
+        }
+        if (!source.active) return this.forkArchivedCodexSession(source, namespace, messageLocalId)
         try {
-            this.assertConversationHistoryIdle(source)
+            this.assertConversationHistoryIdle(source, (Boolean(messageLocalId) || latestCompleted) && this.resolveFlavor(source) === 'codex')
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
@@ -1442,18 +3065,41 @@ export class SyncEngine {
         try {
             rpcResult = await this.rpcGateway.forkConversation(
                 sessionId,
-                messageLocalId ? { messageLocalId } : {}
+                latestCompleted
+                    ? { latestCompleted: true, ...(boundary?.nativeTurnId ? { lastTurnId: boundary.nativeTurnId } : {}) }
+                    : messageLocalId
+                        ? { messageLocalId }
+                        : boundary?.nativeTurnId ? { lastTurnId: boundary.nativeTurnId } : {}
             )
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
 
-        if (!rpcResult?.nativeSessionId) {
+        if (
+            rpcResult &&
+            typeof rpcResult === 'object' &&
+            'error' in rpcResult &&
+            typeof rpcResult.error === 'string' &&
+            rpcResult.error.trim()
+        ) {
+            return { type: 'error', message: rpcResult.error }
+        }
+
+        if (
+            !rpcResult ||
+            typeof rpcResult !== 'object' ||
+            !('nativeSessionId' in rpcResult) ||
+            !rpcResult.nativeSessionId
+        ) {
             return { type: 'error', message: 'Native fork did not return a session id' }
+        }
+        if (latestCompleted && (!rpcResult.sessionId || !rpcResult.completedTurnId)) {
+            return { type: 'error', message: 'Runner did not verify the completed-turn fork boundary' }
         }
         if (rpcResult.sessionId) {
             const child = await this.validateSharedChild(source, rpcResult.sessionId, rpcResult.nativeSessionId)
             if (!child || child.metadata?.forkedFrom !== sessionId) return { type: 'error', message: 'Invalid shared-runtime fork binding' }
+            this.restoreForkSummaryMetadata(child.id, namespace, buildForkSessionSummary(source.metadata))
             return { type: 'success', sessionId: child.id }
         }
 
@@ -1466,10 +3112,19 @@ export class SyncEngine {
         source = refreshedSource
 
         const flavor = this.resolveFlavor(source)
+        if (flavor === 'opencode'
+            && (rpcResult.opencodeHistoryCheckpoint?.sessionId !== rpcResult.nativeSessionId
+                || rpcResult.opencodeHistoryCheckpoint.localMessageIds?.length !== 0
+                || rpcResult.opencodeHistoryCheckpoint.localPublicationPending)) {
+            return { type: 'error', message: 'OpenCode fork did not return a verified child history checkpoint' }
+        }
         const childId = randomUUID()
         let prefix
         try {
-            prefix = selectForkTranscriptPrefix(this.store.messages.getAllMessages(sessionId), messageLocalId)
+            prefix = resolveForkBoundary(this.store.messages.getAllMessages(sessionId), {
+                mode: messageLocalId ? 'message' : 'current',
+                messageLocalId
+            }).prefix
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
@@ -1505,6 +3160,9 @@ export class SyncEngine {
         }
         if (flavor === 'codex') {
             childMetadata.codexSessionId = rpcResult.nativeSessionId
+        } else if (flavor === 'opencode') {
+            childMetadata.opencodeHistoryCheckpoint = rpcResult.opencodeHistoryCheckpoint
+            childMetadata.opencodeForkPending = true
         } else if (flavor === 'grok') {
             childMetadata.grokSessionId = rpcResult.nativeSessionId
         } else if (flavor === 'pi') {
@@ -1568,11 +3226,17 @@ export class SyncEngine {
                 source.collaborationMode,
                 undefined,
                 undefined,
-                rpcResult.forkSession === true
+                rpcResult.forkSession === true,
+                undefined,
+                rpcResult.resumeSessionAt
             )
             if (spawn.type !== 'success') {
                 throw new Error(spawn.message)
             }
+            // CLI bootstrap can replace the provisional fork metadata before
+            // the child becomes ready. Restore the generated fork title only
+            // when startup left the child without an explicit title or summary.
+            this.restoreForkSummaryMetadata(childId, namespace, forkSummary)
 
             // Claude fork is spawn+flag, not an RPC-time snapshot. Keep the
             // source history lock (caller holds historyActionsInFlight) until
@@ -1604,6 +3268,19 @@ export class SyncEngine {
                 if (!bound) {
                     throw new Error('Pi fork could not load the exact native session before ready')
                 }
+            }
+
+            if (flavor === 'opencode') {
+                // The CLI seeds opencodeSessionId from the resume id before ACP
+                // initialize, so only the validated session-ready fence proves
+                // the forked native session actually loaded.
+                const bound = await this.waitForExactNativeForkBound(
+                    childId, rpcResult.nativeSessionId, 'opencodeSessionId', true
+                )
+                if (!bound) {
+                    throw new Error('OpenCode fork could not load the forked native session')
+                }
+                this.completeOpencodeForkValidation(childId, namespace)
             }
 
             return { type: 'success', sessionId: childId }
@@ -1642,29 +3319,241 @@ export class SyncEngine {
     async rewindConversation(
         sessionId: string,
         namespace: string,
-        messageLocalId: string
+        messageLocalId: string,
+        boundary?: ForkBoundary
     ): Promise<{ type: 'success' } | { type: 'error'; message: string; code?: RewindConversationErrorCode; hydrateFailed?: boolean }> {
         if (this.historyActionsInFlight.has(sessionId)) {
             return { type: 'error', message: 'Conversation history action already in progress' }
         }
         this.historyActionsInFlight.add(sessionId)
         try {
-            return await this.rewindConversationUnlocked(sessionId, namespace, messageLocalId)
+            return await this.rewindConversationUnlocked(sessionId, namespace, messageLocalId, boundary)
         } finally {
             this.historyActionsInFlight.delete(sessionId)
+        }
+    }
+
+    /**
+     * Hub-restart recovery for interrupted Claude rewind RPCs: if a committed
+     * `claudeRewind` intent persisted in metadata still has its boundary in SQLite,
+     * apply the idempotent transcript cut before accepting CLI or user traffic.
+     */
+    private reconcilePendingClaudeRewinds(): void {
+        for (const session of this.sessionCache.getSessions()) {
+            this.reconcilePendingClaudeRewind(session)
+        }
+    }
+
+    /** Clear the in-flight RPC marker only if it still belongs to the same rewind request. */
+    private clearClaudeRewindInFlight(sessionId: string, messageLocalId: string): void {
+        if (this.claudeRewindRpcsInFlight.get(sessionId) === messageLocalId) {
+            this.claudeRewindRpcsInFlight.delete(sessionId)
+        }
+    }
+
+    /** Idempotently reconcile a persisted claudeRewind intent when no matching rewind RPC is active. */
+    private reconcilePendingClaudeRewind(session: Session | undefined): void {
+        if (!session) {
+            return
+        }
+        const stored = this.store.sessions.getSession(session.id)
+        const rawMetadata = asRecord(stored?.metadata)
+        const hasRawRewind = rawMetadata !== null && rawMetadata.claudeRewind !== undefined
+        const intent = session.metadata?.claudeRewind
+        if (!intent && !hasRawRewind) {
+            return
+        }
+        if (session.metadata?.conversationHistoryDiverged === true || rawMetadata?.conversationHistoryDiverged === true) {
+            return
+        }
+
+        const truncateFromLocalId = typeof intent?.truncateFromLocalId === 'string' && intent.truncateFromLocalId.length > 0
+            ? intent.truncateFromLocalId
+            : null
+        if (truncateFromLocalId && this.claudeRewindRpcsInFlight.get(session.id) === truncateFromLocalId) {
+            return
+        }
+        if (!truncateFromLocalId) {
+            if (session.metadata) {
+                this.markConversationHistoryDiverged(session.id, session.namespace)
+            } else if (rawMetadata && stored) {
+                const { claudeRewind: _invalid, ...rest } = rawMetadata
+                this.store.sessions.updateSessionMetadata(
+                    session.id,
+                    { ...rest, conversationHistoryDiverged: true } as unknown as Session['metadata'],
+                    stored.metadataVersion,
+                    session.namespace,
+                    { touchUpdatedAt: false }
+                )
+                this.sessionCache.refreshSession(session.id)
+            }
+            return
+        }
+
+        const states = this.store.messages.getLocalMessageStates(session.id, [truncateFromLocalId])
+        if (states.length === 0) {
+            // Already truncated (RPC reply, catch recovery, or prior startup).
+            // Record the commitment so the CLI's native proof can clear the
+            // intent instead of holding it until the next restart.
+            this.markClaudeRewindCutApplied(session.id, session.namespace, truncateFromLocalId)
+            return
+        }
+
+        const targetState = states[0]
+        // The cut is bounded by the intent's discardedThroughSeq: uninvoked
+        // rows queued after that bound are newer input the recovery cut must
+        // preserve, not evidence of an unsafe transcript. Intents without a
+        // bound (written by an older CLI or hub) cut unbounded, so any
+        // uninvoked row still blocks the cut.
+        const discardedThroughSeq = intent?.discardedThroughSeq
+        const uninvokedMessages = this.store.messages.getUninvokedLocalMessages(session.id)
+        const hasUninvokedMessages = discardedThroughSeq === undefined
+            ? uninvokedMessages.length > 0
+            : uninvokedMessages.some((message) => message.seq <= discardedThroughSeq)
+        const isClaudeSession = session.metadata?.flavor === undefined || session.metadata.flavor === 'claude'
+        if (!isClaudeSession || targetState?.invokedAt == null || hasUninvokedMessages) {
+            this.markConversationHistoryDiverged(session.id, session.namespace)
+            return
+        }
+
+        try {
+            this.truncateHubTranscriptFrom(session.id, session.namespace, truncateFromLocalId, intent?.discardedThroughSeq)
+        } catch {
+            this.markConversationHistoryDiverged(session.id, session.namespace)
+        }
+    }
+
+    /**
+     * Hub-side half of a rewind: delete the transcript from the keyed localId
+     * on, refresh derived state, and tell clients to refetch. Runs once, at
+     * rewind-RPC success — the native re-arm is the CLI's durable intent, so
+     * no later metadata-driven truncation pass can eat post-rewind turns.
+     * `discardedThroughSeq` is the newest row that existed when the rewind was
+     * dispatched: a delayed or recovery cut never deletes rows created later.
+     */
+    private truncateHubTranscriptFrom(
+        sessionId: string,
+        namespace: string,
+        truncateFromLocalId: string,
+        discardedThroughSeq?: number
+    ): void {
+        this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId, [], discardedThroughSeq)
+        this.scrubHistoryLocators(sessionId, namespace)
+        this.sessionCache.rebuildTodosFromTranscript(sessionId)
+        this.markClaudeRewindCutApplied(sessionId, namespace, truncateFromLocalId)
+        this.eventPublisher.emit({
+            type: 'messages-invalidated',
+            sessionId,
+            namespace,
+            reason: 'rewind',
+            truncateFromLocalId
+        })
+        this.sessionCache.refreshSession(sessionId)
+    }
+
+    /**
+     * Record on the intent that this hub has applied the transcript cut.
+     *
+     * The CLI owns the native branch and deletes the intent as soon as its
+     * proof (post-rewind input re-parented onto the kept boundary) lands. A
+     * transient disconnect can drop the rewind RPC reply, so the proof may be
+     * observed while the hub cut has not happened yet: the pending guard then
+     * skips reconciliation for this hub process, and the deletion would leave
+     * the transcript mismatched with no intent left to repair it. The marker
+     * is what lets the CLI tell the two apart - it only clears the intent once
+     * the cut is confirmed, so the timeout/reconnect reconcile still finds it.
+     */
+    private markClaudeRewindCutApplied(sessionId: string, namespace: string, truncateFromLocalId: string): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                ?? this.sessionCache.refreshSession(sessionId)
+            if (!session?.metadata) return
+            const intent = asRecord(session.metadata.claudeRewind)
+            if (intent === null || intent.truncateFromLocalId !== truncateFromLocalId || intent.hubCutApplied === true) return
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...session.metadata, claudeRewind: { ...intent, hubCutApplied: true } },
+                session.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                // A CLI holding native proof clears the intent on this update;
+                // without the push it waits for its next write or a reconnect,
+                // keeping fork/rewind blocked on an already-applied cut.
+                this.emitCliSessionMetadataUpdate(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') return
+        }
+    }
+
+    /**
+     * A `claudeRewind` intent visible in hub metadata means the rewind is
+     * committed: the CLI's unknown-outcome settlement arms the native boundary
+     * as soon as it sees the intent (flush timeout released the local launch),
+     * so the hub transcript cut has to happen here too. The RPC reply can be a
+     * rejection that was produced after the write landed; deleting the intent
+     * then would leave the hub with turns the native side already dropped.
+     * Returns the truncate key when that committed intent matches the request.
+     */
+    private committedClaudeRewindLocalId(sessionId: string, messageLocalId: string): string | null {
+        const intent = asRecord(asRecord(this.sessionCache.refreshSession(sessionId)?.metadata)?.claudeRewind)
+        const truncateFromLocalId = typeof intent?.truncateFromLocalId === 'string' && intent.truncateFromLocalId.length > 0
+            ? intent.truncateFromLocalId
+            : null
+        return truncateFromLocalId === messageLocalId ? truncateFromLocalId : null
+    }
+
+    /**
+     * Drop a `claudeRewind` intent that the RPC outcome proved was never
+     * committed: this rewind's own target (`messageLocalId`), or a stale
+     * intent for an older target whose retrying metadata write lost its
+     * version race (that write's rejection finds nothing matching and lands
+     * here). Leaving one behind would arm a bogus native boundary on the next
+     * start and block history actions behind the pending-rewind guard.
+     */
+    private clearUncommittedClaudeRewind(sessionId: string, namespace: string): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                ?? this.sessionCache.refreshSession(sessionId)
+            if (!session?.metadata) return
+            if (asRecord(session.metadata.claudeRewind) === null) return
+
+            const { claudeRewind: _cleared, ...nextMetadata } = session.metadata
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                nextMetadata,
+                session.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') return
         }
     }
 
     private async rewindConversationUnlocked(
         sessionId: string,
         namespace: string,
-        messageLocalId: string
+        messageLocalId: string,
+        boundary?: ForkBoundary
     ): Promise<{ type: 'success' } | { type: 'error'; message: string; code?: RewindConversationErrorCode; hydrateFailed?: boolean }> {
         const access = this.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return { type: 'error', message: access.reason === 'not-found' ? 'Session not found' : 'Access denied' }
         }
         const session = access.session
+        if (boundary) {
+            const moved = this.boundaryMovedReason(sessionId, session, boundary, 'rewind', messageLocalId)
+            if (moved) {
+                return { type: 'error', message: moved, code: 'boundary_moved' }
+            }
+        }
         try {
             this.assertConversationHistoryIdle(session)
         } catch (error) {
@@ -1679,45 +3568,81 @@ export class SyncEngine {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
 
+        if (session.metadata?.flavor === 'opencode') return await this.rewindOpenCode(session, namespace, messageLocalId)
+
+        this.claudeRewindRpcsInFlight.set(sessionId, messageLocalId)
+        // The CLI persists this bound with its intent, so recovery after a
+        // lost reply or a hub restart cuts exactly what was discarded now.
+        const discardedThroughSeq = this.store.messages.getMaxSeq(sessionId)
         let rpcResult: Awaited<ReturnType<RpcGateway['rewindConversation']>>
         try {
-            rpcResult = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId })
+            rpcResult = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId, discardedThroughSeq })
         } catch (error) {
-            if (!(error instanceof RpcTargetMissingError)) {
-                this.markConversationHistoryDiverged(sessionId, namespace)
-                return {
-                    type: 'error',
-                    hydrateFailed: true,
-                    message: 'Rewind outcome is unknown; session history requires reconciliation'
+            // Crash window: the runner persists the durable rewind intent
+            // BEFORE it starts the restart teardown, and the native branch
+            // re-arms from that intent on the next start. If the intent for
+            // exactly this rewind is already visible here, the rewind is
+            // committed - truncate now (idempotent with the success path)
+            // instead of leaving the hub transcript diverged from the native
+            // side that will inevitably cut the same turns.
+            try {
+                this.sessionCache.refreshSession(sessionId)
+                const intent = this.getSession(sessionId)?.metadata?.claudeRewind as { truncateFromLocalId?: string } | undefined
+                if (intent?.truncateFromLocalId === messageLocalId) {
+                    try {
+                        this.truncateHubTranscriptFrom(sessionId, namespace, messageLocalId, discardedThroughSeq)
+                        return { type: 'success' }
+                    } catch {
+                        // Fall through: the diverged marker below is the honest state.
+                    }
                 }
-            }
-            return { type: 'error', message: error.message }
-        }
-
-        if (rpcResult?.success !== true) {
-            return {
-                type: 'error',
-                message: rpcResult?.error ?? 'Native rewind failed',
-                ...(rpcResult?.success === false && rpcResult.code ? { code: rpcResult.code } : {})
+                if (!(error instanceof RpcTargetMissingError)) {
+                    this.markConversationHistoryDiverged(sessionId, namespace)
+                    return {
+                        type: 'error',
+                        hydrateFailed: true,
+                        message: 'Rewind outcome is unknown; session history requires reconciliation'
+                    }
+                }
+                return { type: 'error', message: error.message }
+            } finally {
+                this.clearClaudeRewindInFlight(sessionId, messageLocalId)
             }
         }
 
         try {
-            this.store.messages.truncateMessagesFromLocalId(
-                sessionId,
-                rpcResult.truncateFromLocalId ?? messageLocalId,
-                rpcResult.messages ?? []
-            )
-            this.scrubHistoryLocators(sessionId, namespace)
-            this.sessionCache.rebuildTodosFromTranscript(sessionId)
-            this.eventPublisher.emit({
-                type: 'messages-invalidated',
-                sessionId,
-                namespace,
-                reason: 'rewind',
-                truncateFromLocalId: rpcResult.truncateFromLocalId ?? messageLocalId
-            })
-            this.sessionCache.refreshSession(sessionId)
+            if (rpcResult?.success !== true) {
+                // The write can land while the RPC reply is still a rejection
+                // (the CLI aborts the retrying write on a flush timeout but the
+                // first attempt persisted). A rejection then must not delete an
+                // intent that the CLI's local settlement already consumed:
+                // treat it as committed and reconcile the cut idempotently.
+                // (The lost-RPC catch above does the same.)
+                const committedLocalId = this.committedClaudeRewindLocalId(sessionId, messageLocalId)
+                if (committedLocalId) {
+                    // Nothing to truncate (already cut) or the boundary is gone:
+                    // the native side already dropped those turns either way.
+                    try {
+                        this.truncateHubTranscriptFrom(sessionId, namespace, committedLocalId, discardedThroughSeq)
+                    } catch {
+                        // Preserve the committed intent: the startup reconcile
+                        // owns the cut once the transcript is repairable again.
+                    }
+                    return { type: 'success' }
+                }
+                this.clearUncommittedClaudeRewind(sessionId, namespace)
+                return {
+                    type: 'error',
+                    message: rpcResult?.error ?? 'Native rewind failed',
+                    ...(rpcResult?.success === false && rpcResult.code ? { code: rpcResult.code } : {})
+                }
+            }
+        } finally {
+            this.clearClaudeRewindInFlight(sessionId, messageLocalId)
+        }
+
+        try {
+            this.truncateHubTranscriptFrom(sessionId, namespace, rpcResult.truncateFromLocalId ?? messageLocalId, discardedThroughSeq)
             return { type: 'success' }
         } catch (error) {
             // Native history already changed; refuse further history actions until repaired.
@@ -1730,7 +3655,196 @@ export class SyncEngine {
         }
     }
 
+    private openCodeRewindPending(sessionId: string): boolean {
+        const phase = (this.store.sessions.getSession(sessionId)?.metadata as Session['metadata'])?.opencodeRewind?.phase
+        return phase === 'reserved' || phase === 'prepared' || phase === 'unknown'
+    }
+
+    private async rewindOpenCode(session: Session, namespace: string, localId: string): Promise<{ type: 'success' } | { type: 'error'; message: string }> {
+        const current = this.store.sessions.getSession(session.id)!
+        const metadata = MetadataSchema.parse(current.metadata)
+        const checkpoint = metadata.opencodeHistoryCheckpoint
+        const index = metadata.conversationHistoryIndexes?.[localId]
+        const nativeMessageId = index === undefined ? undefined : checkpoint?.userMessageIds[index]
+        if (!metadata.opencodeWorkerId || !metadata.opencodeWorkerProcess
+            || metadata.opencodeWorkerProcess.workerId !== metadata.opencodeWorkerId
+            || !checkpoint || !nativeMessageId || checkpoint.localPublicationPending
+            || checkpoint.localMessageIds === undefined || checkpoint.sessionId !== metadata.opencodeSessionId) {
+            return { type: 'error', message: 'OpenCode rewind requires a verified native boundary and worker' }
+        }
+        const messages = this.store.messages.getAllMessages(session.id)
+        const boundary = messages.find(m => m.localId === localId && m.invokedAt != null)
+        if (!boundary) return { type: 'error', message: 'History boundary is not invoked' }
+        const operation: OpenCodeRewindOperation = { operationId: randomUUID(), nativeSessionId: checkpoint.sessionId,
+            workerId: metadata.opencodeWorkerId, workerPid: metadata.opencodeWorkerProcess.pid, workerStartMarker: metadata.opencodeWorkerProcess.startMarker,
+            requestedLocalId: localId, nativeMessageId, cutoffSeq: boundary.seq,
+            sourceEpoch: this.store.messages.getMessageEpoch(session.id), sourceMaxSeq: Math.max(0, ...messages.map(m => m.seq)),
+            sourceTranscriptHash: createHash('sha256').update(JSON.stringify(messages)).digest('hex'),
+            reservationVersion: current.metadataVersion + 1, phase: 'reserved' }
+        // Durable reservation before the first native/RPC await. No generic
+        // metadata retry can reserve against a different source version.
+        const reserved = this.store.sessions.updateSessionMetadata(session.id, { ...metadata, opencodeRewind: operation }, current.metadataVersion, namespace)
+        if (reserved.result !== 'success') return { type: 'error', message: 'OpenCode source metadata changed before reservation' }
+        this.sessionCache.refreshSession(session.id)
+        try {
+            await this.rpcGateway.rewindConversation(session.id, { messageLocalId: localId, opencodeRewind: operation })
+        } catch { /* durable state below is authoritative, never an RPC success alone */ }
+        const latest = (this.store.sessions.getSession(session.id)?.metadata as Session['metadata'])?.opencodeRewind
+        if (latest?.operationId === operation.operationId && latest.phase === 'committed') return { type: 'success' }
+        return { type: 'error', message: 'OpenCode rewind remains blocked pending native/Hub reconciliation' }
+    }
+
+    reportOpenCodeRewind(sessionId: string, namespace: string, report: OpenCodeRewindReport, expectedVersion: number): OpenCodeRewindOperation {
+        let invalidated = false
+        const operation = this.store.runInTransaction(() => {
+            const current = this.store.sessions.getSession(sessionId)
+            if (!current || current.namespace !== namespace) throw new Error('Session access denied')
+            const metadata = MetadataSchema.parse(current.metadata)
+            const op = metadata.opencodeRewind
+            const incoming = report.operation
+            const keys = ['operationId', 'nativeSessionId', 'workerId', 'workerPid', 'workerStartMarker', 'requestedLocalId', 'nativeMessageId',
+                'cutoffSeq', 'sourceEpoch', 'sourceMaxSeq', 'reservationVersion', 'sourceTranscriptHash'] as const
+            if (!op || keys.some(key => op[key] !== incoming[key]) || metadata.opencodeSessionId !== op.nativeSessionId) throw new Error('OpenCode rewind operation mismatch')
+            // Check the operation tombstone BEFORE the optimistic version/cutoff.
+            // An old report after a new turn cannot truncate that turn again.
+            if (op.phase === 'committed') {
+                if (report.phase === 'applied' && (report.sourceHash !== op.sourceHash || report.prefixHash !== op.prefixHash)) throw new Error('Committed proof mismatch')
+                return op
+            }
+            if (op.phase === 'rejected') return op
+            if (current.metadataVersion !== expectedVersion) throw new Error('OpenCode rewind metadata version changed')
+            let next: OpenCodeRewindOperation = { ...op }
+            let nextMetadata = metadata
+            // A reserved operation has not durably authorized native mutation.
+            // Keep it rejectable when preparation failed before persistence.
+            if (report.phase === 'unknown') next.phase = op.phase === 'reserved' ? 'reserved' : 'unknown'
+            else if (report.phase === 'rejected') {
+                if (op.phase !== 'reserved' && !(report.unchanged && op.sourceHash === report.sourceHash && op.prefixHash === report.prefixHash)) {
+                    throw new Error('Native mutation cannot be rejected without recovery evidence')
+                }
+                next.phase = 'rejected'
+            } else {
+                const rows = this.store.messages.getAllMessages(sessionId)
+                const hubBoundary = rows.find(m => m.localId === op.requestedLocalId && m.seq === op.cutoffSeq && m.invokedAt != null)
+                if (this.store.messages.getMessageEpoch(sessionId) !== op.sourceEpoch
+                    || createHash('sha256').update(JSON.stringify(rows)).digest('hex') !== op.sourceTranscriptHash
+                    || Math.max(0, ...rows.map(m => m.seq)) !== op.sourceMaxSeq
+                    || !hubBoundary
+                    || this.store.messages.getUninvokedLocalMessages(sessionId).length) throw new Error('OpenCode source transcript changed')
+                if (!report.sourceHash?.match(/^[a-f0-9]{64}$/) || !report.prefixHash?.match(/^[a-f0-9]{64}$/)) throw new Error('Missing native source/prefix proof')
+                if (report.phase === 'prepared') {
+                    if (op.phase !== 'reserved') throw new Error('OpenCode preparation is not repeatable after mutation')
+                    next = { ...op, phase: 'prepared', sourceHash: report.sourceHash, prefixHash: report.prefixHash }
+                } else {
+                    if (op.sourceHash !== report.sourceHash || op.prefixHash !== report.prefixHash) throw new Error('Native proof does not match the prepared operation')
+                    const checkpoint = report.checkpoint
+                    const source = metadata.opencodeHistoryCheckpoint
+                    const boundary = source?.messageIds.indexOf(op.nativeMessageId) ?? -1
+                    const expected = source?.messageIds.slice(0, boundary)
+                    if (!checkpoint || boundary < 0 || checkpoint.sessionId !== op.nativeSessionId || checkpoint.localPublicationPending
+                        || checkpoint.localMessageIds === undefined || JSON.stringify(checkpoint.messageIds) !== JSON.stringify(expected)
+                        || JSON.stringify(checkpoint.userMessageIds) !== JSON.stringify(source!.userMessageIds.slice(0, source!.userMessageIds.indexOf(op.nativeMessageId)))) {
+                        throw new Error('Retained native checkpoint does not match the requested boundary')
+                    }
+                    const indexes: Record<string, number> = {}
+                    for (const [local, index] of Object.entries(metadata.conversationHistoryIndexes ?? {})) {
+                        const target = source!.userMessageIds[index]
+                        const nextIndex = checkpoint.userMessageIds.indexOf(target!)
+                        if (nextIndex >= 0) indexes[local] = nextIndex
+                    }
+                    if (JSON.stringify(Object.entries(indexes).sort()) !== JSON.stringify(Object.entries(report.indexes ?? {}).sort())) throw new Error('Retained locator mismatch')
+                    this.store.messages.truncateOpenCodeRewind(sessionId, op.cutoffSeq, hubBoundary.id)
+                    next = { ...op, phase: 'committed' }
+                    nextMetadata = { ...metadata, opencodeHistoryCheckpoint: checkpoint, conversationHistoryIndexes: indexes,
+                        conversationHistoryPoints: Object.fromEntries(Object.keys(indexes).map(key => [key, true as const])) }
+                    invalidated = true
+                }
+            }
+            const updated = this.store.sessions.updateSessionMetadata(sessionId, { ...nextMetadata, opencodeRewind: next }, current.metadataVersion, namespace)
+            if (updated.result !== 'success') throw new Error('OpenCode rewind metadata CAS failed')
+            if (invalidated) {
+                const todos = this.store.messages.getAllMessages(sessionId).map(m => extractTodoWriteTodosFromMessageContent(m.content)).filter(Boolean).at(-1) ?? null
+                this.store.sessions.replaceSessionTodos(sessionId, todos, namespace)
+            }
+            return next
+        })
+        // Only publish after the encompassing database transaction commits.
+        this.sessionCache.refreshSession(sessionId)
+        if (invalidated) this.eventPublisher.emit({ type: 'messages-invalidated', sessionId, namespace, reason: 'rewind', truncateFromLocalId: operation.requestedLocalId })
+        return operation
+    }
+
+    async prepareOpenCodeSessionStop(sessionId: string, pid: number, processStartMarker: string,
+        preparationLease: SessionStopPreparationLease, machineId: string): Promise<'ready' | 'not_required'> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
+        const metadata = this.sessionCache.getSession(sessionId)?.metadata
+        if (metadata?.machineId !== machineId) throw new Error('Session machine does not match runner')
+        if (metadata?.flavor !== 'opencode') return 'not_required'
+        // Only request the session RPC here. Calling archiveSession would
+        // recurse into the runner's StopSession handler that is awaiting us.
+        const requestPreparation = async () => this.rpcGateway.killSession(sessionId, {
+            prepareOnly: true, expectedMachineId: machineId, expectedPid: pid, expectedProcessStartMarker: processStartMarker, preparationLease
+        })
+        let result: Awaited<ReturnType<typeof requestPreparation>>
+        try {
+            result = await requestPreparation()
+        } catch (error) {
+            // KillSession's beforeKill drain may already have completed while
+            // the CLI's async cleanup closed the session socket: honor the
+            // remembered drained generation for this exact target instead of
+            // failing the runner's stop coordination.
+            const drained = this.archiveDrainedGenerations.get(sessionId)
+            if (!drained || drained.machineId !== machineId || drained.pid !== pid
+                || drained.processStartMarker !== processStartMarker) throw error
+            result = { pid, machineId, processStartMarker, preparationLease }
+        }
+        if (result.pid !== pid || result.processStartMarker !== processStartMarker || result.machineId !== machineId) {
+            throw new Error('Session shutdown preparation did not confirm the target generation')
+        }
+        if (result.preparationLease?.id !== preparationLease.id || result.preparationLease.expiresAt !== preparationLease.expiresAt) {
+            throw new Error('Session shutdown preparation did not confirm the lease')
+        }
+        return 'ready'
+    }
+
     async archiveSession(sessionId: string): Promise<void> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
+        const existing = this.archiveRequests.get(sessionId)
+        if (existing) return existing
+        const operation = this.archiveSessionOnce(sessionId)
+        this.archiveRequests.set(sessionId, operation)
+        try { await operation } finally {
+            if (this.archiveRequests.get(sessionId) === operation) this.archiveRequests.delete(sessionId)
+            this.archiveDrainedGenerations.delete(sessionId)
+        }
+    }
+
+    private async archiveSessionOnce(sessionId: string): Promise<void> {
+        if (this.historyActionsInFlight.has(sessionId) || this.archivedForkPending(sessionId)) {
+            throw new Error('Archived fork is in progress; retry the fork to reconcile it before archiving')
+        }
+        this.historyActionsInFlight.add(sessionId)
+        try {
+            await this.archiveSessionUnlocked(sessionId)
+        } finally { this.historyActionsInFlight.delete(sessionId) }
+    }
+
+    private async archiveSessionUnlocked(sessionId: string): Promise<void> {
+        // Windows may need longer than the ordinary 30s RPC timeout to prove a
+        // complete tree exited. All PID fallbacks share this bounded operation
+        // budget; an acknowledgement timeout must never become archive success.
+        const deadline = performance.now() + 90_000
+        const stopRunner = async (machineId: string, id: string, processStartMarker?: string) => {
+            const timeoutMs = Math.ceil(deadline - performance.now())
+            if (timeoutMs <= 0) throw new ArchiveCleanupError('timeout')
+            try {
+                return await this.rpcGateway.stopRunnerSession(machineId, id, {
+                    timeoutMs, ...(processStartMarker ? { processStartMarker } : {}),
+                })
+            } catch (error) {
+                throw new ArchiveCleanupError(error instanceof RunnerStopRpcError && error.timedOut ? 'timeout' : 'unavailable', error)
+            }
+        }
         // tiann/hapi#916 / #1910: KillSession is a session-socket RPC. A missing
         // target does not prove the runner child is dead (stale registration,
         // mid-reconnect, id rotation on resume). Always fall through to the
@@ -1752,23 +3866,18 @@ export class SyncEngine {
         }
 
         const sessionMeta = this.sessionCache.getSession(sessionId)?.metadata
-        const machineId = sessionMeta?.machineId
-        const runnerSpawned = sessionMeta?.startedBy === 'runner'
+        const machineId = sessionMeta?.codexResumePending?.machineId ?? sessionMeta?.machineId
+        // Remember the drained generation so a concurrent prepare-stop can
+        // still be honored after the CLI's cleanup disconnects the socket.
+        if (machineId && typeof killPid === 'number' && killPid > 0
+            && typeof killProcessStartMarker === 'string' && killProcessStartMarker.length > 0) {
+            this.archiveDrainedGenerations.set(sessionId, { machineId, pid: killPid, processStartMarker: killProcessStartMarker })
+        }
+        const runnerSpawned = Boolean(sessionMeta?.codexResumePending) || sessionMeta?.startedBy === 'runner'
             || sessionMeta?.startedFromRunner === true
         if (machineId && runnerSpawned) {
-            let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
-            try {
-                status = await this.rpcGateway.stopRunnerSession(machineId, sessionId)
-            } catch (stopError) {
-                // Machine RPC missing is NOT proof the detached CLI is gone
-                // (KillMode=process children survive runner death). Refuse to
-                // archive on any StopSession failure — including when KillSession
-                // was also unreachable. Both targets missing still leaves a
-                // possible live orphan; retry StopSession when the runner
-                // reconnects (#1911 bot Major).
-                void stopError
-                status = 'still_alive'
-            }
+            // Missing Runner acknowledgement leaves cleanup unconfirmed.
+            let status = await stopRunner(machineId, sessionId)
             // KillSession acknowledges before cleanupAndExit finishes, and socket
             // loss is not exit proof. When the runner cannot find the HAPI id,
             // confirm the KillSession-reported OS pid + start marker.
@@ -1779,14 +3888,7 @@ export class SyncEngine {
                 && killProcessStartMarker.length > 0
             )
             if (status === 'unknown' && killPidConfirmable) {
-                try {
-                    status = await this.rpcGateway.stopRunnerSession(machineId, `PID-${killPid}`, {
-                        processStartMarker: killProcessStartMarker,
-                    })
-                } catch (pidStopError) {
-                    void pidStopError
-                    status = 'still_alive'
-                }
+                status = await stopRunner(machineId, `PID-${killPid}`, killProcessStartMarker)
             }
             // Estate dogfood (#1911 / Peer #1820): KillSession often supplies no
             // pid+marker when the CLI socket is already gone. If session-id stop
@@ -1797,12 +3899,7 @@ export class SyncEngine {
             if (status === 'unknown' && !killPidConfirmable) {
                 const hostPid = sessionMeta?.hostPid
                 if (typeof hostPid === 'number' && hostPid > 0) {
-                    try {
-                        status = await this.rpcGateway.stopRunnerSession(machineId, `PID-${hostPid}`)
-                    } catch (hostPidStopError) {
-                        void hostPidStopError
-                        status = 'still_alive'
-                    }
+                    status = await stopRunner(machineId, `PID-${hostPid}`)
                 }
             }
             // Ambiguous machine-spawn keep-stub: startedBy=runner, no hostPid, still
@@ -1816,13 +3913,14 @@ export class SyncEngine {
                 if (
                     stored
                     && isMachineSpawnPreallocatedStub(stored)
+                    && !sessionMeta?.codexResumePending
                     && !(typeof sessionMeta?.hostPid === 'number' && sessionMeta.hostPid > 0)
                 ) {
                     status = 'already_gone'
                 }
             }
             if (status === 'still_alive' || status === 'unknown') {
-                throw new Error('Session process is still running and could not be stopped')
+                throw new ArchiveCleanupError('unconfirmed')
             }
         } else if (machineId && !runnerSpawned) {
             // Terminal / non-runner sessions: KillSession is the primary stop.
@@ -1848,7 +3946,10 @@ export class SyncEngine {
             )
             this.emitCliSessionMetadataUpdate(sessionId)
         }
+        this.releaseSessionEnumerations(sessionId)
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
+        const archivedSession = this.sessionCache.getSession(sessionId)
+        if (archivedSession?.metadata?.codexResumePending) this.writeCodexResumePending(sessionId, archivedSession.namespace, undefined)
     }
 
     /**
@@ -2061,6 +4162,7 @@ export class SyncEngine {
     }
 
     async clearConversation(sessionId: string, namespace: string): Promise<{ sessionId: string }> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok || !access.session.active || !access.session.metadata?.capabilities?.concurrentClients) {
             throw new Error('Clear requires an active shared session')
@@ -2084,6 +4186,7 @@ export class SyncEngine {
     }
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         if (this.getSession(sessionId)?.metadata?.capabilities?.concurrentClients) throw new Error('control_mode_not_applicable')
         if (this.historyActionsInFlight.has(sessionId)) {
             throw new Error('Conversation history action already in progress')
@@ -2091,20 +4194,106 @@ export class SyncEngine {
         await this.rpcGateway.switchSession(sessionId, to)
     }
 
-    async renameSession(sessionId: string, name: string): Promise<void> {
-        await this.sessionCache.renameSession(sessionId, name)
+    async renameSession(sessionId: string, name: string | undefined, titleLocked?: boolean): Promise<void> {
+        await this.sessionCache.renameSession(sessionId, name, titleLocked)
+    }
+
+    async setSessionExternalRefs(sessionId: string, externalRefs: ExternalRef[]): Promise<void> {
+        await this.sessionCache.setSessionExternalRefs(sessionId, externalRefs)
+    }
+
+    async mutateSessionExternalRefs(
+        sessionId: string,
+        mutate: (current: ExternalRef[]) => ExternalRef[]
+    ): Promise<ExternalRef[]> {
+        return await this.sessionCache.mutateSessionExternalRefs(sessionId, mutate)
+    }
+
+    /** Whether a translation provider is configured (drives the web toggle's visibility). */
+    isInputTranslationAvailable(): boolean {
+        return this.inputTranslationService.available
+    }
+
+    async setSessionTranslateInput(sessionId: string, enabled: boolean): Promise<void> {
+        if (enabled && !this.inputTranslationService.available) {
+            throw new Error('Input translation is not configured on this hub')
+        }
+        await this.sessionCache.setSessionTranslateInput(sessionId, enabled)
     }
 
     async suggestSessionTitle(sessionId: string): Promise<string> {
         return await this.titleSuggestionService.suggestTitle(sessionId)
     }
 
-    async updateSessionSummary(sessionId: string, text: string): Promise<void> {
-        await this.sessionCache.updateSessionSummary(sessionId, text)
+    async updateSessionSummary(sessionId: string, text: string, titleLocked?: boolean): Promise<void> {
+        await this.sessionCache.updateSessionSummary(sessionId, text, titleLocked)
+    }
+
+    async acknowledgeModelError(sessionId: string, eventId: string): Promise<void> {
+        await this.sessionCache.acknowledgeModelError(sessionId, eventId)
+    }
+
+    async markModelErrorNotified(sessionId: string, eventId: string): Promise<void> {
+        await this.sessionCache.markModelErrorNotified(sessionId, eventId)
+    }
+
+    async bridgeModelError(sessionId: string, eventId: string): Promise<{ ok: boolean; reason?: string }> {
+        const session = this.sessionCache.refreshSession(sessionId)
+            ?? this.sessionCache.getSession(sessionId)
+        if (!session) {
+            throw new Error('Session not found')
+        }
+
+        const err = session.metadata?.lastModelError
+        if (!err) {
+            throw new Error('No model error to bridge')
+        }
+        if (err.eventId !== eventId) {
+            throw new Error('Model error changed; refresh before bridging.')
+        }
+        if (!err.transient) {
+            throw new Error('Model error is not transient')
+        }
+        if (err.bridgedForEventId === err.eventId) {
+            throw new Error('Model error was already bridged')
+        }
+        if (err.retriedAndFailed) {
+            throw new Error('Bridge already failed for this error')
+        }
+        if (err.supersededByUserTurn) {
+            throw new Error('Model error was superseded by a newer turn')
+        }
+        if (err.bridgeable === false) {
+            throw new Error('Model error is not bridgeable')
+        }
+
+        // Do not mark bridgedForEventId here — CLI persists recovery only after
+        // the bridge prompt actually succeeds.
+        return await this.rpcGateway.bridgeModelError(sessionId, {
+            eventId: err.eventId,
+            atTs: err.atTs,
+            kind: err.kind,
+            rawSnippet: err.rawSnippet,
+            lastUserMessage: err.lastUserMessage,
+            priorAssistantClaimsDone: err.priorAssistantClaimsDone,
+            transient: err.transient,
+            bridgedForEventId: err.bridgedForEventId,
+            retriedAndFailed: err.retriedAndFailed,
+            supersededByUserTurn: err.supersededByUserTurn,
+            bridgeable: err.bridgeable
+        })
     }
 
     async deleteSession(sessionId: string): Promise<void> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
+        if (this.sessionCache.getSession(sessionId)?.metadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
+        if (this.historyActionsInFlight.has(sessionId) || this.archivedForkPending(sessionId)) {
+            throw new Error('Archived fork is pending; reconcile it before deleting the source')
+        }
         await this.sessionCache.deleteSession(sessionId)
+        this.titleTurnCompletedIds.delete(sessionId)
+        this.automaticTitleSuggestionService.forgetSession(sessionId)
+        this.releaseSessionEnumerations(sessionId)
     }
 
     async applySessionConfig(
@@ -2117,9 +4306,11 @@ export class SyncEngine {
             serviceTier?: string | null
             collaborationMode?: CodexCollaborationMode
             copilotAgentMode?: CopilotAgentMode
+            autoBridgeTransientModelErrors?: boolean
         }
     ): Promise<void> {
         const session = this.sessionCache.getSession(sessionId)
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         if (!session?.active) {
             // For inactive sessions, update the in-memory cache directly without
             // an RPC call — the CLI is not running yet. The updated value will be
@@ -2181,7 +4372,9 @@ export class SyncEngine {
         startingMode?: 'remote' | 'pty',
         // Required for fresh machine spawns so the runner stamps the HAPI id on
         // argv before the first webhook (#1911 Major: unreapable window).
-        namespace?: string
+        namespace?: string,
+        /** Claude: resume the spawned child truncated to this entry uuid. */
+        resumeSessionAt?: string
     ): ReturnType<RpcGateway['spawnSession']> {
         // Fresh machine spawns historically omitted existingSessionId, so
         // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
@@ -2236,7 +4429,8 @@ export class SyncEngine {
                 copilotAgentMode,
                 startingMode,
                 undefined,
-                preallocated ? allocatedSessionId : undefined
+                preallocated ? allocatedSessionId : undefined,
+                resumeSessionAt
             )
         } catch (error) {
             // Ambiguous post-dispatch failure — keep the stub (child may exist).
@@ -2308,6 +4502,7 @@ export class SyncEngine {
      * source still owns an in-flight OpenCode turn or native compaction.
      */
     async clearOpenCodeSession(sessionId: string, namespace: string): Promise<ClearOpencodeSessionResult> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const clearTailKey = `${namespace}:${sessionId}`
         const existing = this.opencodeClearTails.get(clearTailKey)
         if (existing) {
@@ -2590,6 +4785,10 @@ export class SyncEngine {
             this.persistClearOperationState(sessionId, namespace, operation, message)
             return { type: 'error', message, code: 'replacement_link_failed' }
         }
+        // Move outliving jobs before writing supersededBySessionId. resolveAttachedJobSessionId
+        // follows that link; without a transfer, heartbeats on the retained source id hit the
+        // empty replacement while the meter row stays frozen on the archived source.
+        this.transferAttachedJobs(sessionId, replacementSessionId, namespace)
         if (!this.persistClearReplacement(sessionId, namespace, replacementSessionId, operation)) {
             const message = 'Fresh OpenCode session started but the archived source could not be linked'
             this.persistClearOperationState(sessionId, namespace, operation, message)
@@ -2743,9 +4942,9 @@ export class SyncEngine {
         if (flavor === 'kimi') return metadata.kimiSessionId ?? null
         if (flavor === 'copilot') return metadata.copilotSessionId ?? null
         if (flavor === 'pi') return metadata.piSessionId ?? null
-        // The official DSH ACP server creates fresh sessions only; never fall
-        // through to a stale Claude id and advertise a false resume path.
-        if (flavor === 'dsh') return null
+        // Current DSH ACP profiles resume persisted sessions through their
+        // `session/resume` method. Never fall through to a stale cross-flavor id.
+        if (flavor === 'dsh') return metadata.dshSessionId ?? null
 
         return metadata.claudeSessionId ?? this.recoverClaudeSessionIdFromMessages(session.id, namespace)
     }
@@ -2760,8 +4959,15 @@ export class SyncEngine {
             }
         }
 
+        if (this.archivedForkPending(access.sessionId, namespace)) {
+            return { type: 'error', message: 'Archived fork is pending; retry that fork before resuming', code: 'resume_unavailable' }
+        }
+
         const session = access.session
         const metadata = session.metadata
+        if (metadata?.codexRuntime?.kind === 'attached') {
+            return { type: 'error', message: 'Externally attached Codex session: run hapi attach on its machine; owned cold resume is disabled', code: 'resume_unavailable' }
+        }
         if (!metadata || typeof metadata.path !== 'string' || metadata.path.length === 0) {
             return { type: 'error', message: 'Session metadata missing path', code: 'resume_unavailable' }
         }
@@ -2822,11 +5028,74 @@ export class SyncEngine {
                     updatedAt: session?.updatedAt ?? 0,
                     name: session?.metadata?.name,
                     summary: session?.metadata?.summary?.text,
+                    promptTitle: session?.metadata?.promptTitle,
                     firstUserMessage: this.resolveFirstUserMessage(target.sessionId)
                 }
             })
             .filter((session) => !opts?.machineId || session.machineId === opts.machineId)
             .sort((a, b) => b.updatedAt - a.updatedAt)
+    }
+
+    /**
+     * Intentional terminal revive of an inactive session (`hapi resume`,
+     * `hapi claude --resume`): clear a hub-authored archive before the CLI
+     * reopens the row with `--existing-session-id`, the same way hub reopen
+     * does before spawning. The #1911 guard still rejects CLI metadata writes
+     * that try to un-archive on their own.
+     */
+    async prepareLocalResume(sessionId: string, namespace: string): Promise<LocalResumePrepareResult> {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return access.reason === 'access-denied'
+                ? { type: 'error', message: 'Session access denied', code: 'access_denied' }
+                : { type: 'error', message: 'Session not found', code: 'session_not_found' }
+        }
+        if (access.session.active) {
+            return { type: 'error', message: 'Session is active; hand it off before reopening locally', code: 'session_active' }
+        }
+        const metadata = access.session.metadata
+        if (metadata?.lifecycleState !== 'archived' || metadata.archivedBy !== 'hub') {
+            return { type: 'success', revived: false }
+        }
+        await this.sessionCache.clearSessionArchiveMetadata(access.sessionId)
+        return { type: 'success', revived: true }
+    }
+
+    /**
+     * Find the HAPI session that owns a native Claude session id (current or
+     * rotated-away), so a terminal `hapi claude --resume <id>` reopens that
+     * session instead of minting a duplicate HAPI id. `target: null` means no
+     * HAPI session owns the id yet.
+     */
+    resolveLocalResumeTargetByAgentSessionId(
+        agentSessionId: string,
+        namespace: string,
+        opts?: { machineId?: string }
+    ): LocalResumeTargetByAgentResult {
+        const candidates: Array<{ session: Session; match: 'current' | 'historical' }> = []
+        for (const session of this.getSessionsByNamespace(namespace)) {
+            if (this.resolveFlavor(session) !== 'claude') continue
+            const metadata = session.metadata
+            if (opts?.machineId && metadata?.machineId && metadata.machineId !== opts.machineId) continue
+            const match = matchesClaudeSessionId(metadata, agentSessionId)
+            if (match) candidates.push({ session, match })
+        }
+        if (candidates.length === 0) {
+            return { type: 'success', target: null, historical: false }
+        }
+
+        // Current-id owners beat historical ones; then the live row; then recency.
+        candidates.sort((a, b) => {
+            if (a.match !== b.match) return a.match === 'current' ? -1 : 1
+            if (a.session.active !== b.session.active) return a.session.active ? -1 : 1
+            return b.session.updatedAt - a.session.updatedAt
+        })
+        const best = candidates[0]!
+        const result = this.resolveLocalResumeTarget(best.session.id, namespace)
+        if (result.type === 'error') {
+            return { type: 'error', message: result.message, code: 'resume_unavailable' }
+        }
+        return { type: 'success', target: result.target, historical: best.match === 'historical' }
     }
 
     private resolveFirstUserMessage(sessionId: string): string | undefined {
@@ -3090,6 +5359,7 @@ export class SyncEngine {
     /** Inactive session with directory path but no agent thread and no prior user turn. */
     private canFreshSpawnNeverStartedSession(session: Session, sessionId: string, namespace: string): boolean {
         const metadata = session.metadata
+        if (metadata?.codexRuntime?.kind === 'attached') return false
         if (!metadata || typeof metadata.path !== 'string' || metadata.path.length === 0) {
             return false
         }
@@ -3123,6 +5393,34 @@ export class SyncEngine {
     }
 
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
+        if (this.archivedForkPending(sessionId, namespace)) {
+            return { type: 'error', message: 'Archived fork is in progress; retry the fork before reopening', code: 'resume_failed' }
+        }
+        const isPty = this.isPtySession(sessionId, namespace)
+        if (!isPty) {
+            const existing = this.resumeTails.get(sessionId)
+            if (existing) return await existing
+        }
+
+        if (this.historyActionsInFlight.has(sessionId)) {
+            return { type: 'error', message: 'Archived fork is in progress; retry the fork before reopening', code: 'resume_failed' }
+        }
+        this.historyActionsInFlight.add(sessionId)
+        const promise = (async () => {
+            try {
+                return await this.resumeSessionUnlocked(sessionId, namespace, opts)
+            } finally {
+                this.historyActionsInFlight.delete(sessionId)
+                this.resumeTails.delete(sessionId)
+            }
+        })()
+        if (!isPty) {
+            this.resumeTails.set(sessionId, promise)
+        }
+        return await promise
+    }
+
+    private async resumeSessionUnlocked(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
@@ -3133,6 +5431,10 @@ export class SyncEngine {
         }
 
         let initialSession = access.session
+        if (initialSession.metadata?.codexResumePending) {
+            if (!await this.reconcileCodexResume(initialSession)) return { type: 'error', message: 'Codex resume startup is still unconfirmed', code: 'resume_failed', rollbackSafe: false }
+            initialSession = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? initialSession
+        }
         if (await this.recoverInactiveReservedClear(initialSession, namespace)) {
             initialSession = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? initialSession
         }
@@ -3206,7 +5508,10 @@ export class SyncEngine {
         const targetMachine = this.resolveOnlineMachineForSession(
             session,
             namespace,
-            { strictMachineId: flavor === 'cursor' || (flavor === 'pi' && resumeToken !== undefined) }
+            {
+                strictMachineId: flavor === 'cursor'
+                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh') && resumeToken !== undefined)
+            }
         )
         if (!targetMachine) {
             return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
@@ -3255,6 +5560,11 @@ export class SyncEngine {
                         message: 'Cursor chat data is no longer available on the recorded machine',
                         code: 'resume_unavailable'
                     }
+                }
+                // Thread dir without store.db: nothing was ever persisted, so
+                // there is nothing to resume; start a fresh Cursor thread.
+                if (chatStatus.store === 'empty') {
+                    resumeToken = undefined
                 }
             } catch (error) {
                 // Soft-fail on probe skew / missing handler (#1084): definitive
@@ -3324,6 +5634,10 @@ export class SyncEngine {
                 }
             }
 
+            if (flavor === 'codex' && resumeToken) {
+                this.sessionReadyIds.delete(access.sessionId)
+                this.writeCodexResumePending(access.sessionId, namespace, { machineId: targetMachine.id, nativeSessionId: resumeToken })
+            }
             const spawnResult = await this.rpcGateway.spawnSession(
                 targetMachine.id,
                 directory,
@@ -3344,6 +5658,10 @@ export class SyncEngine {
             )
 
             if (spawnResult.type !== 'success') {
+                if (flavor === 'codex' && resumeToken) {
+                    if (spawnResult.childStarted === false) this.writeCodexResumePending(access.sessionId, namespace, undefined)
+                    else return { type: 'error', message: spawnResult.message, code: 'resume_failed', rollbackSafe: false }
+                }
                 if (requiresPiNativeReady) {
                     const stopped = await this.terminateInPlacePiResume(
                         targetMachine.id,
@@ -3508,6 +5826,8 @@ export class SyncEngine {
                 const oldSession = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)
                 if (oldSession) {
                     try {
+                        // Enumeration cleanup for the deleted old row fires via
+                        // the onSessionMergedAway hook wired in the constructor.
                         await this.sessionCache.mergeSessions(access.sessionId, spawnResult.sessionId, namespace)
                     } catch (error) {
                         const message = error instanceof Error ? error.message : 'Failed to merge resumed session'
@@ -3584,6 +5904,42 @@ export class SyncEngine {
      * needed to resume is missing.
      */
     async reopenSession(sessionId: string, namespace: string): Promise<ReopenSessionResult> {
+        if (this.archivedForkPending(sessionId, namespace)) {
+            return { type: 'error', message: 'Archived fork is in progress; retry the fork before reopening', code: 'resume_failed' }
+        }
+        const isPty = this.isPtySession(sessionId, namespace)
+        if (!isPty) {
+            const existing = this.reopenTails.get(sessionId)
+            if (existing) return await existing
+
+            const existingResume = this.resumeTails.get(sessionId)
+            if (existingResume) {
+                const result = await existingResume
+                return result.type === 'error'
+                    ? { type: 'error', message: result.message, code: result.code }
+                    : { type: 'success', sessionId: result.sessionId, resumed: true }
+            }
+        }
+
+        if (this.historyActionsInFlight.has(sessionId)) {
+            return { type: 'error', message: 'Archived fork is in progress; retry the fork before reopening', code: 'resume_failed' }
+        }
+        this.historyActionsInFlight.add(sessionId)
+        const promise = (async () => {
+            try {
+                return await this.reopenSessionUnlocked(sessionId, namespace)
+            } finally {
+                this.historyActionsInFlight.delete(sessionId)
+                this.reopenTails.delete(sessionId)
+            }
+        })()
+        if (!isPty) {
+            this.reopenTails.set(sessionId, promise)
+        }
+        return await promise
+    }
+
+    private async reopenSessionUnlocked(sessionId: string, namespace: string): Promise<ReopenSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
@@ -3594,6 +5950,10 @@ export class SyncEngine {
         }
 
         let session = access.session
+        if (session.metadata?.codexResumePending) {
+            const result = await this.resumeSessionUnlocked(sessionId, namespace)
+            return result.type === 'error' ? result : { type: 'success', sessionId: result.sessionId, resumed: true }
+        }
         if (await this.recoverInactiveReservedClear(session, namespace)) {
             session = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? session
         }
@@ -3678,7 +6038,7 @@ export class SyncEngine {
             // (after Pi/PTY attempt rows capture archiveSnapshot). Hub restart
             // between clear and spawn leaves a non-archived inactive row;
             // archiveSnapshot still rolls back on resume failure while alive.
-            const resumeResult = await this.resumeSession(access.sessionId, namespace)
+            const resumeResult = await this.resumeSessionUnlocked(access.sessionId, namespace)
             if (resumeResult.type === 'error') {
                 // Never restore archived metadata over a live Pi child. A live
                 // row blocks retry by itself and must remain visible as active.
@@ -3710,7 +6070,7 @@ export class SyncEngine {
         // Not active and not archived (e.g. brand-new session that has not yet connected,
         // or one that ended without writing archive metadata). Forward to resume so the
         // operator still gets one-click revival.
-        const resumeResult = await this.resumeSession(access.sessionId, namespace)
+        const resumeResult = await this.resumeSessionUnlocked(access.sessionId, namespace)
         if (resumeResult.type === 'error') {
             return resumeResult
         }
@@ -3719,6 +6079,7 @@ export class SyncEngine {
     }
 
     async handoffSessionToLocal(sessionId: string, namespace: string): Promise<LocalHandoffResult> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
@@ -4009,7 +6370,10 @@ export class SyncEngine {
         }
         if (session?.active) this.handleSessionEnd({ sid: sessionId, time: Date.now(), reason: 'error' })
         const remaining = this.sessionCache.getSession(sessionId)
-        if (remaining && !remaining.active) await this.sessionCache.deleteSession(sessionId)
+        if (remaining && !remaining.active) {
+            await this.sessionCache.deleteSession(sessionId)
+            this.releaseSessionEnumerations(sessionId)
+        }
         this.piUnexpectedTempOriginalIds.delete(sessionId)
         await this.writePiResumeAttempt(originalSessionId, namespace, null, true).catch(() => {})
         return true
@@ -4169,12 +6533,27 @@ export class SyncEngine {
         if (child?.active) this.handleSessionEnd({ sid: childSessionId, time: Date.now(), reason: 'error' })
         if (childSessionId !== session.id) {
             const remaining = this.sessionCache.getSession(childSessionId)
-            if (remaining && !remaining.active) await this.sessionCache.deleteSession(childSessionId)
+            if (remaining && !remaining.active) {
+                await this.sessionCache.deleteSession(childSessionId)
+                this.releaseSessionEnumerations(childSessionId)
+            }
         }
         await this.writePiResumeAttempt(session.id, session.namespace, null, true)
         this.piResumeQuarantinedIds.delete(session.id)
         this.piUnexpectedTempOriginalIds.delete(childSessionId)
         return true
+    }
+
+    private recordPromptTitle(sessionId: string, content: unknown): void {
+        const metadata = this.sessionCache.getSession(sessionId)?.metadata
+        if (!metadata || metadata.name?.trim() || metadata.summary?.text?.trim() || metadata.promptTitle) return
+        const title = createPromptTitle(content)
+        if (!title) return
+        try {
+            this.sessionCache.updatePromptTitle(sessionId, title)
+        } catch {
+            // A display-only title must never interrupt message delivery.
+        }
     }
 
     private triggerDedupIfNeeded(sessionId: string): void {
@@ -4236,24 +6615,88 @@ export class SyncEngine {
         return await this.rpcGateway.getAgentAvailability(machineId)
     }
 
+    async getUsageQuerySettings(machineId: string, agent: UsageQueryAgent): Promise<UsageQuerySettingsResponse> {
+        return await this.rpcGateway.getUsageQuerySettings(machineId, agent)
+    }
+
+    async saveUsageQuerySettings(
+        machineId: string,
+        agent: UsageQueryAgent,
+        settings: UsageQueryAgentSettings
+    ): Promise<UsageQuerySettingsResponse> {
+        return await this.rpcGateway.saveUsageQuerySettings(machineId, agent, settings)
+    }
+
+    async testUsageQueryTemplate(
+        machineId: string,
+        agent: UsageQueryAgent,
+        template: UsageQueryTemplate
+    ): Promise<UsageQueryResult> {
+        return await this.rpcGateway.testUsageQueryTemplate(machineId, agent, template)
+    }
+
+    async queryUsage(
+        machineId: string,
+        agent: UsageQueryAgent,
+        force = false
+    ): Promise<UsageQueryResult> {
+        return await this.rpcGateway.queryUsage(machineId, agent, force)
+    }
+
+    async getAgentQuotas(machineId: string, options?: { refresh?: boolean }): ReturnType<RpcGateway['getAgentQuotas']> {
+        return await this.rpcGateway.getAgentQuotas(machineId, options)
+    }
+
     async listMachineDirectory(machineId: string, path: string, includeHidden?: boolean): Promise<RpcListDirectoryResponse> {
         return await this.rpcGateway.listMachineDirectory(machineId, path, includeHidden)
     }
 
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {
-        return await this.rpcGateway.getGitStatus(sessionId, cwd)
+        try {
+            return await this.rpcGateway.getGitStatus(sessionId, cwd)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd: fallbackCwd }) =>
+                this.rpcGateway.getWorkspaceGitStatus(machineId, { cwd: fallbackCwd })
+            )
+        }
     }
 
     async getGitDiffNumstat(sessionId: string, options: { cwd?: string; staged?: boolean }): Promise<RpcCommandResponse> {
-        return await this.rpcGateway.getGitDiffNumstat(sessionId, options)
+        try {
+            return await this.rpcGateway.getGitDiffNumstat(sessionId, options)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd: fallbackCwd }) =>
+                this.rpcGateway.getWorkspaceGitDiffNumstat(machineId, {
+                    ...options,
+                    cwd: fallbackCwd,
+                })
+            )
+        }
     }
 
     async getGitDiffFile(sessionId: string, options: { cwd?: string; filePath: string; staged?: boolean }): Promise<RpcCommandResponse> {
-        return await this.rpcGateway.getGitDiffFile(sessionId, options)
+        try {
+            return await this.rpcGateway.getGitDiffFile(sessionId, options)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd: fallbackCwd }) =>
+                this.rpcGateway.getWorkspaceGitDiffFile(machineId, {
+                    ...options,
+                    cwd: fallbackCwd,
+                })
+            )
+        }
     }
 
-    async readSessionFile(sessionId: string, path: string): Promise<RpcReadFileResponse> {
-        return await this.rpcGateway.readSessionFile(sessionId, path)
+    async readSessionFile(sessionId: string, path: string, options?: { maxBytes?: number }): Promise<RpcReadFileResponse> {
+        try {
+            return options === undefined
+                ? await this.rpcGateway.readSessionFile(sessionId, path)
+                : await this.rpcGateway.readSessionFile(sessionId, path, options)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd }) =>
+                this.rpcGateway.readWorkspaceFile(machineId, { cwd, path, ...options })
+            )
+        }
     }
 
     async readGeneratedImage(sessionId: string, imageId: string): Promise<RpcGeneratedImageResponse> {
@@ -4261,15 +6704,43 @@ export class SyncEngine {
     }
 
     async listDirectory(sessionId: string, path: string): Promise<RpcListDirectoryResponse> {
-        return await this.rpcGateway.listDirectory(sessionId, path)
+        try {
+            return await this.rpcGateway.listDirectory(sessionId, path)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd }) =>
+                this.rpcGateway.listWorkspaceDirectory(machineId, { cwd, path })
+            )
+        }
     }
 
     async statFiles(sessionId: string, paths: string[]): Promise<RpcStatFilesResponse> {
-        return await this.rpcGateway.statFiles(sessionId, paths)
+        try {
+            return await this.rpcGateway.statFiles(sessionId, paths)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd }) =>
+                this.rpcGateway.statWorkspaceFiles(machineId, { cwd, paths })
+            )
+        }
     }
 
     async uploadFile(sessionId: string, filename: string, content: string, mimeType: string): Promise<RpcUploadFileResponse> {
         return await this.rpcGateway.uploadFile(sessionId, filename, content, mimeType)
+    }
+
+    async initChunkedUpload(sessionId: string, request: InitChunkedUploadRequest): Promise<InitChunkedUploadResponse> {
+        return await this.rpcGateway.initChunkedUpload(sessionId, request)
+    }
+
+    async uploadFileChunk(sessionId: string, uploadId: string, index: number, content: string): Promise<UploadChunkResponse> {
+        return await this.rpcGateway.uploadFileChunk(sessionId, uploadId, index, content)
+    }
+
+    async finalizeChunkedUpload(sessionId: string, uploadId: string): Promise<RpcUploadFileResponse> {
+        return await this.rpcGateway.finalizeChunkedUpload(sessionId, uploadId)
+    }
+
+    async abortChunkedUpload(sessionId: string, uploadId: string): Promise<AbortChunkedUploadResponse> {
+        return await this.rpcGateway.abortChunkedUpload(sessionId, uploadId)
     }
 
     async deleteUploadFile(sessionId: string, path: string): Promise<RpcDeleteUploadResponse> {
@@ -4277,11 +6748,21 @@ export class SyncEngine {
     }
 
     async runRipgrep(sessionId: string, args: string[], cwd?: string, fileSearch?: FileSearchOptions): Promise<RpcCommandResponse> {
-        return await this.rpcGateway.runRipgrep(sessionId, args, cwd, fileSearch)
+        try {
+            return await this.rpcGateway.runRipgrep(sessionId, args, cwd, fileSearch)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd: fallbackCwd }) =>
+                this.rpcGateway.runWorkspaceRipgrep(machineId, { args, cwd: fallbackCwd, fileSearch })
+            )
+        }
     }
 
     async listSlashCommands(sessionId: string, agent: string): Promise<SlashCommandsResponse> {
-        return await this.rpcGateway.listSlashCommands(sessionId, agent)
+        return await this.slashCommandsEnumeration.get(
+            `${sessionId}|${agent}`,
+            () => this.rpcGateway.listSlashCommands(sessionId, agent),
+            (result) => result.success === true && Array.isArray(result.commands)
+        )
     }
 
     async listSkills(sessionId: string, flavor?: string): Promise<{
@@ -4289,18 +6770,52 @@ export class SyncEngine {
         skills?: Array<{ name: string; description?: string }>
         error?: string
     }> {
-        return await this.rpcGateway.listSkills(sessionId, flavor)
+        return await this.skillsEnumeration.get(
+            `${sessionId}|${flavor ?? ''}`,
+            () => this.rpcGateway.listSkills(sessionId, flavor),
+            (result) => result.success === true && Array.isArray(result.skills)
+        )
     }
 
     async listAgyModelsForMachine(
         machineId: string,
         options?: { refresh?: boolean }
     ): Promise<RpcListAgyModelsResponse> {
-        return await this.rpcGateway.listAgyModelsForMachine(machineId, options)
+        // An explicit refresh must actually hit the engine; bypass the cache
+        // entirely. `machine-agy-models-changed` invalidates the entry via
+        // handleRealtimeEvent so plain fetches revalidate too.
+        if (options?.refresh === true) {
+            return await this.rpcGateway.listAgyModelsForMachine(machineId, options)
+        }
+        return await this.modelListCache.get(
+            `${machineId}|agy-models`,
+            () => this.rpcGateway.listAgyModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListAgyModelsResponse
     }
 
     async listPiModelsForMachine(machineId: string): Promise<RpcListPiModelsResponse> {
-        return await this.rpcGateway.listPiModelsForMachine(machineId)
+        return await this.modelListCache.get(
+            `${machineId}|pi-models`,
+            () => this.rpcGateway.listPiModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListPiModelsResponse
+    }
+
+    async listPiModelsForSession(sessionId: string): Promise<RpcListPiModelsResponse> {
+        return await this.modelListCache.get(
+            `${sessionId}|pi-models`,
+            () => this.rpcGateway.listPiModelsForSession(sessionId),
+            SyncEngine.modelListCacheable
+        ) as RpcListPiModelsResponse
+    }
+
+    async listClaudeModelsForMachine(machineId: string): Promise<RpcListClaudeModelsResponse> {
+        return await this.modelListCache.get(
+            `${machineId}|claude-models`,
+            () => this.rpcGateway.listClaudeModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListClaudeModelsResponse
     }
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
@@ -4323,8 +6838,20 @@ export class SyncEngine {
         return await this.rpcGateway.listPiSessionsForMachine(machineId, cwd, sessionIds)
     }
 
+    async listOpencodeSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListOpencodeSessionsResponse> {
+        return await this.rpcGateway.listOpencodeSessionsForMachine(machineId, cwd, sessionIds)
+    }
+
     async archiveCodexSessionForMachine(machineId: string, sessionId: string): Promise<RpcArchiveCodexSessionResponse> {
         return await this.rpcGateway.archiveCodexSessionForMachine(machineId, sessionId)
+    }
+
+    async listLocalSessionsForMachine(machineId: string, params: {
+        flavor: LocalSessionFlavor
+        cwd?: string | null
+        sessionIds?: string[] | null
+    }): Promise<ListLocalSessionsRpcResponse> {
+        return await this.rpcGateway.listLocalSessionsForMachine(machineId, params)
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {
@@ -4351,6 +6878,22 @@ export class SyncEngine {
         return await this.rpcGateway.listGrokModelsForSession(sessionId)
     }
 
+    async listDshModelsForMachine(machineId: string): Promise<RpcListDshModelsResponse> {
+        return await this.modelListCache.get(
+            `${machineId}|dsh-models`,
+            () => this.rpcGateway.listDshModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListDshModelsResponse
+    }
+
+    async listDshModelsForSession(sessionId: string): Promise<RpcListDshModelsResponse> {
+        return await this.modelListCache.get(
+            `${sessionId}|dsh-models`,
+            () => this.rpcGateway.listDshModelsForSession(sessionId),
+            SyncEngine.modelListCacheable
+        ) as RpcListDshModelsResponse
+    }
+
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {
         return await this.rpcGateway.listGrokReasoningEffortOptionsForSession(sessionId)
     }
@@ -4359,12 +6902,20 @@ export class SyncEngine {
         return await this.rpcGateway.listCopilotModelsForCwd(machineId, cwd)
     }
 
+    async listCopilotReasoningEffortOptionsForSession(sessionId: string): Promise<CopilotReasoningEffortResponse> {
+        return await this.rpcGateway.listCopilotReasoningEffortOptionsForSession(sessionId)
+    }
+
     async listCopilotModelsForSession(sessionId: string): Promise<RpcListCopilotModelsResponse> {
         return await this.rpcGateway.listCopilotModelsForSession(sessionId)
     }
 
     async listKimiModelsForCwd(machineId: string, cwd: string): Promise<RpcListKimiModelsResponse> {
         return await this.rpcGateway.listKimiModelsForCwd(machineId, cwd)
+    }
+
+    async listKimiReasoningEffortOptionsForSession(sessionId: string): Promise<KimiReasoningEffortResponse> {
+        return await this.rpcGateway.listKimiReasoningEffortOptionsForSession(sessionId)
     }
 
     async listKimiModelsForSession(sessionId: string): Promise<RpcListKimiModelsResponse> {

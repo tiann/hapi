@@ -1,5 +1,6 @@
 import React from 'react';
-import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
+import { settleAcpLauncherShutdown } from '@/modules/common/remote/settleAcpLauncherShutdown';
+import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -19,7 +20,11 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CopilotSession;
     private readonly model?: string;
     private readonly onModelRollback?: (model: string | null) => void;
+    private readonly onEffortRollback?: (effort: string | null) => void;
+    private readonly getQueuedModel?: () => string | null;
     private backend: ReturnType<typeof createCopilotBackend> | null = null;
+    private shutdownRequested = false;
+    private disconnectPromise: Promise<void> | undefined;
     private permissionHandler: CopilotPermissionHandler | null = null;
     private happyServer: { stop: () => void } | null = null;
     private abortController = new AbortController();
@@ -28,6 +33,8 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     private displayAgentMode: CopilotAgentMode | null = null;
     private currentAgentMode: CopilotAgentMode = 'interactive';
     private currentBackendModel: string | null = null;
+    private currentBackendEffort: string | null = null;
+    private defaultBackendEffort: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
     private setModeSupported: boolean | undefined = undefined;
     private activeSessionId: string | null = null;
@@ -36,18 +43,44 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     constructor(session: CopilotSession, opts: {
         model?: string;
         onModelRollback?: (model: string | null) => void;
+        onEffortRollback?: (effort: string | null) => void;
+        /** Model the next queued turn will carry; differs from the backend's while a switch is pending. */
+        getQueuedModel?: () => string | null;
     }) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
         this.model = opts.model;
         this.onModelRollback = opts.onModelRollback;
+        this.onEffortRollback = opts.onEffortRollback;
+        this.getQueuedModel = opts.getQueuedModel;
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
-        return this.start({
+        let shutdown: Promise<void> | undefined;
+        const running = this.start({
             onExit: () => this.handleExitFromUi(),
             onSwitchToLocal: () => this.handleSwitchFromUi()
+        }).catch((error) => {
+            if (!this.shutdownRequested) throw error;
+            logger.debug('[copilot-remote] Launcher failed during shutdown', error);
+            return 'exit' as const;
         });
+        this.session.setKillHandler(() => shutdown ??= settleAcpLauncherShutdown({
+            logTag: 'copilot-remote',
+            cancel: () => {
+                this.shutdownRequested = true;
+                this.exitReason = 'exit';
+                return this.requestExit('exit', () => this.handleAbort(true));
+            },
+            disconnect: () => this.backend ? this.disconnectBackend() : undefined,
+            running
+        }));
+        try {
+            const reason = await running;
+            return this.shutdownRequested ? 'exit' : reason;
+        } finally {
+            this.session.setKillHandler(() => {});
+        }
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
@@ -58,18 +91,20 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
 
+        const titleSync = createAcpSessionTitleSync(session.client);
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
-            enableChangeTitle: false,
+            onChangeTitle: () => titleSync.markManualTitle(),
             skillLookup: { workingDirectory: session.path, flavor: 'copilot' }
         });
         this.happyServer = happyServer;
+        if (this.shouldExit) return;
 
         const runtimeConfig = resolveCopilotRuntimeConfig({ model: this.model });
 
         this.currentAgentMode = session.getAgentMode();
         const backend = createCopilotBackend({ agentMode: this.currentAgentMode });
         this.backend = backend;
-        registerAcpSessionTitleSync(backend, session.client);
+        registerAcpSessionTitleSync(backend, session.client, titleSync);
 
         backend.onStderrError((error) => {
             logger.debug('[copilot-remote] stderr error', error);
@@ -78,6 +113,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         });
 
         await backend.initialize();
+        if (this.shouldExit) return;
 
         const resumeSessionId = session.sessionId;
         const acpMcpServers = toAcpMcpServers(mcpServers);
@@ -90,6 +126,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
                     mcpServers: acpMcpServers
                 });
             } catch (error) {
+                if (this.shouldExit) return;
                 logger.warn('[copilot-remote] resume failed, starting new session', error);
                 session.sendSessionEvent({
                     type: 'message',
@@ -106,6 +143,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
                 mcpServers: acpMcpServers
             });
         }
+        if (this.shouldExit) return;
         session.onSessionFound(acpSessionId);
         this.activeSessionId = acpSessionId;
         session.setRemoteAgentModeApplier((agentMode) => this.applyAgentMode(agentMode));
@@ -140,32 +178,116 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListCopilotModels, async () => {
             return await buildCopilotModelsResponseFromBackend(acpSessionId, backend, session.path);
         });
+        this.captureEffortBaseline(acpSessionId);
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListCopilotReasoningEffortOptions, async () => {
+            // A model change is applied with the turn that carries it; until
+            // then the cached levels belong to the previous model.
+            const queuedModel = this.getQueuedModel?.() ?? null;
+            if (queuedModel !== null && queuedModel !== this.currentBackendModel) {
+                return { success: false, error: 'Copilot model switch pending' };
+            }
+            const option = backend.getThoughtLevelConfigOption(acpSessionId);
+            return { success: true, options: option?.options ?? [], currentValue: option?.currentValue ?? null };
+        });
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleSwitchRequest()
-        });
+        }, () => this.abortController.abort(),
+        // A rejected cancel must not leave the loop on the aborted signal.
+        () => { if (this.abortController.signal.aborted) this.abortController = new AbortController(); });
 
         const sendReady = () => {
             session.sendSessionEvent({ type: 'ready' });
         };
 
         while (!this.shouldExit) {
-            const batch = await session.queue.waitForMessagesAndGetAsString(this.abortController.signal);
+            await this.waitForAbortBarrier();
+            if (this.shouldExit) break;
+            const waitSignal = this.abortController.signal;
+            // Defer hub ack until the dispatch commit point below: a batch
+            // dropped by a concurrent teardown must not be stamped `invoked`.
+            const batch = await session.queue.waitForDeferredBatch(waitSignal);
             if (!batch) {
-                if (this.abortController.signal.aborted && !this.shouldExit) {
+                if (waitSignal.aborted && !this.shouldExit) {
                     continue;
                 }
                 break;
             }
+            let batchSettled = false;
+            const requeue = () => {
+                if (!session.queue.isClosed()) {
+                    session.queue.unshiftBatch(batch);
+                    batchSettled = true;
+                }
+            };
+            try {
+                if (this.shouldExit) {
+                    // Terminal teardown reset the queue while this batch sat in
+                    // the wait: drop it un-ACKed and end.
+                    break;
+                }
 
-            if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
-                batch.mode.model = await this.applyQueuedModel(batch.mode.model) ?? undefined;
-            }
+                const modelBeforeBatch = this.currentBackendModel;
+                if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
+                    batch.mode.model = await this.applyQueuedModel(batch.mode.model) ?? undefined;
+                    if (this.currentBackendModel !== modelBeforeBatch) {
+                        // Take the NEW model's effort baseline before any
+                        // bail-out: the requeued batch re-enters with the model
+                        // already applied and would otherwise keep the previous
+                        // model's baseline.
+                        this.captureEffortBaseline(acpSessionId);
+                    }
+                    if (this.shouldExit) {
+                        break;
+                    }
+                    if (waitSignal.aborted) {
+                        requeue();
+                        continue;
+                    }
+                }
+                await this.applyQueuedEffort(acpSessionId, batch.mode);
+                if (this.shouldExit) {
+                    break;
+                }
+                if (waitSignal.aborted) {
+                    requeue();
+                    continue;
+                }
 
-            const desiredAgentMode = batch.mode.agentMode ?? session.getAgentMode();
-            if (desiredAgentMode !== this.currentAgentMode) {
-                await this.applyAgentMode(desiredAgentMode);
+                const desiredAgentMode = batch.mode.agentMode ?? session.getAgentMode();
+                if (desiredAgentMode !== this.currentAgentMode) {
+                    await this.applyAgentMode(desiredAgentMode);
+                    if (this.shouldExit) {
+                        break;
+                    }
+                    if (waitSignal.aborted) {
+                        requeue();
+                        continue;
+                    }
+                }
+                if (this.shouldExit) {
+                    // Terminal teardown reset the queue: drop the un-ACKed batch
+                    // and end.
+                    break;
+                }
+                if (waitSignal.aborted) {
+                    // A plain Stop preserves the queue, and this batch was never
+                    // hub-ACKed: put it back so it drains once the Stop settles
+                    // instead of dispatching a cancelled turn.
+                    requeue();
+                    continue;
+                }
+
+                // Dispatch commit point: every pre-dispatch bail-out above
+                // requeued the never-ACKed batch, so the hub ack only fires once
+                // the turn is really going out.
+                batchSettled = true;
+                session.queue.commitBatch(batch);
+            } finally {
+                if (!batchSettled) {
+                    session.queue.releaseBatch(batch);
+                }
             }
 
             this.applyDisplayMode(batch.mode.permissionMode, batch.mode.model);
@@ -194,6 +316,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
                 });
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
+                if (this.shouldExit) break;
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 logger.warn('[copilot-remote] prompt failed', { message: errorMessage });
                 session.sendSessionEvent({
@@ -211,24 +334,34 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private async disconnectBackend(): Promise<void> {
+        this.disconnectPromise ??= this.backend?.disconnect({ waitForTransport: true });
+        await this.disconnectPromise;
+    }
+
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
         this.session.setRemoteAgentModeApplier(null);
         this.activeSessionId = null;
 
-        if (this.permissionHandler) {
-            await this.permissionHandler.cancelAll('Session ended');
-            this.permissionHandler = null;
-        }
-
-        if (this.backend) {
-            await this.backend.disconnect();
+        try {
+            try {
+                if (this.permissionHandler) {
+                    await this.permissionHandler.cancelAll('Session ended');
+                    this.permissionHandler = null;
+                }
+            } finally {
+                await this.disconnectBackend();
+            }
+        } catch (error) {
+            if (!this.shutdownRequested) throw error;
+            logger.debug('[copilot-remote] Error during launcher cleanup', error);
+        } finally {
             this.backend = null;
-        }
-
-        if (this.happyServer) {
-            this.happyServer.stop();
-            this.happyServer = null;
+            if (this.happyServer) {
+                this.happyServer.stop();
+                this.happyServer = null;
+            }
         }
     }
 
@@ -240,6 +373,11 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
 
         switch (message.type) {
             case 'text':
+                // Interim idle snapshots; the settled text arrives at the
+                // segment boundary, which is what belongs in the local log.
+                if (message.live) {
+                    break;
+                }
                 this.messageBuffer.addMessage(message.text, 'assistant');
                 break;
             case 'reasoning':
@@ -269,6 +407,8 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
                 break;
             case 'turn_complete':
                 this.messageBuffer.addMessage('Turn complete', 'status');
+                break;
+            case 'round_summary':
                 break;
             default: {
                 const _exhaustive: never = message;
@@ -439,6 +579,35 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    /** The agent's level for the active model; "Default" resets to it. */
+    private captureEffortBaseline(sessionId: string): void {
+        this.currentBackendEffort = this.backend?.getThoughtLevelConfigOption(sessionId)?.currentValue ?? null;
+        this.defaultBackendEffort = this.currentBackendEffort;
+    }
+
+    private async applyQueuedEffort(sessionId: string, mode: { effort?: string | null }): Promise<void> {
+        const backend = this.backend;
+        const requested = mode.effort ?? this.defaultBackendEffort;
+        if (!backend || !requested || requested === this.currentBackendEffort) return;
+        const option = backend.getThoughtLevelConfigOption(sessionId);
+        try {
+            if (!option) throw new Error('no reasoning effort option');
+            await backend.setConfigOption(sessionId, option.id, requested);
+            this.currentBackendEffort = requested;
+        } catch (error) {
+            logger.warn('[copilot-remote] Inline effort switch failed', error);
+            const effort = this.currentBackendEffort === this.defaultBackendEffort ? null : this.currentBackendEffort;
+            mode.effort = effort;
+            this.session.setEffort(effort);
+            this.session.pushKeepAlive();
+            this.onEffortRollback?.(effort);
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: `Failed to switch Copilot effort to ${requested}.`
+            });
+        }
+    }
+
     private rollbackModel(): string | null {
         const model = this.currentBackendModel === 'auto' ? null : this.currentBackendModel;
         this.session.setModel(model);
@@ -447,14 +616,27 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         return this.currentBackendModel;
     }
 
-    private async handleAbort(): Promise<void> {
+    private async handleAbort(leavingRemote = false): Promise<void> {
+        if (leavingRemote) {
+            // Terminal switch/exit must unpark a waiting loop iteration
+            // before the teardown's awaits: a batch arriving meanwhile would
+            // otherwise be dequeued and hub-ACKed against the still-live
+            // signal and dropped after the teardown resets the queue
+            // (mirrors dsh's entry abort-and-replace).
+            this.abortController.abort();
+            this.abortController = new AbortController();
+        }
         const backend = this.backend;
         if (backend && this.session.sessionId) {
             await backend.cancelPrompt(this.session.sessionId);
         }
         await this.permissionHandler?.cancelAll('User aborted');
         this.session.sendSessionEvent({ type: 'message', message: 'Session aborted' });
-        this.session.queue.reset();
+        // Plain Stop preserves the pending queue for the next drain; only
+        // terminal cleanup (exit / switch-to-local) resets it.
+        if (leavingRemote) {
+            this.session.queue.reset();
+        }
         this.session.onThinkingChange(false);
         this.abortController.abort();
         this.abortController = new AbortController();
@@ -462,15 +644,23 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleExitFromUi(): Promise<void> {
-        await this.requestExit('exit', () => this.handleAbort());
+        await this.requestExit('exit', () => this.handleAbort(true));
     }
 
     private async handleSwitchFromUi(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort());
+        await this.requestExit('switch', () => this.handleAbort(true));
     }
 
     private async handleSwitchRequest(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort());
+        await this.requestExit('switch', () => this.handleAbort(true));
+    }
+
+    protected override onTerminalTeardownRejected(): void {
+        // A rejected terminal teardown still owes the queue reset and the
+        // dequeue-signal abort, or an idle waiter parks forever on the
+        // un-aborted signal and start() never reaches cleanup().
+        this.session.queue.reset();
+        this.abortController.abort();
     }
 }
 
@@ -485,7 +675,7 @@ function toAcpMcpServers(config: Record<string, { command: string; args: string[
 
 export async function copilotRemoteLauncher(
     session: CopilotSession,
-    opts: { model?: string; onModelRollback?: (model: string | null) => void }
+    opts: ConstructorParameters<typeof CopilotRemoteLauncher>[1]
 ): Promise<'switch' | 'exit'> {
     const launcher = new CopilotRemoteLauncher(session, opts);
     return launcher.launch();

@@ -4,7 +4,8 @@ import { sessionIsUnread } from '@/lib/sessionAttention'
 import { shouldShowSessionInSidebar } from '@/components/SessionList'
 import {
     getSessionLastSeenSnapshot,
-    initializeSessionLastSeen,
+    getSessionManualUnreadSnapshot,
+    observeSessionReadStates,
     useSessionLastSeenVersion,
 } from '@/lib/sessionLastSeen'
 
@@ -46,14 +47,18 @@ export function canUseAppBadging(): boolean {
     return getAppBadgeNavigator() !== null
 }
 
-/** Count sessions whose activity is newer than their local watermark. */
+/** Count sessions whose completed activity is newer than their local watermark. */
 export function countUnreadSessions(
     sessions: readonly SessionSummary[],
     lastSeenById: Readonly<Record<string, number>>,
+    manualUnreadById: Readonly<Record<string, number | null>> = {},
 ): number {
     return sessions.reduce(
         (count, session) => count + (
-            sessionIsUnread(session, { lastSeenAt: lastSeenById[session.id] ?? 0 })
+            sessionIsUnread(session, {
+                lastSeenAt: lastSeenById[session.id] ?? 0,
+                manualUnreadAt: manualUnreadById[session.id]
+            })
                 ? 1
                 : 0
         ),
@@ -134,10 +139,13 @@ export function useAppBadge(options: UseAppBadgeOptions): void {
         // it can show a count nothing in the UI is able to clear (hapi#1845).
         const eligibleSessions = options.sessions.filter(session => shouldShowSessionInSidebar(session))
 
-        // Match the session list's first-load baseline so existing sessions do
-        // not all appear unread when a user installs the PWA for the first time.
-        initializeSessionLastSeen(options.scope, eligibleSessions)
-        const count = countUnreadSessions(eligibleSessions, getSessionLastSeenSnapshot())
+        // Reconcile the shared read state before deriving the icon badge.
+        observeSessionReadStates(eligibleSessions)
+        const count = countUnreadSessions(
+            eligibleSessions,
+            getSessionLastSeenSnapshot(),
+            getSessionManualUnreadSnapshot(eligibleSessions)
+        )
         syncBadge(appBadgeNavigator, count, lastAppliedCountRef)
     }, [
         lastSeenVersion,

@@ -476,6 +476,163 @@ class SseEngineTest {
         assertEquals("e-1", conn2.lastEventId, "per-key cursor survives unsubscribe/resubscribe")
     }
 
+    // ------------------------------------------------- failure attribution --
+    // The banner labels an outage with why the attempt ended
+    // (`ConnectionFailure`; web `ReconnectingBanner.tsx` reason strings).
+
+    @Test
+    fun `transport failure attributes TransportError with the http code and clears on recovery`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        h.awaitOpen().fail(502)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.TransportError, 502), h.engine.connectionState(key).value.lastFailure)
+
+        h.awaitOpen().handshake()
+        runCurrent()
+        assertNull(h.engine.connectionState(key).value.lastFailure, "a successful handshake clears the failure label")
+    }
+
+    @Test
+    fun `clean server EOF attributes Closed without an http code`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        val conn = h.awaitOpen()
+        conn.handshake()
+        runCurrent()
+        conn.finish()
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.Closed), h.engine.connectionState(key).value.lastFailure)
+    }
+
+    @Test
+    fun `a missed connect deadline attributes ConnectTimeout`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        h.awaitOpen() // never handshakes
+        advanceTimeBy(ReconnectPolicy.CONNECT_TIMEOUT_MS)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.ConnectTimeout), h.engine.connectionState(key).value.lastFailure)
+        h.awaitOpen() // absorb the retry so the loop parks in backoff
+    }
+
+    @Test
+    fun `staleness attributes HeartbeatTimeout`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        val conn = h.awaitOpen()
+        conn.handshake()
+        runCurrent()
+        advanceTimeBy(ReconnectPolicy.STALE_MS)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.HeartbeatTimeout), h.engine.connectionState(key).value.lastFailure)
+        assertTrue(conn.closed)
+        h.awaitOpen() // absorb the retry
+    }
+
+    @Test
+    fun `a stale foreground resume attributes VisibilityRecovery`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        val conn = h.awaitOpen()
+        conn.handshake()
+        runCurrent()
+
+        h.engine.setLifecycleForeground(false)
+        runCurrent()
+        advanceTimeBy(ReconnectPolicy.RESUME_STALE_MS)
+        runCurrent()
+        h.engine.setLifecycleForeground(true)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.VisibilityRecovery), h.engine.connectionState(key).value.lastFailure)
+        assertTrue(conn.closed)
+        h.awaitOpen() // absorb the retry
+    }
+
+    @Test
+    fun `a codeless failure is attributed TransportError and the failure survives backoff republishes`() = runTest {
+        // DNS/TLS/socket errors carry no HTTP code (mobile's dominant outage
+        // shape); the web maps any onerror to transport-error, so a null-code
+        // Failure must not degrade to a "connection closed" label.
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        h.awaitOpen().fail(null)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.TransportError, null), h.engine.connectionState(key).value.lastFailure)
+
+        // The label rides along while the outage continues ( Connecting →
+        // Backoff republishes), until a handshake succeeds.
+        h.awaitOpen().connect()
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.TransportError, null), h.engine.connectionState(key).value.lastFailure)
+    }
+
+    // ----------------------------------------------------- outage visibility --
+    // The banner's visibility is independent of the reason label.
+
+    @Test
+    fun `repeated null-token retries keep the reconnecting notice visible`() = runTest {
+        // Auth-side outage: a stale JWT whose refresh keeps failing cycles
+        // Backoff forever without a transport attempt ever running, so
+        // nothing attributes a failure reason — the notice must still surface
+        // after the grace (reason-less), not collapse to "no banner".
+        val h = harness(supplyToken = { null })
+        val key = SseSubscriptionKey.Global
+        h.engine.connectionOutageNotice(key).test {
+            assertNull(awaitItem())
+            h.engine.subscribe(key)
+            runCurrent()
+            advanceTimeBy(3_999)
+            expectNoEvents()
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(OutageNotice(null), awaitItem())
+
+            // More backoff cycles keep republishing the same outage: the
+            // notice stays up (no re-emit, no collapse).
+            advanceTimeBy(30_000)
+            runCurrent()
+            expectNoEvents()
+        }
+        h.assertNoOpen() // pure auth-side outage: no transport ever opened
+    }
+
+    @Test
+    fun `the outage notice hides while backgrounded and returns with the foreground`() = runTest {
+        val h = harness(supplyToken = { null })
+        val key = SseSubscriptionKey.Global
+        h.engine.connectionOutageNotice(key).test {
+            assertNull(awaitItem())
+            h.engine.subscribe(key)
+            runCurrent()
+            advanceTimeBy(4_000)
+            runCurrent()
+            assertEquals(OutageNotice(null), awaitItem())
+
+            // Backgrounding suspends the pipe — the banner host is
+            // invisible, so the notice hides.
+            h.engine.setLifecycleForeground(false)
+            runCurrent()
+            assertNull(awaitItem())
+
+            // Returning to the foreground releases the deferred retries; the
+            // still-ongoing outage re-shows, re-graced from the return.
+            h.engine.setLifecycleForeground(true)
+            runCurrent()
+            advanceTimeBy(3_999)
+            expectNoEvents()
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(OutageNotice(null), awaitItem())
+        }
+    }
+
     @Test
     fun `null token is a failure that backs off until a token appears`() = runTest {
         var token: String? = null

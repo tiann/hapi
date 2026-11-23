@@ -2,10 +2,13 @@ import type { Database } from 'bun:sqlite'
 
 import { hasConversationMessageContent } from '@hapi/protocol/messages'
 import { decodeMessageContent } from './contentCodec'
+import { prepareCached } from './statementCache'
 
 import type { StoredMessage } from './types'
 import {
     addMessage,
+    upsertToolCallMessage,
+    getLiveToolWork,
     syncNativeQueuedMessage,
     addImportedMessage,
     cancelQueuedMessage,
@@ -31,6 +34,7 @@ import {
     countMessages,
     markMessagesInvoked,
     markMessagesIndeterminate,
+    markDispatchingMessagesIndeterminate,
     setMessagesDeliveryState,
     markUninvokedImmediateMessages,
     mergeSessionMessages,
@@ -38,15 +42,30 @@ import {
     moveUninvokedMessages,
     copyMessageToSession as copyStoredMessageToSession,
     copyMessagesToSession as copyStoredMessagesToSession,
+    addMessageSweepingLiveSnapshots,
+    deleteLiveTextSnapshots,
     getAllMessages,
     getMessagesAfterSeq,
+    getMaxSeq,
+    getMinSeq,
     getMessageSeqById,
+    getMessageById,
     truncateMessagesFromLocalId,
+    truncateOpenCodeRewind,
     type CancelQueuedMessageResult,
     type LookupQueuedMessageResult,
     type LocalMessageState,
     type MessagePosition,
+    type UpsertToolCallResult,
+    type AddMessageSweepResult,
 } from './messages'
+import {
+    hasPotentiallyIncompleteMessageContent,
+    searchMessageContent,
+    searchMessageContentInSession,
+    type MessageContentSearchMatch,
+    type SessionMessageContentSearchResult
+} from './messageContentSearch'
 
 export class MessageStore {
     private readonly db: Database
@@ -55,8 +74,35 @@ export class MessageStore {
         this.db = db
     }
 
+    truncateOpenCodeRewind(sessionId: string, cutoffSeq: number, boundaryId: string): number {
+        return truncateOpenCodeRewind(this.db, sessionId, cutoffSeq, boundaryId)
+    }
+
     addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {
         return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+    addMessageSweepingLiveSnapshots(
+        sessionId: string,
+        content: unknown,
+        localId?: string,
+        scheduledAt?: number | null,
+        createdAt?: number
+    ): AddMessageSweepResult {
+        return addMessageSweepingLiveSnapshots(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+
+    deleteLiveTextSnapshots(sessionId: string, streamId: string, keepMessageId?: string): number {
+        return deleteLiveTextSnapshots(this.db, sessionId, streamId, keepMessageId)
+    }
+
+    upsertToolCallMessage(sessionId: string, content: unknown, callId: string, localId?: string, createdAt?: number): UpsertToolCallResult {
+        return upsertToolCallMessage(this.db, sessionId, content, callId, localId, createdAt)
+    }
+
+    /** Whether the session tail still holds unsettled tool work (see
+     *  getLiveToolWork in messages.ts for the liveness contract). */
+    getLiveToolWork(sessionId: string): boolean {
+        return getLiveToolWork(this.db, sessionId)
     }
 
     syncNativeQueuedMessage(sessionId: string, localId: string, text: string): StoredMessage {
@@ -94,8 +140,20 @@ export class MessageStore {
         return getMessagesAfterSeq(this.db, sessionId, afterSeq)
     }
 
+    getMaxSeq(sessionId: string): number {
+        return getMaxSeq(this.db, sessionId)
+    }
+
+    getMinSeq(sessionId: string): number | null {
+        return getMinSeq(this.db, sessionId)
+    }
+
     getSeqById(sessionId: string, messageId: string): number | null {
         return getMessageSeqById(this.db, sessionId, messageId)
+    }
+
+    getMessageById(sessionId: string, messageId: string): StoredMessage | null {
+        return getMessageById(this.db, sessionId, messageId)
     }
 
     getMessages(sessionId: string, limit: number = 200): StoredMessage[] {
@@ -165,21 +223,56 @@ export class MessageStore {
 
     // ponytail: scans through leading bookkeeping; index content if that prefix becomes costly.
     hasConversationContent(sessionId: string): boolean {
-        const query = this.db.prepare<{ content: string | Uint8Array }, [string]>(
-            'SELECT content FROM messages WHERE session_id = ? ORDER BY seq ASC'
+        const statement = prepareCached(
+            this.db,
+            'SELECT seq, content FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT 16'
         )
-        try {
-            for (const row of query.iterate(sessionId)) {
-                if (hasConversationMessageContent(decodeMessageContent(row.content))) return true
+        let afterSeq = -1
+        while (true) {
+            const rows = statement.all(sessionId, afterSeq) as Array<{ seq: number; content: string | Uint8Array }>
+            if (rows.length === 0) {
+                return false
             }
-            return false
-        } finally {
-            query.finalize()
+            for (const row of rows) {
+                if (hasConversationMessageContent(decodeMessageContent(row.content))) {
+                    return true
+                }
+            }
+            if (rows.length < 16) {
+                return false
+            }
+            afterSeq = rows[rows.length - 1]!.seq
         }
     }
 
     countMessages(sessionId: string): number {
         return countMessages(this.db, sessionId)
+    }
+
+    searchContent(
+        query: string,
+        namespace: string,
+        limit: number = 50,
+        sessionIds?: readonly string[]
+    ): MessageContentSearchMatch[] {
+        return searchMessageContent(this.db, query, namespace, limit, sessionIds)
+    }
+
+    searchContentInSession(
+        query: string,
+        namespace: string,
+        sessionId: string,
+        limit: number = 500
+    ): SessionMessageContentSearchResult {
+        return searchMessageContentInSession(this.db, query, namespace, sessionId, limit)
+    }
+
+    hasPotentiallyIncompleteContent(
+        namespace: string,
+        query: string,
+        sessionIds?: readonly string[]
+    ): boolean {
+        return hasPotentiallyIncompleteMessageContent(this.db, namespace, query, sessionIds)
     }
 
     cancelQueuedMessage(sessionId: string, messageId: string): CancelQueuedMessageResult {
@@ -200,6 +293,10 @@ export class MessageStore {
 
     markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): number {
         return markMessagesInvoked(this.db, sessionId, localIds, invokedAt)
+    }
+
+    markDispatchingMessagesIndeterminate(sessionId: string): string[] {
+        return markDispatchingMessagesIndeterminate(this.db, sessionId)
     }
 
     markMessagesIndeterminate(sessionId: string, localIds: string[]): number {
@@ -234,8 +331,9 @@ export class MessageStore {
             localId?: string | null
             createdAt?: number
             invokedAt?: number | null
-        }> = []
+        }> = [],
+        upToSeq?: number
     ): { deleted: number; inserted: number; epoch: number } {
-        return truncateMessagesFromLocalId(this.db, sessionId, localId, replacement)
+        return truncateMessagesFromLocalId(this.db, sessionId, localId, replacement, upToSeq)
     }
 }

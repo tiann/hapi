@@ -40,16 +40,6 @@ describe('parseRemoteAgentCommandOptions', () => {
         })
     })
 
-    it('accepts pty as the agy runner starting mode', () => {
-        expect(parseRemoteAgentCommandOptions([
-            '--started-by', 'runner',
-            '--hapi-starting-mode', 'pty',
-        ], AGY_PERMISSION_MODES, ['local', 'remote', 'pty'])).toMatchObject({
-            startedBy: 'runner',
-            startingMode: 'pty',
-        })
-    })
-
     it('parses --existing-session-id and rejects a missing value', () => {
         expect(parseRemoteAgentCommandOptions([
             '--existing-session-id', 'preallocated-hapi-id'

@@ -34,6 +34,19 @@ private final class FakeSessionListStore: SessionListStoring {
     func archiveSession(sessionId: String) async throws {
         calls.append("archive:\(sessionId)")
     }
+
+    func renameSession(sessionId: String, name: String) async throws {
+        calls.append("rename:\(sessionId)")
+    }
+
+    func deleteSession(sessionId: String) async throws {
+        calls.append("delete:\(sessionId)")
+    }
+
+    func reopenSession(sessionId: String) async throws -> ReopenSessionResponse {
+        calls.append("reopen:\(sessionId)")
+        return ReopenSessionResponse(ok: true, sessionId: sessionId, resumed: true)
+    }
 }
 
 @MainActor

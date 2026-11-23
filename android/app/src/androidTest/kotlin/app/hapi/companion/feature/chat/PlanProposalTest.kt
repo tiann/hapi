@@ -70,6 +70,8 @@ class PlanProposalTest {
         }
         compose.waitUntil(10_000) { compose.onAllNodesWithText("Plan failed to apply", substring = true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Plan failed to apply", substring = true).performScrollTo().assertIsDisplayed()
+        // Let background Source/result producers finish before rule teardown.
+        compose.waitForIdle()
     }
 
     @Test fun lowercaseProposalOpensWhenInputArrivesAndPrecedesApproval() {
@@ -83,7 +85,7 @@ class PlanProposalTest {
         }
         compose.onNodeWithText("Review first").assertIsDisplayed()
         val document = compose.onNodeWithText("Then approve.").fetchSemanticsNode().boundsInRoot
-        val approval = compose.onNodeWithText("⏳ Awaiting approval").fetchSemanticsNode().boundsInRoot
+        val approval = compose.onNodeWithText("Awaiting approval").fetchSemanticsNode().boundsInRoot
         assertTrue("Read the plan before approval", document.bottom <= approval.top)
     }
 

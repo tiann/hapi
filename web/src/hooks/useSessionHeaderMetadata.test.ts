@@ -9,6 +9,7 @@ describe('parseSessionHeaderMetadata', () => {
         expect(DEFAULT_SESSION_HEADER_METADATA).toMatchObject({
             showLabels: true,
             agent: true,
+            project: true,
             model: true,
             reasoning: true,
             fastMode: true,

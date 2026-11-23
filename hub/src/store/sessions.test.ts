@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test'
+import type { Database } from 'bun:sqlite'
 import { Store } from './index'
 import { randomUUID } from 'node:crypto'
 import { SessionIdentityConflictError } from './sessions'
@@ -295,6 +296,70 @@ describe('getOrCreateSession: requested identity', () => {
         store.close()
     })
 
+    it('preserves machine-spawn stub tag when preservePreallocation is set', () => {
+        const store = makeStore()
+        const allocatedId = randomUUID()
+        const created = store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'm1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+            },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )
+        expect(created.tag).toBe(`machine-spawn:${allocatedId}`)
+
+        const updated = store.sessions.updateSessionMetadata(
+            allocatedId,
+            {
+                ...(created.metadata as object),
+                externalRefs: [{
+                    kind: 'github_pr',
+                    repo: 'tiann/hapi',
+                    number: 1163,
+                    url: 'https://github.com/tiann/hapi/pull/1163',
+                    role: 'primary',
+                    source: 'user',
+                    linkedAt: 1,
+                }],
+            },
+            created.metadataVersion,
+            'default',
+            { touchUpdatedAt: false, preservePreallocation: true }
+        )
+        expect(updated.result).toBe('success')
+        const row = store.sessions.getSession(allocatedId)
+        expect(row?.tag).toBe(`machine-spawn:${allocatedId}`)
+
+        const cliTag = randomUUID()
+        const adopted = store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            cliTag,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'm1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                hostPid: 4242,
+            },
+            { controlledByUser: false },
+            'default'
+        )
+        expect(adopted.tag).toBe(cliTag)
+        store.close()
+    })
+
     it('rejects adopt of an archived preallocated stub', () => {
         const store = makeStore()
         const allocatedId = randomUUID()
@@ -465,6 +530,167 @@ describe('updateSessionMetadata: refuse un-archive (#1911 M1)', () => {
 })
 
 describe('updateSessionMetadata: protocol resume token preservation', () => {
+    it('preserves externalRefs when a sparse replacement omits them', () => {
+        const store = makeStore()
+        const externalRefs = [{
+            kind: 'github_pr',
+            repo: 'tiann/hapi',
+            number: 1160,
+            url: 'https://github.com/tiann/hapi/pull/1160',
+            role: 'primary'
+        }]
+        const session = store.sessions.getOrCreateSession(
+            'external-refs-preserve',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                externalRefs
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                lifecycleState: 'running'
+            },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.externalRefs).toEqual(externalRefs)
+        store.close()
+    })
+
+    it('lets an explicit externalRefs write win, including clearing with []', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'external-refs-explicit',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                externalRefs: [{
+                    kind: 'github_pr',
+                    repo: 'tiann/hapi',
+                    number: 1160,
+                    url: 'https://github.com/tiann/hapi/pull/1160',
+                    role: 'primary'
+                }]
+            },
+            null,
+            'default'
+        )
+
+        const replacement = [{
+            kind: 'github_pr',
+            repo: 'owner/other',
+            number: 42,
+            url: 'https://github.com/owner/other/pull/42',
+            role: 'secondary'
+        }]
+        let version = session.metadataVersion
+        let result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                externalRefs: replacement
+            },
+            version,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        if (result.result === 'success') version = result.version
+        expect(getMetadata(store, session.id)?.externalRefs).toEqual(replacement)
+
+        result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                externalRefs: []
+            },
+            version,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.externalRefs).toEqual([])
+        store.close()
+    })
+
+    it.each(['Fork: Source title', 'Branch: Source title'])('preserves a generated %s summary across sparse child startup metadata', (text) => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            `generated-summary-preserve:${text}`,
+            { path: '/tmp/project', host: 'example', summary: { text, updatedAt: 1234 } },
+            null,
+            'default'
+        )
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', lifecycleState: 'running' },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.summary).toEqual({ text, updatedAt: 1234 })
+        store.close()
+    })
+
+    it('does not globally preserve ordinary summaries across sparse metadata updates', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'ordinary-summary-replace',
+            { path: '/tmp/project', host: 'example', summary: { text: 'Generated title', updatedAt: 1234 } },
+            null,
+            'default'
+        )
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', lifecycleState: 'running' },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.summary).toBeUndefined()
+        store.close()
+    })
+
+    it('preserves the automatic title attempt marker across sparse metadata updates', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'auto-title-marker',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                titleSuggestionAutoAttemptedAt: 1234,
+                titleSuggestionTurn: { first: true, completed: false }
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', lifecycleState: 'archived' },
+            session.metadataVersion,
+            'default'
+        )
+
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.titleSuggestionAutoAttemptedAt).toBe(1234)
+        expect(getMetadata(store, session.id)?.titleSuggestionTurn).toEqual({ first: true, completed: false })
+        store.close()
+    })
+
     it('preserves cursorSessionId when archive payload omits it (Cursor crash-archive)', () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
@@ -549,7 +775,8 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         ['cursorSessionId', 'cursor-thread-x'],
         ['kimiSessionId', 'kimi-thread-x'],
         ['copilotSessionId', 'copilot-thread-x'],
-        ['piSessionId', 'pi-thread-x']
+        ['piSessionId', 'pi-thread-x'],
+        ['dshSessionId', 'dsh-thread-x']
     ])('preserves %s across an archive metadata replacement', (field, value) => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
@@ -834,6 +1061,150 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         expect(metadata?.host).toBe('example')
         expect(metadata?.cursorSessionId).toBe('parse-required')
         expect(metadata?.lifecycleState).toBe('archived')
+    })
+
+    it('preserves lastModelError across sparse archive (durable alert state)', () => {
+        const store = makeStore()
+        const lastModelError = {
+            eventId: 'evt-1700000000000',
+            kind: 'quota_exhausted',
+            transient: false,
+            rawSnippet: 'Error: T: [resource_exhausted]',
+            atTs: 1_700_000_000_000,
+            priorAssistantClaimsDone: false
+        }
+        const session = store.sessions.getOrCreateSession(
+            'cursor-model-error-survives',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'err-uuid',
+                lastModelError
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                lifecycleState: 'archived',
+                archivedBy: 'cli',
+                archiveReason: 'Session crashed'
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.lastModelError).toEqual(lastModelError)
+        expect(metadata?.lifecycleState).toBe('archived')
+    })
+
+    it('preserves lastModelError.acknowledgedAt against stale CLI rewrite of same eventId', () => {
+        const store = makeStore()
+        const eventId = 'evt-ack-1700000000111'
+        const atTs = 1_700_000_000_111
+        const session = store.sessions.getOrCreateSession(
+            'cursor-model-error-ack-survives',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'ack-uuid',
+                lastModelError: {
+                    eventId,
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false,
+                    acknowledgedAt: 1_700_000_000_222
+                }
+            },
+            null,
+            'default'
+        )
+
+        // CLI local snapshot still has the same error without acknowledgedAt.
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'ack-uuid',
+                lastModelError: {
+                    eventId,
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false
+                }
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as {
+            lastModelError?: { atTs?: number; acknowledgedAt?: number }
+        } | null
+        expect(metadata?.lastModelError?.atTs).toBe(atTs)
+        expect(metadata?.lastModelError?.acknowledgedAt).toBe(1_700_000_000_222)
+    })
+
+    it('preserves lastModelError.notifiedAt against stale CLI rewrite of same eventId', () => {
+        const store = makeStore()
+        const eventId = 'evt-notified-1700000000333'
+        const atTs = 1_700_000_000_333
+        const session = store.sessions.getOrCreateSession(
+            'cursor-model-error-notified-survives',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'notify-uuid',
+                lastModelError: {
+                    eventId,
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false,
+                    notifiedAt: 1_700_000_000_444
+                }
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'notify-uuid',
+                lastModelError: {
+                    eventId,
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false
+                }
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as {
+            lastModelError?: { atTs?: number; notifiedAt?: number }
+        } | null
+        expect(metadata?.lastModelError?.atTs).toBe(atTs)
+        expect(metadata?.lastModelError?.notifiedAt).toBe(1_700_000_000_444)
     })
 
     it('does not invent path or host when prior had none', () => {
@@ -1291,5 +1662,29 @@ describe('replaceSessionTodos: watermark ratchet (PR #897 rewind race)', () => {
         expect(after?.todosUpdatedAt).toBe(51)
 
         store.close()
+    })
+})
+
+describe('updateSessionAgentState: updated_at (#1855)', () => {
+    it('only advances updated_at when a new permission request arrives', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('agent-state-recency', { path: '/tmp/p', host: 'h' }, null, 'default')
+        const resetUpdatedAt = () => (store as unknown as { db: Database }).db
+            .prepare('UPDATE sessions SET updated_at = 1000 WHERE id = ?').run(session.id)
+        resetUpdatedAt()
+        const update = (state: unknown, version: number) =>
+            store.sessions.updateSessionAgentState(session.id, state, version, 'default')
+
+        expect(update({ codexUsage: { primary: 1 }, requests: {} }, 1).result).toBe('success')
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(1000)
+
+        expect(update({ requests: { r1: { tool: 'Bash', arguments: {} } } }, 2).result).toBe('success')
+        const touched = store.sessions.getSession(session.id)?.updatedAt ?? 0
+        expect(touched).toBeGreaterThan(1000)
+
+        resetUpdatedAt()
+        expect(update({ requests: {}, completedRequests: { r1: { tool: 'Bash', arguments: {}, status: 'approved' } } }, 3).result).toBe('success')
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(1000)
+        expect(update({}, 3).result).toBe('version-mismatch')
     })
 })

@@ -2,8 +2,10 @@ import {
     WORK_GRAPH_MAX_STRING,
     WORK_GRAPH_MAX_SUMMARY,
     WORK_GRAPH_MAX_TAGS,
+    detectNotifySummaryNearMiss,
     extractAssistantPlainText,
     extractNotifySummary,
+    isLiveStreamSnapshot,
     unwrapRoleWrappedRecordEnvelope,
     type NotifySummary,
     type WorkGraphEvent,
@@ -236,6 +238,20 @@ function loadMessagesForCause(
         if (cursorSeq != null) {
             return store.messages.getMessagesAfterSeq(sessionId, cursorSeq)
         }
+        // Retention may trim the cursor row while the ledger row (and its
+        // numeric causeSeq watermark) survives: resume after causeSeq instead
+        // of degrading to a full session read on every later notify. The
+        // watermark is only trustworthy while every remaining row sits above
+        // it — a history move (mergeSessionHistory) empties the session and
+        // restarts its seq space, leaving stale low watermarks that would
+        // skip freshly appended rows.
+        const trimmedSeq = readCauseSeq(previous?.payloadJson)
+        if (trimmedSeq != null) {
+            const minSeq = store.messages.getMinSeq(sessionId)
+            if (minSeq == null || minSeq > trimmedSeq) {
+                return store.messages.getMessagesAfterSeq(sessionId, trimmedSeq)
+            }
+        }
         return store.messages.getAllMessages(sessionId)
     }
     const afterSeq = readCauseSeq(previous?.payloadJson)
@@ -294,7 +310,9 @@ function consumedInboundIds(
  * Sequential rule: first unconsumed invoked inbound is the cause identity.
  * causeSeq advances past other invoked inbounds before this assistant (one
  * Claude batch can join several same-mode prompts). Uninvoked leftovers wait.
- * No new invoked inbound → sticky copy of the previous event's cause.
+ * No new invoked inbound → sticky copy of the previous event's cause, with the
+ * resume point (causeSeq + causeCursorMessageId) advanced past this assistant
+ * turn when no waiting inbound below it can still mature into a cause.
  */
 function batchCauseCursor(
     messages: StoredMessage[],
@@ -314,10 +332,32 @@ function batchCauseCursor(
     return { causeSeq: maxSeq, causeCursorMessageId: cursorId }
 }
 
+/**
+ * An inbound below the resume watermark that can still mature into a cause
+ * later (queued/not yet invoked, or unmatured scheduled). While any exist, the
+ * resume point must not advance past them or they would never be attributed.
+ * Transcript echoes and already-consumed rows are dead ends.
+ */
+function hasWaitingInbound(
+    messages: StoredMessage[],
+    watermark: number,
+    consumed: Set<string>,
+    now: number = Date.now()
+): boolean {
+    return messages.some((message) => (
+        message.seq < watermark
+        && !consumed.has(message.id)
+        && isInboundUserMessage(message.content)
+        && asRecord(asRecord(message.content)?.meta)?.isTranscriptEcho !== true
+        && (message.invokedAt === null || (message.scheduledAt != null && message.scheduledAt > now))
+    ))
+}
+
 export function resolveWorkAdCause(params: {
     messages: StoredMessage[]
     previousWorkAds: WorkGraphEvent[]
     assistantSeq?: number | null
+    assistantMessageId?: string | null
 }): { cause: WorkAdCause | null; previousEventId: string | null } {
     const previous = params.previousWorkAds.at(-1) ?? null
     const consumed = consumedInboundIds(params.messages, params.previousWorkAds)
@@ -349,6 +389,25 @@ export function resolveWorkAdCause(params: {
     if (previous) {
         const sticky = readCauseFromPayload(previous.payloadJson)
         if (sticky) {
+            // Sticky copy keeps the cause identity but should still advance the
+            // resume point past this assistant turn when nothing below it can
+            // mature into a future cause. Automation-style sessions emit many
+            // notifies with no new invoked inbound; without the advance the
+            // resume point stays frozen at the original inbound and every
+            // notify re-reads and re-parses the whole session tail (zstd +
+            // JSON per row), growing without bound as the session grows.
+            const watermark = params.assistantSeq ?? null
+            const resumeMessageId = params.assistantMessageId ?? null
+            const canAdvance = watermark != null
+                && resumeMessageId != null
+                && watermark > (sticky.causeSeq ?? Number.NEGATIVE_INFINITY)
+                && !hasWaitingInbound(params.messages, watermark, consumed)
+            if (canAdvance) {
+                return {
+                    cause: { ...sticky, causeSeq: watermark, causeCursorMessageId: resumeMessageId },
+                    previousEventId: previous.id
+                }
+            }
             return { cause: sticky, previousEventId: previous.id }
         }
     }
@@ -441,6 +500,36 @@ export function buildWorkAdFromNotify(params: {
 }
 
 /**
+ * A near miss - a final line that attempts the footer but does not parse -
+ * silently costs the turn its status. Say so once at the ingest boundary;
+ * otherwise the only detector is a human noticing the status never arrived.
+ *
+ * The wording has to hold for every reason. A `trailing-content` line is often
+ * correct prose quoting the contract, which is kept on screen rather than
+ * stripped - calling that "malformed" or "ignored" would read as a dropped
+ * status to anyone grepping for one. What is true in every case is that the
+ * final line recorded no status, so that is what the message says, and
+ * `removedFromDisplay` distinguishes the two outcomes.
+ *
+ * Mid-stream snapshots are skipped: a footer that is still being written is
+ * incomplete by construction, not malformed.
+ */
+function warnOnNotifySummaryNearMiss(input: NotifyIngestInput, plainText: string): void {
+    if (isLiveStreamSnapshot(input.content)) return
+
+    const nearMiss = detectNotifySummaryNearMiss(plainText)
+    if (!nearMiss) return
+
+    console.warn('[work-graph] no AGENT_NOTIFY_SUMMARY status recorded from the final line', {
+        reason: nearMiss.reason,
+        removedFromDisplay: nearMiss.removedFromDisplay,
+        payloadLength: nearMiss.payloadLength,
+        sessionId: input.sessionId,
+        messageId: input.messageId
+    })
+}
+
+/**
  * On assistant message ingest: well-formed trailing AGENT_NOTIFY_SUMMARY →
  * idempotent work_ad row. Invalid/missing footer → no-op (null).
  *
@@ -461,17 +550,21 @@ export function ingestNotifySummaryFromMessage(input: NotifyIngestInput): Notify
 
     const notify = extractNotifySummary(plainText)
     if (!notify) {
+        warnOnNotifySummaryNearMiss(input, plainText)
         return null
     }
 
     // Cause is hub-derived from session messages SQL (no REST 200 cap).
     const previousWorkAds = listPreviousWorkAds(input.store, input.namespace, input.sessionId)
     const messages = loadMessagesForCause(input.store, input.sessionId, previousWorkAds)
-    const assistantSeq = messages.find((message) => message.id === input.messageId)?.seq ?? null
+    // Direct seq lookup: the window above is incremental, so the notify-bearing
+    // assistant row (and its seq) is not guaranteed to be inside it.
+    const assistantSeq = input.store.messages.getSeqById(input.sessionId, input.messageId)
     const { cause, previousEventId } = resolveWorkAdCause({
         messages,
         previousWorkAds,
-        assistantSeq
+        assistantSeq,
+        assistantMessageId: input.messageId
     })
 
     const create = buildWorkAdFromNotify({

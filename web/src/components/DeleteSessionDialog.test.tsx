@@ -1,0 +1,140 @@
+import { StrictMode, type ReactNode } from 'react'
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { describe, expect, it, vi } from 'vitest'
+import { ApiError, type ApiClient } from '@/api/client'
+import { useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { I18nProvider } from '@/lib/i18n-context'
+import { DeleteSessionDialog } from './DeleteSessionDialog'
+
+function setup() {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+    const wrapper = ({ children }: { children: ReactNode }) => (
+        <StrictMode><QueryClientProvider client={client}><I18nProvider>{children}</I18nProvider></QueryClientProvider></StrictMode>
+    )
+    let resolve!: () => void
+    let reject!: (error: Error) => void
+    const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail })
+    const api = { archiveSession: vi.fn(() => promise) } as unknown as ApiClient
+    const initiator = renderHook(() => useSessionActions(api, 'session-A'), { wrapper })
+    const onConfirm = vi.fn(async () => {})
+    const onClose = vi.fn()
+    const dialog = (sessionId = 'session-A', isPending = false) => (
+        <DeleteSessionDialog isOpen sessionId={sessionId} onClose={onClose}
+            description="Delete this session permanently?" onConfirm={onConfirm} isPending={isPending} />
+    )
+    return { client, wrapper, initiator, resolve, reject, dialog, onConfirm, onClose }
+}
+
+describe('DeleteSessionDialog shared archive progress', () => {
+    it.each(['success', 'failure'])('waits after the initiating view unmounts and requires explicit delete (%s)', async outcome => {
+        const state = setup()
+        let pending!: Promise<unknown>
+        act(() => { pending = state.initiator.result.current.archiveSession().catch(error => error) })
+        await waitFor(() => expect(state.initiator.result.current.isPending).toBe(true))
+        state.initiator.unmount()
+        const view = render(state.dialog(), { wrapper: state.wrapper })
+        expect(screen.getByRole('button', { name: 'Waiting for archive to finish…' })).toBeDisabled()
+        fireEvent.click(screen.getByRole('button', { name: 'Waiting for archive to finish…' }))
+        expect(state.onConfirm).not.toHaveBeenCalled()
+        expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
+        // A different session must remain deletable even while A is archiving.
+        view.rerender(state.dialog('session-B'))
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled())
+        view.rerender(state.dialog())
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Waiting for archive to finish…' })).toBeDisabled())
+        await act(async () => {
+            if (outcome === 'success') state.resolve()
+            else state.reject(new Error('Archive failed'))
+            await pending
+        })
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled())
+        expect(state.onConfirm).not.toHaveBeenCalled()
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+        await waitFor(() => expect(state.onConfirm).toHaveBeenCalledTimes(1))
+        expect(state.onClose).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([false, true])('protects a reporting meter and requires separate clear and delete confirmations (stale=%s)', async stale => {
+        const state = setup()
+        const clearStaleSessionJob = vi.fn(async () => {})
+        const api = { clearStaleSessionJob } as unknown as ApiClient
+        const job = { key: 'import', label: 'Batch', status: 'running', runId: 'gen', startedAt: 1,
+            updatedAt: 2, heartbeatAt: stale ? Date.now() : 2 }
+        const remove = vi.fn(async () => {}).mockRejectedValueOnce(new ApiError('conflict', 409,
+            'attached_job_running', JSON.stringify({ job, canClearStale: stale })))
+        render(<DeleteSessionDialog isOpen sessionId="A" api={api} description="Delete session?"
+            onClose={state.onClose} isPending={false} onConfirm={remove} />, { wrapper: state.wrapper })
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+        if (!stale) {
+            expect(await screen.findByText(/Batch.*still reporting/)).toBeInTheDocument()
+            expect(clearStaleSessionJob).not.toHaveBeenCalled()
+            return
+        }
+        fireEvent.click(await screen.findByRole('button', { name: 'Remove stale job record' }))
+        await waitFor(() => expect(clearStaleSessionJob).toHaveBeenCalledWith('A', job))
+        expect(remove).toHaveBeenCalledTimes(1)
+        expect(state.onClose).not.toHaveBeenCalled()
+        fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+        await waitFor(() => expect(state.onClose).toHaveBeenCalledOnce())
+        expect(remove).toHaveBeenCalledTimes(2)
+    })
+
+    it('explains that a newly heartbeating job was kept and checks again before recovery', async () => {
+        const state = setup()
+        const job = { key: 'k', label: 'Batch', status: 'running', startedAt: 1, heartbeatAt: 2, updatedAt: 2 }
+        const conflict = (canClearStale: boolean) => new ApiError('blocked', 409, 'attached_job_running', JSON.stringify({ job, canClearStale }))
+        const remove = vi.fn().mockRejectedValueOnce(conflict(true)).mockRejectedValueOnce(conflict(false))
+        const clear = vi.fn().mockRejectedValue(new ApiError('changed', 409, 'job_changed'))
+        render(<DeleteSessionDialog isOpen sessionId="A" api={{ clearStaleSessionJob: clear } as unknown as ApiClient}
+            description="Delete?" onClose={state.onClose} isPending={false} onConfirm={remove} />, { wrapper: state.wrapper })
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+        fireEvent.click(await screen.findByRole('button', { name: 'Remove stale job record' }))
+        expect(await screen.findByText(/job changed and its record was kept/)).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+        expect(await screen.findByText(/Batch.*still reporting/)).toBeInTheDocument()
+        expect(clear).toHaveBeenCalledTimes(1)
+    })
+
+    it('updates an already-open dialog when another view starts archiving', async () => {
+        const state = setup()
+        render(state.dialog(), { wrapper: state.wrapper })
+        expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled()
+        let pending!: Promise<void>
+        act(() => { pending = state.initiator.result.current.archiveSession() })
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Waiting for archive to finish…' })).toBeDisabled())
+        await act(async () => { state.resolve(); await pending })
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled())
+    })
+
+    it('releases its shared subscription when dismissed and recovers progress when reopened', async () => {
+        const state = setup()
+        const cache = state.client.getMutationCache()
+        expect(cache.hasListeners()).toBe(false)
+        let pending!: Promise<void>
+        act(() => { pending = state.initiator.result.current.archiveSession() })
+        await waitFor(() => expect(state.initiator.result.current.isPending).toBe(true))
+        const view = render(state.dialog(), { wrapper: state.wrapper })
+        expect(cache.hasListeners()).toBe(true)
+        view.unmount()
+        expect(cache.hasListeners()).toBe(false)
+        render(state.dialog(), { wrapper: state.wrapper })
+        expect(screen.getByRole('button', { name: 'Waiting for archive to finish…' })).toBeDisabled()
+        await act(async () => { state.resolve(); await pending })
+    })
+
+    it('keeps the deleting label and disables confirmation while delete is pending', () => {
+        const state = setup()
+        render(state.dialog('session-A', true), { wrapper: state.wrapper })
+        expect(screen.getByRole('button', { name: 'Deleting…' })).toBeDisabled()
+        expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    })
+
+    it('does not subscribe while its wrapper is closed', () => {
+        const state = setup()
+        render(<DeleteSessionDialog isOpen={false} sessionId="session-A" onClose={state.onClose}
+            description="Delete?" onConfirm={state.onConfirm} isPending={false} />, { wrapper: state.wrapper })
+        expect(state.client.getMutationCache().hasListeners()).toBe(false)
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+})

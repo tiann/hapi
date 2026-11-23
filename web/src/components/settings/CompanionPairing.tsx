@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import { Button } from '@/components/ui/button'
+import { safeCopyToClipboard } from '@/lib/clipboard'
 import { useTranslation } from '@/lib/use-translation'
 
 type CompanionPairingProps = {
@@ -62,7 +63,7 @@ export function CompanionPairing({ baseUrl }: CompanionPairingProps) {
     const handleCopy = async () => {
         if (!deeplink) return
         try {
-            await navigator.clipboard.writeText(deeplink)
+            await safeCopyToClipboard(deeplink)
             setCopied(true)
             setTimeout(() => setCopied(false), 2000)
         } catch {

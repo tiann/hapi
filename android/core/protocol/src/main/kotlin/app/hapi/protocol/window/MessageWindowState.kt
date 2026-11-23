@@ -66,6 +66,7 @@ sealed interface OlderLoadOutcome {
  */
 data class MessageWindowState(
     val sessionId: String,
+    val readThroughRevision: Long? = null,
     /** Window rows in position order (queued rows re-merged after each trim). */
     val messages: List<WindowMessage> = emptyList(),
     /** Older history exists (server flag, or rows were trimmed away). */
@@ -95,6 +96,11 @@ data class MessageWindowState(
     val requiresLatestReset: Boolean = false,
     /** Re-activation with persisted state: fetch the current tail first. */
     val preferLatestOnActivation: Boolean = false,
+    /** Gap-recovery pending: the next tail sync must catch up the missed
+     *  interval with a cursor sync and then reconcile an authoritative latest
+     *  page as an upsert (web `pendingGapRecovery`). Run-scoped — never
+     *  persisted. */
+    val pendingGapRecovery: Boolean = false,
     /** Invalidates in-flight tail syncs (compare-and-ignore). */
     val syncGeneration: Long = 0,
     /** Invalidates in-flight older-page loads. */

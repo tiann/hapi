@@ -23,6 +23,24 @@ describe('getSessionTitle', () => {
         })).toBe('HAPI Skill Lookup')
     })
 
+    it('uses the prompt title until a name or summary exists', () => {
+        expect(getSessionTitle({
+            id: 'abcdef0123456789',
+            metadata: {
+                promptTitle: 'Fix the login redirect',
+                path: '/tmp/share-title-parity',
+            },
+        })).toBe('Fix the login redirect')
+        expect(getSessionTitle({
+            id: 'abcdef0123456789',
+            metadata: {
+                summary: { text: 'Login redirect fix' },
+                promptTitle: 'Fix the login redirect',
+                path: '/tmp/share-title-parity',
+            },
+        })).toBe('Login redirect fix')
+    })
+
     it('falls back to the last path segment when name and summary are absent', () => {
         expect(getSessionTitle({
             id: 'abcdef0123456789',
@@ -38,7 +56,7 @@ describe('getSessionTitle', () => {
 })
 
 describe('hasSessionTitleSignal', () => {
-    it('is true for name or summary text and false for path-only', () => {
+    it('is true for name, summary or prompt title text and false for path-only', () => {
         expect(hasSessionTitleSignal({
             id: 'x',
             metadata: { name: 'Named', path: '/tmp/foo' },
@@ -46,6 +64,10 @@ describe('hasSessionTitleSignal', () => {
         expect(hasSessionTitleSignal({
             id: 'x',
             metadata: { summary: { text: 'Summary only' }, path: '/tmp/foo' },
+        })).toBe(true)
+        expect(hasSessionTitleSignal({
+            id: 'x',
+            metadata: { promptTitle: 'Prompt only', path: '/tmp/foo' },
         })).toBe(true)
         expect(hasSessionTitleSignal({
             id: 'x',

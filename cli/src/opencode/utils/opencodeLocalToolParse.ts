@@ -1,4 +1,5 @@
 import { isObject } from '@hapi/protocol';
+import { canonicalizeDiffToolInput } from '@/agent/utils';
 
 export type ParsedToolCall = {
     callId: string;
@@ -49,6 +50,19 @@ function parseMaybeJson(value: unknown): unknown {
     return value;
 }
 
+/**
+ * OpenCode's id for a tool call in a part or hook payload. The model's callID
+ * comes before any part id so every path (part updates, hook events) names
+ * one call the same way; part.id is only a fallback for payloads without it.
+ */
+export function extractNativeToolCallId(record: Record<string, unknown>): string | null {
+    return getString(record.callID)
+        || getString(record.callId)
+        || getString(record.tool_call_id)
+        || getString(record.toolCallId)
+        || getString(record.id);
+}
+
 export function parseToolCall(part: unknown): ParsedToolCall | null {
     if (!isObject(part)) {
         return null;
@@ -60,15 +74,23 @@ export function parseToolCall(part: unknown): ParsedToolCall | null {
         return null;
     }
     const name = getString(record.tool) || getString(record.name);
-    // Prefer OpenCode's tool callID over part.id so lifecycle updates share one id.
-    const callId = getString(record.callID)
-        || getString(record.callId)
-        || getString(record.tool_call_id)
-        || getString(record.toolCallId)
-        || getString(record.id);
+    const callId = extractNativeToolCallId(record);
     if (!name || !callId) {
         return null;
     }
+    // OpenCode native edit/write args ({filePath, oldString, newString} /
+    // {filePath, content}) are canonicalized to the Claude-shaped inputs the
+    // web Edit/Write views render — same contract as the ACP path.
+    const toParsed = (input: unknown, title: string | null): ParsedToolCall => {
+        const canonical = canonicalizeDiffToolInput(input, name);
+        return {
+            callId,
+            name: canonical ? canonical.name : name,
+            input: canonical ? canonical.input : input,
+            ...(title ? { title } : {})
+        };
+    };
+
     if (isObject(record.state)) {
         const state = record.state as Record<string, unknown>;
         const status = getString(state.status);
@@ -78,12 +100,10 @@ export function parseToolCall(part: unknown): ParsedToolCall | null {
             return null;
         }
         const input = parseMaybeJson(state.input ?? state.raw ?? record.input ?? record.args ?? record.arguments);
-        const title = getString(state.title);
-        return { callId, name, input, ...(title ? { title } : {}) };
+        return toParsed(input, getString(state.title));
     }
     const input = parseMaybeJson(record.input ?? record.args ?? record.arguments ?? record.raw);
-    const title = getString(record.title);
-    return { callId, name, input, ...(title ? { title } : {}) };
+    return toParsed(input, getString(record.title));
 }
 
 export function parseToolResult(part: unknown): ParsedToolResult | null {
@@ -96,11 +116,7 @@ export function parseToolResult(part: unknown): ParsedToolResult | null {
     if (getString(record.type) !== 'tool') {
         return null;
     }
-    const callId = getString(record.callID)
-        || getString(record.callId)
-        || getString(record.tool_call_id)
-        || getString(record.toolCallId)
-        || getString(record.id);
+    const callId = extractNativeToolCallId(record);
     if (!callId) {
         return null;
     }

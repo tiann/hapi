@@ -46,7 +46,8 @@ export function useAnchoredMenu(options: {
         const menuEl = menuRef.current
         if (!menuEl) return
 
-        const menuRect = menuEl.getBoundingClientRect()
+        // Use layout size, not the transform of the opening animation.
+        const { offsetHeight: height, offsetWidth: width } = menuEl
         const viewportWidth = window.innerWidth
         const viewportHeight = window.innerHeight
         const padding = 8
@@ -54,18 +55,18 @@ export function useAnchoredMenu(options: {
 
         const spaceBelow = viewportHeight - anchorPoint.y
         const spaceAbove = anchorPoint.y
-        const openAbove = spaceBelow < menuRect.height + gap && spaceAbove > spaceBelow
+        const openAbove = spaceBelow < height + gap && spaceAbove > spaceBelow
 
-        let top = openAbove ? anchorPoint.y - menuRect.height - gap : anchorPoint.y + gap
+        let top = openAbove ? anchorPoint.y - height - gap : anchorPoint.y + gap
         // Center the menu on a trigger button, or start its left edge at a
         // pointer, then clamp it so it never leaves the viewport.
-        let left = align === 'start' ? anchorPoint.x : anchorPoint.x - menuRect.width / 2
+        let left = align === 'start' ? anchorPoint.x : anchorPoint.x - width / 2
         const transformOrigin = openAbove
             ? 'bottom center'
             : align === 'start' ? 'top left' : 'top center'
 
-        top = Math.min(Math.max(top, padding), viewportHeight - menuRect.height - padding)
-        left = Math.min(Math.max(left, padding), viewportWidth - menuRect.width - padding)
+        top = Math.min(Math.max(top, padding), viewportHeight - height - padding)
+        left = Math.min(Math.max(left, padding), viewportWidth - width - padding)
 
         setMenuPosition({ top, left, transformOrigin })
     }, [align, anchorPoint])
@@ -73,6 +74,11 @@ export function useAnchoredMenu(options: {
     useLayoutEffect(() => {
         if (!isOpen) return
         updatePosition()
+        const menu = menuRef.current
+        if (!menu || typeof ResizeObserver === 'undefined') return
+        const observer = new ResizeObserver(updatePosition)
+        observer.observe(menu)
+        return () => observer.disconnect()
     }, [isOpen, updatePosition])
 
     useEffect(() => {

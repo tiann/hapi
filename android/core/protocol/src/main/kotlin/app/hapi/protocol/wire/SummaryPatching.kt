@@ -123,6 +123,7 @@ object SummaryPatching {
                 "kimi" -> metadata.kimiSessionId
                 "copilot" -> metadata.copilotSessionId
                 "pi" -> metadata.piSessionId
+                "dsh" -> metadata.dshSessionId
                 else -> null
             }
             return flavorSessionId?.trim()?.takeIf { it.isNotEmpty() }
@@ -136,6 +137,7 @@ object SummaryPatching {
             ?: metadata.cursorSessionId
             ?: metadata.kimiSessionId
             ?: metadata.copilotSessionId
+            ?: metadata.dshSessionId
     }
 
     /** `toSessionSummaryMetadata` — list-sized projection of full metadata. */
@@ -167,6 +169,11 @@ object SummaryPatching {
         thinking = session.thinking,
         activeAt = session.activeAt,
         updatedAt = session.updatedAt,
+        contentRevision = session.contentRevision,
+        readState = session.readState,
+        createdAt = session.createdAt,
+        lastUserMessageAt = session.lastUserMessageAt,
+        hasConversationContent = session.hasConversationContent,
         pinned = session.pinned ?: false,
         globalPinned = session.globalPinned ?: false,
         metadata = toSessionSummaryMetadata(session.metadata),
@@ -203,6 +210,8 @@ object SummaryPatching {
      *   (see the class doc for why equality is safe here and only here), then
      *   recompute the derived fields. `pendingRequests`' fallback `since` is
      *   the summary's post-patch `updatedAt`, matching the reference.
+     * - `attachedJob` gates strictly (`>`) on `attachedJobUpdatedAt`, like
+     *   the reference: a lagged heartbeat must not resurrect a clear.
      * - `teamState` is a summary no-op (not rendered on the list).
      * - `activeTurnStartedAt` / `scratchlistUpdatedAt` / `serviceTier` /
      *   `permissionMode` / `collaborationMode` / `copilotAgentMode` have no
@@ -210,10 +219,13 @@ object SummaryPatching {
      */
     fun applySessionSummaryPatch(current: SessionSummary, patch: SessionPatch): SessionSummary {
         var next = current.copy(
+            contentRevision = patch.contentRevision?.let { max(current.contentRevision ?: 0, it) } ?: current.contentRevision,
+            readState = SessionReadState.merge(current.readState, patch.readState),
             active = patch.active ?: current.active,
             thinking = patch.thinking ?: current.thinking,
             activeAt = patch.activeAt ?: current.activeAt,
             updatedAt = patch.updatedAt?.let { max(current.updatedAt, it) } ?: current.updatedAt,
+            lastUserMessageAt = patch.lastUserMessageAt?.let { max(current.lastUserMessageAt ?: 0, it) } ?: current.lastUserMessageAt,
             backgroundTaskCount = patch.backgroundTaskCount ?: current.backgroundTaskCount,
             model = when (val model = patch.model) {
                 is OptionalField.Present -> model.value
@@ -257,6 +269,11 @@ object SummaryPatching {
                     metadata = toSessionSummaryMetadata(metadata.value),
                     metadataVersion = metadata.version,
                 )
+            }
+        }
+        patch.attachedJob?.let { job ->
+            if (job.version > current.attachedJobUpdatedAt) {
+                next = next.copy(attachedJob = job.value, attachedJobUpdatedAt = job.version)
             }
         }
         return next
@@ -305,9 +322,11 @@ object SummaryPatching {
      * effect is suppressing a re-render that stores an equal-rendering value.
      */
     fun isRenderIrrelevantPatch(current: SessionSummary, next: SessionSummary): Boolean {
-        return current.active == next.active
+        return current.contentRevision == next.contentRevision && current.readState == next.readState &&
+            current.active == next.active
             && current.thinking == next.thinking
             && current.updatedAt == next.updatedAt
+            && current.lastUserMessageAt == next.lastUserMessageAt
             && current.backgroundTaskCount == next.backgroundTaskCount
             && current.model == next.model
             && current.modelReasoningEffort == next.modelReasoningEffort
@@ -328,6 +347,9 @@ object SummaryPatching {
             && current.metadataVersion == next.metadataVersion
             && current.agentStateVersion == next.agentStateVersion
             && current.todosUpdatedAt == next.todosUpdatedAt
+            // Heartbeats move only `heartbeatAt`, which drives the stale state.
+            && current.attachedJob == next.attachedJob
+            && current.attachedJobUpdatedAt == next.attachedJobUpdatedAt
     }
 
     /**

@@ -1,9 +1,10 @@
 import { RawJSONLines, RawJSONLinesSchema } from "../types";
-import { basename, join } from "node:path";
+import { basename, dirname } from "node:path";
 import { open, stat } from "node:fs/promises";
 import { logger } from "@/ui/logger";
 import { getProjectPath } from "./path";
 import { BaseSessionScanner, SessionFileScanEntry, SessionFileScanResult, SessionFileScanStats } from "@/modules/common/session/BaseSessionScanner";
+import { findClaudeSessionFile, listClaudeSubagentFiles, readSubagentParentToolUseId } from "./transcriptEntry";
 
 /**
  * Known internal Claude Code event types that should be silently skipped.
@@ -49,6 +50,10 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     private readonly pendingSessions = new Set<string>();
     private currentSessionId: string | null;
     private readonly scannedSessions = new Set<string>();
+    // Subagent transcript path → spawning Agent/Task tool_use id, from its meta.json.
+    private readonly subagentParents = new Map<string, string>();
+    // Session id → transcript path, once Claude Code has relocated it.
+    private readonly sessionFiles = new Map<string, string>();
 
     constructor(opts: { sessionId: string | null; workingDirectory: string; onMessage: (message: RawJSONLines) => void }) {
         super({ intervalMs: 3000 });
@@ -82,12 +87,17 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
         if (!this.currentSessionId) {
             return;
         }
-        const sessionFile = this.sessionFilePath(this.currentSessionId);
+        const sessionFile = await this.resolveSessionFile(this.currentSessionId);
         const { events, nextCursor } = await readSessionLog(sessionFile, 0);
         logger.debug(`[SESSION_SCANNER] Marking ${events.length} existing messages as processed from session ${this.currentSessionId}`);
         const keys = events.map((entry) => messageKey(entry.event));
         this.seedProcessedKeys(keys);
         this.setCursor(sessionFile, nextCursor);
+        for (const subagentFile of await this.subagentFilePaths(sessionFile)) {
+            const existing = await readSessionLog(subagentFile, 0);
+            this.seedProcessedKeys(existing.events.map((entry) => messageKey(entry.event)));
+            this.setCursor(subagentFile, existing.nextCursor);
+        }
     }
 
     protected async beforeScan(): Promise<void> {
@@ -97,10 +107,15 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     protected async findSessionFiles(): Promise<string[]> {
         const files = new Set<string>();
         for (const sessionId of this.pendingSessions) {
-            files.add(this.sessionFilePath(sessionId));
+            files.add(await this.resolveSessionFile(sessionId));
         }
         if (this.currentSessionId && !this.pendingSessions.has(this.currentSessionId)) {
-            files.add(this.sessionFilePath(this.currentSessionId));
+            files.add(await this.resolveSessionFile(this.currentSessionId));
+        }
+        for (const sessionFile of [...files]) {
+            for (const subagentFile of await this.subagentFilePaths(sessionFile)) {
+                files.add(subagentFile);
+            }
         }
         for (const watched of this.getWatchedFiles()) {
             files.add(watched);
@@ -109,6 +124,18 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     }
 
     protected async parseSessionFile(filePath: string, cursor: number): Promise<SessionFileScanResult<RawJSONLines>> {
+        if (isSubagentFile(filePath)) {
+            const { events, nextCursor } = await readSessionLog(filePath, cursor);
+            const parentToolUseId = await this.subagentParentToolUseId(filePath);
+            if (parentToolUseId) {
+                for (const { event } of events) {
+                    if (event.isSidechain && !event.parentToolUseId) {
+                        event.parentToolUseId = parentToolUseId;
+                    }
+                }
+            }
+            return { events, nextCursor };
+        }
         const sessionId = sessionIdFromPath(filePath);
         if (sessionId) {
             this.scannedSessions.add(sessionId);
@@ -145,8 +172,32 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
         }
     }
 
-    private sessionFilePath(sessionId: string): string {
-        return join(this.projectDir, `${sessionId}.jsonl`);
+    // Claude Code moves the transcript to the project dir of the new cwd when
+    // the session enters or leaves a git worktree, so look for it by session id
+    // across all project dirs once the known path is gone.
+    private async resolveSessionFile(sessionId: string): Promise<string> {
+        return findClaudeSessionFile(sessionId, {
+            projectDir: this.projectDir,
+            sessionFiles: this.sessionFiles,
+            onFileMoved: (newPath, knownPath) => {
+                // Re-read the moved file from the top; processed event keys drop what was already sent.
+                this.setCursor(newPath, 0);
+                this.pruneWatchers(this.getWatchedFiles().filter((file) => file !== knownPath));
+            }
+        });
+    }
+
+    // Claude Code 2.x writes each subagent to <session>/subagents/agent-*.jsonl
+    // instead of the main session log.
+    private async subagentFilePaths(sessionFile: string): Promise<string[]> {
+        return listClaudeSubagentFiles(sessionFile);
+    }
+
+    // The transcript lines carry no parent tool_use id; the sibling meta.json
+    // records it as `toolUseId`. Without it the web tracer can only fall back
+    // to matching the subagent prompt against the Agent tool input.
+    private async subagentParentToolUseId(filePath: string): Promise<string | undefined> {
+        return readSubagentParentToolUseId(filePath, this.subagentParents);
     }
 }
 
@@ -284,6 +335,10 @@ export async function readSessionLog(filePath: string, startByte: number): Promi
         }
     }
     return { events: messages, nextCursor };
+}
+
+function isSubagentFile(filePath: string): boolean {
+    return basename(dirname(filePath)) === 'subagents';
 }
 
 function sessionIdFromPath(filePath: string): string | null {

@@ -71,8 +71,8 @@ describe('shouldInvokeComposerDictateShortcut', () => {
         expect(shouldInvokeComposerDictateShortcut(base)).toBe(true)
     })
 
-    it('does not start assistant voice when UnifiedButton is in send mode', () => {
-        expect(shouldInvokeComposerDictateShortcut({ ...base, canSend: true })).toBe(false)
+    it('starts assistant voice via toolbar DictationButton when UnifiedButton is Send', () => {
+        expect(shouldInvokeComposerDictateShortcut({ ...base, canSend: true })).toBe(true)
     })
 
     it('starts dictation on an empty composer when scratchlist routing is off', () => {
@@ -95,5 +95,22 @@ describe('shouldInvokeComposerDictateShortcut', () => {
             ...base,
             routesToScratchlist: true,
         })).toBe(false)
+    })
+
+    it('suppresses scratchlist-routed draft starts (toolbar voice also hidden)', () => {
+        expect(shouldInvokeComposerDictateShortcut({
+            ...base,
+            canSend: true,
+            routesToScratchlist: true,
+        })).toBe(false)
+    })
+
+    it('still stops an active voice session while scratchlist routing is on', () => {
+        expect(shouldInvokeComposerDictateShortcut({
+            ...base,
+            canSend: true,
+            routesToScratchlist: true,
+            voiceStatus: 'connected',
+        })).toBe(true)
     })
 })

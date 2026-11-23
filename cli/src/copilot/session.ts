@@ -64,6 +64,10 @@ export class CopilotSession extends AgentSessionBase<CopilotMode> {
         this.model = model;
     };
 
+    setEffort = (effort: string | null): void => {
+        this.effort = effort;
+    };
+
     setAgentMode = (mode: CopilotAgentMode): void => {
         this.agentMode = mode;
     };
@@ -95,6 +99,7 @@ export class CopilotSession extends AgentSessionBase<CopilotMode> {
         this.client.keepAlive(this.thinking, this.mode, {
             permissionMode: this.permissionMode,
             model: this.model,
+            effort: this.effort,
             copilotAgentMode: this.agentMode
         });
     };

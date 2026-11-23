@@ -4,16 +4,29 @@ import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import type { Session } from '@/types/api'
+import { readSessionWithLiveUpdates } from '@/lib/sessionDetailRead'
+import { queryKeys } from '@/lib/query-keys'
 import {
     applySessionDetailPatch,
-    canApplyVersionedSummaryPatch,
     isGlobalScopedMessageStreamEvent,
     isNewerVersionedPatch,
     isRenderIrrelevantPatch,
     isRenderIrrelevantSessionPatch,
+    sameSessionSummaryMetadata,
     shouldInvalidateSessionListForEvent,
     useSSE
 } from './useSSE'
+
+describe('session summary metadata equality', () => {
+    it('detects capability changes that control list actions', () => {
+        const base = { path: '/p', host: 'h' }
+        expect(sameSessionSummaryMetadata(base, { ...base, conversationHistory: { forkCurrent: true } })).toBe(false)
+        expect(sameSessionSummaryMetadata(
+            { ...base, conversationHistory: { forkCurrent: true } },
+            { ...base, conversationHistory: { forkCurrent: true } },
+        )).toBe(true)
+    })
+})
 
 class FakeEventSource {
     static instances: FakeEventSource[] = []
@@ -45,11 +58,13 @@ class FakeEventSource {
     }
 }
 
-function renderUseSSE(options?: { onDisconnect?: (reason: string) => void }) {
+function renderUseSSE(options?: {
+    onDisconnect?: (reason: string) => void
+}) {
     const queryClient = new QueryClient()
     const wrapper = ({ children }: { children: ReactNode }) =>
         createElement(QueryClientProvider, { client: queryClient }, children)
-    return renderHook(() => useSSE({
+    const hook = renderHook(() => useSSE({
         enabled: true,
         token: 'test-token',
         baseUrl: 'http://hub.test',
@@ -57,6 +72,7 @@ function renderUseSSE(options?: { onDisconnect?: (reason: string) => void }) {
         onEvent: () => {},
         onDisconnect: options?.onDisconnect
     }), { wrapper })
+    return { ...hook, queryClient }
 }
 
 describe('useSSE connection liveness (mobile suspend/resume)', () => {
@@ -161,6 +177,37 @@ describe('useSSE connection liveness (mobile suspend/resume)', () => {
     })
 })
 
+describe('useSSE scratchlist status invalidation', () => {
+    beforeEach(() => {
+        vi.useFakeTimers()
+        FakeEventSource.instances = []
+        vi.stubGlobal('EventSource', FakeEventSource)
+    })
+
+    afterEach(() => {
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+    })
+
+    it('invalidates both the session scratchlist and batch status queries', () => {
+        const { unmount, queryClient } = renderUseSSE()
+        const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined)
+
+        act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({
+                type: 'session-updated',
+                sessionId: 'session-1',
+                data: { scratchlistUpdatedAt: 1234 }
+            })
+            vi.advanceTimersByTime(20)
+        })
+
+        expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.scratchlist('session-1') })
+        expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.scratchlistSessionIds })
+        unmount()
+    })
+})
+
 function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     return {
         id: 'session-1',
@@ -179,63 +226,13 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides
     } as SessionSummary
 }
-
-describe('canApplyVersionedSummaryPatch (PR #897 review, HAPI Bot 2026-07-23 Major)', () => {
-    it('allows non-versioned patches without a detail cache', () => {
-        expect(canApplyVersionedSummaryPatch({}, false)).toBe(true)
-        expect(canApplyVersionedSummaryPatch({ metadata: undefined, agentState: undefined }, false)).toBe(true)
-    })
-
-    it('refuses metadata/agentState/todos summary patches when detail version source is missing', () => {
-        expect(
-            canApplyVersionedSummaryPatch(
-                { metadata: { version: 1, value: null } },
-                false
-            )
-        ).toBe(false)
-        expect(
-            canApplyVersionedSummaryPatch(
-                { agentState: { version: 1, value: null } },
-                false
-            )
-        ).toBe(false)
-        expect(
-            canApplyVersionedSummaryPatch(
-                { todos: { version: 1, value: [] } },
-                false
-            )
-        ).toBe(false)
-    })
-
-    it('allows teamState-only patches without detail (summary no-op)', () => {
-        expect(
-            canApplyVersionedSummaryPatch(
-                { teamState: { version: 1, value: null } },
-                false
-            )
-        ).toBe(true)
-    })
-
-    it('allows versioned summary patches when detail is present', () => {
-        expect(
-            canApplyVersionedSummaryPatch(
-                { metadata: { version: 2, value: null } },
-                true
-            )
-        ).toBe(true)
-        expect(
-            canApplyVersionedSummaryPatch(
-                { todos: { version: 2, value: [] } },
-                true
-            )
-        ).toBe(true)
-    })
-})
 
 describe('isNewerVersionedPatch (PR #897 review, HAPI Bot 2026-06-16 Major)', () => {
     // Pin the version-monotonicity contract for structured metadata /
@@ -323,6 +320,23 @@ describe('isRenderIrrelevantPatch', () => {
         const current = makeSummary()
         const next = makeSummary({ ...change, activeAt: 11_000 })
 
+        expect(isRenderIrrelevantPatch(current, next)).toBe(false)
+    })
+
+    it('reports attachedJob.startedAt changes as relevant', () => {
+        const job = {
+            key: 'beets',
+            label: 'beets',
+            status: 'running' as const,
+            heartbeatAt: 100,
+            startedAt: 100,
+            updatedAt: 100
+        }
+        const current = makeSummary({ attachedJob: job })
+        const next = makeSummary({
+            attachedJob: { ...job, startedAt: 50 },
+            activeAt: 11_000
+        })
         expect(isRenderIrrelevantPatch(current, next)).toBe(false)
     })
 })
@@ -430,5 +444,65 @@ describe('applySessionDetailPatch (PR #897 review, Copilot keep-alive)', () => {
             activeAt: 11_000,
             copilotAgentMode: 'interactive'
         })).toBeNull()
+    })
+})
+
+describe('useSSE user-activity ordering', () => {
+    beforeEach(() => {
+        FakeEventSource.instances = []
+        vi.stubGlobal('EventSource', FakeEventSource)
+    })
+    afterEach(() => vi.unstubAllGlobals())
+
+    it('ignores agent/status updates, promotes new input, and rejects stale replay', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        const sessions = [
+            makeSummary({ id: 'new', createdAt: 3_000, lastUserMessageAt: 8_000 }),
+            makeSummary({ id: 'old', createdAt: 1_000, lastUserMessageAt: 5_000 })
+        ]
+        queryClient.setQueryData(queryKeys.sessions, { sessions })
+        const patch = (sessionId: string, data: Record<string, unknown>) => act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({ type: 'session-updated', sessionId, data })
+        })
+        const read = () => queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)!.sessions
+        for (let i = 0; i < 10; i++) {
+            patch('old', { updatedAt: 90_000 + i, thinking: true, active: true })
+            patch('new', { updatedAt: 100_000 + i, thinking: false, active: false })
+            expect(read().map(s => s.id)).toEqual(['new', 'old'])
+        }
+        patch('old', { lastUserMessageAt: 200_000 })
+        expect(read().map(s => s.id)).toEqual(['old', 'new'])
+        patch('old', { lastUserMessageAt: 4_000 })
+        expect(read()[0]!.lastUserMessageAt).toBe(200_000)
+        expect(read().map(s => s.id)).toEqual(['old', 'new'])
+        unmount()
+    })
+
+    it('observes an expiry even without a detail row to patch during a cold fetch', async () => {
+        const { queryClient, unmount } = renderUseSSE()
+        let resolve!: (value: { session: Session }) => void
+        const stopped = { active: false, activeAt: 10, thinking: false, activeTurnStartedAt: null } as Session
+        const fetch = vi.fn().mockImplementationOnce(() => new Promise(done => { resolve = done })).mockResolvedValue({ session: stopped })
+        const read = readSessionWithLiveUpdates(queryClient, 'cold', fetch)
+        act(() => FakeEventSource.instances[0]?.simulateMessage({ type: 'session-updated', sessionId: 'cold',
+            data: { active: false, activeAt: 10, thinking: false, activeTurnStartedAt: null } }))
+        resolve({ session: { active: true, activeAt: 10, thinking: true, activeTurnStartedAt: 5 } as Session })
+        expect((await read).session).toMatchObject({ active: false, activeAt: 10, thinking: false, activeTurnStartedAt: null })
+        unmount()
+    })
+
+    it('preserves the user timestamp through a stale full-session event', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({ id: 'session-1', lastUserMessageAt: 9_000 })] })
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: {
+                ...makeSummary(), id: 'session-1', namespace: 'default', seq: 1,
+                createdAt: 1, agentState: null, thinkingAt: 0, lastUserMessageAt: 1_000
+            }
+        }))
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        expect(data?.sessions[0]?.lastUserMessageAt).toBe(9_000)
+        unmount()
     })
 })

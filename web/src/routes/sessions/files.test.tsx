@@ -21,6 +21,12 @@ const mocks = vi.hoisted(() => ({
         onSessionReopened?: (newSessionId: string) => void | Promise<void>
     },
     search: {} as { tab?: 'changes' | 'directories'; query?: string },
+    fileSearchResult: null as null | {
+        files: Array<{ fileName: string; filePath: string; fullPath: string; fileType: 'file' }>
+        error: string | null
+        isPathSearch: boolean
+        isLoading: boolean
+    },
     gitStatus: {
         status: null as null | Record<string, unknown>,
         error: null as null | string,
@@ -63,6 +69,12 @@ vi.mock('@/hooks/queries/useGitStatusFiles', () => ({
 vi.mock('@/hooks/queries/useSessionFileSearch', () => ({
     useSessionFileSearch: (...args: unknown[]) => {
         mocks.fileSearch(...args)
+        if (mocks.fileSearchResult) {
+            return {
+                ...mocks.fileSearchResult,
+                refetch: vi.fn(),
+            }
+        }
         return {
             files: [{
                 fileName: '感言.ts',
@@ -71,6 +83,7 @@ vi.mock('@/hooks/queries/useSessionFileSearch', () => ({
                 fileType: 'file' as const,
             }],
             error: null,
+            isPathSearch: false,
             isLoading: false,
             refetch: vi.fn(),
         }
@@ -107,6 +120,7 @@ function renderFilesPage() {
 // Most tests do not render git rows; only the changes-row suite installs a status.
 beforeEach(() => {
     mocks.gitStatus = { status: null, error: null, isLoading: false, refetch: vi.fn() }
+    mocks.fileSearchResult = null
 })
 
 describe('FilesPage search navigation', () => {
@@ -114,6 +128,7 @@ describe('FilesPage search navigation', () => {
         vi.clearAllMocks()
         mocks.sessionId = 'session-1'
         mocks.search = { tab: 'directories', query: '感' }
+        mocks.fileSearchResult = null
         window.localStorage.clear()
         window.sessionStorage.clear()
     })
@@ -168,6 +183,21 @@ describe('FilesPage search navigation', () => {
             replace: true,
             resetScroll: false,
         })
+    })
+
+    it('uses path-specific empty copy for an empty path search', () => {
+        mocks.search.query = 'src/nope.ts'
+        mocks.fileSearchResult = {
+            files: [],
+            error: null,
+            isPathSearch: true,
+            isLoading: false,
+        }
+
+        renderFilesPage()
+
+        expect(screen.getByText('No files match your search in this path.')).toBeInTheDocument()
+        expect(screen.queryByText('No files match your search.')).not.toBeInTheDocument()
     })
 })
 
@@ -260,6 +290,37 @@ describe('FilesPage reopen draft transfer', () => {
         renderFilesPage()
         const secondScrollRegion = document.querySelector('[data-hapi-session-files-scroll="true"]') as HTMLElement
         expect(secondScrollRegion.scrollTop).toBe(87)
+    })
+})
+
+describe('FilesPage change errors', () => {
+    beforeEach(() => {
+        vi.clearAllMocks()
+        mocks.gitStatus = { status: null, error: null, isLoading: false, refetch: vi.fn() }
+        mocks.search = { tab: 'changes', query: undefined }
+        window.localStorage.clear()
+        window.sessionStorage.clear()
+    })
+
+    it('collapses long Git status errors until clicked', () => {
+        const tail = 'FULL GIT STATUS ERROR TAIL'
+        const longError = `Command failed: git status --porcelain=v2 --branch --untracked-files=all ${'diagnostic '.repeat(30)}${tail}`
+        mocks.gitStatus.error = longError
+
+        renderFilesPage()
+
+        const errorToggle = screen.getByRole('button', { name: /Show full error/ })
+        expect(errorToggle).toHaveAttribute('aria-expanded', 'false')
+        expect(errorToggle).toHaveTextContent('…')
+        expect(errorToggle).not.toHaveTextContent(tail)
+
+        fireEvent.click(errorToggle)
+        expect(errorToggle).toHaveAttribute('aria-expanded', 'true')
+        expect(errorToggle).toHaveTextContent(longError)
+
+        fireEvent.click(errorToggle)
+        expect(errorToggle).toHaveAttribute('aria-expanded', 'false')
+        expect(errorToggle).not.toHaveTextContent(tail)
     })
 })
 

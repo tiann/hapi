@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { en, zhCN } from '@/lib/locales'
 import type { ToolCallBlock } from '@/chat/types'
 import type { ToolGroupBlock } from '@/chat/toolGroups'
-import { formatGroupedHeaderSubtitle, formatGroupedHeaderTitle, formatGroupedRowLabel, inferGroupedSummaryIntent } from '@/components/ToolCard/groupedPresentation'
+import { formatGroupedHeaderSubtitle, formatGroupedHeaderTitle, inferGroupedSummaryIntent } from '@/components/ToolCard/groupedPresentation'
 
 type Dict = Record<string, string>
 
@@ -17,7 +17,7 @@ function makeTranslator(dict: Dict) {
     }
 }
 
-function makeTool(id: string, name: string, input: unknown = {}): ToolCallBlock {
+function makeTool(id: string, name: string, input: unknown = {}, nativeKind?: string): ToolCallBlock {
     return {
         kind: 'tool-call',
         id,
@@ -35,6 +35,7 @@ function makeTool(id: string, name: string, input: unknown = {}): ToolCallBlock 
             execStartedAt: null,
             execCompletedAt: null,
             description: null,
+            nativeKind,
             result: null,
             permission: undefined,
         },
@@ -99,21 +100,19 @@ describe('inferGroupedSummaryIntent', () => {
         const tool = makeTool('shell-2', 'Bash', { command: 'rg "TodoWrite" web/src' })
         expect(inferGroupedSummaryIntent(tool)).toBe('search-content')
     })
-})
 
-describe('formatGroupedRowLabel', () => {
-    it('returns a friendly english label without leaking raw shell command text', () => {
-        const tool = makeTool('shell-3', 'shell_command', { command: 'Get-ChildItem src -Recurse' })
-        const label = formatGroupedRowLabel(tool, tEn)
-
-        expect(label).toBe('Inspect project files')
-        expect(label).not.toContain('Get-ChildItem')
-        expect(label).not.toContain('src')
+    it('normalizes lowercase and snake-case tool aliases', () => {
+        expect(inferGroupedSummaryIntent(makeTool('read-1', 'read_file'))).toBe('inspect-files')
+        expect(inferGroupedSummaryIntent(makeTool('search-1', 'grep_search'))).toBe('search-content')
+        expect(inferGroupedSummaryIntent(makeTool('edit-1', 'replace_file_content'))).toBe('modify-files')
+        expect(inferGroupedSummaryIntent(makeTool('web-1', 'web_search'))).toBe('open-web')
     })
 
-    it('returns a friendly chinese label for command execution', () => {
-        const tool = makeTool('shell-4', 'Bash', { command: 'bun run build:web' })
-        expect(formatGroupedRowLabel(tool, tZh)).toBe('执行项目命令')
+    it('uses native kinds for ACP title-as-name tools', () => {
+        expect(inferGroupedSummaryIntent(makeTool('read-1', 'src/grok.ts', {}, 'read'))).toBe('inspect-files')
+        expect(inferGroupedSummaryIntent(makeTool('search-1', 'tool grouping', {}, 'search'))).toBe('search-content')
+        expect(inferGroupedSummaryIntent(makeTool('edit-1', 'Writing to src/grok.ts', {}, 'edit'))).toBe('modify-files')
+        expect(inferGroupedSummaryIntent(makeTool('command-1', 'bun test grok', { command: 'bun test grok' }, 'execute'))).toBe('run-project-command')
     })
 })
 

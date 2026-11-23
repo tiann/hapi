@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 import type { FileSearchItem, GitFileStatus } from '@/types/api'
 import { FileIcon } from '@/components/FileIcon'
+import { ExpandableErrorMessage } from '@/components/ExpandableErrorMessage'
 import { DirectoryTree } from '@/components/SessionFiles/DirectoryTree'
 import { FileActionMenu } from '@/components/FileActionMenu'
 import { useFileMenuTrigger } from '@/hooks/useFileMenuTrigger'
@@ -651,9 +652,12 @@ export default function FilesPage() {
             >
                 <div className="mx-auto w-full max-w-content">
                     {showGitErrorBanner && activeTab === 'changes' ? (
-                        <div className="border-b border-[var(--app-divider)] bg-amber-500/10 px-3 py-2 text-xs text-[var(--app-hint)]">
-                            {gitErrorMessage}
-                        </div>
+                        <ExpandableErrorMessage
+                            message={gitErrorMessage ?? ''}
+                            expandLabel={t('files.changes.expandError')}
+                            collapseLabel={t('files.changes.collapseError')}
+                            className="border-b border-[var(--app-divider)] bg-amber-500/10 px-3 py-2 text-xs text-[var(--app-hint)]"
+                        />
                     ) : null}
                     {shouldSearch ? (
                         searchResults.isLoading ? (
@@ -662,7 +666,7 @@ export default function FilesPage() {
                             <div className="p-6 text-sm text-[var(--app-hint)]">{searchErrorMessage}</div>
                         ) : searchResults.files.length === 0 ? (
                             <div className="p-6 text-sm text-[var(--app-hint)]">
-                                {t('files.search.empty')}
+                                {t(searchResults.isPathSearch ? 'files.search.emptyPath' : 'files.search.empty')}
                             </div>
                         ) : (
                             <div className="border-t border-[var(--app-divider)]">

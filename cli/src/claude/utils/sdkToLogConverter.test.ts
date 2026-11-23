@@ -115,6 +115,27 @@ describe('SDKToLogConverter', () => {
 
             expect(converter.convert(sdkMessage)?.isMeta).toBeUndefined()
         })
+
+        it.each([
+            '<local-command-stdout>Compacted </local-command-stdout>',
+            '<local-command-name>/context</local-command-name>',
+            '<local-command-stdout>context window usage</local-command-stdout>',
+            '<local-command-stderr>boom</local-command-stderr>'
+        ])('keeps other local-command CLI output visible for the client contract (%s)', (content) => {
+            // Local-command output is rendered intentionally as a CLI-output
+            // block (docs/api/client-contract/messages.md). The compact stdout
+            // echo is suppressed upstream, in claudeRemote's stream loop, where
+            // the active-command state lives.
+            const sdkMessage: SDKUserMessage = {
+                type: 'user',
+                message: {
+                    role: 'user',
+                    content
+                }
+            }
+
+            expect(converter.convert(sdkMessage)?.isMeta).toBeUndefined()
+        })
     })
 
     describe('Assistant messages', () => {
@@ -159,6 +180,23 @@ describe('SDKToLogConverter', () => {
 
             expect((logMessage as any).requestId).toBe('req_123')
         })
+
+        it('keeps the top-level error on synthetic API error messages (#1857)', () => {
+            const sdkMessage: any = {
+                type: 'assistant',
+                message: {
+                    model: '<synthetic>',
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'Prompt is too long' }]
+                },
+                error: 'invalid_request',
+                is_api_error_message: true
+            }
+
+            const logMessage = converter.convert(sdkMessage)
+
+            expect((logMessage as any).error).toBe('invalid_request')
+        })
     })
 
     describe('System messages', () => {
@@ -202,9 +240,25 @@ describe('SDKToLogConverter', () => {
             const logMessage = converter.convert(userMessage)
             expect(logMessage?.sessionId).toBe('updated-session-789')
         })
+
+        it('keeps the task list on background_tasks_changed snapshots', () => {
+            const tasks = [{ task_id: 'b1', task_type: 'local_bash' }]
+            const logMessage = converter.convert({
+                type: 'system',
+                subtype: 'background_tasks_changed',
+                tasks
+            } as SDKSystemMessage)
+
+            expect(logMessage).toMatchObject({ type: 'system', subtype: 'background_tasks_changed', tasks })
+        })
     })
 
     describe('Result messages', () => {
+        // resultSummary rides the system variant's passthrough; the union needs
+        // a narrowing cast for direct property assertions.
+        const summaryOf = (logMessage: ReturnType<SDKToLogConverter['convert']>): Record<string, unknown> | undefined =>
+            (logMessage as { resultSummary?: Record<string, unknown> } | null)?.resultSummary
+
         it('converts successful results into a round-summary carrier without advancing the parent chain', () => {
             const preceding = converter.convert({
                 type: 'user',
@@ -262,6 +316,10 @@ describe('SDKToLogConverter', () => {
                 type: 'result',
                 subtype: 'error_max_turns',
                 num_turns: 10,
+                usage: {
+                    input_tokens: 500,
+                    output_tokens: 40
+                },
                 total_cost_usd: 0.1,
                 duration_ms: 5000,
                 duration_api_ms: 4500,
@@ -281,6 +339,87 @@ describe('SDKToLogConverter', () => {
                     duration_ms: 5000
                 }
             })
+            // An errored round has no meaningful generation rate.
+            expect(summaryOf(logMessage)).not.toHaveProperty('generation_ms')
+            expect(summaryOf(logMessage)).not.toHaveProperty('generation_output_tokens')
+        })
+
+        it('carries the API generation time and output tokens for tok/s', () => {
+            const sdkMessage: SDKResultMessage = {
+                type: 'result',
+                subtype: 'success',
+                num_turns: 3,
+                usage: {
+                    input_tokens: 100,
+                    output_tokens: 200
+                },
+                total_cost_usd: 0.05,
+                duration_ms: 3000,
+                duration_api_ms: 2500,
+                is_error: false,
+                session_id: 'result-session'
+            }
+
+            const logMessage = converter.convert(sdkMessage)
+
+            // duration_api_ms is Claude Code's own API-active time: tool
+            // execution and permission waits are already outside it.
+            expect(summaryOf(logMessage)).toMatchObject({
+                generation_ms: 2500,
+                generation_output_tokens: 200
+            })
+        })
+
+        it.each([
+            ['duration', { duration_api_ms: 0 }],
+            ['duration', { duration_api_ms: -1 }],
+            ['duration', { duration_api_ms: 1.5 }],
+            ['tokens', { usage: { input_tokens: 10, output_tokens: 0 } }],
+            ['tokens', { usage: { input_tokens: 10, output_tokens: -5 } }],
+            ['tokens', { usage: { input_tokens: 10, output_tokens: 2.5 } }],
+            ['tokens', {}]
+        ])('omits the tok/s pair for a %s value that cannot produce a rate (%j)', (_label, patch) => {
+            const sdkMessage: SDKResultMessage = {
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0,
+                duration_ms: 3000,
+                duration_api_ms: 2500,
+                is_error: false,
+                session_id: 'result-session',
+                ...patch
+            } as SDKResultMessage
+
+            const logMessage = converter.convert(sdkMessage)
+
+            expect(summaryOf(logMessage)).toBeTruthy()
+            expect(summaryOf(logMessage)).not.toHaveProperty('generation_ms')
+            expect(summaryOf(logMessage)).not.toHaveProperty('generation_output_tokens')
+        })
+
+        it('omits the tok/s pair for a compaction turn result', () => {
+            const sdkMessage = {
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                usage: {
+                    input_tokens: 30_000,
+                    output_tokens: 900
+                },
+                total_cost_usd: 0.02,
+                duration_ms: 4000,
+                duration_api_ms: 3800,
+                is_error: false,
+                session_id: 'result-session',
+                hapi_compact_turn: true
+            } as unknown as SDKResultMessage
+
+            const logMessage = converter.convert(sdkMessage)
+
+            expect(summaryOf(logMessage)).toMatchObject({ duration_ms: 4000, num_turns: 1 })
+            expect(summaryOf(logMessage)).not.toHaveProperty('generation_ms')
+            expect(summaryOf(logMessage)).not.toHaveProperty('generation_output_tokens')
         })
 
         it('does not let a sidechain result carrier advance the sidechain parent chain', () => {
@@ -393,6 +532,33 @@ describe('SDKToLogConverter', () => {
             // Subsequent assistant message uses the refined value
             const second = converter.convert(makeAssistantMessage()) as any
             expect(second?.message?.usage?.context_window).toBe(500_000)
+        })
+
+        it('exposes the resolved context window for the post-compaction usage refresh', () => {
+            // No init/result yet: the launcher's context-only usage must not
+            // invent a window, so the getter stays undefined.
+            expect(converter.currentContextWindow()).toBeUndefined()
+
+            converter.convert({
+                type: 'system',
+                subtype: 'init',
+                session_id: 'session-cw',
+                model: 'claude-opus-4-7[1m]'
+            } as SDKSystemMessage)
+            expect(converter.currentContextWindow()).toBe(1_000_000)
+
+            converter.convert({
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0,
+                duration_ms: 1,
+                duration_api_ms: 1,
+                is_error: false,
+                session_id: 'session-cw',
+                modelUsage: { 'claude-opus-4-7[1m]': { contextWindow: 500_000 } }
+            } as SDKResultMessage)
+            expect(converter.currentContextWindow()).toBe(500_000)
         })
 
         it('does not overwrite an explicit context_window already set by upstream', () => {
@@ -562,6 +728,68 @@ describe('SDKToLogConverter', () => {
             expect(turn1?.message?.usage?.context_window).toBe(1_000_000)
         })
 
+        it('seeds a 1M turn-1 estimate for a bare preset alias, which resolves to a native 1M model', () => {
+            const seededConverter = new SDKToLogConverter({
+                ...context,
+                selectedModel: 'fable'
+            } as any)
+
+            seededConverter.convert({
+                type: 'system',
+                subtype: 'init',
+                session_id: 'session-7b',
+                model: 'claude-fable-5-1'
+            } as SDKSystemMessage)
+
+            const turn1 = seededConverter.convert({
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    model: 'claude-fable-5-1',
+                    content: [{ type: 'text', text: 'hi' }],
+                    usage: { input_tokens: 10, output_tokens: 20 }
+                }
+            } as any) as any
+
+            expect(turn1?.message?.usage?.context_window).toBe(1_000_000)
+        })
+
+        it('uses get_context_usage over the alias seed and over a later result (1M disabled / autoCompactWindow)', () => {
+            const seededConverter = new SDKToLogConverter({
+                ...context,
+                selectedModel: 'fable'
+            } as any)
+
+            seededConverter.convert({
+                type: 'system',
+                subtype: 'init',
+                session_id: 'session-7c',
+                model: 'claude-fable-5-1'
+            } as SDKSystemMessage)
+
+            seededConverter.applyContextUsage('claude-sonnet-5-5', 100_000)
+            expect((seededConverter.convert(makeAssistantMessage()) as any)?.message?.usage?.context_window).toBe(1_000_000)
+            expect(seededConverter.currentContextWindow()).toBe(1_000_000)
+
+            seededConverter.applyContextUsage('claude-fable-5-1', 200_000)
+            expect((seededConverter.convert(makeAssistantMessage()) as any)?.message?.usage?.context_window).toBe(200_000)
+            expect(seededConverter.currentContextWindow()).toBe(200_000)
+
+            seededConverter.convert({
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0,
+                duration_ms: 1,
+                duration_api_ms: 1,
+                is_error: false,
+                session_id: 'session-7c',
+                modelUsage: { 'claude-fable-5-1': { contextWindow: 1_000_000 } }
+            } as SDKResultMessage)
+            expect((seededConverter.convert(makeAssistantMessage()) as any)?.message?.usage?.context_window).toBe(200_000)
+            expect(seededConverter.currentContextWindow()).toBe(200_000)
+        })
+
         it('seeds a conservative 200k when neither the bare init model nor a selectedModel hint indicates 1M, until result confirms it', () => {
             // Bare init model + no selectedModel hint: neither signal says "1M", so we can't
             // know the real window on turn 1 and seed 200k conservatively rather than
@@ -664,18 +892,18 @@ describe('SDKToLogConverter', () => {
             // selectedModel and none on the bare init model). Without a live update, the
             // converter would still be seeding from the stale "fable[1m]" snapshot and
             // would over-seed 1,000,000 for the newly-selected model's first turn.
-            liveConverter.updateSelectedModel('sonnet')
+            liveConverter.updateSelectedModel('claude-sonnet-4-6')
             liveConverter.convert({
                 type: 'system',
                 subtype: 'init',
                 session_id: 'session-10',
-                model: 'claude-sonnet-5'
+                model: 'claude-sonnet-4-6'
             } as SDKSystemMessage)
             const afterSwitch = liveConverter.convert({
                 type: 'assistant',
                 message: {
                     role: 'assistant',
-                    model: 'claude-sonnet-5',
+                    model: 'claude-sonnet-4-6',
                     content: [{ type: 'text', text: 'hi' }],
                     usage: { input_tokens: 10, output_tokens: 20 }
                 }
@@ -852,9 +1080,15 @@ describe('SDKToLogConverter', () => {
             } as any) as any
             expect(t1?.message?.usage?.context_window).toBe(1_000_000)
 
-            // Switch to plain fable (200k): must re-seed 200k, NOT keep the stale 1M.
+            // Switch to plain fable and let its result report a smaller window: the
+            // plain entry must take it without overwriting fable[1m]'s 1M.
             conv.updateSelectedModel('fable')
             conv.convert({ type: 'system', subtype: 'init', session_id: 's', model: 'claude-fable-5' } as SDKSystemMessage)
+            conv.convert({
+                type: 'result', subtype: 'success', num_turns: 1, total_cost_usd: 0,
+                duration_ms: 1, duration_api_ms: 1, is_error: false, session_id: 's',
+                modelUsage: { 'claude-fable-5': { contextWindow: 200_000 } }
+            } as SDKResultMessage)
             const t2 = conv.convert({
                 type: 'assistant',
                 message: { role: 'assistant', model: 'claude-fable-5', content: [{ type: 'text', text: 'b' }], usage: { input_tokens: 10, output_tokens: 20 } }

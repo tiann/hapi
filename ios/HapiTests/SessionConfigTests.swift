@@ -225,7 +225,6 @@ final class SessionConfigTests: XCTestCase {
         // Offline/terminal notices do not introduce a blanket UI authorization gate.
         harness.store.updateDetailLocal("config") { $0.metadata?.capabilities = nil }
         XCTAssertTrue(harness.model.config.controlledByUser)
-        XCTAssertTrue(harness.model.config.permissionModes.contains { $0.mode == .safeYolo })
     }
 }
 

@@ -1,7 +1,11 @@
 package app.hapi.companion.feature.newsession
 
-/** A `(wire value, display label)` pair for the option pickers. */
-data class OptionItem(val value: String, val label: String)
+/**
+ * A `(wire value, display label)` pair for the option pickers. [enabled]
+ * covers per-option gating (grok's Auto mode when the machine reports the
+ * capability as false); every static catalog keeps the default.
+ */
+data class OptionItem(val value: String, val label: String, val enabled: Boolean = true)
 
 /**
  * Static option catalogs for the create form — data ports of
@@ -16,12 +20,10 @@ object NewSessionCatalogs {
     /** `'auto'` sentinel rows use the web's "Default" label. */
     val CLAUDE_MODELS: List<OptionItem> = listOf(
         OptionItem("auto", "Default"),
-        OptionItem("sonnet", "Sonnet"),
-        OptionItem("sonnet[1m]", "Sonnet 1M"),
         OptionItem("opus", "Opus"),
-        OptionItem("opus[1m]", "Opus 1M"),
         OptionItem("fable", "Fable"),
-        OptionItem("fable[1m]", "Fable 1M"),
+        OptionItem("sonnet", "Sonnet"),
+        OptionItem("haiku", "Haiku"),
     )
 
     val CLAUDE_EFFORTS: List<OptionItem> = listOf(

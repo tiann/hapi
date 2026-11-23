@@ -1,0 +1,17 @@
+name: Auto Merge Signal
+
+# Fork PR review events get no secrets, so this run only records the owner's
+# approval. Its completion triggers the privileged Auto Merge workflow, which
+# re-verifies the approval through the API before merging anything.
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions: {}
+
+jobs:
+  owner-approval:
+    if: github.event.review.state == 'approved' && github.event.review.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Owner approval recorded; Auto Merge will merge once all checks pass."

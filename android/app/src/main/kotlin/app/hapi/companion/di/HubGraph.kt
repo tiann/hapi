@@ -2,13 +2,17 @@ package app.hapi.companion.di
 
 import android.content.Context
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.home.ConnectionChrome
+import app.hapi.companion.feature.home.RunnerSkewChrome
 import app.hapi.data.HubSession
 import app.hapi.data.auth.AuthEvents
 import app.hapi.data.auth.CredentialStore
+import app.hapi.data.auth.JwtPeek
 import app.hapi.data.sse.GlobalSsePipe
 import app.hapi.data.sse.AndroidNetworkMonitor
 import app.hapi.data.sse.OkHttpSseTransport
 import app.hapi.data.sse.SseEngine
+import app.hapi.data.sse.SseSubscriptionKey
 import app.hapi.data.sse.SseTokenProvider
 import app.hapi.data.sse.SyncEventRouter
 import app.hapi.data.sse.SyncTargets
@@ -28,6 +32,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -92,7 +97,21 @@ class HubGraph(
 
     val machineStore: MachineStore = MachineStore(session.api, scope, snapshotDir)
 
-    val lastSeenStore: LastSeenStore = LastSeenStore(scope, snapshotDir)
+    private val readNamespace = credentialStore.get(session.hubUrl)?.jwt?.let { JwtPeek.peek(it)?.ns }
+    val lastSeenStore: LastSeenStore = LastSeenStore(scope, snapshotDir, namespace = readNamespace)
+
+    private fun configureReadState() {
+        scope.launch {
+            val namespace = readNamespace ?: runCatching { session.ensureFreshToken()?.let { JwtPeek.peek(it)?.ns } }.getOrNull()
+                ?: return@launch
+            lastSeenStore.configure(namespace) { id, state ->
+                check(session.ensureFreshToken()?.let { JwtPeek.peek(it)?.ns } == namespace) { "Read state identity changed" }
+                session.api.updateSessionReadState(id, state).readState
+            }
+        }
+    }
+
+    init { configureReadState() }
 
     val messageWindows: MessageWindowStores = MessageWindowStores(
         api = session.api,
@@ -110,6 +129,28 @@ class HubGraph(
     val visibilityReporter: VisibilityReporter =
         VisibilityReporter(session.api::setVisibility, scope)
 
+    /**
+     * Global connection banner state (slice C-①): reconnecting/syncing notice
+     * from the global pipe + the resync lifecycle. Lives before
+     * [syncTargets] so its synchronous `onResyncEvent` hook can feed it.
+     */
+    val connectionChrome: ConnectionChrome =
+        ConnectionChrome(
+            globalOutageNotice = sseEngine.connectionOutageNotice(SseSubscriptionKey.Global),
+            scope = scope,
+        )
+
+    /**
+     * Runner version-skew banner state (slice C-②): machines missing required
+     * capabilities + the manual restart exit.
+     */
+    val runnerSkewChrome: RunnerSkewChrome =
+        RunnerSkewChrome(
+            machines = machineStore.machines,
+            restartRunner = { machineId -> session.api.restartMachineRunner(machineId) },
+            scope = scope,
+        )
+
     val syncTargets: SyncTargets = StoreSyncTargets(
         sessions = sessionStore,
         machines = machineStore,
@@ -117,6 +158,7 @@ class HubGraph(
         messageWindows = messageWindows,
         onToastEvent = { mutableToasts.tryEmit(it) },
         onHandshakeEvent = visibilityReporter::onHandshake,
+        onResyncEvent = connectionChrome::onResyncEvent,
     )
 
     val syncEventRouter: SyncEventRouter = SyncEventRouter(syncTargets)
@@ -136,6 +178,8 @@ class HubGraph(
     fun setLifecycleForeground(foreground: Boolean) {
         sseEngine.setLifecycleForeground(foreground)
         visibilityReporter.setForeground(foreground)
+        lastSeenStore.setForeground(foreground)
+        if (foreground) configureReadState()
     }
 
     /**
@@ -160,6 +204,7 @@ class HubGraph(
 
     override fun close() {
         networkMonitor.close()
+        lastSeenStore.shutdown()
         scope.cancel()
         imageLoader.shutdown()
         session.close()

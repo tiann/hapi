@@ -100,6 +100,21 @@ struct SyncEventDecodingTests {
         #expect(raw == ["activeAt": 1, "someFutureField": 2])
     }
 
+    @Test func acceptsBackgroundTaskPatches() throws {
+        let event = try decode("""
+        {
+            "type": "session-updated",
+            "sessionId": "s-1",
+            "data": {"backgroundTaskCount": 1, "backgroundTasks": [{"id": "b1", "type": "local_bash", "description": "Run tests"}]}
+        }
+        """)
+        guard case .sessionUpdated(_, _, .patch(let patch)?) = event else {
+            Issue.record("expected .sessionUpdated patch, got \(event)")
+            return
+        }
+        #expect(patch.backgroundTaskCount == 1)
+    }
+
     @Test func decodesSessionAddedLikeSessionUpdated() throws {
         let event = try decode("""
         {"type": "session-added", "sessionId": "s-2", "data": {"thinking": true}}

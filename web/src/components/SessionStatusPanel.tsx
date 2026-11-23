@@ -91,7 +91,7 @@ export function SessionStatusPanel({ data }: { data: SessionStatusData }) {
                     </Section>
                 ) : null}
 
-                {data.terminals.length > 0 || data.undiscoveredTerminalCount > 0 ? (
+                {data.terminals.length > 0 ? (
                     <Section title={t('session.status.terminals')}>
                         <div className="flex flex-col gap-1.5">
                             {data.terminals.map((terminal) => {
@@ -109,21 +109,6 @@ export function SessionStatusPanel({ data }: { data: SessionStatusData }) {
                                     </div>
                                 )
                             })}
-                            {data.undiscoveredTerminalCount > 0 ? (
-                                <>
-                                    <div className="text-xs text-[var(--app-hint)]">
-                                        {t('session.status.terminalsUnavailable', { count: data.undiscoveredTerminalCount })}
-                                    </div>
-                                    {data.possibleTerminalCommands.length > 0 ? (
-                                        <div className="text-[11px] text-[var(--app-hint)]">
-                                            {t('session.status.terminalsPossible')}
-                                            {data.possibleTerminalCommands.map((command, index) => (
-                                                <code key={`${command}:${index}`} className="block overflow-hidden text-ellipsis whitespace-nowrap" title={command}>{command}</code>
-                                            ))}
-                                        </div>
-                                    ) : null}
-                                </>
-                            ) : null}
                         </div>
                     </Section>
                 ) : null}

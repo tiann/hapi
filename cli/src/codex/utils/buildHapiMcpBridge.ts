@@ -9,6 +9,7 @@ import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv';
+import { isPeerToolsDisabled } from '@/modules/common/peerTools';
 import type { CodexMcpServerConfig } from './codexMcpServers';
 
 /**
@@ -48,6 +49,10 @@ export interface HapiMcpBridgeOptions {
     exportSessionEnv?: boolean;
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
+    enableLinkPr?: boolean;
+    onChangeTitle?: (title: string) => void;
+    /** Session project cwd for relative spawn_peer directories (Codex --cd aware). */
+    workingDirectory?: string;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
@@ -82,14 +87,21 @@ export async function buildHapiMcpBridge(
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
+        enableLinkPr: options.enableLinkPr,
+        onChangeTitle: options.onChangeTitle,
+        workingDirectory: options.workingDirectory ?? options.skillLookup?.workingDirectory,
         skillLookup: options.skillLookup
     });
+    // Stamp the hub row id so orphanReap can find MCP helpers after the agent
+    // root dies without a full tree kill (#2003 / #1911 follow-up).
     const bridgeCommand = getHappyCliCommand([
         'mcp',
         '--url',
         happyServer.url,
         '--tools',
-        happyServer.toolNames.join(',')
+        happyServer.toolNames.join(','),
+        '--hapi-session-id',
+        client.sessionId,
     ]);
     const tools: Record<string, McpServerToolConfig> = {
         display_image: {
@@ -107,13 +119,28 @@ export async function buildHapiMcpBridge(
             approval_mode: 'approve'
         };
     }
+    // Prompt — not approve: link_pr mutates session metadata. Native
+    // pre-approval would bypass BasePermissionHandler's read-only guard.
+    if (happyServer.toolNames.includes('link_pr')) {
+        tools.link_pr = {
+            approval_mode: 'prompt'
+        };
+    }
+
     // Discovery shortlist only - same trust as skill_lookup / change_title.
-    tools.list_peers = {
+    // Skipped under HAPI_DISABLE_PEER_TOOLS (tool is not registered then).
+    if (!isPeerToolsDisabled()) {
+        tools.list_peers = {
+            approval_mode: 'approve'
+        };
+    }
+    // Own-session progress meter (tiann/hapi#1404) — hub REST, not peer inject.
+    tools.session_job = {
         approval_mode: 'approve'
     };
-    // ping_peer / inspect_peer are registered on the HTTP MCP server / stdio
-    // bridge, but are not auto-approved: they target another session (resume +
-    // inject, or read peer histories).
+    // ping_peer / inspect_peer / spawn_peer are registered on the HTTP MCP
+    // server / stdio bridge, but are not auto-approved: they target another
+    // session (resume + inject, read peer histories, or create + inject).
     if (options.skillLookup) {
         tools.skill_lookup = {
             approval_mode: 'approve'

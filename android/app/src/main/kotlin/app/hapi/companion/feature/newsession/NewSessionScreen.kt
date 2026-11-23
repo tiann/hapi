@@ -521,13 +521,22 @@ private fun PermissionSection(
     onYoloToggle: (Boolean) -> Unit,
 ) {
     when (val permission = state.permission) {
-        is PermissionUi.NativeSelect -> OptionDropdown(
-            label = stringResource(R.string.new_session_permission_mode),
-            options = permission.options,
-            selected = state.form.permissionMode,
-            enabled = !state.isSpawning,
-            onSelect = onPermissionModeSelected,
-        )
+        is PermissionUi.NativeSelect -> Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            OptionDropdown(
+                label = stringResource(R.string.new_session_permission_mode),
+                options = permission.options,
+                selected = state.form.permissionMode,
+                enabled = !state.isSpawning,
+                onSelect = onPermissionModeSelected,
+            )
+            if (state.grokAutoUnavailable) {
+                Text(
+                    text = stringResource(R.string.new_session_grok_auto_unavailable_desc),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
 
         is PermissionUi.YoloToggle -> Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             SectionLabel(stringResource(R.string.new_session_yolo))
@@ -629,6 +638,7 @@ private fun OptionDropdown(
                             expanded = false
                             onSelect(option.value)
                         },
+                        enabled = option.enabled,
                     )
                 }
             }
@@ -672,6 +682,7 @@ private fun previewState(form: NewSessionForm): NewSessionUiState = NewSessionUi
     effortOptions = NewSessionCatalogs.CLAUDE_EFFORTS,
     reasoningEffortOptions = null,
     permission = PermissionUi.YoloToggle("Yolo"),
+    grokAutoUnavailable = false,
     showCollaborationMode = false,
     collaborationModeOptions = emptyList(),
     showFastMode = false,

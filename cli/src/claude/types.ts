@@ -13,10 +13,12 @@ import { z } from "zod";
 // back to a heuristic denominator for local sessions only.
 export const UsageSchema = z.object({
   input_tokens: z.number().int().nonnegative(),
-  cache_creation_input_tokens: z.number().int().nonnegative().optional(),
-  cache_read_input_tokens: z.number().int().nonnegative().optional(),
+  // The Messages API types these as nullable; Claude Code's synthetic API
+  // error records write `service_tier: null`, which `.optional()` rejected.
+  cache_creation_input_tokens: z.number().int().nonnegative().nullish(),
+  cache_read_input_tokens: z.number().int().nonnegative().nullish(),
   output_tokens: z.number().int().nonnegative(),
-  service_tier: z.string().optional(),
+  service_tier: z.string().nullish(),
 }).passthrough();
 
 // `passthrough` keeps fields the SDK adds going forward (e.g. `model`, future
@@ -68,6 +70,9 @@ export const RawJSONLinesSchema = z.discriminatedUnion("type", [
     type: z.literal("assistant"),
     message: RawMessageSchema.optional(),
     requestId: z.string().optional(),
+    // Set on Claude Code's synthetic API error messages (e.g. "Prompt is too long").
+    isApiErrorMessage: z.boolean().optional(),
+    error: z.unknown().optional(),
   }),
 
   // Summary message - validates summary and leafUuid

@@ -9,7 +9,12 @@ import app.hapi.companion.feature.pairing.PairingClient
 import app.hapi.companion.feature.pairing.PairingClientFactory
 import app.hapi.companion.feature.settings.AppLanguage
 import app.hapi.companion.feature.settings.LanguagePrefs
+import app.hapi.companion.feature.sessions.SessionListOrderPrefs
 import app.hapi.companion.feature.settings.ThemePrefs
+import app.hapi.companion.feature.share.ContentResolverShareReader
+import app.hapi.companion.feature.share.ShareInbox
+import app.hapi.companion.feature.share.SharedInput
+import java.io.File
 import app.hapi.data.push.EncryptedPrefsPushIdentityStore
 import app.hapi.data.push.PushIdentityManager
 import app.hapi.data.push.PushMessageDecoder
@@ -29,6 +34,7 @@ import app.hapi.protocol.pairing.BindLink
 import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.HubHealthResponse
+import app.hapi.protocol.wire.PasskeyLoginResponse
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -48,6 +54,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import okhttp3.OkHttpClient
 
 /** One terminal auth failure, re-emitted off OkHttp threads as a flow. */
@@ -79,6 +86,27 @@ class AppGraph(context: Context) {
     /** The protocol-configured Json (lenient, ignores unknown keys). */
     val json: Json = HapiJson
 
+    val shareIntakeFailed = MutableStateFlow(false)
+    val shareInbox = ShareInbox(File(appContext.noBackupFilesDir, "share-inbox"),
+        ContentResolverShareReader(appContext.contentResolver), scope,
+        onFailure = { shareIntakeFailed.value = true })
+
+    fun receiveShare(input: SharedInput) {
+        if (input.isEmpty) {
+            shareIntakeFailed.value = true
+            return
+        }
+        scope.launch {
+            try {
+                shareInbox.receive(input)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                shareIntakeFailed.value = true
+            }
+        }
+    }
+
     val hubRegistryStorage: HubRegistryStorage =
         DataStoreHubRegistryStorage(appContext.hapiDataStore)
 
@@ -95,6 +123,9 @@ class AppGraph(context: Context) {
 
     /** Appearance choice (B-M4e); MainActivity reads it at setContent. */
     val themePrefs: ThemePrefs = ThemePrefs(appContext.hapiDataStore)
+
+    /** Session-list sort + Active first, app-wide like web's localStorage view keys. */
+    val sessionListOrderPrefs: SessionListOrderPrefs = SessionListOrderPrefs(appContext.hapiDataStore)
 
     /** Language choice (B-M5a: applied via per-app locales; Settings writes it). */
     val languagePrefs: LanguagePrefs = LanguagePrefs(appContext.hapiDataStore)
@@ -150,8 +181,9 @@ class AppGraph(context: Context) {
     val pairingNotice = MutableStateFlow<String?>(null)
 
     /**
-     * Bare client for the two pre-pairing endpoints (`GET /health`,
-     * `POST /api/auth`) — no interceptors: there are no credentials yet.
+     * Bare client for the pre-pairing endpoints (`GET /health`,
+     * `POST /api/auth`, passkey sign-in) — no interceptors: there are no
+     * credentials yet.
      */
     private val pairingHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -165,6 +197,8 @@ class AppGraph(context: Context) {
             override suspend fun health(): HubHealthResponse = api.health()
             override suspend fun authenticate(accessToken: String): AuthResponse =
                 api.authenticate(accessToken)
+            override suspend fun passkeyLoginVerify(response: JsonObject): PasskeyLoginResponse =
+                api.passkeyLoginVerify(response)
         }
     }
 
@@ -222,6 +256,11 @@ class AppGraph(context: Context) {
     /** Idempotent-enough for the single Application.onCreate call site. */
     fun start() {
         scope.launch {
+            try {
+                shareInbox.load()
+            } catch (_: Exception) {
+                shareIntakeFailed.value = true
+            }
             hubRegistry.load()
             mutableReady.value = true
             // Roster is loaded: the registrar's first emission re-registers
@@ -248,8 +287,10 @@ class AppGraph(context: Context) {
     }
 
     /** Sequential by construction: only the [start] collector calls this. */
-    private fun swapActiveHub(activeHubUrl: String?) {
-        mutableActiveHubGraph.value?.close()
+    private suspend fun swapActiveHub(activeHubUrl: String?) {
+        val previous = mutableActiveHubGraph.value
+        previous?.close()
+        previous?.lastSeenStore?.flushPersistence()
         mutableActiveHubGraph.value = activeHubUrl?.let { hubUrl ->
             HubGraph(
                 hubUrl = hubUrl,

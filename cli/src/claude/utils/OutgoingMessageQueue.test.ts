@@ -33,6 +33,18 @@ describe('OutgoingMessageQueue message filtering', () => {
         expect(sent[1]).toMatchObject({ type: 'assistant' })
     })
 
+    it('forwards hidden background task snapshots, including empty ones', async () => {
+        queue.enqueue({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b1' }], uuid: '1' })
+        queue.enqueue({ type: 'system', subtype: 'background_tasks_changed', tasks: [], uuid: '2' })
+        queue.enqueue({ type: 'system', subtype: 'task_started', uuid: '3' })
+        await queue.flush()
+
+        expect(sent).toEqual([
+            expect.objectContaining({ subtype: 'background_tasks_changed', tasks: [{ task_id: 'b1' }] }),
+            expect.objectContaining({ subtype: 'background_tasks_changed', tasks: [] })
+        ])
+    })
+
     it('filters out isMeta messages', async () => {
         queue.enqueue({ type: 'user', isMeta: true, uuid: '1' })
         queue.enqueue({ type: 'assistant', uuid: '2' })

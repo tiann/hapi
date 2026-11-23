@@ -24,13 +24,40 @@ data class MessagesPage(
     val snapshotHeadSeq: Long? = null,
     val snapshotHeadAt: Long? = null,
     val hasMore: Boolean,
+    val readThroughRevision: Long? = null,
 )
-
 /** `GET /api/sessions/:id/messages` — messages in ascending display order. */
 @Serializable
 data class MessagesResponse(
     val messages: List<DecryptedMessage>,
     val page: MessagesPage,
+)
+
+/**
+ * Cursor block of `GET /api/sessions/:id/messages/:messageId/context`
+ * (`MessageContextResponse['page']` in `shared/src/apiTypes.ts`): the bounded
+ * context window carries no direction/limit/reset keys.
+ */
+@Serializable
+data class MessageContextPage(
+    val epoch: Long,
+    val nextBeforeSeq: Long? = null,
+    val nextBeforeAt: Long? = null,
+    val snapshotHeadSeq: Long? = null,
+    val snapshotHeadAt: Long? = null,
+    val hasMore: Boolean,
+)
+
+/**
+ * `GET /api/sessions/:id/messages/:messageId/context` — a bounded history
+ * window centered on one message. The hub answers a bare JSON `null` when the
+ * message does not resolve (web `MessageContextResponse | null`).
+ */
+@Serializable
+data class MessageContextResponse(
+    val messages: List<DecryptedMessage>,
+    val targetMessageId: String,
+    val page: MessageContextPage,
 )
 
 /** `GET /api/sessions`. */
@@ -49,6 +76,12 @@ data class SessionResponse(
 @Serializable
 data class MachinesResponse(
     val machines: List<Machine>,
+)
+
+/** `POST /api/machines/:id/restart-runner` — hub ack (`{message}`). */
+@Serializable
+data class RestartRunnerResponse(
+    val message: String,
 )
 
 /** `POST /api/auth` success body (`AuthResponse`, `shared/src/apiTypes.ts`). */
@@ -272,6 +305,33 @@ data class CodexModelSummary(
     val serviceTiers: List<String>? = null,
 )
 
+/**
+ * `GET /api/machines/:id/grok-models?cwd=` (RPC-wrapped: check [success]) —
+ * the directory-scoped Grok probe; `GrokModelsResponse` in
+ * `shared/src/apiTypes.ts`. This slice consumes only
+ * [autoPermissionModeSupported] (the create-form Auto gate); model discovery
+ * stays deferred and unknown fields are ignored by [HapiJson].
+ */
+@Serializable
+data class GrokModelsResponse(
+    val success: Boolean,
+    val availableModels: List<GrokModelSummary>? = null,
+    val currentModelId: String? = null,
+    /**
+     * Nullable on purpose: the server may omit it, and the gate fires only on
+     * a literal `false` (web guards with `=== false`).
+     */
+    val autoPermissionModeSupported: Boolean? = null,
+    val error: String? = null,
+)
+
+/** `GrokModelSummary` (`shared/src/apiTypes.ts`). */
+@Serializable
+data class GrokModelSummary(
+    val modelId: String,
+    val name: String? = null,
+)
+
 /** `POST /api/sessions/:id/upload` (RPC-wrapped: check [success]). */
 @Serializable
 data class UploadFileResponse(
@@ -314,3 +374,32 @@ data class TranscriptionProviderInfo(
     /** Subset of `standard` / `realtime`; native dictation uses `standard`. */
     val modes: List<String>,
 )
+
+/**
+ * `GET /api/hub-settings` — only what the app reads (readable by every
+ * namespace). [translateInputByDefault] is the hub-wide input-translation
+ * default for sessions without an explicit `metadata.translateInput`;
+ * absent (older hub) ⇒ off.
+ */
+@Serializable
+data class HubSettingsResponse(
+    val translateInputByDefault: Boolean = false,
+)
+
+/** `inputTranslation` in `GET /api/features` — true when the hub has a translation provider. */
+@Serializable
+data class InputTranslationFeature(
+    val available: Boolean = false,
+)
+
+/**
+ * `GET /api/features` — only the fields a native client branches on;
+ * `ignoreUnknownKeys` drops the rest (`githubPrAwareness`, `prChipDisplay`).
+ * [inputTranslation] is optional on the wire; absent ⇒ unavailable.
+ */
+@Serializable
+data class FeaturesResponse(
+    val inputTranslation: InputTranslationFeature? = null,
+) {
+    val inputTranslationAvailable: Boolean get() = inputTranslation?.available == true
+}

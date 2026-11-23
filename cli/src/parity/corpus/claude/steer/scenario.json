@@ -1,0 +1,107 @@
+{
+  "flavor": "claude",
+  "argv": [
+    "claude",
+    "--hapi-starting-mode",
+    "remote",
+    "--started-by",
+    "runner",
+    "--hapi-session-id",
+    "a1111111-1111-4111-8111-111111111111"
+  ],
+  "env": {},
+  "hubScript": [
+    {
+      "sendUpdate": {
+        "t": "new-message",
+        "message": {
+          "id": "message-1",
+          "localId": "local-1",
+          "seq": 1,
+          "createdAt": 1,
+          "content": {
+            "role": "user",
+            "content": {
+              "type": "text",
+              "text": "hello"
+            }
+          }
+        }
+      },
+      "until": [
+        {
+          "event": "message",
+          "contains": "Recorded answer"
+        },
+        {
+          "event": "update-metadata",
+          "contains": "\"claudeSessionId\":",
+          "result": "success"
+        },
+        {
+          "event": "update-state",
+          "contains": "\"steeringActive\":true",
+          "result": "success"
+        }
+      ]
+    },
+    {
+      "sendUpdate": {
+        "t": "retry-queued-message",
+        "message": {
+          "id": "message-2",
+          "localId": "local-2",
+          "seq": 2,
+          "createdAt": 2,
+          "content": {
+            "role": "user",
+            "content": {
+              "type": "text",
+              "text": "follow up"
+            }
+          }
+        },
+        "messageId": "message-2",
+        "localId": "local-2"
+      },
+      "expectAck": {
+        "accepted": true,
+        "removed": false
+      }
+    },
+    {
+      "rpc": "steer-queued-message",
+      "params": {
+        "localId": "local-2"
+      },
+      "until": [
+        {
+          "event": "message",
+          "contains": "\"type\":\"ready\""
+        },
+        {
+          "event": "update-metadata",
+          "contains": "\"summary\":",
+          "result": "success"
+        },
+        {
+          "event": "update-state",
+          "contains": "\"steeringActive\":false",
+          "result": "success"
+        }
+      ]
+    },
+    {
+      "signal": "SIGTERM",
+      "settledAlive": {
+        "effort": null,
+        "mode": "remote",
+        "model": null,
+        "permissionMode": "default",
+        "thinking": false
+      }
+    }
+  ],
+  "agentScript": "agent.jsonl",
+  "timeoutMs": 120000
+}

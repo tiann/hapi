@@ -22,6 +22,7 @@
             "at": 20000,
             "seq": 20
         },
+        "readThroughRevision": 0,
         "viewMode": "tail"
     },
     "fixtureVersion": 1,

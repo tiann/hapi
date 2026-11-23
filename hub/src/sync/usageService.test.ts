@@ -1,3 +1,7 @@
+import { Database } from 'bun:sqlite'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'bun:test'
 import { Store } from '../store'
 import { getUsageSummary } from './usageService'
@@ -865,5 +869,102 @@ describe('usage service', () => {
         expect(store.usage.getEvents([source.id])).toEqual([])
         expect(store.usage.getEvents([target.id])).toHaveLength(1)
         store.close()
+    })
+
+    it('extracts Antigravity (agy) round-summary token usage with inclusive input tokens', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'agy-usage-test',
+            { path: '/tmp', host: 'test', flavor: 'agy' },
+            null,
+            'default',
+            'gemini-3.1-pro-high'
+        )
+
+        addAgentMessage(store, session.id, {
+            type: 'codex',
+            data: {
+                type: 'round-summary',
+                summary: {
+                    provider: 'agy',
+                    model: 'gemini-3.1-pro-high',
+                    agy_usage: {
+                        input_tokens: 1000,
+                        output_tokens: 200,
+                        cache_read_tokens: 800
+                    }
+                }
+            }
+        })
+
+        const result = getUsageSummary(store, 'default', 'all')
+        expect(result.totals.requests).toBe(1)
+        expect(result.totals.inputTokens).toBe(1800)
+        expect(result.totals.outputTokens).toBe(200)
+        expect(result.totals.cacheReadTokens).toBe(800)
+        expect(result.totals.totalTokens).toBe(2000)
+        expect(result.totals.uncachedTokens).toBe(1200)
+        expect(result.byAgent.find((row) => row.key === 'agy')?.totalTokens).toBe(2000)
+        expect(result.byModel.find((row) => row.key === 'gemini-3.1-pro-high')?.totalTokens).toBe(2000)
+        store.close()
+    })
+
+    it('reindexes historical Antigravity messages when upgrading a pre-parser_version usage_scan_state', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-agy-upgrade-'))
+        const dbPath = join(dir, 'hapi.db')
+        try {
+            const initialStore = new Store(dbPath)
+            const session = initialStore.sessions.getOrCreateSession(
+                'agy-upgrade-test',
+                { path: '/tmp', host: 'test', flavor: 'agy' },
+                null,
+                'default',
+                'gemini-3.1-pro-high'
+            )
+            addAgentMessage(initialStore, session.id, {
+                type: 'codex',
+                data: {
+                    type: 'round-summary',
+                    summary: {
+                        provider: 'agy',
+                        model: 'gemini-3.1-pro-high',
+                        agy_usage: {
+                            input_tokens: 500,
+                            output_tokens: 100,
+                            cache_read_tokens: 300
+                        }
+                    }
+                }
+            })
+            initialStore.close()
+
+            // Simulate a database whose usage_scan_state was created before parser_version existed
+            // and already scanned past seq 1 without indexing the Antigravity round-summary message.
+            const rawDb = new Database(dbPath, { readwrite: true })
+            rawDb.exec(`
+                DROP TABLE usage_scan_state;
+                CREATE TABLE usage_scan_state (
+                    session_id TEXT PRIMARY KEY,
+                    message_epoch INTEGER NOT NULL DEFAULT 0,
+                    last_seq INTEGER NOT NULL DEFAULT 0
+                );
+                DELETE FROM usage_events;
+            `)
+            rawDb.prepare('INSERT INTO usage_scan_state (session_id, message_epoch, last_seq) VALUES (?, 0, 1)')
+                .run(session.id)
+            rawDb.close()
+
+            const upgradedStore = new Store(dbPath)
+            const summary = getUsageSummary(upgradedStore, 'default', 'all')
+            expect(summary.totals.requests).toBe(1)
+            expect(summary.totals.inputTokens).toBe(800)
+            expect(summary.totals.outputTokens).toBe(100)
+            expect(summary.totals.cacheReadTokens).toBe(300)
+            expect(summary.totals.totalTokens).toBe(900)
+            expect(summary.totals.uncachedTokens).toBe(600)
+            upgradedStore.close()
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
     })
 })

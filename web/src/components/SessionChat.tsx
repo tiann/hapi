@@ -1,6 +1,7 @@
+import { BranchConversationDialog } from '@/components/BranchConversationDialog'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 import { AssistantRuntimeProvider, useAui, useAuiState } from '@assistant-ui/react'
@@ -9,6 +10,7 @@ import { ApiError, type ApiClient } from '@/api/client'
 import type {
     AgyModelSummary,
     AttachmentMetadata,
+    ClaudeModelSummary,
     CodexCollaborationMode,
     CodexModelSummary,
     CopilotAgentMode,
@@ -19,16 +21,19 @@ import type {
     SlashCommand
 } from '@/types/api'
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
-import type { Suggestion } from '@/hooks/useActiveSuggestions'
+import type { SuggestionHandler, Suggestion } from '@/hooks/useActiveSuggestions'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
 import { buildConversationOutline } from '@/chat/outline'
-import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@/chat/toolGroups'
+import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock, type VisibleChatBlock, visibleBlockRole } from '@/chat/toolGroups'
+import { filterConciseChatBlocks } from '@/chat/conciseView'
+import { getAssistantResponseGroups, hasUnambiguousResponseOwner, responseBlockKey, responseBlockIdentity, responseGroupIdentity } from '@/chat/responseGroups'
 import { useUnseenBlockCount } from '@/hooks/useUnseenBlockCount'
 import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
 import { isQueuedForInvocation } from '@/lib/messages'
-import { inactiveSessionCanResume } from '@/lib/sessionResume'
+import { sendVoiceMessage } from '@/lib/dictationSend'
+import { inactiveSessionBannerKey, inactiveSessionCanResume } from '@/lib/sessionResume'
 import {
     getCodexModelReasoningEfforts,
     supportsCodexReasoningEffort
@@ -44,6 +49,9 @@ import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePic
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
+import { AsyncQuestionsPanel } from '@/components/AssistantChat/AsyncQuestionsPanel'
+import { isAsyncRequestUserInput } from '@/components/ToolCard/requestUserInput'
+import { getPendingRequestNavigationTarget } from '@/lib/pendingRequests'
 import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
 import { useHubScratchlist } from '@/lib/use-hub-scratchlist'
 import { useSessions } from '@/hooks/queries/useSessions'
@@ -53,14 +61,17 @@ import { classifySessionAttention, getSessionAttentionLabelKey } from '@/lib/ses
 import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { ScratchlistMigrationBanner } from '@/components/AssistantChat/ScratchlistMigrationBanner'
-import { findLatestCompletedBoundaryId, useHappyRuntime } from '@/lib/assistant-runtime'
+import { assignThreadMessageIds, findLatestCompletedBoundaryId, useHappyRuntime } from '@/lib/assistant-runtime'
+import { resolveAssistantForkPointsForCanonicalBlocks } from '@/lib/assistant-fork-points'
 import {
     getRestoredComposerSendIntent,
     resolveMessageDeliveryMode,
     type ComposerSendIntent,
 } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
-import { isSteeringSupportedForSession } from '@hapi/protocol'
+import { hasActiveSteeringTurn } from '@hapi/protocol'
+import { AGY_MODEL_LABELS, AGY_MODEL_PRESETS, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
+import { getClaudeCatalogOptions } from '@/components/AssistantChat/modelOptions'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { ShareSeedConsumer } from '@/components/ShareSeedConsumer'
@@ -83,19 +94,25 @@ import {
     type AttachmentDraftInput,
 } from '@/lib/composer-attachment-drafts'
 import { useTranslation } from '@/lib/use-translation'
-import type { SendMessageAcceptance, SendMessageSettlement } from '@/hooks/mutations/useSendMessage'
+import { useOptionalAddToast } from '@/lib/toast-context'
+import { useSessionInputTranslation } from '@/hooks/useSessionInputTranslation'
+import type { SendMessageAcceptance } from '@/hooks/mutations/useSendMessage'
 import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { SessionHeader } from '@/components/SessionHeader'
 import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
+import { ModelErrorBanner, hasActiveModelError, isBridgeSettling, shouldKeepPendingBridge, visibleBridgeFailureReason } from '@/components/ModelErrorBanner'
 import { TeamPanel } from '@/components/TeamPanel'
 import { SessionStatusPanel } from '@/components/SessionStatusPanel'
 import { buildSessionStatusData } from '@/chat/sessionStatus'
 import { usePlatform } from '@/hooks/usePlatform'
+import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
+import { useConciseChatMode } from '@/hooks/useConciseChatMode'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModels } from '@/hooks/queries/useCursorModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import { useAgyModels } from '@/hooks/queries/useAgyModels'
+import { useClaudeModels } from '@/hooks/queries/useClaudeModels'
 import {
     mergeCursorCliModelSkus,
     resolveCursorBaseFromWire
@@ -113,7 +130,10 @@ import { buildCursorEffortPickerOptionsWithDefaultFirst } from '@/lib/cursorMode
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useGrokModels } from '@/hooks/queries/useGrokModels'
 import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
+import { useCopilotReasoningEffortOptions } from '@/hooks/queries/useCopilotReasoningEffortOptions'
 import { useKimiModelsForSession } from '@/hooks/queries/useKimiModelsForSession'
+import { useKimiReasoningEffortOptions } from '@/hooks/queries/useKimiReasoningEffortOptions'
+import { useDshModelsForSession } from '@/hooks/queries/useDshModels'
 import { buildKimiSessionModelOptions } from '@/components/NewSession/grokModels'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
@@ -122,6 +142,8 @@ import { queryKeys } from '@/lib/query-keys'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { AgentTerminalView } from '@/components/AgentTerminal/AgentTerminalView'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { ForkPreviewDialog } from '@/components/AssistantChat/ForkPreviewDialog'
+import { useForkFlow } from '@/hooks/useForkFlow'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
 
@@ -141,10 +163,6 @@ export function opencodeEffortOptionsInvalidationKey(
         return null
     }
     return queryKeys.sessionOpencodeReasoningEffortOptions(sessionId)
-}
-
-export function isRewindForkFallbackError(error: unknown): boolean {
-    return error instanceof ApiError && error.code === 'ambiguous_native_boundary_fork_safe'
 }
 
 export function resolvePiContextWindow(
@@ -174,10 +192,27 @@ export function buildAgyComposerModelOptions(
         return undefined
     }
 
-    return availableModels.map((model) => ({
+    return getAgyModelChoices(availableModels).map((model) => ({
         value: model.modelId,
-        label: model.name ?? model.modelId
+        label: model.name
     }))
+}
+
+/**
+ * The effort to send along with a model change, or undefined to leave it.
+ * Only a Claude catalog carries per-model effort levels, so other flavors
+ * (whose catalog here is empty) never get one.
+ */
+export function resolveEffortForModelChange(args: {
+    currentEffort: string | null
+    model: SessionModelSelection
+    claudeModels: readonly ClaudeModelSummary[]
+}): { effort: string | null } | undefined {
+    if (typeof args.model === 'object' && args.model !== null) {
+        return undefined
+    }
+    const effort = resolveClaudeEffortForModel(args.currentEffort, args.model, args.claudeModels)
+    return effort === args.currentEffort ? undefined : { effort }
 }
 
 export async function applyModelChangeWithReasoningRollback(args: {
@@ -531,17 +566,72 @@ export function buildGoalStateMessages(
  * A live tail revision invalidates the remembered boundary until tail view
  * observes the authoritative current boundary again.
  */
+type CompletedBoundaryMemory = {
+    id: string | null
+    tailRevision: number
+    sessionId?: string
+    canonicalBlocks?: readonly ChatBlock[]
+    visibleBlocks?: readonly VisibleChatBlock[]
+}
+
+type BoundaryProjection = {
+    sessionId: string
+    canonicalBlocks: readonly ChatBlock[]
+    visibleBlocks: readonly VisibleChatBlock[]
+    isRunning: boolean
+}
+
+function renderedResponseGroups(blocks: readonly VisibleChatBlock[]): { id: string; keys: string[] }[] {
+    const groups: { id: string; keys: string[] }[] = []
+    let group: { id: string; keys: string[] } | null = null
+    for (const { block, threadMessageId } of assignThreadMessageIds(blocks)) {
+        if (visibleBlockRole(block) !== 'assistant') { group = null; continue }
+        if (!group) { group = { id: threadMessageId, keys: [] }; groups.push(group) }
+        group.keys.push(...(block.kind === 'tool-group' ? block.tools.map(responseBlockKey) : [responseBlockKey(block)]))
+    }
+    return groups
+}
+
 export function resolveLatestCompletedBoundaryIdForView(
     viewMode: 'tail' | 'history',
     currentTailBoundaryId: string | null,
-    rememberedTailBoundary: { id: string | null; tailRevision: number } | null,
-    currentTailRevision: number
+    rememberedTailBoundary: CompletedBoundaryMemory | null,
+    currentTailRevision: number,
+    projection?: BoundaryProjection
 ): string | null {
     if (viewMode === 'tail') return currentTailBoundaryId
-    if (!rememberedTailBoundary || rememberedTailBoundary.tailRevision !== currentTailRevision) {
-        return null
+    const memory = rememberedTailBoundary
+    if (!memory || memory.tailRevision !== currentTailRevision) return null
+    if (!projection) return memory.id
+    if (projection.isRunning || memory.sessionId !== projection.sessionId
+        || !memory.id || !memory.canonicalBlocks || !memory.visibleBlocks) return null
+
+    // User boundaries retain their canonical identity through either projection.
+    const rememberedUser = assignThreadMessageIds(memory.visibleBlocks).find(({ block, threadMessageId }) =>
+        threadMessageId === memory.id && visibleBlockRole(block) === 'user')
+    if (rememberedUser && rememberedUser.block.kind !== 'tool-group') {
+        const identity = JSON.stringify(responseBlockIdentity(rememberedUser.block))
+        const matches = assignThreadMessageIds(projection.visibleBlocks).filter(({ block }) =>
+            block.kind !== 'tool-group' && visibleBlockRole(block) === 'user'
+            && JSON.stringify(responseBlockIdentity(block)) === identity)
+        return matches.length === 1 ? matches[0].threadMessageId : null
     }
-    return rememberedTailBoundary.id
+
+    const rememberedCard = renderedResponseGroups(memory.visibleBlocks).find(group => group.id === memory.id)
+    if (!rememberedCard) return null
+    const originals = getAssistantResponseGroups(memory.canonicalBlocks).filter(group =>
+        rememberedCard.keys.every(key => group.blocks.some(block => responseBlockKey(block) === key)))
+    if (originals.length !== 1 || !hasUnambiguousResponseOwner(originals[0])) return null
+    const signature = responseGroupIdentity(originals[0])
+    const matches = getAssistantResponseGroups(projection.canonicalBlocks).filter(group =>
+        hasUnambiguousResponseOwner(group) && responseGroupIdentity(group) === signature)
+    if (matches.length !== 1) return null
+    const keys = new Set(matches[0].blocks.map(responseBlockKey))
+    if (keys.size !== matches[0].blocks.length || matches[0].blocks.some(block => !block.id.trim())) return null
+    const cards = renderedResponseGroups(projection.visibleBlocks).filter(group => group.keys.every(key => keys.has(key)))
+    // A hidden event can join distinct original groups into one card. Its extra
+    // keys fail the subset check above; do not invent current ownership.
+    return cards.length === 1 ? cards[0].id : null
 }
 
 function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
@@ -561,7 +651,21 @@ function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
     return false
 }
 
+type PendingRequestNavigation = {
+    requestId: string
+    version: number
+    fromRoute: boolean
+}
+
+type PendingRequestTarget = {
+    messageId: string
+    version: number
+    fromRoute: boolean
+}
+
 type SessionChatProps = {
+    checkingSession?: boolean
+    readThroughRevision?: number
     api: ApiClient
     titleSuggestionAvailable?: boolean
     session: Session
@@ -571,10 +675,14 @@ type SessionChatProps = {
     messages: DecryptedMessage[]
     messagesWarning: string | null
     hasMoreMessages: boolean
+    hasMoreNewerMessages?: boolean
     isSyncingTail: boolean
+    /** Cached re-entry: the authoritative latest-page fetch is still in flight. */
+    isCatchingUpFromCache: boolean
+    /** Cached re-entry of a hydrated tail window: first frame can render at the bottom before the sync settles. */
+    cachedTailFirstFrame: boolean
     isLoadingMoreMessages: boolean
     isSending: boolean
-    sendSettlement: SendMessageSettlement | null
     viewMode: 'tail' | 'history'
     messagesVersion: number
     historyVersion: number
@@ -582,6 +690,7 @@ type SessionChatProps = {
     onBack: () => void
     onRefresh: () => void | Promise<void>
     onLoadMore: (onBeforeApply?: (historyVersion: number) => boolean) => Promise<OlderLoadOutcome>
+    onLoadNewer?: (resolvePreserveMessageId?: () => string | null) => Promise<boolean>
     onCancelLoadMore: () => void
     // Returns the accepted mutation's attempt id, or false when
     // pre-mutation guards (no-api / no-session / pending) rejected the call OR async
@@ -595,9 +704,14 @@ type SessionChatProps = {
     ) => Promise<SendMessageAcceptance | false>
     resolveSessionIdForUpload?: (sessionId: string) => Promise<string>
     onUploadSessionResolved?: (sessionId: string) => void
+    /** Inactive-session resume for voice dictation direct-sends; see HappyComposer. */
+    resolveSessionIdForVoice?: (sessionId: string) => Promise<{ sessionId: string; resumed: boolean }>
+    /** Navigate/seed after a voice direct-send resumed an inactive session. */
+    onVoiceSessionResolved?: (sessionId: string) => void
     onViewModeChange: (mode: 'tail' | 'history') => void
+    onJumpToTail: () => void
     onRetryMessage?: (localId: string) => void
-    autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
+    autocompleteSuggestions?: SuggestionHandler
     availableSlashCommands?: readonly SlashCommand[]
     // The latest send the hub rejected (4xx/5xx/network).  When set, the
     // composer is asked to restore the typed text and surface an inline
@@ -608,6 +722,14 @@ type SessionChatProps = {
     onSuppressSendErrorRestore?: (id: number) => void
     initialOutlineOpen?: boolean
     onInitialOutlineConsumed?: () => void
+    initialTargetMessageId?: string
+    initialTargetMessageQuery?: string
+    searchRequestId?: number
+    initialPendingRequestId?: string
+    onInitialPendingRequestConsumed?: () => void
+    onLoadMessageContext?: (messageId: string) => Promise<boolean>
+    onInitialTargetConsumed?: () => void
+    onSearchTargetDismissed?: () => void
     // Called when an `abort-restore` event arrives and the composer is not empty,
     // so the caller can surface the aborted text via the existing sendError path.
     onAbortRestore?: (text: string) => void
@@ -638,27 +760,23 @@ function SessionChatInner(props: SessionChatProps) {
     const { t } = useTranslation()
     const { codexExplorationCollapsed } = useCodexExplorationCollapse()
     const navigate = useNavigate()
+    const { toolCardDisplayMode } = useToolCardDisplayMode()
+    const { conciseChatMode, setConciseChatMode } = useConciseChatMode()
+    const { groupingMode: toolGroupingMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const [historyActionPending, setHistoryActionPending] = useState(false)
+    const [branchPoint, setBranchPoint] = useState<{ messageLocalId?: string; messageId?: string } | null>(null)
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
-
-    const onForkConversation = useCallback(async (messageLocalId?: string) => {
-        setHistoryActionPending(true)
-        try {
-            const result = await props.api.forkConversation(props.session.id, messageLocalId)
-            await navigate({
+    const forkFlow = useForkFlow({
+        session: props.session,
+        api: props.api,
+        onForked: (childSessionId) => {
+            void navigate({
                 to: '/sessions/$sessionId',
-                params: { sessionId: result.sessionId },
+                params: { sessionId: childSessionId },
                 ...PRESERVE_SESSION_SIDEBAR_SCROLL,
             })
-        } finally {
-            setHistoryActionPending(false)
-        }
-    }, [navigate, props.api, props.session.id])
-
-    const onRewindConversation = useCallback(async (messageLocalId: string) => {
-        setHistoryActionPending(true)
-        try {
-            await props.api.rewindConversation(props.session.id, messageLocalId)
+        },
+        onRewound: async (messageLocalId) => {
             // Apply the deterministic local part immediately so the removed
             // suffix cannot flash back while the authoritative refresh runs.
             rewindMessageWindow(props.session.id, messageLocalId)
@@ -666,28 +784,33 @@ function SessionChatInner(props: SessionChatProps) {
             // Force the same tail behavior as a successful send after the
             // refreshed message window has been committed.
             setForceScrollToken((token) => token + 1)
-        } catch (error) {
-            if (isRewindForkFallbackError(error)) {
-                setRewindForkFallback(messageLocalId)
-                return
-            }
-            throw error
-        } finally {
-            setHistoryActionPending(false)
+        },
+        onRewindForkSafeFallback: (messageLocalId) => {
+            setRewindForkFallback(messageLocalId)
         }
-    }, [props.api, props.onRefresh, props.session.id])
+    })
 
-    const onRewindForkFallback = useCallback(async () => {
+    const onForkConversation = useCallback(async (messageLocalId?: string) => {
+        forkFlow.openFork(messageLocalId)
+    }, [forkFlow])
+
+    const onRewindConversation = useCallback(async (messageLocalId: string) => {
+        forkFlow.openRewind(messageLocalId)
+    }, [forkFlow])
+
+    const onRewindForkFallback = useCallback(() => {
         if (!rewindForkFallback) return
-        await onForkConversation(rewindForkFallback)
+        const localId = rewindForkFallback
         setRewindForkFallback(null)
-    }, [onForkConversation, rewindForkFallback])
+        forkFlow.openFork(localId)
+    }, [forkFlow, rewindForkFallback])
     const sessionInactive = !props.session.active
     const inactiveCanResume = inactiveSessionCanResume(
         props.session,
         props.messages.length,
         props.cursorChatOnDisk
     )
+    const inactiveBanner = inactiveSessionBannerKey(props.session, Boolean(props.checkingSession), inactiveCanResume)
     const terminalSupported = isRemoteTerminalSupported(props.session.metadata)
     // Offer the agent terminal only for an ACTIVE PTY session: a 'remote'/SDK
     // session has no agent PTY, and an archived/inactive one has no live PTY (and
@@ -700,10 +823,8 @@ function SessionChatInner(props: SessionChatProps) {
     const focusComposerRef = useRef<(() => void) | null>(null)
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const visibleGroupsRef = useRef<ToolGroupBlock[]>([])
-    const [rememberedTailBoundary, setRememberedTailBoundary] = useState<{
-        id: string | null
-        tailRevision: number
-    } | null>(null)
+    const visibleGroupsModeRef = useRef(toolGroupingMode)
+    const [rememberedTailBoundary, setRememberedTailBoundary] = useState<CompletedBoundaryMemory | null>(null)
     const [forceScrollToken, setForceScrollToken] = useState(0)
     const uploadDraftSnapshotRef = useRef<{ text: string; attachments: AttachmentDraftInput[] }>({
         text: '',
@@ -711,6 +832,15 @@ function SessionChatInner(props: SessionChatProps) {
     })
     const [outlineOpen, setOutlineOpen] = useState(props.initialOutlineOpen ?? false)
     const [terminalVisible, setTerminalVisible] = useState(false)
+    const pendingRequestSequenceRef = useRef(0)
+    const [pendingRequestNavigation, setPendingRequestNavigation] = useState<PendingRequestNavigation | null>(() =>
+        props.initialPendingRequestId
+            ? { requestId: props.initialPendingRequestId, version: 1, fromRoute: true }
+            : null
+    )
+    const [livePendingRequestId, setLivePendingRequestId] = useState<string | null>(props.initialPendingRequestId ?? null)
+    const [pendingMessageTarget, setPendingMessageTarget] = useState<PendingRequestTarget | null>(null)
+    const [pendingAsyncTarget, setPendingAsyncTarget] = useState<PendingRequestNavigation | null>(null)
     useEffect(() => {
         if (!props.initialOutlineOpen) {
             return
@@ -718,6 +848,90 @@ function SessionChatInner(props: SessionChatProps) {
         setOutlineOpen(true)
         props.onInitialOutlineConsumed?.()
     }, [props.initialOutlineOpen, props.onInitialOutlineConsumed])
+
+    useEffect(() => {
+        if (!props.initialPendingRequestId) return
+        setLivePendingRequestId(props.initialPendingRequestId)
+        pendingRequestSequenceRef.current += 1
+        setPendingRequestNavigation({
+            requestId: props.initialPendingRequestId,
+            version: pendingRequestSequenceRef.current,
+            fromRoute: true,
+        })
+    }, [props.initialPendingRequestId])
+
+    const consumePendingRequestNavigation = useCallback((fromRoute: boolean) => {
+        setPendingRequestNavigation(null)
+        setPendingMessageTarget(null)
+        setPendingAsyncTarget(null)
+        if (fromRoute) props.onInitialPendingRequestConsumed?.()
+    }, [props.onInitialPendingRequestConsumed])
+
+    const locatePendingRequest = useCallback((requestId: string) => {
+        setLivePendingRequestId(requestId)
+        pendingRequestSequenceRef.current += 1
+        setPendingRequestNavigation({
+            requestId,
+            version: pendingRequestSequenceRef.current,
+            fromRoute: false,
+        })
+    }, [])
+
+    const consumeMessagePendingRequestTarget = useCallback(() => {
+        if (!pendingMessageTarget) return
+        const fromRoute = pendingMessageTarget.fromRoute
+        consumePendingRequestNavigation(fromRoute)
+        if (fromRoute || props.initialTargetMessageId) {
+            props.onInitialTargetConsumed?.()
+            if (!fromRoute) props.onSearchTargetDismissed?.()
+        }
+    }, [
+        consumePendingRequestNavigation,
+        pendingMessageTarget,
+        props.initialTargetMessageId,
+        props.onInitialTargetConsumed,
+        props.onSearchTargetDismissed,
+    ])
+
+    const dismissMessagePendingRequestTarget = useCallback(() => {
+        if (pendingMessageTarget) consumePendingRequestNavigation(pendingMessageTarget.fromRoute)
+        props.onSearchTargetDismissed?.()
+    }, [consumePendingRequestNavigation, pendingMessageTarget, props.onSearchTargetDismissed])
+
+    const consumeAsyncPendingRequestTarget = useCallback(() => {
+        if (pendingAsyncTarget) consumePendingRequestNavigation(pendingAsyncTarget.fromRoute)
+    }, [consumePendingRequestNavigation, pendingAsyncTarget])
+
+    useEffect(() => {
+        if (!pendingRequestNavigation) return
+        const request = props.session.agentState?.requests?.[pendingRequestNavigation.requestId]
+        if (!request) {
+            setLivePendingRequestId(null)
+            consumePendingRequestNavigation(pendingRequestNavigation.fromRoute)
+            return
+        }
+        const target = getPendingRequestNavigationTarget(
+            pendingRequestNavigation.requestId,
+            request,
+            isAsyncRequestUserInput(request.tool, request.arguments)
+        )
+        if (target.kind === 'async') {
+            setPendingMessageTarget(null)
+            setPendingAsyncTarget(pendingRequestNavigation)
+            return
+        }
+        setPendingAsyncTarget(null)
+        setPendingMessageTarget({
+            messageId: target.messageId,
+            version: pendingRequestNavigation.version,
+            fromRoute: pendingRequestNavigation.fromRoute,
+        })
+    }, [consumePendingRequestNavigation, pendingRequestNavigation, props.session.agentState?.requests])
+    useEffect(() => {
+        if (livePendingRequestId && !props.session.agentState?.requests?.[livePendingRequestId]) {
+            setLivePendingRequestId(null)
+        }
+    }, [livePendingRequestId, props.session.agentState?.requests])
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     // Serialize Cursor setModel RPCs so drill-down default apply cannot finish
     // after a later explicit variant click and overwrite it.
@@ -999,6 +1213,7 @@ function SessionChatInner(props: SessionChatProps) {
         api: props.api,
         sessionId: props.session.id,
         machineId: props.session.metadata?.machineId ?? null,
+        preferSession: props.session.metadata?.capabilities?.concurrentClients === true,
         enabled: agentFlavor === 'codex' && props.session.active && !controlledByUser
     })
     const effectiveCodexServiceTier = agentFlavor === 'codex'
@@ -1079,6 +1294,12 @@ function SessionChatInner(props: SessionChatProps) {
         sessionId: props.session.id,
         enabled: agentFlavor === 'copilot' && props.session.active && !controlledByUser
     })
+    const copilotEffortOptions = useCopilotReasoningEffortOptions({
+        api: props.api,
+        sessionId: props.session.id,
+        model: props.session.model,
+        enabled: agentFlavor === 'copilot' && props.session.active && !controlledByUser
+    })
     const copilotModelOptions = useMemo(() => (
         agentFlavor === 'copilot'
             ? [
@@ -1098,6 +1319,19 @@ function SessionChatInner(props: SessionChatProps) {
         enabled: agentFlavor === 'cursor' && props.session.active
     })
     const sessionMachineId = props.session.metadata?.machineId ?? null
+    const addToast = useOptionalAddToast()
+    const inputTranslation = useSessionInputTranslation(props.api, props.session)
+    const inputTranslationToggle = inputTranslation.toggle
+    const handleToggleInputTranslation = useCallback(() => {
+        void inputTranslationToggle().catch((error: unknown) => {
+            addToast?.({
+                title: t('dialog.error.default'),
+                body: error instanceof Error ? error.message : t('dialog.error.default'),
+                sessionId: props.session.id,
+                url: `/sessions/${props.session.id}`
+            })
+        })
+    }, [addToast, inputTranslationToggle, props.session.id, t])
     // A running session discovers its models over its own connection (kimi
     // provider list --json), so this works without a background runner;
     // switching itself still goes through the existing ACP setModel path.
@@ -1106,11 +1340,36 @@ function SessionChatInner(props: SessionChatProps) {
         sessionId: props.session.id,
         enabled: agentFlavor === 'kimi' && props.session.active
     })
+    const kimiEffortOptions = useKimiReasoningEffortOptions({
+        api: props.api,
+        sessionId: props.session.id,
+        model: props.session.model,
+        enabled: agentFlavor === 'kimi' && props.session.active && !controlledByUser
+    })
     const kimiModelOptions = useMemo(() => (
         agentFlavor === 'kimi' && kimiModelsState.availableModels.length > 0
             ? buildKimiSessionModelOptions(kimiModelsState.availableModels)
             : undefined
     ), [agentFlavor, kimiModelsState.availableModels])
+    // dsh exposes its catalog through ACP config options (Zed-style grouped
+    // provider/model tuples flattened server-side into opaque value strings);
+    // switching rides the generic session config rail like kimi/agy.
+    const dshModelsState = useDshModelsForSession({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'dsh' && props.session.active
+    })
+    const dshModelOptions = useMemo(() => (
+        agentFlavor === 'dsh' && dshModelsState.availableModels.length > 0
+            ? [
+                { value: null, label: 'Default' },
+                ...dshModelsState.availableModels.map((model) => ({
+                    value: model.modelId,
+                    label: model.name ?? model.modelId
+                }))
+            ]
+            : undefined
+    ), [agentFlavor, dshModelsState.availableModels])
     const machineCursorModelsState = useCursorModelsForMachine({
         api: props.api,
         machineId: sessionMachineId,
@@ -1132,8 +1391,7 @@ function SessionChatInner(props: SessionChatProps) {
             machineModels: machineCursorModelsState.availableModels,
             cliModelSkus: sessionCliModelSkus,
             sessionModel: props.session.model,
-            sessionCurrentModelId: cursorModelsState.currentModelId,
-            autoRestartLabel: t('session.modelChange.cursorAutoRestart')
+            sessionCurrentModelId: cursorModelsState.currentModelId
         })
     }, [
         agentFlavor,
@@ -1141,8 +1399,7 @@ function SessionChatInner(props: SessionChatProps) {
         cursorModelsState.currentModelId,
         machineCursorModelsState.availableModels,
         sessionCliModelSkus,
-        props.session.model,
-        t
+        props.session.model
     ])
     const agyModelsState = useAgyModels({
         api: props.api,
@@ -1157,6 +1414,40 @@ function SessionChatInner(props: SessionChatProps) {
             ? buildAgyComposerModelOptions(agyModelsState.availableModels)
             : undefined
     ), [agentFlavor, agyModelsState.availableModels])
+    const agyChoices = useMemo(() => getAgyModelChoices(
+        agyModelsState.availableModels.length > 0
+            ? agyModelsState.availableModels
+            : AGY_MODEL_PRESETS.map((modelId) => ({ modelId, name: AGY_MODEL_LABELS[modelId] }))
+    ), [agyModelsState.availableModels])
+    const agySelection = splitAgyModelSelection(props.session.model)
+    const agySelectedChoice = agyChoices.find((choice) => choice.modelId === props.session.model)
+        ?? agyChoices.find((choice) => choice.modelId === agySelection.model)
+    const agyCurrentModel = agySelectedChoice?.modelId ?? props.session.model
+    const agyCurrentEffort = agySelectedChoice?.supportedEfforts.length
+        ? props.session.effort ?? agySelection.effort
+        : null
+    const agyEffortOptions = agySelectedChoice?.supportedEfforts.map((level) => ({
+        value: level,
+        name: level === 'xhigh' ? 'XHigh' : level.charAt(0).toUpperCase() + level.slice(1)
+    })) ?? []
+    const claudeModelsState = useClaudeModels({
+        api: props.api,
+        machineId: sessionMachineId,
+        enabled: agentFlavor === 'claude' && props.session.active && Boolean(sessionMachineId)
+    })
+    // Until the catalog arrives (or on a runner without discovery) this stays
+    // undefined and the composer keeps its built-in Claude presets.
+    const claudeModelOptions = useMemo(() => (
+        agentFlavor === 'claude' && claudeModelsState.availableModels.length > 0
+            ? getClaudeCatalogOptions(claudeModelsState.availableModels, t('misc.otherModels'))
+            : undefined
+    ), [agentFlavor, claudeModelsState.availableModels, t])
+    // Levels the current Claude model accepts; undefined when unknown (no
+    // catalog, or a model it does not list), which keeps every level.
+    const claudeEffortOptions = useMemo(() => (
+        getClaudeEffortLevelsForModel(props.session.model ?? null, claudeModelsState.availableModels)
+            ?.map((level) => ({ value: level }))
+    ), [props.session.model, claudeModelsState.availableModels])
     const piModelsState = usePiModels({
         api: props.api,
         sessionId: props.session.id,
@@ -1271,6 +1562,7 @@ function SessionChatInner(props: SessionChatProps) {
     ), [agentFlavor, cursorModelEffortOptions, props.session.model])
     const {
         abortSession,
+        isAborting,
         switchSession,
         setPermissionMode,
         setCollaborationMode,
@@ -1286,6 +1578,63 @@ function SessionChatInner(props: SessionChatProps) {
         codexCollaborationModeSupported
     )
 
+    const handleAcknowledgeModelError = useCallback(async () => {
+        const eventId = props.session.metadata?.lastModelError?.eventId
+        if (typeof eventId !== 'string' || eventId.length === 0) {
+            props.onRefresh()
+            return
+        }
+        await props.api.acknowledgeModelError(props.session.id, eventId).catch(() => {})
+        props.onRefresh()
+    }, [props.api, props.session.id, props.session.metadata?.lastModelError?.eventId, props.onRefresh])
+
+    const [isBridgingModelError, setIsBridgingModelError] = useState(false)
+    const [pendingBridgeEventId, setPendingBridgeEventId] = useState<string | null>(null)
+    const [bridgeFailure, setBridgeFailure] = useState<{ eventId: string; reason: string } | null>(null)
+    const currentModelError = props.session.metadata?.lastModelError
+    const bridgePending = isBridgeSettling(props.session.metadata, pendingBridgeEventId)
+
+    useEffect(() => {
+        if (pendingBridgeEventId && !shouldKeepPendingBridge(props.session.active, bridgePending)) {
+            setPendingBridgeEventId(null)
+        }
+    }, [props.session.active, pendingBridgeEventId, bridgePending])
+
+    const handleBridgeModelError = useCallback(async () => {
+        if (isBridgingModelError || bridgePending) {
+            return
+        }
+        const eventId = currentModelError?.eventId
+        if (typeof eventId !== 'string' || eventId.length === 0) {
+            props.onRefresh()
+            return
+        }
+        setIsBridgingModelError(true)
+        setBridgeFailure(null)
+        try {
+            const result = await props.api.bridgeModelError(props.session.id, eventId)
+            if (result.ok) {
+                setPendingBridgeEventId(eventId)
+            } else {
+                setBridgeFailure({ eventId, reason: result.reason ?? 'not_bridgeable' })
+            }
+            props.onRefresh()
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'bridge_failed'
+            setBridgeFailure({ eventId, reason: message })
+            console.warn('[SessionChat] model error bridge failed:', error)
+        } finally {
+            setIsBridgingModelError(false)
+        }
+    }, [
+        isBridgingModelError,
+        bridgePending,
+        currentModelError?.eventId,
+        props.api,
+        props.session.id,
+        props.onRefresh
+    ])
+
     // Voice assistant integration
     const voice = useVoiceOptional()
     const [voiceBackendReady, setVoiceBackendReady] = useState(false)
@@ -1293,15 +1642,38 @@ function SessionChatInner(props: SessionChatProps) {
     // Register session store for voice client tools
     useEffect(() => {
         registerSessionStore({
-            getSession: () => props.session as { agentState?: { requests?: Record<string, unknown> } } | null,
-            sendMessage: (_sessionId: string, message: string) => props.onSend(message),
-            approvePermission: async (_sessionId: string, requestId: string) => {
-                await props.api.approvePermission(props.session.id, requestId)
-                props.onRefresh()
+            getSession: async (sessionId: string) => {
+                if (sessionId === props.session.id) {
+                    return props.session as unknown as { agentState?: { requests?: Record<string, unknown> } }
+                }
+                try {
+                    const res = await props.api.getSession(sessionId)
+                    return res.session as unknown as { agentState?: { requests?: Record<string, unknown> } }
+                } catch {
+                    return null
+                }
             },
-            denyPermission: async (_sessionId: string, requestId: string) => {
-                await props.api.denyPermission(props.session.id, requestId)
-                props.onRefresh()
+            sendMessage: async (sessionId: string, message: string) => {
+                if (sessionId === props.session.id) {
+                    const accepted = await props.onSend(message)
+                    if (!accepted) {
+                        throw new Error('Message was not accepted')
+                    }
+                } else {
+                    await sendVoiceMessage(props.api, sessionId, message)
+                }
+            },
+            approvePermission: async (sessionId: string, requestId: string) => {
+                await props.api.approvePermission(sessionId, requestId)
+                if (sessionId === props.session.id) {
+                    props.onRefresh()
+                }
+            },
+            denyPermission: async (sessionId: string, requestId: string) => {
+                await props.api.denyPermission(sessionId, requestId)
+                if (sessionId === props.session.id) {
+                    props.onRefresh()
+                }
             }
         })
     }, [props.session, props.api, props.onSend, props.onRefresh])
@@ -1446,9 +1818,10 @@ function SessionChatInner(props: SessionChatProps) {
 
     const reduced = useMemo(
         () => reduceChatBlocks(normalizedMessages, props.session.agentState, {
-            goalStateMessages: normalizedGoalStateMessages
+            goalStateMessages: normalizedGoalStateMessages,
+            pendingRequestTargetId: livePendingRequestId ?? undefined
         }),
-        [normalizedMessages, normalizedGoalStateMessages, props.session.agentState]
+        [normalizedMessages, normalizedGoalStateMessages, props.session.agentState, livePendingRequestId]
     )
     const reconciled = useMemo(
         () => reconcileChatBlocks(reduced.blocks, blocksByIdRef.current),
@@ -1459,15 +1832,13 @@ function SessionChatInner(props: SessionChatProps) {
             goal: reduced.latestGoal,
             tasks: props.session.todos,
             blocks: reconciled.blocks,
-            messages: normalizedMessages,
-            backgroundTaskCount: props.session.backgroundTaskCount
+            backgroundTasks: props.session.backgroundTasks
         }),
         [
             reduced.latestGoal,
             props.session.todos,
-            props.session.backgroundTaskCount,
-            reconciled.blocks,
-            normalizedMessages
+            props.session.backgroundTasks,
+            reconciled.blocks
         ]
     )
     const hasRunningChildAgent = useMemo(
@@ -1479,13 +1850,25 @@ function SessionChatInner(props: SessionChatProps) {
         blocksByIdRef.current = reconciled.byId
     }, [reconciled.byId])
 
+    // A search jump can target any message, so show the full thread while a
+    // search target is active and restore the concise view once dismissed.
+    const conciseViewActive = conciseChatMode
+        && !pendingMessageTarget
+        && !(props.initialTargetMessageId && props.initialTargetMessageQuery)
+    const threadBlocks = useMemo(
+        () => conciseViewActive ? filterConciseChatBlocks(reconciled.blocks) : reconciled.blocks,
+        [conciseViewActive, reconciled.blocks]
+    )
+
     const visibleBlocks = useMemo(
-        () => buildVisibleChatBlocks(reconciled.blocks, {
+        () => buildVisibleChatBlocks(threadBlocks, {
             hasMoreMessages: props.hasMoreMessages,
             previousGroups: visibleGroupsRef.current,
+            previousGroupingMode: visibleGroupsModeRef.current,
+            groupingMode: toolGroupingMode,
             codexExplorationCollapsed
         }),
-        [reconciled.blocks, props.hasMoreMessages, codexExplorationCollapsed]
+        [threadBlocks, props.hasMoreMessages, toolGroupingMode, codexExplorationCollapsed]
     )
 
     // Fork-current must compare against assistant-ui message ids (`kind:id`),
@@ -1509,25 +1892,45 @@ function SessionChatInner(props: SessionChatProps) {
         if (props.viewMode !== 'tail') return
         setRememberedTailBoundary((previous) => (
             previous?.id === currentTailBoundaryId && previous.tailRevision === props.tailRevision
+                && previous.sessionId === props.session.id && previous.canonicalBlocks === reconciled.blocks
+                && previous.visibleBlocks === visibleBlocks
                 ? previous
-                : { id: currentTailBoundaryId, tailRevision: props.tailRevision }
+                : { id: currentTailBoundaryId, tailRevision: props.tailRevision, sessionId: props.session.id,
+                    canonicalBlocks: reconciled.blocks, visibleBlocks }
         ))
-    }, [currentTailBoundaryId, props.tailRevision, props.viewMode])
+    }, [currentTailBoundaryId, props.tailRevision, props.viewMode, props.session.id, reconciled.blocks, visibleBlocks])
 
     const latestCompletedBoundaryId = resolveLatestCompletedBoundaryIdForView(
         props.viewMode,
         currentTailBoundaryId,
         rememberedTailBoundary,
-        props.tailRevision
+        props.tailRevision,
+        { sessionId: props.session.id, canonicalBlocks: reconciled.blocks, visibleBlocks,
+            isRunning: props.session.thinking }
     )
 
+    const assistantForkPoints = useMemo(
+        // Resolve against the canonical thread: concise filtering hides
+        // compact-summary/system/CLI boundaries and would bridge an
+        // assistant fork point across them.
+        () => resolveAssistantForkPointsForCanonicalBlocks(reconciled.blocks, {
+            hasMoreMessages: props.hasMoreMessages,
+            previousGroups: visibleGroupsRef.current,
+            previousGroupingMode: visibleGroupsModeRef.current,
+            groupingMode: toolGroupingMode,
+            codexExplorationCollapsed
+        }, props.session.metadata?.conversationHistoryPoints),
+        [reconciled.blocks, props.hasMoreMessages, toolGroupingMode, codexExplorationCollapsed,
+            props.session.metadata?.conversationHistoryPoints]
+    )
     const isLatestCompletedBoundary = useCallback((messageId: string) => {
         return latestCompletedBoundaryId === messageId
     }, [latestCompletedBoundaryId])
 
     useEffect(() => {
+        visibleGroupsModeRef.current = toolGroupingMode
         visibleGroupsRef.current = visibleBlocks.filter(isToolGroupBlock)
-    }, [visibleBlocks])
+    }, [toolGroupingMode, visibleBlocks])
 
     // "N new messages" counts rendered blocks, not raw messages: a subagent run
     // is dozens of sidechain messages but a single Task card, and a tool_use +
@@ -1582,13 +1985,27 @@ function SessionChatInner(props: SessionChatProps) {
             codexModels: codexModelsState.models,
             model
         })
+        // Sent in the same request so the session never runs the new model
+        // with an effort it does not offer.
+        const agyNextChoice = agentFlavor === 'agy' && typeof model === 'string'
+            ? agyChoices.find((choice) => choice.modelId === model)
+            : undefined
+        const effortChange = agentFlavor === 'agy'
+            ? { effort: agyNextChoice?.supportedEfforts.some((level) => level === agyCurrentEffort)
+                ? agyCurrentEffort
+                : null }
+            : resolveEffortForModelChange({
+                currentEffort: props.session.effort ?? null,
+                model,
+                claudeModels: claudeModelsState.availableModels
+            })
 
         try {
             await applyModelChangeWithReasoningRollback({
                 model,
                 previousModelReasoningEffort,
                 shouldClearReasoningEffort,
-                setModel,
+                setModel: (nextModel) => setModel(nextModel, effortChange),
                 setModelReasoningEffort
             })
             haptic.notification('success')
@@ -1600,6 +2017,10 @@ function SessionChatInner(props: SessionChatProps) {
     }, [
         agentFlavor,
         codexModelsState.models,
+        claudeModelsState.availableModels,
+        agyChoices,
+        agyCurrentEffort,
+        props.session.effort,
         props.session.modelReasoningEffort,
         setModelReasoningEffort,
         setModel,
@@ -1661,14 +2082,18 @@ function SessionChatInner(props: SessionChatProps) {
 
     const handleEffortChange = useCallback(async (effort: string | null) => {
         try {
-            await setEffort(effort)
+            if (agentFlavor === 'agy') {
+                await setModel(agyCurrentModel, { effort })
+            } else {
+                await setEffort(effort)
+            }
             haptic.notification('success')
             props.onRefresh()
         } catch (e) {
             haptic.notification('error')
             console.error('Failed to set effort:', e)
         }
-    }, [setEffort, props.onRefresh, haptic])
+    }, [agentFlavor, agyCurrentModel, setModel, setEffort, props.onRefresh, haptic])
 
     const handleServiceTierChange = useCallback(async (serviceTier: string | null) => {
         try {
@@ -1684,6 +2109,10 @@ function SessionChatInner(props: SessionChatProps) {
     // Abort handler
     const handleAbort = useCallback(async () => {
         await abortSession()
+        // Abort cancels pending/in-flight Bridge without recovered/failed/superseded
+        // metadata, and the session stays active — drop the local latch so Bridge
+        // is not stuck as "Bridging…" until remount.
+        setPendingBridgeEventId(null)
         props.onRefresh()
     }, [abortSession, props.onRefresh])
 
@@ -1721,7 +2150,6 @@ function SessionChatInner(props: SessionChatProps) {
     // absolute epoch-ms using Date.now() at that moment (send-time base for presets).
     const [pendingSchedule, setPendingSchedule] = useState<PendingSchedule | null>(null)
     const [pendingScheduleRevision, setPendingScheduleRevision] = useState(0)
-    const [sendAcceptance, setSendAcceptance] = useState<{ attemptId: string | null } | null>(null)
     const updatePendingSchedule = useCallback((next: PendingSchedule | null) => {
         setPendingSchedule(next)
         setPendingScheduleRevision((revision) => revision + 1)
@@ -1803,7 +2231,6 @@ function SessionChatInner(props: SessionChatProps) {
         })
         const accepted = await onSendForComposer(text, attachments, scheduledAt, deliveryMode)
         if (!accepted) return
-        setSendAcceptance({ attemptId: accepted.attemptId })
         if (!routedToScratchlist) {
             // Clear pendingSchedule only after the mutation is actually
             // accepted - covers both pre-mutation guards AND async
@@ -1895,6 +2322,8 @@ function SessionChatInner(props: SessionChatProps) {
                 filesActive={false}
                 onToggleOutline={handleToggleOutline}
                 outlineActive={outlineOpen}
+                onToggleConciseView={() => setConciseChatMode(!conciseChatMode)}
+                conciseViewActive={conciseChatMode}
                 onToggleTerminal={canViewAgentTerminal ? () => setTerminalVisible(v => !v) : undefined}
                 terminalActive={terminalVisible}
                 api={props.api}
@@ -1921,21 +2350,85 @@ function SessionChatInner(props: SessionChatProps) {
 
             {sessionStatus ? <SessionStatusPanel data={sessionStatus} /> : null}
 
+            <ModelErrorBanner
+                metadata={props.session.metadata}
+                onDismiss={handleAcknowledgeModelError}
+                onBridge={agentFlavor === 'cursor' && props.session.active
+                    ? handleBridgeModelError
+                    : undefined}
+                isBridging={isBridgingModelError || bridgePending}
+                bridgeErrorReason={visibleBridgeFailureReason(bridgeFailure, currentModelError?.eventId)}
+            />
+
             <div className="flex flex-col min-h-0 flex-1">
             {props.session.teamState && (
                 <TeamPanel teamState={props.session.teamState} />
             )}
 
-            {sessionInactive ? (
+            {inactiveBanner ? (
                 <div className="mx-auto w-full max-w-content bg-[var(--app-subtle-bg)] p-3 text-center text-sm text-[var(--app-hint)]">
-                    {inactiveCanResume
-                        ? t('session.inactive.autoResume')
-                        : t('session.inactive.cannotResume')}
+                    {t(inactiveBanner)}
                 </div>
             ) : null}
 
             <AssistantRuntimeProvider runtime={runtime}>
                 <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
+                {forkFlow.preview ? (
+                    <ForkPreviewDialog
+                        isOpen
+                        view={forkFlow.preview.view}
+                        prefixMayHaveMore={props.hasMoreMessages || forkFlow.preview.view.prefixTruncated}
+                        stale={forkFlow.stale}
+                        loading={forkFlow.loading}
+                        onCancel={forkFlow.closePreview}
+                        onConfirm={forkFlow.confirmPreview}
+                    />
+                ) : null}
+                {forkFlow.legacyFallback && forkFlow.legacyRequest?.intent !== 'rewind' ? (
+                    <ConfirmDialog
+                        isOpen
+                        onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
+                        title={t('message.fork.confirmTitle')}
+                        description={t('message.fork.confirmDescription')}
+                        confirmLabel={t('message.fork')}
+                        confirmingLabel={t('message.fork.confirming')}
+                        isPending={forkFlow.confirming}
+                        centerTitle
+                        onConfirm={forkFlow.confirmLegacy}
+                    />
+                ) : null}
+                {forkFlow.legacyFallback && forkFlow.legacyRequest?.intent === 'rewind' ? (
+                    <ConfirmDialog
+                        isOpen
+                        onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
+                        title={t('message.rewind.confirmTitle')}
+                        description={t('message.rewind.confirmDescription')}
+                        confirmLabel={t('message.rewind')}
+                        confirmingLabel={t('message.rewind.confirming')}
+                        isPending={forkFlow.confirming}
+                        destructive
+                        centerTitle
+                        onConfirm={forkFlow.confirmLegacy}
+                    />
+                ) : null}
+                {forkFlow.errorMessage && !forkFlow.preview ? (
+                    <ConfirmDialog
+                        isOpen
+                        onClose={forkFlow.closePreview}
+                        title={forkFlow.errorIntent === 'rewind' ? t('message.rewind.confirmTitle') : t('message.fork.confirmTitle')}
+                        description={forkFlow.errorMessage}
+                        confirmLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                        confirmingLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                        isPending={forkFlow.loading}
+                        hideCancel
+                        keepOpenAfterConfirm={forkFlow.errorWasConnectFailure}
+                        centerTitle
+                        onConfirm={async () => {
+                            if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
+                            else forkFlow.closePreview()
+                        }}
+                    />
+                ) : null}
                 <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
                 <DragDropZone disabled={(!props.session.active && !inactiveCanResume) || props.isSending || pendingSchedule != null || isScratchlistParking}>
                     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -1949,6 +2442,31 @@ function SessionChatInner(props: SessionChatProps) {
                         )}
                         <div className={(terminalVisible && canViewAgentTerminal) ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
 
+                    {props.session.metadata?.conversationBranch ? (
+                        <div className="border-b border-[var(--app-divider)] p-3 text-xs text-[var(--app-hint)]">
+                            <Link to="/sessions/$sessionId" params={{ sessionId: props.session.metadata.conversationBranch.sourceSessionId }} className="underline">
+                                {t('branch.source')}
+                            </Link>{' · '}{t('branch.filesNotice')}
+                            {props.session.metadata.conversationBranch.state !== 'started'
+                                ? <p role="status">{t('branch.uncertain')}</p> : null}
+                        </div>
+                    ) : null}
+                    {branchPoint && props.session.metadata?.machineId ? <BranchConversationDialog
+                        api={props.api}
+                        machineId={props.session.metadata.machineId}
+                        sourceAgent={props.session.metadata.flavor ?? 'claude'}
+                        messageLocalId={branchPoint.messageLocalId}
+                        messageId={branchPoint.messageId}
+                        onClose={() => setBranchPoint(null)}
+                        onSubmit={async options => {
+                            setHistoryActionPending(true)
+                            try {
+                                const result = await props.api.branchConversation(props.session.id, options)
+                                await navigate({ to: '/sessions/$sessionId', params: { sessionId: result.sessionId }, ...PRESERVE_SESSION_SIDEBAR_SCROLL })
+                                setBranchPoint(null)
+                            } finally { setHistoryActionPending(false) }
+                        }}
+                    /> : null}
                     <HappyThread
                         // Key with prefix: different components under the same session
                         // (thread, scratchlist, composer) must have distinct keys to avoid
@@ -1961,19 +2479,30 @@ function SessionChatInner(props: SessionChatProps) {
                         sessionId={props.session.id}
                         metadata={props.session.metadata}
                         disabled={sessionInactive}
+                        allowInactiveFork={sessionInactive && props.session.metadata?.flavor === 'codex'
+                            && Boolean(props.session.metadata?.codexSessionId && props.session.metadata?.machineId)}
                         onRefresh={props.onRefresh}
                         onRetryMessage={props.onRetryMessage}
                         onContinuePlan={() => focusComposerRef.current?.()}
-                        historyActionPending={historyActionPending}
-                        onForkConversation={controlledByUser ? undefined : onForkConversation}
+                        historyActionPending={forkFlow.loading || historyActionPending}
+                        onBranchConversation={Boolean(props.session.metadata?.machineId) && (!props.session.active || !controlledByUser) && ['claude', 'codex'].includes(props.session.metadata?.flavor ?? 'claude')
+                            ? (messageLocalId, messageId) => setBranchPoint({ messageLocalId, messageId }) : undefined}
+                        onForkConversation={controlledByUser && !sessionInactive ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}
+                        assistantForkPoints={assistantForkPoints}
                         onViewModeChange={props.onViewModeChange}
+                        onJumpToTail={props.onJumpToTail}
+                        readThroughRevision={!terminalVisible && props.viewMode === 'tail' ? props.readThroughRevision : undefined}
                         isSyncingTail={props.isSyncingTail}
+                        isCatchingUpFromCache={props.isCatchingUpFromCache}
+                        cachedTailFirstFrame={props.cachedTailFirstFrame}
                         messagesWarning={props.messagesWarning}
                         hasMoreMessages={props.hasMoreMessages}
+                        hasMoreNewerMessages={props.hasMoreNewerMessages}
                         isLoadingMoreMessages={props.isLoadingMoreMessages}
                         onLoadMore={props.onLoadMore}
+                        onLoadNewer={props.onLoadNewer}
                         onCancelLoadMore={props.onCancelLoadMore}
                         unseenCount={unseenCount}
                         rawMessagesCount={visibleMessages.length}
@@ -1984,6 +2513,17 @@ function SessionChatInner(props: SessionChatProps) {
                         outlineOpen={outlineOpen}
                         outlineItems={outlineItems}
                         onOutlineOpenChange={setOutlineOpen}
+                        initialTargetMessageId={pendingMessageTarget?.messageId ?? props.initialTargetMessageId}
+                        initialTargetMessageQuery={pendingMessageTarget ? undefined : props.initialTargetMessageQuery}
+                        targetHighlightKind={pendingMessageTarget ? 'pending-request' : 'search'}
+                        searchRequestId={(props.searchRequestId ?? 0) + (pendingMessageTarget?.version ?? 0)}
+                        onLoadMessageContext={props.onLoadMessageContext}
+                        onInitialTargetConsumed={pendingMessageTarget
+                            ? consumeMessagePendingRequestTarget
+                            : props.onInitialTargetConsumed}
+                        onSearchTargetDismissed={pendingMessageTarget
+                            ? dismissMessagePendingRequestTarget
+                            : props.onSearchTargetDismissed}
                     />
                     </div>
 
@@ -2010,6 +2550,17 @@ function SessionChatInner(props: SessionChatProps) {
                         />
 
                         <div className="px-3">
+                            <AsyncQuestionsPanel
+                                key={`questions-${props.session.id}`}
+                                api={props.api}
+                                sessionId={props.session.id}
+                                requests={props.session.agentState?.requests}
+                                disabled={sessionInactive}
+                                onRefresh={props.onRefresh}
+                                targetRequestId={pendingAsyncTarget?.requestId}
+                                targetVersion={pendingAsyncTarget?.version}
+                                onTargetConsumed={consumeAsyncPendingRequestTarget}
+                            />
                             {/*
                              * Scratchlist drawer - composer-controlled. Only
                              * mounted when the operator clicks the notepad icon
@@ -2031,6 +2582,9 @@ function SessionChatInner(props: SessionChatProps) {
                             ) : null}
                             <QueuedMessagesBar
                                 sessionId={props.session.id}
+                                compactionPendingMessageIds={agentFlavor === 'codex' && props.session.active
+                                    && props.session.agentState?.steeringActive === true
+                                    ? props.session.agentState.codexCompactionPendingMessageIds ?? undefined : undefined}
                                 api={props.api}
                                 pendingSchedule={pendingSchedule}
                                 pendingScheduleRevision={pendingScheduleRevision}
@@ -2038,10 +2592,9 @@ function SessionChatInner(props: SessionChatProps) {
                                     // Restore the schedule so the clock button re-activates
                                     updatePendingSchedule(restored)
                                 }}
-                                canSteer={isSteeringSupportedForSession(props.session.metadata)
-                                    && (agentFlavor === 'pi'
-                                        ? props.session.thinking
-                                        : props.session.agentState?.steeringActive === true)
+                                deliveryActive={props.session.active && props.session.thinking}
+                                canSteer={props.session.active && props.session.thinking
+                                    && hasActiveSteeringTurn(props.session)
                                     && !controlledByUser}
                             />
                         </div>
@@ -2051,6 +2604,8 @@ function SessionChatInner(props: SessionChatProps) {
                         key={`composer-${props.session.id}`}
                         sessionId={props.session.id}
                         canRestoreAttachments={props.session.active}
+                        isAborting={isAborting}
+                        attachmentsEnabled={attachmentAdapter !== undefined}
                         onUploadDraftSnapshot={(text, attachments) => {
                             uploadDraftSnapshotRef.current = { text, attachments }
                         }}
@@ -2058,18 +2613,22 @@ function SessionChatInner(props: SessionChatProps) {
                         resolveSessionMentionTooltip={resolveSessionMentionTooltip}
                         disabled={props.isSending}
                         pendingSchedule={pendingSchedule}
-                        sendAcceptance={sendAcceptance}
-                        sendSettlement={props.sendSettlement}
                         onSchedule={updatePendingSchedule}
                         onClearSchedule={() => updatePendingSchedule(null)}
                         permissionMode={props.session.permissionMode}
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         copilotAgentMode={agentFlavor === 'copilot' ? props.session.copilotAgentMode : undefined}
-                        model={props.session.model}
+                        model={agentFlavor === 'agy' ? agyCurrentModel : props.session.model}
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
-                        effort={props.session.effort}
+                        effort={agentFlavor === 'agy' ? agyCurrentEffort : props.session.effort}
                         agentFlavor={agentFlavor}
-                        concurrentClients={props.session.metadata?.capabilities?.concurrentClients}
+                        machineId={sessionMachineId}
+                        inputTranslation={inputTranslation.visible ? {
+                            enabled: inputTranslation.enabled,
+                            fromDefault: inputTranslation.fromDefault,
+                            pending: inputTranslation.pending,
+                            onToggle: handleToggleInputTranslation
+                        } : undefined}
                         availableModelOptions={
                             agentFlavor === 'codex'
                                 ? codexModelOptions
@@ -2091,13 +2650,16 @@ function SessionChatInner(props: SessionChatProps) {
                                                 ? kimiModelOptions
                                             : agentFlavor === 'agy'
                                                 ? agyModelOptions
+                                            : agentFlavor === 'dsh'
+                                                ? dshModelOptions
                                         // Pi gets its provider-qualified model list from the piModels prop;
                                         // feeding piModelOptions here would make the generic Ctrl/Cmd+M
                                         // cycler (getNextModelForFlavor) post a bare modelId string,
                                         // which loses the provider and can pick the wrong cached
                                         // match or throw in runPi. undefined makes the shortcut a no-op
-                                        // so Pi model changes go through the settings sheet only.
-                                        : undefined
+                                        // so Pi model changes go through the settings sheet only;
+                                        // claudeModelOptions is undefined for every non-Claude flavor.
+                                        : claudeModelOptions
                         }
                         piModels={piModels}
                         piSelectedModel={agentFlavor === 'pi' ? piSelectedModel : undefined}
@@ -2109,15 +2671,24 @@ function SessionChatInner(props: SessionChatProps) {
                                     : undefined
                         }
                         availableEffortOptions={
-                            agentFlavor === 'grok' && grokEffortState.options.length > 0
+                            agentFlavor === 'agy'
+                                ? agyEffortOptions
+                                : agentFlavor === 'grok' && grokEffortState.options.length > 0
                                 ? grokEffortState.options
-                                : undefined
+                                : agentFlavor === 'copilot'
+                                ? copilotEffortOptions
+                                : agentFlavor === 'kimi'
+                                ? kimiEffortOptions
+                                : claudeEffortOptions
                         }
                         active={props.session.active}
                         allowSendWhenInactive
+                        resolveSessionIdForVoice={props.resolveSessionIdForVoice}
+                        onVoiceSessionResolved={props.onVoiceSessionResolved}
                         onResumeStoredDraft={() => handleSend('', undefined, null)}
                         thinking={props.session.thinking}
                         agentState={props.session.agentState}
+                        onPendingRequestClick={locatePendingRequest}
                         backgroundTaskCount={props.session.backgroundTaskCount}
                         contextSize={reduced.latestUsage?.contextSize}
                         contextCacheRead={reduced.latestUsage?.cacheRead}
@@ -2197,7 +2768,7 @@ function SessionChatInner(props: SessionChatProps) {
                                 : undefined
                         }
                         onModelReasoningEffortChange={
-                            (agentFlavor === 'codex' || agentFlavor === 'opencode')
+                            (agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'dsh')
                                 && props.session.active
                                 && !controlledByUser
                                 && (agentFlavor !== 'opencode' || opencodeReasoningEffortState.options.length > 0)
@@ -2205,8 +2776,20 @@ function SessionChatInner(props: SessionChatProps) {
                                 : undefined
                         }
                         onEffortChange={
-                            agentFlavor === 'grok'
+                            agentFlavor === 'agy'
+                                ? (props.session.active && !controlledByUser && agyEffortOptions.length > 0
+                                    ? handleEffortChange
+                                    : undefined)
+                                : agentFlavor === 'grok'
                                 ? (props.session.active && !controlledByUser && grokEffortState.options.length > 0
+                                    ? handleEffortChange
+                                    : undefined)
+                                : agentFlavor === 'copilot'
+                                ? (props.session.active && !controlledByUser && copilotEffortOptions.length > 0
+                                    ? handleEffortChange
+                                    : undefined)
+                                : agentFlavor === 'kimi'
+                                ? (props.session.active && !controlledByUser && kimiEffortOptions.length > 0
                                     ? handleEffortChange
                                     : undefined)
                                 : handleEffortChange
@@ -2259,15 +2842,13 @@ function SessionChatInner(props: SessionChatProps) {
 
             <ConfirmDialog
                 isOpen={rewindForkFallback !== null}
-                onClose={() => {
-                    if (!historyActionPending) setRewindForkFallback(null)
-                }}
+                onClose={() => setRewindForkFallback(null)}
                 title={t('message.rewind.fallbackTitle')}
                 description={t('message.rewind.fallbackDescription')}
                 confirmLabel={t('message.rewind.fallbackFork')}
                 confirmingLabel={t('message.rewind.fallbackForking')}
-                isPending={historyActionPending}
-                onConfirm={onRewindForkFallback}
+                isPending={false}
+                onConfirm={async () => onRewindForkFallback()}
             />
         </div>
     )

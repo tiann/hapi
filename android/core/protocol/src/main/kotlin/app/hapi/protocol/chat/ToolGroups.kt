@@ -35,6 +35,7 @@ class ToolGroupBlock(
     val activityTitle: String?,
     /** `'default' | 'codex-exploration'`. */
     val presentationMode: String,
+    val roundSummary: RoundSummary? = null,
     val summary: ToolGroupSummary,
 ) : VisibleChatBlock {
     val kind: String get() = "tool-group"
@@ -316,6 +317,7 @@ fun buildVisibleChatBlocks(
                 needsOlderHistory = needsOlderHistory,
                 activityTitle = activityTitle,
                 presentationMode = groupingFamily,
+                roundSummary = tools.first().roundSummary,
                 summary = summarizeToolGroup(tools),
             )
         )

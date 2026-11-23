@@ -2,24 +2,43 @@ import HapiClient
 import SwiftUI
 import UIKit
 
-/// Post-pairing home: the session list for the active hub, with the hub
-/// switcher (switch / add / settings / sign out), the "+" new-session sheet
-/// (A-M3c), the Settings sheet (A-M4e), and a unified session-filter menu.
+/// Post-pairing home: the session list for the active hub, with the "+"
+/// new-session sheet (A-M3c), the Settings sheet (A-M4e, which also switches,
+/// adds and signs out of hubs), and a unified session-filter menu.
 /// Degraded connections appear below navigation, not among its actions.
-/// iPhone pushes the chat; iPad selects a stable detail in a native split.
+/// iPhone pushes the chat; iPad and foldable iPhones select a stable detail in
+/// a native split that collapses to a stack when the window is compact.
 /// Spawn, notification and row selection share the same opening path.
 struct HomeView: View {
     let session: HubSession
 
     @Environment(AppModel.self) private var model
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var listModel: SessionListModel
-    @State private var confirmSignOut = false
     @State private var showNewSession = false
     @State private var showSettings = false
     @State private var path: [String] = []
     @State private var tabletNavigation = SessionNavigationState()
+    /// Transient connection states show only after `connectionRevealDelay`:
+    /// a foreground reconnect usually finishes first (Telegram-style).
+    @State private var connectionStatusRevealed = false
+    private let connectionRevealDelay: Duration = .seconds(2)
 
-    private var usesSplitNavigation: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+    private var usesSplitNavigation: Bool {
+        let idiom = UIDevice.current.userInterfaceIdiom
+        return idiom == .pad || idiom == .mac || FoldableDevice.shared.hasHinge
+    }
+
+    /// The sidebar is visible next to the chat (not collapsed into a stack).
+    private var showsSideBySide: Bool {
+        usesSplitNavigation && horizontalSizeClass == .regular
+    }
+
+    /// iPhone Duo outer screen: the system moves toolbar actions into its
+    /// vertical bar, leaving the top bar to the title alone.
+    private var isFoldedOuterScreen: Bool {
+        FoldableDevice.shared.hasHinge && horizontalSizeClass == .compact
+    }
 
     init(session: HubSession) {
         self.session = session
@@ -44,6 +63,14 @@ struct HomeView: View {
                 }
             }
         }
+        .background(HingeProbe())
+        // The hinge is reported after the first render; carry a chat that was
+        // already pushed (e.g. a cold-start notification) into the split.
+        .onChange(of: usesSplitNavigation) { _, split in
+            guard split else { return }
+            if let sessionId = path.last { openSession(sessionId) }
+            path = []
+        }
         // Notification tap (P3): consume the pending target into this hub's
         // navigation path. `initial: true` covers a tap that cold-started
         // the app before this view existed.
@@ -53,11 +80,17 @@ struct HomeView: View {
             openSession(sessionId)
         }
         .onChange(of: session.sessionRemoval) { _, removal in
-            guard usesSplitNavigation, let removal else { return }
-            tabletNavigation.remove(removal.sessionId)
+            guard let removal else { return }
+            if usesSplitNavigation {
+                tabletNavigation.remove(removal.sessionId)
+            } else if let index = path.firstIndex(of: removal.sessionId) {
+                // Deleted or archived elsewhere: leave the emptied chat.
+                path.removeSubrange(index...)
+            }
         }
         .sheet(isPresented: $model.showAddHub) {
             PairingFlowView(context: .addHub)
+                .macSheetSizing()
         }
         .sheet(isPresented: $showNewSession) {
             NewSessionView(session: session) { sessionId in
@@ -65,10 +98,36 @@ struct HomeView: View {
                 showNewSession = false
                 openSession(sessionId)
             }
+            .macSheetSizing()
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(session: session)
+                .macSheetSizing()
         }
+        .focusedSceneValue(\.homeCommands, HomeCommandActions(
+            newSession: { showNewSession = true },
+            openSettings: { showSettings = true },
+            toggleSidebar: usesSplitNavigation ? toggleSidebar : nil,
+            selectAdjacentSession: usesSplitNavigation ? selectAdjacentSession : nil
+        ))
+    }
+
+    private func toggleSidebar() {
+        tabletNavigation.columnVisibility = tabletNavigation.columnVisibility == .detailOnly ? .all : .detailOnly
+    }
+
+    /// Steps through the list as shown (filters and search applied).
+    private func selectAdjacentSession(_ offset: Int) {
+        let ids = listModel.rows.map(\.id)
+        guard !ids.isEmpty else { return }
+        let target: Int
+        if let current = tabletNavigation.selectedSessionId, let index = ids.firstIndex(of: current) {
+            target = index + offset
+        } else {
+            target = offset > 0 ? 0 : ids.count - 1
+        }
+        guard ids.indices.contains(target) else { return }
+        openSession(ids[target])
     }
 
     private var sessionList: some View {
@@ -76,10 +135,7 @@ struct HomeView: View {
             if let failedHub = model.authFailureNotice {
                 authFailureBanner(failedHub: failedHub)
             }
-            SessionConnectionNotice(
-                state: session.connectionState,
-                showsCachedSessions: listModel.isOffline && listModel.hasLoaded
-            )
+            connectionNotice
             SessionListView(model: listModel, selection: usesSplitNavigation ? Binding(
                 get: { tabletNavigation.selectedSessionId },
                 // Native list deselection (e.g. a filter hides the row) is
@@ -87,26 +143,82 @@ struct HomeView: View {
                 set: { if let id = $0 { openSession(id) } }
             ) : nil, onOpenSession: openSession)
         }
+        .task(id: session.connectionState == .connected) {
+            connectionStatusRevealed = false
+            guard session.connectionState != .connected else { return }
+            try? await Task.sleep(for: connectionRevealDelay)
+            if !Task.isCancelled { connectionStatusRevealed = true }
+        }
+        .modifier(ConnectionSubtitle(message: subtitleCarriesConnectionStatus
+            ? connectionNotice.transientMessage(revealed: connectionStatusRevealed) : nil))
+        .searchable(text: $listModel.searchQuery, prompt: Text("Search sessions"))
+        .onChange(of: tabletNavigation.selectedSessionId, initial: true) { _, sessionId in
+            listModel.selectedSessionId = sessionId
+        }
         .navigationTitle("Sessions")
+        // Inline: it shares the toolbar row, so the list starts right below
+        // and Pinned/Recent headers carry the structure.
         .navigationBarTitleDisplayMode(.inline)
+        .modifier(SidebarTitleRemoval(isSidebar: showsSideBySide || isFoldedOuterScreen))
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) { hubMenu }
+            ToolbarItem(placement: .topBarLeading) { settingsButton }
             if listModel.showsFilterMenu {
-                ToolbarItem(placement: .topBarTrailing) { SessionFilterMenu(model: listModel) }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { showNewSession = true } label: {
-                    Label("New Session", systemImage: "plus")
-                        .frame(minWidth: 44, minHeight: 44)
+                // Beside Settings when the system sidebar toggle shares the
+                // trailing edge, so the icons do not bunch up.
+                ToolbarItem(placement: showsSideBySide ? .topBarLeading : .topBarTrailing) {
+                    SessionFilterMenu(model: listModel)
                 }
-                .accessibilityIdentifier("home.new-session")
+            }
+            if !showsNewSessionBesideSearch {
+                ToolbarItem(placement: .topBarTrailing) { newSessionButton }
             }
         }
+        .modifier(NewSessionBesideSearch(isEnabled: showsNewSessionBesideSearch) { newSessionButton })
+    }
+
+    private var connectionNotice: SessionConnectionNotice {
+        SessionConnectionNotice(
+            state: session.connectionState,
+            showsCachedSessions: listModel.isOffline && listModel.hasLoaded,
+            lastRefreshedAt: listModel.lastRefreshedAt,
+            showsTransientStatus: connectionStatusRevealed && !subtitleCarriesConnectionStatus,
+            onRetry: { Task { await listModel.refresh() } }
+        )
+    }
+
+    /// iOS 26 puts transient status under the inline title (Mail-style), so
+    /// the list never shifts. A sidebar or folded Duo has no title to carry it.
+    private var subtitleCarriesConnectionStatus: Bool {
+        guard #available(iOS 26.0, *) else { return false }
+        return !(showsSideBySide || isFoldedOuterScreen)
+    }
+
+    /// iOS 26 bottom search bar, as in Messages: New Session sits beside the
+    /// field. A side-by-side sidebar keeps search at its top, and older
+    /// systems keep search under the title.
+    private var showsNewSessionBesideSearch: Bool {
+        guard #available(iOS 26.0, *) else { return false }
+        return !showsSideBySide
+    }
+
+    private var newSessionButton: some View {
+        Button { showNewSession = true } label: {
+            Label("New Session", systemImage: "plus")
+                .modifier(TouchTarget())
+        }
+        .accessibilityIdentifier("home.new-session")
+    }
+
+    private var settingsButton: some View {
+        Button { showSettings = true } label: {
+            Label("Settings", systemImage: "gearshape")
+                .modifier(TouchTarget())
+        }
+        .accessibilityIdentifier("home.settings")
     }
 
     private func openSession(_ sessionId: String) {
         if usesSplitNavigation {
-            listModel.onSessionOpened(sessionId)
             tabletNavigation.open(sessionId)
         } else if path.last != sessionId {
             path.append(sessionId)
@@ -125,61 +237,11 @@ struct HomeView: View {
         .id(sessionId)
     }
 
-    // MARK: - Hub switcher
-
-    private var hubMenu: some View {
-        Menu {
-            Section("Hubs") {
-                ForEach(model.hubs, id: \.self) { hub in
-                    Button {
-                        model.switchHub(to: hub)
-                    } label: {
-                        if hub == session.hubUrl {
-                            Label(HubDisplay.host(hub), systemImage: "checkmark")
-                        } else {
-                            Text(HubDisplay.host(hub))
-                        }
-                    }
-                }
-            }
-            Button {
-                model.showAddHub = true
-            } label: {
-                Label("Add Hub…", systemImage: "plus")
-            }
-            Divider()
-            Button {
-                showSettings = true
-            } label: {
-                Label("Settings", systemImage: "gearshape")
-            }
-            Button(role: .destructive) {
-                confirmSignOut = true
-            } label: {
-                Label("Sign Out…", systemImage: "rectangle.portrait.and.arrow.right")
-            }
-        } label: {
-            Label("Hubs", systemImage: "server.rack")
-                .frame(minWidth: 44, minHeight: 44)
-        }
-        .accessibilityValue(HubDisplay.host(session.hubUrl))
-        .accessibilityIdentifier("home.hubs")
-        .confirmationDialog(
-            "Sign out of \(HubDisplay.host(session.hubUrl))?",
-            isPresented: $confirmSignOut,
-            titleVisibility: .visible
-        ) {
-            Button("Sign Out", role: .destructive) { model.signOut(hub: session.hubUrl) }
-        } message: {
-            Text("Removes the stored access token for this hub. Pair again to reconnect.")
-        }
-    }
-
     private func authFailureBanner(failedHub: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
-            Text("\(HubDisplay.host(failedHub)) rejected its stored credentials and was signed out. Pair it again from the hub menu.")
+            Text("\(HubDisplay.host(failedHub)) rejected its stored credentials and was signed out. Pair it again from Settings.")
                 .font(.footnote)
             Spacer(minLength: 0)
             Button {
@@ -197,10 +259,54 @@ struct HomeView: View {
     }
 }
 
-/// One status line; a failed list refresh takes precedence over SSE status.
+/// A side-by-side sidebar's bar already holds settings, filter, new session and
+/// the system sidebar toggle; at 320pt the inline "Sessions" title only got a
+/// truncated sliver. The title stays set for VoiceOver and collapsed stacks.
+private struct SidebarTitleRemoval: ViewModifier {
+    let isSidebar: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.toolbar(removing: isSidebar ? .title : nil)
+        } else {
+            content
+        }
+    }
+}
+
+/// Places the system search field in the bottom bar with New Session on its
+/// trailing side. The OS branch is static and the toggle lives inside the
+/// toolbar, so resizing never replaces the session list's identity.
+private struct NewSessionBesideSearch<NewSessionButton: View>: ViewModifier {
+    let isEnabled: Bool
+    @ViewBuilder var newSessionButton: () -> NewSessionButton
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.toolbar {
+                if isEnabled {
+                    DefaultToolbarItem(kind: .search, placement: .bottomBar)
+                    ToolbarSpacer(.fixed, placement: .bottomBar)
+                    ToolbarItem(placement: .bottomBar) { newSessionButton() }
+                }
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// Home connection status. Transient SSE states are quiet: the iOS 26 nav
+/// subtitle, else a gray line with a spinner. Only a failed list refresh
+/// (cached data on screen) is amber, with when it last updated and Retry.
 struct SessionConnectionNotice: View {
+    @Environment(\.hapiTheme) private var theme
+    @Environment(\.locale) private var locale
     let state: SSEConnectionState
     let showsCachedSessions: Bool
+    var lastRefreshedAt: Date? = nil
+    var showsTransientStatus = true
+    var onRetry: (() -> Void)? = nil
 
     var message: String? {
         if showsCachedSessions { return String(localized: "Offline — showing cached sessions") }
@@ -213,17 +319,97 @@ struct SessionConnectionNotice: View {
         }
     }
 
+    func transientMessage(revealed: Bool) -> String? {
+        revealed && !showsCachedSessions ? message : nil
+    }
+
     var body: some View {
-        if let message {
-            Label(message, systemImage: "wifi.exclamationmark")
-                .font(.footnote)
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-                .background(.orange.opacity(0.15))
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("home.connection-notice")
+        if showsCachedSessions {
+            offlineBanner
+        } else if showsTransientStatus, let message {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text(message)
+            }
+            .font(.footnote)
+            .foregroundStyle(theme.textSecondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("home.connection-notice")
         }
+    }
+
+    private var offlineBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "icloud.slash")
+                .foregroundStyle(attentionColor)
+            offlineText
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            if let onRetry {
+                Button("Retry", action: onRetry)
+                    .font(.footnote.weight(.semibold))
+                    .buttonStyle(.borderless)
+            }
+        }
+        .font(.footnote)
+        .foregroundStyle(theme.textPrimary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(attentionColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("home.connection-notice")
+    }
+
+    @ViewBuilder
+    private var offlineText: some View {
+        if let lastRefreshedAt {
+            // Minute ticks keep "updated … ago" honest while offline.
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                Text("Offline · updated \(relativeAge(of: lastRefreshedAt, now: context.date))")
+            }
+        } else {
+            Text("Offline — showing cached sessions")
+        }
+    }
+
+    private func relativeAge(of date: Date, now: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = locale
+        formatter.dateTimeStyle = .named
+        return formatter.localizedString(for: date, relativeTo: now)
+    }
+
+    private var attentionColor: Color {
+        theme.isDark ? theme.warning : Color(hex: 0x9A6700)
+    }
+}
+
+/// iOS 26 navigation subtitle. Always applied (empty when connected) so the
+/// session list keeps one identity as the connection state changes.
+private struct ConnectionSubtitle: ViewModifier {
+    let message: String?
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.navigationSubtitle(Text(verbatim: message ?? ""))
+        } else {
+            content
+        }
+    }
+}
+
+/// 44pt touch slots; Mac toolbar buttons use the system's pointer sizing.
+private struct TouchTarget: ViewModifier {
+    func body(content: Content) -> some View {
+        #if targetEnvironment(macCatalyst)
+        content
+        #else
+        content.frame(minWidth: 44, minHeight: 44)
+        #endif
     }
 }

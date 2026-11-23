@@ -34,6 +34,7 @@ enum TranscriptRow: Identifiable, Equatable {
 }
 
 struct ChatTranscriptView: View {
+    @Environment(\.scenePhase) private var scenePhase
     let model: ChatModel
 
     private var rows: [TranscriptRow] {
@@ -49,6 +50,8 @@ struct ChatTranscriptView: View {
     }
 
     var body: some View {
+        let revision = model.readThroughRevision
+        let readState = model.renderedReadState
         AnchoredTranscriptList(
             items: rows,
             historyVersion: model.historyVersion,
@@ -62,6 +65,9 @@ struct ChatTranscriptView: View {
                 )
             },
             onLayout: { version, progress in model.historyLaidOut(version: version, madeProgress: progress) },
+            onTailDisplayed: {
+                if scenePhase == .active { model.markDisplayed(revision: revision, serverState: readState) }
+            },
             spacingBefore: { previous, row in row.spacing(after: previous) }
         ) { row in
             // The list bridges the current environment into its hosting roots.

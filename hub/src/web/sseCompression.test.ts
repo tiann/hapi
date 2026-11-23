@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test'
+import { randomBytes } from 'node:crypto'
 import zlib from 'node:zlib'
 import { acceptsGzip, compressSseResponse } from './sseCompression'
 
@@ -160,6 +161,40 @@ describe('compressSseResponse cleanup', () => {
         process.off('unhandledRejection', onRejection)
 
         expect(rejections).toEqual([])
+    })
+
+    it('does not throw when the client cancels while zlib still holds output', async () => {
+        // A large event leaves compressed output parked in zlib while the
+        // consumer is behind. pull() switches zlib back to flowing; if the
+        // client disconnects before that flow runs, the late 'data' event
+        // must not enqueue into the closed stream. Uncaught, that error
+        // takes the whole hub down.
+        const payload = randomBytes(96 * 1024).toString('base64')
+        const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+                controller.enqueue(new TextEncoder().encode(`data: {"pad":"${payload}"}\n\n`))
+            }
+        })
+        const result = compressSseResponse(
+            new Response(body, { headers: { 'Content-Type': 'text/event-stream' } }),
+            'gzip'
+        )
+        const errors: unknown[] = []
+        const onError = (error: unknown) => errors.push(error)
+        process.on('uncaughtException', onError)
+
+        try {
+            const reader = result.body!.getReader()
+            await reader.read()
+            await new Promise((resolve) => setTimeout(resolve, 20))
+            void reader.read()
+            await reader.cancel('client gone')
+            await new Promise((resolve) => setTimeout(resolve, 50))
+        } finally {
+            process.off('uncaughtException', onError)
+        }
+
+        expect(errors).toEqual([])
     })
 })
 

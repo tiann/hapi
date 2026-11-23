@@ -1,3 +1,7 @@
+---
+description: "HAPI architecture: the CLI wraps coding agents, a self-hosted hub syncs sessions, and web and native clients control them over REST, SSE and an encrypted relay."
+---
+
 # How it Works
 
 HAPI connects coding agents, a self-hosted hub, and web/native clients for remote control.
@@ -33,10 +37,10 @@ The CLI is a wrapper around AI coding agents. It supports multiple agent flavors
 hapi              # Choose an agent interactively and start a session
 hapi <agent>      # Start a supported agent directly (required in scripts)
 hapi runner start # Run background service for remote session spawning
-hapi ping-peer --list  # Shell peer shortlist (prefer MCP list_peers in-session)
+hapi ping-peer --list  # Active peers with machine and cwd (prefer MCP list_peers in-session)
 ```
 
-MCP peer tools (same hub/namespace as the session): `list_peers` (discover), `inspect_peer` (read), `ping_peer` (message). These work from runner-spawned sessions even when the hub is on another host - see [Installation → Split hub + remote runner](./installation.md#split-hub-remote-runner-peer-discovery).
+MCP peer tools let an agent find, read, message, and spawn other sessions on the same hub and namespace: `list_peers`, `inspect_peer`, `ping_peer`, and `spawn_peer`. Runners can hide them with `HAPI_DISABLE_PEER_TOOLS=1`. See [Peer sessions](./peer-sessions.md).
 
 ### HAPI Hub
 
@@ -72,7 +76,7 @@ FCM/APNs with the [native push contract](../api/native-companion-contract.md).
 The apps have their own navigation and rendering. Protocol fixture conformance
 does not imply web UI parity: the terminal, Work Graph and realtime voice
 controls remain web features. See [Native apps](./native-apps.md) for current
-capabilities, platform differences and build/pairing instructions.
+capabilities, platform differences and install/pairing instructions.
 
 ## Data Flow
 
@@ -155,10 +159,11 @@ Real-time bidirectional communication for:
 ### External Access: Tunnel
 
 For remote access outside your local network:
-- **Built-in relay** (`hapi hub --relay`) - Managed tunwg tunnel (WireGuard + TLS), no third-party account required
-- **Cloudflare Tunnel** (recommended) - Free, secure, reliable
+- **Built-in relay** (`hapi hub --relay`, recommended) - Managed tunwg tunnel (WireGuard + TLS), no third-party account required
+- **Your own tunnel or reverse proxy** - Cloudflare Tunnel, ngrok, or an HTTPS reverse proxy in front of the hub
 - **Tailscale** - Mesh VPN for private networks
-- **ngrok** - Quick setup for testing
+
+See [Installation → Hub setup](./installation.md#hub-setup) for details.
 
 ## Seamless Handoff
 

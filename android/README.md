@@ -5,6 +5,9 @@ independent from the web app; shares the
 [client contract](../docs/api/client-contract/index.md) and the web-generated
 golden fixtures (`shared/fixtures/`).
 
+End users: install HAPI from [Google Play](https://play.google.com/store/apps/details?id=run.hapi.companion).
+This README covers development builds.
+
 - **applicationId**: `run.hapi.companion` · **minSdk** 26 · **target/compileSdk** 36
 - **Toolchain**: Gradle 8.14.2 (wrapper) · AGP 8.11.1 · Kotlin 2.1.21 · Compose BOM 2025.05.00 · JDK 17+ (CI uses 21)
 
@@ -24,6 +27,13 @@ differences, pairing and features currently available through the web.
 - **Composer:** optimistic send, queue/steer where supported, drafts and
   attachments uploaded on selection. Slash suggestions combine session
   metadata and the slash-command RPC; the skills `$` picker has no UI.
+- **Incoming shares:** Android Share → HAPI accepts single/multiple files,
+  captions, text and links. Choose a session on the current or another paired
+  hub; stopped sessions require explicit restore before upload. Content is
+  added to the existing composer for manual sending. Private, no-backup
+  staging survives pairing and process recreation until handoff, with a
+  24-hour pending-content lifetime. Once imported, attachments follow the
+  ordinary composer lifecycle (they are not persisted as attachment drafts).
 - **Dictation:** provider discovery on chat entry picks the first
   `standard`-capable provider. The microphone stays hidden until one is
   available. First use requests `RECORD_AUDIO`; `MediaRecorder` records
@@ -124,6 +134,61 @@ Temporary authentication refresh failures (network/5xx) keep paired
 credentials. A rejected access token or a second 401 after a successful
 refresh requires re-pairing. See the [auth contract](../docs/api/client-contract/auth.md#silent-re-auth-401-handling).
 
+### Passkeys
+
+After pairing with the access token, **Settings → Passkeys** registers a
+passkey for the active hub through Credential Manager
+(`androidx.credentials` + `credentials-play-services-auth`). On another
+device, **Sign in with a passkey** on the pairing screen takes one system
+passkey sheet and no Hub address (see [single-ceremony sign-in](#single-ceremony-passkey-sign-in)):
+the hub returns a JWT plus a `passkeySession`, which is stored in
+`EncryptedSharedPreferences` instead of an access token and exchanged by the
+normal silent re-auth loop (`POST /api/auth {"passkeySession": …}`; a 401
+there signs the device out with a "sign in again" notice). App passkeys use
+the fixed RP ID `auth.hapi.run`; the app refuses registration options for any
+other RP ID, and passkeys created through the web authentication page also sign
+in to the app. Registration validates the connected Hub, operation/channel and
+user handle before opening Credential Manager. Set the Hub’s `HAPI_PUBLIC_URL`
+to its canonical HTTPS origin.
+See the [native passkey contract](../docs/api/client-contract/auth.md#passkeys-native).
+
+Ceremonies only work when two things match the APK's **signing
+certificate**:
+
+1. `https://auth.hapi.run/.well-known/assetlinks.json`
+   (`web/passkey-site/.well-known/assetlinks.json`) lists package
+   `run.hapi.companion` with the certificate's SHA-256 fingerprint
+   (colon-separated hex). Otherwise Credential Manager rejects the `auth.hapi.run`
+   request before the hub is involved.
+2. The hub accepts the origin `android:apk-key-hash:<hash>`, where `<hash>` is
+   the same SHA-256 digest as **base64url without padding**. Official hashes
+   live in `OFFICIAL_ANDROID_PASSKEY_ORIGINS` (`hub/src/web/routes/passkey.ts`);
+   other builds need `HAPI_PASSKEY_NATIVE_ORIGINS=android:apk-key-hash:<hash>`
+   on the hub.
+
+To compute both values for a keystore (debug: `~/.android/debug.keystore`,
+alias `androiddebugkey`, password `android`; `./gradlew :app:signingReport`
+prints the same SHA-256):
+
+```sh
+keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey \
+  -storepass android | grep 'SHA256:'
+# SHA256: AB:CD:…  → assetlinks.json sha256_cert_fingerprints
+echo 'AB:CD:…' | tr -d ':' | xxd -r -p | base64 | tr '+/' '-_' | tr -d '='
+# → android:apk-key-hash:<output>
+```
+
+Play-distributed builds are re-signed by **Play App Signing**: use the *app
+signing key* certificate SHA-256 from Play Console → Test and release → App
+integrity, not the upload key. That fingerprint goes into `assetlinks.json`
+and its base64url form into `OFFICIAL_ANDROID_PASSKEY_ORIGINS`. Debug builds
+and self-signed release builds each have their own certificate, so a passkey
+ceremony from a debug build only works if its fingerprint is also published
+in an `assetlinks.json` served from the RP ID — for local testing, that means
+a fork with its own shared RP constant, static authentication site, and matching
+app build. Only the auth.hapi.run maintainers can change the official file;
+per-Hub RP overrides are not supported.
+
 ## Firebase / push
 
 **Official Firebase builds:** pair an updated hub and allow
@@ -175,8 +240,10 @@ for wire details and [relay deployment](../relay/README.md) for maintainer setup
 
 The [Android Official Build workflow](../.github/workflows/android-release.yml)
 is manually dispatched on `main`.
-It tests and uploads signed APK/AAB artifacts; it does not publish to Play.
-Provide a new positive `version_code` and the desired `version_name`.
+It tests and uploads signed APK/AAB workflow artifacts. It does not publish to
+Google Play itself; the maintainer uploads the AAB to the Play Console.
+Provide the desired `version_name`; `versionCode` is the git commit count of the
+dispatched commit (artifact `hapi-android-<versionCode>`).
 
 Repository configuration, set once by the maintainer:
 
@@ -192,8 +259,11 @@ Repository configuration, set once by the maintainer:
 `-PhapiOfficialBuild=true -PhapiFirebaseProjectId=<project>` requires a
 matching Firebase project/package and release signing configuration.
 Missing or mismatched settings fail the build instead of shipping a package
-without working push. `hapiVersionCode` and `hapiVersionName` override the
-normal version defaults. The Firebase service-account private key belongs
+without working push. `versionCode` is derived automatically from the git
+commit count (`git rev-list --count HEAD`), so official builds need full
+history (the workflow checks out with `fetch-depth: 0`; shallow clones are
+rejected) and must come from `main`. Builds without git fall back to `1`.
+`hapiVersionName` overrides the default `versionName`. The Firebase service-account private key belongs
 only on the relay and must never enter Android build artifacts.
 
 Roll out relay support/credentials first, then the hub, then the app. Verify
@@ -239,7 +309,7 @@ Dependency direction: `:app` → `:core:data` → `:core:protocol`.
 
 ## Internationalization
 
-The app ships English (default) and Simplified Chinese
+The app ships English (default), Simplified Chinese, Russian and Japanese
 (`app/src/main/res/values-zh-rCN/strings.xml`). App UI strings
 live in resources; both files carry the **same key set** (lint
 `MissingTranslation` is the gate).
@@ -358,10 +428,41 @@ content, or a failed clipboard operation, offers UTF-8 file export through
 FileProvider and Android's sharesheet; Binder receives a URI, not the text.
 Exports older than 24 hours are cleaned on the next export.
 
-Body/composer/user text uses 16sp/24sp, code/diff/terminal 14sp/20sp, captions
-12sp/16sp. Content and composer share a centered 720dp reading column with
-16dp minimum side margins. Bubble widths use actual container constraints,
+Reading metrics match iOS `HapiTypography` (`ui/theme/HapiTypography.kt`):
+body/composer/user text 16sp/24sp with zero tracking, strict CJK line breaking
+and leading trimmed above the first and below the last line; code/diff/terminal
+14sp/20sp in bundled JetBrains Mono NL (SIL OFL, no ligatures); inline code 14sp
+on a glyph-hugging chip; captions 12sp/16sp; headings 24/20/18/17sp semibold.
+Markdown blocks are 12dp apart, 24dp before a heading and 8dp after one; list
+items 8dp. Transcript rows use iOS `TranscriptRowRole` gaps (8dp between tools
+or between user prompts, 24dp before and 16dp after a user turn, otherwise
+12dp). Content and composer share a centered 720dp reading column with 16dp
+minimum side margins. Bubble widths use actual container constraints,
 including split-screen; Android font scaling remains enabled.
+
+Chat surfaces stay neutral gray: the static schemes carry hue-free surface
+ladders, and `NeutralChatSurfaces` reapplies them over Material You so the
+wallpaper only tints accents inside a conversation (presets and OLED pass
+through). Transcript icons are Material Symbols Rounded vector drawables
+(`res/drawable/ic_sym_*`, Apache-2.0), never emoji or text glyphs. Inline
+actions (approvals, plan actions) share `ChatActionButton`: 48dp minimum,
+10dp corners, one filled primary per row.
+
+### Visual specimens
+
+`app/src/test/.../specimens/` renders deterministic, non-networked specimens
+(Markdown, reasoning, tool cards, approvals, composer states) under Robolectric
+native graphics in light/dark/OLED. Ordinary unit-test runs only compose them;
+capture images with:
+
+```sh
+./gradlew :app:recordRoborazziDebug --tests 'app.hapi.companion.specimens.*'
+# → app/build/outputs/roborazzi/specimens/*.png
+```
+
+They are review aids for visual changes, not committed goldens or store
+screenshots. Roborazzi is pinned to 1.60.0: later releases ship Kotlin 2.3
+metadata this Kotlin 2.1 build cannot read.
 
 ## Connection status and home filters
 
@@ -373,18 +474,41 @@ preserving replay cursors; background retries defer until foreground. A local
 hub route does not need Android's internet-validation capability.
 
 Home centers the Sessions title between a **Hubs and settings** icon and a
-**Filters** icon, keeping the new-session FAB. The hub menu is the only entry
+**Sort & filter** icon, keeping the new-session FAB. The hub menu is the only entry
 for switching/adding hubs, app settings and sign-out; the active hub is checked.
-The filter icon marks an applied filter and opens a Material 3 single-selection
-sheet. Choices come from all sessions, including historical
+The icon carries a dot for any applied filter or a non-default order and opens
+one Material 3 sheet: under **Filter**, single "label · value" rows for **Machines** (two or
+more machines; a menu with per-machine session counts), **Activity dates**
+(opens the range picker) and **Show** all / active only / archived only, plus an
+**Unread only** switch; under **Sort**, **Sort by** last message (default) or
+date created and an **Active first** switch (on by default: connected sessions
+lead the pinned and recent sections, below manual pins), both persisted
+app-wide in `hapi_prefs`. Home groups sessions by project folder and machine;
+worktrees share their repository folder. Tap a folder to fold all its sessions.
+Global pins stay above folders; project pins stay inside. Search keeps its flat
+relevance ranking. Turn off **Group by project folder** for the original flat
+layout. The layout preference persists across launches. **Reset** and **Done** sit in the sheet header. Status and unread
+filters keep the open session listed; search ranks by relevance with the base
+order as tie-break, as on web. Machine choices come from all sessions, including historical
 machines; names/IDs determine ordering, never counts. Duplicate names include
-IDs; unnamed and unknown machines are labeled. The applied filter has a Clear
-action, is transient per home/hub, and is cleared when no longer valid.
+IDs; unnamed and unknown machines are labeled. **Reset** clears the filters (not
+the order); filters are transient per home/hub and cleared when no longer valid.
+The share picker reuses the list model with the base order.
+
+Each row's agent icon carries the web presence badge (one mark per state):
+solid green pulsing while working, solid blue pulsing when only background
+tasks run, a green ring when connected and waiting, and a power mark when
+stopped or archived. A running [attached job](../docs/guide/session-jobs.md)
+counts as working even when the agent is idle or disconnected, keeps the session
+under **Active only** unless the session is archived, and adds a line under the meta line:
+`label · remaining or percent · elapsed` with a thin bar (determinate only for
+an honest fraction), amber with `no heartbeat` after 15 minutes. Job patches are
+versioned like web's: a lagged heartbeat cannot resurrect a cleared job.
 The home holder follows the active connection instance, releasing the previous
 store and filter even when switching back to a previously used hub URL.
 
 Pairing and Settings both link to the [privacy policy](https://hapi.run/docs/privacy).
-These controls and notices ship in English and Simplified Chinese.
+These controls and notices ship in English, Simplified Chinese, Russian and Japanese.
 
 ### Validation status (2026-09-12)
 
@@ -405,3 +529,31 @@ dependency calling the removed `InputManager.getInstance()` method.
 
 Earlier API 29 checks passed 19 chat/reader regressions. No 60/120 Hz device
 frame-time, memory, or predictive-back measurements are claimed by these checks.
+
+Unread state uses the hub’s [revision read-state contract](../docs/api/client-contract/read-state.md).
+List selection and metadata updates never acknowledge reading. The resumed chat
+acknowledges only its rendered tail, with a durable outbox scoped by hub and namespace.
+
+### Single-ceremony Passkey sign-in
+
+Sign-in runs exactly one Credential Manager ceremony. The app builds its own
+challenge, base64url (no padding) of the UTF-8 JSON
+`{"v":2,"operation":"login","channel":"native","iat":<epoch ms>,"nonce":<43-char base64url of 32 random bytes>}`,
+and requests `{challenge, rpId: "auth.hapi.run", userVerification: "required", timeout: 120000}`
+with no `allowCredentials` or extensions (`NativePasskeys.nativeLoginOptions`).
+`NativePasskeys.loginHub` reads the Hub from the selected credential's v2 user
+handle; the app then probes `GET /health` there and posts the assertion to
+`POST /api/passkey/login/verify`. The Hub accepts a native challenge only
+within [now − 5 min, now + 1 min] and only once; there is no login options
+endpoint. The user handle only locates the Hub; the Hub's signature check is
+the authentication.
+
+**Enter Hub address manually** passes an expected Hub: the app probes it before
+opening the sheet, and the credential must belong to it (equal origin, or the
+SHA-256 origin hash for long addresses). A passkey for another Hub fails before
+its assertion is posted anywhere. The handle fits 46 ASCII authority bytes; longer
+addresses produce an opaque handle, so sign-in without an address reports
+"Hub address required" and opens manual entry (a second ceremony in that rare
+case). Credentials registered before v2 handles need re-registration. No
+central server is involved; the credential must be available through the
+local/synced provider.

@@ -34,7 +34,7 @@ export async function runCli(): Promise<void> {
     }
 
     const { resolveCommand } = await import('./registry')
-    const resolved = resolveCommand(args)
+    const resolved = await resolveCommand(args)
     if (!resolved) {
         console.error(`Unknown ${args[0].startsWith('-') ? 'option' : 'command'}: ${args[0]}`)
         console.error('Run hapi to choose an agent, or use hapi <agent> [options]. See hapi --help.')

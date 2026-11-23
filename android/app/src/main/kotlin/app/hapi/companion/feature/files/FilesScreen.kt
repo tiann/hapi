@@ -42,12 +42,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
+import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.git.GitFileStatus
 import app.hapi.protocol.wire.FileSearchItem
@@ -267,7 +267,7 @@ private fun GitFileRow(file: GitFileStatus, onClick: () -> Unit) {
                     if (file.linesAdded > 0 && file.linesRemoved > 0) append(' ')
                     if (file.linesRemoved > 0) append("-${file.linesRemoved}")
                 },
-                fontFamily = FontFamily.Monospace,
+                fontFamily = HapiTypography.monoFamily,
                 fontSize = 11.sp,
                 color = colors.hint,
             )

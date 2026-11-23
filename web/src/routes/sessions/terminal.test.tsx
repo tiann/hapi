@@ -1,15 +1,36 @@
+import { useEffect } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
+import { clearDraft, getDraft } from '@/lib/composer-drafts'
 import TerminalPage, { buildTerminalCommandSequence } from './terminal'
 
 const writeMock = vi.fn()
 const goBackMock = vi.fn()
+const navigateMock = vi.fn()
 const connectMock = vi.fn()
 const resizeMock = vi.fn()
 const disconnectMock = vi.fn()
 const onOutputMock = vi.fn()
 let onExitHandler: ((code: number | null, signal: string | null) => void) | null = null
+type MountedTerminal = {
+    hasSelection: () => boolean
+    getSelection: () => string
+    focus: () => void
+    write: (data: string) => void
+    onData: (handler: (data: string) => void) => { dispose: () => void }
+    onSelectionChange: (handler: () => void) => { dispose: () => void }
+    buffer: {
+        active: {
+            length: number
+            getLine: (index: number) => { translateToString: (trimRight?: boolean) => string } | undefined
+        }
+    }
+    __setSelection: (value: string | null) => void
+    __fireSelectionChange: () => void
+}
+let mountedTerminal: MountedTerminal | null = null
+let selectionChangeHandler: (() => void) | null = null
 
 const onExitRegister = (handler: (code: number | null, signal: string | null) => void) => {
     onExitHandler = handler
@@ -43,7 +64,8 @@ const terminalSocketState = {
 }
 
 vi.mock('@tanstack/react-router', () => ({
-    useParams: () => ({ sessionId: 'session-1' })
+    useParams: () => ({ sessionId: 'session-1' }),
+    useNavigate: () => navigateMock,
 }))
 
 vi.mock('@/lib/app-context', () => ({
@@ -78,7 +100,45 @@ vi.mock('@/hooks/useTerminalSocket', () => ({
 }))
 
 vi.mock('@/components/Terminal/TerminalView', () => ({
-    TerminalView: () => <div data-testid="terminal-view" />
+    TerminalView: (props: { onMount?: (terminal: MountedTerminal) => void }) => {
+        useEffect(() => {
+            let selection: string | null = null
+            const terminal: MountedTerminal = {
+                hasSelection: () => selection !== null && selection.length > 0,
+                getSelection: () => selection ?? '',
+                focus: vi.fn(),
+                write: vi.fn(),
+                onData: () => ({ dispose: vi.fn() }),
+                onSelectionChange: (handler: () => void) => {
+                    selectionChangeHandler = handler
+                    return { dispose: vi.fn() }
+                },
+                buffer: {
+                    active: {
+                        length: 2,
+                        getLine: (index: number) => {
+                            const lines = [
+                                'REFUSE: lane B authorisation',
+                                'must be granted by an operator',
+                            ]
+                            const value = lines[index]
+                            if (value === undefined) return undefined
+                            return { isWrapped: false, translateToString: () => value }
+                        },
+                    },
+                },
+                __setSelection: (value: string | null) => {
+                    selection = value
+                },
+                __fireSelectionChange: () => {
+                    selectionChangeHandler?.()
+                },
+            }
+            mountedTerminal = terminal
+            props.onMount?.(terminal)
+        }, [props.onMount])
+        return <div data-testid="terminal-view" />
+    },
 }))
 
 function renderWithProviders() {
@@ -94,6 +154,9 @@ describe('TerminalPage paste behavior', () => {
         vi.clearAllMocks()
         setCompactTerminalControls(false)
         onExitHandler = null
+        mountedTerminal = null
+        selectionChangeHandler = null
+        clearDraft('session-1')
     })
 
     it('does not open manual paste dialog when clipboard text is empty', async () => {
@@ -334,5 +397,70 @@ describe('buildTerminalCommandSequence', () => {
     it('normalizes pasted lines and appends one carriage return', () => {
         expect(buildTerminalCommandSequence('echo one\necho two')).toBe('echo one\recho two\r')
         expect(buildTerminalCommandSequence('echo done\r')).toBe('echo done\r')
+    })
+})
+
+describe('TerminalPage to agent', () => {
+    beforeEach(() => {
+        vi.clearAllMocks()
+        setCompactTerminalControls(false)
+        onExitHandler = null
+        mountedTerminal = null
+        selectionChangeHandler = null
+        clearDraft('session-1')
+    })
+
+    it('labels the control To agent until a selection exists', () => {
+        renderWithProviders()
+        expect(screen.getByTestId('terminal-to-agent')).toHaveTextContent('To agent')
+    })
+
+    it('flips the label when the terminal selection becomes nonempty', async () => {
+        renderWithProviders()
+        await waitFor(() => {
+            expect(mountedTerminal).not.toBeNull()
+        })
+
+        await act(async () => {
+            mountedTerminal?.__setSelection('lane B refuse')
+            mountedTerminal?.__fireSelectionChange()
+        })
+
+        expect(screen.getByTestId('terminal-to-agent')).toHaveTextContent('Selection to agent')
+    })
+
+    it('appends the buffer to the composer draft and navigates to chat', async () => {
+        renderWithProviders()
+        await waitFor(() => {
+            expect(mountedTerminal).not.toBeNull()
+        })
+        fireEvent.click(screen.getByTestId('terminal-to-agent'))
+
+        expect(getDraft('session-1')).toContain('### Terminal output')
+        expect(getDraft('session-1')).toContain('REFUSE: lane B authorisation')
+        expect(navigateMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                to: '/sessions/$sessionId',
+                params: { sessionId: 'session-1' },
+            })
+        )
+    })
+
+    it('appends the selection instead of the full buffer when selected', async () => {
+        renderWithProviders()
+        await waitFor(() => {
+            expect(mountedTerminal).not.toBeNull()
+        })
+
+        await act(async () => {
+            mountedTerminal?.__setSelection('selected refuse line')
+            mountedTerminal?.__fireSelectionChange()
+        })
+
+        fireEvent.click(screen.getByTestId('terminal-to-agent'))
+
+        expect(getDraft('session-1')).toContain('### Terminal selection')
+        expect(getDraft('session-1')).toContain('selected refuse line')
+        expect(getDraft('session-1')).not.toContain('must be granted by an operator')
     })
 })

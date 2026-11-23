@@ -4,14 +4,17 @@ import {
     type KeyboardEvent as ReactKeyboardEvent,
     type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
+    createContext,
     useCallback,
+    useContext,
     useEffect,
     useMemo,
     useRef,
     useState,
 } from 'react'
+import type { MutableRefObject } from 'react'
 import { type AttachmentDropPosition } from '@/lib/attachmentOrder'
-import { AttachmentItem, type AttachmentDragHandleProps } from './AttachmentItem'
+import { AttachmentItem, type AttachmentDragHandleProps, type AttachmentRetryHandler } from './AttachmentItem'
 
 const DRAG_START_DISTANCE_PX = 6
 
@@ -32,12 +35,32 @@ type SortableComposerAttachmentProps = {
     onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>, id: string) => void
     onContextMenu: (event: ReactMouseEvent<Element>, id: string) => void
     onClick: (event: ReactMouseEvent<Element>, id: string) => void
+    attachmentOrderRef?: MutableRefObject<string[]>
+    retryingAttachmentIdsRef?: MutableRefObject<Set<string>>
+    onRetry?: AttachmentRetryHandler
 }
 
 type AttachmentDropTarget = {
     id: string
     position: AttachmentDropPosition
 }
+
+type AttachmentItemContextValue = {
+    dragHandleProps?: AttachmentDragHandleProps
+    attachmentOrderRef?: MutableRefObject<string[]>
+    retryingAttachmentIdsRef?: MutableRefObject<Set<string>>
+    onRetry?: AttachmentRetryHandler
+}
+
+const AttachmentDragHandleContext = createContext<AttachmentItemContextValue | undefined>(undefined)
+
+function SortableAttachmentItem() {
+    const context = useContext(AttachmentDragHandleContext)
+    return <AttachmentItem {...context} />
+}
+
+// Updating drag handlers must not replace the attachment component and reset its image viewer.
+const SORTABLE_ATTACHMENT_COMPONENTS = { Attachment: SortableAttachmentItem }
 
 function findAttachmentDropTarget(clientX: number, clientY: number): AttachmentDropTarget | null {
     if (typeof document.elementsFromPoint !== 'function') return null
@@ -64,6 +87,9 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
         onKeyDown,
         onContextMenu,
         onClick,
+        attachmentOrderRef,
+        retryingAttachmentIdsRef,
+        onRetry,
     } = props
     const handlePointerDown = useCallback(
         (event: ReactPointerEvent<HTMLButtonElement>) => onPointerDown(event, attachment.id, false),
@@ -97,11 +123,16 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
                 onSurfaceContextMenu: handleContextMenu,
                 onSurfaceClick: handleClick,
             },
-        [attachment.name, disabled, handleKeyDown, handlePointerDown],
+        [attachment.name, disabled, handleClick, handleContextMenu, handleKeyDown, handlePointerDown, handleSurfacePointerDown],
     )
-    const AttachmentWithHandle = useCallback(
-        () => <AttachmentItem dragHandleProps={dragHandleProps} />,
-        [dragHandleProps],
+    const attachmentItemContext = useMemo<AttachmentItemContextValue>(
+        () => ({
+            dragHandleProps,
+            attachmentOrderRef,
+            retryingAttachmentIdsRef,
+            onRetry,
+        }),
+        [attachmentOrderRef, dragHandleProps, onRetry, retryingAttachmentIdsRef],
     )
 
     return (
@@ -110,10 +141,12 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
             data-hapi-composer-attachment-dragging={isDragging || undefined}
             className={isDragging ? 'opacity-60' : undefined}
         >
-            <ComposerPrimitive.AttachmentByIndex
-                index={index}
-                components={{ Attachment: AttachmentWithHandle }}
-            />
+            <AttachmentDragHandleContext.Provider value={attachmentItemContext}>
+                <ComposerPrimitive.AttachmentByIndex
+                    index={index}
+                    components={SORTABLE_ATTACHMENT_COMPONENTS}
+                />
+            </AttachmentDragHandleContext.Provider>
         </div>
     )
 }
@@ -123,8 +156,19 @@ export function SortableComposerAttachments(props: {
     orderedAttachmentIds: readonly string[]
     disabled?: boolean
     onReorder: (activeId: string, targetId: string, position: AttachmentDropPosition) => void
+    attachmentOrderRef?: MutableRefObject<string[]>
+    retryingAttachmentIdsRef?: MutableRefObject<Set<string>>
+    onRetry?: AttachmentRetryHandler
 }) {
-    const { attachments, orderedAttachmentIds, onReorder, disabled = false } = props
+    const {
+        attachments,
+        orderedAttachmentIds,
+        onReorder,
+        disabled = false,
+        attachmentOrderRef,
+        retryingAttachmentIdsRef,
+        onRetry,
+    } = props
     const [draggingId, setDraggingId] = useState<string | null>(null)
     const dragRef = useRef<DragState | null>(null)
     const suppressClickIdRef = useRef<string | null>(null)
@@ -262,11 +306,14 @@ export function SortableComposerAttachments(props: {
                         attachment={attachment}
                         index={index}
                         isDragging={draggingId === id}
-                        disabled={disabled}
+                        disabled={disabled || attachments.length < 2}
                         onPointerDown={handlePointerDown}
                         onKeyDown={handleKeyDown}
                         onContextMenu={handleContextMenu}
                         onClick={handleClick}
+                        attachmentOrderRef={attachmentOrderRef}
+                        retryingAttachmentIdsRef={retryingAttachmentIdsRef}
+                        onRetry={onRetry}
                     />
                 )
             })}

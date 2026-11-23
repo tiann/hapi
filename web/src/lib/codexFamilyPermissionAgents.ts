@@ -1,13 +1,16 @@
-import type { AgentFlavor } from '@hapi/protocol'
+import { AGENT_FLAVORS, isCodexFamilyFlavor, type AgentFlavor } from '@hapi/protocol'
 
-/** Agents that share codex-family permission modes (default / read-only / safe-yolo / yolo). */
-export const CODEX_FAMILY_PERMISSION_AGENTS = [
-    'codex',
-    'gemini',
-    'kimi',
-    'copilot',
-    'opencode'
-] as const satisfies readonly AgentFlavor[]
+const permissionAgents = AGENT_FLAVORS
+    .filter(isCodexFamilyFlavor)
+    .filter(flavor => flavor !== 'grok')
+
+/**
+ * Codex-family flavors that use the shared create-form permission state.
+ * Derived from the shared codex-family membership minus grok: grok belongs to
+ * the family for tool-permission UI and uses separate create-form state for
+ * its own mode catalog (default / auto / plan / bypassPermissions).
+ */
+export const CODEX_FAMILY_PERMISSION_AGENTS: Readonly<typeof permissionAgents> = permissionAgents
 
 export type CodexFamilyPermissionAgent = typeof CODEX_FAMILY_PERMISSION_AGENTS[number]
 
@@ -19,15 +22,18 @@ export function usesCodexFamilyPermissionModes(
 }
 
 /**
- * Flavors whose create-form permission control is the native-mode select.
+ * Flavors outside the codex-family mode set that still render the create-form
+ * permission control through the native-mode select.
  * Ports: `NewSessionLogic.usesNativePermissionSelect`
  * (`ios/Packages/HapiKit/Sources/HapiClient/NewSession/NewSessionForm.swift`,
  * `android/app/src/main/kotlin/app/hapi/companion/feature/newsession/NewSessionForm.kt`).
- * claude and grok do not share the codex-family mode set, but they render
- * through the same native select.
  */
+const NATIVE_PERMISSION_SELECT_EXTRA_FLAVORS: readonly AgentFlavor[] = ['claude', 'grok', 'cursor', 'agy']
+
 export function usesNativePermissionSelect(flavor: string | null | undefined): boolean {
-    return flavor === 'claude' || flavor === 'grok' || usesCodexFamilyPermissionModes(flavor)
+    return typeof flavor === 'string'
+        && ((NATIVE_PERMISSION_SELECT_EXTRA_FLAVORS as readonly string[]).includes(flavor)
+            || usesCodexFamilyPermissionModes(flavor))
 }
 
 /**
@@ -47,4 +53,4 @@ export function usesSharedPermissionModeState(flavor: string | null | undefined)
  * once into the native mode it mapped to; flavors that moved earlier already
  * settled on 'default' and are intentionally left alone.
  */
-export const LEGACY_YOLO_BRIDGE_AGENTS: readonly AgentFlavor[] = ['codex', 'claude']
+export const LEGACY_YOLO_BRIDGE_AGENTS: readonly AgentFlavor[] = ['codex', 'claude', 'cursor', 'agy']

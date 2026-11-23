@@ -29,6 +29,7 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 import { CodexAppServerClient, isIndeterminateError } from './codexAppServerClient';
+import { killProcessByChildProcess } from '@/utils/process';
 
 function fakeStream(): EventEmitter & { setEncoding: ReturnType<typeof vi.fn> } {
     return Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
@@ -36,6 +37,8 @@ function fakeStream(): EventEmitter & { setEncoding: ReturnType<typeof vi.fn> } 
 
 function fakeChild() {
     return Object.assign(new EventEmitter(), {
+        exitCode: null as number | null,
+        signalCode: null as string | null,
         stdin: Object.assign(new EventEmitter(), {
             end: vi.fn(),
             write: vi.fn(),
@@ -60,6 +63,33 @@ describe('CodexAppServerClient process cwd', () => {
     beforeEach(() => {
         execFileSyncMock.mockClear();
         spawnMock.mockReset();
+        vi.mocked(killProcessByChildProcess).mockClear();
+    });
+
+    it('lets a completed read/fork helper exit on stdin EOF without process-tree probing', async () => {
+        const child = fakeChild();
+        child.stdin.end.mockImplementation(() => { child.exitCode = 0; child.emit('exit', 0, null); });
+        spawnMock.mockReturnValue(child);
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.disconnect({ gracefulTimeoutMs: 100 });
+        expect(child.stdin.end).toHaveBeenCalledTimes(1);
+        expect(killProcessByChildProcess).not.toHaveBeenCalled();
+        expect(client.isConnected()).toBe(false);
+    });
+
+    it('falls back to exact child cleanup if graceful helper shutdown does not finish', async () => {
+        vi.useFakeTimers();
+        try {
+            const child = fakeChild();
+            spawnMock.mockReturnValue(child);
+            const client = new CodexAppServerClient();
+            await client.connect();
+            const closing = client.disconnect({ gracefulTimeoutMs: 100 });
+            await vi.advanceTimersByTimeAsync(100);
+            await closing;
+            expect(killProcessByChildProcess).toHaveBeenCalledWith(child);
+        } finally { vi.useRealTimers(); }
     });
 
     it('passes an explicit neutral cwd to the app-server process', async () => {
@@ -74,6 +104,22 @@ describe('CodexAppServerClient process cwd', () => {
             expect.objectContaining({ cwd: '/neutral-home' })
         );
         await client.disconnect();
+    });
+
+    it('passes the explicit catalog to a single app-server without preparation processes', async () => {
+        const file = process.platform === 'win32' ? 'C:\\Models with spaces\\catalog.json' : '/Models with spaces/catalog.json';
+        vi.stubEnv('HAPI_CODEX_MODEL_CATALOG_JSON', file);
+        const client = new CodexAppServerClient();
+        try {
+            spawnMock.mockReturnValue(fakeChild());
+            await client.connect();
+            expect(spawnMock).toHaveBeenCalledTimes(1);
+            expect(spawnMock).toHaveBeenCalledWith('codex', ['app-server', '-c', `model_catalog_json=${JSON.stringify(file)}`],
+                expect.objectContaining({ shell: false }));
+        } finally {
+            await client.disconnect();
+            vi.unstubAllEnvs();
+        }
     });
 
     it('steerTurn resolves dispatch on stdin accept and completes with the turn response', async () => {

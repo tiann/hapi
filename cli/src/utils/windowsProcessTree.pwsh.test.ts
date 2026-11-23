@@ -67,13 +67,12 @@ describePwsh('windowsProcessTreeCimCommand under real pwsh (#1911 B1)', () => {
         const mock = `
 function Get-CimInstance {
   param($ClassName, $Filter)
-  $ppid = [int](($Filter -split "=")[1])
-  if ($ppid -eq 1234) {
-    [pscustomobject]@{ ProcessId = 2000 }
-    [pscustomobject]@{ ProcessId = 3000 }
-  } elseif ($ppid -eq 2000) {
-    [pscustomobject]@{ ProcessId = 4000 }
-  }
+  # A healthy full enumeration includes parent links and the scanner itself.
+  [pscustomobject]@{ ProcessId = 1234; ParentProcessId = 0 }
+  [pscustomobject]@{ ProcessId = 2000; ParentProcessId = 1234 }
+  [pscustomobject]@{ ProcessId = 3000; ParentProcessId = 1234 }
+  [pscustomobject]@{ ProcessId = 4000; ParentProcessId = 2000 }
+  [pscustomobject]@{ ProcessId = $PID; ParentProcessId = 0 }
 }
 ${windowsProcessTreeCimCommand(1234)}
 `
@@ -84,7 +83,11 @@ ${windowsProcessTreeCimCommand(1234)}
 
     it('emits OK:root alone when the mocked tree has no children', () => {
         const mock = `
-function Get-CimInstance { param($ClassName, $Filter) }
+function Get-CimInstance {
+  param($ClassName, $Filter)
+  [pscustomobject]@{ ProcessId = 1234; ParentProcessId = 0 }
+  [pscustomobject]@{ ProcessId = $PID; ParentProcessId = 0 }
+}
 ${windowsProcessTreeCimCommand(1234)}
 `
         const result = runPwsh(mock)

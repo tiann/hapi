@@ -4,6 +4,7 @@ import type { ApiSessionClient } from '@/api/apiSession';
 import { logger } from '@/ui/logger';
 import { deriveToolInput, deriveToolName } from '@/agent/utils';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { settleRequestsOfPreviousAgentProcess } from '@/modules/common/permission/settleStaleRequests';
 import {
     resolveToolAutoApprovalDecision,
     type AutoApprovalDecision
@@ -39,6 +40,7 @@ export class PermissionAdapter {
         private readonly getPermissionMode?: () => SessionPermissionMode | undefined,
         private readonly interceptPermissionResponse?: (response: PermissionResponseMessage) => Promise<boolean>
     ) {
+        settleRequestsOfPreviousAgentProcess(this.backend, this.session);
         this.backend.onPermissionRequest((request) => this.handlePermissionRequest(request));
         this.session.rpcHandlerManager.registerHandler<PermissionResponseMessage, void>(
             RPC_METHODS.Permission,
@@ -62,7 +64,11 @@ export class PermissionAdapter {
         });
         const input = deriveToolInput(request);
         const mode = this.getPermissionMode?.();
-        const autoDecision = resolveToolAutoApprovalDecision(mode, toolName, request.toolCallId);
+        const autoDecision = resolveToolAutoApprovalDecision(
+            mode,
+            toolName,
+            request.toolCallId
+        );
 
         if (autoDecision) {
             void this.autoApproveRequest(request, toolName, input, autoDecision);
@@ -77,6 +83,7 @@ export class PermissionAdapter {
                 ...currentState.requests,
                 [request.id]: {
                     tool: toolName,
+                    toolCallId: request.toolCallId,
                     arguments: input,
                     createdAt: Date.now()
                 }
@@ -115,6 +122,7 @@ export class PermissionAdapter {
                 ...currentState.completedRequests,
                 [request.id]: {
                     tool: toolName,
+                    toolCallId: request.toolCallId,
                     arguments: input,
                     createdAt: timestamp,
                     completedAt: timestamp,
@@ -169,6 +177,7 @@ export class PermissionAdapter {
                     ...currentState.completedRequests,
                     [response.id]: {
                         tool: toolName,
+                        toolCallId: pending.toolCallId,
                         arguments: toolInput,
                         createdAt: requestEntry?.createdAt ?? Date.now(),
                         completedAt: Date.now(),

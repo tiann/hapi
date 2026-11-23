@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { createContext, useContext, useState } from 'react'
 import type { ApiClient } from '@/api/client'
-import type { TerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
+import type { TerminalToolDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import type { SessionMetadataSummary } from '@/types/api'
 
 export type OlderHistoryLoadResult = 'loaded' | 'transient-stop' | 'terminal-stop'
@@ -13,16 +13,21 @@ export type HappyChatContextValue = {
     terminalToolDisplayMode: TerminalToolDisplayMode
     /** Hub-wide AGENT_NOTIFY_SUMMARY chat display; polled once at chat shell. */
     showSessionSummaryInChat: boolean
+    /** Effective hub input translation for this session; labels in-flight sends "Translating…". */
+    inputTranslationEnabled?: boolean
     disabled: boolean
+    allowInactiveFork?: boolean
     onRefresh: () => void
     codexPlanProposalId?: string | null
     onContinuePlan?: (planId: string) => void
     continuedPlanIds?: ReadonlySet<string>
     onRetryMessage?: (localId: string) => void
     historyActionPending?: boolean
+    onBranchConversation?: (messageLocalId?: string, messageId?: string) => void
     onForkConversation?: (messageLocalId?: string) => Promise<void>
     onRewindConversation?: (messageLocalId: string) => Promise<void>
     isLatestCompletedBoundary?: (messageId: string) => boolean
+    assistantForkPoints?: ReadonlyMap<string, string>
     onShareTurn?: (
         messageElement: HTMLElement | string | null,
         clientY?: number,

@@ -18,7 +18,19 @@ struct PairingFlowView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var showScanner = false
+
+    private static var introText: LocalizedStringKey {
+        #if targetEnvironment(macCatalyst)
+        "HAPI is self-hosted: your agent sessions run on your own machine, served by a hub you operate. Start the hub, then enter its URL and access token, or paste the pairing link it prints."
+        #else
+        "HAPI is self-hosted: your agent sessions run on your own machine, served by a hub you operate. Start the hub on your computer, then pair this app with the QR code it prints — or enter the hub URL and access token by hand."
+        #endif
+    }
     @State private var showManualEntry = false
+    @State private var passkeyAttempt = PairingAttempt()
+    @State private var showPasskeyManualEntry = false
+    /// Why the manual passkey form opened, shown at its top.
+    @State private var passkeyManualReason: PairingFailure?
 
     private static let docsURL = URL(string: "https://hapi.run/docs/guide/quick-start")
 
@@ -39,7 +51,7 @@ struct PairingFlowView: View {
                             ? String(localized: "Pair with your hub")
                             : String(localized: "Add another hub"))
                             .font(.title.bold())
-                        Text("HAPI is self-hosted: your agent sessions run on your own machine, served by a hub you operate. Start the hub on your computer, then pair this app with the QR code it prints — or enter the hub URL and access token by hand.")
+                        Text(Self.introText)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -51,6 +63,20 @@ struct PairingFlowView: View {
                     .padding(.horizontal, 24)
 
                     VStack(spacing: 12) {
+                        #if targetEnvironment(macCatalyst)
+                        // Macs have no live QR scanner; manual entry (which
+                        // also accepts a pasted pairing link) is the primary path.
+                        Button {
+                            showManualEntry = true
+                        } label: {
+                            Label("Enter Manually", systemImage: "keyboard")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+
+                        passkeyButton
+                        #else
                         Button {
                             showScanner = true
                         } label: {
@@ -68,6 +94,9 @@ struct PairingFlowView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.large)
+
+                        passkeyButton
+                        #endif
                     }
                     .padding(.horizontal, 24)
 
@@ -91,11 +120,67 @@ struct PairingFlowView: View {
             }
             .sheet(isPresented: $showScanner) {
                 QRScannerView()
+                    .macSheetSizing()
             }
             .sheet(isPresented: $showManualEntry) {
                 ManualEntryView()
+                    .macSheetSizing()
+            }
+            .sheet(isPresented: $showPasskeyManualEntry) {
+                ManualEntryView(mode: .passkey, initialFailure: passkeyManualReason)
+                    .macSheetSizing()
+            }
+            .onChange(of: passkeyAttempt.failure) { _, failure in
+                // The passkey does not name its hub: ask for the address, then
+                // sign in with a passkey bound to it.
+                guard failure == .passkeyHubAddressRequired else { return }
+                passkeyAttempt.failure = nil
+                openPasskeyManualEntry(reason: failure)
             }
         }
+    }
+
+    /// One system sheet: the selected passkey (added in Settings → Passkeys
+    /// or the web app) names its hub, so no URL is typed.
+    @ViewBuilder
+    private var passkeyButton: some View {
+        Button {
+            passkeyAttempt.signInWithPasskey(model)
+        } label: {
+            Group {
+                if passkeyAttempt.isPairing {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                        Text("Signing in…")
+                    }
+                } else {
+                    Label("Sign in with a Passkey", systemImage: "person.badge.key")
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+        .disabled(passkeyAttempt.isPairing)
+        .accessibilityIdentifier("pairing.passkeyEntry")
+
+        if let failure = passkeyAttempt.failure {
+            PairingErrorView(failure: failure)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("pairing.passkeyError")
+            Button("Enter Hub address manually") {
+                passkeyAttempt.failure = nil
+                openPasskeyManualEntry(reason: nil)
+            }
+            .font(.subheadline)
+            .accessibilityIdentifier("pairing.passkeyManual")
+        }
+    }
+
+    private func openPasskeyManualEntry(reason: PairingFailure?) {
+        passkeyManualReason = reason
+        showPasskeyManualEntry = true
     }
 
     private func authFailureBanner(failedHub: String) -> some View {

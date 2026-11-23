@@ -1,0 +1,134 @@
+{
+    "description": "Partial exact/estimated facts merge independently, missing and invalid later values do not erase valid zero or summary.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "compactionId": "codex:thread:turn:item:context_compacted",
+                    "estimatedTokensAfter": 3,
+                    "summary": "Native checkpoint summary",
+                    "tokensAfter": 0,
+                    "tokensBefore": 100,
+                    "type": "compact-summary"
+                },
+                "id": "first",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000000100,
+                "id": "answer:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Normal final answer is preserved."
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "compactionId": "codex:thread:turn:item:context_compacted",
+                    "estimatedTokensAfter": 3,
+                    "summary": "Native checkpoint summary",
+                    "tokensAfter": 0,
+                    "tokensBefore": 100,
+                    "type": "compact-summary"
+                },
+                "id": "first",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000000100,
+                "id": "answer:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Normal final answer is preserved."
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "compactionId": "codex:thread:turn:item:context_compacted",
+                            "estimatedTokensAfter": 3,
+                            "summary": "Native checkpoint summary",
+                            "tokensBefore": 100,
+                            "type": "compact-summary"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "first",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Normal final answer is preserved.",
+                            "type": "message"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000100,
+                "id": "answer",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "compactionId": "codex:thread:turn:item:context_compacted",
+                            "summary": "",
+                            "tokensAfter": 0,
+                            "type": "compact-summary"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000200,
+                "id": "second",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "compactionId": "codex:thread:turn:item:context_compacted",
+                            "estimatedTokensAfter": -1,
+                            "summary": "",
+                            "tokensAfter": -1,
+                            "tokensBefore": -1,
+                            "type": "compact-summary"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000300,
+                "id": "invalid",
+                "localId": null,
+                "seq": 4
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-compaction-metric-merge-validity"
+}

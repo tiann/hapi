@@ -1,7 +1,12 @@
 import type { Session } from '../sync/syncEngine'
-import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import type {
+    ModelErrorNotification,
+    ModelErrorSendOutcome,
+    NotificationChannel
+} from '../notifications/notificationTypes'
 import type { NotificationSendContext } from '../notifications/notificationSendContext'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
+import { formatModelErrorBody, formatModelErrorTitle } from '../notifications/modelErrorCopy'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import type { PushPayload, PushService } from './pushService'
@@ -75,37 +80,11 @@ export class PushNotificationChannel implements NotificationChannel {
         await this.deliverWebOrToast(session, payload, ctx, 'ready')
     }
 
-    async sendTaskNotification(session: Session, notification: TaskNotification, ctx?: NotificationSendContext): Promise<void> {
-        if (!session.active) {
-            return
-        }
-
-        const agentName = getAgentName(session)
-        const name = getSessionName(session)
-        const normalizedStatus = notification.status?.trim().toLowerCase()
-        const isFailure = normalizedStatus === 'failed'
-            || normalizedStatus === 'error'
-            || normalizedStatus === 'killed'
-            || normalizedStatus === 'aborted'
-
-        const payload: PushPayload = {
-            title: isFailure ? 'Task failed' : 'Task completed',
-            body: `${agentName} · ${name} · ${notification.summary}`,
-            data: {
-                type: 'task-notification',
-                sessionId: session.id,
-                url: this.buildSessionPath(session.id)
-            }
-        }
-
-        await this.deliverWebOrToast(session, payload, ctx, 'task')
-    }
-
     private async deliverWebOrToast(
         session: Session,
         payload: PushPayload,
         ctx: NotificationSendContext | undefined,
-        method: 'permission' | 'ready' | 'task'
+        method: 'permission' | 'ready'
     ): Promise<void> {
         if (ctx?.nativeGate?.sent) {
             this.logBranch(method, session.namespace, 'defer-to-native', 'fcm-delivered-this-dispatch')
@@ -134,6 +113,57 @@ export class PushNotificationChannel implements NotificationChannel {
 
         this.logBranch(method, session.namespace, 'web-push-fired')
         await this.pushService.sendToNamespace(session.namespace, payload)
+    }
+
+    async sendModelError(
+        session: Session,
+        notification: ModelErrorNotification,
+        ctx?: NotificationSendContext
+    ): Promise<ModelErrorSendOutcome> {
+        // No active-session guard: scheduled retries must still deliver after
+        // the session goes inactive (watermark + timer survive that transition).
+
+        if (ctx?.nativeGate?.sent) {
+            this.logBranch('model-error', session.namespace, 'defer-to-native', 'fcm-delivered-this-dispatch')
+            return 'unavailable'
+        }
+
+        const agentName = getAgentName(session)
+        const sessionName = getSessionName(session)
+        const title = formatModelErrorTitle(notification.kind)
+        const body = formatModelErrorBody(notification, { agentName, sessionName })
+        const url = this.buildSessionPath(session.id)
+
+        const payload: PushPayload = {
+            title,
+            body,
+            // Distinct tag from `ready-${id}` so the model-error ping never
+            // collapses into the prior "all done" notification on the same
+            // session. Tag keyed by eventId so distinct errors in the same
+            // session DON'T overwrite each other on the lock screen.
+            tag: `model-error-${session.id}-${notification.eventId}`,
+            data: {
+                type: 'model-error',
+                sessionId: session.id,
+                url
+            }
+        }
+
+        // Skip the in-page toast shortcut for model errors. Toasts are
+        // ephemeral and easy to miss; an error of this severity should
+        // ALWAYS surface as a real push so a backgrounded operator gets
+        // a system-tray ping. The web banner + pulsing-dot already
+        // cover the foreground case. Still defer when FCM already
+        // delivered this dispatch (nativeGate).
+        this.logBranch('model-error', session.namespace, 'web-push-fired')
+        const result = await this.pushService.sendToNamespace(session.namespace, payload)
+        if (result.sent > 0) {
+            return 'delivered'
+        }
+        if (result.subscriptions === 0) {
+            return 'unavailable'
+        }
+        return 'failed'
     }
 
     private buildSessionPath(sessionId: string): string {

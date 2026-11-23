@@ -182,6 +182,8 @@ class StoreSyncTargetsTest {
 
             override suspend fun getQueuedState(sessionId: String, localIds: List<String>) =
                 QueuedStateResponse(emptyList(), emptyList())
+
+            override suspend fun getMessageContext(sessionId: String, messageId: String) = null
         }
         val windows = MessageWindowStores(api = api, scope = scope)
         return windows to windows.open("s1")
