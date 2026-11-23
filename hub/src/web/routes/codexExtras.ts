@@ -856,12 +856,14 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     // of them are touched (#1717). The footer and the reply that answers it
     // can live in two different sessions — a live projection and an import
     // of the same thread — so deriving this from the merge's OWN output
-    // would need the merge to preserve which row answered which, across
-    // sessions whose clocks are not directly comparable except through the
-    // hub's own arrival time. Reconciling first means the merge never has
-    // to carry that evidence through: it can dedupe by plain content key,
-    // exactly as it always could, because there is nothing left here for
-    // dropping a duplicate row to lose.
+    // would need the merge to preserve which row answered which. Reconciling
+    // first means the merge never has to carry that evidence through: it can
+    // dedupe by plain content key, exactly as it always could, because there
+    // is nothing left here for dropping a duplicate row to lose.
+    //
+    // `sessionStates` is already in the function's required deterministic
+    // order (most messages, newest `updatedAt`, session id — canonical
+    // first); see that function's own doc comment for why this matters.
     if (engine) {
         engine.reconcileNotifyAcrossDuplicateSessions(
             sessionStates.map((candidate) => candidate.sessionId),

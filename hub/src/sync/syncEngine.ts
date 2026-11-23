@@ -839,8 +839,16 @@ export class SyncEngine {
      * in that order. This is the exact order the row-dedup loop below
      * processes sources in, so the chosen signal and whichever row the
      * content-dedup happens to keep are never pointing at different events.
+     *
+     * `sessionIds` MUST already be in that order — this function trusts the
+     * caller's sort (`survivors[0]`) rather than re-deriving it, so passing
+     * an arbitrary order silently changes which signal represents the
+     * group, with nothing here to catch it.
      */
     reconcileNotifyAcrossDuplicateSessions(
+        // Caller's deterministic merge order (most messages, newest
+        // `updatedAt`, then session id) — canonical first. See the doc
+        // comment above; this function does not re-sort.
         sessionIds: string[],
         canonicalSessionId: string,
         namespace: string
