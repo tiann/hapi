@@ -1,6 +1,5 @@
-import type { AgentFlavor, PermissionMode } from './modes'
+import type { PermissionMode, SteeringCapability, SteeringSessionMetadata, SteeringSessionState } from './modes'
 
-// --- Capability constants (prevent literal scattering) ---
 export const Capabilities = {
     ModelChange: 'model-change',
     Effort: 'effort',
@@ -15,6 +14,8 @@ type FlavorTraits = {
     readonly label: string
     readonly capabilities: ReadonlySet<Capability>
     readonly permissionReplyStyle: PermissionReplyStyle
+    /** Permission modes offered for the flavor; empty when the flavor has none. */
+    readonly permissionModes: readonly PermissionMode[]
     /** New-session form permission mode: `shared` selectable in the shared form state, `separate` selectable in the flavor's own state, `managed` not selectable. */
     readonly permissionCreateFormModeSource: 'shared' | 'separate' | 'managed'
     /** Mode a saved YOLO toggle migrates to in the new-session form; null if it is not migrated. */
@@ -23,142 +24,213 @@ type FlavorTraits = {
     readonly yoloPermissionMode: PermissionMode | null
     /** Tools whose name starts with this are answered with decisions in any session; null if none. */
     readonly decisionToolNamePrefix: string | null
+    /** Offered when creating a new session. */
+    readonly creatable: boolean
+    /** How a queued message is delivered into an active turn; null if the flavor cannot steer. */
+    readonly steering: SteeringCapability | null
 }
 
-// --- One record per flavor ---
-const agyTraits = {
+type FlavorSpec<TModes extends readonly PermissionMode[]> = {
+    label: string
+    capabilities: ReadonlySet<Capability>
+    permissionReplyStyle: PermissionReplyStyle
+    permissionModes: TModes
+    decisionToolNamePrefix?: string
+    /** The new-session form keeps this flavor's mode in its own state instead of the shared one. */
+    ownPermissionFormState?: boolean
+    /** Saved new-session YOLO toggles from before permission modes migrate to the auto-approve mode. */
+    migratesYoloToggle?: boolean
+    creatable?: boolean
+    steering?: SteeringCapability
+}
+
+const AUTO_APPROVE_MODES: readonly PermissionMode[] = ['yolo', 'bypassPermissions', 'always-proceed']
+
+function defineFlavor<const TModes extends readonly PermissionMode[]>(
+    spec: FlavorSpec<TModes>
+): FlavorTraits & { readonly permissionModes: TModes } {
+    const autoApproveModes = spec.permissionModes.filter((mode) => AUTO_APPROVE_MODES.includes(mode))
+    if (autoApproveModes.length > 1) {
+        throw new Error(`Flavor ${spec.label} lists more than one auto-approve mode: ${autoApproveModes.join(', ')}`)
+    }
+    const yoloPermissionMode = autoApproveModes[0] ?? null
+    return {
+        label: spec.label,
+        capabilities: spec.capabilities,
+        permissionReplyStyle: spec.permissionReplyStyle,
+        permissionModes: spec.permissionModes,
+        permissionCreateFormModeSource: spec.permissionModes.length === 0
+            ? 'managed'
+            : spec.ownPermissionFormState ? 'separate' : 'shared',
+        yoloToggleMigrationMode: spec.migratesYoloToggle ? yoloPermissionMode : null,
+        yoloPermissionMode,
+        decisionToolNamePrefix: spec.decisionToolNamePrefix ?? null,
+        creatable: spec.creatable ?? true,
+        steering: spec.steering ?? null,
+    }
+}
+
+// Only sessions running on agy acp can steer.
+function isAgyAcpSession(metadata: SteeringSessionMetadata): boolean {
+    return metadata.agyProtocol === 'acp'
+}
+
+// Legacy stream-json sessions cannot steer, including pre-ACP sessions with only an id.
+function isCursorAcpSession(metadata: SteeringSessionMetadata): boolean {
+    return metadata.cursorSessionProtocol !== 'stream-json'
+        && (Boolean(metadata.cursorSessionProtocol) || !metadata.cursorSessionId)
+}
+
+const agy = defineFlavor({
     label: 'Antigravity',
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'generic',
-    permissionCreateFormModeSource: 'shared',
-    yoloToggleMigrationMode: 'always-proceed',
-    yoloPermissionMode: 'always-proceed',
-    decisionToolNamePrefix: null,
-} satisfies FlavorTraits
+    permissionModes: ['request-review', 'acceptEdits', 'plan', 'always-proceed'],
+    migratesYoloToggle: true,
+    // Concurrent ACP `session/prompt` (`agy acp`); agy answers the interrupted request at once and folds the steer in after any running tool call finishes.
+    steering: { activeTurnState: 'steeringActive', supportsSession: isAgyAcpSession },
+})
 
-const claudeTraits = {
+const claude = defineFlavor({
     label: 'Claude',
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'allowTools',
-    permissionCreateFormModeSource: 'shared',
-    yoloToggleMigrationMode: 'bypassPermissions',
-    yoloPermissionMode: 'bypassPermissions',
-    decisionToolNamePrefix: null,
-} satisfies FlavorTraits
+    permissionModes: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
+    migratesYoloToggle: true,
+    // Stream-json stdin write during the turn (TUI Ctrl+X Ctrl+S); folded in at the next tool boundary, remote mode only.
+    steering: { activeTurnState: 'steeringActive' },
+})
 
-const codexTraits = {
+const codex = defineFlavor({
     label: 'Codex',
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'decision',
-    permissionCreateFormModeSource: 'shared',
-    yoloToggleMigrationMode: 'yolo',
-    yoloPermissionMode: 'yolo',
+    permissionModes: ['default', 'read-only', 'autoReview', 'yolo'],
     decisionToolNamePrefix: 'Codex',
-} satisfies FlavorTraits
+    migratesYoloToggle: true,
+    // App-server `turn/steer` (true mid-turn inject).
+    steering: { activeTurnState: 'steeringActive' },
+})
 
-const dshTraits = {
+const dsh = defineFlavor({
     label: 'DeepSeek Harness',
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'generic',
-    permissionCreateFormModeSource: 'managed',
-    yoloToggleMigrationMode: null,
-    yoloPermissionMode: null,
-    decisionToolNamePrefix: null,
-} satisfies FlavorTraits
+    // DSH applies its own server-side permission policy, so no modes are offered.
+    permissionModes: [],
+})
 
-const copilotTraits = {
+const copilot = defineFlavor({
     label: 'Copilot',
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'decision',
-    permissionCreateFormModeSource: 'shared',
-    yoloToggleMigrationMode: null,
-    yoloPermissionMode: 'yolo',
+    permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
     decisionToolNamePrefix: 'Copilot',
-} satisfies FlavorTraits
+})
 
-const cursorTraits = {
+const cursor = defineFlavor({
     label: 'Cursor',
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'decision',
-    permissionCreateFormModeSource: 'shared',
-    yoloToggleMigrationMode: 'yolo',
-    yoloPermissionMode: 'yolo',
+    permissionModes: ['default', 'plan', 'ask', 'debug', 'autoReview', 'yolo'],
     decisionToolNamePrefix: 'Cursor',
-} satisfies FlavorTraits
+    migratesYoloToggle: true,
+    // ACP: concurrent `session/prompt` soft-send without cancel; legacy stream-json sessions cannot steer.
+    steering: { activeTurnState: 'steeringActive', supportsSession: isCursorAcpSession },
+})
 
-const geminiTraits = {
+const gemini = defineFlavor({
     label: 'Gemini',
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'decision',
-    permissionCreateFormModeSource: 'shared',
-    yoloToggleMigrationMode: null,
-    yoloPermissionMode: 'yolo',
+    permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
     decisionToolNamePrefix: 'Gemini',
-} satisfies FlavorTraits
+    // Google sunset the consumer Gemini CLI, so it cannot be launched; stored sessions stay viewable.
+    creatable: false,
+})
 
-const grokTraits = {
+const grok = defineFlavor({
     label: 'Grok Build',
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'decision',
+    permissionModes: ['default', 'auto', 'plan', 'bypassPermissions'],
     // Its Auto mode depends on a machine capability, so the form keeps grok's mode apart.
-    permissionCreateFormModeSource: 'separate',
-    yoloToggleMigrationMode: null,
-    yoloPermissionMode: 'bypassPermissions',
-    decisionToolNamePrefix: null,
-} satisfies FlavorTraits
+    ownPermissionFormState: true,
+})
 
-const kimiTraits = {
+const kimi = defineFlavor({
     label: 'Kimi',
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'decision',
-    permissionCreateFormModeSource: 'shared',
-    yoloToggleMigrationMode: null,
-    yoloPermissionMode: 'yolo',
-    decisionToolNamePrefix: null,
-} satisfies FlavorTraits
+    permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
+})
 
-const opencodeTraits = {
+const opencode = defineFlavor({
     label: 'OpenCode',
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'decision',
-    permissionCreateFormModeSource: 'shared',
-    yoloToggleMigrationMode: null,
-    yoloPermissionMode: 'yolo',
+    permissionModes: ['default', 'plan', 'yolo'],
     decisionToolNamePrefix: 'OpenCode',
-} satisfies FlavorTraits
+    // v1: concurrent ACP `session/prompt`; v2: durable REST inbox steering at a native step boundary. Both require live steeringActive.
+    steering: { activeTurnState: 'steeringActive' },
+})
 
-const piTraits = {
+const pi = defineFlavor({
     label: 'Pi',
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'generic',
-    permissionCreateFormModeSource: 'managed',
-    yoloToggleMigrationMode: null,
-    yoloPermissionMode: null,
-    decisionToolNamePrefix: null,
-} satisfies FlavorTraits
+    // Pi RPC always auto-approves, so no modes are offered.
+    permissionModes: [],
+    // Native steer over the Pi runtime.
+    steering: { activeTurnState: 'thinking' },
+})
 
-const FLAVOR_TRAITS: Readonly<Record<AgentFlavor, FlavorTraits>> = {
-    agy: agyTraits,
-    claude: claudeTraits,
-    codex: codexTraits,
-    dsh: dshTraits,
-    copilot: copilotTraits,
-    cursor: cursorTraits,
-    gemini: geminiTraits,
-    grok: grokTraits,
-    kimi: kimiTraits,
-    opencode: opencodeTraits,
-    pi: piTraits,
-}
+// One entry per flavor; the key is the flavor id stored in session metadata.
+const FLAVOR_TRAITS = {
+    agy, claude, codex, dsh, copilot, cursor, gemini, grok, kimi, opencode, pi,
+} satisfies Record<string, FlavorTraits>
+
+export type AgentFlavor = keyof typeof FLAVOR_TRAITS
+
+// Object.keys is not typed per key and z.enum needs a non-empty tuple.
+export const AGENT_FLAVORS = Object.keys(FLAVOR_TRAITS) as unknown as readonly [AgentFlavor, ...AgentFlavor[]]
+
+export const CREATABLE_AGENT_FLAVORS: readonly AgentFlavor[] = AGENT_FLAVORS.filter(
+    (flavor) => FLAVOR_TRAITS[flavor].creatable
+)
+
+// Per-flavor names kept for existing importers; a new flavor does not need one.
+export const AGY_PERMISSION_MODES = FLAVOR_TRAITS.agy.permissionModes
+export type AgyPermissionMode = typeof AGY_PERMISSION_MODES[number]
+export const CLAUDE_PERMISSION_MODES = FLAVOR_TRAITS.claude.permissionModes
+export type ClaudePermissionMode = typeof CLAUDE_PERMISSION_MODES[number]
+export const CODEX_PERMISSION_MODES = FLAVOR_TRAITS.codex.permissionModes
+export type CodexPermissionMode = typeof CODEX_PERMISSION_MODES[number]
+export const COPILOT_PERMISSION_MODES = FLAVOR_TRAITS.copilot.permissionModes
+export type CopilotPermissionMode = typeof COPILOT_PERMISSION_MODES[number]
+export const CURSOR_PERMISSION_MODES = FLAVOR_TRAITS.cursor.permissionModes
+export type CursorPermissionMode = typeof CURSOR_PERMISSION_MODES[number]
+export const GEMINI_PERMISSION_MODES = FLAVOR_TRAITS.gemini.permissionModes
+export type GeminiPermissionMode = typeof GEMINI_PERMISSION_MODES[number]
+export const GROK_PERMISSION_MODES = FLAVOR_TRAITS.grok.permissionModes
+export type GrokPermissionMode = typeof GROK_PERMISSION_MODES[number]
+export const KIMI_PERMISSION_MODES = FLAVOR_TRAITS.kimi.permissionModes
+export type KimiPermissionMode = typeof KIMI_PERMISSION_MODES[number]
+export const OPENCODE_PERMISSION_MODES = FLAVOR_TRAITS.opencode.permissionModes
+export type OpencodePermissionMode = typeof OPENCODE_PERMISSION_MODES[number]
 
 const UNKNOWN_FLAVOR_TRAITS: FlavorTraits = {
     label: 'Unknown',
     capabilities: new Set<Capability>(),
     permissionReplyStyle: 'generic',
+    // Unknown flavors fall back to the Claude list.
+    permissionModes: FLAVOR_TRAITS.claude.permissionModes,
     permissionCreateFormModeSource: 'managed',
     yoloToggleMigrationMode: null,
     yoloPermissionMode: null,
     decisionToolNamePrefix: null,
+    creatable: false,
+    steering: null,
 }
 
 function traitsOf(flavor: string | null | undefined): FlavorTraits {
@@ -215,4 +287,46 @@ export function getYoloToggleMigrationMode(flavor: string | null | undefined): P
 
 export function resolveHapiYoloPermissionMode(flavor: string | null | undefined): PermissionMode | null {
     return traitsOf(flavor).yoloPermissionMode
+}
+
+/** Flavors that can deliver a queued message into an active turn without waiting for the turn to end; the UI hides Steer for the others. */
+export const STEERING_SUPPORTED_FLAVORS: readonly AgentFlavor[] = AGENT_FLAVORS.filter(
+    (flavor) => FLAVOR_TRAITS[flavor].steering !== null
+)
+
+function getSteeringCapability(flavor?: string | null): SteeringCapability | null {
+    return traitsOf(flavor).steering
+}
+
+export function isSteeringSupportedForFlavor(flavor?: string | null): boolean {
+    return getSteeringCapability(flavor) !== null
+}
+
+/**
+ * Session-aware steer gate. Legacy Cursor stream-json sessions advertise
+ * flavor `cursor` but cannot steer, including pre-ACP sessions with only an id.
+ * Native admission and remote-control checks remain the caller's responsibility.
+ */
+export function isSteeringSupportedForSession(metadata?: SteeringSessionMetadata | null): boolean {
+    const capability = getSteeringCapability(metadata?.flavor)
+    return capability !== null && (capability.supportsSession?.(metadata ?? {}) ?? true)
+}
+
+/**
+ * Whether the provider reports an active steerable turn. This does not imply
+ * that the session is active, remotely controlled, or will accept a native steer.
+ */
+export function hasActiveSteeringTurn(session: SteeringSessionState): boolean {
+    if (!isSteeringSupportedForSession(session.metadata)) return false
+    return getSteeringCapability(session.metadata?.flavor)?.activeTurnState === 'thinking'
+        ? session.thinking === true
+        : session.agentState?.steeringActive === true
+}
+
+export function getPermissionModesForFlavor(flavor?: string | null): readonly PermissionMode[] {
+    return traitsOf(flavor).permissionModes
+}
+
+export function isPermissionModeAllowedForFlavor(mode: PermissionMode, flavor?: string | null): boolean {
+    return getPermissionModesForFlavor(flavor).includes(mode)
 }
