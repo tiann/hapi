@@ -1036,7 +1036,7 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
-    it('merges duplicate sessions discovered across SyncEngine cache and persistent store', async () => {
+    it('persists the canonical plan before deleting merged duplicate sessions', async () => {
         const app = new Hono<WebAppEnv>()
         app.use('*', async (c, next) => {
             c.set('namespace', 'default')
@@ -1047,13 +1047,16 @@ describe('Codex Desktop import routes', () => {
         const engineSession = store.sessions.getOrCreateSession('engine-session', { codexSessionId: 'codex-thread-1' }, {}, 'default')
         store.messages.addMessage(storedSession.id, { type: 'text', text: 'first stored message' }, 'stored-1')
         store.messages.addMessage(storedSession.id, { type: 'text', text: 'second stored message' }, 'stored-2')
-        store.messages.addMessage(engineSession.id, { type: 'text', text: 'engine-only message' }, 'engine-1')
+        store.messages.addMessage(engineSession.id, { role: 'agent', content: { type: 'codex', data: {
+            type: 'plan_update', plan: [{ step: 'Copied task', status: 'pending' }],
+        } } }, 'engine-1')
         const engine = {
             getSessionsByNamespace: () => [engineSession],
             transferAttachedJobs: (fromSessionId: string, toSessionId: string) => {
                 store.sessionJobs.transfer(fromSessionId, toSessionId)
             },
             deleteSession: async (sessionId: string) => {
+                expect(store.sessions.getSession(storedSession.id)?.todos).toMatchObject([{ content: 'Copied task' }])
                 store.sessions.deleteSession(sessionId, 'default')
             },
             handleRealtimeEvent: () => {},

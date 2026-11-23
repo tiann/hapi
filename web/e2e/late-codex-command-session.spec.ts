@@ -20,7 +20,8 @@ test('stored shutdown result remains identifiable in the archived session UI', a
     expect(auth.ok()).toBe(true)
     const headers = { Authorization: `Bearer ${(await auth.json()).token}` }
     const session = await request.get(`${base}/api/sessions/${sessionId}`, { headers })
-    expect((await session.json()).session.active).toBe(false)
+    const stored = (await session.json()).session
+    expect(stored.active).toBe(false)
     const response = await request.get(`${base}/api/sessions/${sessionId}/messages?limit=200`, { headers })
     const rows = (await response.json()).messages
     const end = rows.find((row: { content: { content?: { data?: { output?: { type?: string } } } } }) =>
@@ -31,7 +32,7 @@ test('stored shutdown result remains identifiable in the archived session UI', a
     for (const mobile of [true, false]) {
         await page.setViewportSize(mobile ? { width: 412, height: 915 } : { width: 1440, height: 1000 })
         await page.goto(`${base}/sessions/${sessionId}`, { timeout: 90_000, waitUntil: 'domcontentloaded' })
-        await expect(page.getByText('This session is inactive.', { exact: false })).toBeVisible()
+        await expect(page.getByText(stored.metadata?.lifecycleState === 'archived' ? 'This session is archived' : 'The agent is not connected.', { exact: false })).toBeVisible()
         const card = page.getByRole('button').filter({ hasText: 'LATE_COMMAND_' }).first()
         await card.scrollIntoViewIfNeeded()
         await expect(card).toBeVisible()
@@ -144,7 +145,7 @@ test('archiving a real Codex session preserves a late background command result'
         await installHapiAuth(page, base, accessToken)
         await page.setViewportSize({ width: 412, height: 915 })
         await page.goto(`${base}/sessions/${sessionId}`, { timeout: 90_000, waitUntil: 'domcontentloaded' })
-        await expect(page.getByText('This session is inactive.', { exact: false })).toBeVisible()
+        await expect(page.getByText((await detail()).metadata?.lifecycleState === 'archived' ? 'This session is archived' : 'The agent is not connected.', { exact: false })).toBeVisible()
         const card = page.getByRole('button').filter({ hasText: marker }).first()
         await expect(card).toBeVisible()
         await expect(card.locator('.text-red-600').first()).toBeVisible()

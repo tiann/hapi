@@ -131,7 +131,7 @@ export function buildSessionStatusData(args: {
     const data: SessionStatusData = {
         goal: args.goal ?? null,
         tasks,
-        taskProgress: tasks.length > 0
+        taskProgress: allTasks.length > 0
             ? {
                 completed: allTasks.filter((task) => task.status === 'completed').length,
                 total: allTasks.length
@@ -144,7 +144,7 @@ export function buildSessionStatusData(args: {
     }
 
     return data.goal
-        || data.tasks.length > 0
+        || data.taskProgress !== null
         || data.subagents.length > 0
         || data.terminals.length > 0
         ? data

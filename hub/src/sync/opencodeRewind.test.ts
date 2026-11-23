@@ -320,6 +320,29 @@ describe('OpenCode durable Hub rewind commit', () => {
         } finally { unsubscribe(); engine.stop(); store.close() }
     })
 
+    it('rebuilds the newest surviving task snapshot by transcript position, not arrival order', async () => {
+        const f = fixture()
+        const plan = (step: string) => ({ role: 'agent', content: { type: 'codex', data: {
+            type: 'plan', entries: [{ content: step, status: 'pending' }],
+        } } })
+        const before = f.store.messages.getAllMessages(f.id)[0]!.createdAt - 1_000
+        const latest = f.store.messages.addMessage(f.id, plan('Newest surviving plan'), undefined, undefined, before)
+        f.store.messages.addMessage(f.id, plan('Older plan, received later'), undefined, undefined, before - 500)
+        const checkpoint = { sessionId: 'native', messageIds: ['u1', 'a1'], userMessageIds: ['u1'], localMessageIds: [] }
+        const hashes = { sourceHash: 'a'.repeat(64), prefixHash: 'b'.repeat(64) }
+        try {
+            ;(f.engine as any).rpcGateway.rewindConversation = async (_id: string, { opencodeRewind: operation }: { opencodeRewind: OpenCodeRewindOperation }) => {
+                f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase: 'prepared', ...hashes }, f.version())
+                f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase: 'applied', ...hashes, checkpoint, indexes: { one: 0 } }, f.version())
+                return { success: true, truncateFromLocalId: 'two' }
+            }
+            expect(await f.engine.rewindConversation(f.id, 'default', 'two')).toEqual({ type: 'success' })
+            expect(f.store.sessions.getSession(f.id)).toMatchObject({
+                todos: [{ content: 'Newest surviving plan' }], todosSourceAt: before, todosSourceSeq: latest.seq,
+            })
+        } finally { f.engine.stop(); f.store.close() }
+    })
+
     it('atomically removes only cutoff search rows before invalidation and preserves later rows on committed replay', async () => {
         const f = fixture(true)
         const rows = f.store.messages.getAllMessages(f.id)

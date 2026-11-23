@@ -6,7 +6,7 @@ import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import type { Store, StoredMessage } from '../../store'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { SyncEngine } from '../../sync/syncEngine'
-import { rebuildImportedSessionTodos } from './localSessions/rebuildImportedSessionTodos'
+import { persistImportedSessionTodos } from './localSessions/rebuildImportedSessionTodos'
 import { collectImportCandidates, type ImportCandidate } from './localSessions/matchContentPrefix'
 
 // The canonical candidate collection lives with the generic matcher; the
@@ -854,23 +854,28 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
 
     for (const source of sessionStates.slice(1)) {
         latestActivity = Math.max(latestActivity, source.updatedAt)
-        for (const message of source.storedMessages) {
-            const comparableKey = getComparableStoredMessageKey(message)
-            if (knownKeys.has(comparableKey)) {
-                continue
-            }
+        options.store.runInTransaction(() => {
+            for (const message of source.storedMessages) {
+                const comparableKey = getComparableStoredMessageKey(message)
+                if (knownKeys.has(comparableKey)) {
+                    continue
+                }
 
-            const copied = options.store.messages.copyMessageToSession(canonical.sessionId, {
-                content: message.content,
-                createdAt: message.createdAt,
-                localId: message.localId,
-                invokedAt: message.invokedAt,
-                scheduledAt: message.scheduledAt
-            })
-            knownKeys.add(comparableKey)
-            appendedMessages.push(copied)
-            latestActivity = Math.max(latestActivity, copied.invokedAt ?? copied.createdAt)
-        }
+                const copied = options.store.messages.copyMessageToSession(canonical.sessionId, {
+                    content: message.content,
+                    createdAt: message.createdAt,
+                    localId: message.localId,
+                    invokedAt: message.invokedAt,
+                    scheduledAt: message.scheduledAt
+                })
+                knownKeys.add(comparableKey)
+                appendedMessages.push(copied)
+                latestActivity = Math.max(latestActivity, copied.invokedAt ?? copied.createdAt)
+            }
+            persistImportedSessionTodos(options.store, canonical.sessionId, options.namespace)
+        })
+        // Refresh only after the transcript and its task snapshot are durable.
+        engine?.handleRealtimeEvent({ type: 'session-updated', sessionId: canonical.sessionId })
 
         // Transfer outliving jobs before CASCADE delete (store refuses running jobs).
         // Without SyncEngine we cannot persist jobsAcceptedFromSessionIds / key remaps,
@@ -889,7 +894,6 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
 
     if (appendedMessages.length > 0) {
         emitImportedMessageEvents(engine, canonical.sessionId, appendedMessages)
-        rebuildImportedSessionTodos(options.store, engine, canonical.sessionId)
     }
 
     if (engine) {

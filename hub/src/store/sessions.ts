@@ -91,6 +91,7 @@ const HUB_OWNED_METADATA_FIELDS = [
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
     'promptTitle',
+    'translateInput',
     'forkedFrom',
     'conversationBranch'
 ] as const
@@ -709,7 +710,7 @@ export function setSessionTodos(
     todos: unknown,
     source: SessionTodoSource,
     namespace: string,
-    options: { touchUpdatedAt?: boolean; allowSameSource?: boolean } = {}
+    options: { touchUpdatedAt?: boolean; allowSameSource?: boolean; throwOnError?: boolean } = {}
 ): boolean {
     try {
         const json = todos === null || todos === undefined ? null : JSON.stringify(todos)
@@ -752,7 +753,8 @@ export function setSessionTodos(
         })
 
         return result.changes === 1
-    } catch {
+    } catch (error) {
+        if (options.throwOnError) throw error
         return false
     }
 }

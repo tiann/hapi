@@ -1,4 +1,5 @@
 import { describe, expect, it, mock } from 'bun:test'
+import type { Database } from 'bun:sqlite'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { Store, type StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
@@ -333,6 +334,37 @@ describe('cli session handlers', () => {
         expect(store.messages.getMessages(session.id)).toHaveLength(0)
         expect(socket.roomEvents).toHaveLength(0)
         expect(webEvents).toHaveLength(0)
+    })
+
+    it('rolls back a live plan message if its checklist cannot be persisted, then repairs a missing snapshot on replay', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('transactional-plan', {}, null, 'default')
+        const socket = new FakeSocket()
+        const events: SyncEvent[] = []
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+            onWebappEvent: event => events.push(event),
+        })
+        const message = { sid: session.id, localId: 'plan-1', message: { role: 'agent', content: {
+            type: 'codex', data: { type: 'plan_update', plan: [{ step: 'Preserve this task', status: 'in_progress' }] },
+        } } }
+        const db = (store as unknown as { db: Database }).db
+        db.exec(`CREATE TRIGGER fail_task_write BEFORE UPDATE OF todos ON sessions
+            BEGIN SELECT RAISE(ABORT, 'fixture interrupted task write'); END`)
+        try {
+            expect(() => socket.trigger('message', message)).toThrow('fixture interrupted task write')
+            expect(store.messages.getAllMessages(session.id)).toHaveLength(0)
+            expect(events).toEqual([])
+            db.exec('DROP TRIGGER fail_task_write')
+            socket.trigger('message', message)
+            expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+            expect(store.sessions.getSession(session.id)?.todos).toMatchObject([{ content: 'Preserve this task' }])
+            // Reproduces an already-imported row from before atomic writes.
+            db.query('UPDATE sessions SET todos = NULL, todos_source_at = NULL, todos_source_seq = NULL WHERE id = ?').run(session.id)
+            socket.trigger('message', message)
+            expect(store.sessions.getSession(session.id)?.todos).toMatchObject([{ content: 'Preserve this task' }])
+            expect(events.filter(event => event.type === 'message-received')).toHaveLength(1)
+        } finally { store.close() }
     })
 
     it('emits a structured todos patch when a TodoWrite message lands (closes second half of #884)', () => {
@@ -692,6 +724,7 @@ it.each([
         ['titleSuggestionAutoAttemptedAt', 1234],
         ['titleSuggestionTurn', { first: false, completed: true }],
         ['promptTitle', 'Forged title'],
+        ['translateInput', true],
         ['jobsAcceptedFromSessionIds', ['foreign-session']],
         ['jobsTransferredToSessionId', 'foreign-session'],
         ['jobKeyRedirects', { 'foreign-session/beets': 'beets.foreign' }],
@@ -717,6 +750,26 @@ it.each([
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
         }
     )
+
+    it('preserves the hub-owned translateInput toggle across CLI metadata replacements', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('preserve-translate', {
+            path: '/tmp/project', translateInput: true
+        }, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            metadata: { path: '/tmp/project', translateInput: false }
+        }, () => {})
+        expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata)
+            .toMatchObject({ translateInput: true })
+    })
 
     it.each([1234, null])('preserves Codex import state %s across CLI bootstrap replacements', (codexImportedAt) => {
         const store = new Store(':memory:')

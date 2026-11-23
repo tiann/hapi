@@ -93,7 +93,8 @@ const HUB_OWNED_METADATA_KEYS = [
     'jobsAcceptedFromSessionIds',
     'jobsTransferredToSessionId',
     'jobKeyRedirects',
-    'promptTitle'
+    'promptTitle',
+    'translateInput'
 ] as const
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
@@ -197,19 +198,43 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        const wasStored = Boolean(localId && store.messages.lookupQueuedMessage(sid, localId).status !== 'absent')
-        // ACP agents re-emit one tool call under a stable callId for every
-        // state tick. When that callId is still live in the session tail, fold
-        // the tick into the call's existing row instead of appending another
-        // one, and broadcast the merged row under its original id/seq so
-        // clients upsert it in place. Peer CLIs in the session room dedupe
-        // that re-emit by message id, harmlessly: only user rows reach a
-        // consumer there (onUserMessage), agent rows do not.
-        const callId = getToolCallId(content)
-        const stored = callId !== null && !wasStored
-            ? store.messages.upsertToolCallMessage(sid, content, callId, localId, createdAt)
-            : store.messages.addMessageSweepingLiveSnapshots(sid, content, localId, undefined, createdAt)
+        const { stored, wasStored, todos, todosUpdated } = store.runInTransaction(() => {
+            const wasStored = Boolean(localId && store.messages.lookupQueuedMessage(sid, localId).status !== 'absent')
+            // ACP agents re-emit one tool call under a stable callId for every
+            // state tick. When that callId is still live in the session tail, fold
+            // the tick into the call's existing row instead of appending another
+            // one, and broadcast the merged row under its original id/seq so
+            // clients upsert it in place. Peer CLIs in the session room dedupe
+            // that re-emit by message id, harmlessly: only user rows reach a
+            // consumer there (onUserMessage), agent rows do not.
+            const callId = getToolCallId(content)
+            const stored = callId !== null && !wasStored
+                ? store.messages.upsertToolCallMessage(sid, content, callId, localId, createdAt)
+                : store.messages.addMessageSweepingLiveSnapshots(sid, content, localId, undefined, createdAt)
+            const msg = stored.message
+            // Use the committed row for duplicate events: replay must not
+            // overwrite the original content. Source position prevents an
+            // older replay from replacing a newer plan.
+            const todos = extractSessionTodosFromMessageContent(msg.content)
+            const todosUpdated = todos !== null && store.sessions.setSessionTodos(
+                sid, todos, { at: msg.invokedAt ?? msg.createdAt, seq: msg.seq }, session.namespace,
+                { allowSameSource: stored.updated && !wasStored, touchUpdatedAt: false, throwOnError: true }
+            )
+            return { stored, wasStored, todos, todosUpdated }
+        })
         const msg = stored.message
+        if (todosUpdated && todos !== null) {
+            const snapshot = store.sessions.getSession(sid)
+            if (snapshot) {
+                onWebappEvent?.({
+                    type: 'session-updated', sessionId: sid,
+                    data: {
+                        todos: { version: snapshot.todosUpdatedAt ?? msg.createdAt, value: todos },
+                        updatedAt: snapshot.updatedAt,
+                    },
+                })
+            }
+        }
         // A merged row keeps its first snapshot's createdAt for stable
         // ordering, but derived todo/team versions must strictly advance
         // (setSessionTeamState gates on team_state_updated_at < candidate),
@@ -243,31 +268,6 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
 
         if (shouldRecordSessionActivity(content)) {
             onSessionActivity?.(sid, msg.createdAt)
-        }
-
-        const todos = extractSessionTodosFromMessageContent(content)
-        if (todos) {
-            const updated = store.sessions.setSessionTodos(
-                sid,
-                todos,
-                { at: msg.invokedAt ?? msg.createdAt, seq: msg.seq },
-                session.namespace,
-                { allowSameSource: stored.updated, touchUpdatedAt: false }
-            )
-            if (updated) {
-                const stored = store.sessions.getSession(sid)
-                onWebappEvent?.({
-                    type: 'session-updated',
-                    sessionId: sid,
-                    data: {
-                        todos: {
-                            version: stored?.todosUpdatedAt ?? msg.createdAt,
-                            value: todos
-                        },
-                        updatedAt: stored?.updatedAt ?? msg.createdAt
-                    }
-                })
-            }
         }
 
         const teamDelta = extractTeamStateFromMessageContent(content)

@@ -140,7 +140,8 @@ function extractTodosFromCodexMessage(content: Record<string, unknown>): TodoIte
     if (!data) return null
 
     if (data.type === 'plan_update') {
-        return normalizePlanEntries(data.plan ?? data.update ?? data.items ?? data.steps)
+        const plan = data.plan ?? data.update ?? data.items ?? data.steps
+        return normalizePlanEntries(Array.isArray(plan) ? plan : isObject(plan) ? plan.plan ?? plan.items ?? plan.steps : plan)
     }
 
     if (data.type !== 'tool-call') return null

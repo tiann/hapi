@@ -28,6 +28,12 @@ describe('extractSessionTodosFromMessageContent', () => {
         ])
     })
 
+    it.each(['plan', 'items', 'steps'])('accepts a nested Codex update.%s array', key => {
+        expect(extractSessionTodosFromMessageContent({ role: 'agent', content: { type: 'codex', data: {
+            type: 'plan_update', update: { [key]: [{ step: 'Nested plan', status: 'pending' }] },
+        } } })).toMatchObject([{ content: 'Nested plan', status: 'pending' }])
+    })
+
     it('accepts the direct plan_update payload used by older Codex paths', () => {
         const todos = extractSessionTodosFromMessageContent({
             role: 'agent',

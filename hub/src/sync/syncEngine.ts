@@ -49,6 +49,7 @@ import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService, type RetryIndeterminateMessageResult } from './messageService'
 import { createTitleSuggestionService, type TitleSuggestionService } from './titleSuggestion'
+import { createInputTranslationService, type InputTranslationService } from './inputTranslation'
 import { createPromptTitle } from './promptTitle'
 import { resolveForkBoundary, resolveRewindBoundary, invokedTailSeq, type ResolvedBoundary } from './forkBoundary'
 import { buildForkSessionSummary } from './forkSessionSummary'
@@ -95,12 +96,13 @@ import { SessionEnumerationCache } from './sessionEnumerationCache'
 import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
 import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
-import { extractSessionTodosFromMessageContent } from './todos'
+import { findLatestStructuredTodos } from './todos'
 import {
     readAutoBridgeTransientModelErrorsEnabled,
     writeAutoBridgeTransientModelErrorsEnabled
 } from '../config/autoBridgeTransientModelErrors'
 import { getConfiguration } from '../configuration'
+import { getSettingsFile, readSettingsOrThrowCached } from '../config/settings'
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
 type PtyResumeAttempt = NonNullable<NonNullable<Session['metadata']>['ptyResumeAttempt']>
@@ -235,6 +237,7 @@ export class SyncEngine {
     private readonly machineCache: MachineCache
     private readonly messageService: MessageService
     private readonly titleSuggestionService: TitleSuggestionService
+    private readonly inputTranslationService: InputTranslationService
     private readonly automaticTitleSuggestionService: AutomaticTitleSuggestionService
     /** Completed turns whose final chat message may still be in transit. */
     private readonly titleTurnCompletedIds = new Set<string>()
@@ -355,11 +358,19 @@ export class SyncEngine {
             }
         })
         this.machineCache = new MachineCache(store, this.eventPublisher)
+        this.inputTranslationService = createInputTranslationService()
         this.messageService = new MessageService(
             store,
             io,
             this.eventPublisher,
-            (sessionId, updatedAt) => this.recordSessionActivity(sessionId, updatedAt)
+            (sessionId, updatedAt) => this.recordSessionActivity(sessionId, updatedAt),
+            this.inputTranslationService,
+            async () => {
+                const dataDir = this.resolveSettingsDataDir()
+                if (!dataDir) return false
+                const settings = await readSettingsOrThrowCached(getSettingsFile(dataDir))
+                return settings.translateInputByDefault === true
+            }
         )
         this.titleSuggestionService = createTitleSuggestionService(store)
         this.automaticTitleSuggestionService = new AutomaticTitleSuggestionService(
@@ -844,7 +855,11 @@ export class SyncEngine {
         serviceTier?: string | null
         collaborationMode?: CodexCollaborationMode
     }): void {
-        const before = this.sessionCache.getSession(payload.sid)
+        const before = this.sessionCache.getSession(payload.sid) ?? this.sessionCache.refreshSession(payload.sid)
+        // A buffered keepalive is not a reopen. Hub-archived rows can only be
+        // revived after clearSessionArchiveMetadata; self-archived CLIs keep
+        // their existing reconnect path. Drop before replaying queued prompts.
+        if (before?.metadata?.lifecycleState === 'archived' && before.metadata.archivedBy === 'hub') return
         const wasActive = before?.active === true
         const wasThinking = before?.thinking === true
         if (!wasThinking && payload.thinking === true) {
@@ -3753,8 +3768,8 @@ export class SyncEngine {
             const updated = this.store.sessions.updateSessionMetadata(sessionId, { ...nextMetadata, opencodeRewind: next }, current.metadataVersion, namespace)
             if (updated.result !== 'success') throw new Error('OpenCode rewind metadata CAS failed')
             if (invalidated) {
-                const todos = this.store.messages.getAllMessages(sessionId).map(m => extractSessionTodosFromMessageContent(m.content)).filter(Boolean).at(-1) ?? null
-                this.store.sessions.replaceSessionTodos(sessionId, todos, namespace)
+                const latest = findLatestStructuredTodos(this.store, sessionId)
+                this.store.sessions.replaceSessionTodos(sessionId, latest?.todos ?? null, namespace, latest?.source ?? null)
             }
             return next
         })
@@ -4197,6 +4212,18 @@ export class SyncEngine {
         mutate: (current: ExternalRef[]) => ExternalRef[]
     ): Promise<ExternalRef[]> {
         return await this.sessionCache.mutateSessionExternalRefs(sessionId, mutate)
+    }
+
+    /** Whether a translation provider is configured (drives the web toggle's visibility). */
+    isInputTranslationAvailable(): boolean {
+        return this.inputTranslationService.available
+    }
+
+    async setSessionTranslateInput(sessionId: string, enabled: boolean): Promise<void> {
+        if (enabled && !this.inputTranslationService.available) {
+            throw new Error('Input translation is not configured on this hub')
+        }
+        await this.sessionCache.setSessionTranslateInput(sessionId, enabled)
     }
 
     async suggestSessionTitle(sessionId: string): Promise<string> {
@@ -5006,6 +5033,7 @@ export class SyncEngine {
                     updatedAt: session?.updatedAt ?? 0,
                     name: session?.metadata?.name,
                     summary: session?.metadata?.summary?.text,
+                    promptTitle: session?.metadata?.promptTitle,
                     firstUserMessage: this.resolveFirstUserMessage(target.sessionId)
                 }
             })

@@ -4,6 +4,7 @@ import { Hono } from 'hono'
 import { getConfiguration, type ConfigSource } from '../../configuration'
 import { loadPrChipDisplayProfile } from '../../config/prChipDisplay'
 import type { WebAppEnv } from '../middleware/auth'
+import { readTranslationProviderConfig } from '../../sync/inputTranslation'
 
 export type GithubPrAwarenessState = {
     enabled: boolean
@@ -14,6 +15,7 @@ export type FeaturesRouteDeps = {
     getGithubPrAwareness: () => GithubPrAwarenessState
     setGithubPrAwareness: (enabled: boolean) => Promise<void>
     getPrChipDisplay: () => PrChipDisplayProfile
+    isInputTranslationAvailable?: () => boolean
 }
 
 function defaultDeps(): FeaturesRouteDeps {
@@ -28,7 +30,8 @@ function defaultDeps(): FeaturesRouteDeps {
         setGithubPrAwareness: async (enabled: boolean) => {
             await getConfiguration().setGithubPrAwareness(enabled)
         },
-        getPrChipDisplay: () => loadPrChipDisplayProfile(getConfiguration().dataDir)
+        getPrChipDisplay: () => loadPrChipDisplayProfile(getConfiguration().dataDir),
+        isInputTranslationAvailable: () => readTranslationProviderConfig() !== null
     }
 }
 
@@ -44,7 +47,8 @@ export function createFeaturesRoutes(deps: FeaturesRouteDeps = defaultDeps()): H
                 enabled: githubPrAwareness.enabled,
                 source: githubPrAwareness.source
             },
-            prChipDisplay: deps.getPrChipDisplay()
+            prChipDisplay: deps.getPrChipDisplay(),
+            inputTranslation: { available: deps.isInputTranslationAvailable?.() ?? false }
         })
     })
 
@@ -84,7 +88,8 @@ export function createFeaturesRoutes(deps: FeaturesRouteDeps = defaultDeps()): H
                 enabled: next.enabled,
                 source: next.source
             },
-            prChipDisplay: deps.getPrChipDisplay()
+            prChipDisplay: deps.getPrChipDisplay(),
+            inputTranslation: { available: deps.isInputTranslationAvailable?.() ?? false }
         })
     })
 

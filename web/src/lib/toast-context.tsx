@@ -86,3 +86,8 @@ export function useAddToast(): ToastContextValue['addToast'] {
     }
     return addToast
 }
+
+/** Like `useAddToast`, but returns null outside a ToastProvider (embedded / test shells). */
+export function useOptionalAddToast(): ToastContextValue['addToast'] | null {
+    return useContext(AddToastContext)
+}

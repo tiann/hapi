@@ -72,12 +72,12 @@ describe('buildSessionStatusData', () => {
         })
     })
 
-    it('hides a status panel that only contains completed tasks', () => {
+    it('keeps the completed count without showing completed rows', () => {
         expect(buildSessionStatusData({
             goal: null,
             tasks: [{ id: 'done', content: 'Finished', priority: 'low', status: 'completed' }],
             blocks: [],
-        })).toBeNull()
+        })).toMatchObject({ tasks: [], taskProgress: { completed: 1, total: 1 } })
     })
 
     it('lists only active or failed subagents', () => {
