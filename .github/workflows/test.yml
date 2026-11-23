@@ -32,6 +32,7 @@ jobs:
                   image-preview-back.spec.ts
                   opencode-fork-buttons.spec.ts
                   auth-network-recovery.spec.ts
+                  session-list-blocked.spec.ts
 
     unit-cli:
         runs-on: ubuntu-latest

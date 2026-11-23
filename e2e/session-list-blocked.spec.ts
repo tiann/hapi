@@ -54,14 +54,31 @@ test.describe('#1717 blocked session-list chrome', () => {
     test('still hints off-screen work when the section is collapsed', async ({ page }) => {
         // The collapsible panel animates grid-template-rows to 0fr rather than
         // unmounting, so collapsed rows stay in the DOM. Measuring presence
-        // alone would report "all visible" while nothing is on screen.
+        // alone would report "all visible" while nothing is on screen — but
+        // `collectOffscreenBlockers` positions a collapsed section's rows at
+        // its OWN header, so collapsing while that header is still on screen
+        // (as it is here, at the top of the list) genuinely means nothing is
+        // off-screen yet, and the pill correctly shows no direction.
         const pill = page.getByTestId('blocked-jump-pill')
+        const section = page.getByTestId('blocked-section')
         await expect(pill).not.toContainText('↑')
         await expect(pill).not.toContainText('↓')
 
-        await page.getByTestId('blocked-section').locator('[role="button"]').first().click()
+        await section.locator('[role="button"]').first().click()
+        await expect(pill).not.toContainText(/[↑↓↕]/)
 
+        // Now scroll the collapsed header itself out of view — the position
+        // the hint is actually measured from.
+        const scroller = page.locator('.app-scroll-y').first()
+        await scroller.evaluate((el) => { el.scrollTop = el.scrollHeight })
+        await expect(section).not.toBeInViewport()
         await expect(pill).toContainText(/[↑↓↕]/)
+
+        // Clicking the pill expands the section (a collapsed, zero-height
+        // panel cannot be jumped into) and scrolls the target row into view.
+        await pill.click()
+        await expect(section.locator('[role="button"]').first()).toHaveAttribute('aria-expanded', 'true')
+        await expect(page.locator('[data-session-blocked="active"]').first()).toBeInViewport()
     })
 
     test('the lens toggle narrows the list to blocked work only', async ({ page }) => {
