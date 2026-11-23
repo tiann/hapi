@@ -77,8 +77,14 @@ export function windowsGenerationMayBeAlive(table: WindowsProcessTable | null, p
 }
 
 export type WindowsStopReport = { confirmed: boolean; phase: string; elapsedMs: number; snapshots: number }
+/**
+ * `isRootLive` reports whether the caller still holds an open handle to the
+ * root (a ChildProcess that has not reported exit). Windows never reuses a PID
+ * while a handle is open, so the initial snapshot only identifies the original
+ * root if the handle stayed open across it.
+ */
 export async function stopWindowsProcessTree(rootPid: number, force: boolean, report?: (result: WindowsStopReport) => void,
-    callerDeadlineMs?: number): Promise<boolean> {
+    callerDeadlineMs?: number, isRootLive?: () => boolean): Promise<boolean> {
     // Includes command startup, queries, signalling and verification, independent
     // of tree size. Each async child is killed when its remaining budget expires.
     const started = performance.now()
@@ -99,7 +105,10 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
         ], Math.min(5_000, remaining()))
     }
     if (!remaining()) return finish(false)
+    const rootWasLive = isRootLive?.() === true
+    const rootIdentityLost = () => rootWasLive && !isRootLive!()
     const initial = await readWindowsProcessTable(Math.min(15_000, remaining()))
+    if (rootIdentityLost()) return finish(false)
     if (!initial) {
         // A transient CIM failure must not leave the cancellation path with no
         // termination attempt. A direct process probe still supplies a
@@ -107,7 +116,7 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
         // unverified, so the result stays unconfirmed.
         phase = 'root-fallback-probe'; snapshots++
         const rootProbe = await readWindowsProcessTable(Math.min(5_000, remaining()), [rootPid])
-        if (rootProbe?.get(rootPid)) await signal(rootPid, force, true)
+        if (rootProbe?.get(rootPid) && !rootIdentityLost()) await signal(rootPid, force, true)
         return finish(false)
     }
     const members = new Map<number, string | null>()

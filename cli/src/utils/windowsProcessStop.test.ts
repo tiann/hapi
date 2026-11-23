@@ -53,6 +53,24 @@ describe('Windows asynchronous tree stop', () => {
         expect(syncMock).not.toHaveBeenCalled()
     })
 
+    it('sends no signal when the root handle closes during the initial snapshot (PID may be reused)', async () => {
+        let live = true
+        execFileMock.mockImplementationOnce((_file, _args, _options, callback) => {
+            queueMicrotask(() => {
+                live = false
+                callback(null, JSON.stringify({ complete: true, processes: rows }), '')
+            })
+            return { kill: vi.fn() }
+        })
+        await expect(killProcessTreeByPid(100, true, 'SIGTERM', undefined, undefined, () => live)).resolves.toBe(false)
+        expect(kills).toEqual([])
+    })
+
+    it('stops the tree normally while the root handle stays open', async () => {
+        await expect(killProcessTreeByPid(100, true, 'SIGTERM', undefined, undefined, () => true)).resolves.toBe(true)
+        expect(kills.map(k => k.pid)).toEqual([100, 200])
+    })
+
     it('retains the upstream stop report while an expired lease prevents signalling', async () => {
         const reports: Array<import('./windowsProcessStop').WindowsStopReport> = []
         authority.now = 100

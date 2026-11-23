@@ -481,7 +481,9 @@ export async function killProcessTreeByPid(
   // 4th arg: stop deadline (signal-lease budget) when numeric, else the Windows
   // report fallback used when the 3rd arg is a signal (#1911).
   deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
-  fallbackReport?: (report: WindowsStopReport) => void
+  fallbackReport?: (report: WindowsStopReport) => void,
+  // Windows: whether the caller's handle to `pid` is still open (see stopWindowsProcessTree).
+  isRootLive?: () => boolean
 ): Promise<boolean> {
   const deadlineMs = typeof deadlineOrFallbackReport === 'number' ? deadlineOrFallbackReport : undefined;
   const onReport = typeof signalOrReport === 'function' ? signalOrReport
@@ -491,7 +493,7 @@ export async function killProcessTreeByPid(
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) return false;
   if (isWindows()) {
-    return stopWindowsProcessTree(n, force, onReport, deadlineMs);
+    return stopWindowsProcessTree(n, force, onReport, deadlineMs, isRootLive);
   }
   return killProcessTree(n, force, deadlineMs, signal);
 }
@@ -551,5 +553,6 @@ export async function killProcessByChildProcess(
   // Both platforms: tree-kill + full-tree verify (win32 must not trust
   // root-only). The soft signal rides along on POSIX so job Ctrl-C stays
   // exit 130 (#1424).
-  return killProcessTreeByPid(pid, force, signalOrReport, deadlineOrFallbackReport, fallbackReport);
+  const isRootLive = () => child.exitCode === null && child.signalCode === null;
+  return killProcessTreeByPid(pid, force, signalOrReport, deadlineOrFallbackReport, fallbackReport, isRootLive);
 }
