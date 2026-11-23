@@ -305,12 +305,21 @@ internal fun ChatScreen(
                         Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.chat_open_settings))
                     }
                     val scratchlistCount by viewModel.scratchlistCount.collectAsState()
+                    val inputTranslationAvailable by viewModel.inputTranslationAvailable.collectAsState()
                     SessionOverflowMenu(
                         active = state.header.active,
                         onOpenFiles = onOpenFiles,
                         scratchlistCount = scratchlistCount,
                         onOpenScratchlist = if (viewModel.scratchlistEnabled) onOpenScratchlist else null,
                         onRename = { renameDialogOpen = true },
+                        translateInputEnabled = state.header.translateInput,
+                        // Web parity: offered when the hub has a provider, or to
+                        // switch off a session that was left translating.
+                        onToggleTranslateInput = if (inputTranslationAvailable || state.header.translateInput) {
+                            viewModel::toggleTranslateInput
+                        } else {
+                            null
+                        },
                         onReopen = viewModel::reopenSession,
                         onDelete = { deleteDialogOpen = true },
                         // Draft-level action, relocated from the composer's
@@ -467,8 +476,8 @@ internal fun ChatScreen(
 
 /**
  * Top-bar ⋮ menu: navigation entries first (Files always, Scratchlist with
- * entry count when enabled), then Rename always; Reopen only for inactive
- * sessions; Delete last.
+ * entry count when enabled), then Rename always; the input-translation toggle
+ * when offered; Reopen only for inactive sessions; Delete last.
  */
 @Composable
 private fun SessionOverflowMenu(
@@ -483,6 +492,9 @@ private fun SessionOverflowMenu(
     onOpenScratchlist: (() -> Unit)? = null,
     /** null ⇒ hidden (scratchlist off or empty composer). */
     onParkDraft: (() -> Unit)? = null,
+    /** null ⇒ hidden (hub has no translation provider and the session is off). */
+    onToggleTranslateInput: (() -> Unit)? = null,
+    translateInputEnabled: Boolean = false,
 ) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }) {
@@ -522,6 +534,25 @@ private fun SessionOverflowMenu(
                 onRename()
             },
         )
+        if (onToggleTranslateInput != null) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        stringResource(
+                            if (translateInputEnabled) {
+                                R.string.chat_translate_input_off
+                            } else {
+                                R.string.chat_translate_input_on
+                            },
+                        ),
+                    )
+                },
+                onClick = {
+                    open = false
+                    onToggleTranslateInput()
+                },
+            )
+        }
         if (onParkDraft != null) {
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.chat_park_draft)) },
@@ -672,4 +703,5 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     is ChatNotice.ModelsLoadFailed -> notice.detail ?: context.getString(R.string.chat_notice_models_failed)
     is ChatNotice.ReadStateFailed -> notice.detail ?: context.getString(R.string.chat_notice_read_state_failed)
     is ChatNotice.ConfigUpdateFailed -> notice.detail ?: context.getString(R.string.chat_notice_config_failed)
+    is ChatNotice.TranslateInputFailed -> notice.detail ?: context.getString(R.string.chat_notice_config_failed)
 }

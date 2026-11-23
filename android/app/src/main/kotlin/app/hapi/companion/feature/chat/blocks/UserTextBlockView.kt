@@ -21,12 +21,16 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -40,6 +44,9 @@ import app.hapi.companion.feature.chat.attachments.rememberPreviewImage
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.chat.ChatAttachment
 import app.hapi.protocol.chat.UserTextBlock
+import app.hapi.protocol.chat.translatedFrom
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 
 /**
  * Operator prompt: right-aligned bubble (whitespace preserved — prompts are
@@ -48,10 +55,17 @@ import app.hapi.protocol.chat.UserTextBlock
  * Android- and web-sent messages carry one, and optimistic rows do too, so
  * thumbnails appear instantly on send) or filename chips, and a failed-send
  * tap-to-retry hint (B-M3f upgrades the former chips-only rendering).
+ *
+ * Hub-translated prompts (`meta.translatedFrom`) show what the user typed by
+ * default; a caption under the bubble flips to the English actually sent to
+ * the agent (web `HappyUserMessage`). Selection copies the visible variant.
  */
 @Composable
 fun UserTextBlockView(block: UserTextBlock, modifier: Modifier = Modifier) {
-    val preview = remember(block.text) { messagePreview(block.text) }
+    val translatedFrom = block.translatedFrom
+    var showSentText by rememberSaveable(block.id) { mutableStateOf(false) }
+    val visibleText = if (translatedFrom != null && !showSentText) translatedFrom else block.text
+    val preview = remember(visibleText) { messagePreview(visibleText) }
     val inspection = LocalChatInspection.current
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val maxBubbleWidth = maxWidth * 0.85f
@@ -68,7 +82,7 @@ fun UserTextBlockView(block: UserTextBlock, modifier: Modifier = Modifier) {
                         SelectionContainer {
                             Text(text = preview.text, style = HapiTypography.body)
                         }
-                        if (preview.end < block.text.length) {
+                        if (preview.end < visibleText.length) {
                             TextButton(onClick = { inspection?.openMessage(block.id) }, enabled = inspection != null) {
                                 Text(stringResource(R.string.chat_view_full_message))
                             }
@@ -83,6 +97,18 @@ fun UserTextBlockView(block: UserTextBlock, modifier: Modifier = Modifier) {
                             }
                         }
                     }
+                }
+                if (translatedFrom != null) {
+                    Text(
+                        text = stringResource(R.string.chat_translated_label) + " · " + stringResource(
+                            if (showSentText) R.string.chat_translated_show_original else R.string.chat_translated_show_sent,
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .clickable(role = Role.Button) { showSentText = !showSentText }
+                            .padding(top = 2.dp, end = 4.dp),
+                    )
                 }
                 if (block.status == "failed") {
                     val interactions = LocalChatInteractions.current
@@ -198,6 +224,19 @@ private fun UserTextBlockPreview() {
                     status = "failed",
                     originalText = null,
                     meta = null,
+                ),
+            )
+            UserTextBlockView(
+                UserTextBlock(
+                    id = "u3",
+                    localId = null,
+                    createdAt = 0,
+                    invokedAt = null,
+                    text = "Fix the login bug",
+                    attachments = null,
+                    status = null,
+                    originalText = null,
+                    meta = buildJsonObject { put("translatedFrom", JsonPrimitive("修复登录问题")) },
                 ),
             )
             }

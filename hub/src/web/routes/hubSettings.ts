@@ -19,6 +19,7 @@ function toHubSettings(settings: Settings): HubSettingsResponse {
         sessionSummaryContract: settings.sessionSummaryContract === true,
         sessionSummaryInChat: settings.sessionSummaryInChat === true,
         autoBridgeTransientModelErrors: settings.autoBridgeTransientModelErrors === true,
+        translateInputByDefault: settings.translateInputByDefault === true,
         peerSpawnDefaults: mergePeerSpawnDefaults(settings.peerSpawnDefaults)
     }
 }
@@ -49,10 +50,17 @@ export function createHubSettingsRoutes(
         const providedFieldCount = [
             parsed.data.sessionSummaryContract,
             parsed.data.sessionSummaryInChat,
-            parsed.data.autoBridgeTransientModelErrors
+            parsed.data.autoBridgeTransientModelErrors,
+            parsed.data.translateInputByDefault
         ].filter((value) => value !== undefined).length
         if (providedFieldCount > 1) {
             return c.json({ error: 'Update one hub setting per request' }, 400)
+        }
+        if (parsed.data.translateInputByDefault === true) {
+            const engine = getSyncEngine?.() ?? null
+            if (engine && !engine.isInputTranslationAvailable()) {
+                return c.json({ error: 'Input translation is not configured on this hub' }, 400)
+            }
         }
         // Auto-bridge is not a plain settings write: SyncEngine fans the pref out
         // to live Cursor CLIs and rolls the disk value back if any session refuses.
@@ -84,6 +92,9 @@ export function createHubSettingsRoutes(
             }
             if (parsed.data.sessionSummaryInChat !== undefined) {
                 settings.sessionSummaryInChat = parsed.data.sessionSummaryInChat
+            }
+            if (parsed.data.translateInputByDefault !== undefined) {
+                settings.translateInputByDefault = parsed.data.translateInputByDefault
             }
             if (parsed.data.peerSpawnDefaults !== undefined) {
                 settings.peerSpawnDefaults = applyPeerSpawnDefaultsPatch(

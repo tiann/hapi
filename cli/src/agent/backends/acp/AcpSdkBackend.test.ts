@@ -933,6 +933,87 @@ describe('AcpSdkBackend', () => {
         expect(events).toEqual(['wait', 'request', 'sent', 'answered', 'wait', 'resolved']);
     });
 
+    it('waits for transport dispatch before firing timing.onSent', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const events: string[] = [];
+        let resolveDispatched!: () => void;
+        let resolveCompleted!: (value: unknown) => void;
+        const dispatched = new Promise<void>((resolve) => { resolveDispatched = resolve; });
+        const completed = new Promise<unknown>((resolve) => { resolveCompleted = resolve; });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequestWithDispatch: (
+                    method: string,
+                    params: unknown,
+                    options?: { timeoutMs?: number; dispatchTimeoutMs?: number }
+                ) => { dispatched: Promise<void>; completed: Promise<unknown> };
+                close: () => Promise<void>;
+            } | null;
+            waitForSessionUpdateQuiet: (quietMs: number, timeoutMs: number) => Promise<void>;
+        };
+        backendInternal.waitForSessionUpdateQuiet = async () => {};
+        const sendRequestWithDispatch = vi.fn(() => {
+            events.push('request');
+            return { dispatched, completed };
+        });
+        backendInternal.transport = {
+            sendRequestWithDispatch,
+            close: async () => {}
+        };
+
+        const promptPromise = backend.prompt('session-1', [{ type: 'text', text: 'hello' }], () => {}, {
+            timing: {
+                onSent: () => events.push('sent'),
+                onAnswered: () => events.push('answered')
+            }
+        });
+
+        await vi.waitFor(() => expect(sendRequestWithDispatch).toHaveBeenCalledTimes(1));
+        expect(sendRequestWithDispatch).toHaveBeenCalledWith(
+            'session/prompt',
+            { sessionId: 'session-1', prompt: [{ type: 'text', text: 'hello' }] },
+            { timeoutMs: Infinity }
+        );
+        expect(events).toEqual(['request']);
+
+        resolveDispatched();
+        await vi.waitFor(() => expect(events).toEqual(['request', 'sent']));
+
+        resolveCompleted({ stopReason: 'end_turn' });
+        await promptPromise;
+        expect(events).toEqual(['request', 'sent', 'answered']);
+    });
+
+    it('does not fire timing.onSent when transport dispatch rejects', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const onSent = vi.fn();
+        const onAnswered = vi.fn();
+        const dispatchError = new Error('stdin write failed');
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequestWithDispatch: () => { dispatched: Promise<void>; completed: Promise<unknown> };
+                close: () => Promise<void>;
+            } | null;
+            waitForSessionUpdateQuiet: (quietMs: number, timeoutMs: number) => Promise<void>;
+        };
+        backendInternal.waitForSessionUpdateQuiet = async () => {};
+        backendInternal.transport = {
+            sendRequestWithDispatch: () => ({
+                dispatched: Promise.reject(dispatchError),
+                completed: Promise.reject(dispatchError)
+            }),
+            close: async () => {}
+        };
+
+        await expect(
+            backend.prompt('session-1', [{ type: 'text', text: 'hello' }], () => {}, {
+                timing: { onSent, onAnswered }
+            })
+        ).rejects.toThrow('stdin write failed');
+        expect(onSent).not.toHaveBeenCalled();
+        expect(onAnswered).toHaveBeenCalledTimes(1);
+    });
+
     it('seals a Cursor done footer before quiet drain so harness text stays separate (#2268)', async () => {
         backendStatics.UPDATE_QUIET_PERIOD_MS = 40;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
@@ -2939,5 +3020,178 @@ describe('AcpSdkBackend num_turns extraction (google-antigravity/antigravity-cli
 
     it('rounds fractional numbers instead of dropping them', () => {
         expect(backend.extractNumTurns({ usage: { num_turns: 2.9 } })).toBe(3);
+    });
+});
+
+describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () => {
+    it('captures agentInfo.version from initialize and flushes pending message buffers on demand', async () => {
+        const backend = new AcpSdkBackend({
+            command: 'agy',
+            args: ['acp'],
+            flavor: 'agy',
+            textChunkMode: 'delta',
+            toolCallLifetimeStore: null
+        });
+        let deliver: (method: string, params: unknown) => void = () => {};
+        const ctor = AcpSdkBackend as unknown as Record<string, number>;
+        const savedTimings = {
+            UPDATE_QUIET_PERIOD_MS: ctor.UPDATE_QUIET_PERIOD_MS,
+            UPDATE_DRAIN_TIMEOUT_MS: ctor.UPDATE_DRAIN_TIMEOUT_MS,
+            PRE_PROMPT_UPDATE_QUIET_PERIOD_MS: ctor.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
+            PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS: ctor.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS,
+            LATE_FLUSH_INTERVAL_MS: ctor.LATE_FLUSH_INTERVAL_MS,
+            LATE_FLUSH_QUIET_PERIOD_MS: ctor.LATE_FLUSH_QUIET_PERIOD_MS,
+            LATE_FLUSH_WINDOW_MS: ctor.LATE_FLUSH_WINDOW_MS
+        };
+        ctor.UPDATE_QUIET_PERIOD_MS = 10;
+        ctor.UPDATE_DRAIN_TIMEOUT_MS = 40;
+        ctor.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 10;
+        ctor.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 40;
+        ctor.LATE_FLUSH_INTERVAL_MS = 10;
+        ctor.LATE_FLUSH_QUIET_PERIOD_MS = 20;
+        ctor.LATE_FLUSH_WINDOW_MS = 60;
+
+        const createSpy = vi.spyOn(AcpStdioTransport, 'create').mockImplementation(async () => ({
+            sendRequest: vi.fn(async (method: string) => {
+                if (method === 'initialize') {
+                    return {
+                        protocolVersion: 1,
+                        agentInfo: { name: 'Antigravity ACP Server', version: '1.5.13' },
+                        agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } }
+                    };
+                }
+                if (method === 'session/prompt') {
+                    deliver('session/update', {
+                        sessionId: 's1',
+                        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'STARTED' } }
+                    });
+                    return { stopReason: 'end_turn' };
+                }
+                return {};
+            }),
+            sendNotification: vi.fn(),
+            onNotification: (cb: (method: string, params: unknown) => void) => {
+                deliver = cb;
+            },
+            onStderrError: () => {},
+            registerRequestHandler: () => {},
+            isAlive: () => true,
+            getProcessPid: () => 1234,
+            close: async () => true
+        } as unknown as AcpStdioTransport));
+
+        try {
+            await backend.initialize();
+            expect(backend.getAgentVersion()).toBe('1.5.13');
+            expect(backend.hasMessageHandler()).toBe(false);
+
+            const turn1Updates: AgentMessage[] = [];
+            await backend.prompt('s1', [{ type: 'text', text: 'start' }], (msg) => turn1Updates.push(msg));
+            expect(backend.hasMessageHandler()).toBe(true);
+            expect(turn1Updates.filter((m) => m.type === 'text')).toEqual([{ type: 'text', text: 'STARTED' }]);
+
+            // Stream idle wakeup chunks without waiting for the 1000ms idle timer, then flush on demand.
+            deliver('session/update', {
+                sessionId: 's1',
+                update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'FINISHED:' } }
+            });
+            deliver('session/update', {
+                sessionId: 's1',
+                update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'DONE_BG' } }
+            });
+            await backend.flushPendingMessageBuffers();
+
+            const finalized = turn1Updates.filter((m): m is Extract<AgentMessage, { type: 'text' }> => m.type === 'text' && !m.live);
+            expect(finalized.map((m) => m.text)).toEqual(['STARTED', 'FINISHED:DONE_BG']);
+
+            // Turn 2's pre-swap drain has nothing left to leak.
+            const countBeforeTurn2 = turn1Updates.length;
+            const turn2Updates: AgentMessage[] = [];
+            await backend.prompt('s1', [{ type: 'text', text: 'next' }], (msg) => turn2Updates.push(msg));
+            expect(turn1Updates).toHaveLength(countBeforeTurn2);
+        } finally {
+            createSpy.mockRestore();
+            Object.assign(ctor, savedTimings);
+        }
+    });
+
+    describe('prompt beforeHandlerSwap', () => {
+        async function setup() {
+            const backend = new AcpSdkBackend({ command: 'agy', args: ['acp'], flavor: 'agy', textChunkMode: 'delta', toolCallLifetimeStore: null });
+            let deliver: (method: string, params: unknown) => void = () => {};
+            const chunk = (text: string) => deliver('session/update', {
+                sessionId: 's1',
+                update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }
+            });
+            const prompts: string[] = [];
+            const ctor = AcpSdkBackend as unknown as Record<string, number>;
+            const saved = { ...ctor };
+            Object.assign(ctor, {
+                UPDATE_QUIET_PERIOD_MS: 10, UPDATE_DRAIN_TIMEOUT_MS: 40,
+                PRE_PROMPT_UPDATE_QUIET_PERIOD_MS: 10, PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS: 40,
+                LATE_FLUSH_INTERVAL_MS: 10, LATE_FLUSH_QUIET_PERIOD_MS: 20, LATE_FLUSH_WINDOW_MS: 60
+            });
+            const createSpy = vi.spyOn(AcpStdioTransport, 'create').mockImplementation(async () => ({
+                sendRequest: vi.fn(async (method: string) => {
+                    if (method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+                    if (method === 'session/prompt') {
+                        prompts.push('prompt');
+                        chunk(`reply-${prompts.length}`);
+                        return { stopReason: 'end_turn' };
+                    }
+                    return {};
+                }),
+                sendNotification: vi.fn(),
+                onNotification: (cb: (method: string, params: unknown) => void) => { deliver = cb; },
+                onStderrError: () => {}, registerRequestHandler: () => {},
+                isAlive: () => true, getProcessPid: () => 1234, close: async () => true
+            } as unknown as AcpStdioTransport));
+            await backend.initialize();
+            const turn1: AgentMessage[] = [];
+            await backend.prompt('s1', [{ type: 'text', text: 'one' }], (m) => turn1.push(m));
+            const texts = (updates: AgentMessage[]) => updates.filter((m) => m.type === 'text' && !m.live).map((m) => (m as { text: string }).text);
+            return { backend, chunk, prompts, turn1, texts, restore: () => { createSpy.mockRestore(); Object.assign(ctor, saved); } };
+        }
+
+        it('runs after the pre-prompt drain and before the new handler and the prompt request', async () => {
+            const t = await setup();
+            try {
+                t.chunk('late');
+                const seen: { drained: string[]; prompts: number } = { drained: [], prompts: -1 };
+                const turn2: AgentMessage[] = [];
+                await t.backend.prompt('s1', [{ type: 'text', text: 'two' }], (m) => turn2.push(m), {
+                    beforeHandlerSwap: async () => { seen.drained = t.texts(t.turn1); seen.prompts = t.prompts.length; }
+                });
+                expect(seen.drained).toEqual(['reply-1', 'late']);
+                expect(seen.prompts).toBe(1);
+                expect(t.texts(turn2)).toEqual(['reply-2']);
+            } finally { t.restore(); }
+        });
+
+        it('leaves the old handler and prompt bookkeeping intact when the hook throws', async () => {
+            const t = await setup();
+            try {
+                await expect(t.backend.prompt('s1', [{ type: 'text', text: 'two' }], () => {}, {
+                    beforeHandlerSwap: async () => { throw new Error('hook failed'); }
+                })).rejects.toThrow('hook failed');
+                expect(t.prompts).toHaveLength(1);
+                t.chunk('still old');
+                await t.backend.flushPendingMessageBuffers();
+                expect(t.texts(t.turn1)).toEqual(['reply-1', 'still old']);
+                const turn3: AgentMessage[] = [];
+                await t.backend.prompt('s1', [{ type: 'text', text: 'three' }], (m) => turn3.push(m));
+                expect(t.texts(turn3)).toEqual(['reply-2']);
+            } finally { t.restore(); }
+        });
+
+        it('behaves as before when the hook is omitted', async () => {
+            const t = await setup();
+            try {
+                const turn2: AgentMessage[] = [];
+                await t.backend.prompt('s1', [{ type: 'text', text: 'two' }], (m) => turn2.push(m));
+                expect(t.texts(turn2)).toEqual(['reply-2']);
+                expect(t.prompts).toHaveLength(2);
+            } finally { t.restore(); }
+        });
     });
 });

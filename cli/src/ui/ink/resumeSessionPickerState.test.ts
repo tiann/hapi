@@ -24,13 +24,22 @@ function session(overrides: Partial<ResumableSession>): ResumableSession {
 }
 
 describe('resumeSessionPickerState', () => {
-    it('uses the first user message as the list label before title or summary', () => {
+    it.each([
+        [{ name: 'Saved title', summary: 'Summary', promptTitle: 'Prompt title' }, 'Saved title'],
+        [{ summary: 'Summary', promptTitle: 'Prompt title' }, 'Summary'],
+        [{ promptTitle: 'Prompt title' }, 'Prompt title'],
+        [{ directory: '/work/project' }, 'project'],
+        [{ directory: 'C:\\Users\\jader\\project\\' }, 'project'],
+        [{ directory: '\\\\server\\share\\project' }, 'project'],
+        [{ directory: 'C:\\' }, 'session-'],
+        [{ directory: '/work/a\\b' }, 'a\\b'],
+        [{ directory: '/' }, 'session-']
+    ] as const)('uses the web title rules with %j', (overrides, title) => {
         expect(getResumeSessionName(session({
-            sessionId: 'session-title',
-            name: 'Generated title',
-            summary: 'Generated summary',
-            firstUserMessage: 'First prompt'
-        }))).toBe('First prompt')
+            flavor: 'claude',
+            firstUserMessage: 'First prompt',
+            ...overrides
+        }))).toBe(title)
     })
 
     it('formats updatedAt as relative time', () => {
@@ -58,6 +67,7 @@ describe('resumeSessionPickerState', () => {
                 flavor: 'claude',
                 directory: '/repo/mobile',
                 summary: 'Fix login screen',
+                promptTitle: 'Investigate OAuth',
                 agentSessionId: 'thread-b'
             }),
             session({
@@ -70,6 +80,8 @@ describe('resumeSessionPickerState', () => {
         ]
 
         expect(filterResumeSessions(sessions, 'billing').map((item) => item.sessionId)).toEqual(['alpha'])
+        expect(filterResumeSessions(sessions, 'PAYMENT').map((item) => item.sessionId)).toEqual(['alpha'])
+        expect(filterResumeSessions(sessions, 'oauth').map((item) => item.sessionId)).toEqual(['beta'])
         expect(filterResumeSessions(sessions, 'MOBILE').map((item) => item.sessionId)).toEqual(['beta'])
         expect(filterResumeSessions(sessions, 'thread-c').map((item) => item.sessionId)).toEqual(['gamma'])
         expect(filterResumeSessions(sessions, 'remote').map((item) => item.sessionId)).toEqual(['gamma'])
