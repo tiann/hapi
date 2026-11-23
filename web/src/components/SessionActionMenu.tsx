@@ -1,6 +1,5 @@
 import { useId } from 'react'
 import { useTranslation } from '@/lib/use-translation'
-import { HoverTooltip } from '@/components/HoverTooltip'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import { buildSessionReferenceText } from '@/lib/sessionReference'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -9,6 +8,11 @@ import { ArchiveIcon, CheckIcon, CopyIcon, ForkIcon } from '@/components/icons'
 import { buildSessionWindowPath } from '@/lib/sessionNavigation'
 import { getSessionManualUnreadAt, sessionNeedsReadAction, markListedSessionSeen, markSessionUnread, useSessionLastSeenVersion } from '@/lib/sessionLastSeen'
 import type { SessionSummary } from '@/types/api'
+
+// Keep recovery instructions in the scrolling menu, including on touch screens.
+function MenuHint({ id, text }: { id: string; text?: string }) {
+    return text ? <p id={id} className="max-w-72 px-3 pb-2 text-sm leading-snug text-[var(--app-hint)]">{text}</p> : null
+}
 
 type ReadTarget = Pick<SessionSummary, 'id' | 'contentRevision' | 'readState'>
 
@@ -429,29 +433,22 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                 </button>
 
                 {onForkSession || forkDisabledReason ? (
-                    <HoverTooltip
-                        id={`${resolvedMenuId}-fork-tooltip`}
-                        className="w-full [&>span:first-child]:w-full"
-                        align="start"
-                        revealOnParentFocusClass="group-focus-within:opacity-100 group-focus-within:visible"
-                        target={(
-                            <button
-                                type="button"
-                                role="menuitem"
-                                aria-disabled={forkDisabledReason ? true : undefined}
-                                aria-describedby={forkDisabledReason ? `${resolvedMenuId}-fork-tooltip` : undefined}
-                                className={`${baseItemClassName} ${forkDisabledReason
-                                    ? 'cursor-not-allowed opacity-50'
-                                    : 'hover:bg-[var(--app-subtle-bg)]'}`}
-                                onClick={forkDisabledReason ? undefined : handleForkSession}
-                            >
-                                <ForkIcon className="h-[18px] w-[18px] text-[var(--app-hint)]" />
-                                {t('session.action.fork')}
-                            </button>
-                        )}
-                    >
-                        {forkDisabledReason ?? t('session.action.fork')}
-                    </HoverTooltip>
+                    <>
+                        <button
+                            type="button"
+                            role="menuitem"
+                            aria-disabled={forkDisabledReason ? true : undefined}
+                            aria-describedby={forkDisabledReason ? `${resolvedMenuId}-fork-hint` : undefined}
+                            className={`${baseItemClassName} ${forkDisabledReason
+                                ? 'cursor-not-allowed opacity-50'
+                                : 'hover:bg-[var(--app-subtle-bg)]'}`}
+                            onClick={forkDisabledReason ? undefined : handleForkSession}
+                        >
+                            <ForkIcon className="h-[18px] w-[18px] text-[var(--app-hint)]" />
+                            {t('session.action.fork')}
+                        </button>
+                        <MenuHint id={`${resolvedMenuId}-fork-hint`} text={forkDisabledReason} />
+                    </>
                 ) : null}
 
                 {!isTelegram ? (
@@ -556,33 +553,26 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                 ) : (
                     <>
                         {onReopen || reopenDisabledReason || reopenHint ? (
-                            <HoverTooltip
-                                id={`${resolvedMenuId}-reopen-tooltip`}
-                                className="w-full [&>span:first-child]:w-full"
-                                align="start"
-                                revealOnParentFocusClass="group-focus-within:opacity-100 group-focus-within:visible"
-                                target={(
-                                    <button
-                                        type="button"
-                                        role="menuitem"
-                                        aria-disabled={reopenDisabledReason ? true : undefined}
-                                        aria-describedby={
-                                            reopenDisabledReason || reopenHint
-                                                ? `${resolvedMenuId}-reopen-tooltip`
-                                                : undefined
-                                        }
-                                        className={`${baseItemClassName} ${reopenDisabledReason
-                                            ? 'cursor-not-allowed opacity-50'
-                                            : 'hover:bg-[var(--app-subtle-bg)]'}`}
-                                        onClick={reopenDisabledReason ? undefined : handleReopen}
-                                    >
-                                        <ReopenIcon className="text-[var(--app-hint)]" />
-                                        {t('session.action.reopen')}
-                                    </button>
-                                )}
-                            >
-                                {reopenDisabledReason ?? reopenHint ?? t('session.action.reopen')}
-                            </HoverTooltip>
+                            <>
+                                <button
+                                    type="button"
+                                    role="menuitem"
+                                    aria-disabled={reopenDisabledReason ? true : undefined}
+                                    aria-describedby={
+                                        reopenDisabledReason || reopenHint
+                                            ? `${resolvedMenuId}-reopen-hint`
+                                            : undefined
+                                    }
+                                    className={`${baseItemClassName} ${reopenDisabledReason
+                                        ? 'cursor-not-allowed opacity-50'
+                                        : 'hover:bg-[var(--app-subtle-bg)]'}`}
+                                    onClick={reopenDisabledReason ? undefined : handleReopen}
+                                >
+                                    <ReopenIcon className="text-[var(--app-hint)]" />
+                                    {t('session.action.reopen')}
+                                </button>
+                                <MenuHint id={`${resolvedMenuId}-reopen-hint`} text={reopenDisabledReason ?? reopenHint} />
+                            </>
                         ) : null}
                         <button
                             type="button"

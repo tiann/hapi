@@ -198,7 +198,7 @@ describe('SessionActionMenu - Reopen action', () => {
 
         const reopen = screen.getByRole('menuitem', { name: /Reopen/ })
         expect(reopen).toHaveAttribute('aria-disabled', 'true')
-        expect(screen.getByRole('tooltip')).toHaveTextContent('Cursor chat data is no longer available')
+        expect(reopen).toHaveAccessibleDescription('Cursor chat data is no longer available on this machine.')
 
         fireEvent.click(reopen)
         expect(onClose).not.toHaveBeenCalled()
@@ -214,7 +214,7 @@ describe('SessionActionMenu - Reopen action', () => {
 
         const reopen = screen.getByRole('menuitem', { name: /Reopen/ })
         expect(reopen).not.toHaveAttribute('aria-disabled', 'true')
-        expect(screen.getByRole('tooltip')).toHaveTextContent('Could not verify Cursor chat data')
+        expect(reopen).toHaveAccessibleDescription('Could not verify Cursor chat data (runner may be outdated).')
 
         fireEvent.click(reopen)
         expect(onReopen).toHaveBeenCalledTimes(1)
