@@ -21,7 +21,7 @@ import { findStopSessionOrphanTargets, reapRunnerSpawnedOrphans } from '@/runner
 import { readStopRuntimeCandidates } from './stopRuntimes';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import { observeHeartbeatProcesses, type HeartbeatProcessState } from './heartbeatProcesses';
-import { captureProcessBinding, captureStopSignalBinding, sharedStopBinding, terminateCapturedBinding } from './processBinding';
+import { captureProcessBinding, captureStopSignalBinding, sharedStopBinding, stopConfirmationBinding, terminateCapturedBinding } from './processBinding';
 import { cleanupFailedStartupAfterExit, sessionStartupTimeout, waitForRecoverableStartup } from './sessionStartup';
 import { buildChildExitNotices, type ChildExitNotice } from './childExitNotice';
 import {
@@ -446,12 +446,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     };
     const capturePidBinding = (pid: number, sessionId: string) => captureProcessBinding(() => [
       pidToTrackedSession.get(pid), pidToRequestedSessionId.get(pid),
-      pidToConfirmedSessionId.get(pid), persistedResumeProcesses.get(pid),
+      stopConfirmationBinding(pidToRequestedSessionId.get(pid), pidToConfirmedSessionId.get(pid), sessionId),
+      persistedResumeProcesses.get(pid),
       existingSessionIdByChildPid.get(pid), sharedStopBinding(pidToTrackedSession.get(pid), sessionId),
     ]);
     const capturePidSignalGuard = (pid: number, sessionId: string) => captureStopSignalBinding(() => [
       pidToTrackedSession.get(pid), pidToRequestedSessionId.get(pid),
-      pidToConfirmedSessionId.get(pid), persistedResumeProcesses.get(pid),
+      stopConfirmationBinding(pidToRequestedSessionId.get(pid), pidToConfirmedSessionId.get(pid), sessionId),
+      persistedResumeProcesses.get(pid),
       existingSessionIdByChildPid.get(pid),
     ], () => sharedStopBinding(pidToTrackedSession.get(pid), sessionId) !== '[]');
     for (const [pid, record] of [...persistedResumeProcesses]) {

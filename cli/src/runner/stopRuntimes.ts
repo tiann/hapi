@@ -26,17 +26,21 @@ export async function readStopRuntimeCandidates(
     const markers = new Map<number, string | null>();
     if (table) {
         for (const [pid, entry] of table) markers.set(pid, entry.marker);
-    } else {
-        for (const pid of pids) {
-            if (isProcessAlive(pid)) markers.set(pid, getProcessStartMarker(pid));
-        }
     }
+    const observed = new Set<number>();
+    const observePosix = (pid: number) => {
+        if (table || observed.has(pid)) return;
+        observed.add(pid);
+        if (isProcessAlive(pid)) markers.set(pid, getProcessStartMarker(pid));
+    };
     return records.filter(record => {
         const key = generationKey(record);
         if (knownLive.has(key)) return true;
-        if ((record.marker && markers.get(record.pid) === record.marker)
-            || (record.kind !== 'attached' && record.serverPid && record.serverMarker
-                && markers.get(record.serverPid) === record.serverMarker)) {
+        observePosix(record.pid);
+        const rootMatches = Boolean(record.marker && markers.get(record.pid) === record.marker);
+        const serverPid = record.kind !== 'attached' ? record.serverPid : undefined;
+        if (!rootMatches && serverPid) observePosix(serverPid);
+        if (rootMatches || (serverPid && record.serverMarker && markers.get(serverPid) === record.serverMarker)) {
             knownLive.add(key);
             return true;
         }

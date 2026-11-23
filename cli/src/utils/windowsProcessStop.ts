@@ -147,7 +147,18 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
     const rootMarker = members.get(rootPid)
     if (unresolved.has(rootPid) && rootMarker && current.get(rootPid)?.marker === rootMarker) {
         const result = await signal(rootPid, force, true)
-        if (result === 'vetoed') return finish(false)
+        if (result === 'vetoed') {
+            // The Runner may clear the binding just after the snapshot if the
+            // wrapper exits. Only a fresh generation check can distinguish
+            // that from a live root whose signal must remain vetoed.
+            if (unresolved.size <= 1) return finish(false)
+            current = await snapshot()
+            if (current) refresh(current)
+            if (!current || unresolved.has(rootPid)) {
+                phase = 'binding-veto'
+                return finish(false)
+            }
+        }
         if (!force && result === 'sent') {
             const graceDeadline = performance.now() + Math.min(2_000, remaining())
             while (unresolved.size && performance.now() < graceDeadline) {

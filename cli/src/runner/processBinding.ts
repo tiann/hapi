@@ -7,6 +7,11 @@ export function captureProcessBinding(readBinding: () => readonly unknown[]): ()
     };
 }
 
+/** Confirming the already-requested session does not replace a stop target. */
+export function stopConfirmationBinding(requested: string | undefined, confirmed: string | undefined, target: string): string | undefined {
+    return requested === target && confirmed === target ? undefined : confirmed;
+}
+
 /** Empty maps after a proven wrapper exit are expected, unlike replacement bindings. */
 export function captureStopSignalBinding(
     readBinding: () => readonly unknown[],

@@ -43,6 +43,16 @@ describe('stop runtime candidates', () => {
         expect(mocks.alive).toHaveBeenCalledTimes(1);
         expect(mocks.marker).toHaveBeenCalledTimes(1);
     });
+    it('does not probe a POSIX native server whose wrapper generation already matches', async () => {
+        mocks.windows.mockReturnValue(false);
+        mocks.alive.mockReturnValue(true);
+        const first = { ...records[0], marker: 'posix-marker', serverPid: 51, serverMarker: 'native' };
+        const second = { ...first, id: 'another', serverPid: 52 };
+        mocks.marker.mockReturnValue(first.marker);
+        expect(await readStopRuntimeCandidates([first, second], 'target')).toEqual([first, second]);
+        expect(mocks.alive.mock.calls).toEqual([[first.pid]]);
+        expect(mocks.marker).toHaveBeenCalledTimes(1);
+    });
     it('filters proven retired generations using one complete snapshot', async () => {
         mocks.snapshot.mockResolvedValue(new Map([[42, { parentPid: 0, marker: 'replacement', name: 'codex', commandLine: 'codex' }]]));
         expect(await readStopRuntimeCandidates(records, 'claude-session')).toEqual([]);

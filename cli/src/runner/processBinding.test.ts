@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { captureProcessBinding, captureStopSignalBinding, sharedStopBinding, terminateCapturedBinding } from './processBinding';
+import { captureProcessBinding, captureStopSignalBinding, stopConfirmationBinding, sharedStopBinding, terminateCapturedBinding } from './processBinding';
 
 describe('asynchronous process binding guard', () => {
     it('allows empty post-exit bindings only for captured descendants, never a replacement or sibling', () => {
@@ -86,4 +86,22 @@ describe('asynchronous process binding guard', () => {
         }
         expect(unchanged()).toBe(true);
     });
+});
+
+it('retains the stop guard when the same requested session confirms, not after a rebound', () => {
+    const child = {};
+    let tracked = child;
+    let confirmed: string | undefined;
+    let siblings = false;
+    const signal = captureStopSignalBinding(() => [tracked, stopConfirmationBinding('target', confirmed, 'target')], () => siblings);
+    confirmed = 'target';
+    expect(signal('root')).toBe(true);
+    siblings = true;
+    expect(signal('root')).toBe(false);
+    siblings = false;
+    confirmed = 'unrelated';
+    expect(signal('root')).toBe(false);
+    confirmed = 'target';
+    tracked = {};
+    expect(signal('root')).toBe(false);
 });

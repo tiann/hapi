@@ -69,9 +69,32 @@ describe('Windows asynchronous tree stop', () => {
         const reports: import('./windowsProcessStop').WindowsStopReport[] = []
         const operation = killProcessTreeByPid(100, false, report => reports.push(report), undefined, undefined, () => false)
         await vi.advanceTimersByTimeAsync(1)
-        expect(reports).toEqual([expect.objectContaining({ confirmed: false, phase: 'binding-veto', snapshots: 2 })])
+        expect(reports).toEqual([expect.objectContaining({ confirmed: false, phase: 'binding-veto', snapshots: 3 })])
         expect(await operation).toBe(false)
         expect(kills).toEqual([])
+    })
+
+    it('continues descendant cleanup when the root exits while the verification snapshot is pending', async () => {
+        let scans = 0
+        execFileMock.mockImplementation((file, args, _options, callback) => {
+            queueMicrotask(() => {
+                if (file === 'powershell') {
+                    const sampled = [...rows]
+                    if (++scans === 2) rows = rows.filter(process => process.ProcessId !== 100)
+                    callback(null, JSON.stringify({ complete: true, processes: sampled }), '')
+                    return
+                }
+                const pid = Number(args[args.indexOf('/PID') + 1])
+                kills.push({ pid, force: args.includes('/F'), tree: args.includes('/T') })
+                onKill(pid, args.includes('/F'))
+                callback(null, '', '')
+            })
+            return { kill: vi.fn() }
+        })
+        const canSignal = vi.fn((phase?: 'root' | 'descendant') => phase === 'descendant')
+        expect(await killProcessTreeByPid(100, true, undefined, undefined, undefined, canSignal)).toBe(true)
+        expect(canSignal.mock.calls.flat()).toEqual(['root', 'descendant'])
+        expect(kills.map(kill => kill.pid)).toEqual([200])
     })
 
     it('confirms all descendants without blocking the runner with per-PID shell probes', async () => {
