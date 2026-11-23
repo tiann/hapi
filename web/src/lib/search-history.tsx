@@ -53,10 +53,12 @@ type FailedWrite = { action: 'enable' } | {
 
 function reconcileFailedWrite(failed: FailedWrite | null, saved: SearchHistoryState): FailedWrite | null {
     if (!failed) return null
-    const completed = failed.action === 'enable'
-        ? saved.enabled
-        : failed.affected.every(({ type, queries }) => queries.every(query => !saved[type].includes(query)))
-    return completed ? null : failed
+    if (failed.action === 'enable') return saved.enabled ? null : failed
+    const affected = failed.affected.flatMap(({ type, queries }) => {
+        const unresolved = queries.filter(query => saved[type].includes(query))
+        return unresolved.length ? [{ type, queries: unresolved }] : []
+    })
+    return affected.length > 0 ? { action: 'delete', affected } : null
 }
 
 type HistoryContextValue = {
