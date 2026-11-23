@@ -54,3 +54,10 @@ export function readDestinationBackgroundOnly(value: unknown, field: string): bo
     if (typeof value !== 'boolean') throw new Error(`${field} must be a boolean`)
     return value
 }
+
+/** Per-request recipient limits published by WxPusher (applied after deduplication). */
+export function assertWxPusherRecipientLimits(uids: string[], topicIds: number[], field: string): void {
+    if (uids.length > 2000 || topicIds.length > 5) {
+        throw new Error(`${field} supports at most 2000 distinct UIDs and 5 distinct topic IDs`)
+    }
+}

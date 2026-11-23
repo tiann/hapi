@@ -419,53 +419,42 @@ export class NotificationHub {
         await this.notifySessionError(session, reason)
     }
 
-    private async notifyReady(session: Session): Promise<void> {
-        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
-        for (const channel of this.channels) {
+    private async dispatchNotification(
+        label: string,
+        send: (channel: NotificationChannel) => Promise<void> | undefined
+    ): Promise<void> {
+        const sendSafely = async (channel: NotificationChannel) => {
             try {
-                await channel.sendReady(session, ctx)
+                await send(channel)
             } catch (error) {
-                console.error('[NotificationHub] Failed to send ready notification:', error)
+                console.error(`[NotificationHub] Failed to send ${label} notification:`, error)
             }
         }
+        const independent = this.channels.filter(channel => channel.independent).map(sendSafely)
+        // Preserve native push ordering and its handoff to Web Push. Independent
+        // HTTP providers must not hold up that chain or one another.
+        for (const channel of this.channels) {
+            if (!channel.independent) await sendSafely(channel)
+        }
+        await Promise.all(independent)
+    }
+
+    private async notifyReady(session: Session): Promise<void> {
+        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
+        await this.dispatchNotification('ready', channel => channel.sendReady(session, channel.independent ? undefined : ctx))
     }
 
     private async notifyPermission(session: Session): Promise<void> {
         const ctx: NotificationSendContext = { nativeGate: { sent: false } }
-        for (const channel of this.channels) {
-            try {
-                await channel.sendPermissionRequest(session, ctx)
-            } catch (error) {
-                console.error('[NotificationHub] Failed to send permission notification:', error)
-            }
-        }
+        await this.dispatchNotification('permission', channel => channel.sendPermissionRequest(session, channel.independent ? undefined : ctx))
     }
 
     private async notifySessionCompletion(session: Session, reason: SessionEndReason): Promise<void> {
-        for (const channel of this.channels) {
-            if (typeof channel.sendSessionCompletion !== 'function') {
-                continue
-            }
-            try {
-                await channel.sendSessionCompletion(session, reason)
-            } catch (error) {
-                console.error('[NotificationHub] Failed to send session completion notification:', error)
-            }
-        }
+        await this.dispatchNotification('session completion', channel => channel.sendSessionCompletion?.(session, reason))
     }
 
     private async notifySessionError(session: Session, reason: SessionEndReason): Promise<void> {
-        for (const channel of this.channels) {
-            if (typeof channel.sendSessionError !== 'function') {
-                continue
-            }
-            try {
-                await channel.sendSessionError(session, reason)
-            } catch (error) {
-                console.error('[NotificationHub] Failed to send session error notification:', error)
-            }
-        }
-
+        await this.dispatchNotification('session error', channel => channel.sendSessionError?.(session, reason))
     }
 
     private async notifyModelError(session: Session, notification: ModelErrorNotification): Promise<boolean> {

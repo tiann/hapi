@@ -269,6 +269,42 @@ describe('NotificationHub', () => {
     })
 
 
+    it('delivers ready and error notifications without waiting for a stalled independent provider', async () => {
+        const engine = new FakeSyncEngine()
+        const calls: string[] = []
+        const pending = Promise.withResolvers<void>()
+        const slow: NotificationChannel = {
+            independent: true,
+            sendReady: () => { calls.push('slow-ready'); return pending.promise },
+            sendPermissionRequest: async () => {},
+            sendSessionError: () => { calls.push('slow-error'); return pending.promise },
+        }
+        const fast: NotificationChannel = {
+            independent: true,
+            sendReady: async () => { calls.push('fast-ready') },
+            sendPermissionRequest: async () => {},
+            sendSessionError: async () => { calls.push('fast-error') },
+        }
+        const normal = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [slow, fast, normal])
+        const session = createSession()
+        engine.setSession(session)
+        try {
+            engine.emit({ type: 'message-received', sessionId: session.id, message: {
+                id: 'ready', seq: 1, localId: null, createdAt: 0,
+                content: { role: 'agent', content: { id: 'ready-event', type: 'event', data: { type: 'ready' } } },
+            } })
+            engine.emit({ type: 'session-ended', sessionId: session.id, reason: 'error' })
+            await sleep(5)
+            expect(calls).toEqual(expect.arrayContaining(['slow-ready', 'fast-ready', 'slow-error', 'fast-error']))
+            expect(normal.readySessions).toHaveLength(1)
+            expect(normal.sessionErrors).toHaveLength(1)
+        } finally {
+            pending.resolve()
+            hub.stop()
+        }
+    })
+
     it('continues with later completion channels after a WxPusher request times out', async () => {
         const engine = new FakeSyncEngine()
         const laterChannel = new StubChannel()

@@ -7,7 +7,11 @@ import { shouldSuppressBackgroundNotification } from '../notifications/backgroun
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import { composeInputRequestNotification, getFirstPendingRequest } from '../notifications/inputRequest'
 
+const SERVERCHAN_REQUEST_TIMEOUT_MS = 10_000
+
 export class ServerChanChannel implements NotificationChannel {
+    readonly independent = true
+
     constructor(
         private readonly sendKey: string | null,
         private readonly publicUrl: string,
@@ -80,7 +84,8 @@ export class ServerChanChannel implements NotificationChannel {
             headers: {
                 'content-type': 'application/x-www-form-urlencoded'
             },
-            body
+            body,
+            signal: AbortSignal.timeout(SERVERCHAN_REQUEST_TIMEOUT_MS),
         })
 
         if (!response.ok) {

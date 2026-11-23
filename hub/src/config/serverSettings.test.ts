@@ -269,6 +269,20 @@ describe('loadServerSettings', () => {
         await expect(loadServerSettings(dir)).rejects.toThrow(error)
     })
 
+    it('rejects an oversized legacy topic list', async () => {
+        dir = makeTempDir()
+        process.env.WXPUSHER_TOPIC_IDS = '1,2,3,4,5,6'
+        await expect(loadServerSettings(dir)).rejects.toThrow(/at most 2000 distinct UIDs and 5 distinct topic IDs/)
+    })
+
+    it('rejects an oversized explicit UID list after deduplication', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ wxPusherByNamespace: {
+            team: { appToken: 'AT_TEST', uids: Array.from({ length: 2001 }, (_, i) => `UID_${i}`) },
+        } }))
+        await expect(loadServerSettings(dir)).rejects.toThrow(/at most 2000 distinct UIDs and 5 distinct topic IDs/)
+    })
+
     it('loads WxPusher settings from settings.json', async () => {
         dir = makeTempDir()
         writeFileSync(join(dir, 'settings.json'), JSON.stringify({

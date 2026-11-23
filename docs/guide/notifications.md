@@ -106,7 +106,7 @@ export HAPI_PUBLIC_URL="https://your-public-url"
 hapi hub
 ```
 
-Multiple UIDs can be separated by commas. Topic recipients can be configured with `WXPUSHER_TOPIC_IDS` instead:
+Multiple UIDs can be separated by commas. Each destination supports at most 2,000 distinct UIDs and 5 distinct topic IDs, whether configured through environment variables or `settings.json`. Topic recipients can be configured with `WXPUSHER_TOPIC_IDS` instead:
 
 ```bash
 export WXPUSHER_UIDS=""

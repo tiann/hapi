@@ -18,6 +18,7 @@ type WxPusherResponse = {
     code?: number
     msg?: string
     message?: string
+    data?: unknown
 }
 
 export type WxPusherMessage = {
@@ -54,6 +55,8 @@ function truncateWxPusherSummary(summary: string): string {
 }
 
 export class WxPusherChannel implements NotificationChannel {
+    readonly independent = true
+
     constructor(
         private readonly appToken: string,
         private readonly uids: string[],
@@ -87,15 +90,14 @@ export class WxPusherChannel implements NotificationChannel {
 
         const name = getSessionName(session)
         const pending = getFirstPendingRequest(session)
-        const request = pending?.request
+        if (!pending) return
         const inputNotification = composeInputRequestNotification(session, pending)
-        const toolName = request?.tool ? ` (${request.tool})` : ''
         const url = buildSessionUrl(this.publicUrl, session.id)
         const content = inputNotification
-            ? `${inputNotification.body}\n会话：${name}`
-            : `${name}${toolName}`
+            ? `${inputNotification.title}\n\n${inputNotification.body}\n会话：${name}`
+            : `${getAgentName(session)} · ${name} (${pending.request.tool})`
         await this.send(this.createMessage(
-            `授权：${name}`,
+            `${inputNotification ? '待输入' : '授权'}：${name}`,
             content,
             url
         ))
@@ -171,6 +173,15 @@ export class WxPusherChannel implements NotificationChannel {
                 ? result.msg ?? result.message
                 : undefined
             throw new Error(`WxPusher send failed: ${(message ?? responseText) || 'unknown error'}`)
+        }
+        if (result.data !== undefined) {
+            if (!Array.isArray(result.data)) throw new Error('WxPusher send failed: invalid recipient results')
+            const rejected = result.data.filter(entry => !isWxPusherResponse(entry) || entry.code !== 1000).length
+            if (rejected > 0) {
+                // Do not log recipient identifiers or provider-supplied text, and do not
+                // retry the batch: some recipients may already have an accepted task.
+                throw new Error(`WxPusher send failed: ${rejected} of ${result.data.length} recipient tasks not accepted`)
+            }
         }
     }
 }

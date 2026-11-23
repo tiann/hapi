@@ -82,7 +82,9 @@ describe('WxPusherChannel', () => {
             }
             await sendAllActions(createSession({ namespace: 'unconfigured', active: true }))
             expect(fetchMock).not.toHaveBeenCalled()
-            await sendAllActions(createSession({ namespace: 'team', active: true }))
+            await sendAllActions(createSession({ namespace: 'team', active: true, agentState: {
+                requests: { approval: { tool: 'Bash', arguments: {}, createdAt: 1 } },
+            } }))
             expect(fetchMock).toHaveBeenCalledTimes(4)
             for (const [, init] of fetchMock.mock.calls) {
                 expect(JSON.parse(String(init.body))).toMatchObject({ appToken: 'AT_TEAM', uids: ['UID_TEAM'] })
@@ -272,8 +274,22 @@ describe('WxPusherChannel', () => {
             const call = fetchMock.mock.calls[0] as unknown[] | undefined
             const init = call?.[1] as RequestInit | undefined
             const message = JSON.parse(String(init?.body)) as { summary: string; content: string }
-            expect(message.summary.endsWith('…')).toBe(true)
+            expect(message.summary).toMatch(/^待输入：.+…$/u)
+            expect(message.content).toContain('Agent needs your input')
             expect(message.content).toContain(`会话：${sessionName}`)
+        } finally {
+            globalThis.fetch = originalFetch
+        }
+    })
+
+    it('does not send an approval when the active session no longer has pending requests', async () => {
+        const originalFetch = globalThis.fetch
+        const fetchMock = mock(async () => new Response('{"code":1000}'))
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+        try {
+            const channel = new WxPusherChannel('AT_TEST', ['UID_ONE'], [], 'https://hapi.example.com')
+            await channel.sendPermissionRequest(createSession({ active: true, agentState: { requests: {} } }))
+            expect(fetchMock).not.toHaveBeenCalled()
         } finally {
             globalThis.fetch = originalFetch
         }
@@ -390,6 +406,22 @@ describe('WxPusherChannel', () => {
 
             await expect(channel.sendSessionCompletion(createSession(), 'completed' satisfies SessionEndReason))
                 .rejects.toThrow('WxPusher send failed: HTTP 429 Too Many Requests - rate limited')
+        } finally {
+            globalThis.fetch = originalFetch
+        }
+    })
+
+    it('reports mixed recipient task results without exposing recipient identifiers', async () => {
+        const originalFetch = globalThis.fetch
+        const fetchMock = mock(async () => new Response(JSON.stringify({ code: 1000, data: [
+            { code: 1000, uid: 'UID_ACCEPTED' }, { code: 1001, uid: 'UID_PRIVATE', status: 'rejected' },
+        ] })))
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+        try {
+            const channel = new WxPusherChannel('AT_TEST', ['UID_ACCEPTED', 'UID_PRIVATE'], [], 'https://hapi.example.com')
+            await expect(channel.sendSessionCompletion(createSession(), 'completed'))
+                .rejects.toThrow(/^WxPusher send failed: 1 of 2 recipient tasks not accepted$/)
+            expect(fetchMock).toHaveBeenCalledTimes(1)
         } finally {
             globalThis.fetch = originalFetch
         }
