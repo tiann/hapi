@@ -2396,7 +2396,9 @@ function SessionChatInner(props: SessionChatProps) {
             scheduledAt,
             routesToScratchlist: routedToScratchlist,
         })
-        const accepted = await onSendForComposer(text, attachments, scheduledAt, deliveryMode, originalText)
+        // Always carry the submitted composer snapshot (even if empty),
+        // distinct from raw sends such as scratchlist promotion.
+        const accepted = await onSendForComposer(text, attachments, scheduledAt, deliveryMode, originalText ?? text)
         if (!accepted) return
         if (!routedToScratchlist) {
             // Clear pendingSchedule only after the mutation is actually

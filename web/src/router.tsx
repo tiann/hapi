@@ -757,13 +757,15 @@ function SessionPage() {
                 resolvedSessionId,
                 () => handleSessionResolved(resolvedSessionId),
                 [],
-                // assistant-ui clears composer text without awaiting this path;
-                // keep the submitted snapshot so deferred hydration still has it.
-                { textOverride: context.originalText ?? context.text },
+                // Only a composer-originated send has a submitted draft to
+                // rehydrate. A scratchlist queue send must not seed its note
+                // into the editor or replace the user's existing draft.
+                { textOverride: context.originalText },
             )
             // Cross-session resume: visible metadata may still carry source-scoped
             // upload paths, and inactive remounts hide stored files entirely.
             // Always defer so the active target can hydrate/re-upload before POST.
+            if (context.originalText === undefined && !context.attachments?.length) return undefined
             const stored = await getDraftAttachments(resolvedSessionId)
             if ((context.attachments?.length ?? 0) > 0 || stored.length > 0) {
                 return { deferUntilDraftHydrated: true }

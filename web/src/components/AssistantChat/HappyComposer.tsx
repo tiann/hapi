@@ -967,7 +967,11 @@ export function HappyComposer(props: {
             consumeSettlement()
             return
         }
-        if (draftHydration.sessionId !== sessionId || !draftHydration.complete) return
+        if (draftHydration.sessionId !== sessionId) return
+        // The text can already be visible while the attachment read is still
+        // pending. Wait on an empty composer so text restoration gets a chance
+        // to run, but clear a visible, unchanged submitted draft immediately.
+        if (!draftHydration.complete && composerText === '') return
 
         const submittedText = settlement.originalText
             ?? props.sendAcceptance?.originalText
@@ -1038,6 +1042,8 @@ export function HappyComposer(props: {
             recordSuccessfulComposerClear(sessionId, composerText)
             api.composer().setText('')
         }
+        // Keep settlement available for submitted chips that hydrate later.
+        if (!draftHydration.complete) return
         const submittedAttachmentIds = settlement.attachmentIds
             ?? props.sendAcceptance?.attachmentIds
             ?? (

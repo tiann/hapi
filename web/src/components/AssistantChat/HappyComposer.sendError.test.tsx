@@ -691,6 +691,27 @@ describe('HappyComposer send-error atomic restore', () => {
         expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
     })
 
+    it('clears the visible submitted text before the attachment read finishes', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+        act(() => controls.current!.acceptSend())
+        let finishHydration!: () => void
+        runtime.pendingHydration = new Promise<void>(resolve => { finishHydration = resolve })
+        try {
+            act(() => controls.current!.remount())
+            act(() => controls.current!.programmaticSetText('foo'))
+            await waitFor(() => expect(input()).toHaveValue('foo'))
+            act(() => controls.current!.settleSend())
+            await waitFor(() => expect(input()).toHaveValue(''))
+            expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+            await act(async () => finishHydration())
+            await waitFor(() => expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, 'foo'))
+        } finally {
+            runtime.pendingHydration = null
+            finishHydration()
+        }
+    })
+
     it('clears submitted text when a simultaneous abort recovery is rejected', async () => {
         const controls = renderComposer('foo', null)
         send()

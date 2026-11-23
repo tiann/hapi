@@ -2,23 +2,29 @@ import { expect, test } from '@playwright/test'
 
 test.use({ serviceWorkers: 'block' })
 
-for (const scenario of ['delayed send', 'durable recovery'] as const) {
+for (const scenario of ['delayed send', 'durable recovery', 'scratchlist queue'] as const) {
     test(scenario === 'delayed send'
         ? 'a successful delayed send keeps the reopened editor and new draft'
-        : 'a full reload restores canceled queued text and schedule', async ({ page }) => {
+        : scenario === 'durable recovery'
+            ? 'a full reload restores canceled queued text and schedule'
+            : 'resuming to queue a scratchlist note preserves the existing composer draft', async ({ page }) => {
         const session = {
             id: 'delayed-send-fixture', namespace: 'default', seq: 1,
             createdAt: 1700000000000, updatedAt: 1700000000000,
-            active: true, activeAt: Date.now(), thinking: false, thinkingAt: 0,
+            active: scenario !== 'scratchlist queue', activeAt: Date.now(), thinking: false, thinkingAt: 0,
             metadataVersion: 1, agentStateVersion: 0, agentState: null,
             metadata: { name: 'Delayed send fixture', host: 'fixture', path: '/synthetic/project', flavor: 'codex', codexSessionId: 'fixture-thread' },
             model: null, modelReasoningEffort: null, effort: null,
         }
-        await page.addInitScript(() => {
+        await page.addInitScript(({ scratchlistQueue, sessionId }) => {
             localStorage.setItem(`hapi_access_token::${location.origin}`, 'delayed-send-fixture')
             localStorage.setItem('hapi-lang', 'en')
             localStorage.setItem('hapi.fue.v1.rich-composer-mentions', '1')
-        })
+            localStorage.setItem('hapi.fue.v1.scratchlist-toggle', '1')
+            if (scratchlistQueue && !sessionStorage.getItem('hapi:composer-drafts')) {
+                sessionStorage.setItem('hapi:composer-drafts', JSON.stringify({ [sessionId]: 'Keep this separate draft' }))
+            }
+        }, { scratchlistQueue: scenario === 'scratchlist queue', sessionId: session.id })
         const posted = Promise.withResolvers<void>()
         const allowResponse = Promise.withResolvers<void>()
         await page.route(url => url.pathname.startsWith('/api/'), async route => {
@@ -26,7 +32,10 @@ for (const scenario of ['delayed send', 'durable recovery'] as const) {
             if (path === '/api/auth') await route.fulfill({ json: { token: 'synthetic-jwt', user: { id: 1, username: 'fixture' } } })
             else if (path === '/api/features') await route.fulfill({ json: { githubPrAwareness: { enabled: false, envPinned: false } } })
             else if (path === '/api/sessions') await route.fulfill({ json: { sessions: [session] } })
-            else if (path === `/api/sessions/${session.id}`) await route.fulfill({ json: { session } })
+            else if (path === `/api/sessions/${session.id}/resume`) {
+                session.active = true
+                await route.fulfill({ json: { sessionId: session.id } })
+            } else if (path === `/api/sessions/${session.id}`) await route.fulfill({ json: { session } })
             else if (path.endsWith('/messages') && route.request().method() === 'POST') {
                 posted.resolve()
                 await allowResponse.promise
@@ -35,7 +44,9 @@ for (const scenario of ['delayed send', 'durable recovery'] as const) {
                 await route.fulfill({ json: { messages: [], page: { direction: 'latest', limit: 20, epoch: 0,
                     reset: false, nextBeforeAt: null, nextBeforeSeq: null, nextAfterAt: null,
                     nextAfterSeq: null, snapshotHeadAt: null, snapshotHeadSeq: null, hasMore: false } } })
-            } else if (path.endsWith('/scratchlist')) await route.fulfill({ json: { entries: [] } })
+            } else if (path.endsWith('/scratchlist')) await route.fulfill({ json: { entries: scenario === 'scratchlist queue' ? [
+                { entryId: 'queued-note', text: 'Note to queue', createdAt: Date.now(), updatedAt: Date.now(), attachments: [] },
+            ] : [] } })
             else if (path === '/api/machines') await route.fulfill({ json: { machines: [] } })
             else if (path === '/api/events') await route.fulfill({ contentType: 'text/event-stream', body: ': fixture\n\n' })
             else await route.fulfill({ json: {} })
@@ -64,6 +75,24 @@ for (const scenario of ['delayed send', 'durable recovery'] as const) {
             if (process.env.HAPI_RECOVERY_SCREENSHOT) await page.screenshot({ path: process.env.HAPI_RECOVERY_SCREENSHOT })
             await schedule.click()
             await expect(schedule).not.toHaveClass(/bg-blue-500/)
+            return
+        }
+        if (scenario === 'scratchlist queue') {
+            await expect(editor).toHaveText('Keep this separate draft')
+            await composer.getByRole('button', { name: 'Scratchlist drawer' }).click()
+            await expect(page.getByText('Note to queue', { exact: true })).toBeVisible()
+            try {
+                const response = page.waitForResponse(r => r.url().endsWith(`/sessions/${session.id}/messages`) && r.request().method() === 'POST')
+                await page.getByRole('button', { name: 'Send to queue', exact: true }).click()
+                await posted.promise
+                allowResponse.resolve()
+                const queuedResponse = await response
+                expect(queuedResponse.ok()).toBe(true)
+                expect(queuedResponse.request().postDataJSON()).toMatchObject({ text: 'Note to queue', deliveryMode: 'queue' })
+                await expect(editor).toHaveText('Keep this separate draft')
+                expect(await page.evaluate(id => JSON.parse(sessionStorage.getItem('hapi:composer-drafts') ?? '{}')[id], session.id)).toBe('Keep this separate draft')
+                if (process.env.HAPI_SCRATCHLIST_SCREENSHOT) await page.screenshot({ path: process.env.HAPI_SCRATCHLIST_SCREENSHOT, animations: 'disabled' })
+            } finally { allowResponse.resolve() }
             return
         }
         await editor.fill('First message')
