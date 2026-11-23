@@ -3,7 +3,8 @@ import { EMPTY_READ_STATE, mergeReadState, type SessionReadState, type SessionRe
 import { randomId } from '@/lib/randomId'
 
 type SessionInput = { id: string; contentRevision?: number; readState?: SessionReadState }
-type Pending = { id: string; request: SessionReadStateRequest }
+type ReadRequest = Extract<SessionReadStateRequest, { type: 'read' }>
+type Pending = { id: string; request: SessionReadStateRequest; onUnreadConflict?: ReadRequest }
 type Entry = { server: SessionReadState; pending?: Pending }
 type Store = Record<string, Entry>
 type Sender = (id: string, request: SessionReadStateRequest) => Promise<{ readState: SessionReadState }>
@@ -121,12 +122,17 @@ export async function flushSessionReadState(): Promise<void> {
                     const store = readStore(key)
                     const current = store[id]
                     if (current?.pending?.id === pending.id) {
-                        // 409 includes the authoritative manual choice.
+                        let restore: ReadRequest | undefined
+                        // A replacement also returns 409, but never includes readState.
                         try {
                             const body = JSON.parse(failure.body ?? '{}') as { readState?: SessionReadState }
                             current.server = mergeReadState(current.server, body.readState)!
+                            const fallback = current.pending.onUnreadConflict
+                            if (failure.status === 409 && body.readState && !current.server.manualUnread
+                                && fallback && fallback.readRevision > current.server.readRevision) restore = fallback
                         } catch { /* a removed/replaced session has no read state */ }
-                        delete current.pending
+                        if (restore) current.pending = { id: randomId(), request: restore }
+                        else delete current.pending
                         if (!save(store, key)) failed = true
                         if (scope === key) notify()
                     }
@@ -207,6 +213,19 @@ export function getSessionManualUnreadSnapshot(sessions: readonly SessionInput[]
 export function pendingUnreadId(sessionId: string): string | undefined {
     const pending = readStore()[sessionId]?.pending
     return pending?.request.type === 'unread' ? pending.id : undefined
+}
+
+/** The receipt was already rendered and visible. If a later local unread is
+ * in flight, keep its precedence; recover the read only on authoritative conflict. */
+export function markRenderedSessionSeen(id: string, revision: number, version: number | undefined, observedUnread: string | undefined): void {
+    const store = readStore()
+    const pending = store[id]?.pending
+    if (pending?.request.type === 'unread' && pending.id !== observedUnread) {
+        if (revision > (pending.onUnreadConflict?.readRevision ?? -1)) {
+            pending.onUnreadConflict = { type: 'read', readRevision: revision, expectedVersion: version ?? store[id].server.version }
+            save(store)
+        }
+    } else markSessionSeen(id, revision, version)
 }
 
 export function sessionNeedsReadAction(session: SessionInput): boolean {

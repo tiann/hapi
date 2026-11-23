@@ -93,6 +93,7 @@ describe('SessionActionMenu - Mark unread action', () => {
         const release = followSessionTail('suppressed')
         try {
             renderMenu({ readTarget: { id: 'suppressed', contentRevision: 7 } })
+            expect(screen.getByRole('menuitem', { name: 'Mark as unread' })).toBeInTheDocument()
             fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as read' }))
             expect(getSessionLastSeenAt('suppressed')).toBe(7)
         } finally { release() }

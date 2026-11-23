@@ -175,13 +175,18 @@ describe('rendered read receipt', () => {
         expect(getSessionLastSeenAt('s')).toBe(3)
     })
 
-    it('sends an explicit local unread queued behind an in-flight read', async () => {
+    it.each(['accepted', 'conflict', 'replaced'] as const)('settles a local unread queued behind a read: %s', async outcome => {
         const view = viewport()
         const sent: SessionReadStateRequest[] = []
         let resolve!: (value: { readState: SessionReadState }) => void
-        const disconnect = configureSessionReadState('local-race', async (_id, request) => {
+        const disconnect = configureSessionReadState(`local-race-${outcome}`, async (_id, request) => {
             sent.push({ ...request })
-            if (request.type === 'read') return new Promise(r => { resolve = r })
+            if (request.type === 'read') {
+                if (request.readRevision === 41) return new Promise(r => { resolve = r })
+                return { readState: { readRevision: 42, version: 4, manualUnread: false } }
+            }
+            if (outcome === 'replaced') throw { status: 409, body: '{"error":"Session replaced"}' }
+            if (outcome === 'conflict') throw { status: 409, body: JSON.stringify({ readState: { readRevision: 41, version: 3, manualUnread: false } }) }
             return { readState: { readRevision: 41, version: 2, manualUnread: true } }
         })
         try {
@@ -195,8 +200,11 @@ describe('rendered read receipt', () => {
             await settle()
             resolve({ readState: { readRevision: 41, version: 1, manualUnread: false } })
             await settle()
-            expect(sent).toEqual([{ type: 'read', readRevision: 41, expectedVersion: 0 }, { type: 'unread', expectedVersion: 1 }])
-            expect(getSessionManualUnreadAt('s')).toBe(0)
+            expect(sent).toEqual([
+                { type: 'read', readRevision: 41, expectedVersion: 0 }, { type: 'unread', expectedVersion: 1 },
+                ...(outcome === 'conflict' ? [{ type: 'read', readRevision: 42, expectedVersion: 0 }] : []),
+            ])
+            expect(getSessionManualUnreadAt('s')).toBe(outcome === 'accepted' ? 0 : null)
         } finally { disconnect() }
     })
 

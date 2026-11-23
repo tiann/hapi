@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, type RefObject } from 'react'
-import { followSessionTail, markSessionSeen, pendingUnreadId } from '@/lib/sessionLastSeen'
+import { followSessionTail, markRenderedSessionSeen, pendingUnreadId } from '@/lib/sessionLastSeen'
 import { useDocumentVisibility } from './useDocumentVisibility'
 
 function tailIsVisible(viewport: HTMLElement, messages: HTMLElement): boolean {
@@ -56,9 +56,7 @@ export function useSelectedSessionSeen(
                 const receipt = ready
                 ready = undefined
                 acknowledged = receipt.revision
-                const pending = pendingUnreadId(sessionId)
-                // Never replace a newer explicit local action in the durable outbox.
-                if (!pending || pending === receipt.localUnread) markSessionSeen(sessionId, receipt.revision, receipt.version)
+                markRenderedSessionSeen(sessionId, receipt.revision, receipt.version, receipt.localUnread)
             }
             if (frame !== undefined || acknowledged === revision) return
             const receipt = observed

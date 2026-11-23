@@ -5,9 +5,9 @@ import { safeCopyToClipboard } from '@/lib/clipboard'
 import { buildSessionReferenceText } from '@/lib/sessionReference'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu'
-import { ArchiveIcon, CopyIcon, ForkIcon } from '@/components/icons'
+import { ArchiveIcon, CheckIcon, CopyIcon, ForkIcon } from '@/components/icons'
 import { buildSessionWindowPath } from '@/lib/sessionNavigation'
-import { sessionNeedsReadAction, markListedSessionSeen, markSessionUnread, useSessionLastSeenVersion } from '@/lib/sessionLastSeen'
+import { getSessionManualUnreadAt, sessionNeedsReadAction, markListedSessionSeen, markSessionUnread, useSessionLastSeenVersion } from '@/lib/sessionLastSeen'
 import type { SessionSummary } from '@/types/api'
 
 type ReadTarget = Pick<SessionSummary, 'id' | 'contentRevision' | 'readState'>
@@ -16,15 +16,24 @@ function ReadAction({ session, className, onClose }: { session: ReadTarget; clas
     const { t } = useTranslation()
     useSessionLastSeenVersion()
     const unread = sessionNeedsReadAction(session)
+    const manual = getSessionManualUnreadAt(session.id, session.readState) !== null
     return (
-        <button type="button" role="menuitem" className={className} onClick={() => {
-            onClose()
-            if (unread) markListedSessionSeen(session)
-            else markSessionUnread(session.id, session.readState)
-        }}>
-            <UnreadIcon className="text-[var(--app-hint)]" />
-            {t(unread ? 'session.action.markRead' : 'session.action.markUnread')}
-        </button>
+        <>
+            {unread && <button type="button" role="menuitem" className={className} onClick={() => {
+                onClose()
+                markListedSessionSeen(session)
+            }}>
+                <CheckIcon className="text-[var(--app-hint)]" />
+                {t('session.action.markRead')}
+            </button>}
+            {!manual && <button type="button" role="menuitem" className={className} onClick={() => {
+                onClose()
+                markSessionUnread(session.id, session.readState)
+            }}>
+                <UnreadIcon className="text-[var(--app-hint)]" />
+                {t('session.action.markUnread')}
+            </button>}
+        </>
     )
 }
 
