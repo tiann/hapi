@@ -31,7 +31,7 @@ describe('SESSION_DETAIL_STALE_TIME_MS', () => {
 it('checks a cached disconnected session on entry and keeps a newer reconnect during the fetch', async () => {
     const client = new QueryClient()
     const key = queryKeys.session('test')
-    const offline = { id: 'test', active: false, activeAt: 10, thinking: false, thinkingAt: 10, metadata: null } as Session
+    const offline = { id: 'test', active: false, activeAt: 10, thinking: false, thinkingAt: 10, metadataVersion: 0, metadata: null } as Session
     client.setQueryData(key, { session: offline })
     let resolve!: (value: { session: Session }) => void
     const getSession = vi.fn(() => new Promise<{ session: Session }>(done => { resolve = done }))
@@ -45,6 +45,25 @@ it('checks a cached disconnected session on entry and keeps a newer reconnect du
     })
     await waitFor(() => expect(view.result.current.isFetching).toBe(false))
     expect(view.result.current.session).toMatchObject({ active: true, thinking: true, activeAt: 20 })
+    view.unmount()
+    client.clear()
+})
+
+it('preserves an archive metadata patch even when its liveness clock is unchanged', async () => {
+    const client = new QueryClient()
+    const key = queryKeys.session('archive-race')
+    const offline = { id: 'archive-race', active: false, activeAt: 10, metadataVersion: 1, metadata: null } as Session
+    client.setQueryData(key, { session: offline })
+    let resolve!: (value: { session: Session }) => void
+    const api = { getSession: () => new Promise(done => { resolve = done }) } as unknown as ApiClient
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const view = renderHook(() => useSession(api, 'archive-race'), { wrapper })
+    await act(async () => {
+        client.setQueryData(key, { session: { ...offline, metadataVersion: 2, metadata: { lifecycleState: 'archived' } } })
+        resolve({ session: offline })
+    })
+    await waitFor(() => expect(view.result.current.isFetching).toBe(false))
+    expect(view.result.current.session).toMatchObject({ metadataVersion: 2, metadata: { lifecycleState: 'archived' } })
     view.unmount()
     client.clear()
 })

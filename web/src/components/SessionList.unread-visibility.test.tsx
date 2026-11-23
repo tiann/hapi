@@ -103,7 +103,8 @@ describe('SessionList unread visibility', () => {
         expect(screen.queryByRole('button', { name: /Unread row/ })).toBeNull()
     })
 
-    it('restores an explicit fold on an active project after reload, isolated by account', () => {
+    it.each([false, true])('restores an explicit fold after reload, isolated by account (unread lens: %s)', unread => {
+        localStorage.setItem('hapi-session-list-unread-only', String(unread))
         const sessions = [makeSession({ id: 'busy', active: true, updatedAt: 42, metadata: { path: '/work/busy', name: 'Busy row' } })]
         const api = (ns: string) => ({ getReadStateScope: () => ns } as ApiClient)
         const first = renderSessionList(sessions, undefined, api('a'))

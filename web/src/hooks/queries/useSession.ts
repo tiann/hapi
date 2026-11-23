@@ -45,6 +45,8 @@ export function useSession(api: ApiClient | null, sessionId: string | null): {
                     ? { active: current.active, activeAt: current.activeAt, thinking: current.thinking,
                         thinkingAt: current.thinkingAt, activeTurnStartedAt: current.activeTurnStartedAt }
                     : {}),
+                ...(current && current.metadataVersion > response.session.metadataVersion
+                    ? { metadata: current.metadata, metadataVersion: current.metadataVersion } : {}),
                 contentRevision: Math.max(current?.contentRevision ?? 0, response.session.contentRevision ?? 0),
                 readState: mergeReadState(current?.readState, response.session.readState)
             } }
