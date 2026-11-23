@@ -691,27 +691,27 @@ export function ConversationStartStatus(props: {
     kind?: NavigationFeedbackKind
 }) {
     const { t } = useTranslation()
-    if (props.status === 'idle') return null
-
-    const isError = props.status === 'error'
     const prompt = props.kind === 'prompt'
-    const label = props.status === 'loading'
-        ? t(prompt ? 'message.loadingPrompt' : 'message.loadingConversationStart')
-        : props.status === 'success'
-            ? t(prompt ? 'message.reachedPrompt' : 'message.reachedConversationStart')
-            : t(prompt ? 'message.loadPromptFailed' : 'message.loadConversationStartFailed')
+    const loading = props.status === 'loading'
+    const success = props.status === 'success'
+    const active = loading || success
+    const badgeClass = "pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 text-xs font-medium text-[var(--app-fg)] shadow-lg"
 
     return (
-        <div
-            role={isError ? 'alert' : 'status'}
-            aria-live={isError ? 'assertive' : 'polite'}
-            className="pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 text-xs font-medium text-[var(--app-fg)] shadow-lg"
-        >
-            {props.status === 'loading' ? <Spinner size="sm" label={null} /> : null}
-            {props.status === 'success' ? <CheckIcon className="h-4 w-4 text-green-500" /> : null}
-            {props.status === 'error' ? <span className="text-red-500" aria-hidden="true">!</span> : null}
-            <span>{label}</span>
-        </div>
+        <>
+            <div data-testid="history-navigation-status" role="status" aria-live="polite" aria-atomic="true" className={active ? badgeClass : 'sr-only'}>
+                {loading ? <Spinner size="sm" label={null} /> : null}
+                {success ? <CheckIcon className="h-4 w-4 text-green-500" /> : null}
+                {loading ? <span>{t(prompt ? 'message.loadingPrompt' : 'message.loadingConversationStart')}</span> : null}
+                {success ? <span>{t(prompt ? 'message.reachedPrompt' : 'message.reachedConversationStart')}</span> : null}
+            </div>
+            {props.status === 'error' ? (
+                <div role="alert" className={badgeClass}>
+                    <span className="text-red-500" aria-hidden="true">!</span>
+                    <span>{t(prompt ? 'message.loadPromptFailed' : 'message.loadConversationStartFailed')}</span>
+                </div>
+            ) : null}
+        </>
     )
 }
 
@@ -2801,6 +2801,16 @@ export function HappyThread(props: {
 
     const handleOutlineSelect = useCallback(async (item: ConversationOutlineItem) => {
         if (navigationInFlightRef.current) return
+        const currentViewport = viewportRef.current
+        if (!hasMoreMessagesRef.current && currentViewport
+            && currentViewport.scrollHeight - currentViewport.clientHeight <= 1) {
+            const target = document.getElementById(getConversationMessageAnchorId(item.targetMessageId))
+            if (target && currentViewport.contains(target)) {
+                props.onOutlineItemClick?.(item)
+                props.onOutlineOpenChange(false)
+                return
+            }
+        }
         const runId = navigationRunRef.current
         const isCancelled = () => navigationRunRef.current !== runId
         navigationInFlightRef.current = true

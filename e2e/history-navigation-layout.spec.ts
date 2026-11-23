@@ -97,3 +97,41 @@ test('keeps following new output after jumping to the already-visible start of a
     await expect.poll(measureBottom).toBeLessThanOrEqual(3)
     await expect(page.getByText('New reply line 25', { exact: true })).toBeInViewport()
 })
+
+test('keeps following new output after selecting an already visible outline item', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartShort=1')
+    const chat = page.locator('.chat-scroll-y')
+    await expect(page.getByText('First short reply', { exact: true })).toBeInViewport()
+    await page.getByRole('button', { name: 'Open history', exact: true }).click()
+    await page.getByRole('button', { name: /Short chat prompt/ }).click()
+    await expect(page.getByRole('searchbox', { name: 'Search outline items' })).toHaveCount(0)
+    await page.evaluate(() => window.__probe.appendReply())
+    await expect.poll(() => chat.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(100)
+    await expect(page.getByText('New reply line 25', { exact: true })).toBeInViewport()
+    if (process.env.HAPI_REVIEW_SCREENSHOT_DIR) {
+        await page.screenshot({ path: `${process.env.HAPI_REVIEW_SCREENSHOT_DIR}/response-navigation-outline-tail.png` })
+    }
+})
+
+for (const [locale, action, success] of [
+    ['ja', '会話の先頭へ移動', '会話の先頭に移動しました'],
+    ['ru', 'Перейти к началу разговора', 'Достигнуто начало разговора'],
+] as const) {
+    test(`announces conversation navigation from a persistent live region (${locale})`, async ({ page }) => {
+        await page.addInitScript(lang => window.localStorage.setItem('hapi-lang', lang), locale)
+        await page.setViewportSize({ width: 1280, height: 800 })
+        await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartShort=1')
+        const status = page.getByTestId('history-navigation-status')
+        await expect(status).toHaveText('')
+        await expect(status).toHaveAttribute('aria-live', 'polite')
+        await status.evaluate(element => { element.setAttribute('data-probe-mounted', 'idle') })
+        await page.getByText('First short reply', { exact: true }).hover()
+        await page.getByRole('button', { name: action, exact: true }).click()
+        await expect(status).toHaveText(success)
+        await expect(status).toHaveAttribute('data-probe-mounted', 'idle')
+        if (process.env.HAPI_REVIEW_SCREENSHOT_DIR) {
+            await page.screenshot({ path: `${process.env.HAPI_REVIEW_SCREENSHOT_DIR}/response-navigation-${locale}.png` })
+        }
+    })
+}
