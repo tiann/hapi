@@ -38,8 +38,10 @@ GitHub Release body may contain only a **Full Changelog** compare link. That
 means the written notes are missing; it does not mean the release had no
 changes.
 
-1. Use the compare base linked from the GitHub Release when it is present,
-   otherwise use the previous release tag.
+1. Use the immediately preceding published release tag as the base. Treat the
+   GitHub Release compare link as supporting evidence: it can span more than
+   one published version. For example, v0.16.3 links back to v0.16.1, but its
+   own changes are the range `v0.16.2..v0.16.3`.
 2. Before tagging, review `git log --no-merges <previous-release-tag>..HEAD`
    and `git diff <previous-release-tag>..HEAD`. If preparing a different release
    commit, use its SHA in place of `HEAD`. For historical backfills, use the
@@ -101,7 +103,8 @@ Copy this prompt when preparing a new release entry:
 为 HAPI 版本 vX.Y.Z 编写 Settings > About 的中英文更新公告。
 
 主要依据：发布前查看 `git log --no-merges <上一个发行标签>..HEAD` 与实际代码差异；
-如目标不是 HEAD，则用预定发布提交的 SHA。补写历史公告时，终点使用已有的发行标签。
+如目标不是 HEAD，则用预定发布提交的 SHA。补写历史公告时，使用相邻的两个已发布版本
+标签。GitHub Release 的对比链接可能跨过中间版本，仅用于辅助核对。
 官方 GitHub Release 和 PR 仅作为辅助证据。维护者可能直接向 main 提交而没有
 PR；Release 正文只有 “Full Changelog” 时，表示缺少文案，不代表没有代码变更。
 不要仅凭 PR 标题或 Release 空白推断“无更新”。先按用户影响从重要到次要排序，
