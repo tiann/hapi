@@ -132,8 +132,10 @@ wins and cannot be edited from Settings. See
 
 The session rename dialog shows **Generate** whenever a Hub connection is
 available. Without a configured provider, selecting it shows setup instructions;
-manual rename still works. With a provider, each request sends recent visible
-conversation text (up to 200 messages, bounded in size). The API key stays on the Hub.
+manual rename still works. Configuring the provider also enables HAPI's automatic
+fallback for untitled sessions after an eligible turn; generation is not limited to
+clicking **Generate**. Both paths send recent visible conversation text (up to 200
+messages, bounded in size) to the configured provider. The API key stays on the Hub.
 
 Configure the connection through the environment, through the `titleProvider`
 object in `settings.json`, or a combination of both. Environment variables

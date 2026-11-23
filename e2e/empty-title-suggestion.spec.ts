@@ -23,3 +23,14 @@ test('empty sessions explain why title generation cannot run', async ({ page }) 
         await page.screenshot({ path: screenshotPath, fullPage: true })
     }
 })
+
+test('a failed save does not display the previous generation error details', async ({ page }) => {
+    await page.goto('/e2e-fixtures/rename-session-error-fixture.html?locale=en&saveFails=1')
+    await page.getByRole('button', { name: 'Generate' }).click()
+    await expect(page.getByRole('button', { name: 'Show original error' })).toBeVisible()
+    await page.getByRole('textbox').fill('Manual title')
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(page.getByText(/failed to rename|rename failed/i)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Show original error' })).toHaveCount(0)
+    if (process.env.HAPI_REVIEW_SCREENSHOT) await page.screenshot({ path: process.env.HAPI_REVIEW_SCREENSHOT })
+})

@@ -17,7 +17,9 @@ function App() {
                 isOpen={true}
                 onClose={() => undefined}
                 currentName="新会话"
-                onRename={async () => undefined}
+                onRename={async () => {
+                    if (new URL(location.href).searchParams.has('saveFails')) throw new Error('Fixture save failure')
+                }}
                 onSuggestTitle={async () => {
                     throw new ApiError(
                         'HTTP 422 Unprocessable Entity: {"error":"No conversation content","code":"empty"}',

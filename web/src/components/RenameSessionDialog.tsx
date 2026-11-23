@@ -226,6 +226,8 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
             return
         }
         setError(null)
+        setRawError(null)
+        setShowRawError(false)
         setIsSaving(true)
         const saveGeneration = generationRef.current
         try {

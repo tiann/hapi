@@ -262,10 +262,21 @@ function chatCompletionsUrl(baseUrl: string): string {
 }
 
 function extractProviderText(value: unknown): string | null {
-    if (!isObject(value) || !Array.isArray(value.choices)) return null
+    if (value === undefined) return null // physically empty response body
+    if (!isObject(value) || !Array.isArray(value.choices)) {
+        throw new TitleProviderRequestError('Title provider returned malformed JSON or choices', 'invalid-response')
+    }
+    if (!value.choices.length) return null
     const choice = value.choices[0]
-    if (!isObject(choice) || !isObject(choice.message)) return null
-    return extractChatText(choice.message.content)
+    if (!isObject(choice) || !isObject(choice.message)) {
+        throw new TitleProviderRequestError('Title provider returned an invalid message', 'invalid-response')
+    }
+    const content = choice.message.content
+    if (content === null) return null
+    if (typeof content !== 'string' && !Array.isArray(content)) {
+        throw new TitleProviderRequestError('Title provider returned invalid message content', 'invalid-response')
+    }
+    return extractChatText(content)
 }
 
 const TITLE_PROVIDER_HTTP_REASONS: Record<number, string> = {
@@ -302,12 +313,12 @@ async function readTitleProviderResponseBody(response: Response): Promise<unknow
         if (isAbortError(error)) throw error
         throw new TitleProviderRequestError('Title provider connection failed', 'connection-failed')
     }
-    if (!text.trim()) return null
+    if (!text.trim()) return undefined
 
     try {
         return JSON.parse(text) as unknown
     } catch {
-        return text
+        throw new TitleProviderRequestError('Title provider returned malformed JSON', 'invalid-response')
     }
 }
 

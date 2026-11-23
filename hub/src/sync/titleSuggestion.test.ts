@@ -297,6 +297,18 @@ describe('OpenAI-compatible title provider', () => {
         expect(await request?.json()).toMatchObject({ max_tokens: 4096 })
     })
 
+    it.each([
+        ['not JSON', 'invalid-response'],
+        ['{"choices":[{}]}', 'invalid-response'],
+        ['{"choices":[{"message":{"content":17}}]}', 'invalid-response'],
+        ['{"choices":[{"message":{"content":"  "}}]}', 'empty-response'],
+        ['', 'empty-response'],
+    ])('distinguishes invalid from empty title replies: %s', async (body, reason) => {
+        const provider = new OpenAICompatibleTitleProvider({ baseUrl: 'https://example.test/v1',
+            apiKey: 'fixture', model: 'small-model' }, async () => new Response(body))
+        await expect(provider.suggest('Recent conversation')).rejects.toMatchObject({ reason })
+    })
+
     it('aborts the request when the configured timeout elapses', async () => {
         const provider = new OpenAICompatibleTitleProvider(
             {
