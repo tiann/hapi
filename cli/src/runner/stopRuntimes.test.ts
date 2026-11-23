@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ windows: vi.fn(() => true), snapshot: vi.fn(), alive: vi.fn((_pid: number) => false), marker: vi.fn(() => null) }));
+const mocks = vi.hoisted(() => ({ windows: vi.fn(() => true), snapshot: vi.fn(), alive: vi.fn((_pid: number) => false), marker: vi.fn<() => string | null>(() => null) }));
 vi.mock('@/utils/process', () => ({ isWindows: mocks.windows, isProcessAlive: mocks.alive, getProcessStartMarker: mocks.marker }));
 vi.mock('@/utils/windowsProcessStop', () => ({ readWindowsProcessTable: mocks.snapshot }));
 import { type CodexRuntimeRecord } from '@/codex/shared/registry';
@@ -31,6 +31,17 @@ describe('stop runtime candidates', () => {
         mocks.snapshot.mockResolvedValueOnce(new Map());
         expect(await readStopRuntimeCandidates([owner, other], 'target', knownLive)).toEqual([owner]);
         expect(mocks.snapshot).toHaveBeenLastCalledWith(10_000, [43]);
+    });
+    it('reuses proven POSIX generations across registry reads', async () => {
+        mocks.windows.mockReturnValue(false);
+        mocks.alive.mockReturnValue(true);
+        const owner = { ...records[0], marker: 'posix-marker' };
+        mocks.marker.mockImplementation(() => owner.marker);
+        const knownLive = new Set<string>();
+        expect(await readStopRuntimeCandidates([owner], 'target', knownLive)).toEqual([owner]);
+        expect(await readStopRuntimeCandidates([owner], 'target', knownLive)).toEqual([owner]);
+        expect(mocks.alive).toHaveBeenCalledTimes(1);
+        expect(mocks.marker).toHaveBeenCalledTimes(1);
     });
     it('filters proven retired generations using one complete snapshot', async () => {
         mocks.snapshot.mockResolvedValue(new Map([[42, { parentPid: 0, marker: 'replacement', name: 'codex', commandLine: 'codex' }]]));

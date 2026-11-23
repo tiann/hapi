@@ -165,6 +165,32 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
         await expect(stopSession('target')).resolves.toBe('unknown')
     })
 
+    it.each(['ESRCH', 'EPERM'])('rechecks a changed raw binding without signalling a replacement (%s)', async code => {
+        const pid = code === 'ESRCH' ? 45454 : 45455;
+        mocks.threadGroupId.mockReturnValueOnce(pid);
+        record.sessions = {};
+        const scan = Promise.withResolvers<CodexRuntimeRecord[]>();
+        const scanStarted = Promise.withResolvers<void>();
+        // First registry probe is for the logical root; the second follows
+        // capturePidBinding in the raw PID path.
+        mocks.readRuntimes.mockResolvedValueOnce([]).mockImplementationOnce(() => {
+            scanStarted.resolve();
+            return scan.promise;
+        });
+        const stop = stopSession(`PID-${pid}`);
+        await scanStarted.promise;
+        reportSession(`replacement-${code}`, { hostPid: pid, startedBy: 'terminal' } as Parameters<typeof reportSession>[1]);
+        const killProbe = vi.spyOn(process, 'kill').mockImplementation(() => { throw Object.assign(new Error(code), { code }); });
+        try {
+            scan.resolve([]);
+            await expect(stop).resolves.toBe(code === 'ESRCH' ? 'already_gone' : 'unknown');
+            expect(killProbe).toHaveBeenCalledWith(pid, 0);
+            expect(mocks.kill).not.toHaveBeenCalled();
+        } finally {
+            killProbe.mockRestore();
+        }
+    })
+
     it('keeps raw PID confirmation fail-closed without a start marker', async () => {
         await expect(stopSession('PID-42')).resolves.toBe('unknown')
         expect(mocks.kill).not.toHaveBeenCalled()

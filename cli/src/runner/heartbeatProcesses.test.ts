@@ -62,6 +62,14 @@ describe('heartbeat process observations', () => {
         expect(mocks.snapshot).not.toHaveBeenCalled();
     });
 
+    it('does not read a POSIX start marker for a live unpersisted process', async () => {
+        mocks.windows.mockReturnValue(false);
+        const states = await observeHeartbeatProcesses([42, 43], new Set([43]));
+        expect(states.get(42)).toEqual({ alive: true, startMarker: null });
+        expect(states.get(43)).toEqual({ alive: true, startMarker: 'generation' });
+        expect(mocks.marker).toHaveBeenCalledExactlyOnceWith(43);
+    });
+
     it('retains POSIX liveness and generation observations', async () => {
         mocks.windows.mockReturnValue(false);
         mocks.alive.mockImplementation(pid => pid === 42);

@@ -1448,6 +1448,21 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         return wrapperHasActiveSiblingRoots(live, sessionId, pid);
       };
 
+      // A changed binding is never authority to signal a replacement. It can
+      // nevertheless be positive stop evidence when a fresh OS probe proves absence.
+      const changedBindingResult = async (pid: number): Promise<'already_gone' | 'unknown'> => {
+        if (isWindows()) {
+          const snapshot = await readWindowsProcessTable(5_000, [pid]);
+          return snapshot && !snapshot.has(pid) ? 'already_gone' : 'unknown';
+        }
+        try {
+          process.kill(pid, 0);
+          return 'unknown';
+        } catch (error) {
+          return (error as NodeJS.ErrnoException).code === 'ESRCH' ? 'already_gone' : 'unknown';
+        }
+      };
+
       // KillSession pid fallback must verify the start marker BEFORE any tracked
       // PID match can tree-kill a reused OS pid.
       if (sessionId.startsWith('PID-')) {
@@ -1457,7 +1472,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           const canSignal = capturePidSignalGuard(pid, sessionId);
           const liveForPid = await liveRegistryRuntimes();
           if (liveForPid === null) return 'still_alive';
-          if (!bindingUnchanged()) return 'unknown';
+          if (!bindingUnchanged()) return await changedBindingResult(pid);
           const decision = decideRawPidStop({
             alive: isProcessAlive(pid),
             expectedMarker: opts?.processStartMarker,
@@ -1488,6 +1503,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             && !await prepareSessionStop(logicalId, pid, opts?.processStartMarker)) return 'still_alive';
           // Preparation can outlive the target generation. Recheck after that
           // await before signalling a raw PID that the OS may have reused.
+          if (!bindingUnchanged()) return await changedBindingResult(pid);
           if (!isProcessAlive(pid)) return await finishWithOrphanSweep('already_gone');
           if (getProcessStartMarker(pid) !== opts?.processStartMarker) return 'unknown';
           if (!(await killProcessTreeByPid(pid, false, undefined,
@@ -1560,7 +1576,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             return await finishKeepWrapperDetach(pid);
           }
 
-          if (!bindingUnchanged()) return await finishWithOrphanSweep('unknown');
+          if (!bindingUnchanged()) return await finishWithOrphanSweep(await changedBindingResult(pid));
 
           let treeTerminationVerified = false;
           if (session.startedBy === 'runner') {
@@ -1688,7 +1704,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           }
           const liveForPid = await liveRegistryRuntimes();
           if (liveForPid === null) return 'still_alive';
-          if (!bindingUnchanged()) return await finishWithOrphanSweep('unknown');
+          if (!bindingUnchanged()) return await finishWithOrphanSweep(await changedBindingResult(pid));
           if (wrapperHasActiveSiblingRoots(liveForPid, sessionId, pid)) {
             // Keep this shared wrapper; siblings alone are not stop proof for
             // this root — require an inactive registry binding (KillSession ack).
@@ -1706,7 +1722,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (!await prepareSessionStop(sessionId, pid, persisted.processStartMarker)) return 'still_alive';
           // Preparation can outlive the target generation; both the OS
           // generation and the captured HAPI binding must still match.
-          if (!bindingUnchanged()) return await finishWithOrphanSweep('unknown');
+          if (!bindingUnchanged()) return await finishWithOrphanSweep(await changedBindingResult(pid));
           if (!isProcessAlive(pid)) return await finishWithOrphanSweep('already_gone');
           if (persisted.processStartMarker && getProcessStartMarker(pid) !== persisted.processStartMarker) return 'unknown';
           const termination = await terminateCapturedBinding(
@@ -2077,7 +2093,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       }));
       let observations: Map<number, HeartbeatProcessState> | undefined;
       try {
-        observations = await observeHeartbeatProcesses(candidates.map(candidate => candidate.pid));
+        observations = await observeHeartbeatProcesses(
+          candidates.map(candidate => candidate.pid),
+          new Set(candidates.filter(candidate => candidate.persisted).map(candidate => candidate.pid)),
+        );
       } catch (error) {
         // Unknown state is not proof of exit. Keep all bindings and continue
         // publishing heartbeat/version state; a later tick retries the scan.

@@ -4,7 +4,10 @@ import { readWindowsProcessTable } from '@/utils/windowsProcessStop';
 export type HeartbeatProcessState = { alive: boolean; startMarker: string | null };
 
 /** Observe the PIDs present at the start of one heartbeat. */
-export async function observeHeartbeatProcesses(pids: Iterable<number>): Promise<Map<number, HeartbeatProcessState>> {
+export async function observeHeartbeatProcesses(
+    pids: Iterable<number>,
+    verifyGeneration?: ReadonlySet<number>,
+): Promise<Map<number, HeartbeatProcessState>> {
     const states = new Map<number, HeartbeatProcessState>();
     const candidates = new Set(pids);
     if (candidates.size === 0) return states;
@@ -22,7 +25,8 @@ export async function observeHeartbeatProcesses(pids: Iterable<number>): Promise
     for (const pid of candidates) {
         await new Promise<void>(resolve => setImmediate(resolve));
         const alive = isProcessAlive(pid);
-        states.set(pid, { alive, startMarker: alive ? getProcessStartMarker(pid) : null });
+        const needsMarker = verifyGeneration === undefined || verifyGeneration.has(pid);
+        states.set(pid, { alive, startMarker: alive && needsMarker ? getProcessStartMarker(pid) : null });
     }
     return states;
 }

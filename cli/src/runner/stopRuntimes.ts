@@ -1,5 +1,5 @@
 import { type CodexRuntimeRecord, runtimeMayBeAlive } from '@/codex/shared/registry';
-import { isWindows } from '@/utils/process';
+import { getProcessStartMarker, isProcessAlive, isWindows } from '@/utils/process';
 import { readWindowsProcessTable } from '@/utils/windowsProcessStop';
 import { logger } from '@/ui/logger';
 
@@ -13,25 +13,33 @@ export async function readStopRuntimeCandidates(
     sessionId: string,
     knownLive: Set<string> = new Set(),
 ): Promise<CodexRuntimeRecord[]> {
-    if (!isWindows()) return records.filter(runtime => runtimeMayBeAlive(runtime));
     const unchecked = records.filter(record => !knownLive.has(generationKey(record)));
     if (!unchecked.length) return records;
     const pids = [...new Set(unchecked.flatMap(record => [record.pid, ...(record.serverPid ? [record.serverPid] : [])]))];
-    const table = await readWindowsProcessTable(10_000, pids);
-    if (!table) {
+    const windows = isWindows();
+    const table = windows ? await readWindowsProcessTable(10_000, pids) : null;
+    if (windows && !table) {
         logger.warn(`[RUNNER RUN] Cannot verify Windows runtimes during stop of ${sessionId}: empty process snapshot`);
         // Unknown liveness preserves sibling protection but is never cached.
         return records;
     }
+    const markers = new Map<number, string | null>();
+    if (table) {
+        for (const [pid, entry] of table) markers.set(pid, entry.marker);
+    } else {
+        for (const pid of pids) {
+            if (isProcessAlive(pid)) markers.set(pid, getProcessStartMarker(pid));
+        }
+    }
     return records.filter(record => {
         const key = generationKey(record);
         if (knownLive.has(key)) return true;
-        if ((record.marker && table.get(record.pid)?.marker === record.marker)
+        if ((record.marker && markers.get(record.pid) === record.marker)
             || (record.kind !== 'attached' && record.serverPid && record.serverMarker
-                && table.get(record.serverPid)?.marker === record.serverMarker)) {
+                && markers.get(record.serverPid) === record.serverMarker)) {
             knownLive.add(key);
             return true;
         }
-        return runtimeMayBeAlive(record, table);
+        return runtimeMayBeAlive(record, markers);
     });
 }
