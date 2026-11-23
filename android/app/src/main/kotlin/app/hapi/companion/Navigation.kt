@@ -1155,7 +1155,11 @@ internal fun HandleActiveHubNavigation(navController: NavHostController, activeH
                 // The pending share lives in the inbox. Keep its picker open, but
                 // don't let Cancel or Back reveal a session from the old Hub.
                 val requestId = currentEntry?.arguments?.getString("requestId") ?: return@LaunchedEffect
-                navController.navigate(Routes.share(requestId)) { popUpTo(Routes.HOME) }
+                if (!navController.popBackStack(Routes.HOME, inclusive = false)) {
+                    // A notification can open chat directly over pairing, without Home.
+                    navController.navigateClearingBackStack(Routes.HOME)
+                }
+                navController.navigate(Routes.share(requestId))
             }
         }
     }

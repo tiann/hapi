@@ -69,6 +69,28 @@ class HubNavigationRestorationTest {
         compose.runOnIdle { assertNull(navController.previousBackStackEntry) }
     }
 
+    @Test fun cancellingShareAfterSwitchingHubCreatesHomeWhenItWasNotOnTheStack() = withNavigation {
+        compose.runOnIdle {
+            // A bind link clears the stack to Pairing; a notification can open
+            // a chat directly while the previously paired Hub is still active.
+            navController.navigate(Routes.PAIRING) { popUpTo(0) { inclusive = true } }
+            navController.navigate(Routes.chat(SESSION)) {
+                popUpTo(Routes.HOME)
+                launchSingleTop = true
+            }
+            assertEquals(Routes.PAIRING_LANDING, navController.previousBackStackEntry?.destination?.route)
+        }
+        assertDestination(Routes.CHAT, SESSION)
+        openSharePicker()
+
+        compose.runOnIdle { activeHubUrl.value = HUB_B }
+
+        assertSharePicker()
+        compose.runOnIdle { navController.popBackStack() }
+        assertDestination(Routes.HOME)
+        compose.runOnIdle { assertNull(navController.previousBackStackEntry) }
+    }
+
     @Test fun sameHubRecreationRetainsTheChatUnderTheSharePicker() = withNavigation { scenario ->
         openChat()
         openSharePicker()
