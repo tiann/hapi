@@ -110,13 +110,13 @@ describe('session dialog title alignment', () => {
         await waitFor(() => expect(screen.getByText(
             'This session has no conversation content yet. Send a message before generating a title.'
         )).toBeInTheDocument())
-        const rawErrorToggle = screen.getByRole('button', { name: 'Show original error' })
-        expect(rawErrorToggle).toHaveClass('inline-flex', 'whitespace-nowrap')
-        expect(rawErrorToggle.parentElement).toHaveClass('leading-5')
-        expect(rawErrorToggle).toHaveAttribute('aria-expanded', 'false')
-        fireEvent.click(rawErrorToggle)
-        expect(screen.getByRole('button', { name: 'Hide original error' })).toHaveAttribute('aria-expanded', 'true')
-        expect(screen.getByTestId('title-suggestion-raw-error')).toHaveTextContent('HTTP 422')
+        const detailsToggle = screen.getByRole('button', { name: 'Show error details' })
+        expect(detailsToggle).toHaveClass('inline-flex', 'whitespace-nowrap')
+        expect(detailsToggle.parentElement).toHaveClass('leading-5')
+        expect(detailsToggle).toHaveAttribute('aria-expanded', 'false')
+        fireEvent.click(detailsToggle)
+        expect(screen.getByRole('button', { name: 'Hide error details' })).toHaveAttribute('aria-expanded', 'true')
+        expect(screen.getByTestId('title-suggestion-diagnostics')).toHaveTextContent('HTTP 422')
     })
 
     it('uses the generic error for a provider failure with HTTP 503', async () => {

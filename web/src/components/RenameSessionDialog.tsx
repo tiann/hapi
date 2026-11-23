@@ -24,15 +24,6 @@ type RenameSessionDialogProps = {
     isPending: boolean
 }
 
-function redactRawError(message: string): string {
-    return message
-        .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
-        .replace(/\b((?:sk|rk|pk)-)[A-Za-z0-9_-]+/g, '$1[redacted]')
-        .replace(/([?&](?:api[-_ ]?key|token|secret|password)=)[^&\s]+/gi, '$1[redacted]')
-        .replace(/\b((?:api[-_ ]?key|token|secret|password)(?:\s+provided)?)\b\s*[:=]\s*["']?[^,\s}"']+/gi, '$1: [credential redacted]')
-        .trim()
-}
-
 type TitleSuggestionProviderReason =
     | 'request-rejected'
     | 'authentication-failed'
@@ -45,55 +36,41 @@ type TitleSuggestionProviderReason =
     | 'empty-response'
     | 'invalid-response'
 
-type TitleSuggestionErrorDetail = {
-    message: string
+type TitleSuggestionErrorCode = 'unavailable' | 'empty' | 'rate-limited' | 'provider'
+type TitleSuggestionDiagnostics = {
+    httpStatus: number
+    code?: TitleSuggestionErrorCode
     reason?: TitleSuggestionProviderReason
     providerStatus?: number
 }
 
-function isTitleSuggestionProviderReason(value: unknown): value is TitleSuggestionProviderReason {
-    return typeof value === 'string' && [
-        'request-rejected',
-        'authentication-failed',
-        'access-denied',
-        'endpoint-or-model-not-found',
-        'request-timed-out',
-        'rate-limited',
-        'provider-service-unavailable',
-        'connection-failed',
-        'empty-response',
-        'invalid-response'
-    ].includes(value)
+function isHttpStatus(value: unknown): value is number {
+    return typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599
 }
 
-function extractTitleSuggestionErrorDetail(error: ApiError): TitleSuggestionErrorDetail | null {
-    if (!error.body) return null
+function getTitleSuggestionDiagnostics(error: unknown): TitleSuggestionDiagnostics | null {
+    if (!(error instanceof ApiError) || !isHttpStatus(error.status)) return null
+    const diagnostics: TitleSuggestionDiagnostics = { httpStatus: error.status }
+    const code = error.code
+    if (code === 'unavailable' || code === 'empty' || code === 'rate-limited' || code === 'provider') {
+        diagnostics.code = code
+    }
+    if (code !== 'provider' || !error.body) return diagnostics
 
-    let parsed: unknown
+    // ApiError.message embeds the response body. Never render it or arbitrary
+    // JSON fields: a reverse proxy can return its own HTML or diagnostic text.
     try {
-        parsed = JSON.parse(error.body) as unknown
+        const body: unknown = JSON.parse(error.body)
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return diagnostics
+        const { code: bodyCode, reason, providerStatus } = body as Record<string, unknown>
+        if (bodyCode === 'provider' && typeof reason === 'string' && Object.hasOwn(titleSuggestionProviderReasonKeys, reason)) {
+            diagnostics.reason = reason as TitleSuggestionProviderReason
+            if (isHttpStatus(providerStatus)) diagnostics.providerStatus = providerStatus
+        }
     } catch {
-        return null
+        // Unrecognized bodies have no additional diagnostics.
     }
-
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-    const value = parsed as { error?: unknown; reason?: unknown; providerStatus?: unknown }
-    const message = value.error
-    if (typeof message !== 'string') return null
-
-    const detail = message
-        .replace(/\s+/g, ' ')
-        .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
-        .replace(/([?&](?:api[-_ ]?key|token|secret|password)=)[^&\s]+/gi, '$1[redacted]')
-        .replace(/\b((?:api[-_ ]?key|token|secret|password)(?:\s+provided)?)\b\s*[:=]\s*["']?[^,\s}"']+/gi, '$1: [credential redacted]')
-        .trim()
-
-    if (!detail) return null
-    return {
-        message: detail.length > 240 ? `${detail.slice(0, 239)}…` : detail,
-        ...(isTitleSuggestionProviderReason(value.reason) ? { reason: value.reason } : {}),
-        ...(typeof value.providerStatus === 'number' ? { providerStatus: value.providerStatus } : {})
-    }
+    return diagnostics
 }
 
 const titleSuggestionProviderReasonKeys: Record<TitleSuggestionProviderReason, string> = {
@@ -110,11 +87,9 @@ const titleSuggestionProviderReasonKeys: Record<TitleSuggestionProviderReason, s
 }
 
 function formatTitleSuggestionErrorDetail(
-    detail: TitleSuggestionErrorDetail,
+    detail: { reason: TitleSuggestionProviderReason; providerStatus?: number },
     t: (key: string, params?: Record<string, string | number>) => string
 ): string {
-    if (!detail.reason) return detail.message
-
     const reason = t(titleSuggestionProviderReasonKeys[detail.reason])
     if (detail.providerStatus !== undefined) {
         return t('dialog.rename.generateProviderErrorWithStatus', {
@@ -135,8 +110,8 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
     const [draftEdited, setDraftEdited] = useState(false)
     const [isGenerating, setIsGenerating] = useState(false)
     const [isSaving, setIsSaving] = useState(false)
-    const [rawError, setRawError] = useState<string | null>(null)
-    const [showRawError, setShowRawError] = useState(false)
+    const [diagnostics, setDiagnostics] = useState<TitleSuggestionDiagnostics | null>(null)
+    const [showDiagnostics, setShowDiagnostics] = useState(false)
     const inputRef = useRef<HTMLInputElement>(null)
     const generationRef = useRef(0)
     const busy = isPending || isGenerating || isSaving
@@ -149,7 +124,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
     const handleClose = () => {
         generationRef.current += 1
         setIsGenerating(false)
-        setShowRawError(false)
+        setShowDiagnostics(false)
         onClose()
     }
 
@@ -169,8 +144,8 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
             setName(currentName)
             setTitleLocked(currentTitleLocked)
             setError(null)
-            setRawError(null)
-            setShowRawError(false)
+            setDiagnostics(null)
+            setShowDiagnostics(false)
             setDraftSource('manual')
             setDraftEdited(false)
             setIsGenerating(false)
@@ -182,8 +157,8 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
 
         const generation = ++generationRef.current
         setError(null)
-        setRawError(null)
-        setShowRawError(false)
+        setDiagnostics(null)
+        setShowDiagnostics(false)
         setIsGenerating(true)
         try {
             const suggested = (await onSuggestTitle()).trim()
@@ -193,20 +168,16 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
             setDraftSource('generated')
         } catch (error) {
             if (generation === generationRef.current) {
-                if (error instanceof ApiError) {
-                    setRawError(redactRawError(error.message))
-                }
-                if (error instanceof ApiError && (error.code === 'empty' || error.status === 422)) {
+                const detail = getTitleSuggestionDiagnostics(error)
+                setDiagnostics(detail)
+                if (detail?.code === 'empty' || detail?.httpStatus === 422) {
                     setError(t('dialog.rename.generateEmpty'))
-                } else if (error instanceof ApiError && error.code === 'unavailable') {
+                } else if (detail?.code === 'unavailable') {
                     setError(t('dialog.rename.generateUnavailable'))
                 } else {
-                    const detail = error instanceof ApiError
-                        ? extractTitleSuggestionErrorDetail(error)
-                        : null
                     setError(detail?.reason
                         ? t('dialog.rename.generateErrorWithReason', {
-                            reason: formatTitleSuggestionErrorDetail(detail, t)
+                            reason: formatTitleSuggestionErrorDetail({ reason: detail.reason, providerStatus: detail.providerStatus }, t)
                         })
                         : t('dialog.rename.generateError'))
                 }
@@ -229,8 +200,8 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
             return
         }
         setError(null)
-        setRawError(null)
-        setShowRawError(false)
+        setDiagnostics(null)
+        setShowDiagnostics(false)
         setIsSaving(true)
         const saveGeneration = generationRef.current
         try {
@@ -324,29 +295,34 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
                         <div className="rounded-md bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-400">
                             <div className="leading-5">
                                 <span>{error}</span>
-                                {rawError ? (
+                                {diagnostics ? (
                                     <>
                                         {' '}
                                         <button
                                             type="button"
-                                            aria-controls="title-suggestion-raw-error"
-                                            aria-expanded={showRawError}
+                                            aria-controls="title-suggestion-diagnostics"
+                                            aria-expanded={showDiagnostics}
                                             className="inline-flex whitespace-nowrap align-baseline underline underline-offset-2"
-                                            onClick={() => setShowRawError((visible) => !visible)}
+                                            onClick={() => setShowDiagnostics((visible) => !visible)}
                                         >
-                                            {showRawError
-                                                ? t('dialog.rename.hideRawError')
-                                                : t('dialog.rename.showRawError')}
+                                            {showDiagnostics
+                                                ? t('dialog.rename.hideDiagnostics')
+                                                : t('dialog.rename.showDiagnostics')}
                                         </button>
                                     </>
                                 ) : null}
-                                {showRawError ? (
+                                {showDiagnostics && diagnostics ? (
                                     <pre
-                                        id="title-suggestion-raw-error"
-                                        data-testid="title-suggestion-raw-error"
+                                        id="title-suggestion-diagnostics"
+                                        data-testid="title-suggestion-diagnostics"
                                         className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded bg-black/10 p-2 font-mono text-xs"
                                     >
-                                        {rawError}
+                                        {[
+                                            `HTTP ${diagnostics.httpStatus}`,
+                                            diagnostics.code && t('dialog.rename.diagnosticCode', { code: diagnostics.code }),
+                                            diagnostics.providerStatus !== undefined && t('dialog.rename.diagnosticProviderStatus', { status: diagnostics.providerStatus }),
+                                            diagnostics.reason && t('dialog.rename.diagnosticReason', { reason: diagnostics.reason })
+                                        ].filter(Boolean).join('\n')}
                                     </pre>
                                 ) : null}
                             </div>

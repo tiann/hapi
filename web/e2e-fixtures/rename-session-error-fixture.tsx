@@ -1,7 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import '../src/index.css'
-import { ApiError } from '../src/api/client'
+import { ApiClient, ApiError } from '../src/api/client'
 import { RenameSessionDialog } from '../src/components/RenameSessionDialog'
 import { I18nProvider } from '../src/lib/i18n-context'
 
@@ -28,6 +28,9 @@ function App() {
                     if (new URL(location.href).searchParams.has('saveFails')) throw new Error('Fixture save failure')
                 }}
                 onSuggestTitle={async () => {
+                    if (new URL(location.href).searchParams.has('apiResponse')) {
+                        return (await new ApiClient('').suggestSessionTitle('fixture-title')).title
+                    }
                     if (conflict) {
                         setManualName('Manual title from another tab')
                         return 'Generated draft'
