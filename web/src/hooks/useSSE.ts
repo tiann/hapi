@@ -517,7 +517,21 @@ export function useSSE(options: {
                 // dismissal can omit an overflow request the other stream's
                 // dismissal already surfaced, even though the requests
                 // themselves (and so `agentStateVersion`) never changed.
-                const keepExistingRefs = existing !== undefined && (keepExistingPending || keepExistingNotify)
+                // `pendingRequestRefs`' CONTENT describes the same request
+                // set `pendingRequestsCount`/`pendingRequestKinds` do, which
+                // move on `agentStateVersion` — gating refs on EITHER
+                // staleness signal alone (#1717 bot review) kept EXISTING's
+                // refs even when incoming's `agentStateVersion` was
+                // strictly newer, describing a request the fresher
+                // agentState had already replaced while the rest of the
+                // bundle above correctly took the new one. `agentStateVersion`
+                // not having gone backwards is the precondition; staleness
+                // in either signal is only a reason to prefer existing's
+                // refs once that precondition holds.
+                const existingAgentStateNotOlder = (existing?.agentStateVersion ?? 0) >= (session.agentStateVersion ?? 0)
+                const keepExistingRefs = existing !== undefined
+                    && existingAgentStateNotOlder
+                    && (keepExistingPending || keepExistingNotify)
                 // Same gap as `reconcileDelayedListSession`'s Major (#1717
                 // cold-review round 26): a full-session snapshot captured
                 // while the agent was still thinking can arrive on one
@@ -529,9 +543,17 @@ export function useSSE(options: {
                 // is the CLI's own clamped alive-report time, and two
                 // transitions landing in the same clamped-to-"now"
                 // millisecond can carry an identical value.
+                //
+                // `thinkingRevision` lives only in the hub's in-memory
+                // cache (#1717 bot review) — a restart resets it to 0, but
+                // this tab keeps whatever higher value it cached from the
+                // previous process. A reported 0 can never actually be
+                // stale, so it must win outright rather than lose here.
                 const existingThinkingRevision = existing?.thinkingRevision ?? 0
+                const incomingThinkingRevision = session.thinkingRevision ?? 0
                 const keepExistingThinking = existing !== undefined
-                    && existingThinkingRevision > (session.thinkingRevision ?? 0)
+                    && incomingThinkingRevision !== 0
+                    && existingThinkingRevision > incomingThinkingRevision
                 const summary = {
                     ...toSessionSummary(session),
                     ...(keepExistingThinking && existing !== undefined
@@ -611,7 +633,15 @@ export function useSSE(options: {
                 // below, an absent `thinkingRevision` (older hub) takes the
                 // patch unconditionally — today's behaviour, preserved for
                 // backward compatibility.
+                //
+                // `thinkingRevision` lives only in the hub's in-memory
+                // cache (#1717 bot review) — a restart resets it to 0, but
+                // this tab keeps whatever higher value it cached from the
+                // previous process. A reported 0 can never actually be
+                // stale, so it is excluded from the "older" check below
+                // exactly like the absent case already is.
                 const keepCurrentThinking = patch.thinkingRevision !== undefined
+                    && patch.thinkingRevision !== 0
                     && patch.thinkingRevision < (current.thinkingRevision ?? 0)
                 const nextSummary: SessionSummary = {
                     ...current,

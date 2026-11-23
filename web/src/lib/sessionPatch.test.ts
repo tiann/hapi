@@ -112,6 +112,32 @@ describe('reconcileDelayedListSession', () => {
         expect(result.pendingRequestsCount).toBe(0)
     })
 
+    it('keeps pendingRequestRefs in sync with the newer agentState rather than pinned to a stale notify revision (#1717)', () => {
+        // The sibling test above asserts the aggregate fields track the
+        // newer `agentStateVersion` but never checked `pendingRequestRefs`
+        // itself — which is exactly where this broke: `keepPriorRefs` OR'd
+        // the two staleness signals together, so an older notify revision
+        // alone kept PRIOR's refs (describing an already-answered request)
+        // even though `agentStateVersion` said the request set had moved
+        // on. The classifier reads `pendingRequestRefs` FIRST when present,
+        // so the chip described and offered to dismiss the wrong, already-
+        // resolved request.
+        const prior = makeSummary({
+            id: 'session-1',
+            agentStateVersion: 5,
+            notifyUpdatedAt: 20,
+            pendingRequestRefs: [{ id: 'answered-request', kind: 'permission', since: 1 }]
+        })
+        const incoming = makeSummary({
+            id: 'session-1',
+            agentStateVersion: 6,
+            notifyUpdatedAt: 10,
+            pendingRequestRefs: [{ id: 'new-request', kind: 'permission', since: 2 }]
+        })
+        const result = reconcileDelayedListSession(prior, incoming)
+        expect(result.pendingRequestRefs).toEqual(incoming.pendingRequestRefs)
+    })
+
     it('keeps a newer thinking=false when a delayed list response still shows thinking=true (cold-review round 26)', () => {
         // If GET /sessions captures a blocked footer while the agent is
         // still thinking, the turn can end and deliver thinking=false over
@@ -127,6 +153,22 @@ describe('reconcileDelayedListSession', () => {
         expect(result.thinking).toBe(false)
         expect(result.thinkingConfirmed).toBe(true)
         expect(result.thinkingRevision).toBe(2)
+    })
+
+    it('trusts a reported thinkingRevision of 0 even when the cached one is higher (#1717)', () => {
+        // `thinkingRevision` lives only in the hub's in-memory cache — a
+        // restart resets every session's counter to 0, but this tab's
+        // cached summary keeps whatever higher value it saw from the
+        // previous process. A reported 0 must win outright, or the
+        // restarted hub's genuinely current `thinking: false` (and the
+        // blocker it would otherwise reveal) stays hidden behind a stale
+        // cached `thinking: true` forever.
+        const prior = makeSummary({ id: 'session-1', thinking: true, thinkingConfirmed: true, thinkingRevision: 47 })
+        const postRestart = makeSummary({ id: 'session-1', thinking: false, thinkingConfirmed: true, thinkingRevision: 0 })
+
+        const result = reconcileDelayedListSession(prior, postRestart)
+        expect(result.thinking).toBe(false)
+        expect(result.thinkingRevision).toBe(0)
     })
 
     it('still takes the incoming thinking state when it is genuinely newer', () => {

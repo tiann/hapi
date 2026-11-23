@@ -479,6 +479,21 @@ describe('applySessionDetailPatch (PR #897 review, Copilot keep-alive)', () => {
             thinkingRevision: 3
         })).toBeNull()
     })
+
+    it('applies a reported thinkingRevision of 0 even when the cached one is higher (#1717)', () => {
+        // `thinkingRevision` lives only in the hub's in-memory cache — a
+        // restart resets every session's counter to 0, but this cached
+        // Session keeps whatever higher value it saw from the previous
+        // process. A reported 0 must win outright, or a genuinely current
+        // post-restart `thinking: false` stays hidden behind the stale one.
+        const thinkingSession = { ...session, thinking: true, thinkingRevision: 47 } as unknown as Session
+        const next = applySessionDetailPatch(thinkingSession, {
+            thinking: false,
+            thinkingRevision: 0
+        })
+        expect(next?.thinking).toBe(false)
+        expect(next?.thinkingRevision).toBe(0)
+    })
 })
 
 describe('useSSE user-activity ordering', () => {
@@ -615,6 +630,41 @@ describe('useSSE user-activity ordering', () => {
         unmount()
     })
 
+    it('keeps pendingRequestRefs in sync with a newer agentState rather than pinned to a stale notify revision (#1717)', () => {
+        // `pendingRequestRefs`' CONTENT describes the same request set
+        // `pendingRequestsCount`/`pendingRequestKinds` do, which move on
+        // `agentStateVersion` — gating refs on EITHER staleness signal
+        // alone (#1717 bot review) kept EXISTING's refs even when
+        // incoming's `agentStateVersion` was strictly newer, describing a
+        // request the fresher agentState had already replaced.
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
+            id: 'session-1',
+            agentStateVersion: 5,
+            notifyUpdatedAt: 20,
+            pendingRequestRefs: [{ id: 'answered-request', kind: 'permission', since: 1 }]
+        })] })
+
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: {
+                ...makeSummary(), id: 'session-1', namespace: 'default', seq: 1,
+                createdAt: 1, thinkingAt: 0,
+                // `pendingRequestRefs` is never carried on the wire for a
+                // full snapshot — `toSessionSummary` always recomputes it
+                // from `agentState`, so the fixture has to describe the
+                // underlying request, not the derived ref list.
+                agentState: { requests: { 'new-request': { tool: 'Bash', arguments: {}, createdAt: 2 } } },
+                agentStateVersion: 6, notifyUpdatedAt: 10
+            }
+        }))
+
+        const data2 = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        const refs2 = data2?.sessions[0]?.pendingRequestRefs ?? []
+        expect(refs2.map((r) => r.id)).toEqual(['new-request'])
+        unmount()
+    })
+
     it('keeps a newer thinking=false when a delayed full-session SSE snapshot still shows thinking=true (cold-review round 26)', () => {
         // Same gap as `reconcileDelayedListSession`'s Major, in this OTHER
         // path that populates the list: a full-session snapshot can arrive
@@ -630,7 +680,7 @@ describe('useSSE user-activity ordering', () => {
             type: 'session-updated', sessionId: 'session-1',
             data: {
                 ...makeSummary(), id: 'session-1', namespace: 'default', seq: 1,
-                createdAt: 1, agentState: null,
+                createdAt: 1, agentState: null, thinkingAt: 0,
                 thinking: true, thinkingConfirmed: false, thinkingRevision: 1
             }
         }))
@@ -638,6 +688,32 @@ describe('useSSE user-activity ordering', () => {
         const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
         expect(data?.sessions[0]?.thinking).toBe(false)
         expect(data?.sessions[0]?.thinkingRevision).toBe(2)
+        unmount()
+    })
+
+    it('applies a reported thinkingRevision of 0 in a full-session snapshot even when the cached one is higher (#1717)', () => {
+        // `thinkingRevision` lives only in the hub's in-memory cache — a
+        // restart resets every session's counter to 0, but this cached row
+        // keeps whatever higher value it saw from the previous process. A
+        // reported 0 must win outright, or a genuinely current post-restart
+        // `thinking: false` stays hidden behind the stale cached one.
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
+            id: 'session-1', thinking: true, thinkingConfirmed: true, thinkingRevision: 47
+        })] })
+
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: {
+                ...makeSummary(), id: 'session-1', namespace: 'default', seq: 1,
+                createdAt: 1, agentState: null, thinkingAt: 0,
+                thinking: false, thinkingConfirmed: true, thinkingRevision: 0
+            }
+        }))
+
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        expect(data?.sessions[0]?.thinking).toBe(false)
+        expect(data?.sessions[0]?.thinkingRevision).toBe(0)
         unmount()
     })
 
@@ -679,6 +755,27 @@ describe('useSSE user-activity ordering', () => {
         const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
         expect(data?.sessions[0]?.thinking).toBe(false)
         expect(data?.sessions[0]?.thinkingRevision).toBe(2)
+        unmount()
+    })
+
+    it('applies an incremental patch reporting thinkingRevision 0 even when the cached one is higher (#1717)', () => {
+        // Same restart exposure as the full-snapshot path above: a reported
+        // 0 must win outright, since it can only mean either a never-bumped
+        // session or a hub process that no longer exists to be "fresher"
+        // than.
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
+            id: 'session-1', thinking: true, thinkingConfirmed: true, thinkingRevision: 47
+        })] })
+
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: { thinking: false, thinkingConfirmed: true, thinkingRevision: 0 }
+        }))
+
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        expect(data?.sessions[0]?.thinking).toBe(false)
+        expect(data?.sessions[0]?.thinkingRevision).toBe(0)
         unmount()
     })
 

@@ -73,7 +73,20 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
     // two transitions can land in the same clamped-to-"now" millisecond and
     // carry an identical value). An absent `thinkingRevision` (older hub)
     // takes the patch unconditionally, preserving prior behaviour.
-    if (patch.thinkingRevision === undefined || patch.thinkingRevision >= (session.thinkingRevision ?? 0)) {
+    //
+    // `thinkingRevision` lives only in the hub's in-memory cache (#1717 bot
+    // review) — a restart resets every session's counter to 0, but an open
+    // tab keeps whatever higher value it cached from the PREVIOUS process.
+    // A reported 0 can therefore never actually be stale: it is either a
+    // session that has never been bumped (nothing fresher exists to lose
+    // to) or a post-restart reset (the cached higher value describes a
+    // process that no longer exists). Either way it must win outright,
+    // exactly like the absent case just above.
+    if (
+        patch.thinkingRevision === undefined
+        || patch.thinkingRevision === 0
+        || patch.thinkingRevision >= (session.thinkingRevision ?? 0)
+    ) {
         if (patch.thinking !== undefined) assign('thinking', patch.thinking)
         if (patch.thinkingConfirmed !== undefined) assign('thinkingConfirmed', patch.thinkingConfirmed)
         if (patch.thinkingAt !== undefined) assign('thinkingAt', patch.thinkingAt)
@@ -161,11 +174,20 @@ export function reconcileDelayedListSession(
     // correctly kept, even though the underlying requests (and so
     // `agentStateVersion`) never changed — only which of them are dismissed
     // did. `keepPriorNotify` is exactly "the incoming dismissal is stale",
-    // the other half of the same picture `agentStateVersion` cannot see, so
-    // refs are preserved whenever EITHER signal is stale, even when the rest
-    // of the agentState-derived bundle below is still fine to take from the
-    // incoming response.
-    const keepPriorRefs = prior !== undefined && (keepPriorPending || keepPriorNotify)
+    // the other half of the same picture `agentStateVersion` cannot see.
+    //
+    // But that only holds while the underlying request SET itself has not
+    // moved on. Gating refs on EITHER signal alone (#1717 cold-review, bot
+    // review) kept PRIOR's refs even when incoming's `agentStateVersion` was
+    // STRICTLY newer — describing a request the newer agentState had already
+    // replaced, while the rest of the bundle below correctly took the fresh
+    // one. `agentStateVersion` not having gone backwards is the precondition;
+    // staleness in either signal is only a reason to prefer prior's refs
+    // once that precondition holds.
+    const priorAgentStateNotOlder = (prior?.agentStateVersion ?? 0) >= (incoming.agentStateVersion ?? 0)
+    const keepPriorRefs = prior !== undefined
+        && priorAgentStateNotOlder
+        && (keepPriorPending || keepPriorNotify)
     // Neither `thinking` nor `thinkingConfirmed` carries its own revision
     // otherwise, so a list GET captured while the agent was still thinking
     // can land after an SSE idle patch and restore a stale `thinking: true`
@@ -180,8 +202,18 @@ export function reconcileDelayedListSession(
     // the idle transition could leave the cached ordering value unchanged
     // while the flags it is supposed to protect did change.
     const priorThinkingRevision = prior?.thinkingRevision ?? 0
+    const incomingThinkingRevision = incoming.thinkingRevision ?? 0
+    // `thinkingRevision` lives only in the hub's in-memory cache (#1717 bot
+    // review) — a restart resets every session's counter to 0, but the
+    // cached PRIOR summary keeps whatever higher value it saw from the
+    // previous process. A reported 0 can never actually be stale (nothing
+    // fresher exists for a never-bumped session to lose to; a post-restart
+    // reset means the higher cached value describes a process that no
+    // longer exists), so it must win outright rather than lose this
+    // comparison.
     const keepPriorThinking = prior !== undefined
-        && priorThinkingRevision > (incoming.thinkingRevision ?? 0)
+        && incomingThinkingRevision !== 0
+        && priorThinkingRevision > incomingThinkingRevision
     return {
         ...incoming,
         ...(keepPriorThinking && prior !== undefined
