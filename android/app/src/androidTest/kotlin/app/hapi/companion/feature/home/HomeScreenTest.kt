@@ -129,6 +129,41 @@ class HomeScreenTest {
         }
     }
 
+    @Test fun manualFolderCollapseHidesOnlyItsOwnRowsAndSurvivesARefresh() {
+        val prefix = "/very/long/shared/parent/project/workspaces"
+        sessions.sessions.value = sessions.sessions.value.map { row ->
+            when (row.id) {
+                "build" -> row.copy(metadata = row.metadata!!.copy(path = "$prefix/team-a/src/app"))
+                "fix" -> row.copy(metadata = row.metadata!!.copy(path = "$prefix/team-b/src/app"))
+                "research" -> row.copy(metadata = row.metadata!!.copy(path = "$prefix/team-a/src/app"))
+                else -> row
+            }
+        }
+        mount()
+        capture("projects-expanded")
+        val folder = compose.onNode(hasClickAction() and hasText("team-a/src/app", substring = true) and hasStateDescription(label(R.string.sessions_folder_expanded)))
+        folder.performClick()
+        compose.onNodeWithText("Build API").assertDoesNotExist()
+        compose.onNodeWithText("Fix Android").assertIsDisplayed()
+        val other = compose.onNode(hasClickAction() and hasText("team-b/src/app", substring = true))
+        other.performClick()
+        compose.onNodeWithText("Fix Android").assertDoesNotExist()
+        capture("project-folded")
+        other.performClick()
+        sessions.sessions.value = sessions.sessions.value.map { it.copy(contentRevision = 10) }
+        compose.waitUntil(10_000) { viewModel.uiState.value.rows.all { it.summary.contentRevision == 10L } }
+        compose.onNodeWithContentDescription(label(R.string.sessions_search_open)).performClick()
+        compose.onNodeWithTag("home-search-input").performTextInput("zznomatchzz")
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithText(label(R.string.sessions_search_no_results_hint)).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithContentDescription(label(R.string.sessions_search_close)).performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Fix Android").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Build API").assertDoesNotExist()
+        compose.onNode(hasClickAction() and hasStateDescription(label(R.string.sessions_folder_collapsed))).performClick()
+        compose.onNodeWithText("Build API").assertIsDisplayed()
+    }
+
     private fun label(id: Int) = context.getString(id)
     private fun openFilters() = compose.onNodeWithContentDescription(label(R.string.sessions_filters)).performClick()
     // Send a real Back event: dispatching straight to the activity skips the

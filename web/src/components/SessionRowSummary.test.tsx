@@ -429,7 +429,7 @@ describe('SessionRowSummary attached job progress', () => {
         vi.useRealTimers()
     })
 
-    it('fades the row but keeps a pulsing working badge and job meter after the agent stops', () => {
+    it('shows a stopped agent and a separate fresh job meter after disconnect', () => {
         const { container } = render(
             <I18nProvider>
                 <SessionRowSummary
@@ -457,9 +457,8 @@ describe('SessionRowSummary attached job progress', () => {
         // different things at once: nothing holds this session in memory, and
         // the work is still running.
         const badge = container.querySelector('[data-testid="session-presence"]') as HTMLElement
-        expect(badge).toHaveAttribute('data-presence', 'working')
-        // Working badge + job dot still animate, now via the shared ticker.
-        expect(badge.style.opacity).toBe('1')
+        expect(badge).toHaveAttribute('data-presence', 'stopped')
+        expect(screen.queryByTestId('session-activity')).toBeNull()
 
         const faded = container.querySelector('.opacity-50')
         expect(faded).not.toBeNull()
@@ -712,16 +711,15 @@ describe('SessionRowSummary combined activity and unread indicator', () => {
         expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-[var(--app-hint)]')
     })
 
-    it('keeps outliving jobs spinning at full contrast after disconnect', () => {
-        const session = makeSummary({ active: false, contentRevision: 2, attachedJob: {
+    it('does not spin for a disconnected agent with an outliving job or stale tool signal', () => {
+        const session = makeSummary({ active: false, derivedToolWork: true, contentRevision: 2, attachedJob: {
             key: 'import', label: 'Import', status: 'running', heartbeatAt: Date.now(),
             startedAt: Date.now(), updatedAt: Date.now(),
         } })
-        const { container } = render(<I18nProvider><SessionRowSummary session={session} /></I18nProvider>)
-        const spinner = screen.getByTestId('session-activity')
-        expect(spinner.querySelector('svg')).toHaveClass('text-blue-500')
-        expect(container.querySelector('.opacity-50')!.contains(spinner)).toBe(false)
-        expect(screen.queryByTestId('session-unread')).toBeNull()
+        render(<I18nProvider><SessionRowSummary session={session} /></I18nProvider>)
+        expect(screen.queryByTestId('session-activity')).toBeNull()
+        expect(screen.getByTestId('session-unread')).toBeInTheDocument()
+        expect(screen.getByTestId('attached-job-progress-bar')).toBeInTheDocument()
     })
 
     it('animates the running spinner and presence badge from the low-rate ticker', () => {

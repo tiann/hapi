@@ -186,6 +186,20 @@ struct ChatView: View {
                     } label: {
                         Label("Rename…", systemImage: "pencil")
                     }
+                    if model.showsTranslateInputToggle {
+                        // Web `SessionActionMenu` translate item: the label
+                        // names the action the tap performs.
+                        let enabled = model.interactor.translateInputEnabled
+                        Button {
+                            model.interactor.setTranslateInput(!enabled)
+                        } label: {
+                            if enabled {
+                                Label("Stop translating my messages", systemImage: "translate")
+                            } else {
+                                Label("Translate my messages to English", systemImage: "translate")
+                            }
+                        }
+                    }
                     // Web `SessionActionMenu`: reopen/delete only for a known
                     // inactive session; a removal closes this chat.
                     if model.sessionIsActive == false {
@@ -604,9 +618,11 @@ private struct ConversationHistorySheet: View {
 
     private func row(_ message: UserTextBlock) -> some View {
         let actions = model.interactor.historyActions(forMessageLocalId: message.localId)
+        // A translated prompt is listed as the user typed it (bubble default).
+        let text = message.translatedFrom ?? message.text
         return HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(verbatim: message.text.isEmpty ? " " : message.text)
+                Text(verbatim: text.isEmpty ? " " : text)
                     .lineLimit(3)
                 Text(verbatim: Date(timeIntervalSince1970: Double(message.createdAt) / 1000)
                     .formatted(date: .abbreviated, time: .shortened))

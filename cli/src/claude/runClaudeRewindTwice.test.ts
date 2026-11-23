@@ -527,18 +527,18 @@ describe('runClaude rewind proof lifetime', () => {
         }
     })
 
-    it('cancels a pending rewind when a local SessionStart rotates the session', { timeout: 20_000 }, async () => {
+    it.each(['local', 'remote'] as const)('cancels a pending rewind on a native clear hook in %s mode', { timeout: 20_000 }, async (mode) => {
         const prev = snapshotRunner()
         const runPromise = runClaude({
             workingDirectory: '/tmp/hapi-rewind-test',
             startedBy: 'runner',
-            startingMode: 'local'
+            startingMode: mode
         })
         runPromise.catch((error) => { harness.runError = error })
 
         await waitForFreshRunner(prev)
 
-        const sessionInstance = createRunnerSession('local')
+        const sessionInstance = createRunnerSession(mode)
         sessionInstance.sessionId = 'native-a'
         sessionInstance.requestRemoteRestart = async () => {}
         try {

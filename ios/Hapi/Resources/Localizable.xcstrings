@@ -14106,6 +14106,29 @@
         }
       }
     },
+    "Show English sent to agent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "エージェントに送った英語を表示"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показать английский текст для агента"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看发送给 Agent 的英文"
+          }
+        }
+      }
+    },
     "Show Hidden" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -14171,6 +14194,29 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "展示图片"
+          }
+        }
+      }
+    },
+    "Show original" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "原文を表示"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показать оригинал"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看原文"
           }
         }
       }
@@ -14746,6 +14792,29 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "停止当前回合"
+          }
+        }
+      }
+    },
+    "Stop translating my messages" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージの翻訳を停止"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не переводить мои сообщения"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止翻译我的消息"
           }
         }
       }
@@ -15804,6 +15873,52 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "转录失败"
+          }
+        }
+      }
+    },
+    "Translate my messages to English" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージを英語に翻訳"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Переводить мои сообщения на английский"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将我的消息翻译为英文"
+          }
+        }
+      }
+    },
+    "Translated" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "翻訳済み"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Переведено"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已翻译"
           }
         }
       }

@@ -382,7 +382,7 @@ describe('session row hover unpin', () => {
         expect(document.activeElement).toBe(screen.getByRole('button', { name: /Title project-pin/ }))
     })
 
-    it('keeps focus on the unread preview after transitionend when keyboard-unpinning an unselected unread inactive project pin', async () => {
+    it('expands the destination to keep keyboard focus when keyboard-unpinning an unselected unread inactive project pin', async () => {
         let finishUnpin: () => void = () => {}
         const setSessionPinMode = vi.fn(() => new Promise<void>((resolve) => {
             finishUnpin = resolve
@@ -419,20 +419,7 @@ describe('session row hover unpin', () => {
         ])
 
         await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
-        expect(screen.getByTitle('/work/quiet')).toHaveAttribute('aria-expanded', 'false')
-
-        // An unread row keeps its own CollapsiblePanel open even while its
-        // group collapses (upstream fix, #2434: rows render once each, no
-        // longer duplicated into a separate "peek" list) — the row's own
-        // row-level focus effect (SessionItem, via CollapsiblePanelOpenContext)
-        // re-focuses it directly, so there's no separate preview element or
-        // closing-panel dance to account for here anymore. The row's
-        // scroll-anchor attribute lives on a non-focusable wrapper <div>, not
-        // a native <button> (hapi#238: a focusable PR/issue chip can't be a
-        // descendant of a real button per ARIA) — the actually focusable
-        // element is its role="button" descendant, not a selector qualified
-        // by the `button` tag (upstream's own row IS a button, so its
-        // equivalent assertion uses that selector; it would never match here).
+        expect(screen.getByTitle('/work/quiet')).toHaveAttribute('aria-expanded', 'true')
         const unreadRow = document.querySelector<HTMLElement>('[data-session-row-id="unread-project-pin"]')
         expect(unreadRow).not.toBeNull()
         const unreadPreviewButton = unreadRow!.querySelector<HTMLElement>('[role="button"], button')

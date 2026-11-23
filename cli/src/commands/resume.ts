@@ -16,14 +16,15 @@ import type { ReasoningEffort } from '@/codex/appServerTypes'
 import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
+import { getResumeSessionName } from '@/ui/ink/resumeSessionPickerState'
 import type { CommandDefinition } from './types'
 
 function formatSessionLine(session: ResumableSession, index: number): string {
-    const name = session.name ?? session.summary ?? session.sessionId
+    const name = getResumeSessionName(session)
     const state = session.active
         ? session.controlledByUser ? 'local' : 'remote'
         : 'inactive'
-    return `${index + 1}. ${session.flavor.padEnd(8)} ${state.padEnd(8)} ${name}  ${session.directory}`
+    return `${index + 1}. ${session.flavor.padEnd(8)} ${state.padEnd(8)} ${name}  ${session.directory}  ${session.sessionId}`
 }
 
 export async function selectResumableSession(sessions: ResumableSession[]): Promise<string> {

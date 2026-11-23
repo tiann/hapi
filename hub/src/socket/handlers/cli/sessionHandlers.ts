@@ -93,7 +93,8 @@ const HUB_OWNED_METADATA_KEYS = [
     'jobsAcceptedFromSessionIds',
     'jobsTransferredToSessionId',
     'jobKeyRedirects',
-    'promptTitle'
+    'promptTitle',
+    'translateInput'
 ] as const
 
 /**

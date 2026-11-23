@@ -24,6 +24,7 @@
         "./peerParentStamp": "./src/peerParentStamp.ts",
         "./sessionExport": "./src/sessionExport.ts",
         "./sessionLifecycle": "./src/sessionLifecycle.ts",
+        "./sessionTitle": "./src/sessionTitle.ts",
         "./types": "./src/types.ts",
         "./voice": "./src/voice.ts",
         "./voicePickerCatalog": "./src/voicePickerCatalog.ts",
