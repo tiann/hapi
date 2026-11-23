@@ -644,21 +644,27 @@ export class SyncEngine {
     /**
      * Newest eligible footer in the retained transcript, or null.
      *
-     * Pages the scan window outward until a REPLY is established, not
-     * merely until a footer is found (#1717 cold-review round 31 — the
-     * round 30 fix stopped one step too early). A footer found at a small
-     * scan depth with no boundary in that same window is NOT yet reliable:
-     * `deriveNotifyStateFromTranscript` only recognizes an exact-text
-     * replay as superseded by cross-checking it against a reply's
-     * position AND author-cutoff, both of which require the boundary to
-     * already be in view. A small window that happens to contain a stale
-     * replay of an already-answered footer, but NOT the original
-     * footer+reply pair further back, reads that replay as live — exactly
-     * the identity-vs-content distinction the self-exclusion fix (round
-     * 29) already established matters. Scanning until the boundary is
-     * found (or until the cap, where whatever was last found is the best
-     * available answer) gives the derivation the SAME full context a
-     * one-shot full scan would have, just paged.
+     * Pages the scan window outward, but a FOUND SIGNAL only short-circuits
+     * once we've seen ENOUGH of the transcript to rule out an earlier
+     * occurrence of its identity, not just once ANY boundary happens to be
+     * in view (#1717 cold-review round 32 — the round 31 fix still stopped
+     * one case too early). A reply that exists in the current window but
+     * is unrelated to the found footer can set `boundaryAt` non-null
+     * without the window reaching far enough back to contain the ORIGINAL
+     * footer+reply pair a later exact-text replay needs to be recognized
+     * against — `deriveNotifyStateFromTranscript` can then read that
+     * replay as live, having nothing in view to supersede it with.
+     *
+     * The asymmetry that makes this safe to bound: a CONCLUSIVELY IDLE
+     * result (`signal === null` with a boundary established) is stable
+     * under MORE history — every message paging-further reveals is OLDER
+     * than everything already seen, hence at-or-before the same boundary,
+     * hence superseded by POSITION alone regardless of content. A result
+     * reporting something LIVE has no equivalent guarantee — an identical,
+     * already-answered occurrence could still be waiting further back —
+     * so only the idle case may return early; a found signal keeps paging
+     * to the cap, where whatever was last found becomes the best
+     * available answer.
      */
     private findNotifySignalInTranscript(
         sessionId: string,
@@ -668,7 +674,7 @@ export class SyncEngine {
         let depth = scanDepth
         for (;;) {
             const result = this.deriveNotifyStateFromTranscript(sessionId, depth)
-            if (result.boundaryAt !== null) return result.signal
+            if (result.signal === null && result.boundaryAt !== null) return null
             if (depth >= NOTIFY_BACKFILL_MESSAGE_SCAN_MAX) return result.signal
             depth = Math.min(depth * 4, NOTIFY_BACKFILL_MESSAGE_SCAN_MAX)
         }

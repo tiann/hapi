@@ -1642,6 +1642,85 @@ describe('startup notify backfill (#1717)', () => {
         expect(engine.getSession(session.id)?.lastNotify).toBeNull()
     })
 
+    it('does not trust a found footer just because SOME unrelated reply put a boundary in view, if the window still misses the replay\'s own original pair (#1717 cold-review round 32)', async () => {
+        // The round 31 fix stopped paging as soon as ANY boundary was
+        // established, assuming that meant the window had enough context.
+        // It didn't: an UNRELATED reply can land inside an intermediate
+        // window (setting `boundaryAt` non-null) while the ORIGINAL
+        // footer+reply pair that would mark a LATER exact-text replay as
+        // superseded is still further back, outside that same window.
+        // Nothing in view supersedes the replay, so it reads as live.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'backfill-unrelated-reply-masks-replay',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const now = Date.now()
+        const footerAuthorAt = now - 50_000
+        const footerText = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+
+        // Original footer, genuinely answered.
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } }
+            }
+        }, undefined, null, footerAuthorAt, footerAuthorAt)
+        store.messages.addMessage(session.id, {
+            role: 'user', content: { type: 'text', text: 'here is the key' }, meta: { sentFrom: 'webapp' }
+        }, undefined, null, footerAuthorAt + 1_000, footerAuthorAt + 1_000)
+
+        // 23 padding rows: enough that a 24-row scan from the end does not
+        // reach back to the original footer+reply pair above.
+        for (let i = 0; i < 23; i += 1) {
+            store.messages.addMessage(session.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `note ${i}` }] } }
+                }
+            }, undefined, null, footerAuthorAt + 2_000 + i * 100, footerAuthorAt + 2_000 + i * 100)
+        }
+
+        // An UNRELATED reply, well within a 24-row scan from the end —
+        // just some other prompt that has nothing to do with the footer.
+        store.messages.addMessage(session.id, {
+            role: 'user', content: { type: 'text', text: 'how is it going' }, meta: { sentFrom: 'webapp' }
+        }, undefined, null, now - 11_000, now - 11_000)
+
+        // The replay: IDENTICAL text and author time to the original,
+        // landing AFTER the unrelated reply above.
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } }
+            }
+        }, undefined, null, footerAuthorAt, now - 10_000)
+
+        // 7 more padding rows after the replay.
+        for (let i = 0; i < 7; i += 1) {
+            store.messages.addMessage(session.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `trailing ${i}` }] } }
+                }
+            }, undefined, null, now - 9_000 + i * 1_000, now - 9_000 + i * 1_000)
+        }
+
+        expect(engine.backfillRecentNotifySignals({ now })).toBe(0)
+        expect(engine.getSession(session.id)?.lastNotify).toBeNull()
+    })
+
     it('does not let a locally handled command answer a footer during reconciliation', async () => {
         // The live path already skips the clear for a command the CLI handled
         // itself, but the store still stamps the row's `invoked_at`, so every
