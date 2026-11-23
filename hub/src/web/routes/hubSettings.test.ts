@@ -42,6 +42,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
+            translateInputByDefault: false,
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -58,6 +59,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: true,
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
+            translateInputByDefault: false,
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
@@ -66,6 +68,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: true,
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
+            translateInputByDefault: false,
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -84,6 +87,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: true,
             sessionSummaryInChat: true,
             autoBridgeTransientModelErrors: false,
+            translateInputByDefault: false,
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -100,6 +104,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: true,
+            translateInputByDefault: false,
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -122,6 +127,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
+            translateInputByDefault: false,
             peerSpawnDefaults: {
                 agent: 'cursor',
                 permissionMode: 'yolo',
@@ -163,6 +169,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
+            translateInputByDefault: false,
             peerSpawnDefaults: {
                 agent: 'codex',
                 permissionMode: 'default',
@@ -236,6 +243,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: true,
             autoBridgeTransientModelErrors: false,
+            translateInputByDefault: false,
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
@@ -257,7 +265,45 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: true,
             sessionSummaryInChat: true,
             autoBridgeTransientModelErrors: true,
+            translateInputByDefault: false,
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
+    })
+
+    it('persists the translation default for the owner', async () => {
+        const { app } = await createApp()
+        const put = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ translateInputByDefault: true })
+        })
+        expect(put.status).toBe(200)
+        expect(((await put.json()) as { translateInputByDefault: boolean }).translateInputByDefault).toBe(true)
+        const get = await app.request('/api/hub-settings')
+        expect(((await get.json()) as { translateInputByDefault: boolean }).translateInputByDefault).toBe(true)
+    })
+
+    it('refuses to turn the translation default on without a provider', async () => {
+        const dataDir = await mkdtemp(join(tmpdir(), 'hapi-hub-settings-'))
+        directories.push(dataDir)
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const engine = { isInputTranslationAvailable: () => false }
+        app.route('/api', createHubSettingsRoutes(dataDir, () => engine as never))
+        const on = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ translateInputByDefault: true })
+        })
+        expect(on.status).toBe(400)
+        const off = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ translateInputByDefault: false })
+        })
+        expect(off.status).toBe(200)
     })
 })

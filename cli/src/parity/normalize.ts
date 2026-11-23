@@ -35,7 +35,7 @@ const clockPaths = new Set([
     'decoded/agentTimestamp',
     'decoded/content/permissions/date'
 ])
-const metadataClock = /^(?:POST \/cli\/sessions\/args\/body|POST \/session-started\/args|update-metadata\/(?:args|ack))\/metadata\/(?:lifecycleStateSince|summary\/updatedAt)$/
+const metadataClock = /^(?:POST \/cli\/sessions\/args\/body|POST \/session-started\/args|update-metadata\/(?:args|ack))\/metadata\/(?:lifecycleStateSince|summary\/updatedAt|contextDetails\/updatedAt)$/
 const requestClock = /^update-state\/(?:args|ack)\/agentState\/(?:requests\/[^/]+\/createdAt|completedRequests\/[^/]+\/(?:createdAt|completedAt))$/
 
 export function normalize(rows: Row[], facts: ProcessFacts, launches: unknown[], decoded: unknown[]) {

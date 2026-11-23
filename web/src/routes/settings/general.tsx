@@ -118,6 +118,22 @@ export default function SettingsGeneralPage() {
                     />
                 </SettingsSection>
             ) : null}
+            {isOwner && features?.inputTranslation?.available ? (
+                <SettingsSection title={t('settings.general.inputTranslation.title')}>
+                    <SettingsSwitch
+                        label={t('settings.general.inputTranslation.default')}
+                        description={hubSettingsMutation.error instanceof Error && hubSettingsMutation.variables?.translateInputByDefault !== undefined
+                            ? hubSettingsMutation.error.message
+                            : t('settings.general.inputTranslation.default.desc')}
+                        checked={hubSettingsQuery.data?.translateInputByDefault === true}
+                        disabled={!hubSettingsQuery.data || hubSettingsMutation.isPending}
+                        onChange={(checked) => {
+                            if (hubSettingsMutation.isPending) return
+                            hubSettingsMutation.mutate({ translateInputByDefault: checked })
+                        }}
+                    />
+                </SettingsSection>
+            ) : null}
             {isOwner ? (
                 <SettingsSection
                     title={t('settings.general.sessionSummary.title')}

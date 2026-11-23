@@ -26,6 +26,7 @@ import { useToast } from '@/lib/toast-context'
 import { queryKeys } from '@/lib/query-keys'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
 import { useFeatures } from '@/hooks/queries/useFeatures'
+import { useSessionInputTranslation } from '@/hooks/useSessionInputTranslation'
 import {
     DEFAULT_PR_CHIP_DISPLAY,
     getPrimaryGithubPrRef,
@@ -296,6 +297,19 @@ export function SessionHeader(props: {
         } catch (error) {
             addToast({
                 title: t('session.action.pinFailed'),
+                body: error instanceof Error ? error.message : t('dialog.error.default'),
+                sessionId: session.id,
+                url: `/sessions/${session.id}`
+            })
+        }
+    }
+    const inputTranslation = useSessionInputTranslation(api, session)
+    const handleToggleTranslateInput = async () => {
+        try {
+            await inputTranslation.toggle()
+        } catch (error) {
+            addToast({
+                title: t('dialog.error.default'),
                 body: error instanceof Error ? error.message : t('dialog.error.default'),
                 sessionId: session.id,
                 url: `/sessions/${session.id}`
@@ -603,6 +617,8 @@ export function SessionHeader(props: {
                 onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
                 linkedPr={linkedPr}
                 onMarkUnread={() => markSessionUnread(session.id, session.readState)}
+                onToggleTranslateInput={inputTranslation.visible ? () => void handleToggleTranslateInput() : undefined}
+                translateInputEnabled={inputTranslation.enabled}
                 onSetPinMode={api ? (mode) => void handleSetPinMode(mode) : undefined}
                 onExport={() => setExportOpen(true)}
                 onSyncCodex={api && codexSessionId && !session.active ? handleSyncCodex : undefined}

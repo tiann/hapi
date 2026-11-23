@@ -680,6 +680,11 @@
     <string name="tool_custom_answer">Custom answer</string>
     <string name="tool_answer_note">Note</string>
     <string name="chat_view_full_message">View full message</string>
+    <string name="chat_translate_input_on">Translate my messages to English</string>
+    <string name="chat_translate_input_off">Stop translating my messages</string>
+    <string name="chat_translated_label">Translated</string>
+    <string name="chat_translated_show_sent">Show English sent to agent</string>
+    <string name="chat_translated_show_original">Show original</string>
     <string name="chat_full_message">Full message</string>
     <string name="chat_previous_part">Previous part</string>
     <string name="chat_next_part">Next part</string>
