@@ -130,7 +130,12 @@ export async function flushSessionReadState(): Promise<void> {
                         if (!save(store, key)) failed = true
                         if (scope === key) notify()
                     }
-                } else { failed = true; break }
+                } else {
+                    failed = true
+                    // One session failing on the Hub must not starve unrelated
+                    // receipts. Back off immediately on transport or gateway errors.
+                    if (failure.status !== 500) break
+                }
             }
         }
     } finally {

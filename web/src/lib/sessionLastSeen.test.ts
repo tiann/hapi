@@ -145,6 +145,21 @@ describe('durable session read state', () => {
         expect(JSON.parse(localStorage.getItem('hapi.sessionReadState.v1:hub-a:alice')!).s.pending).toBeUndefined()
     })
 
+    it('syncs other receipts while one session keeps returning 500', async () => {
+        markSessionSeen('broken', 5)
+        markSessionSeen('healthy', 3)
+        const send = vi.fn(async (id: string) => {
+            if (id === 'broken') throw { status: 500 }
+            return { readState: server(3, 1) }
+        })
+        cleanup = configureSessionReadState('hub-a:alice', send)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(send.mock.calls.map(([id]) => id)).toEqual(['broken', 'healthy'])
+        const store = JSON.parse(localStorage.getItem('hapi.sessionReadState.v1:hub-a:alice')!)
+        expect(store.broken.pending).toBeDefined()
+        expect(store.healthy.pending).toBeUndefined()
+    })
+
     it('rolls back a rejected operation to authoritative state', async () => {
         markSessionSeen('s', 9)
         cleanup = configureSessionReadState('hub-a:alice', async () => {

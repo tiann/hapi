@@ -374,6 +374,7 @@ export default {
   'session.action.pinFailed': 'ピン留めを更新できませんでした',
   'sessions.pinnedSection': 'ピン留めしたセッション',
   'session.action.export': '会話をエクスポート',
+  'session.action.markRead': '既読にする',
   'session.action.markUnread': '未読にする',
   'session.action.translateInputOn': 'メッセージを英語に翻訳',
   'session.action.translateInputOff': 'メッセージの翻訳を停止',

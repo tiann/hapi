@@ -79,15 +79,13 @@ describe('SessionActionMenu - Pin action', () => {
 })
 
 describe('SessionActionMenu - Mark unread action', () => {
-    it('fires the mark-unread handler and closes the menu', () => {
-        const onMarkUnread = vi.fn()
+    it('can mark one unread session read and reverse that choice', () => {
         const onClose = vi.fn()
-        renderMenu({ onMarkUnread, onClose })
-
+        renderMenu({ readTarget: { id: 'read-toggle', contentRevision: 7 }, onClose })
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as read' }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as unread' }))
-
-        expect(onMarkUnread).toHaveBeenCalledTimes(1)
-        expect(onClose).toHaveBeenCalledTimes(1)
+        expect(screen.getByRole('menuitem', { name: 'Mark as read' })).toBeInTheDocument()
+        expect(onClose).toHaveBeenCalledTimes(2)
     })
 
     it('does not render the action when no handler is provided', () => {

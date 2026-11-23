@@ -856,6 +856,7 @@ export function HappyThread(props: {
     const viewportRef = useRef<HTMLDivElement | null>(null)
     useTransientScrollbar(viewportRef, 'right')
     const contentRef = useRef<HTMLDivElement | null>(null)
+    const messagesRef = useRef<HTMLDivElement | null>(null)
     const [pullToLoadState, setPullToLoadState] = useState<PullToLoadState>('idle')
     const [searchTargetRetryVersion, setSearchTargetRetryVersion] = useState(0)
     const [isLocatingSearchTarget, setIsLocatingSearchTarget] = useState(false)
@@ -910,7 +911,7 @@ export function HappyThread(props: {
     const needsViewportCoverageRef = useRef<(options?: { includePreloadMargin?: boolean }) => boolean>(() => false)
     useSelectedSessionSeen(props.sessionId,
         !props.isSyncingTail && !props.messagesWarning ? props.readThroughRevision : undefined,
-        props.session.readState?.version, viewportRef, contentRef)
+        props.session.readState?.version, viewportRef, messagesRef)
     const atBottomRef = useRef(true)
     const onViewModeChangeRef = useRef(props.onViewModeChange)
     const forceScrollTokenRef = useRef(props.forceScrollToken)
@@ -2921,7 +2922,7 @@ export function HappyThread(props: {
                                     ) : null}
                                 </>
                             )}
-                            <div className="happy-thread-messages flex flex-col gap-3">
+                            <div ref={messagesRef} className="happy-thread-messages flex flex-col gap-3">
                                 <ThreadMessagesById components={THREAD_MESSAGE_COMPONENTS} />
                             </div>
                         </div>

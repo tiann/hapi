@@ -9,7 +9,7 @@ function setVisibility(state: DocumentVisibilityState): void {
 }
 function viewport(atBottom = true) {
     const element = document.createElement('div')
-    Object.defineProperty(element, 'clientHeight', { value: 100 })
+    Object.defineProperty(element, 'clientHeight', { configurable: true, value: 100 })
     Object.defineProperty(element, 'scrollHeight', { value: 200 })
     element.scrollTop = atBottom ? 100 : 0
     return { current: element }
@@ -18,7 +18,7 @@ const content = { current: document.createElement('div') }
 const settle = () => act(async () => { await vi.advanceTimersByTimeAsync(100) })
 
 beforeEach(() => { vi.useFakeTimers(); localStorage.clear(); setVisibility('visible') })
-afterEach(() => { vi.useRealTimers(); setVisibility('visible') })
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); setVisibility('visible') })
 
 describe('rendered read receipt', () => {
     it('waits for visible rendered tail and uses only its observed revision', async () => {
@@ -76,6 +76,63 @@ describe('rendered read receipt', () => {
         unmount()
         expect(getUnreadSessionCount([head])).toBe(1)
         expect(getSessionLastSeenAt('s')).toBe(0)
+    })
+
+    it('makes progress during continuous scrolling, DOM mutations and rendered revisions', async () => {
+        const view = viewport()
+        const { rerender } = renderHook(({ revision }) => useSelectedSessionSeen('s', revision, 0, view, content), {
+            initialProps: { revision: 1 },
+        })
+        for (let revision = 2; revision <= 16; revision++) {
+            rerender({ revision })
+            content.current.textContent = String(revision)
+            act(() => view.current.dispatchEvent(new Event('scroll')))
+            await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+        }
+        expect(getSessionLastSeenAt('s')).toBeGreaterThan(1)
+        await settle()
+        expect(getSessionLastSeenAt('s')).toBe(16)
+    })
+
+    it('rechecks a viewport resize without waiting for a scroll or a message', async () => {
+        let resize!: () => void
+        const observe = vi.fn()
+        vi.stubGlobal('ResizeObserver', class {
+            constructor(callback: () => void) { resize = callback }
+            observe = observe
+            disconnect() {}
+        })
+        const view = viewport(false)
+        renderHook(() => useSelectedSessionSeen('s', 3, 0, view, content))
+        await settle()
+        expect(getSessionLastSeenAt('s')).toBe(0)
+        expect(observe).toHaveBeenCalledWith(view.current)
+        Object.defineProperty(view.current, 'clientHeight', { value: 200 })
+        act(() => resize())
+        await settle()
+        expect(getSessionLastSeenAt('s')).toBe(3)
+    })
+
+    it('acknowledges the visible end of the transcript before its trailing padding', async () => {
+        const view = viewport(false)
+        const messages = viewport()
+        vi.spyOn(view.current, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 100, 100, 100))
+        vi.spyOn(messages.current, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 20, 100, 180))
+        renderHook(() => useSelectedSessionSeen('s', 3, 0, view, messages))
+        await settle()
+        expect(getSessionLastSeenAt('s')).toBe(3)
+    })
+
+    it('does not borrow a newer manual-unread version during layout', async () => {
+        const view = viewport()
+        const { rerender } = renderHook(({ version }) => useSelectedSessionSeen('s', 3, version, view, content), {
+            initialProps: { version: 0 },
+        })
+        observeSessionReadStates([{ id: 's', readState: { readRevision: 2, version: 1, manualUnread: true } }])
+        rerender({ version: 1 })
+        await settle()
+        expect(getSessionLastSeenAt('s')).toBe(3)
+        expect(getSessionManualUnreadAt('s')).toBe(0)
     })
 
     it('read-state SSE alone cannot clear a manual unread choice', async () => {

@@ -407,6 +407,7 @@ export default {
   'session.action.pinFailed': '无法更新置顶状态',
   'sessions.pinnedSection': '置顶会话',
   'session.action.export': '导出对话',
+  'session.action.markRead': '标为已读',
   'session.action.markUnread': '标为未读',
   'session.action.translateInputOn': '将我的消息翻译为英文',
   'session.action.translateInputOff': '停止翻译我的消息',
