@@ -86,7 +86,7 @@ describe('search history interaction', () => {
     it('reports an unsaved opt-out, suspends recording locally, and supports retry', () => {
         render(<Fixture />)
         const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => { throw new Error('blocked') })
-        const toggle = screen.getByRole('checkbox', { name: 'Search history', exact: true })
+        const toggle = screen.getByRole('checkbox', { name: 'Search history' })
         fireEvent.click(toggle)
         expect(toggle).not.toBeChecked()
         expect(screen.getByRole('alert')).toHaveTextContent('Could not save this opt-out')
