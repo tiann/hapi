@@ -54,3 +54,32 @@ test('renders localized release announcements on the mobile About page', async (
     await expect(page.getByRole('link', { name: `打开 v${latestRelease.version} 发行页` })).toBeVisible()
     await expect(page.getByText('查看完整发行说明', { exact: true })).toHaveCount(0)
 })
+
+
+test('a missing release-history chunk leaves About and settings backup usable', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.route('**/AboutReleaseHistory.tsx*', route => route.fulfill({ status: 404, contentType: 'text/plain', body: 'fixture missing chunk' }))
+    await page.goto(fixture)
+    await expect(page.getByText('App Version', { exact: true })).toBeVisible()
+    await expect(page.getByText('Release history is unavailable. Reload the page to try again.')).toBeVisible()
+    await expect(page.locator('input[type="file"]')).toBeEnabled()
+    const download = page.waitForEvent('download')
+    await page.getByRole('button', { name: 'Export', exact: true }).click()
+    expect((await download).suggestedFilename()).toMatch(/^hapi-settings-.*\.json$/)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/about-history-chunk-unavailable.png` })
+})
+
+for (const locale of ['ja', 'ru']) {
+    test(`fallback release text carries its own language (${locale})`, async ({ page }) => {
+        await page.addInitScript(lang => localStorage.setItem('hapi-lang', lang), locale)
+        await page.goto(fixture)
+        await expect(page.locator('html')).toHaveAttribute('lang', locale)
+        const release = page.locator('details').first()
+        await expect(release.getByText(latestRelease.summary.en)).toHaveAttribute('lang', 'en')
+        await expect(release.getByRole('heading', { name: latestRelease.groups[0].title.en })).toHaveAttribute('lang', 'en')
+        await expect(release.getByText(latestRelease.groups[0].changes[0].text.en, { exact: true })).toHaveAttribute('lang', 'en')
+        const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+        if (locale === 'ja' && screenshots) await page.screenshot({ path: `${screenshots}/about-release-fallback-language.png` })
+    })
+}

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NativeAppPromoButton, NativeAppPromoSheet } from '@/components/NativeAppPromo'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -74,6 +74,7 @@ import SettingsHubPage from '@/routes/settings'
 import SettingsGeneralPage from '@/routes/settings/general'
 import SettingsDisplayPage from '@/routes/settings/display'
 import SettingsChatPage from '@/routes/settings/chat'
+import SettingsAboutPage from '@/routes/settings/about'
 import SettingsVoicePage from '@/routes/settings/voice'
 import SettingsVoiceVoicesPage from '@/routes/settings/voice-voices'
 import SettingsVoiceAdvancedPage from '@/routes/settings/voice-advanced'
@@ -83,16 +84,6 @@ import SettingsUsagePage from '@/routes/settings/usage'
 import SharePage from '@/routes/share'
 import { retargetSharePendingTransfer, setSharePendingTransfer } from '@/lib/sharePendingState'
 import { deleteShareTransfer, parseShareSearch } from '@/lib/shareTransfer'
-
-const LazySettingsAboutPage = lazy(() => import('@/routes/settings/about'))
-
-function SettingsAboutRoute() {
-    return (
-        <Suspense fallback={<LoadingState className="m-4" />}>
-            <LazySettingsAboutPage />
-        </Suspense>
-    )
-}
 
 
 function BackIcon(props: { className?: string }) {
@@ -1463,7 +1454,7 @@ const settingsMachinesRoute = createRoute({
 const settingsAboutRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'about',
-    component: SettingsAboutRoute,
+    component: SettingsAboutPage,
 })
 
 const settingsStorageRoute = createRoute({

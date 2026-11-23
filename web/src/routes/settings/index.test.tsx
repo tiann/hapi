@@ -500,7 +500,7 @@ describe('responsive settings pages', () => {
         expect(setCodexExplorationCollapsed).toHaveBeenCalledWith(false)
     })
 
-    it('renders About metadata on its own route page', () => {
+    it('renders About metadata on its own route page', async () => {
         renderPage(<SettingsAboutPage />)
         const latestReleaseNote = getVisibleReleaseNotes(__APP_VERSION__, RELEASE_NOTES)[0]
         const latestReleaseChanges = latestReleaseNote.groups.flatMap((group) => group.changes)
@@ -511,7 +511,7 @@ describe('responsive settings pages', () => {
         expect(screen.getByText('Protocol Version')).toBeInTheDocument()
         expect(screen.getByRole('link', { name: 'hapi.run' })).toHaveAttribute('rel', 'noopener noreferrer')
         expect(screen.getByText("What's New")).toBeInTheDocument()
-        expect(screen.getByText(`v${latestReleaseNote.version}`)).toBeInTheDocument()
+        expect(await screen.findByText(`v${latestReleaseNote.version}`)).toBeInTheDocument()
         const latestReleaseElement = screen.getByRole('link', { name: `Open release page for v${latestReleaseNote.version}` }).closest('details')
         expect(latestReleaseElement).not.toBeNull()
         expect(within(latestReleaseElement as HTMLElement).getByText(latestReleaseNote.groups[0].changes[0].text.en)).toBeInTheDocument()
@@ -528,14 +528,14 @@ describe('responsive settings pages', () => {
         expect(document.querySelector(`time[datetime="${latestReleaseNote.date}"]`)).toBeInTheDocument()
     })
 
-    it('localizes release announcements with the selected language', () => {
+    it('localizes release announcements with the selected language', async () => {
         localStorage.setItem('hapi-lang', 'zh-CN')
         renderPage(<SettingsAboutPage />)
         const latestReleaseNote = getVisibleReleaseNotes(__APP_VERSION__, RELEASE_NOTES)[0]
         const latestReleaseChanges = latestReleaseNote.groups.flatMap((group) => group.changes)
         const releaseKindLabels = { feature: '新增', fix: '修复', note: '说明' } as const
         expect(screen.getByText('更新公告')).toBeInTheDocument()
-        const latestReleaseElement = screen.getByRole('link', { name: `打开 v${latestReleaseNote.version} 发行页` }).closest('details')
+        const latestReleaseElement = (await screen.findByRole('link', { name: `打开 v${latestReleaseNote.version} 发行页` })).closest('details')
         expect(latestReleaseElement).not.toBeNull()
         expect(within(latestReleaseElement as HTMLElement).getByText(latestReleaseNote.groups[0].changes[0].text['zh-CN'])).toBeInTheDocument()
         expect(latestReleaseElement?.textContent).toContain(latestReleaseNote.summary['zh-CN'])

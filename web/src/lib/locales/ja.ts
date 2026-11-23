@@ -1347,6 +1347,7 @@ export default {
   'settings.hub.machines.summary': 'マシンのカスタム名',
   'settings.about.title': 'このアプリについて',
   'settings.about.description': 'HAPI のリンクとバージョン情報。',
+  'settings.about.releaseNotes.unavailable': '更新履歴を読み込めません。ページを再読み込みしてもう一度お試しください。',
   'settings.about.website': 'Web サイト',
   'settings.about.appVersion': 'アプリのバージョン',
   'settings.about.protocolVersion': 'プロトコルのバージョン',

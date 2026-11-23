@@ -1241,6 +1241,7 @@ export default {
   'settings.hub.machines.summary': 'Собственные имена для ваших машин',
   'settings.about.title': 'О приложении',
   'settings.about.description': 'Ссылки и информация о версии HAPI.',
+  'settings.about.releaseNotes.unavailable': 'История выпусков недоступна. Перезагрузите страницу и повторите попытку.',
   'settings.about.website': 'Сайт',
   'settings.about.appVersion': 'Версия приложения',
   'settings.about.protocolVersion': 'Версия протокола',

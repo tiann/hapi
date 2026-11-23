@@ -208,16 +208,16 @@ export const RELEASE_NOTES = [
                 change('fix', 'Avoid re-parsing session read state for every sidebar row when loading large session lists.', '加载大列表时不再对每个侧栏行重复解析会话已读状态。'),
             ]),
         ]), releaseNote('0.34.2', '2026-11-05',
-        'Add a concise chat view, keep sidebar search and shared-export images reliable, and publish Android tool-card state on the main thread; bound and isolate Mac regression hangs.',
-        '新增简洁聊天视图，改善侧栏搜索与分享导出图片的可靠性，并让 Android 工具卡片状态在主线程发布；限制并隔离 Mac 回归测试超时。',
+        'Add a concise chat view, preserve images in shared exports, and improve Android tool-card reliability.',
+        '新增简洁聊天视图，保留分享导出的图片，并提升 Android 工具卡片的可靠性。',
         [
             group('Web chat and sharing', 'Web 聊天与分享', [
                 change('feature', 'Add a concise chat view.', '新增简洁聊天视图。'),
                 change('fix', 'Keep the Codex Fast toggle legible in dark mode and preserve blob-backed images in shared exports.', '保持 Codex Fast 开关在暗色模式下清晰可读，并在分享导出中保留 blob 支撑的图片。'),
-                change('fix', 'Bound and isolate Mac regression test hangs.', '为 Mac 回归测试设置上限并隔离超时。'),
             ]),
-            group('Android and diagnostics', 'Android 与诊断', [
-                change('fix', 'Publish tool-card async state on the main thread and wait for pairing fields to disable.', '在主线程发布工具卡片异步状态，并在配对字段禁用前等待。'),
+            group('Native apps', '原生应用', [
+                change('fix', 'Publish Android tool-card async state on the main thread.', '在主线程发布 Android 工具卡片异步状态。'),
+                change('note', 'Bound Mac regression test hangs and wait for pairing fields to be disabled in the iOS test.', '为 Mac 回归测试设置超时上限，并让 iOS 配对测试等待相关字段禁用。'),
             ]),
         ]), releaseNote('0.34.1', '2026-11-04',
         'Add opt-in session message content search, sort and filter the session list, group inactive session mentions, and streamline session-list actions; add Codex model catalog options, Fast mode memory, and mid-turn OpenCode steering.',

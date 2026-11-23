@@ -1416,6 +1416,7 @@ export default {
   'settings.hub.machines.summary': '给设备起自定义名字',
   'settings.about.title': '关于',
   'settings.about.description': 'HAPI 链接、版本信息和更新公告。',
+  'settings.about.releaseNotes.unavailable': '暂时无法加载更新公告。请重新加载页面后再试。',
   'settings.about.website': '官方网站',
   'settings.about.appVersion': '应用版本',
   'settings.about.protocolVersion': '协议版本',

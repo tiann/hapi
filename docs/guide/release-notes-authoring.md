@@ -32,7 +32,7 @@ first catalog entry before it prepares the release commit and tag.
 
 ## Source of truth
 
-Start with the commits and code changed in the release tag range. Maintainers
+Start with the commits and code changed in the intended release range. Maintainers
 sometimes push directly to `main`, so a change may have no pull request and a
 GitHub Release body may contain only a **Full Changelog** compare link. That
 means the written notes are missing; it does not mean the release had no
@@ -40,8 +40,10 @@ changes.
 
 1. Use the compare base linked from the GitHub Release when it is present,
    otherwise use the previous release tag.
-2. Review `git log --no-merges <base>..<target>` and the relevant `git diff`.
-   Include direct commits even when they have no PR.
+2. Before tagging, review `git log --no-merges <previous-release-tag>..HEAD`
+   and `git diff <previous-release-tag>..HEAD`. If preparing a different release
+   commit, use its SHA in place of `HEAD`. For historical backfills, use the
+   existing release tag as the endpoint. Include direct commits without PRs.
 3. Use pull requests, release bodies, tests, and the implementation itself as
    supporting evidence. Do not infer behavior from a title alone.
 4. Only describe a release as version-only after confirming that the diff
@@ -98,7 +100,8 @@ Copy this prompt when preparing a new release entry:
 ```text
 为 HAPI 版本 vX.Y.Z 编写 Settings > About 的中英文更新公告。
 
-主要依据：发行 tag 范围 `git log --no-merges <base>..<target>`、实际代码差异。
+主要依据：发布前查看 `git log --no-merges <上一个发行标签>..HEAD` 与实际代码差异；
+如目标不是 HEAD，则用预定发布提交的 SHA。补写历史公告时，终点使用已有的发行标签。
 官方 GitHub Release 和 PR 仅作为辅助证据。维护者可能直接向 main 提交而没有
 PR；Release 正文只有 “Full Changelog” 时，表示缺少文案，不代表没有代码变更。
 不要仅凭 PR 标题或 Release 空白推断“无更新”。先按用户影响从重要到次要排序，

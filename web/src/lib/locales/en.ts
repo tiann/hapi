@@ -1418,6 +1418,7 @@ export default {
   'settings.hub.machines.summary': 'Custom names for your machines',
   'settings.about.title': 'About',
   'settings.about.description': 'HAPI links, version information, and release notes.',
+  'settings.about.releaseNotes.unavailable': 'Release history is unavailable. Reload the page to try again.',
   'settings.about.website': 'Website',
   'settings.about.appVersion': 'App Version',
   'settings.about.protocolVersion': 'Protocol Version',
