@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import { clearDraft, getDraft, getDraftRevision, saveDraft } from '@/lib/composer-drafts'
-import { recordComposerDraftChange } from '@/lib/composer-send-state'
+import { recordComposerTextChange } from '@/lib/composer-send-state'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { sendVoiceMessage } from '@/lib/dictationSend'
 import type { ConversationStatus } from '@/realtime/types'
@@ -100,7 +100,7 @@ export function recoverFailedVoiceSend(args: {
     }
     const merged = appendTranscript(replacement, args.failedText)
     saveDraft(args.recoverySessionId, merged)
-    recordComposerDraftChange(args.recoverySessionId)
+    recordComposerTextChange(args.recoverySessionId)
     replaceLiveText?.(merged)
     if (sourceSessionId) clearDraft(sourceSessionId)
 }

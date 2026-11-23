@@ -1,4 +1,4 @@
-import { recordSuccessfulComposerClear, resetComposerSendStateForTests } from '@/lib/composer-send-state'
+import { recordComposerDraftChange, recordSuccessfulComposerClear, resetComposerSendStateForTests } from '@/lib/composer-send-state'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -269,6 +269,7 @@ describe('QueuedMessagesBar edit restore', () => {
         mocks.composerText = 'stale submitted text'
         fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }))
         recordSuccessfulComposerClear('session-1', mocks.composerText)
+        recordComposerDraftChange('session-1') // an unrelated attachment reorder
         mocks.composerText = ''
         await resolveCancel({ status: 'cancelled' })
         expect(onEdit).toHaveBeenCalledOnce()

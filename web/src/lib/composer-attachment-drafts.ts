@@ -363,20 +363,16 @@ export function removeDraftAttachmentsById(
         return
     }
 
+    const read = startDraftRead(sessionId)
     const previous = pendingWrites.get(sessionId) ?? Promise.resolve()
     const next = previous
         .catch(() => {})
         .then(async () => {
-            const read = startDraftRead(sessionId)
-            let files: File[]
-            try {
-                files = await readStoredDraftAttachments(sessionId)
-                // A save updates the in-memory draft immediately and queues
-                // the newer durable write behind us. Neither may be replaced.
-                if (read.overwritten()) return
-            } finally {
-                read.finish()
-            }
+            // The replacement may arrive either before the read starts or
+            // while the read is pending. Never publish the old row in either case.
+            if (read.overwritten()) return
+            const files = cache.get(sessionId) ?? await readStoredDraftAttachments(sessionId)
+            if (read.overwritten()) return
             const remaining = toRemainingInputs(files)
             markDraftWrite(sessionId)
             if (remaining.length === 0) {
@@ -391,7 +387,7 @@ export function removeDraftAttachmentsById(
                 files: storedFiles,
                 updatedAt: Date.now(),
             }, sessionId)
-        })
+        }).finally(read.finish)
     pendingWrites.set(sessionId, next)
     void next.catch(() => {}).finally(() => {
         if (pendingWrites.get(sessionId) === next) pendingWrites.delete(sessionId)

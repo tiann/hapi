@@ -1,5 +1,6 @@
 import type { SendMessageSettlement } from '@/hooks/mutations/useSendMessage'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
+import { getDraft } from '@/lib/composer-drafts'
 
 export type PendingComposerSend = {
     attemptId: string | null
@@ -14,6 +15,7 @@ export type PendingComposerSend = {
 const pendingComposerSends = new Map<string, PendingComposerSend>()
 const composerProgrammaticEditRevisions = new Map<string, number>()
 const composerDraftRevisions = new Map<string, number>()
+const composerTextRevisions = new Map<string, number>()
 const lastSuccessfulComposerClears = new Map<string, { text: string; revision: number }>()
 const MAX_RECENT_CLEARS = 128
 const composerSendSettlements = new Map<string, Map<string, SendMessageSettlement>>()
@@ -24,6 +26,7 @@ export function resetComposerSendStateForTests(): void {
     pendingComposerSends.clear()
     composerProgrammaticEditRevisions.clear()
     composerDraftRevisions.clear()
+    composerTextRevisions.clear()
     lastSuccessfulComposerClears.clear()
     composerSendSettlements.clear()
     notify()
@@ -63,6 +66,15 @@ export function getComposerDraftRevision(sessionId: string): number {
     return composerDraftRevisions.get(sessionId) ?? 0
 }
 
+export function getComposerTextRevision(sessionId: string): number {
+    return composerTextRevisions.get(sessionId) ?? 0
+}
+
+export function recordComposerTextChange(sessionId: string): void {
+    composerTextRevisions.set(sessionId, getComposerTextRevision(sessionId) + 1)
+    recordComposerDraftChange(sessionId)
+}
+
 export function getSuccessfulComposerClear(sessionId: string) {
     return lastSuccessfulComposerClears.get(sessionId)
 }
@@ -70,7 +82,7 @@ export function getSuccessfulComposerClear(sessionId: string) {
 export function recordSuccessfulComposerClear(sessionId: string, text: string): void {
     if (!text) return
     lastSuccessfulComposerClears.delete(sessionId)
-    lastSuccessfulComposerClears.set(sessionId, { text, revision: getComposerDraftRevision(sessionId) })
+    lastSuccessfulComposerClears.set(sessionId, { text, revision: getComposerTextRevision(sessionId) })
     if (lastSuccessfulComposerClears.size > MAX_RECENT_CLEARS) {
         const oldest = lastSuccessfulComposerClears.keys().next().value
         if (oldest !== undefined) lastSuccessfulComposerClears.delete(oldest)
@@ -87,8 +99,7 @@ export function recordComposerProgrammaticEdit(sessionId: string): void {
         sessionId,
         getComposerProgrammaticEditRevision(sessionId) + 1,
     )
-    composerDraftRevisions.set(sessionId, getComposerDraftRevision(sessionId) + 1)
-    notify()
+    recordComposerTextChange(sessionId)
 }
 
 export function getComposerSendSettlement(sessionId: string | null): SendMessageSettlement | null {
@@ -124,6 +135,7 @@ function reconcileSuccessfulSend(sessionId: string): void {
     if (getComposerDraftRevision(sessionId) !== pending.draftRevision) return
     const sentText = settlement.originalText ?? pending.originalText ?? settlement.text
     const sentAttachmentIds = settlement.attachmentIds ?? pending.attachmentIds
+    if (getDraft(sessionId) === sentText) recordSuccessfulComposerClear(sessionId, sentText)
     if (sentAttachmentIds !== undefined) {
         clearDraftsAfterSend(sessionId, null, sentText, sentAttachmentIds)
         return

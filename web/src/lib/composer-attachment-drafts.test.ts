@@ -61,6 +61,16 @@ describe('composer-attachment-drafts', () => {
         expect(open).not.toHaveBeenCalled()
     })
 
+    it('does not start a cleanup read after a replacement was saved synchronously', async () => {
+        const mod = await import('./composer-attachment-drafts')
+        const open = vi.fn(() => { throw new Error('fixture does not persist writes') })
+        vi.stubGlobal('indexedDB', { open })
+        mod.removeDraftAttachmentsById('s1', ['sent'])
+        mod.saveDraftAttachments('s1', [{ id: 'replacement', file: new File(['replacement'], 'replacement.txt') }])
+        await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1)) // replacement write only
+        expect((await mod.getDraftAttachments('s1')).map(file => file.name)).toEqual(['replacement.txt'])
+    })
+
     it('keeps the newer cached and durable draft when an older cleanup read finishes later', async () => {
         const mod = await import('./composer-attachment-drafts')
         const readStarted = Promise.withResolvers<void>()

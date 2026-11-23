@@ -46,7 +46,7 @@ import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
 import type { AttachmentDraftInput } from '@/lib/composer-attachment-drafts'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
-import { consumePendingComposerSend, getComposerDraftRevision, recordSuccessfulComposerClear, recordComposerDraftChange } from '@/lib/composer-send-state'
+import { consumePendingComposerSend, getComposerDraftRevision, recordSuccessfulComposerClear, recordComposerTextChange, recordComposerDraftChange } from '@/lib/composer-send-state'
 import { persistInactiveComposerAttachments, setComposerDraftSnapshot, updateComposerDraftTextSnapshot, attachmentDraftRevision, resetInactiveComposerAttachmentVisibility } from '@/lib/composer-draft-transfer'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
@@ -550,7 +550,7 @@ export function HappyComposer(props: {
     composerTextRef.current = composerText
     const getCurrentComposerText = useCallback(() => composerTextRef.current, [])
     const setComposerText = useCallback((text: string) => {
-        if (sessionId) recordComposerDraftChange(sessionId)
+        if (sessionId) recordComposerTextChange(sessionId)
         api.composer().setText(text)
     }, [api, sessionId])
     const voiceInput = useVoiceInputPreferences(props.voiceTranscriptionApi ?? null)
@@ -725,7 +725,7 @@ export function HappyComposer(props: {
 
     const recordUserEdit = useCallback(() => {
         userEditGenerationRef.current += 1
-        if (sessionId) recordComposerDraftChange(sessionId)
+        if (sessionId) recordComposerTextChange(sessionId)
     }, [sessionId])
     const handleAttachmentRemove = useCallback(() => {
         userAttachmentGenerationRef.current += 1
@@ -1088,7 +1088,7 @@ export function HappyComposer(props: {
         // Abort recovery can restore the same text as a still-pending
         // successful send. Record it as newer draft state before the delayed
         // settlement arrives so both live and durable cleanup preserve it.
-        if (sessionId) recordComposerDraftChange(sessionId)
+        if (sessionId) recordComposerTextChange(sessionId)
         api.composer().setText(sendError.text)
         // `scheduledAt` is already absolute (presets resolve at send time), so
         // restore it through the normal controlled schedule path in the same
