@@ -143,6 +143,20 @@ describe('scoped history provider', () => {
         expect(failure).toHaveTextContent('none')
         expect(state().sessions).toEqual(['beta'])
     })
+    it('retains a failed deletion after another type also fails', () => {
+        const key = 'a'
+        localStorage.setItem(key, JSON.stringify({ enabled: true, sessions: ['alpha'], files: ['saved file'] }))
+        render(<SearchHistoryProvider storageKey={key}><Controls /></SearchHistoryProvider>)
+        const write = vi.spyOn(Storage.prototype, 'setItem')
+        const rejectWrite = () => write.mockImplementationOnce(() => { throw new Error('blocked') })
+        rejectWrite(); click('remove')
+        rejectWrite(); click('clear files')
+        expect(screen.getByTestId('failed-types')).toHaveTextContent(/^sessions,files$/)
+        click('clear files')
+        expect(screen.getByTestId('failed-types')).toHaveTextContent(/^sessions$/)
+        click('remove')
+        expect(screen.getByTestId('failure')).toHaveTextContent('none')
+    })
     it('keeps operating in memory if localStorage reads and writes throw', () => {
         vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('blocked') })
         vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('quota') })

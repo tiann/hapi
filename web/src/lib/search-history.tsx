@@ -152,7 +152,15 @@ function ScopedSearchHistoryProvider({ storageKey, children }: { storageKey: str
                 const affected = historyTypes.map(type => ({
                     type, queries: saved[type].filter(query => !next[type].includes(query)),
                 })).filter(entry => entry.queries.length > 0)
-                if (affected.length) setFailedWrite({ action, affected })
+                if (affected.length) setFailedWrite(failed => {
+                    const prior = failed?.action === 'delete' ? failed.affected : []
+                    const unresolved = historyTypes.flatMap(type => {
+                        const queries = [...new Set([...prior, ...affected].filter(entry => entry.type === type)
+                            .flatMap(entry => entry.queries))].filter(query => saved[type].includes(query))
+                        return queries.length ? [{ type, queries }] : []
+                    })
+                    return { action, affected: unresolved }
+                })
             }
             setState(suspendedRecording.current ? { ...saved, enabled: false } : saved)
         }
