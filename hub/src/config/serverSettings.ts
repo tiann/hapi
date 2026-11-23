@@ -305,8 +305,9 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         let wxPusherBackgroundOnly = false
         if (wxPusherNotification && !wxPusherDestinations.has('default')) {
             // wxPusherAppToken: env > file > null
-            if (process.env.WXPUSHER_APP_TOKEN) {
-                wxPusherAppToken = process.env.WXPUSHER_APP_TOKEN
+            const envWxPusherToken = process.env.WXPUSHER_APP_TOKEN?.trim()
+            if (envWxPusherToken) {
+                wxPusherAppToken = envWxPusherToken
                 sources.wxPusherAppToken = 'env'
                 if (settings.wxPusherAppToken === undefined) {
                     settings.wxPusherAppToken = wxPusherAppToken
@@ -316,56 +317,59 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                 if (typeof settings.wxPusherAppToken !== 'string') {
                     throw new Error('wxPusherAppToken must be a string')
                 }
-                wxPusherAppToken = settings.wxPusherAppToken
+                wxPusherAppToken = settings.wxPusherAppToken.trim() || null
                 sources.wxPusherAppToken = 'file'
             }
 
-            // wxPusherUids: env > file > []
-            if (process.env.WXPUSHER_UIDS !== undefined) {
-                wxPusherUids = parseCommaSeparatedStrings(process.env.WXPUSHER_UIDS)
-                sources.wxPusherUids = 'env'
-                if (settings.wxPusherUids === undefined) {
-                    settings.wxPusherUids = wxPusherUids
-                    needsSave = true
+            // Recipient settings are not actionable without a default token.
+            if (wxPusherAppToken) {
+                // wxPusherUids: env > file > []
+                if (process.env.WXPUSHER_UIDS !== undefined) {
+                    wxPusherUids = parseCommaSeparatedStrings(process.env.WXPUSHER_UIDS)
+                    sources.wxPusherUids = 'env'
+                    if (settings.wxPusherUids === undefined) {
+                        settings.wxPusherUids = wxPusherUids
+                        needsSave = true
+                    }
+                } else if (settings.wxPusherUids !== undefined) {
+                    wxPusherUids = readStringArraySetting(settings.wxPusherUids, 'wxPusherUids')
+                    sources.wxPusherUids = 'file'
                 }
-            } else if (settings.wxPusherUids !== undefined) {
-                wxPusherUids = readStringArraySetting(settings.wxPusherUids, 'wxPusherUids')
-                sources.wxPusherUids = 'file'
-            }
 
-            // wxPusherTopicIds: env > file > []
-            if (process.env.WXPUSHER_TOPIC_IDS !== undefined) {
-                wxPusherTopicIds = parseTopicIds(process.env.WXPUSHER_TOPIC_IDS)
-                sources.wxPusherTopicIds = 'env'
-                if (settings.wxPusherTopicIds === undefined) {
-                    settings.wxPusherTopicIds = wxPusherTopicIds
-                    needsSave = true
+                // wxPusherTopicIds: env > file > []
+                if (process.env.WXPUSHER_TOPIC_IDS !== undefined) {
+                    wxPusherTopicIds = parseTopicIds(process.env.WXPUSHER_TOPIC_IDS)
+                    sources.wxPusherTopicIds = 'env'
+                    if (settings.wxPusherTopicIds === undefined) {
+                        settings.wxPusherTopicIds = wxPusherTopicIds
+                        needsSave = true
+                    }
+                } else if (settings.wxPusherTopicIds !== undefined) {
+                    wxPusherTopicIds = readTopicIdArraySetting(settings.wxPusherTopicIds, 'wxPusherTopicIds')
+                    sources.wxPusherTopicIds = 'file'
                 }
-            } else if (settings.wxPusherTopicIds !== undefined) {
-                wxPusherTopicIds = readTopicIdArraySetting(settings.wxPusherTopicIds, 'wxPusherTopicIds')
-                sources.wxPusherTopicIds = 'file'
-            }
 
-            // wxPusherBackgroundOnly: env > file > false
-            if (process.env.WXPUSHER_BACKGROUND_ONLY !== undefined) {
-                wxPusherBackgroundOnly = process.env.WXPUSHER_BACKGROUND_ONLY === 'true'
-                sources.wxPusherBackgroundOnly = 'env'
-                if (settings.wxPusherBackgroundOnly === undefined) {
-                    settings.wxPusherBackgroundOnly = wxPusherBackgroundOnly
-                    needsSave = true
+                // wxPusherBackgroundOnly: env > file > false
+                if (process.env.WXPUSHER_BACKGROUND_ONLY !== undefined) {
+                    wxPusherBackgroundOnly = process.env.WXPUSHER_BACKGROUND_ONLY === 'true'
+                    sources.wxPusherBackgroundOnly = 'env'
+                    if (settings.wxPusherBackgroundOnly === undefined) {
+                        settings.wxPusherBackgroundOnly = wxPusherBackgroundOnly
+                        needsSave = true
+                    }
+                } else if (typeof settings.wxPusherBackgroundOnly === 'boolean') {
+                    wxPusherBackgroundOnly = settings.wxPusherBackgroundOnly
+                    sources.wxPusherBackgroundOnly = 'file'
+                } else if (settings.wxPusherBackgroundOnly !== undefined) {
+                    throw new Error('wxPusherBackgroundOnly must be a boolean')
                 }
-            } else if (typeof settings.wxPusherBackgroundOnly === 'boolean') {
-                wxPusherBackgroundOnly = settings.wxPusherBackgroundOnly
-                sources.wxPusherBackgroundOnly = 'file'
-            } else if (settings.wxPusherBackgroundOnly !== undefined) {
-                throw new Error('wxPusherBackgroundOnly must be a boolean')
-            }
 
-            if (wxPusherAppToken && (wxPusherUids.length || wxPusherTopicIds.length)) {
-                assertWxPusherRecipientLimits(wxPusherUids, wxPusherTopicIds, 'Legacy WxPusher configuration')
-                setLegacyDefaultDestination(wxPusherDestinations, {
-                    appToken: wxPusherAppToken, uids: wxPusherUids, topicIds: wxPusherTopicIds, backgroundOnly: wxPusherBackgroundOnly,
-                })
+                if (wxPusherUids.length || wxPusherTopicIds.length) {
+                    assertWxPusherRecipientLimits(wxPusherUids, wxPusherTopicIds, 'Legacy WxPusher configuration')
+                    setLegacyDefaultDestination(wxPusherDestinations, {
+                        appToken: wxPusherAppToken, uids: wxPusherUids, topicIds: wxPusherTopicIds, backgroundOnly: wxPusherBackgroundOnly,
+                    })
+                }
             }
         }
 

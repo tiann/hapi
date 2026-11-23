@@ -429,16 +429,15 @@ export class NotificationHub {
     }
 
     private async notifySessionCompletion(session: Session, reason: SessionEndReason): Promise<void> {
-        for (const channel of this.channels) {
-            if (typeof channel.sendSessionCompletion !== 'function') {
-                continue
-            }
+        // Completion providers are independent. A slow network request must
+        // not delay a subsequent provider's delivery or timeout budget.
+        await Promise.all(this.channels.map(async channel => {
             try {
-                await channel.sendSessionCompletion(session, reason)
+                await channel.sendSessionCompletion?.(session, reason)
             } catch (error) {
                 console.error('[NotificationHub] Failed to send session completion notification:', error)
             }
-        }
+        }))
     }
 
     private async notifyModelError(session: Session, notification: ModelErrorNotification): Promise<boolean> {

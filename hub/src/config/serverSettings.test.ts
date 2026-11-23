@@ -312,8 +312,21 @@ describe('loadServerSettings', () => {
         expect(result.sources.wxPusherTopicIds).toBe('file')
     })
 
+    it('does not parse or persist flat recipient settings without a usable app token', async () => {
+        dir = makeTempDir()
+        const file = join(dir, 'settings.json')
+        const saved = { wxPusherAppToken: '   ', wxPusherUids: 42 }
+        writeFileSync(file, JSON.stringify(saved))
+        process.env.WXPUSHER_TOPIC_IDS = '12,nope'
+        const { settings } = await loadServerSettings(dir)
+        expect(settings.wxPusherAppToken).toBeNull()
+        expect(settings.wxPusherDestinations.size).toBe(0)
+        expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject(saved)
+    })
+
     it('rejects invalid WxPusher topic IDs from the environment', async () => {
         dir = makeTempDir()
+        process.env.WXPUSHER_APP_TOKEN = ' AT_TEST '
         process.env.WXPUSHER_TOPIC_IDS = '12,nope'
 
         await expect(loadServerSettings(dir)).rejects.toThrow(
@@ -324,6 +337,7 @@ describe('loadServerSettings', () => {
     it('rejects invalid WxPusher recipient arrays from settings.json', async () => {
         dir = makeTempDir()
         writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            wxPusherAppToken: 'AT_TEST',
             wxPusherUids: ['UID_OK', 123],
         }))
 

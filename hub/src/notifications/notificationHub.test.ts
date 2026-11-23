@@ -249,6 +249,22 @@ describe('NotificationHub', () => {
         hub.stop()
     })
 
+    it('starts a second completion provider while the first is still pending', async () => {
+        const engine = new FakeSyncEngine()
+        const held = Promise.withResolvers<void>()
+        const first = new StubChannel()
+        first.sendSessionCompletion = async () => { await held.promise }
+        const second = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [first, second])
+        const session = createSession({ id: 'parallel-completion', active: false })
+        engine.setSession(session)
+        try {
+            engine.emit({ type: 'session-ended', sessionId: session.id, reason: 'completed' })
+            await sleep(5)
+            expect(second.sessionCompletions.map(entry => entry.id)).toEqual([session.id])
+        } finally { held.resolve(); hub.stop() }
+    })
+
     it('fires model-error notification when lastModelError.atTs advances', async () => {
         const engine = new FakeSyncEngine()
         const channel = new StubChannel()
