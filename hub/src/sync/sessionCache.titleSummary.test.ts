@@ -73,3 +73,25 @@ describe('SessionCache.updateSessionSummary', () => {
         expect(updated?.metadata?.summary?.text).toBe('Generated title')
     })
 })
+
+describe('SessionCache.setSessionTranslateInput', () => {
+    it('turns the toggle on and off, keeping other metadata and publishing updates', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const created = cache.getOrCreateSession(
+            'translate-session',
+            { path: '/tmp', host: 'localhost', name: 'Manual name' },
+            null,
+            'default'
+        )
+
+        await cache.setSessionTranslateInput(created.id, true)
+        expect(cache.getSession(created.id)?.metadata).toMatchObject({ name: 'Manual name', translateInput: true })
+
+        // `false` is stored explicitly so carry-forward cannot resurrect `true`.
+        await cache.setSessionTranslateInput(created.id, false)
+        expect(store.sessions.getSession(created.id)?.metadata).toMatchObject({ translateInput: false })
+        expect(events.some((event) => event.type === 'session-updated')).toBe(true)
+    })
+})

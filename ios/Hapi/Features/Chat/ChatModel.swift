@@ -143,6 +143,16 @@ final class ChatModel {
         }
     }
 
+    /// `GET /api/features` `inputTranslation.available` (false until loaded
+    /// or on an older hub). The menu toggle also shows while the session's
+    /// translation is already on, so it can always be turned off.
+    private(set) var inputTranslationAvailable = false
+    @ObservationIgnored private var featuresTask: Task<Void, Never>?
+
+    var showsTranslateInputToggle: Bool {
+        inputTranslationAvailable || interactor.translateInputEnabled
+    }
+
     /// Lifecycle actions need a known state: nil until the detail or the
     /// list row is loaded (the header defaults to inactive before that).
     var sessionIsActive: Bool? {
@@ -283,6 +293,17 @@ final class ChatModel {
             self?.scheduleRecompute()
         }
         interactor.activate()
+        if featuresTask == nil {
+            featuresTask = Task { [weak self] in
+                guard let api = self?.hub.api else { return }
+                guard let features = try? await api.features() else {
+                    // Retry on the next start (e.g. opened while offline).
+                    self?.featuresTask = nil
+                    return
+                }
+                self?.inputTranslationAvailable = features.isInputTranslationAvailable
+            }
+        }
         dictation.onEvent = { [weak self] event in
             guard let self else { return }
             switch event {

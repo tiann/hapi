@@ -71,6 +71,23 @@ struct EndpointRequestTests {
         #expect(bodyString(request) == "{\"deliveryMode\":\"steer\",\"localId\":\"L1\",\"text\":\"hi\"}")
     }
 
+    @Test func featuresAndTranslateInputToggle() async throws {
+        let harness = try makeHarness(jwt: freshJWT())
+        await harness.performer.enqueue(json: #"{"prChipDisplay":{},"inputTranslation":{"available":true}}"#)
+        await harness.performer.enqueue(json: "{\"ok\":true}")
+
+        let features = try await harness.client.features()
+        #expect(features.isInputTranslationAvailable)
+        try await harness.client.setSessionTranslateInput(id: "s 1", enabled: true)
+
+        let requests = await harness.performer.requests
+        #expect(requests.first?.url?.absoluteString == "\(testHubURLString)/api/features")
+        #expect(requests.first?.httpMethod == "GET")
+        #expect(requests.last?.url?.absoluteString == "\(testHubURLString)/api/sessions/s%201")
+        #expect(requests.last?.httpMethod == "PATCH")
+        #expect(bodyString(requests.last) == "{\"translateInput\":true}")
+    }
+
     @Test func approveWithNestedAnswers() async throws {
         let harness = try makeHarness(jwt: freshJWT())
         await harness.performer.enqueue(json: "{\"ok\":true}")

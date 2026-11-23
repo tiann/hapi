@@ -256,24 +256,27 @@ export function normalizeTitleSuggestion(value: string): string | null {
     return title.slice(0, TITLE_SUGGESTION_MAX_TITLE_CHARS).trim() || null
 }
 
-function chatCompletionsUrl(baseUrl: string): string {
+export function chatCompletionsUrl(baseUrl: string): string {
     const base = baseUrl.replace(/\/+$/, '')
     return base.endsWith('/chat/completions') ? base : `${base}/chat/completions`
 }
 
-function extractProviderText(value: unknown): string | null {
+export function extractProviderText(value: unknown, strict = false): string | null {
     if (value === undefined) return null // physically empty response body
     if (!isObject(value) || !Array.isArray(value.choices)) {
+        if (!strict) return null
         throw new TitleProviderRequestError('Title provider returned malformed JSON or choices', 'invalid-response')
     }
     if (!value.choices.length) return null
     const choice = value.choices[0]
     if (!isObject(choice) || !isObject(choice.message)) {
+        if (!strict) return null
         throw new TitleProviderRequestError('Title provider returned an invalid message', 'invalid-response')
     }
     const content = choice.message.content
     if (content === null) return null
     if (typeof content !== 'string' && !Array.isArray(content)) {
+        if (!strict) return null
         throw new TitleProviderRequestError('Title provider returned invalid message content', 'invalid-response')
     }
     return extractChatText(content)
@@ -396,7 +399,7 @@ export class OpenAICompatibleTitleProvider {
             }
 
             const body = await readTitleProviderResponseBody(response)
-            const text = extractProviderText(body)
+            const text = extractProviderText(body, true)
             if (!text) {
                 throw new TitleProviderRequestError('Title provider returned no text', 'empty-response')
             }

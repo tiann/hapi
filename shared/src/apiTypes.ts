@@ -482,9 +482,10 @@ export const SESSION_NAME_MAX_LENGTH = 255
 
 export const RenameSessionRequestSchema = z.object({
     name: z.string().min(1).max(SESSION_NAME_MAX_LENGTH).optional(),
-    titleLocked: z.boolean().optional()
-}).refine(value => value.name !== undefined || value.titleLocked !== undefined, {
-    message: 'name or titleLocked is required'
+    titleLocked: z.boolean().optional(),
+    translateInput: z.boolean().optional()
+}).refine(value => value.name !== undefined || value.titleLocked !== undefined || value.translateInput !== undefined, {
+    message: 'name, titleLocked, or translateInput is required'
 })
 
 export type RenameSessionRequest = z.infer<typeof RenameSessionRequestSchema>

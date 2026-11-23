@@ -694,6 +694,11 @@
     <string name="tool_custom_answer">Свой ответ</string>
     <string name="tool_answer_note">Примечание</string>
     <string name="chat_view_full_message">Показать сообщение целиком</string>
+    <string name="chat_translate_input_on">Переводить мои сообщения на английский</string>
+    <string name="chat_translate_input_off">Не переводить мои сообщения</string>
+    <string name="chat_translated_label">Переведено</string>
+    <string name="chat_translated_show_sent">Показать английский текст для агента</string>
+    <string name="chat_translated_show_original">Показать оригинал</string>
     <string name="chat_full_message">Сообщение целиком</string>
     <string name="chat_previous_part">Предыдущая часть</string>
     <string name="chat_next_part">Следующая часть</string>

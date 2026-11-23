@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { MessagePrimitive, useAuiState, type TextMessagePart } from '@assistant-ui/react'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
@@ -57,6 +58,10 @@ export function HappyUserMessage() {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.kind === 'system-note'
     })
+    const translatedFrom = useAuiState((s) => (
+        s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+    )?.translatedFrom)
+    const [showSentText, setShowSentText] = useState(false)
     const steered = useAuiState(({ message }) => (
         message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
     )?.steered === true)
@@ -143,7 +148,11 @@ export function HappyUserMessage() {
     const importIndex = ctx.metadata?.conversationBranch && localId?.startsWith('branch-')
         ? text.indexOf(importMarker) : -1
     const importedReference = importIndex >= 0 ? text.slice(0, importIndex) : null
-    const visibleText = importIndex >= 0 ? text.slice(importIndex + importMarker.length) : text
+    const sentText = importIndex >= 0 ? text.slice(importIndex + importMarker.length) : text
+    // Translated prompts show what the user typed by default; the English that
+    // actually reached the agent is one tap away.
+    const isTranslated = typeof translatedFrom === 'string' && importIndex < 0
+    const visibleText = isTranslated && !showSentText ? translatedFrom : sentText
     const hasText = visibleText.length > 0
     const hasAttachments = attachments && attachments.length > 0
 
@@ -170,6 +179,18 @@ export function HappyUserMessage() {
                         </div>
                     )}
                 </div>
+                {isTranslated ? (
+                    <button
+                        type="button"
+                        aria-pressed={showSentText}
+                        onClick={() => setShowSentText((value) => !value)}
+                        className="mt-1 inline-flex items-center gap-1 text-[10px] leading-none text-[var(--app-hint)] hover:underline"
+                    >
+                        <span>{t('chat.translated.label')}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{t(showSentText ? 'chat.translated.showOriginal' : 'chat.translated.showSent')}</span>
+                    </button>
+                ) : null}
                 {steered ? (
                     <span
                         title={t('queuedMessages.steeredBadgeTitle')}
@@ -181,7 +202,7 @@ export function HappyUserMessage() {
             </div>
             <MessageActions
                 align="end"
-                copyText={hasText ? text : undefined}
+                copyText={hasText ? (isTranslated ? visibleText : text) : undefined}
                 messageElementId={elementId}
                 onBranch={!historyLocked && ctx.onBranchConversation && !isTranscriptEcho && (localId || sourceMessageId) && invokedAt != null
                     ? () => localId ? ctx.onBranchConversation?.(localId) : ctx.onBranchConversation?.(undefined, sourceMessageId) : undefined}

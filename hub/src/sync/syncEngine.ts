@@ -53,6 +53,7 @@ import {
     type OpenAICompatibleTitleProviderConfig,
     type TitleSuggestionService
 } from './titleSuggestion'
+import { createInputTranslationService, type InputTranslationService } from './inputTranslation'
 import { createPromptTitle } from './promptTitle'
 import { resolveForkBoundary, resolveRewindBoundary, invokedTailSeq, type ResolvedBoundary } from './forkBoundary'
 import { buildForkSessionSummary } from './forkSessionSummary'
@@ -239,6 +240,7 @@ export class SyncEngine {
     private readonly machineCache: MachineCache
     private readonly messageService: MessageService
     private readonly titleSuggestionService: TitleSuggestionService
+    private readonly inputTranslationService: InputTranslationService
     private readonly automaticTitleSuggestionService: AutomaticTitleSuggestionService
     /** Completed turns whose final chat message may still be in transit. */
     private readonly titleTurnCompletedIds = new Set<string>()
@@ -360,11 +362,13 @@ export class SyncEngine {
             }
         })
         this.machineCache = new MachineCache(store, this.eventPublisher)
+        this.inputTranslationService = createInputTranslationService()
         this.messageService = new MessageService(
             store,
             io,
             this.eventPublisher,
-            (sessionId, updatedAt) => this.recordSessionActivity(sessionId, updatedAt)
+            (sessionId, updatedAt) => this.recordSessionActivity(sessionId, updatedAt),
+            this.inputTranslationService
         )
         this.titleSuggestionService = createTitleSuggestionService(store, titleProviderConfig)
         this.automaticTitleSuggestionService = new AutomaticTitleSuggestionService(
@@ -4197,6 +4201,18 @@ export class SyncEngine {
         mutate: (current: ExternalRef[]) => ExternalRef[]
     ): Promise<ExternalRef[]> {
         return await this.sessionCache.mutateSessionExternalRefs(sessionId, mutate)
+    }
+
+    /** Whether a translation provider is configured (drives the web toggle's visibility). */
+    isInputTranslationAvailable(): boolean {
+        return this.inputTranslationService.available
+    }
+
+    async setSessionTranslateInput(sessionId: string, enabled: boolean): Promise<void> {
+        if (enabled && !this.inputTranslationService.available) {
+            throw new Error('Input translation is not configured on this hub')
+        }
+        await this.sessionCache.setSessionTranslateInput(sessionId, enabled)
     }
 
     async suggestSessionTitle(sessionId: string): Promise<string> {

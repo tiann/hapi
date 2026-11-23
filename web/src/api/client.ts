@@ -1468,9 +1468,17 @@ export class ApiClient {
         })
     }
 
+    async setSessionTranslateInput(sessionId: string, enabled: boolean): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ translateInput: enabled })
+        })
+    }
+
     async getFeatures(): Promise<{
         githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
         prChipDisplay: import('@hapi/protocol').PrChipDisplayProfile
+        inputTranslation?: { available: boolean }
     }> {
         return await this.request('/api/features')
     }
@@ -1478,6 +1486,7 @@ export class ApiClient {
     async patchFeatures(patch: { githubPrAwareness?: boolean }): Promise<{
         githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
         prChipDisplay: import('@hapi/protocol').PrChipDisplayProfile
+        inputTranslation?: { available: boolean }
     }> {
         return await this.request('/api/features', {
             method: 'PATCH',
