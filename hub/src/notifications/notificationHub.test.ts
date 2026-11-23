@@ -916,16 +916,22 @@ describe('NotificationHub', () => {
     it('continues with later completion channels after a WxPusher request times out', async () => {
         const engine = new FakeSyncEngine()
         const laterChannel = new StubChannel()
+        const aborted = Promise.withResolvers<unknown>()
+        let observedSignal: AbortSignal | null | undefined
         const originalFetch = globalThis.fetch
         const originalConsoleError = console.error
         const fetchMock = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
             const signal = init?.signal
+            observedSignal = signal
             return await new Promise<Response>((_resolve, reject) => {
                 if (!signal) {
                     reject(new Error('missing abort signal'))
                     return
                 }
-                const rejectOnAbort = () => reject(signal.reason ?? new DOMException('The operation was aborted.', 'AbortError'))
+                const rejectOnAbort = () => {
+                    aborted.resolve(signal.reason)
+                    reject(signal.reason)
+                }
                 if (signal.aborted) {
                     rejectOnAbort()
                     return
@@ -955,7 +961,9 @@ describe('NotificationHub', () => {
                 sessionId: session.id,
                 reason: 'completed' satisfies SessionEndReason
             })
-            await sleep(25)
+            await expect(Promise.race([aborted.promise, sleep(500).then(() => null)]))
+                .resolves.toMatchObject({ name: 'TimeoutError' })
+            expect(observedSignal?.aborted).toBe(true)
 
             expect(laterChannel.sessionCompletions).toHaveLength(1)
             hub.stop()
