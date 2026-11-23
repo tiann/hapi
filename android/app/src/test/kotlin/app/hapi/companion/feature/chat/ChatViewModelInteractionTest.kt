@@ -243,6 +243,9 @@ private class RecordingChatApi : ChatSessionApi {
     var featuresResult: FeaturesResponse = FeaturesResponse()
     override suspend fun getFeatures(): FeaturesResponse = featuresResult
 
+    var hubSettingsResult: app.hapi.protocol.wire.HubSettingsResponse = app.hapi.protocol.wire.HubSettingsResponse()
+    override suspend fun getHubSettings(): app.hapi.protocol.wire.HubSettingsResponse = hubSettingsResult
+
     val translateCalls = MutableStateFlow<List<Pair<String, Boolean>>>(emptyList())
     var translateFailure: Exception? = null
     override suspend fun setSessionTranslateInput(sessionId: String, enabled: Boolean) {
@@ -1841,6 +1844,23 @@ class ChatViewModelInteractionTest {
         assertIs<ChatNotice.TranslateInputFailed>(notice)
         // A failed PATCH leaves the cached flag untouched.
         assertTrue(harness.sessionStore.currentDetail(IX_SESSION)?.metadata?.translateInput == true)
+    }
+
+    @Test
+    fun `translate toggle follows the hub default until the session chooses`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.api.featuresResult = FeaturesResponse(inputTranslation = InputTranslationFeature(available = true))
+        harness.api.hubSettingsResult = app.hapi.protocol.wire.HubSettingsResponse(translateInputByDefault = true)
+        harness.viewModel.start()
+
+        // No explicit metadata.translateInput: the hub default turns it on.
+        harness.viewModel.uiState.first { it.header.translateInput }
+
+        val disabledDetail = detail().copy(metadata = detail().metadata!!.copy(translateInput = false))
+        harness.sessionStore.detailToLoad = disabledDetail
+        harness.viewModel.toggleTranslateInput()
+        harness.api.translateCalls.first { it == listOf(IX_SESSION to false) }
+        harness.viewModel.uiState.first { !it.header.translateInput }
     }
 
     @Test
