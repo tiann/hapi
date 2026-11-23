@@ -1,3 +1,4 @@
+import { isLiveLifecycleState } from '@hapi/protocol/sessionLifecycle'
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import * as Popover from '@radix-ui/react-popover'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
@@ -110,6 +111,8 @@ import {
 import {
     hasAgentForegroundWork,
     hasRunningAttachedJob,
+    hasInProgressJobSession,
+    hasUnarchivedJob,
 } from '@/lib/sessionInProgress'
 import {
     compareDescWithKeyTiebreak,
@@ -239,7 +242,8 @@ export function emptyRunningBuckets(): Record<RunningBucketKey, SessionSummary[]
 export function bucketRunningSessions(
     sessions: SessionSummary[],
     pinInProgressMode: PinInProgressMode,
-    compare: (a: SessionSummary, b: SessionSummary) => number = compareSessionsByOrderKeyDesc
+    compare: (a: SessionSummary, b: SessionSummary) => number = compareSessionsByOrderKeyDesc,
+    now = Date.now()
 ): Record<RunningBucketKey, SessionSummary[]> {
     const buckets = emptyRunningBuckets()
     if (pinInProgressMode === 'off') {
@@ -249,7 +253,7 @@ export function bucketRunningSessions(
         if (session.globalPinned || session.pinned) {
             continue
         }
-        if (!isPinnedInProgressSession(session, pinInProgressMode)) {
+        if (!isPinnedInProgressSession(session, pinInProgressMode, now)) {
             continue
         }
         const agentWorking = hasAgentForegroundWork(session)
@@ -281,15 +285,16 @@ export function bucketRunningSessions(
  */
 export function isPinnedInProgressSession(
     session: SessionSummary,
-    mode: PinInProgressMode
+    mode: PinInProgressMode,
+    now = Date.now()
 ): boolean {
     if (mode === 'off') {
         return false
     }
     if (mode === 'jobs') {
-        return hasRunningAttachedJob(session)
+        return hasInProgressJobSession(session, now)
     }
-    return hasRunningAttachedJob(session) || hasAgentInProgressActivity(session)
+    return hasInProgressJobSession(session, now) || hasAgentInProgressActivity(session)
 }
 
 
@@ -480,7 +485,7 @@ export function filterActiveSessionsOnly(sessions: SessionSummary[], selectedSes
     return sessions.filter(session =>
         session.active
         || session.id === selectedSessionId
-        || hasRunningAttachedJob(session)
+        || hasUnarchivedJob(session)
     )
 }
 
@@ -497,7 +502,7 @@ export function filterSessionsForListStatus(
     if (status === 'active') return filterActiveSessionsOnly(sessions, selectedSessionId)
     return sessions.filter(session =>
         session.id === selectedSessionId
-        || (!session.active && !hasRunningAttachedJob(session))
+        || (!session.active && !hasUnarchivedJob(session))
     )
 }
 
@@ -612,6 +617,14 @@ export function groupSessionsByDirectory(
         })
 }
 
+
+function readClosedProjects(storageKey: string | null): Set<string> {
+    if (!storageKey) return new Set()
+    try {
+        const stored: unknown = JSON.parse(localStorage.getItem(storageKey) ?? '[]')
+        return new Set(Array.isArray(stored) ? stored.filter((key): key is string => typeof key === 'string') : [])
+    } catch { return new Set() }
+}
 
 export function expandSelectedSessionCollapseOverrides(
     overrides: Map<string, boolean>,
@@ -1411,6 +1424,7 @@ function CollapsiblePanel(props: { open: boolean; children: ReactNode }) {
 }
 
 type SessionItemProps = {
+    onRequestDelete: (session: SessionSummary) => void
     session: SessionSummary
     onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     showPath?: boolean
@@ -1470,7 +1484,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const [linkPrOpen, setLinkPrOpen] = useState(false)
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
-    const [deleteOpen, setDeleteOpen] = useState(false)
     const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
     const prChipDisplay = features?.prChipDisplay
     const forkFlow = useForkFlow({
@@ -1509,14 +1522,14 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         ? t('session.action.reopenCursorUnverified')
         : undefined
 
-    const { archiveSession, reopenSession, renameSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, deleteSession, setPinMode, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, setPinMode, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
     )
     const [reopenError, setReopenError] = useState<string | null>(null)
     const holdPanel = useContext(CollapsiblePanelHoldContext)
-    const overlayOpen = menuOpen || renameOpen || linkPrOpen || exportOpen || archiveOpen || deleteOpen || forkFlowOpen || reopenError !== null
+    const overlayOpen = menuOpen || renameOpen || linkPrOpen || exportOpen || archiveOpen || forkFlowOpen || reopenError !== null
     useEffect(() => {
         if (!overlayOpen || !holdPanel) return
         holdPanel(true)
@@ -1620,6 +1633,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const archiveNeedsConfirmation = s.thinking || s.pendingRequestsCount > 0 || (s.backgroundTaskCount ?? 0) > 0
     // The row can turn inactive before the archive request settles (the hub
     // still confirms cleanup); keep the spinner until it does.
+    const canArchive = s.active || isLiveLifecycleState(s.metadata?.lifecycleState)
     const showQuickArchive = s.active || quickArchivePending
     const quickActionCount = (showQuickUnpin ? 1 : 0) + (showQuickArchive ? 1 : 0)
     const hasQuickAction = quickActionCount > 0
@@ -1822,6 +1836,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 sessionId={s.id}
                 sessionTitle={sessionName}
                 sessionActive={s.active}
+                canArchive={canArchive}
                 sessionPinned={Boolean(s.pinned)}
                 sessionGlobalPinned={Boolean(s.globalPinned)}
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
@@ -1838,7 +1853,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 onReopen={cursorReopenDisabledReason ? undefined : () => void handleReopen()}
                 reopenDisabledReason={cursorReopenDisabledReason}
                 reopenHint={cursorReopenUnverifiedHint}
-                onDelete={() => setDeleteOpen(true)}
+                onDelete={() => props.onRequestDelete(s)}
                 anchorPoint={menuAnchorPoint}
             />
 
@@ -1946,16 +1961,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 />
             ) : null}
 
-            {deleteOpen ? (
-                <DeleteSessionDialog
-                    isOpen={true}
-                    sessionId={s.id}
-                    onClose={() => setDeleteOpen(false)}
-                    description={t('dialog.delete.description', { name: sessionName })}
-                    onConfirm={deleteSession}
-                    isPending={isPending}
-                />
-            ) : null}
         </>
     )
 }, (previous, next) =>
@@ -1963,6 +1968,17 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     // The watermark orders REST and SSE updates in the cache. The row renders the job value.
     && shallowEqualExcept(previous.session, next.session, 'attachedJobUpdatedAt')
 )
+
+// Keep confirmation alive if clearing a meter moves or removes its sidebar row.
+function SidebarDeleteDialog({ session, api, onClose }: {
+    session: SessionSummary; api: ApiClient | null; onClose: () => void
+}) {
+    const { t } = useTranslation()
+    const { deleteSession, isPending } = useSessionActions(api, session.id)
+    return <DeleteSessionDialog isOpen api={api} sessionId={session.id} onClose={onClose}
+        description={t('dialog.delete.description', { name: getSessionTitle(session) })}
+        onConfirm={deleteSession} isPending={isPending} />
+}
 
 type PullToRefreshState = 'idle' | 'pulling' | 'ready'
 
@@ -2025,14 +2041,16 @@ export function SessionList(props: {
         machinesById = {},
         onNewSessionInDirectory
     } = props
+    const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null)
     const { features } = useFeatures(api)
     const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
-    const prClockTick = useMinuteTick(githubPrAwarenessEnabled)
+    const hasJobs = useMemo(() => props.sessions.some(hasRunningAttachedJob), [props.sessions])
+    const listClockTick = useMinuteTick(githubPrAwarenessEnabled || hasJobs)
     // Stable between minute ticks so memoized SessionItem rows do not
     // remount on unrelated SSE updates when awareness is off (or mid-minute).
     const prNowMs = useMemo(
         () => (githubPrAwarenessEnabled ? Date.now() : 0),
-        [prClockTick, githubPrAwarenessEnabled]
+        [listClockTick, githubPrAwarenessEnabled]
     )
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
@@ -2054,8 +2072,6 @@ export function SessionList(props: {
         error: scratchlistStatusError,
         refetch: refetchScratchlistSessionIds
     } = useScratchlistSessionIds(api, showScratchlistOnly)
-    // Unread rows stay visible without a filter: collapsed project groups still
-    // show them, and the preview limit never hides them.
     const isSessionUnread = useCallback(
         (session: SessionSummary) => sessionIsUnread(session, {
             lastSeenAt: getSessionLastSeenAt(session.id),
@@ -2064,8 +2080,7 @@ export function SessionList(props: {
         [lastSeenVersion] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const { keepUnreadSessionsVisible } = useKeepUnreadSessionsVisible()
-    // When off, unread rows are treated like any other: collapsed projects fold
-    // completely and the preview limit may hide them.
+    // Unread rows may bypass the preview cap, never their parent folder.
     const previewIsUnread = keepUnreadSessionsVisible ? isSessionUnread : undefined
     const { pinInProgressMode } = usePinInProgressSessions()
     // List sort/filter lives in SessionListView (#2263); jobs mode is #1404.
@@ -2229,7 +2244,8 @@ export function SessionList(props: {
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
     const isSearchFiltering = normalizedQuery.length > 0 || timeRange !== null
-    const isFiltering = isSearchFiltering || listView.unreadOnly || showScratchlistOnly || showActiveOnly || showWorkingOnly
+    const ephemeralFilter = isSearchFiltering || showScratchlistOnly || showActiveOnly || showWorkingOnly
+    const isFiltering = ephemeralFilter || listView.unreadOnly
 
     const contentSearchActive = searchMode === 'content' && normalizedQuery.length > 0
     const contentSearchReady = contentSearchActive
@@ -2551,8 +2567,8 @@ export function SessionList(props: {
             }
             return listComparator(a, b)
         }
-        return bucketRunningSessions(machineFilteredSessions, effectivePinInProgressMode, byRelevanceOrRecent)
-    }, [machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
+        return bucketRunningSessions(machineFilteredSessions, effectivePinInProgressMode, byRelevanceOrRecent, api?.hubClock?.now())
+    }, [api, listClockTick, machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
     // Stopped rows show their stop time only where the list orders them by it:
     // Active first, and no text query (which orders rows by relevance or, for
     // project rows in either search mode, by the legacy comparator).
@@ -2562,16 +2578,9 @@ export function SessionList(props: {
         + runningSessions.pending.length
     const groups = useMemo(
         () => {
+            const inProgressIds = new Set(Object.values(runningSessions).flat().map(session => session.id))
             const grouped = groupSessionsByDirectory(
-                machineFilteredSessions.filter((session) => {
-                    if (session.globalPinned) return false
-                    if (
-                        effectivePinInProgressMode !== 'off'
-                        && !session.pinned
-                        && isPinnedInProgressSession(session, effectivePinInProgressMode)
-                    ) return false
-                    return true
-                }),
+                machineFilteredSessions.filter(session => !session.globalPinned && !inProgressIds.has(session.id)),
                 // Search keeps its own contract: relevance first, then the stable
                 // last-message order for ties, whatever the list view says.
                 hasTextQuery ? undefined : listView
@@ -2581,7 +2590,7 @@ export function SessionList(props: {
             }
             return grouped
         },
-        [machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listView]
+        [runningSessions, machineFilteredSessions, searchScoreIndex, hasTextQuery, listView]
     )
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
@@ -2609,6 +2618,11 @@ export function SessionList(props: {
         const visibleKeys = new Set(groups.map((group) => group.key))
         return allDirectoryGroups.filter((group) => !visibleKeys.has(group.key))
     }, [groups, allDirectoryGroups, effectivePinInProgressMode])
+    // Save explicit folds only, never temporary search expansion or inferred liveness.
+    const identity = api?.getReadStateScope?.()
+    const foldKey = identity ? `hapi.closed-projects.v1:${identity}` : null
+    const [foldRevision, setFoldRevision] = useState(0)
+    const savedFolds = useMemo(() => readClosedProjects(foldKey), [foldKey, foldRevision])
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
@@ -2618,14 +2632,15 @@ export function SessionList(props: {
     const [runningSectionCollapsed, setRunningSectionCollapsed] = useState(false)
     const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false)
     const autoExpandedSelectedSessionKeyRef = useRef<string | null>(null)
+    const previousSelection = useRef(selectedSessionId)
+    const groupOverrides = ephemeralFilter ? filterCollapseOverrides : collapseOverrides
     const isGroupCollapsed = (group: SessionGroup): boolean => {
-        const override = isFiltering
-            ? filterCollapseOverrides.get(group.key)
-            : collapseOverrides.get(group.key)
+        const override = groupOverrides.get(group.key)
         if (override !== undefined) return override
         // Keep matching groups open by default while filtering. Explicit
         // header clicks use a temporary override for the active filter.
-        if (isFiltering) return false
+        if (ephemeralFilter) return false
+        if (savedFolds.has(group.key)) return true
         // Archived-only would otherwise collapse every group (none has an
         // active session), hiding exactly what was asked for.
         if (listView.status === 'archived') return false
@@ -2638,7 +2653,16 @@ export function SessionList(props: {
     }
 
     const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
-        const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
+        if (foldKey && !ephemeralFilter) {
+            const closed = readClosedProjects(foldKey)
+            if (isCollapsed) closed.delete(groupKey)
+            else closed.add(groupKey)
+            try {
+                localStorage.setItem(foldKey, JSON.stringify([...closed]))
+                setFoldRevision(n => n + 1)
+            } catch { /* in-memory override still works */ }
+        }
+        const setOverrides = ephemeralFilter ? setFilterCollapseOverrides : setCollapseOverrides
         setOverrides(prev => {
             const next = new Map(prev)
             next.set(groupKey, !isCollapsed)
@@ -2647,9 +2671,9 @@ export function SessionList(props: {
     }
 
     useEffect(() => {
-        if (isFiltering) return
+        if (ephemeralFilter) return
         setFilterCollapseOverrides(prev => prev.size === 0 ? prev : new Map())
-    }, [isFiltering])
+    }, [ephemeralFilter])
 
     // Per-group reveal cap for paginated session previews. Absent = the configured
     // preview limit; expand/collapse controls move the cap by one preview-sized batch.
@@ -2779,6 +2803,7 @@ export function SessionList(props: {
                                     </div>
                                     {sessions.map((s) => (
                                         <SessionItem
+                                            onRequestDelete={setDeleteTarget}
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}
@@ -2863,6 +2888,7 @@ export function SessionList(props: {
 
     const renderGroupSessionItem = (s: SessionSummary) => (
         <SessionItem
+            onRequestDelete={setDeleteTarget}
             session={s}
             onSelect={props.onSelect}
             showPath={false}
@@ -2884,12 +2910,6 @@ export function SessionList(props: {
     const renderDirectoryGroup = (group: SessionGroup) => {
         const isCollapsed = isGroupCollapsed(group)
         const visibleGroupSessions = getVisibleGroupSessions(group)
-        // A collapsed group still shows its unread rows, so new output in a
-        // quiet project is never folded out of sight. Each row folds on its
-        // own instead of moving to a separate list, so toggling the group
-        // never remounts (and re-animates) the rows that stay visible.
-        const isRowOpen = (s: SessionSummary) => !isCollapsed || (keepUnreadSessionsVisible && isSessionUnread(s))
-        const anyRowOpen = visibleGroupSessions.some(isRowOpen)
         const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
         const currentLimit = Math.min(
             getGroupVisibleCount(group),
@@ -2934,11 +2954,11 @@ export function SessionList(props: {
 
                 {/* Sessions. Spacing lives inside the panels so folded rows take no room. */}
                 <div className="flex flex-col ml-3 pl-1" data-open={!isCollapsed || undefined}>
-                    <CollapsiblePanel open={anyRowOpen}>
+                    <CollapsiblePanel open={!isCollapsed}>
                         <div className="h-1" />
                     </CollapsiblePanel>
                     {visibleGroupSessions.map((s, index) => (
-                        <CollapsiblePanel key={s.id} open={isRowOpen(s)}>
+                        <CollapsiblePanel key={s.id} open={!isCollapsed}>
                             {shouldShowPinnedDivider(visibleGroupSessions, index) ? (
                                 <CollapsiblePanel open={!isCollapsed}>
                                     <div
@@ -2979,7 +2999,7 @@ export function SessionList(props: {
                             </div>
                         </CollapsiblePanel>
                     ) : null}
-                    <CollapsiblePanel open={anyRowOpen}>
+                    <CollapsiblePanel open={!isCollapsed}>
                         <div className="h-0.5" />
                     </CollapsiblePanel>
                 </div>
@@ -2994,6 +3014,7 @@ export function SessionList(props: {
     useEffect(() => {
         if (!selectedSessionId) {
             autoExpandedSelectedSessionKeyRef.current = null
+            previousSelection.current = selectedSessionId
             return
         }
 
@@ -3005,13 +3026,10 @@ export function SessionList(props: {
             g.sessions.some(s => s.id === selectedSessionId)
         )
         if (!group) {
-            // The selected session is not rendered inside any directory group
-            // (e.g. it moved to the pinned "in progress" section). Drop the
-            // guard so it auto-expands again when it transitions back into a
-            // group later.
-            if (!isFiltering) {
-                autoExpandedSelectedSessionKeyRef.current = null
-            }
+            // Selecting a row in a floating bucket is real navigation now,
+            // not a second navigation when the job expires and the row moves.
+            if (machineFilteredSessions.some(s => s.id === selectedSessionId)) previousSelection.current = selectedSessionId
+            if (!isFiltering) autoExpandedSelectedSessionKeyRef.current = null
             return
         }
 
@@ -3019,9 +3037,12 @@ export function SessionList(props: {
         if (autoExpandedSelectedSessionKeyRef.current === autoExpandKey) return
         autoExpandedSelectedSessionKeyRef.current = autoExpandKey
 
-        const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
+        const movedWithoutNavigation = previousSelection.current === selectedSessionId
+        previousSelection.current = selectedSessionId
+        if (movedWithoutNavigation && (groupOverrides.get(group.key) === true || (!ephemeralFilter && savedFolds.has(group.key)))) return
+        const setOverrides = ephemeralFilter ? setFilterCollapseOverrides : setCollapseOverrides
         setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
-    }, [selectedSessionId, groups, isFiltering])
+    }, [selectedSessionId, groups, machineFilteredSessions, isFiltering, ephemeralFilter, savedFolds, groupOverrides])
 
     // Keep a keyboard-unpinned row reachable when it moves into a collapsed or
     // truncated destination section, or fall back to a visible row if removed.
@@ -3059,13 +3080,10 @@ export function SessionList(props: {
         )
         if (targetGroup) {
             const collapsed = isGroupCollapsed(targetGroup)
-            const peekingUnread = collapsed
-                && keepUnreadSessionsVisible
-                && targetGroup.sessions.some((session) => session.id === target.sessionId && isSessionUnread(session))
             let expanding = false
-            if (collapsed && !peekingUnread) {
+            if (collapsed) {
                 expanding = true
-                const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
+                const setOverrides = ephemeralFilter ? setFilterCollapseOverrides : setCollapseOverrides
                 setOverrides((prev) => expandSelectedSessionCollapseOverrides(prev, targetGroup))
             }
 
@@ -3105,8 +3123,7 @@ export function SessionList(props: {
     }, [
         globalPinnedSessions, runningSessions, groups, runningSectionCollapsed,
         collapseOverrides, filterCollapseOverrides, sessionVisibleCounts,
-        isFiltering, selectedSessionId, keepUnreadSessionsVisible,
-        isSessionUnread, sessionPreviewLimit, previewIsUnread,
+        isFiltering, ephemeralFilter, selectedSessionId, sessionPreviewLimit, previewIsUnread,
     ])
 
     // Clean up stale collapse overrides
@@ -3419,6 +3436,7 @@ export function SessionList(props: {
 
     return (
         <div ref={sessionListRef} className="flex min-h-0 w-full flex-1 flex-col">
+            {deleteTarget && <SidebarDeleteDialog key={deleteTarget.id} session={deleteTarget} api={api} onClose={() => setDeleteTarget(null)} />}
             <div className="session-list-scrollbar-offset mx-auto w-full max-w-content shrink-0">
             {showHeaderRow ? (
                 // One toolbar row always. Never flex-wrap: wrapping burned a whole
@@ -3752,6 +3770,7 @@ export function SessionList(props: {
                                 <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
                                     {globalPinnedSessions.map((s) => (
                                         <SessionItem
+                                            onRequestDelete={setDeleteTarget}
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}

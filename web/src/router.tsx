@@ -444,6 +444,7 @@ function SessionPage() {
     const {
         session,
         error: sessionError,
+        isFetching: checkingSession,
         refetch: refetchSession,
     } = useSession(api, sessionId)
     const {
@@ -956,6 +957,7 @@ function SessionPage() {
 
     return (
         <SessionChat
+            checkingSession={checkingSession}
             readThroughRevision={readThroughRevision}
             api={api}
             titleSuggestionAvailable={titleSuggestionAvailable}

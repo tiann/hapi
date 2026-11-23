@@ -33,7 +33,7 @@ import { useUnseenBlockCount } from '@/hooks/useUnseenBlockCount'
 import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
 import { isQueuedForInvocation } from '@/lib/messages'
 import { sendVoiceMessage } from '@/lib/dictationSend'
-import { inactiveSessionCanResume } from '@/lib/sessionResume'
+import { inactiveSessionBannerKey, inactiveSessionCanResume } from '@/lib/sessionResume'
 import {
     getCodexModelReasoningEfforts,
     supportsCodexReasoningEffort
@@ -664,6 +664,7 @@ type PendingRequestTarget = {
 }
 
 type SessionChatProps = {
+    checkingSession?: boolean
     readThroughRevision?: number
     api: ApiClient
     titleSuggestionAvailable?: boolean
@@ -809,6 +810,7 @@ function SessionChatInner(props: SessionChatProps) {
         props.messages.length,
         props.cursorChatOnDisk
     )
+    const inactiveBanner = inactiveSessionBannerKey(props.session, Boolean(props.checkingSession), inactiveCanResume)
     const terminalSupported = isRemoteTerminalSupported(props.session.metadata)
     // Offer the agent terminal only for an ACTIVE PTY session: a 'remote'/SDK
     // session has no agent PTY, and an archived/inactive one has no live PTY (and
@@ -2363,11 +2365,9 @@ function SessionChatInner(props: SessionChatProps) {
                 <TeamPanel teamState={props.session.teamState} />
             )}
 
-            {sessionInactive ? (
+            {inactiveBanner ? (
                 <div className="mx-auto w-full max-w-content bg-[var(--app-subtle-bg)] p-3 text-center text-sm text-[var(--app-hint)]">
-                    {inactiveCanResume
-                        ? t('session.inactive.autoResume')
-                        : t('session.inactive.cannotResume')}
+                    {t(inactiveBanner)}
                 </div>
             ) : null}
 
