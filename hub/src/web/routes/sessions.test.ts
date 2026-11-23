@@ -589,7 +589,7 @@ describe('sessions routes', () => {
     })
 
     it('writes generated titles through the summary metadata endpoint', async () => {
-        const updates: Array<[string, string, boolean | { clearName?: boolean; titleLocked?: boolean }]> = []
+        const updates: Array<[string, string, boolean | { clearName?: boolean; titleLocked?: boolean; expectedName?: string | null }]> = []
         const { app } = createApp(createSession(), {
             updateSessionSummary: async (sessionId, text, options) => {
                 updates.push([sessionId, text, options ?? {}])
@@ -599,11 +599,11 @@ describe('sessions routes', () => {
         const response = await app.request('/api/sessions/session-1/summary', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: '  Generated title  ', clearName: true })
+            body: JSON.stringify({ text: '  Generated title  ', clearName: true, expectedName: null })
         })
 
         expect(response.status).toBe(200)
-        expect(updates).toEqual([['session-1', 'Generated title', { clearName: true }]])
+        expect(updates).toEqual([['session-1', 'Generated title', { clearName: true, expectedName: null }]])
     })
 
     it('rejects an empty summary', async () => {

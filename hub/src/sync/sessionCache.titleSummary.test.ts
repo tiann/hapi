@@ -56,6 +56,41 @@ describe('SessionCache.updateSessionSummary', () => {
         expect(store.sessions.getSession(created.id)?.metadata).not.toHaveProperty('name')
     })
 
+    it.each([null, 'Previous name'])('rejects replacement if the current manual name differs from %s', async (expectedName) => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        const created = cache.getOrCreateSession(
+            'summary-concurrent-rename',
+            { path: '/tmp', host: 'localhost', name: 'Newer manual name', summary: { text: 'Old summary', updatedAt: 1 } },
+            null,
+            'default'
+        )
+
+        await expect(cache.updateSessionSummary(created.id, 'Generated title', {
+            clearName: true, expectedName, titleLocked: true
+        })).rejects.toThrow('concurrently')
+        expect(store.sessions.getSession(created.id)?.metadata).toMatchObject({
+            name: 'Newer manual name', summary: { text: 'Old summary' }
+        })
+        expect(cache.getSession(created.id)?.metadata?.titleLocked).not.toBe(true)
+    })
+
+    it('rechecks the expected name after retrying a stale cached version', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        const created = cache.getOrCreateSession('summary-stale-cache', { path: '/tmp', host: 'localhost' }, null, 'default')
+        const metadata = { path: '/tmp', host: 'localhost', name: 'Newer manual name' }
+        const result = store.sessions.updateSessionMetadata(created.id, metadata, created.metadataVersion, 'default')
+        expect(result.result).toBe('success')
+        expect(cache.getSession(created.id)?.metadata?.name).toBeUndefined()
+
+        await expect(cache.updateSessionSummary(created.id, 'Generated title', {
+            clearName: true, expectedName: null
+        })).rejects.toThrow('concurrently')
+        expect(store.sessions.getSession(created.id)?.metadata).toHaveProperty('name', 'Newer manual name')
+        expect(store.sessions.getSession(created.id)?.metadata).not.toHaveProperty('summary')
+    })
+
     it('clears a whitespace-only metadata.name when explicitly replacing it with a generated summary', async () => {
         const store = new Store(':memory:')
         const cache = new SessionCache(store, createPublisher([]))

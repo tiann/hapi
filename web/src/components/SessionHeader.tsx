@@ -652,6 +652,7 @@ export function SessionHeader(props: {
                 isOpen={renameOpen}
                 onClose={() => setRenameOpen(false)}
                 currentName={title}
+                currentManualName={session.metadata?.name ?? null}
                 currentTitleLocked={session.metadata?.titleLocked === true}
                 sessionId={session.id}
                 onRename={renameSession}

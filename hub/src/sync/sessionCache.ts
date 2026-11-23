@@ -1543,7 +1543,7 @@ export class SessionCache {
     async updateSessionSummary(
         sessionId: string,
         text: string,
-        options?: boolean | { clearName?: boolean; titleLocked?: boolean }
+        options?: boolean | { clearName?: boolean; titleLocked?: boolean; expectedName?: string | null }
     ): Promise<void> {
         // Keep the generated/native title separate from metadata.name unless
         // the user explicitly saved a generated title as the replacement for
@@ -1552,6 +1552,7 @@ export class SessionCache {
         // the agent-authored fallback.
         const clearName = typeof options === 'object' && options !== null ? Boolean(options.clearName) : false
         const titleLocked = typeof options === 'boolean' ? options : options?.titleLocked
+        const expectedName = typeof options === 'object' ? options?.expectedName : undefined
         for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
             const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
             if (!session) {
@@ -1567,6 +1568,9 @@ export class SessionCache {
                 }
             }
 
+            if (clearName && expectedName !== undefined && (currentMetadata.name ?? null) !== expectedName) {
+                throw new Error('Session title was modified concurrently. Reopen the rename dialog to try again.')
+            }
             if (clearName && Object.prototype.hasOwnProperty.call(newMetadata, 'name')) {
                 delete newMetadata.name
             }

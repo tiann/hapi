@@ -425,6 +425,7 @@ export default {
   'dialog.rename.save': '保存',
   'dialog.rename.saving': '保存中…',
   'dialog.rename.error': '名前を変更できませんでした。もう一度お試しください。',
+  'dialog.rename.concurrentTitle': '別の場所でセッションのタイトルが変更されました。ダイアログを開き直して最新のタイトルを確認してから、もう一度お試しください。',
   'dialog.rename.titleLock': 'エージェントによる更新からタイトルをロック',
   'dialog.rename.lockTitle': 'タイトルをロック：エージェントによる更新を防止',
   'dialog.rename.unlockTitle': 'タイトルのロックを解除：エージェントによる更新を許可',

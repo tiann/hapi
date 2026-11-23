@@ -11,16 +11,27 @@ if (locale === 'en' || locale === 'zh-CN') {
 }
 
 function App() {
+    const conflict = new URL(location.href).searchParams.has('concurrentTitle')
+    const [manualName, setManualName] = React.useState('Original title')
     return (
         <I18nProvider>
             <RenameSessionDialog
                 isOpen={true}
                 onClose={() => undefined}
-                currentName="新会话"
+                currentName={conflict ? manualName : '新会话'}
+                currentManualName={conflict ? manualName : null}
+                onUpdateSummary={conflict ? async (_text, _locked, expectedName) => {
+                    if (expectedName !== manualName) throw new ApiError('Title conflict', 409)
+                    throw new Error('Expected the dialog to send the original manual name')
+                } : undefined}
                 onRename={async () => {
                     if (new URL(location.href).searchParams.has('saveFails')) throw new Error('Fixture save failure')
                 }}
                 onSuggestTitle={async () => {
+                    if (conflict) {
+                        setManualName('Manual title from another tab')
+                        return 'Generated draft'
+                    }
                     throw new ApiError(
                         'HTTP 422 Unprocessable Entity: {"error":"No conversation content","code":"empty"}',
                         422,

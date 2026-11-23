@@ -271,7 +271,7 @@ describe('session dialog title alignment', () => {
         await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Generated title'))
         fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
-        await waitFor(() => expect(onUpdateSummary).toHaveBeenCalledWith('Generated title', false))
+        await waitFor(() => expect(onUpdateSummary).toHaveBeenCalledWith('Generated title', false, null))
         expect(onRename).not.toHaveBeenCalled()
     })
 
@@ -294,7 +294,7 @@ describe('session dialog title alignment', () => {
         await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Generated title'))
         fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
-        await waitFor(() => expect(onUpdateSummary).toHaveBeenCalledWith('Generated title', false))
+        await waitFor(() => expect(onUpdateSummary).toHaveBeenCalledWith('Generated title', false, null))
     })
 
     it('treats any edit to a generated draft as a manual metadata.name rename', async () => {

@@ -1901,6 +1901,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     isOpen={true}
                     onClose={() => setRenameOpen(false)}
                     currentName={sessionName}
+                    currentManualName={s.metadata?.name ?? null}
                     currentTitleLocked={s.metadata?.titleLocked === true}
                     sessionId={s.id}
                     onRename={renameSession}

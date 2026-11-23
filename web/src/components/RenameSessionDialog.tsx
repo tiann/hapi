@@ -15,11 +15,12 @@ type RenameSessionDialogProps = {
     isOpen: boolean
     onClose: () => void
     currentName: string
+    currentManualName?: string | null
     currentTitleLocked?: boolean
     sessionId?: string
     onRename: (newName: string | undefined, titleLocked?: boolean) => Promise<void>
     onSuggestTitle?: () => Promise<string>
-    onUpdateSummary?: (text: string, titleLocked?: boolean) => Promise<void>
+    onUpdateSummary?: (text: string, titleLocked: boolean, expectedName: string | null) => Promise<void>
     isPending: boolean
 }
 
@@ -126,7 +127,7 @@ function formatTitleSuggestionErrorDetail(
 
 export function RenameSessionDialog(props: RenameSessionDialogProps) {
     const { t } = useTranslation()
-    const { isOpen, onClose, currentName, currentTitleLocked = false, sessionId, onRename, onSuggestTitle, onUpdateSummary, isPending } = props
+    const { isOpen, onClose, currentName, currentManualName = null, currentTitleLocked = false, sessionId, onRename, onSuggestTitle, onUpdateSummary, isPending } = props
     const [name, setName] = useState(currentName)
     const [titleLocked, setTitleLocked] = useState(currentTitleLocked)
     const [error, setError] = useState<string | null>(null)
@@ -141,6 +142,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
     const busy = isPending || isGenerating || isSaving
     const openedRef = useRef(false)
     const sessionRef = useRef(sessionId)
+    const openedManualName = useRef(currentManualName)
     const titleLockButtonRef = useRef<HTMLButtonElement>(null)
     const titleLockFue = useFue('session-title-lock')
 
@@ -163,6 +165,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
             generationRef.current += 1
             openedRef.current = true
             sessionRef.current = sessionId
+            openedManualName.current = currentManualName
             setName(currentName)
             setTitleLocked(currentTitleLocked)
             setError(null)
@@ -172,7 +175,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
             setDraftEdited(false)
             setIsGenerating(false)
         }
-    }, [isOpen, currentName, currentTitleLocked, sessionId])
+    }, [isOpen, currentName, currentManualName, currentTitleLocked, sessionId])
 
     const handleGenerate = async () => {
         if (!onSuggestTitle) return
@@ -235,13 +238,17 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
                 // Preserve summary/name ownership when only the lock changes.
                 await onRename(undefined, titleLocked)
             } else if (draftSource === 'generated' && onUpdateSummary) {
-                await onUpdateSummary(trimmed, titleLocked)
+                await onUpdateSummary(trimmed, titleLocked, openedManualName.current)
             } else {
                 await onRename(trimmed, titleLocked)
             }
             if (saveGeneration === generationRef.current) handleClose()
-        } catch {
-            if (saveGeneration === generationRef.current) setError(t('dialog.rename.error'))
+        } catch (error) {
+            if (saveGeneration === generationRef.current) {
+                setError(t(error instanceof ApiError && error.status === 409 && draftSource === 'generated'
+                    ? 'dialog.rename.concurrentTitle'
+                    : 'dialog.rename.error'))
+            }
         } finally {
             setIsSaving(false)
         }

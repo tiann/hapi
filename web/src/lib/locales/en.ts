@@ -458,6 +458,7 @@ export default {
   'dialog.rename.save': 'Save',
   'dialog.rename.saving': 'Saving…',
   'dialog.rename.error': 'Failed to rename. Please try again.',
+  'dialog.rename.concurrentTitle': 'The session title changed elsewhere. Reopen this dialog to check the latest title before trying again.',
   'dialog.rename.titleLock': 'Lock title against agent updates',
   'dialog.rename.lockTitle': 'Lock title: prevent agent updates',
   'dialog.rename.unlockTitle': 'Unlock title: allow agent updates',

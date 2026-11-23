@@ -1532,7 +1532,7 @@ export class ApiClient {
     async updateSessionSummary(
         sessionId: string,
         text: string,
-        options?: boolean | { clearName?: boolean; titleLocked?: boolean },
+        options?: boolean | { clearName?: boolean; titleLocked?: boolean; expectedName?: string | null },
         titleLockedLegacy?: boolean
     ): Promise<void> {
         let clearName = false
@@ -1551,6 +1551,7 @@ export class ApiClient {
             body: JSON.stringify({
                 text,
                 ...(clearName ? { clearName: true } : {}),
+                ...(typeof options === 'object' && options?.expectedName !== undefined ? { expectedName: options.expectedName } : {}),
                 ...(titleLocked !== undefined ? { titleLocked } : {})
             })
         })

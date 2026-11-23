@@ -458,6 +458,7 @@ export default {
   'dialog.rename.save': '保存',
   'dialog.rename.saving': '保存中…',
   'dialog.rename.error': '重命名失败，请重试。',
+  'dialog.rename.concurrentTitle': '会话标题已在别处更改。请重新打开此对话框，确认最新标题后再试。',
   'dialog.rename.titleLock': '锁定标题，阻止 AI 更新',
   'dialog.rename.lockTitle': '锁定标题：阻止 AI 更新',
   'dialog.rename.unlockTitle': '解锁标题：允许 AI 更新',

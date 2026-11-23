@@ -1737,7 +1737,11 @@ export function createSessionsRoutes(
 
         try {
             const summaryOptions = parsed.data.clearName !== undefined
-                ? { clearName: parsed.data.clearName, ...(parsed.data.titleLocked !== undefined ? { titleLocked: parsed.data.titleLocked } : {}) }
+                ? {
+                    clearName: parsed.data.clearName,
+                    ...(parsed.data.titleLocked !== undefined ? { titleLocked: parsed.data.titleLocked } : {}),
+                    ...(parsed.data.expectedName !== undefined ? { expectedName: parsed.data.expectedName } : {})
+                }
                 : parsed.data.titleLocked
             await engine.updateSessionSummary(sessionResult.sessionId, parsed.data.text, summaryOptions)
             return c.json({ ok: true })

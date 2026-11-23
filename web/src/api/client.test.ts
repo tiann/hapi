@@ -183,14 +183,14 @@ describe('ApiClient error mapping', () => {
 
         const api = new ApiClient('test-token')
         await expect(api.suggestSessionTitle('session /?#')).resolves.toEqual({ title: 'Generated title' })
-        await api.updateSessionSummary('session /?#', 'Generated title', true)
+        await api.updateSessionSummary('session /?#', 'Generated title', { clearName: true, expectedName: null })
 
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/session%20%2F%3F%23/title-suggestion')
         expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' })
         expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/sessions/session%20%2F%3F%23/summary')
         expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
             method: 'PATCH',
-            body: JSON.stringify({ text: 'Generated title', clearName: true })
+            body: JSON.stringify({ text: 'Generated title', clearName: true, expectedName: null })
         })
     })
 

@@ -46,3 +46,16 @@ test('an unrelated pending session action disables Save without showing Saving',
     const screenshot = process.env.HAPI_RENAME_PENDING_SCREENSHOT
     if (screenshot) await page.screenshot({ path: screenshot })
 })
+
+
+test('a generated draft reports a stale manual title without discarding the draft', async ({ page }) => {
+    await page.goto('/e2e-fixtures/rename-session-error-fixture.html?locale=en&concurrentTitle=1')
+    await expect(page.getByRole('textbox')).toHaveValue('Original title')
+    await page.getByRole('button', { name: 'Generate' }).click()
+    await expect(page.getByRole('textbox')).toHaveValue('Generated draft')
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(page.getByText('The session title changed elsewhere.', { exact: false })).toBeVisible()
+    await expect(page.getByRole('textbox')).toHaveValue('Generated draft')
+    const screenshot = process.env.HAPI_RENAME_CONFLICT_SCREENSHOT
+    if (screenshot) await page.screenshot({ path: screenshot })
+})
