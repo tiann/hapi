@@ -70,6 +70,9 @@ describe('agent config descriptors', () => {
         expect(resolveHapiYoloPermissionMode('cursor')).toBe('yolo')
         expect(resolveHapiYoloPermissionMode('opencode')).toBe('yolo')
         expect(resolveHapiYoloPermissionMode('kimi')).toBe('yolo')
+        expect(resolveHapiYoloPermissionMode('gemini')).toBe('yolo')
+        expect(resolveHapiYoloPermissionMode('copilot')).toBe('yolo')
+        expect(resolveHapiYoloPermissionMode('agy')).toBe('always-proceed')
     })
 
     test('validates descriptors received from a runner', () => {
