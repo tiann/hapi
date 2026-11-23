@@ -95,6 +95,9 @@ type CumulativeUsageBaseline = {
     // True when modelUsage lists every model with counters, so an absent model
     // is new. False when a result may have advanced counters unseen.
     modelSnapshotKnown: boolean
+    // Models whose baseline predates a result that omitted modelUsage; their
+    // counters may have advanced unseen until they are rebased.
+    staleModels: ReadonlySet<string>
 }
 
 const TOKEN_COUNTER_KEYS: readonly CumulativeModelUsageKey[] = [
@@ -280,7 +283,8 @@ export class SDKToLogConverter {
             totalCostUsd: 0,
             durationApiMs: 0,
             modelUsage: {},
-            modelSnapshotKnown: true
+            modelSnapshotKnown: true,
+            staleModels: new Set()
         }
     }
 
@@ -308,6 +312,7 @@ export class SDKToLogConverter {
         // After a result that hid modelUsage (or with no baseline) every model's
         // counters may have advanced unseen, so none can be differenced.
         const snapshotUnknown = previous?.modelSnapshotKnown !== true
+        const staleModels = new Set(previous?.staleModels ?? [])
         let tokenDeltaIncomplete = snapshotUnknown
         if (resultMsg.modelUsage) {
             const perRoundModelUsage: NonNullable<SDKResultMessage['modelUsage']> = {}
@@ -317,14 +322,26 @@ export class SDKToLogConverter {
                 // Only a known snapshot proves an absent model is new in this
                 // process, so its raw counters are its per-round values.
                 const isNewModel = modelBaseline === undefined && previous?.modelSnapshotKnown === true
-                const counters: ModelUsageCounters = snapshotUnknown ? {} : { ...(modelBaseline ?? {}) }
+                // A snapshot gap or a stale baseline means this model cannot be
+                // differenced; rebase on its raw values and fall back to usage.
+                const untrusted = snapshotUnknown || staleModels.has(model)
+                if (untrusted) tokenDeltaIncomplete = true
+                staleModels.delete(model)
+                const counters: ModelUsageCounters = untrusted ? {} : { ...(modelBaseline ?? {}) }
                 let hasComparableDelta = false
                 let hasNonZeroDelta = false
                 for (const key of CUMULATIVE_MODEL_USAGE_KEYS) {
                     const current = (usage as Record<string, unknown>)[key]
-                    if (typeof current !== 'number') continue
+                    if (typeof current !== 'number') {
+                        // A counter that vanished loses its baseline and rebases when it returns.
+                        if (counters[key] !== undefined) {
+                            delete counters[key]
+                            if (TOKEN_COUNTER_KEYS.includes(key)) tokenDeltaIncomplete = true
+                        }
+                        continue
+                    }
                     counters[key] = current
-                    if (snapshotUnknown) {
+                    if (untrusted) {
                         delete perRoundUsage[key]
                         continue
                     }
@@ -359,12 +376,17 @@ export class SDKToLogConverter {
             modelUsage = perRoundModelUsage
         }
 
+        if (resultMsg.modelUsage === undefined) {
+            for (const model of Object.keys(nextModelUsage)) staleModels.add(model)
+        }
+
         this.previousCumulative = {
             totalCostUsd: resultMsg.total_cost_usd,
             durationApiMs: resultMsg.duration_api_ms,
             modelUsage: nextModelUsage,
             // A result without modelUsage may hide advanced counters.
-            modelSnapshotKnown: resultMsg.modelUsage !== undefined
+            modelSnapshotKnown: resultMsg.modelUsage !== undefined,
+            staleModels
         }
 
         return { totalCostUsd, durationApiMs, modelUsage }

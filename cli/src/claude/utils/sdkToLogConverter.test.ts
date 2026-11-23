@@ -623,7 +623,16 @@ describe('SDKToLogConverter', () => {
                     total_cost_usd: 0.9,
                     duration_api_ms: 5200,
                     usage: { input_tokens: 20, output_tokens: 300 },
-                    modelUsage: { 'claude-opus-5': { outputTokens: 330 } }
+                    modelUsage: {
+                        'claude-opus-5': {
+                            inputTokens: 120,
+                            outputTokens: 330,
+                            cacheReadInputTokens: 3000,
+                            cacheCreationInputTokens: 10,
+                            webSearchRequests: 2,
+                            costUSD: 0.67
+                        }
+                    }
                 }))
                 expect(summaryOf(second)?.total_cost_usd).toBeCloseTo(0.23, 9)
                 expect(summaryOf(second)?.modelUsage).toMatchObject({ 'claude-opus-5': { outputTokens: 90 } })
@@ -733,6 +742,87 @@ describe('SDKToLogConverter', () => {
                 expect(dModels['claude-opus-5'].costUSD).toBeCloseTo(0.5, 9)
                 expect(dModels['claude-haiku-3-5'].outputTokens).toBe(20)
                 expect(dModels['claude-haiku-3-5'].costUSD).toBeCloseTo(0.2, 9)
+            })
+
+            it('rebases a model that was absent across a modelUsage gap', () => {
+                converter.startFreshProcessBaseline()
+                converter.convert(result({
+                    total_cost_usd: 1,
+                    duration_api_ms: 1000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 100 }, 'claude-haiku-3-5': { outputTokens: 50 } }
+                }))
+                converter.convert(result({
+                    total_cost_usd: 2,
+                    duration_api_ms: 2000,
+                    usage: { input_tokens: 1, output_tokens: 10 }
+                }))
+                // Opus returns and is rebased; haiku stays absent and stale.
+                converter.convert(result({
+                    total_cost_usd: 3,
+                    duration_api_ms: 3000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 300 } }
+                }))
+
+                const partial = converter.convert(result({
+                    total_cost_usd: 4,
+                    duration_api_ms: 4000,
+                    usage: { input_tokens: 2, output_tokens: 20 },
+                    modelUsage: {
+                        'claude-opus-5': { outputTokens: 340 },
+                        'claude-haiku-3-5': { outputTokens: 900, contextWindow: 200_000 }
+                    }
+                }))
+                expect(summaryOf(partial)?.modelUsage).toEqual({
+                    'claude-opus-5': {},
+                    'claude-haiku-3-5': { contextWindow: 200_000 }
+                })
+
+                const next = converter.convert(result({
+                    total_cost_usd: 5,
+                    duration_api_ms: 5000,
+                    usage: { input_tokens: 2, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 350 }, 'claude-haiku-3-5': { outputTokens: 930 } }
+                }))
+                expect(summaryOf(next)?.modelUsage).toMatchObject({
+                    'claude-opus-5': { outputTokens: 10 },
+                    'claude-haiku-3-5': { outputTokens: 30 }
+                })
+            })
+
+            it('treats a counter missing from one round as incomplete and rebases it on return', () => {
+                converter.startFreshProcessBaseline()
+                converter.convert(result({
+                    total_cost_usd: 1,
+                    duration_api_ms: 1000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { inputTokens: 10, outputTokens: 100 } }
+                }))
+
+                const missing = converter.convert(result({
+                    total_cost_usd: 2,
+                    duration_api_ms: 2000,
+                    usage: { input_tokens: 2, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 150, contextWindow: 200_000 } }
+                }))
+                expect(summaryOf(missing)?.modelUsage).toEqual({ 'claude-opus-5': { contextWindow: 200_000 } })
+
+                const returned = converter.convert(result({
+                    total_cost_usd: 3,
+                    duration_api_ms: 3000,
+                    usage: { input_tokens: 2, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { inputTokens: 40, outputTokens: 170 } }
+                }))
+                expect(summaryOf(returned)?.modelUsage).toEqual({ 'claude-opus-5': {} })
+
+                const next = converter.convert(result({
+                    total_cost_usd: 4,
+                    duration_api_ms: 4000,
+                    usage: { input_tokens: 2, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { inputTokens: 45, outputTokens: 180 } }
+                }))
+                expect(summaryOf(next)?.modelUsage).toMatchObject({ 'claude-opus-5': { inputTokens: 5, outputTokens: 10 } })
             })
 
             it('drops token counters for every model when one model delta is incomplete', () => {
