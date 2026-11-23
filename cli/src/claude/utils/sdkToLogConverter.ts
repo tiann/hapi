@@ -92,7 +92,17 @@ type CumulativeUsageBaseline = {
     totalCostUsd: number
     durationApiMs: number
     modelUsage: Record<string, ModelUsageCounters>
+    // True when modelUsage lists every model with counters, so an absent model
+    // is new. False when a result may have advanced counters unseen.
+    modelSnapshotKnown: boolean
 }
+
+const TOKEN_COUNTER_KEYS: readonly CumulativeModelUsageKey[] = [
+    'inputTokens',
+    'outputTokens',
+    'cacheReadInputTokens',
+    'cacheCreationInputTokens'
+]
 
 /**
  * Per-round delta of a cumulative counter, or undefined when no trustworthy
@@ -269,7 +279,8 @@ export class SDKToLogConverter {
         this.previousCumulative = {
             totalCostUsd: 0,
             durationApiMs: 0,
-            modelUsage: {}
+            modelUsage: {},
+            modelSnapshotKnown: true
         }
     }
 
@@ -294,21 +305,29 @@ export class SDKToLogConverter {
         // subagent that only appears in some rounds) so their next appearance
         // is still diffed correctly.
         const nextModelUsage: Record<string, ModelUsageCounters> = { ...(previous?.modelUsage ?? {}) }
+        // After a result that hid modelUsage (or with no baseline) every model's
+        // counters may have advanced unseen, so none can be differenced.
+        const snapshotUnknown = previous?.modelSnapshotKnown !== true
+        let tokenDeltaIncomplete = snapshotUnknown
         if (resultMsg.modelUsage) {
             const perRoundModelUsage: NonNullable<SDKResultMessage['modelUsage']> = {}
             for (const [model, usage] of Object.entries(resultMsg.modelUsage)) {
                 const perRoundUsage = { ...usage } as Record<string, unknown>
                 const modelBaseline = previous?.modelUsage?.[model]
-                // With a baseline, a model missing from it is new in this
+                // Only a known snapshot proves an absent model is new in this
                 // process, so its raw counters are its per-round values.
-                const isNewModel = previous !== null && modelBaseline === undefined
-                const counters: ModelUsageCounters = { ...(modelBaseline ?? {}) }
+                const isNewModel = modelBaseline === undefined && previous?.modelSnapshotKnown === true
+                const counters: ModelUsageCounters = snapshotUnknown ? {} : { ...(modelBaseline ?? {}) }
                 let hasComparableDelta = false
                 let hasNonZeroDelta = false
                 for (const key of CUMULATIVE_MODEL_USAGE_KEYS) {
                     const current = (usage as Record<string, unknown>)[key]
                     if (typeof current !== 'number') continue
                     counters[key] = current
+                    if (snapshotUnknown) {
+                        delete perRoundUsage[key]
+                        continue
+                    }
                     if (isNewModel) {
                         perRoundUsage[key] = current
                         continue
@@ -320,6 +339,7 @@ export class SDKToLogConverter {
                         if (delta > 0) hasNonZeroDelta = true
                     } else {
                         delete perRoundUsage[key]
+                        if (TOKEN_COUNTER_KEYS.includes(key)) tokenDeltaIncomplete = true
                     }
                 }
                 nextModelUsage[model] = counters
@@ -327,13 +347,24 @@ export class SDKToLogConverter {
                 if (modelBaseline !== undefined && hasComparableDelta && !hasNonZeroDelta) continue
                 perRoundModelUsage[model] = perRoundUsage as NonNullable<SDKResultMessage['modelUsage']>[string]
             }
+            // A partial token breakdown would be summed with the gap as zero, so
+            // drop all token counters and let the round's usage stand in.
+            // costUSD keeps its own per-model delta: nothing sums it across
+            // models and it cannot understate a token total.
+            if (tokenDeltaIncomplete) {
+                for (const usage of Object.values(perRoundModelUsage)) {
+                    for (const key of TOKEN_COUNTER_KEYS) delete (usage as Record<string, unknown>)[key]
+                }
+            }
             modelUsage = perRoundModelUsage
         }
 
         this.previousCumulative = {
             totalCostUsd: resultMsg.total_cost_usd,
             durationApiMs: resultMsg.duration_api_ms,
-            modelUsage: nextModelUsage
+            modelUsage: nextModelUsage,
+            // A result without modelUsage may hide advanced counters.
+            modelSnapshotKnown: resultMsg.modelUsage !== undefined
         }
 
         return { totalCostUsd, durationApiMs, modelUsage }
