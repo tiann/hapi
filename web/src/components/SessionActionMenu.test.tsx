@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
 import { followSessionTail, getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
@@ -107,23 +107,32 @@ describe('SessionActionMenu - Mark unread action', () => {
 })
 
 describe('SessionActionMenu - positioning', () => {
+    it('repositions when an open menu gains a read action at the bottom edge', () => {
+        let reflow!: () => void
+        vi.stubGlobal('ResizeObserver', class {
+            constructor(callback: () => void) { reflow = callback }
+            observe() {}
+            disconnect() {}
+        })
+        const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(160)
+        try {
+            const anchorPoint = { x: 160, y: window.innerHeight - 20 }
+            const { props, rerender } = renderMenu({ anchorPoint, readTarget: { id: 'growing-menu', contentRevision: 0 } })
+            const menu = screen.getByRole('menu').parentElement!
+            expect(menu.style.top).toContain(`${anchorPoint.y - 168}px`)
+            height.mockReturnValue(200)
+            rerender(<I18nProvider><SessionActionMenu {...props} readTarget={{ id: 'growing-menu', contentRevision: 1 }} /></I18nProvider>)
+            expect(screen.getByRole('menuitem', { name: 'Mark as read' })).toBeInTheDocument()
+            act(() => reflow())
+            expect(menu.style.top).toContain(`${anchorPoint.y - 208}px`)
+        } finally { height.mockRestore(); vi.unstubAllGlobals() }
+    })
+
     it('centers the menu on the supplied anchor', () => {
         const originalInnerWidth = window.innerWidth
         Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
-        const menuRect = {
-            bottom: 320,
-            height: 320,
-            left: 0,
-            right: 240,
-            top: 0,
-            width: 240,
-            x: 0,
-            y: 0,
-            toJSON: () => ({})
-        } as DOMRect
-        const getBoundingClientRect = vi
-            .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
-            .mockReturnValue(menuRect)
+        const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(320)
+        const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(240)
 
         try {
             renderMenu({ anchorPoint: { x: 160, y: 100 } })
@@ -133,7 +142,8 @@ describe('SessionActionMenu - positioning', () => {
             expect(menu).toHaveStyle({ left: '40px' })
             expect(screen.getAllByRole('menuitem')[0]).toHaveClass('pl-3', 'pr-[42px]')
         } finally {
-            getBoundingClientRect.mockRestore()
+            height.mockRestore()
+            width.mockRestore()
             Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth })
         }
     })
@@ -141,27 +151,16 @@ describe('SessionActionMenu - positioning', () => {
     it('clamps the trigger-centered menu at the viewport edge', () => {
         const originalInnerWidth = window.innerWidth
         Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
-        const menuRect = {
-            bottom: 320,
-            height: 320,
-            left: 0,
-            right: 240,
-            top: 0,
-            width: 240,
-            x: 0,
-            y: 0,
-            toJSON: () => ({})
-        } as DOMRect
-        const getBoundingClientRect = vi
-            .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
-            .mockReturnValue(menuRect)
+        const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(320)
+        const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(240)
 
         try {
             renderMenu({ anchorPoint: { x: 100, y: 100 } })
 
             expect(screen.getByRole('menu').parentElement).toHaveStyle({ left: '8px' })
         } finally {
-            getBoundingClientRect.mockRestore()
+            height.mockRestore()
+            width.mockRestore()
             Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth })
         }
     })

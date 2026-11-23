@@ -358,7 +358,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     return (
         <div
             ref={menuRef}
-            className="fixed z-50 box-border w-max max-w-[calc(100vw-16px)] rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-lg animate-menu-pop"
+            className="fixed z-50 box-border w-max max-w-[calc(100vw-16px)] max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-16px)] overflow-y-auto rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-lg animate-menu-pop"
             style={menuStyle}
         >
             {linkedPr ? (
