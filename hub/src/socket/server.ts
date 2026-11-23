@@ -11,6 +11,7 @@ import { registerTerminalHandlers } from './handlers/terminal'
 import { RpcRegistry } from './rpcRegistry'
 import { SOCKET_MAX_HTTP_BUFFER_SIZE } from './socketLimits'
 import type { BackgroundTask } from '@hapi/protocol/types'
+import type { ClientToServerEvents } from '@hapi/protocol'
 import type { SyncEvent } from '../sync/syncEngine'
 import { TerminalRegistry } from './terminalRegistry'
 import { clearUserTerminalBuffer } from './userTerminalBuffer'
@@ -40,7 +41,7 @@ export type SocketServerDeps = {
     getSession?: (sessionId: string) => { active: boolean; namespace: string } | null
     onWebappEvent?: (event: SyncEvent) => void
     onSessionAlive?: (payload: { sid: string; time: number; thinking?: boolean; mode?: 'local' | 'remote' }) => void
-    onSessionReady?: (payload: { sid: string; time: number }) => void
+    onSessionReady?: ClientToServerEvents['session-ready']
     onSessionEnd?: (payload: { sid: string; time: number }) => void
     onMachineAlive?: (payload: { machineId: string; time: number; health?: unknown }) => void
     onSessionChildExited?: (payload: { machineId: string; sid: string; pid: number; processStartMarker?: string; time: number; namespace: string }) => void

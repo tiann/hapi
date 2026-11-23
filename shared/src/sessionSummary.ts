@@ -11,10 +11,10 @@ export type ForkSessionSummary = {
 
 /** Seed a fork's generated/native title without claiming manual-name ownership. */
 export function buildForkSessionSummary(
-    metadata: { name?: string; summary?: { text?: string } | null } | null | undefined,
+    metadata: { name?: string; summary?: { text?: string } | null; promptTitle?: string } | null | undefined,
     updatedAt: number = Date.now()
 ): ForkSessionSummary | undefined {
-    const sourceTitle = metadata?.name?.trim() || metadata?.summary?.text?.trim()
+    const sourceTitle = metadata?.name?.trim() || metadata?.summary?.text?.trim() || metadata?.promptTitle?.trim()
     if (!sourceTitle) return undefined
 
     return {

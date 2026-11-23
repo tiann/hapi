@@ -46,6 +46,32 @@ function fixture(shared = true, childMetadata: Partial<Metadata> = {}, flavor = 
 }
 
 describe('fork title generation', () => {
+    it('never submits unverified RPC fork history even if its child emits normal readiness', async () => {
+        const f = fixture()
+        try {
+            f.message(f.child!.id, 'EXCLUDED LATER TOPIC', 'unverified-turn')
+            let submitted = 0
+            f.internal.titleSuggestionService.suggestTitle = async () => { submitted++; return 'unsafe' }
+            f.internal.rpcGateway.forkConversation = async () => {
+                f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now() })
+                await flush()
+                return { error: 'Native fork history does not match the completed-turn cutoff' }
+            }
+            expect(await f.engine.forkConversation(f.source.id, 'default')).toMatchObject({ type: 'error' })
+            await flush()
+            expect(submitted).toBe(0)
+        } finally { f.close() }
+    })
+
+    it("seeds an untitled native fork from the parent's first-prompt title", async () => {
+        const f = fixture()
+        try {
+            f.setMetadata(f.source.id, metadata => ({ ...metadata, name: undefined, summary: undefined, promptTitle: 'Fix the parser' }))
+            expect(await f.engine.forkConversation(f.source.id, 'default')).toMatchObject({ type: 'success' })
+            expect(f.engine.getSession(f.child!.id)?.metadata?.summary?.text).toBe('Fork: Fix the parser')
+        } finally { f.close() }
+    })
+
     it('generates for a native shared fork readiness event and deduplicates the REST trigger', async () => {
         const seed = { text: 'Fork: Current title', updatedAt: 1 }
         const f = fixture(true, { summary: seed, forkTitleSeed: seed })
@@ -56,8 +82,8 @@ describe('fork title generation', () => {
                 requests++
                 return await new Promise<string>(resolve => { finish = resolve })
             }
-            f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now() })
-            f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now() })
+            f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now(), nativeForkTitleReady: true })
+            f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now(), nativeForkTitleReady: true })
             await flush()
             expect(requests).toBe(1)
             await f.engine.forkConversation(f.source.id, 'default')
@@ -65,7 +91,7 @@ describe('fork title generation', () => {
             const reconnected = new SyncEngine(f.store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
             try {
                 ;(reconnected as any).titleSuggestionService.suggestTitle = async () => { requests++; return 'Duplicate' }
-                reconnected.handleSessionReady({ sid: f.child!.id, time: Date.now() })
+                reconnected.handleSessionReady({ sid: f.child!.id, time: Date.now(), nativeForkTitleReady: true })
                 expect(requests).toBe(1)
             } finally { reconnected.stop() }
             finish('Native terminal fork title')
@@ -276,7 +302,7 @@ it('seeds and generates when native readiness sees titled Hub source but untitle
             requests += 1
             return 'Native readiness title'
         }
-        f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now() })
+        f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now(), nativeForkTitleReady: true })
         await flush()
         expect(requests).toBe(1)
         const metadata = f.engine.getSession(f.child!.id)?.metadata
@@ -304,7 +330,7 @@ it('does not seed a native readiness child from a parent in another namespace', 
             requests += 1
             throw new Error('provider unavailable')
         }
-        f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now() })
+        f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now(), nativeForkTitleReady: true })
         await flush()
         expect(requests).toBe(1)
         expect(f.engine.getSession(f.child!.id)?.metadata?.summary).toBeUndefined()
@@ -316,7 +342,7 @@ it('reconciles a stale CLI fork seed after an idle source rename before readines
     try {
         await f.engine.renameSession(f.source.id, 'New')
         f.internal.titleSuggestionService = new TitleSuggestionService(f.store)
-        f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now() })
+        f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now(), nativeForkTitleReady: true })
         await flush()
         await f.engine.forkConversation(f.source.id, 'default')
         await flush()

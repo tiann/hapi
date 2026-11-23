@@ -1383,11 +1383,12 @@ if (isReconnect) {
     }
 
     /** Hub waits for this before mergeSessions on Cursor ACP reopen (tiann/hapi#939). */
-    emitSessionReady(): void {
+    emitSessionReady(options?: { nativeForkTitleReady?: boolean }): void {
         this.emitOrQueue(() => {
             this.socket.emit('session-ready', {
                 sid: this.sessionId,
-                time: Date.now()
+                time: Date.now(),
+                ...(options?.nativeForkTitleReady === true ? { nativeForkTitleReady: true } : {})
             })
         }, 'droppable')
     }

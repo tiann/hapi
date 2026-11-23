@@ -46,10 +46,7 @@ type SessionEndPayload = {
     reason?: SessionEndReason
 }
 
-type SessionReadyPayload = {
-    sid: string
-    time: number
-}
+type SessionReadyPayload = Parameters<ClientToServerEvents['session-ready']>[0]
 
 type ResolveSessionAccess = (sessionId: string, opts?: { fresh?: boolean }) => AccessResult<StoredSession>
 

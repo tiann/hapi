@@ -187,7 +187,7 @@ test.describe('fork title (real Hub, Runner and installed Codex)', () => {
             .map(async name => JSON.parse(await readFile(join(registry, name), 'utf8'))))
         const runtime = records.find(record => record.sessions?.[sourceId]?.active)
         expect(runtime).toBeTruthy()
-        const WebSocket = createRequire(join(process.cwd(), '../cli/package.json'))('ws')
+        const WebSocket = createRequire(new URL('../../cli/package.json', import.meta.url))('ws')
         const socket = new WebSocket(runtime.endpoint, { headers: {
             Host: 'localhost', Authorization: `Bearer ${runtime.token}`
         } })

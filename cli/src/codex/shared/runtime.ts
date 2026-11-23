@@ -213,7 +213,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId); await persist();
     };
     const reserve = async (root: SharedCodexRoot, threadId: string) => withThreadOwnership(home, threadId, id, () => reserveRecord(root, threadId));
-    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false) => {
+    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean,
+        initialOptions?: SharedLaunchOptions, freshThread = false, terminalFork = false) => {
         assertRunning();
         const threadId = string(record(response.thread).id);
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
@@ -237,9 +238,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         // new-thread subscription. Subscribe once without changing settings.
         await control.request('thread/resume', { threadId, excludeTurns: true });
         await root.activate(initialOptions);
-        // Notify only after fork metadata and replayed transcript are durable.
-        // Native terminal /fork does not pass through the Hub's REST fork path.
-        if (await root.session.flush()) root.session.emitSessionReady();
+        // Only terminal gateway forks can request a title here, after replay
+        // is durable. Hub-requested forks must wait for the validating RPC.
+        if (await root.session.flush()) root.session.emitSessionReady({ nativeForkTitleReady: terminalFork });
         await persist();
         // The hub's view of the metadata is what the hub kept of it: a hub
         // without the field strips hostStartMarker, and the runner ignores an
@@ -321,7 +322,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== reservation.root.session.sessionId);
                 await persist(); prepared.delete(reservation.root); await reservation.root.close(true); return;
             }
-            await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start');
+            await bind(reservation.root, record(response.result), true, undefined,
+                request.method === 'thread/start', request.method === 'thread/fork');
         } else if (request.method === 'thread/archive' && !response.error) {
             const root = roots.get(string(record(request.params).threadId) ?? ''); if (root) await end(root, false);
         } else if (request.method === 'thread/queue/delete' && !response.error && record(response.result).deleted === true) {

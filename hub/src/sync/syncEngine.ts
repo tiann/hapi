@@ -866,9 +866,12 @@ export class SyncEngine {
         }
     }
 
-    handleSessionReady(payload: { sid: string; time: number }): void {
+    handleSessionReady(payload: { sid: string; time: number; nativeForkTitleReady?: boolean }): void {
         const session = this.sessionCache.getSession(payload.sid)
-        if (session?.metadata?.forkedFrom && session.metadata.capabilities?.concurrentClients) {
+        // Generic shared-root readiness can precede verification of an RPC fork's
+        // history cutoff. It must not send any inherited text to the title provider.
+        if (payload.nativeForkTitleReady === true && session?.metadata?.flavor === 'codex'
+            && session.metadata.forkedFrom && session.metadata.capabilities?.concurrentClients) {
             void this.generateForkTitle(payload.sid)
         }
         if (session?.metadata?.flavor === 'opencode' && session.metadata.opencodeForkPending) {
