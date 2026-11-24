@@ -149,6 +149,55 @@ test('keeps collapsed query text when the mobile toolbar has room', async ({ pag
     expect(await queryText.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(20)
 })
 
+test('dismisses the machine filter inside More one layer at a time', async ({ page }) => {
+    await page.addInitScript(() => {
+        localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+        localStorage.setItem('hapi-font-scale', '1.3')
+    })
+    await open(page, 320)
+    await page.getByRole('button', { name: /Search sessions/ }).click()
+    await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+    await page.getByPlaceholder(/Search title/).blur()
+    const more = page.getByRole('button', { name: 'More session list actions', exact: true })
+    await more.click()
+    const machineTrigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+    await machineTrigger.click()
+    const machineMenu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+    await expect(machineMenu.getByRole('menuitemradio').first()).toBeFocused()
+    await page.keyboard.press('ArrowDown')
+    await expect(machineMenu.getByRole('menuitemradio').nth(1)).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(machineMenu).toHaveCount(0)
+    await expect(machineTrigger).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(machineTrigger).toHaveCount(0)
+    await expect(more).toBeFocused()
+
+    // Selecting a machine and clicking the submenu's backdrop also return to
+    // More, where the other actions remain available.
+    await more.click()
+    await machineTrigger.click()
+    await machineMenu.getByRole('menuitemradio', { name: /^Server \(1\)$/ }).click()
+    await expect(machineMenu).toHaveCount(0)
+    await expect(machineTrigger).toBeFocused()
+    await machineTrigger.click()
+    await page.getByRole('button', { name: 'Close', exact: true }).click({ position: { x: 3, y: 3 } })
+    await expect(machineMenu).toHaveCount(0)
+    await expect(machineTrigger).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(more).toBeFocused()
+
+    // The combined filter uses the same custom-menu dismissal contract.
+    await more.click()
+    const sortTrigger = page.getByRole('button', { name: 'Sort and filter', exact: true })
+    await sortTrigger.click()
+    await expect(page.getByRole('menu', { name: 'Sort and filter', exact: true })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(sortTrigger).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(more).toBeFocused()
+})
+
 for (const scale of [1, 1.3]) {
     for (const allRead of [false, true]) {
         for (const browse of [false, true]) {

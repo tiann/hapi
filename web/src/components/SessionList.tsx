@@ -72,6 +72,7 @@ function LowRatePulseDot({ pulse, className }: { pulse: boolean; className: stri
 /** Narrow-header overflow for shed secondary actions (tiann/hapi#2039). */
 function SessionListHeaderOverflow(props: { children: ReactNode }) {
     const { t } = useTranslation()
+    const contentRef = useRef<HTMLDivElement>(null)
     return (
         <Popover.Root>
             <Popover.Trigger asChild>
@@ -87,8 +88,16 @@ function SessionListHeaderOverflow(props: { children: ReactNode }) {
             </Popover.Trigger>
             <Popover.Portal>
                 <Popover.Content
+                    ref={contentRef}
                     align="end"
                     sideOffset={6}
+                    onEscapeKeyDown={(event) => {
+                        // The custom filter menus handle Escape themselves.
+                        // Keep their trigger mounted so they can restore focus.
+                        if (contentRef.current?.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) {
+                            event.preventDefault()
+                        }
+                    }}
                     className="z-50 flex max-w-[min(100vw-1rem,20rem)] flex-wrap items-center justify-end gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1.5 shadow-xl"
                 >
                     {props.children}
