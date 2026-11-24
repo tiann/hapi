@@ -585,7 +585,7 @@ describe('getLiveToolWork', () => {
 })
 
 describe('truncateOpenCodeRewind child settlement (#2021)', () => {
-    it('keeps Archive blocked when rewind drops a terminal but retains a running marker', () => {
+    it('keeps Archive clear when rewind drops a terminal but durable settlement remembers it', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-rewind-settle')
 
@@ -620,8 +620,42 @@ describe('truncateOpenCodeRewind child settlement (#2021)', () => {
         expect(store.messages.getLiveToolWork(session.id)).toBe(false)
 
         store.messages.truncateOpenCodeRewind(session.id, boundary.seq, boundary.id)
-        // Fail-closed: no settlement ledger. Sticky orphaned running after
-        // rewind strands Archive (recoverable) rather than kill live work.
+        // Durable hub child-work ledger survives the rewindable transcript cut:
+        // verified completion is not forgotten when only the running marker remains.
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('still blocks Archive when rewind retains a running child that never completed', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-rewind-still-running')
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_live',
+                    childStatus: 'running',
+                },
+            },
+        })
+        const boundary = store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'rewind before more work' },
+        })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'message', message: 'later text' },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.truncateOpenCodeRewind(session.id, boundary.seq, boundary.id)
         expect(store.messages.getLiveToolWork(session.id)).toBe(true)
         store.close()
     })

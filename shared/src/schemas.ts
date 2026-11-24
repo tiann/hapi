@@ -304,6 +304,14 @@ export const MetadataSchema = z.object({
     // that created this session via spawn-peer. Recorded for tree walking only —
     // archive and lifecycle must NOT branch on this field.
     spawnedBySessionId: z.string().uuid().optional(),
+    // Hub-owned durable OpenCode child-work ledger (#2021). Survives rewindable
+    // transcript cuts so a verified child completion cannot be forgotten when
+    // only its earlier running marker remains. CLI update-metadata must not
+    // forge or erase (HUB_OWNED_METADATA_KEYS).
+    childToolWork: z.object({
+        running: z.array(z.string().min(1)).default([]),
+        settled: z.array(z.string().min(1)).default([]),
+    }).optional(),
     // 'running' | 'idle' | 'archived' (see shared/src/sessionLifecycle.ts).
     // 'idle' is written by the hub's keepalive-idle reconciler (tiann/hapi#1820)
     // and reverts to 'running' on the next agent progress.

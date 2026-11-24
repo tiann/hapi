@@ -97,6 +97,8 @@ const HUB_OWNED_METADATA_FIELDS = [
     'conversationBranch',
     // Peer-spawn parent UUID — stamped at spawn; CLI must not forge/erase.
     'spawnedBySessionId',
+    // Durable OpenCode child running/settled ids (#2021).
+    'childToolWork',
 ] as const
 
 const CONTRIBUTION_FIELDS = ['externalRefs'] as const

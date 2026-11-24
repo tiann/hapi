@@ -97,6 +97,8 @@ const HUB_OWNED_METADATA_KEYS = [
     'translateInput',
     // Peer-spawn parent UUID (#2020) — telemetry; CLI must not forge/erase.
     'spawnedBySessionId',
+    // Durable OpenCode child running/settled ids (#2021) — CLI must not forge/erase.
+    'childToolWork',
 ] as const
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
