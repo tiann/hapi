@@ -132,6 +132,9 @@ class WakeupTestBackend {
     }
     async cancelPrompt(sessionId: string): Promise<void> {
         this.cancelCalls.push(sessionId);
+        // Honor cancel for Stop tests: verified exit lets the launcher settle
+        // without waiting the full wakeup hard-stop (#2021).
+        this.alive = false;
     }
     beginSoftSteerPrompt(): never {
         throw new Error('not used');
@@ -4687,6 +4690,10 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             const notify = (update: Record<string, unknown>) => internal.handleNotification('session/update', { sessionId: acpSessionId, update });
             const requests: string[] = [];
             let prompts = 0;
+            // One-shot: session/cancel reports verified exit once so Stop can
+            // settle without retiring; later polls see the transport alive again
+            // for the next idle wakeup (#2021).
+            let cancelExitPulse = false;
             internal.transport = {
                 sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
                     requests.push(method);
@@ -4700,8 +4707,19 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                     }
                     return {};
                 }),
-                sendNotification: vi.fn(), onNotification: () => {}, onStderrError: () => {}, registerRequestHandler: () => {},
-                isAlive: () => true, getProcessPid: () => 4242, close: async () => true
+                sendNotification: vi.fn((method: string) => {
+                    if (method === 'session/cancel') cancelExitPulse = true;
+                }),
+                onNotification: () => {}, onStderrError: () => {}, registerRequestHandler: () => {},
+                isAlive: () => {
+                    if (cancelExitPulse) {
+                        cancelExitPulse = false;
+                        return false;
+                    }
+                    return true;
+                },
+                getProcessPid: () => 4242,
+                close: async () => true
             };
             internal.initializeResult = { protocolVersion: 1, agentVersion: '1.5.13', agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } };
             const { session, queue, client } = makeHarness('always-proceed', resumeSessionId);

@@ -2181,18 +2181,28 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * Wait until the armed wakeup hard-stop finishes retiring, the transport is
-     * already dead, or no hard-stop is pending. Keeps Archive blocked (#2021).
+     * Wait until the armed wakeup hard-stop finishes retiring, the transport
+     * dies (cancel took effect), or no hard-stop is pending. Poll so a late
+     * process exit does not sit until cancelHardStopMs. Keeps Archive blocked
+     * while the wakeup may still be running (#2021).
      */
     private async waitForWakeupCancelHardStop(): Promise<void> {
         const pending = this.wakeupHardStopDone;
         if (!pending) return;
-        const backend = this.backend;
-        if (backend && !backend.isTransportAlive()) {
-            this.clearWakeupCancelHardStop();
-            return;
+        let settled = false;
+        const markSettled = () => { settled = true; };
+        void pending.then(markSettled, markSettled);
+        while (!settled) {
+            const backend = this.backend;
+            if (!backend || !backend.isTransportAlive()) {
+                this.clearWakeupCancelHardStop();
+                return;
+            }
+            await Promise.race([
+                pending,
+                new Promise<void>((resolve) => setTimeout(resolve, 25)),
+            ]);
         }
-        await pending;
     }
 
     /**
