@@ -40,7 +40,7 @@ import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
 import { applySuggestion } from '@/utils/applySuggestion'
 import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
-import { supportsEffort, supportsModelChange, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
+import { supportsEffort, supportsModelChange, usesModelReasoningEffort, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
 import type { PiThinkingLevel } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
@@ -1091,7 +1091,7 @@ export function HappyComposer(props: {
 
     const visibleModelEffortOptions = cursorDrillDownVariantOptions ?? modelEffortOptions
     const codexReasoningEffortOptions = useMemo(
-        () => agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'dsh'
+        () => usesModelReasoningEffort(agentFlavor)
             ? getCodexComposerReasoningEffortOptions(
                 modelReasoningEffort,
                 agentFlavor,
@@ -1825,7 +1825,6 @@ export function HappyComposer(props: {
     }, [isNarrowViewport, onModelChange, agentFlavor, selectedPiModel, model, modelOptions, selectedModelBase])
     const effortValueLabel = useMemo(() => {
         if (isNarrowViewport) return undefined
-        // Codex/OpenCode keep effort in modelReasoningEffort; same button, same wording.
         if (showModelReasoningEffortSettings) {
             if (!modelReasoningEffort) return t('composer.effortDefault')
             const option = codexReasoningEffortOptions.find((candidate) => candidate.value === modelReasoningEffort)
