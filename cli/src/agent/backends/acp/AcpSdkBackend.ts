@@ -1382,11 +1382,9 @@ export class AcpSdkBackend implements AgentBackend {
         // Remote→local keeps the same HAPI wrapper PID, so hub worker-exit
         // retirement never fires. Order matters (#2021 tip Majors):
         //   1. Drain child buffers while the emit sink is still installed
-        //   2. Close the transport and wait for verified process-tree exit
-        //   3. Only then publish interrupted for known children (status-only
-        //      or with handlers). Unconfirmed close leaves hub running markers.
+        //   2. Close the transport (buffered stdout may still report children)
+        //   3. Snapshot known children *after* close, then interrupt if verified
         const sink = this.childEmitSink;
-        const childIds = [...new Set([...this.knownChildSessionIds, ...this.childHandlers.keys()])];
         for (const entry of this.childHandlers.values()) {
             this.clearChildQuietTimer(entry);
             entry.handler.drainBuffers();
@@ -1397,14 +1395,11 @@ export class AcpSdkBackend implements AgentBackend {
         const recordSessionId = this.activeSessionId;
         this.messageHandler?.drainBuffers();
         this.messageHandler = null;
-        this.activeSessionId = null;
+        // Keep activeSessionId / knownChildSessionIds / sink through close so
+        // late child status notifications during process teardown are tracked.
         this.activePromptRequests = 0;
         this.foregroundPromptRequests = 0;
         this.isProcessingMessage = false;
-        this.sessionModelsMetadata.clear();
-        this.initialAvailableCommands.clear();
-        this.sessionAvailableCommands.clear();
-        this.autoPermissionModeEnabled = null;
         this.notifyResponseComplete();
         this.settlePendingElicitations();
         let agentEnded = false;
@@ -1419,6 +1414,8 @@ export class AcpSdkBackend implements AgentBackend {
             this.settleToolCallLifetimeRecord(recordSessionId, agentEnded);
         }
 
+        // Snapshot after close so children first reported during teardown are included.
+        const childIds = [...this.knownChildSessionIds];
         if (sink && agentEnded) {
             for (const childSessionId of childIds) {
                 const scope = childToolCallScope(childSessionId);
@@ -1443,6 +1440,11 @@ export class AcpSdkBackend implements AgentBackend {
         }
         this.knownChildSessionIds.clear();
         this.childEmitSink = null;
+        this.activeSessionId = null;
+        this.sessionModelsMetadata.clear();
+        this.initialAvailableCommands.clear();
+        this.sessionAvailableCommands.clear();
+        this.autoPermissionModeEnabled = null;
     }
 
     /**

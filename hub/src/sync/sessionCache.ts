@@ -23,6 +23,46 @@ const TURN_RECOVERY_WINDOW_MS = 10 * 60_000
 const METADATA_RETRY_ATTEMPTS = 5
 type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function stringIdList(value: unknown): string[] {
+    if (!Array.isArray(value)) return []
+    return value.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+}
+
+/**
+ * Merge hub-owned OpenCode childToolWork across session-row replacement.
+ * Settled ids win over running for the same child; settledCallIds are unioned.
+ * Returns `undefined` when the old row has nothing to contribute.
+ */
+export function mergeChildToolWorkForSessionMerge(oldWork: unknown, newWork: unknown): unknown | null | undefined {
+    if (!isPlainObject(oldWork)) return undefined
+    const oldRunning = stringIdList(oldWork.running)
+    const oldSettled = stringIdList(oldWork.settled)
+    const oldCalls = stringIdList(oldWork.settledCallIds)
+    if (oldRunning.length === 0 && oldSettled.length === 0 && oldCalls.length === 0) {
+        return undefined
+    }
+    if (!isPlainObject(newWork)) {
+        return {
+            running: [...oldRunning].sort(),
+            settled: [...oldSettled].sort(),
+            settledCallIds: [...oldCalls],
+        }
+    }
+    const settled = new Set([...oldSettled, ...stringIdList(newWork.settled)])
+    const settledCallIds = [...new Set([...oldCalls, ...stringIdList(newWork.settledCallIds)])]
+    const running = new Set([...oldRunning, ...stringIdList(newWork.running)])
+    for (const id of settled) running.delete(id)
+    return {
+        running: [...running].sort(),
+        settled: [...settled].sort(),
+        settledCallIds,
+    }
+}
+
 /**
  * Metadata merge used when consolidating an old session row into a replacement
  * (resume/reopen). Carry forward display/contribution fields the new row omitted.
@@ -115,6 +155,15 @@ export function mergeSessionMetadataForSessionMerge(
         && oldObj.spawnedBySessionId.trim().length > 0
         && typeof newObj.spawnedBySessionId !== 'string') {
         merged.spawnedBySessionId = oldObj.spawnedBySessionId
+        changed = true
+    }
+
+    // OpenCode childToolWork is hub-owned settlement evidence. After rewind
+    // drops a completion marker, this ledger is the only record that a child
+    // finished — dedup/resume must carry it onto the surviving row (#2021).
+    const childToolMerged = mergeChildToolWorkForSessionMerge(oldObj.childToolWork, newObj.childToolWork)
+    if (childToolMerged !== undefined) {
+        merged.childToolWork = childToolMerged
         changed = true
     }
 

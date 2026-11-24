@@ -585,10 +585,25 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
 
     /**
      * Confirm process-tree kill *before* requestExit commits shouldExit /
-     * exitReason. A rejected Switch must leave remote mode runnable (#2021).
+     * exitReason. Hold the abort/dequeue barrier so the main loop cannot
+     * acknowledge a queued prompt and spawn a replacement child while kill
+     * verification is still polling (#2021).
      */
     private async confirmLeaveThenExit(reason: 'switch' | 'exit'): Promise<void> {
-        await this.handleAbort(true);
+        // Hold dequeue barrier through kill verification (#2021). Abort the
+        // wait signal first so an idle loop re-enters the barrier instead of
+        // collecting a batch mid-kill — same order as Abort's onAbortEntry.
+        await this.runAbortUnderBarrier(async () => {
+            this.abortController.abort();
+            try {
+                await this.handleAbort(true);
+            } catch (error) {
+                if (this.abortController.signal.aborted) {
+                    this.abortController = new AbortController();
+                }
+                throw error;
+            }
+        });
         await this.requestExit(reason, async () => {});
     }
 

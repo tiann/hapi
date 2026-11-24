@@ -2923,6 +2923,30 @@ describe('AcpSdkBackend OpenCode child session updates', () => {
         expect(texts(messages)).toEqual(['pending bye']);
     });
 
+    it('interrupts children first reported during verified close (#2021)', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend();
+        internal.transport = {
+            sendRequest: async () => ({ stopReason: 'end_turn' }),
+            close: async () => {
+                // Buffered stdout can report a child while awaiting process-tree exit.
+                notify(internal, childStatus('ses_late', 'running'));
+                return true;
+            },
+        };
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+        await backend.disconnect();
+
+        expect(messages).toContainEqual(expect.objectContaining({
+            type: 'turn_complete',
+            childSessionId: 'ses_late',
+            childStatus: 'interrupted',
+            stopReason: 'cancelled',
+        }));
+    });
+
     it('ignores child updates when the capability is not enabled (g)', async () => {
         useFastDrains();
         const { backend, internal } = makeBackend(false);

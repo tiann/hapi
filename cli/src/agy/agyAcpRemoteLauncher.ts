@@ -292,6 +292,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         streamedTextCounts: Map<string, number>;
     } | null = null;
     private reactiveWakeupAbort: AbortController | null = null;
+    private wakeupHardStopTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Bumped to invalidate an in-flight wakeup hard-stop timer (generation fence). */
+    private wakeupHardStopGeneration = 0;
     private lastTurnMode: AgyMode | null = null;
     private lastSessionModeSnapshot: {
         permissionMode: PermissionMode | undefined;
@@ -1412,6 +1415,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
      *  id torn down — including autonomous wakeup Stop, which never reaches the
      *  prompt finalizer (#2021 termination axis). */
     private async discardStoppedWakeup(abortedTurn: AgyTurn | null = null): Promise<void> {
+        // Wakeup is settling — cancel hard-stop so it cannot retire a backend
+        // that is already serving the next prompt (#2021).
+        this.clearWakeupCancelHardStop();
         await this.backend?.flushPendingMessageBuffers();
         const owner = this.handlerOwnerTurn;
         this.handlerOwnerTurn = null;
@@ -2160,24 +2166,38 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         await this.permissionHandler?.cancelAll('User aborted');
     }
 
+    /** Cancel a pending wakeup hard-stop so it cannot retire a later turn's backend (#2021). */
+    private clearWakeupCancelHardStop(): void {
+        if (this.wakeupHardStopTimer) {
+            clearTimeout(this.wakeupHardStopTimer);
+            this.wakeupHardStopTimer = null;
+        }
+        this.wakeupHardStopGeneration += 1;
+    }
+
     /**
-     * If AGY ignores wakeup cancel, retire the backend after cancelHardStopMs.
-     * Awaits retirement internally but does not block Stop→ready (#2021).
+     * If AGY ignores wakeup cancel, retire *this* backend after cancelHardStopMs.
+     * Cleared when the stopped wakeup settles so a later prompt is safe (#2021).
      */
     private armWakeupCancelHardStop(backend: AcpSdkBackend): void {
-        const timer = setTimeout(() => {
+        this.clearWakeupCancelHardStop();
+        const generation = this.wakeupHardStopGeneration;
+        const backendRef = backend;
+        this.wakeupHardStopTimer = setTimeout(() => {
+            this.wakeupHardStopTimer = null;
             void (async () => {
-                if (this.backend !== backend || !backend.isTransportAlive()) return;
+                if (generation !== this.wakeupHardStopGeneration) return;
+                if (this.backend !== backendRef || !backendRef.isTransportAlive()) return;
                 logger.warn('[agy-acp] agy did not stop the wakeup after cancel; restarting it');
                 this.session.sendSessionEvent({
                     type: 'message',
                     message: 'Antigravity did not stop the wakeup; restarting it.',
                 });
                 this.backendLost = true;
-                await this.retireBackend(backend);
+                await this.retireBackend(backendRef);
             })();
         }, this.cancelHardStopMs);
-        timer.unref?.();
+        this.wakeupHardStopTimer.unref?.();
     }
 
     private cancelOnceSent(backend: AcpSdkBackend, acpSessionId: string, turn: AgyTurn): void {
