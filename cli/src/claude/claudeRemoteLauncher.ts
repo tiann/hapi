@@ -359,7 +359,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     }
                 } else if (message.type === 'result') {
                     const resultMessage = message as SDKResultMessage;
-                    if (!resultMessage.is_error || hasPositiveClaudeUsage(resultMessage.usage)) {
+                    if (resultMessage.hapi_skip_usage !== true && (!resultMessage.is_error || hasPositiveClaudeUsage(resultMessage.usage))) {
                         const resultModel = resultMessage.model ?? lastSystemModel;
                         const details = buildClaudeContextDetails({
                             result: resultMessage,
@@ -866,7 +866,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 },
                                 effectiveContextWindow: usage.maxTokens
                             });
-                            if (details) publishContextDetails(session.client, details);
+                            if (details) publishContextDetails(session.client, details, { clearUsageOnWindowChange: true });
                         },
                         onDroppedResult: (message) => sdkToLogConverter.consumeResultForAccounting(message),
                         onSpawn: (fresh) => {

@@ -227,6 +227,20 @@ describe('thread MCP inventory', () => {
         expect(sharedHarness.mcpStatusRequests).toEqual([]);
     });
 
+    it('retains a saved runtime-only server when its scoped read rejects after config succeeds', async () => {
+        sharedHarness.configuredInventory = [];
+        const f = await fixture({ contextDetails: { version: 1, provider: 'codex', updatedAt: 10,
+            codex: { mcpServers: [{ name: 'runtime-only', toolNames: ['last_known'] }] },
+        } });
+        const read = vi.spyOn(f.root.client, 'readThreadMcpServerStatus').mockRejectedValue(new Error('timed out'));
+        await f.root.activate();
+        await vi.waitFor(() => expect(read).toHaveBeenCalledWith('thread', 'runtime-only'));
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual(expect.arrayContaining([
+            { name: 'hapi', toolNames: ['change_title'] },
+            { name: 'runtime-only', toolNames: ['last_known'] },
+        ])));
+    })
+
     it('keeps the saved runtime catalog while configuration arrives and after discovery fails', async () => {
         const pending = Promise.withResolvers<unknown>();
         sharedHarness.runtimeInventory = pending.promise;

@@ -138,7 +138,7 @@ describe('Claude context details', () => {
         publishContextDetails(client, buildClaudeContextDetails({
             contextUsage: { model: 'claude-opus', context_window: 1_000_000 },
             effectiveContextWindow: 1_000_000
-        })!)
+        })!, { clearUsageOnWindowChange: true })
         publishContextDetails(client, buildClaudeContextDetails({
             result: { modelUsage: { 'claude-opus': { contextWindow: 262_144 } } },
             model: 'claude-opus',
@@ -513,6 +513,39 @@ describe('mergeContextDetails', () => {
             cacheReadTokens: 15_000
         })
     })
+    it('does not seed the meter from aggregate results when no saved sample exists', () => {
+        let metadata: Metadata = { path: '/tmp/test', host: 'test', contextDetails: buildClaudeContextDetails({
+            updatedAt: 100, model: 'claude-opus', contextUsage: { raw_max_tokens: 200_000 }
+        })! }
+        const client = { updateMetadata: (handler: (current: Metadata) => Metadata) => { metadata = handler(metadata) } }
+        publishContextDetails(client, buildClaudeContextDetails({
+            updatedAt: 200, model: 'claude-opus',
+            result: { model: 'claude-opus', usage: { input_tokens: 500_000, cache_read_input_tokens: 20_000 } }
+        })!, { preserveUsageSnapshot: true })
+        expect(metadata.contextDetails?.usage).toBeUndefined()
+    })
+
+    it('keeps fresh assistant usage when the result corrects its window', () => {
+        const updates: Array<(metadata: Metadata) => Metadata> = []
+        const client = { updateMetadata: (handler: (metadata: Metadata) => Metadata) => updates.push(handler) }
+        publishContextDetails(client, buildClaudeContextDetails({
+            updatedAt: 100, model: 'claude-opus', contextUsage: { raw_max_tokens: 200_000 }
+        })!)
+        publishContextDetails(client, buildClaudeContextDetails({
+            updatedAt: 200, model: 'claude-opus', messageUsage: { input_tokens: 100 }
+        })!)
+        publishContextDetails(client, buildClaudeContextDetails({
+            updatedAt: 300, model: 'claude-opus',
+            result: { model: 'claude-opus', modelUsage: { 'claude-opus': { contextWindow: 1_000_000 } } }
+        })!, { preserveUsageSnapshot: true })
+
+        let metadata = {} as Metadata
+        for (const update of updates) metadata = update(metadata)
+        expect(metadata.contextDetails).toMatchObject({
+            model: 'claude-opus', contextWindow: 1_000_000, usage: { contextTokens: 100 }
+        })
+    })
+
     it('does not preserve aggregate result usage across a model change', () => {
         let metadata: Metadata = { path: '/tmp/test', host: 'test', contextDetails: buildClaudeContextDetails({
             updatedAt: 100, model: 'claude-opus',

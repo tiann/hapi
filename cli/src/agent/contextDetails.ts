@@ -357,14 +357,9 @@ export function mergeContextDetails(
         && compactPrevious.model !== compactNext.model
     // Model, window, and usage belong to one sample. Never pair a newly
     // reported model/window with the previous model's saved token count.
-    const contextWindowChanged = compactPrevious.contextWindow !== undefined
-        && compactNext.contextWindow !== undefined
-        && compactPrevious.contextWindow !== compactNext.contextWindow
     const previousForMerge: ContextDetails = modelChanged
         ? (({ contextWindow: _contextWindow, usage: _usage, ...rest }) => rest)(compactPrevious)
-        : contextWindowChanged
-            ? (({ usage: _usage, ...rest }) => rest)(compactPrevious)
-            : compactPrevious
+        : compactPrevious
     const merged: ContextDetails = {
         ...previousForMerge,
         ...compactNext,
@@ -391,6 +386,8 @@ export interface PublishContextDetailsOptions {
     preserveUsageSnapshot?: boolean
     /** Legacy composer fields issued in the same CAS write as the startup inventory. */
     claudeStartupCatalog?: Pick<Metadata, 'tools' | 'slashCommands'>
+    /** An authoritative preset/window change invalidates usage from the old sample. */
+    clearUsageOnWindowChange?: boolean
 }
 
 // Per-client, not persisted: saved inventory from a prior launch is not proof
@@ -427,18 +424,22 @@ export function publishContextDetails(
         let incoming = candidate
         if (candidate && options.preserveUsageSnapshot && current?.provider === 'claude') {
             const sameModel = current.model === candidate.model
-            const sameUsageSample = sameModel && !(current.contextWindow !== undefined
-                && candidate.contextWindow !== undefined && current.contextWindow !== candidate.contextWindow)
             incoming = {
                 ...candidate,
-                usage: sameUsageSample && current.usage ? {
+                // Result totals are cumulative conversation counters, never a
+                // current context sample. Only retain an existing actual sample.
+                usage: sameModel && current.usage ? {
                     ...candidate.usage,
                     ...(current.usage.contextTokens !== undefined ? { contextTokens: current.usage.contextTokens } : {}),
                     ...(current.usage.cacheReadTokens !== undefined ? { cacheReadTokens: current.usage.cacheReadTokens } : {})
-                } : sameUsageSample ? candidate.usage : undefined
+                } : undefined
             }
         }
-        const merged = incoming ? mergeContextDetails(current, incoming) : current
+        const clearUsage = Boolean(options.clearUsageOnWindowChange && current?.provider === 'claude'
+            && candidate?.provider === 'claude' && current.contextWindow !== undefined
+            && candidate.contextWindow !== undefined && current.contextWindow !== candidate.contextWindow)
+        const previous = clearUsage && current ? { ...current, usage: undefined } : current
+        const merged = incoming ? mergeContextDetails(previous, incoming) : previous
         const patch: Pick<Metadata, 'tools' | 'slashCommands'> = {}
         if (catalog?.tools !== undefined && !equalStrings(metadata.tools, catalog.tools)) patch.tools = catalog.tools
         if (catalog?.slashCommands !== undefined && !equalStrings(metadata.slashCommands, catalog.slashCommands)) {

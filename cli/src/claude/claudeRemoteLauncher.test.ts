@@ -953,6 +953,27 @@ describe('claudeRemoteLauncher resume anchor', () => {
         }
     })
 
+    it('does not publish context details from a stale result marked hapi_skip_usage', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        harness.metadata = { contextDetails: {
+            version: 1, updatedAt: 10, provider: 'claude', model: 'claude-opus', contextWindow: 200_000,
+            usage: { contextTokens: 100 }
+        } }
+        harness.messages = [{ type: 'result', subtype: 'success', model: 'claude-fable-5', hapi_skip_usage: true,
+            total_cost_usd: 0, duration_ms: 1, num_turns: 1,
+            usage: { input_tokens: 900_000 }, modelUsage: { 'claude-fable-5': { contextWindow: 990_000 } } }]
+        try {
+            queue.push('hello', { permissionMode: 'default' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                model: 'claude-opus', contextWindow: 200_000, usage: { contextTokens: 100 }
+            })
+        } finally { session.stopKeepAlive() }
+    })
+
     it.each([13_681, 0])('persists the post-compaction usage snapshot, including zero (%i)', async compactTokens => {
         // The status bar replaces latestUsage wholesale, so a context-only
         // sample without a window would erase a known 1M denominator and

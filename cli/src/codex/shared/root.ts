@@ -105,6 +105,7 @@ export class SharedCodexRoot {
     private mcpInventoryStarted = false;
     private readingMcpStatuses = false;
     private inFlightMcpStatus?: string;
+    private readonly failedMcpStatuses = new Set<string>();
     private ready!: () => void;
     private readonly bound = new Promise<void>(resolve => { this.ready = resolve; });
 
@@ -378,6 +379,7 @@ export class SharedCodexRoot {
         const currentRuntimeNames = new Set([
             ...this.pendingMcpStatuses,
             ...(this.inFlightMcpStatus ? [this.inFlightMcpStatus] : []),
+            ...this.failedMcpStatuses,
             ...this.notifiedMcpServers,
             ...this.statusMcpServerInventory.keys()
         ]);
@@ -431,9 +433,11 @@ export class SharedCodexRoot {
                     const inventory = parseCodexMcpStatusResponse(result);
                     const server = inventory?.find(entry => entry.name === name);
                     if (server) {
+                        this.failedMcpStatuses.delete(name);
                         this.confirmedAbsentMcpServers.delete(name);
                         this.statusMcpServerInventory.set(name, server);
                     } else if (inventory) {
+                        this.failedMcpStatuses.delete(name);
                         // A valid named response with no entry confirms absence;
                         // malformed/failed reads retain the saved fallback.
                         this.confirmedAbsentMcpServers.add(name);
@@ -441,6 +445,7 @@ export class SharedCodexRoot {
                     }
                     if (inventory) this.publishRootContextDetails();
                 } catch (error) {
+                    this.failedMcpStatuses.add(name);
                     logger.debug('[Codex shared] thread-scoped MCP inventory unavailable', error);
                     // Never fall back to the unscoped list: it can open a second connection.
                 } finally {
