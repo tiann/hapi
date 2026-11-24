@@ -613,7 +613,7 @@ export function SessionHeader(props: {
                 sessionTitle={title}
                 sessionActive={session.active}
                 canArchive={
-                    !sessionHasLiveWork(session)
+                    !(session.active && sessionHasLiveWork(session))
                     && (session.active || isLiveLifecycleState(session.metadata?.lifecycleState))
                 }
                 sessionPinned={Boolean(session.pinned)}

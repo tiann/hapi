@@ -3848,12 +3848,13 @@ export class SyncEngine {
                 throw new ArchiveCleanupError(error instanceof RunnerStopRpcError && error.timedOut ? 'timeout' : 'unavailable', error)
             }
         }
-        // tiann/hapi#2020: refuse archive while hub-visible work is in flight
-        // (thinking / background tasks / pending permission|input). Killing a
-        // mid-turn agent is the case most likely to leave still_alive — stop
-        // the turn via /abort first. No KillSession/StopSession until clear.
+        // tiann/hapi#2020: refuse archive while the session is still connected
+        // with hub-visible work (thinking / background / pending requests).
+        // Stop the turn via /abort first. Disconnected rows may retain stale
+        // agentState.requests after heartbeat expiry — those must not block
+        // Runner-verified cleanup (/abort requires active).
         const liveBeforeStop = this.sessionCache.getSession(sessionId)
-        if (liveBeforeStop && hasLiveWork(liveBeforeStop)) {
+        if (liveBeforeStop?.active === true && hasLiveWork(liveBeforeStop)) {
             throw new ArchiveCleanupError('working')
         }
         // tiann/hapi#916 / #1910: KillSession is a session-socket RPC. A missing

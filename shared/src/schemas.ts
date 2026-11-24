@@ -315,9 +315,6 @@ export const MetadataSchema = z.object({
     idleReconcileExempt: z.boolean().optional(),
     archivedBy: z.string().optional(),
     archiveReason: z.string().optional(),
-    // #2020 soft stand-down: DELETE stays gated until Runner confirms CLI exit
-    // (or the hub confirm poll times out and clears the flag).
-    softStandDownPending: z.boolean().optional(),
     // Set only after a completed fresh-session clear. The source row remains
     // archived; web clients use this durable link to follow the replacement.
     supersededBySessionId: z.string().optional(),

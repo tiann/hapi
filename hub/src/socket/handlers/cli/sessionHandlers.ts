@@ -95,7 +95,6 @@ const HUB_OWNED_METADATA_KEYS = [
     'jobKeyRedirects',
     'promptTitle',
     'translateInput',
-    'softStandDownPending',
     // Peer-spawn parent UUID (#2020) — telemetry; CLI must not forge/erase.
     'spawnedBySessionId',
 ] as const

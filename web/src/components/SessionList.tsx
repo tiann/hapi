@@ -1581,15 +1581,17 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     // #2020: hub refuses archive while live work is visible — hide the
     // affordance rather than surprise the operator with a 409. Stop-turn
     // (`/abort`) is the path to archiveability.
-    const hasLiveWork = sessionHasLiveWork(s)
+    // Only connected live work blocks archive — disconnected rows may keep
+    // stale pending requests after heartbeat expiry (#2020 Approach).
+    const blockedByLiveWork = s.active && sessionHasLiveWork(s)
     // The row can turn inactive before the archive request settles (the hub
     // still confirms cleanup); keep the spinner until it does.
-    const canArchive = !hasLiveWork && (s.active || isLiveLifecycleState(s.metadata?.lifecycleState))
+    const canArchive = !blockedByLiveWork && (s.active || isLiveLifecycleState(s.metadata?.lifecycleState))
     const showQuickArchive = canArchive || quickArchivePending
     const quickActionCount = (showQuickUnpin ? 1 : 0) + (showQuickArchive ? 1 : 0)
     const hasQuickAction = quickActionCount > 0
     const handleQuickArchive = async () => {
-        if (hasLiveWork) return
+        if (blockedByLiveWork) return
         try {
             await archiveSession()
             addToast({

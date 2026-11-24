@@ -1780,15 +1780,6 @@ export function createSessionsRoutes(
             return c.json({ code: 'session_active', error: 'Cannot delete active session. Archive it first.' }, 409)
         }
 
-        // #2020: soft stand-down archives before Runner confirms process exit.
-        // Keep DELETE gated until softStandDownPending clears (CLI shutdown).
-        if (sessionResult.session.metadata?.softStandDownPending === true) {
-            return c.json({
-                code: 'soft_stand_down_pending',
-                error: 'Peer Done soft stand-down is still shutting down the CLI. Retry delete after cleanup finishes.',
-            }, 409)
-        }
-
         // Attached jobs outlive active=false; CASCADE would erase the live meter and
         // leave supervisors PATCHing a deleted session (404 forever).
         const job = engine.getPrimaryAttachedJob(sessionResult.sessionId)

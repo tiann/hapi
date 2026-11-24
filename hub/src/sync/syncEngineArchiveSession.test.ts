@@ -338,6 +338,42 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
+    it('refuses archive for an active session awaiting permission input (#2020)', async () => {
+        const sessionId = insertActiveSession('sess-pending-req-active', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.agentState = {
+            requests: {
+                r1: { tool: 'Bash', arguments: {}, createdAt: Date.now() },
+            },
+        } as never
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+    })
+
+    it('still verifies Runner cleanup for a disconnected session with stale pending requests (#2020)', async () => {
+        const sessionId = insertActiveSession('sess-pending-req-stale', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.active = false
+        live.thinking = false
+        live.agentState = {
+            requests: {
+                r1: { tool: 'Bash', arguments: {}, createdAt: Date.now() },
+            },
+        } as never
+        setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'already_gone'
+
+        await engine.archiveSession(sessionId)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+    })
+
     it('refuses still_alive for idle Peer Done — verified cleanup, no soft stand-down (#2020 reframe)', async () => {
         const sessionId = insertActiveSession('sess-peer-done-alive', 'machine-x')
         setKillSessionMissingTarget()

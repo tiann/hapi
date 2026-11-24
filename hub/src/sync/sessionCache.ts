@@ -1347,39 +1347,7 @@ export class SessionCache {
      * `archiveSession` flow still marks the session inactive in cache via
      * `handleSessionEnd`, just without flipping the persisted lifecycle.
      */
-    /** Clear #2020 soft-stand-down DELETE gate once Runner confirms exit (or give up). */
-    clearSoftStandDownPending(sessionId: string): void {
-        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
-            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
-            if (!session?.metadata || session.metadata.softStandDownPending !== true) return
-            // Hub-owned field: use null clear sentinel so carryForwardIfMissing
-            // does not restore softStandDownPending from the prior blob.
-            const next: Record<string, unknown> = {
-                ...session.metadata,
-                softStandDownPending: null,
-            }
-            const result = this.store.sessions.updateSessionMetadata(
-                sessionId,
-                next,
-                session.metadataVersion,
-                session.namespace,
-                { touchUpdatedAt: false }
-            )
-            if (result.result === 'error') {
-                throw new Error('Failed to clear softStandDownPending')
-            }
-            if (result.result === 'success') {
-                this.refreshSession(sessionId)
-                return
-            }
-        }
-    }
-
-    markSessionArchivedFromHub(
-        sessionId: string,
-        reason: string,
-        extras?: { softStandDownPending?: boolean }
-    ): void {
+    markSessionArchivedFromHub(sessionId: string, reason: string): void {
         for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
             const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
             if (!session) return
@@ -1395,7 +1363,6 @@ export class SessionCache {
                 lifecycleStateSince: Date.now(),
                 archivedBy: 'hub',
                 archiveReason: reason,
-                ...(extras?.softStandDownPending ? { softStandDownPending: true } : {}),
             }
 
             const result = this.store.sessions.updateSessionMetadata(
