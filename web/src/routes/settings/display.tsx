@@ -14,6 +14,7 @@ import { useThemeColors, type ThemeColorKeyId } from '@/hooks/useThemeColors'
 import { useSessionHeaderMetadata, type SessionHeaderMetadataKey } from '@/hooks/useSessionHeaderMetadata'
 import { useAppBadgePreference } from '@/hooks/useAppBadgePreference'
 import { useOpenExternalLinksInNewTab } from '@/hooks/useOpenExternalLinksInNewTab'
+import { useShowMobileMachineFilter } from '@/hooks/useShowMobileMachineFilter'
 import { SettingsChoiceGroup, SettingsFieldLabel, SettingsPageContent, SettingsRow, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
 
 function MinusIcon() {
@@ -145,6 +146,7 @@ export default function SettingsDisplayPage() {
     const { keepUnreadSessionsVisible, setKeepUnreadSessionsVisible } = useKeepUnreadSessionsVisible()
     const { appBadgeEnabled, setAppBadgeEnabled } = useAppBadgePreference()
     const { openExternalLinksInNewTab, setOpenExternalLinksInNewTab } = useOpenExternalLinksInNewTab()
+    const { showMobileMachineFilter, setShowMobileMachineFilter } = useShowMobileMachineFilter()
     const { preferences: sessionHeaderMetadata, setPreference: setSessionHeaderMetadata } = useSessionHeaderMetadata()
     const sessionHeaderOptions: ReadonlyArray<{ key: SessionHeaderMetadataKey; labelKey: string }> = [
         { key: 'showLabels', labelKey: 'settings.display.sessionHeader.showLabels' },
@@ -182,6 +184,7 @@ export default function SettingsDisplayPage() {
             <SettingsSection title={t('settings.display.sessions')}>
                 <SessionPreviewLimitControl />
                 <SettingsSwitch label={t('settings.display.activeSessionsOnly')} description={t('settings.display.activeSessionsOnly.desc')} checked={showActiveSessionsOnly} onChange={setShowActiveSessionsOnly} />
+                <SettingsSwitch label={t('settings.display.mobileMachineFilter')} description={t('settings.display.mobileMachineFilter.desc')} checked={showMobileMachineFilter} onChange={setShowMobileMachineFilter} />
                 <SettingsChoiceGroup
                     label={t('settings.display.pinInProgressSessions')}
                     description={t('settings.display.pinInProgressSessions.desc')}

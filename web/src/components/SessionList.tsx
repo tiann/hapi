@@ -1,5 +1,5 @@
 import { isLiveLifecycleState } from '@hapi/protocol/sessionLifecycle'
-import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from 'react'
 import * as Popover from '@radix-ui/react-popover'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionContentSearchResponse, SessionSummary } from '@/types/api'
@@ -70,10 +70,25 @@ function LowRatePulseDot({ pulse, className }: { pulse: boolean; className: stri
 }
 
 /** Narrow-header overflow for shed secondary actions (tiann/hapi#2039). */
-function SessionListHeaderOverflow(props: { children: ReactNode }) {
+function SessionListHeaderOverflow(props: { children: ReactNode; visibilityRef: RefObject<HTMLElement | null> }) {
     const { t } = useTranslation()
+    const contentRef = useRef<HTMLDivElement>(null)
+    const [open, setOpen] = useState(false)
+    useLayoutEffect(() => {
+        if (!open) return
+        const owner = props.visibilityRef.current
+        if (!owner) return
+        const closeWhenHidden = () => {
+            if (!owner.getClientRects().length) setOpen(false)
+        }
+        closeWhenHidden()
+        if (typeof ResizeObserver === 'undefined') return
+        const observer = new ResizeObserver(closeWhenHidden)
+        observer.observe(owner)
+        return () => observer.disconnect()
+    }, [open, props.visibilityRef])
     return (
-        <Popover.Root>
+        <Popover.Root open={open} onOpenChange={setOpen}>
             <Popover.Trigger asChild>
                 <button
                     type="button"
@@ -87,8 +102,19 @@ function SessionListHeaderOverflow(props: { children: ReactNode }) {
             </Popover.Trigger>
             <Popover.Portal>
                 <Popover.Content
+                    ref={contentRef}
                     align="end"
                     sideOffset={6}
+                    onCloseAutoFocus={(event) => {
+                        if (!props.visibilityRef.current?.getClientRects().length) event.preventDefault()
+                    }}
+                    onEscapeKeyDown={(event) => {
+                        // The custom filter menus handle Escape themselves.
+                        // Keep their trigger mounted so they can restore focus.
+                        if (contentRef.current?.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) {
+                            event.preventDefault()
+                        }
+                    }}
                     className="z-50 flex max-w-[min(100vw-1rem,20rem)] flex-wrap items-center justify-end gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1.5 shadow-xl"
                 >
                     {props.children}
@@ -137,8 +163,9 @@ import { getSessionProjectLabel, getSessionProjectPath } from '@/lib/sessionProj
 import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
-import { MachineFilterBar, MachineSummaryRow } from '@/components/MachineFilterBar'
+import { MachineFilterBar, MachineFilterMenu, MachineSummaryRow } from '@/components/MachineFilterBar'
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
+import { useShowMobileMachineFilter } from '@/hooks/useShowMobileMachineFilter'
 import { useForkFlow } from '@/hooks/useForkFlow'
 import { ForkPreviewDialog } from '@/components/AssistantChat/ForkPreviewDialog'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
@@ -163,8 +190,24 @@ import {
     TOOLBAR_GAP_PX,
     TOOLBAR_ICON_PX,
     TOOLBAR_MORE_PX,
+    toolbarSearchMaxWidth,
     type ToolbarShedSlot
 } from '@/components/sessionToolbarShed'
+
+function useMobileMachineFilterViewport(): boolean {
+    const query = '(width < 48rem)'
+    const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined'
+        && typeof window.matchMedia === 'function' && window.matchMedia(query).matches)
+    useEffect(() => {
+        if (typeof window.matchMedia !== 'function') return
+        const media = window.matchMedia(query)
+        const update = () => setIsMobile(media.matches)
+        update()
+        media.addEventListener('change', update)
+        return () => media.removeEventListener('change', update)
+    }, [])
+    return isMobile
+}
 
 /** Hit targets that must stay visible: icon, clear, calendar. Not the query text. */
 function measureSearchChrome(
@@ -1297,7 +1340,7 @@ export function SessionListSearch(props: {
                                 : <SearchIcon className="h-5 w-5 shrink-0" />}
                         </span>
                         {hasTextQuery ? (
-                            <span className="min-w-0 truncate text-xs font-medium">{props.value}</span>
+                            <span data-search-query-text="" className="min-w-0 truncate text-xs font-medium">{props.value}</span>
                         ) : null}
                     </button>
                     {hasTextQuery ? (
@@ -2086,6 +2129,15 @@ export function SessionList(props: {
     // List sort/filter lives in SessionListView (#2263); jobs mode is #1404.
     const effectivePinInProgressMode: PinInProgressMode = pinInProgressMode
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
+    const { showMobileMachineFilter } = useShowMobileMachineFilter()
+    const dismissFilterMenuRef = useRef<(() => void) | null>(null)
+    const handleFilterMenuOpen = useCallback((dismiss: () => void) => {
+        // Only one custom filter menu may own the document keyboard handlers.
+        // Switching menus closes the old one without restoring its focus.
+        dismissFilterMenuRef.current?.()
+        dismissFilterMenuRef.current = dismiss
+    }, [])
+    const isMobileMachineFilterViewport = useMobileMachineFilterViewport()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
     const [searchMode, setSearchMode] = useState<'metadata' | 'content'>('metadata')
@@ -2102,6 +2154,19 @@ export function SessionList(props: {
     // row and subtracting a guessed search reserve left empty space after More.
     const headerRowRef = useRef<HTMLDivElement>(null)
     const headerActionsRef = useRef<HTMLDivElement>(null)
+    const handleFocusedMachineFilterUnmount = useCallback(() => {
+        // More can unmount its children without rendering SessionList. Restore
+        // after that commit, rather than leaving a flag for an unrelated render.
+        queueMicrotask(() => {
+            const focused = document.activeElement
+            if (focused && focused !== document.body && focused.isConnected) return
+            if (!headerRowRef.current?.getClientRects().length) return
+            const target = headerActionsRef.current?.querySelector<HTMLButtonElement>(
+                '[data-testid="session-toolbar-slot-machine-filter"] button, [data-testid="session-list-header-overflow"]'
+            ) ?? headerActionsRef.current?.querySelector<HTMLButtonElement>('[data-testid="session-list-view-button"]:not([inert] *)')
+            target?.focus()
+        })
+    }, [])
     const toolbarMeasureRef = useRef<HTMLDivElement>(null)
     const actionsObserverRef = useRef<ResizeObserver | null>(null)
     const [headerRowWidth, setHeaderRowWidth] = useState(0)
@@ -3207,11 +3272,15 @@ export function SessionList(props: {
         const root = toolbarMeasureRef.current
         if (!root) return
         const next: Record<string, number> = {}
+        const measuredSlots: ToolbarShedSlot[] = []
         for (const node of root.querySelectorAll<HTMLElement>('[data-measure-id]')) {
             const id = node.dataset.measureId
             if (!id || id === '__more') continue
             const width = node.offsetWidth
-            if (width > 0) next[id] = width
+            if (width > 0) {
+                next[id] = width
+                measuredSlots.push({ id, widthPx: width, keep: Number(node.dataset.keep) })
+            }
         }
         setToolbarSlotWidths((previous) => {
             const previousKeys = Object.keys(previous)
@@ -3230,16 +3299,26 @@ export function SessionList(props: {
                 ? previous
                 : { morePx, gapPx }
         ))
-        // Reserve padding + gap + More so search cannot eat the trailing controls (#2040).
+        // With the optional shortcut, allocate search and actions together so
+        // admitting a control never reduces the query to just its hit targets.
         const row = headerRowRef.current
         const rowBox = row && row.clientWidth > 0 ? row.clientWidth : toolbarRowBoxPx
         const rowStyle = row ? getComputedStyle(row) : null
         const rowPad = rowStyle
             ? (Number.parseFloat(rowStyle.paddingLeft) || 0) + (Number.parseFloat(rowStyle.paddingRight) || 0)
             : 0
-        const trailing = gapPx
-            + morePx
-        const nextSearchMax = rowBox > 0 ? Math.max(0, rowBox - rowPad - trailing) : 0
+        const shortcutEnabled = showMobileMachineFilter && showMachineFilterBar && isMobileMachineFilterViewport
+        const queryText = search?.querySelector<HTMLElement>('[data-search-query-text]')
+        // Up to three text ems (or the whole query, if shorter) keep a useful
+        // snippet beside the scope icon and Clear at every action threshold.
+        const queryTextMinPx = queryText
+            ? Math.min(queryText.scrollWidth, (Number.parseFloat(getComputedStyle(queryText).fontSize) || 0) * 3)
+            : 0
+        const nextSearchMax = rowBox > 0
+            ? shortcutEnabled
+                ? toolbarSearchMaxWidth(measuredSlots, rowBox - rowPad, searchChromePx, queryTextMinPx, { morePx, gapPx })
+                : Math.max(searchChromePx, rowBox - rowPad - gapPx - morePx)
+            : 0
         setSearchMaxPx((previous) => previous === nextSearchMax ? previous : nextSearchMax)
     })
 
@@ -3507,6 +3586,7 @@ export function SessionList(props: {
                                     widthPx: slotWidth('view', TOOLBAR_ICON_PX),
                                     node: (
                                         <SessionListViewMenu
+                                            onOpen={handleFilterMenuOpen}
                                             view={listView}
                                             onChange={setListView}
                                             onReset={() => {
@@ -3539,6 +3619,25 @@ export function SessionList(props: {
                                         />
                                     )
                                 })
+
+                                if (showMobileMachineFilter && showMachineFilterBar && isMobileMachineFilterViewport) {
+                                    definedSlots.push({
+                                        id: 'machine-filter',
+                                        keep: 5.5,
+                                        widthPx: slotWidth('machine-filter', TOOLBAR_ICON_PX),
+                                        node: (
+                                            <MachineFilterMenu
+                                                onOpen={handleFilterMenuOpen}
+                                                onFocusedUnmount={handleFocusedMachineFilterUnmount}
+                                                visibilityRef={headerRowRef}
+                                                machines={machineFilterItems}
+                                                totalCount={allSessions.length}
+                                                value={activeMachineFilter}
+                                                onChange={setMachineFilter}
+                                            />
+                                        )
+                                    })
+                                }
 
                                 if (renderHeader) {
                                     definedSlots.push({
@@ -3609,7 +3708,7 @@ export function SessionList(props: {
                                             className="pointer-events-none absolute left-0 top-0 -z-10 flex h-0 w-max gap-1 overflow-hidden opacity-0"
                                         >
                                             {definedSlots.map((slot) => (
-                                                <span key={slot.id} data-measure-id={slot.id} className="inline-flex shrink-0">
+                                                <span key={slot.id} data-measure-id={slot.id} data-keep={slot.keep} className="inline-flex shrink-0">
                                                     {slot.node}
                                                 </span>
                                             ))}
@@ -3621,7 +3720,7 @@ export function SessionList(props: {
                                             </span>
                                         ))}
                                         {overflow.length > 0 ? (
-                                            <SessionListHeaderOverflow>
+                                            <SessionListHeaderOverflow visibilityRef={headerRowRef}>
                                                 {overflow.map((slot) => (
                                                     <span key={slot.id} data-testid={`session-toolbar-slot-${slot.id}`} className="contents">
                                                         {slot.node}

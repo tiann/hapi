@@ -1202,6 +1202,8 @@ export default {
   'settings.display.sessionPreviewLimit.increase': '增加折叠前显示的会话数',
   'settings.display.activeSessionsOnly': '仅显示活跃会话',
   'settings.display.activeSessionsOnly.desc': '隐藏非活跃会话，但当前打开的会话以及带有运行中长时间任务的会话仍会保留显示。',
+  'settings.display.mobileMachineFilter': '显示移动端机器筛选按钮',
+  'settings.display.mobileMachineFilter.desc': '在移动端会话列表顶部添加独立的机器筛选按钮。',
   'settings.display.pinInProgressSessions': '置顶进行中会话',
   'settings.display.pinInProgressSessions.desc': '侧边栏顶部「进行中」分区的置顶程度（位于项目目录分组之上）。默认为长时间任务（带会话 job 进度的后台批处理）。全局置顶仍在该分区之上。仅保持连接、智能体未在工作且未等待你操作的会话在任何模式下都留在项目目录中——那不是进行中的工作。关闭后全部保留在目录分组中。',
   'settings.display.pinInProgressMode.off': '关闭',

@@ -12,10 +12,11 @@
  * Upstream controls:
  *   4 New
  *   5 Sort and filter
+ *   5.5 Optional mobile machine filter
  *   6 Settings
  *   7 Mark all read (#1773 bulk hygiene — reachable, not a neighbor of New)
  *   8 Browse
- * Machine chips / the mobile machine menu stay outside this ladder.
+ * Desktop machine chips stay outside this ladder.
  * Fork-only Kitchen, Overseer, and agent-import use the same `keep` scale
  * when a soup layer passes them as extras (3 / 9 / 10).
  */
@@ -117,4 +118,28 @@ export function shedToolbarSlots(
         visibleIds: visible.map((slot) => slot.id),
         overflowIds: overflow.map((slot) => slot.id)
     }
+}
+
+/**
+ * Share the row with a collapsed query using the same priorities as the actions.
+ * Reserve readable query text before admitting another action; reserving only
+ * the hit targets makes the query disappear when the next action first fits.
+ * The query then gets all space left by the resulting cluster, including More.
+ */
+export function toolbarSearchMaxWidth(
+    slots: readonly ToolbarShedSlot[],
+    contentWidthPx: number,
+    searchChromePx: number,
+    queryTextMinPx: number,
+    metrics: ToolbarShedMetrics = {}
+): number {
+    if (contentWidthPx <= 0) return 0
+    const gapPx = metrics.gapPx ?? TOOLBAR_GAP_PX
+    const budget = Math.max(0, contentWidthPx - gapPx - searchChromePx - queryTextMinPx)
+    // The action row tolerates one gap when shedding. Query text has an
+    // explicit minimum, so account for that tolerance in this allocation.
+    const { visibleIds, overflowIds } = shedToolbarSlots(slots, budget - gapPx, metrics)
+    const visible = slots.filter((slot) => visibleIds.includes(slot.id))
+    const actionsWidth = clusterWidth(visible, overflowIds.length > 0, metrics)
+    return Math.max(searchChromePx, contentWidthPx - gapPx - actionsWidth)
 }

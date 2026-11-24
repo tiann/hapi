@@ -111,6 +111,7 @@ export function SessionListViewMenu(props: {
     machineFilter?: string | null
     onMachineChange?: (id: string | null) => void
     totalCount?: number
+    onOpen?: (dismiss: () => void) => void
 }) {
     const { t } = useTranslation()
     const [open, setOpen] = useState(false)
@@ -207,6 +208,10 @@ export function SessionListViewMenu(props: {
                 data-testid="session-list-view-button"
                 onClick={() => {
                     fue.engage()
+                    if (!open) props.onOpen?.(() => {
+                        setOpen(false)
+                        setDatePickerOpen(false)
+                    })
                     setOpen(value => !value)
                 }}
                 aria-label={label}

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { chromium, expect, test, type Page } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -51,6 +51,527 @@ for (const width of [1280, 393, 320]) {
         await expect(page.getByRole('button', { name: /Older draft/ })).toBeVisible()
     })
 }
+
+for (const width of [393, 320]) {
+    test(`optional machine filter works without overlapping toolbar controls at ${width}px`, async ({ page }) => {
+        await page.addInitScript(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
+        await open(page, width)
+        const machineButton = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+        await expect(machineButton).toBeVisible()
+        const actions = page.getByTestId('session-list-header-actions')
+        const buttons = actions.locator('button:visible:not([inert] *)')
+        const boxes = (await buttons.evaluateAll(elements => elements.map(element => {
+            const rect = element.getBoundingClientRect()
+            return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
+        })))
+        for (let i = 0; i < boxes.length; i++) {
+            for (let j = i + 1; j < boxes.length; j++) {
+                const a = boxes[i]!
+                const b = boxes[j]!
+                expect(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top).toBe(true)
+            }
+        }
+        await machineButton.click()
+        const machineMenu = page.getByRole('menu', { name: 'Filter sessions by machine' })
+        await expect(machineMenu).toBeInViewport({ ratio: 1 })
+        await machineMenu.getByRole('menuitemradio', { name: /^Server \(1\)$/ }).click()
+        await expect(page.getByRole('button', { name: /Server draft/ })).toBeVisible()
+        await expect(page.getByRole('button', { name: /Reviewed draft/ })).toHaveCount(0)
+        await page.getByRole('button', { name: 'Sort and filter', exact: true }).click()
+        await expect(page.getByRole('menu', { name: 'Sort and filter' }).getByRole('menuitemradio', { name: /^Server \(1\)$/ })).toHaveAttribute('aria-checked', 'true')
+    })
+}
+
+test('optional mobile machine filter does not occupy the desktop toolbar', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
+    await open(page, 1280)
+    await expect(page.getByRole('button', { name: 'Filter sessions by machine', exact: true })).toHaveCount(0)
+    await expect(page.getByTestId('session-toolbar-slot-machine-filter')).toHaveCount(0)
+})
+
+test('keeps Sort and filter on the toolbar before the shortcut with a long search', async ({ page }) => {
+    await page.addInitScript(() => {
+        localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+        localStorage.setItem('hapi-font-scale', '1.1')
+    })
+    await open(page, 320)
+    await page.getByRole('button', { name: /Search sessions/ }).click()
+    const search = page.getByPlaceholder(/Search title/)
+    await search.fill('a very long collapsed session search query')
+    await search.blur()
+    await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Sort and filter' })).toBeVisible()
+})
+
+test('keeps Sort and filter accessible with the shortcut at large font size', async ({ page }) => {
+    await page.addInitScript(() => {
+        localStorage.setItem('hapi-font-scale', '1.3')
+    })
+    await page.addInitScript(() => localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1'))
+    await page.setViewportSize({ width: 334, height: 844 })
+    await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en&allRead')
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--app-font-scale').trim())).toBe('1.3')
+    const searchAndCollapse = async () => {
+        await page.getByRole('button', { name: /Search sessions/ }).click()
+        const search = page.getByPlaceholder(/Search title/)
+        await search.fill('a very long collapsed session search query')
+        await search.blur()
+    }
+    await searchAndCollapse()
+    expect((await page.getByTestId('session-list-search').boundingBox())!.width).toBeGreaterThan(150)
+    await page.getByRole('button', { name: 'More session list actions', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Sort and filter', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await page.evaluate(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
+    await page.reload()
+    await searchAndCollapse()
+    await expect(page.getByRole('button', { name: 'Clear search' })).toBeVisible()
+    const queryText = page.getByTestId('session-list-search').locator('[data-search-query-text]')
+    expect(await queryText.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(40)
+    await page.getByRole('button', { name: 'More session list actions', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Sort and filter', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Filter sessions by machine', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await page.setViewportSize({ width: 364, height: 844 })
+    await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Sort and filter' })).toBeVisible()
+})
+
+test('keeps collapsed query text when the mobile toolbar has room', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
+    await open(page, 440)
+    await page.getByRole('button', { name: /Search sessions/ }).click()
+    const search = page.getByPlaceholder(/Search title/)
+    await search.fill('a very long collapsed session search query')
+    await search.blur()
+    const queryText = page.getByTestId('session-list-search').locator('span.truncate')
+    await expect(queryText).toHaveText('a very long collapsed session search query')
+    expect(await queryText.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(20)
+})
+
+test('dismisses the machine filter inside More one layer at a time', async ({ page }) => {
+    await page.addInitScript(() => {
+        localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+        localStorage.setItem('hapi-font-scale', '1.3')
+    })
+    await open(page, 320)
+    await page.getByRole('button', { name: /Search sessions/ }).click()
+    await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+    await page.getByPlaceholder(/Search title/).blur()
+    const more = page.getByRole('button', { name: 'More session list actions', exact: true })
+    await more.click()
+    const machineTrigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+    await machineTrigger.click()
+    const machineMenu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+    await expect(machineMenu).toBeInViewport({ ratio: 1 })
+    await expect(machineMenu.getByRole('menuitemradio').first()).toBeFocused()
+    await page.keyboard.press('ArrowDown')
+    await expect(machineMenu.getByRole('menuitemradio').nth(1)).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(machineMenu).toHaveCount(0)
+    await expect(machineTrigger).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(machineTrigger).toHaveCount(0)
+    await expect(more).toBeFocused()
+
+    // Selecting a machine and clicking the submenu's backdrop also return to
+    // More, where the other actions remain available.
+    await more.click()
+    await machineTrigger.click()
+    await machineMenu.getByRole('menuitemradio', { name: /^Server \(1\)$/ }).click()
+    await expect(machineMenu).toHaveCount(0)
+    await expect(machineTrigger).toBeFocused()
+    await machineTrigger.click()
+    // A real outside tap must be caught before it activates the Search chip.
+    const searchTrigger = page.getByRole('button', { name: /Search sessions/ })
+    const searchBox = (await searchTrigger.boundingBox())!
+    await page.mouse.click(searchBox.x + searchBox.width / 2, searchBox.y + searchBox.height / 2)
+    await expect(machineMenu).toHaveCount(0)
+    await expect(page.getByPlaceholder(/Search title/)).toHaveCount(0)
+    await expect(machineTrigger).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(more).toBeFocused()
+
+    // The combined filter uses the same custom-menu dismissal contract.
+    await more.click()
+    const sortTrigger = page.getByRole('button', { name: 'Sort and filter', exact: true })
+    await sortTrigger.click()
+    await expect(page.getByRole('menu', { name: 'Sort and filter', exact: true })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(sortTrigger).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(more).toBeFocused()
+})
+
+test.describe('mobile machine menu pointer dismissal', () => {
+    test.use({ hasTouch: true })
+
+    for (const nested of [false, true]) {
+        test(`blocks taps on controls underneath ${nested ? 'inside More' : 'on the toolbar'}`, async ({ page }) => {
+            await page.addInitScript(() => {
+                localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+                localStorage.setItem('hapi-font-scale', '1.3')
+            })
+            await open(page, nested ? 320 : 440)
+            if (nested) {
+                await page.getByRole('button', { name: /Search sessions/ }).tap()
+                await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+                await page.getByPlaceholder(/Search title/).blur()
+                await page.getByRole('button', { name: 'More session list actions', exact: true }).tap()
+            }
+            const trigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+            const menu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+            const search = page.getByRole('button', { name: /Search sessions/ })
+
+            for (const underlying of [search, nested
+                ? page.getByRole('button', { name: 'More session list actions', exact: true })
+                : page.getByRole('button', { name: 'New Session', exact: true })]) {
+                await trigger.tap()
+                await expect(menu).toBeInViewport({ ratio: 1 })
+                const box = (await underlying.boundingBox())!
+                await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2)
+                await expect(menu).toHaveCount(0)
+                await expect(page.getByPlaceholder(/Search title/)).toHaveCount(0)
+                await expect(trigger).toBeFocused()
+            }
+
+            // A viewport-level menu must still follow its trigger when More
+            // changes position; selection must remain inside the parent layer.
+            await trigger.tap()
+            await page.setViewportSize({ width: nested ? 334 : 420, height: 568 })
+            await expect(menu).toBeInViewport({ ratio: 1 })
+            await expect.poll(async () => {
+                const menuBox = (await menu.boundingBox())!
+                const triggerBox = (await trigger.boundingBox())!
+                return Math.abs(menuBox.y - (triggerBox.y + triggerBox.height + 4))
+            }).toBeLessThanOrEqual(1)
+            await expect.poll(async () => {
+                const menuBox = (await menu.boundingBox())!
+                const triggerBox = (await trigger.boundingBox())!
+                const viewportWidth = page.viewportSize()!.width
+                const alignsStart = viewportWidth - triggerBox.x >= triggerBox.x + triggerBox.width
+                return alignsStart
+                    ? Math.abs(menuBox.x - triggerBox.x)
+                    : Math.abs(menuBox.x + menuBox.width - (triggerBox.x + triggerBox.width))
+            }).toBeLessThanOrEqual(1)
+            await menu.getByRole('menuitemradio', { name: /^Mint \(5\)$/ }).tap()
+            await expect(menu).toHaveCount(0)
+            await expect(trigger).toBeFocused()
+            await trigger.tap()
+            await expect(menu).toBeVisible()
+            if (!nested) {
+                // A fixed-width sidebar can retain the same trigger coordinates
+                // while the mobile viewport grows around it.
+                await page.setViewportSize({ width: 700, height: 844 })
+                await expect.poll(async () => Math.abs((await menu.boundingBox())!.x - (await trigger.boundingBox())!.x)).toBeLessThanOrEqual(1)
+            }
+            await page.setViewportSize({ width: 1280, height: 844 })
+            await expect(menu).toHaveCount(0)
+            await expect(trigger).toHaveCount(0)
+            await search.tap()
+            await expect(page.getByPlaceholder(/Search title/)).toBeFocused()
+        })
+    }
+})
+
+for (const expanded of [false, true]) {
+    test(`restores focus when the ${expanded ? 'open' : 'closed'} machine shortcut moves into and out of More`, async ({ page }) => {
+        await page.addInitScript(() => {
+            localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+            localStorage.setItem('hapi-font-scale', '1.3')
+        })
+        await open(page, 440)
+        await page.getByRole('button', { name: /Search sessions/ }).click()
+        await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+        await page.getByPlaceholder(/Search title/).blur()
+        const trigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+        await trigger.focus()
+        const menu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+        if (expanded) {
+            await page.keyboard.press('Enter')
+            await expect(menu.getByRole('menuitemradio').first()).toBeFocused()
+        }
+        await page.setViewportSize({ width: 320, height: 568 })
+        await expect(menu).toHaveCount(0)
+        const more = page.getByRole('button', { name: 'More session list actions', exact: true })
+        await expect(more).toBeFocused()
+        await page.keyboard.press('Enter')
+        await trigger.focus()
+        if (expanded) {
+            await page.keyboard.press('Enter')
+            await expect(menu.getByRole('menuitemradio').first()).toBeFocused()
+        }
+        await page.setViewportSize({ width: 440, height: 844 })
+        await expect(menu).toHaveCount(0)
+        // Wait for the inline instance; the still-focused portal trigger can
+        // match before ResizeObserver finishes moving the shortcut.
+        const inlineTrigger = page.getByTestId('session-list-header-actions')
+            .getByTestId('session-toolbar-slot-machine-filter')
+            .getByRole('button', { name: 'Filter sessions by machine', exact: true })
+        await expect(inlineTrigger).toBeFocused()
+        await page.keyboard.press('Enter')
+        await expect(menu.getByRole('menuitemradio').first()).toBeFocused()
+    })
+}
+
+for (const nested of [false, true]) {
+    test(`switches between filter menus by keyboard without competing arrow handlers ${nested ? 'inside More' : 'on the toolbar'}`, async ({ page }) => {
+        await page.addInitScript(() => {
+            localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+            localStorage.setItem('hapi-font-scale', '1.3')
+        })
+        await open(page, nested ? 320 : 440)
+        if (nested) {
+            await page.getByRole('button', { name: /Search sessions/ }).click()
+            await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+            await page.getByPlaceholder(/Search title/).blur()
+            await page.getByRole('button', { name: 'More session list actions', exact: true }).click()
+        }
+        const viewTrigger = page.getByRole('button', { name: 'Sort and filter', exact: true })
+        const machineTrigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+        const viewMenu = page.getByRole('menu', { name: 'Sort and filter', exact: true })
+        const machineMenu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+        await viewTrigger.click()
+        // The combined menu remains open while tabbing through its own choices.
+        // Reach the adjacent shortcut through the browser's native tab order.
+        for (let index = 0; index < 30 && !(await machineTrigger.evaluate(element => element === document.activeElement)); index++) {
+            await page.keyboard.press('Tab')
+        }
+        await expect(machineTrigger).toBeFocused()
+        await page.keyboard.press('Enter')
+        await expect(viewMenu).toHaveCount(0)
+        const options = machineMenu.getByRole('menuitemradio')
+        await expect(options.first()).toBeFocused()
+        await page.keyboard.press('ArrowDown')
+        await expect(options.nth(1)).toBeFocused()
+        await page.keyboard.press('ArrowDown')
+        await expect(options.nth(2)).toBeFocused()
+        await page.keyboard.press('Shift+Tab')
+        await expect(viewTrigger).toBeFocused()
+        await page.keyboard.press('Enter')
+        await expect(machineMenu).toHaveCount(0)
+        await expect(viewMenu.getByRole('menuitemradio').first()).toBeFocused()
+        await page.keyboard.press('ArrowDown')
+        await expect(viewMenu.getByRole('menuitemradio').nth(1)).toBeFocused()
+    })
+}
+
+for (const nested of [false, true]) {
+    for (const reverse of [false, true]) {
+        test(`resumes ${reverse ? 'backward' : 'forward'} tab order from machine trigger ${nested ? 'inside More' : 'on the toolbar'}`, async ({ page }) => {
+            await page.addInitScript(() => {
+                localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+                localStorage.setItem('hapi-font-scale', '1.3')
+            })
+            await open(page, nested ? 320 : 440)
+            if (nested) {
+                await page.getByRole('button', { name: /Search sessions/ }).click()
+                await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+                await page.getByPlaceholder(/Search title/).blur()
+                await page.getByRole('button', { name: 'More session list actions', exact: true }).click()
+            }
+            const trigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+            const adjacent = page.getByRole('button', { name: reverse ? 'Sort and filter' : nested ? 'Settings' : 'New Session', exact: true })
+            await trigger.click()
+            const menu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+            await expect(menu.getByRole('menuitemradio').first()).toBeFocused()
+            await page.keyboard.press(reverse ? 'Shift+Tab' : 'Tab')
+            await expect(menu).toHaveCount(0)
+            await expect(adjacent).toBeFocused()
+            // Closing removes the document arrow-key handler as well.
+            await page.keyboard.press('ArrowDown')
+            await expect(adjacent).toBeFocused()
+        })
+    }
+}
+
+for (const nested of [false, true]) {
+    test(`cleans up the machine menu on same-layout history navigation ${nested ? 'inside More' : 'on the toolbar'}`, async ({ page }) => {
+        await page.addInitScript(() => {
+            localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+            localStorage.setItem('hapi-font-scale', '1.3')
+            localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1')
+        })
+        await page.setViewportSize({ width: nested ? 320 : 440, height: 568 })
+        await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en&historyLayout')
+        await page.getByRole('button', { name: /HAPI filter integration/ }).click()
+        const chat = page.getByRole('button', { name: 'Chat input', exact: true })
+        await expect(chat).toBeVisible()
+        await page.goBack()
+        await expect(chat).toHaveCount(0)
+        if (nested) {
+            await page.getByRole('button', { name: /Search sessions/ }).click()
+            await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+            await page.getByPlaceholder(/Search title/).blur()
+            await page.getByRole('button', { name: 'More session list actions', exact: true }).click()
+        }
+        const trigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+        await trigger.click()
+        const menu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+        await expect(menu).toBeVisible()
+        await page.goForward()
+        await expect(chat).toBeVisible()
+        await expect(menu).toHaveCount(0)
+        await expect(page.getByRole('button', { name: 'Close', exact: true })).toHaveCount(0)
+        await chat.click()
+        await page.keyboard.press('ArrowDown')
+        await expect(chat).toBeFocused()
+        await page.goBack()
+        await expect(chat).toHaveCount(0)
+        await expect(menu).toHaveCount(0)
+        if (nested) {
+            const more = page.getByRole('button', { name: 'More session list actions', exact: true })
+            if (await more.getAttribute('aria-expanded') === 'false') await more.click()
+        }
+        await expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    })
+}
+
+test('tracks the machine trigger while unread actions reflow More', async ({ page }) => {
+    await page.addInitScript(() => {
+        localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+        localStorage.setItem('hapi-font-scale', '1.3')
+        localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1')
+    })
+    await page.setViewportSize({ width: 320, height: 568 })
+    await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en&allRead')
+    await page.getByRole('button', { name: /Search sessions/ }).click()
+    await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+    await page.getByPlaceholder(/Search title/).blur()
+    await page.getByRole('button', { name: 'More session list actions', exact: true }).click()
+    const trigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+    await trigger.click()
+    const menu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+    await expect(menu).toBeVisible()
+    const initialTrigger = (await trigger.boundingBox())!
+    for (const unread of [true, false]) {
+        await page.evaluate(unread => window.dispatchEvent(new CustomEvent('fixture-unread', { detail: unread })), unread)
+        await expect(page.getByRole('button', { name: /Mark all as read/ })).toHaveCount(unread ? 1 : 0)
+        if (unread) {
+            await expect.poll(async () => Math.abs((await trigger.boundingBox())!.x - initialTrigger.x)).toBeGreaterThan(20)
+        }
+        await expect.poll(async () => {
+            const menuBox = (await menu.boundingBox())!
+            const triggerBox = (await trigger.boundingBox())!
+            const alignsStart = 320 - triggerBox.x >= triggerBox.x + triggerBox.width
+            const horizontal = alignsStart
+                ? Math.abs(menuBox.x - triggerBox.x)
+                : Math.abs(menuBox.x + menuBox.width - (triggerBox.x + triggerBox.width))
+            return Math.max(horizontal, Math.abs(menuBox.y - (triggerBox.y + triggerBox.height + 4)))
+        }).toBeLessThanOrEqual(1)
+        await expect(menu).toBeInViewport({ ratio: 1 })
+    }
+})
+
+for (const scale of [1, 1.3]) {
+    for (const allRead of [false, true]) {
+        for (const browse of [false, true]) {
+            test(`keeps query and controls usable across widths (scale ${scale}, allRead ${allRead}, browse ${browse})`, async ({ page }) => {
+                test.setTimeout(60_000)
+                await page.addInitScript(({ scale }) => {
+                    localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+                    localStorage.setItem('hapi-font-scale', String(scale))
+                    localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1')
+                }, { scale })
+                await page.setViewportSize({ width: 440, height: 844 })
+                await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en' + (allRead ? '&allRead' : '') + (browse ? '&browse' : ''))
+                await page.getByRole('button', { name: /Search sessions/ }).click()
+                await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+                await page.getByPlaceholder(/Search title/).blur()
+
+                // Sweep both directions so stale ResizeObserver measurements
+                // cannot pass by testing only fresh mounts at selected widths.
+                const widths = Array.from({ length: 61 }, (_, index) => 320 + index * 2)
+                for (const width of [...widths, ...widths.reverse()]) {
+                    await page.setViewportSize({ width, height: 844 })
+                    // Let the row, search and actions ResizeObservers settle.
+                    await page.evaluate(async () => {
+                        for (let frame = 0; frame < 4; frame++) {
+                            await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+                        }
+                    })
+                    const layout = await page.evaluate(() => {
+                        const row = document.querySelector<HTMLElement>('[data-testid="session-list-header-row"]')!
+                        const search = row.querySelector<HTMLElement>('[data-testid="session-list-search"]')!
+                        const query = search.querySelector<HTMLElement>('[data-search-query-text]')!
+                        const controls = [
+                            ...search.querySelectorAll<HTMLElement>('button'),
+                            ...row.querySelectorAll<HTMLElement>('[data-testid="session-list-header-actions"] button:not([inert] *)'),
+                        ].filter(element => element.getBoundingClientRect().width > 0)
+                        const boxes = controls.map(element => {
+                            const box = element.getBoundingClientRect()
+                            return { left: box.left, right: box.right, top: box.top, bottom: box.bottom }
+                        })
+                        return {
+                            queryWidth: query.getBoundingClientRect().width,
+                            queryFontSize: Number.parseFloat(getComputedStyle(query).fontSize),
+                            right: Math.min(row.getBoundingClientRect().right, innerWidth),
+                            boxes,
+                        }
+                    })
+                    expect(layout.queryWidth, `query at ${width}px`).toBeGreaterThanOrEqual(layout.queryFontSize * 3 - 1)
+                    for (let index = 0; index < layout.boxes.length; index++) {
+                        const box = layout.boxes[index]!
+                        expect(box.right, `control at ${width}px`).toBeLessThanOrEqual(layout.right + 1)
+                        const next = layout.boxes[index + 1]
+                        if (next) expect(box.right, `overlap at ${width}px`).toBeLessThanOrEqual(next.left + 0.5)
+                    }
+                }
+                // A short query uses its natural width; it must not be clipped
+                // to make room for an extra action either.
+                await page.getByRole('button', { name: /Search sessions/ }).click()
+                await page.getByPlaceholder(/Search title/).fill('hi')
+                await page.getByPlaceholder(/Search title/).blur()
+                const shortQuery = page.getByTestId('session-list-search').locator('[data-search-query-text]')
+                expect(await shortQuery.evaluate(element => element.getBoundingClientRect().width + 1 >= element.scrollWidth)).toBe(true)
+                await page.getByRole('button', { name: 'Clear search' }).click()
+                await expect(shortQuery).toHaveCount(0)
+                await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Sort and filter', exact: true })).toBeVisible()
+            })
+        }
+    }
+}
+
+test('uses the same mobile breakpoint as the machine chips with a larger browser font', async ({ baseURL }) => {
+    const browser = await chromium.launch({ args: ['--no-sandbox', '--blink-settings=defaultFontSize=20'] })
+    try {
+        const page = await browser.newPage({ baseURL })
+        await page.addInitScript(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
+        await open(page, 820)
+        expect(await page.evaluate(() => matchMedia('(width < 48rem)').matches)).toBe(true)
+        await expect(page.getByRole('button', { name: 'Filter sessions by machine', exact: true })).toBeVisible()
+    } finally {
+        await browser.close()
+    }
+})
+
+test('keeps More usable at 320px with large browser and HAPI fonts', async ({ baseURL }) => {
+    const browser = await chromium.launch({ args: ['--no-sandbox', '--blink-settings=defaultFontSize=24'] })
+    try {
+        const page = await browser.newPage({ baseURL, viewport: { width: 320, height: 568 } })
+        await page.addInitScript(() => {
+            localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+            localStorage.setItem('hapi-font-scale', '1.3')
+            localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1')
+        })
+        await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en&allRead')
+        await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--app-font-scale').trim())).toBe('1.3')
+        await page.getByRole('button', { name: /Search sessions/ }).click()
+        await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+        await page.getByPlaceholder(/Search title/).blur()
+        expect(await page.getByTestId('session-list-search').locator('[data-search-query-text]').evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(10)
+        const more = page.getByRole('button', { name: 'More session list actions', exact: true })
+        await expect(more).toBeVisible()
+        expect((await more.boundingBox())!.x + (await more.boundingBox())!.width).toBeLessThanOrEqual(320)
+        await more.click()
+        const sortFilter = page.getByRole('button', { name: 'Sort and filter', exact: true })
+        await expect(sortFilter).toBeVisible()
+        await sortFilter.click()
+        await expect(page.getByRole('menu', { name: 'Sort and filter' })).toBeVisible()
+    } finally {
+        await browser.close()
+    }
+})
 test.beforeEach(async ({ page }) => {
     await page.clock.setFixedTime(new Date(2026, 10, 9, 15))
 })

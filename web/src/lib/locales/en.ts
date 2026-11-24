@@ -1204,6 +1204,8 @@ export default {
   'settings.display.sessionPreviewLimit.increase': 'Show more sessions before folding',
   'settings.display.activeSessionsOnly': 'Active sessions only',
   'settings.display.activeSessionsOnly.desc': 'Hide inactive sessions except the session you have open and sessions with a running long-running job.',
+  'settings.display.mobileMachineFilter': 'Show mobile machine filter button',
+  'settings.display.mobileMachineFilter.desc': 'Add a dedicated machine filter button to the mobile session list header.',
   'settings.display.pinInProgressSessions': 'Pin in-progress sessions',
   'settings.display.pinInProgressSessions.desc': 'How loudly sessions float to the top In progress section above project folders. Default is long-running jobs (outliving batch work with a session job meter). Global pins remain above it. Connected-but-idle sessions (hub socket up, agent not working and not waiting on you) stay in project folders in every mode — that is not in-progress work. Off keeps everything in directory groups.',
   'settings.display.pinInProgressMode.off': 'Off',

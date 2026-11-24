@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
+import type { CSSProperties, RefObject } from 'react'
 import type { MachineHealthPresentation } from '@/lib/machineHealth'
 import { MachineHealthTooltipBody } from '@/components/MachineHealthIndicator'
 import { HoverTooltip } from '@/components/HoverTooltip'
@@ -270,13 +271,23 @@ export function MachineFilterMenu(props: {
     totalCount: number
     value: string | null
     onChange: (id: string | null) => void
+    /** Layout owner to check when the trigger itself is inside a portal. */
+    visibilityRef?: RefObject<HTMLElement | null>
+    onOpen?: (dismiss: () => void) => void
+    onFocusedUnmount?: () => void
 }) {
     const { t } = useTranslation()
     const [open, setOpen] = useState(false)
     const triggerRef = useRef<HTMLButtonElement>(null)
     const wrapperRef = useRef<HTMLDivElement>(null)
     const menuRef = useRef<HTMLDivElement>(null)
-    const [anchor, setAnchor] = useState<MachineFilterMenuAnchor | null>(null)
+    const [anchor, setAnchor] = useState<(MachineFilterMenuAnchor & { viewportWidth: number }) | null>(null)
+
+    useLayoutEffect(() => () => {
+        if (triggerRef.current === document.activeElement || menuRef.current?.contains(document.activeElement)) {
+            props.onFocusedUnmount?.()
+        }
+    }, [props.onFocusedUnmount])
 
     const close = useCallback(() => {
         setOpen(false)
@@ -293,18 +304,36 @@ export function MachineFilterMenu(props: {
             setAnchor(null)
             return
         }
+        // More can reflow when actions appear, moving the trigger without a
+        // resize or scroll. Track viewport position only while the menu is open.
+        let frame = 0
         const updateAnchor = () => {
+            const trigger = triggerRef.current
+            const owner = props.visibilityRef?.current
+            // The sessions layout can hide the list without unmounting it.
+            // Inside More, even the trigger is portaled, so check its owner too.
+            if (!trigger?.getClientRects().length || (owner && !owner.getClientRects().length)) {
+                setOpen(false)
+                setAnchor(null)
+                return
+            }
             const rect = wrapperRef.current?.getBoundingClientRect()
-            if (!rect) return
-            setAnchor({ left: rect.left, right: rect.right, bottom: rect.bottom })
+            if (rect) {
+                const viewportWidth = window.innerWidth
+                setAnchor(previous => previous?.left === rect.left
+                    && previous.right === rect.right && previous.bottom === rect.bottom
+                    && previous.viewportWidth === viewportWidth
+                    ? previous
+                    : { left: rect.left, right: rect.right, bottom: rect.bottom, viewportWidth })
+            }
+            frame = window.requestAnimationFrame(updateAnchor)
         }
         updateAnchor()
-        window.addEventListener('resize', updateAnchor)
-        return () => window.removeEventListener('resize', updateAnchor)
-    }, [open])
+        return () => window.cancelAnimationFrame(frame)
+    }, [open, props.visibilityRef])
 
     const alignStart = anchor
-        ? machineFilterMenuAlignsStart(anchor, window.innerWidth)
+        ? machineFilterMenuAlignsStart(anchor, anchor.viewportWidth)
         : false
 
     // Focus the selected (or first) row on open; Escape closes and Arrow keys
@@ -319,6 +348,12 @@ export function MachineFilterMenu(props: {
         })
 
         const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Tab') {
+                // Let the browser continue in either direction from the trigger,
+                // rather than from the menu's portal at the end of the body.
+                close()
+                return
+            }
             if (event.key === 'Escape') {
                 event.preventDefault()
                 close()
@@ -350,7 +385,10 @@ export function MachineFilterMenu(props: {
             <button
                 ref={triggerRef}
                 type="button"
-                onClick={() => setOpen(value => !value)}
+                onClick={() => {
+                    if (!open) props.onOpen?.(() => setOpen(false))
+                    setOpen(value => !value)
+                }}
                 aria-label={t('sessions.machineFilter.label')}
                 title={t('sessions.machineFilter.label')}
                 aria-haspopup="menu"
@@ -362,24 +400,29 @@ export function MachineFilterMenu(props: {
                     <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-link)]" />
                 ) : null}
             </button>
-            {open ? (
-                <>
+            {open && anchor ? createPortal(
+                // Escape More's transformed positioning wrapper so the backdrop
+                // covers the viewport. The portal stays in More's React tree,
+                // allowing Radix to treat pointer/focus events here as inside.
+                <div className="fixed inset-0 z-[60] md:hidden">
                     <button
                         type="button"
                         aria-label={t('button.close')}
                         tabIndex={-1}
-                        className="fixed inset-0 z-20 cursor-default"
+                        className="absolute inset-0 z-20 cursor-default"
                         onClick={close}
                     />
                     <div
                         ref={menuRef}
                         role="menu"
                         aria-label={t('sessions.machineFilter.label')}
-                        style={anchor ? getMachineFilterMenuClampStyle(anchor) : undefined}
-                        className={cn(
-                            'absolute top-full z-30 mt-1 max-h-80 w-64 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-xl',
-                            alignStart ? 'left-0' : 'right-0'
-                        )}
+                        style={{
+                            ...getMachineFilterMenuClampStyle(anchor),
+                            top: anchor.bottom + MENU_TOP_GAP_PX,
+                            left: alignStart ? anchor.left : undefined,
+                            right: alignStart ? undefined : anchor.viewportWidth - anchor.right,
+                        }}
+                        className="absolute z-30 max-h-80 w-64 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-xl"
                     >
                         <MachineFilterMenuRow
                             label={t('sessions.machineFilter.all')}
@@ -399,7 +442,8 @@ export function MachineFilterMenu(props: {
                             />
                         ))}
                     </div>
-                </>
+                </div>,
+                document.body
             ) : null}
         </div>
     )
