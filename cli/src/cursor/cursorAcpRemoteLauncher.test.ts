@@ -1983,6 +1983,124 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
+    it('preserves generic final RPC classification when a pending steer emits rate-limit stderr during the drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        // Attempt 4 rejects with generic http/2 CANCEL and enters the drain.
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(4);
+
+        // Steer logs typed rate_limit stderr while the drain awaits it.
+        harness.stderrErrorHandler?.({
+            type: 'rate_limit',
+            message: 'HTTP 429',
+            raw: 'status 429'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'modelError',
+                kind: 'prompt_failed',
+                rawSnippet: expect.stringContaining('http/2 stream closed')
+            }));
+        });
+        expect(session.client.sendSessionEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError',
+            kind: 'rate_limited'
+        }));
+
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('preserves primary stderr classification across the soft-steer drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        // Attempt 4 emits typed rate_limit stderr while in flight, then rejects.
+        harness.stderrErrorHandler?.({
+            type: 'rate_limit',
+            message: 'HTTP 429',
+            raw: 'status 429'
+        });
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(4);
+        releaseSoftSteer();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'modelError',
+                kind: 'rate_limited',
+                rawSnippet: expect.stringContaining('status 429')
+            }));
+        });
+
+        session.queue.close();
+        await runPromise;
+    });
+
     it('releases an in-loop retry soft-steer wait on Switch without sending a retry', async () => {
         let releasePrompt!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });

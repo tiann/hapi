@@ -1266,10 +1266,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             this.pendingRetryableError = error instanceof Error ? error.message : String(error);
                         }
 
-                        // Capture the primary attempt's retryable failure before
-                        // awaiting the drain: an inline error from a soft steer
-                        // overwrites pendingRetryableError (#2571 bot Minor).
+                        // Capture the primary attempt's retryable failure and its
+                        // classified settlement before awaiting the drain: a pending
+                        // steer can emit inline text, stderr (`status 429`), or
+                        // generic failures during the wait and must not replace the
+                        // primary failure classification or stderr already received.
                         const primaryRetryableFailure = caughtRetryableError ?? this.pendingRetryableError;
+                        const primaryPostToolFailure = settleFailure(
+                            primaryRetryableFailure ?? 'Cursor connection interrupted after tool activity'
+                        );
+                        const primaryExhaustedFailure = settleFailure(
+                            primaryRetryableFailure ?? 'Cursor Agent failed after retries'
+                        );
                         // Wait for any overlapping soft-steer before deciding between
                         // prompt replay and post-tool Continue (#2509): tool updates
                         // emitted by the settling steer set attemptProducedToolActivity.
@@ -1319,9 +1327,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                 ? CURSOR_POST_TOOL_INTERRUPT_STEER_TIMEOUT_MESSAGE
                                 : CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE;
                             this.surfacePromptFailure(giveUpMessage, { deferFooter: true });
-                            const failure = settleFailure(
-                                primaryRetryableFailure ?? 'Cursor connection interrupted after tool activity'
-                            );
+                            const failure = primaryPostToolFailure;
                             this.pendingStderrFailure = null;
                             this.pendingTextFailure = null;
                             // attemptProducedToolActivity is true this attempt, so
@@ -1338,9 +1344,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             // Continue attempt itself does not get the normal retry
                             // budget — give up rather than resending Continue N times.
                             this.surfacePromptFailure(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE, { deferFooter: true });
-                            const continueFailure = settleFailure(
-                                primaryRetryableFailure ?? 'Cursor connection interrupted after tool activity'
-                            );
+                            const continueFailure = primaryPostToolFailure;
                             this.pendingStderrFailure = null;
                             this.pendingTextFailure = null;
                             // attemptProducedToolActivity is per-attempt and this
@@ -1361,9 +1365,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         {
                             const message = `Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`;
                             this.surfacePromptFailure(message, { deferFooter: true });
-                            const exhaustedFailure = settleFailure(
-                                primaryRetryableFailure ?? 'Cursor Agent failed after retries'
-                            );
+                            const exhaustedFailure = primaryExhaustedFailure;
                             this.pendingStderrFailure = null;
                             this.pendingTextFailure = null;
                             const { bridgeQueued } = exhaustedFailure
