@@ -778,6 +778,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         onThinkingChange: session.onThinkingChange,
                         claudeEnvVars: session.claudeEnvVars,
                         onMessage,
+                        onDroppedResult: (message) => sdkToLogConverter.consumeResultForAccounting(message),
+                        onSpawn: (fresh) => {
+                            if (fresh) sdkToLogConverter.startFreshProcessBaseline();
+                        },
                         onContextUsage: (usage) => sdkToLogConverter.applyContextUsage(usage.model, usage.maxTokens),
                         onAccountIdentity: (identity) => sdkToLogConverter.updateAccountIdentity?.(identity),
                         onFirstResult: (initialMessage) => {

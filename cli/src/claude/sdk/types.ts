@@ -107,6 +107,12 @@ export interface SDKResultMessage extends SDKMessage {
      * not an assistant round. Never present on the wire from Claude itself.
      */
     hapi_compact_turn?: boolean
+    /**
+     * Set in-process on a result forwarded for display whose cumulative
+     * counters belong to another session than the active one, so the log
+     * converter must not diff or rebase usage with it.
+     */
+    hapi_skip_usage?: boolean
 }
 
 export interface SDKControlResponse extends SDKMessage {
