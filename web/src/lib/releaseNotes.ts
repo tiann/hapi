@@ -1362,9 +1362,13 @@ export const RELEASE_NOTES = [
             ]),
         ]),
     releaseNote('0.7.0', '2026-01-07',
-        'Correct the website’s HAPI CLI installation command to use @twsxtd/hapi.',
-        '更正网站上的 HAPI CLI 安装命令，改为使用 @twsxtd/hapi。',
+        'Add in-app notification toasts and visibility-aware push delivery, allow configuring the server bind address, and correct the CLI installation instructions.',
+        '新增应用内通知提示和根据可见状态决定是否推送的机制，支持配置服务监听地址，并更正 CLI 安装说明。',
         [
+            group('Notifications and server', '通知与服务', [
+                change('feature', 'Show in-app notification toasts in visible browser tabs instead of sending duplicate push notifications.', '浏览器标签页可见时，优先显示应用内通知提示，避免重复推送。'),
+                change('feature', 'Configure the server bind address and port with hapi server --host and --port.', '可使用 hapi server 的 --host 和 --port 参数设置监听地址与端口。'),
+            ]),
             group('Package installation', '软件包安装', [
                 change('fix', 'Show npm install -g @twsxtd/hapi in the website’s CLI installation instructions.', '在网站的 CLI 安装说明中显示 npm install -g @twsxtd/hapi。'),
             ]),
