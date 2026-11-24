@@ -95,6 +95,12 @@ describe('kimiWireLocator', () => {
 
         try {
             await wait(300);
+            expect(located).toHaveLength(0);
+
+            // The TUI writes to the journal when it actually opens the session.
+            const sessionDir = join(homeDir, 'sessions', encodeKimiWorkDirKey(workDir), 'session_old-resume');
+            await writeFile(getKimiWirePath(sessionDir), JSON.stringify({ type: 'turn.prompt', time: Date.now() }) + '\n', { flag: 'a' });
+            await wait(300);
             expect(located).toHaveLength(1);
             expect(located[0]?.sessionId).toBe('session_old-resume');
         } finally {

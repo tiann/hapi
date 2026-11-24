@@ -98,6 +98,7 @@ class KimiWireLocatorImpl {
     private readonly onLocated: KimiWireLocatorOptions['onLocated'];
     private readonly onAmbiguous?: KimiWireLocatorOptions['onAmbiguous'];
     private readonly initialSessionIds = new Set<string>();
+    private resumeWireBaseline: { size: number; mtimeMs: number } | null = null;
     private interval: ReturnType<typeof setInterval> | null = null;
     private scanPromise: Promise<void> | null = null;
     private stopped = false;
@@ -113,7 +114,16 @@ class KimiWireLocatorImpl {
     }
 
     async start(): Promise<void> {
-        if (!this.resumeSessionId) {
+        if (this.resumeSessionId) {
+            // A resumed session already has a wire file. Record its current
+            // state so a pre-existing file alone cannot confirm that this
+            // launch opened the conversation.
+            const resumeWirePath = getKimiWirePath(join(this.workspaceDir, this.resumeSessionId))
+            const stats = await stat(resumeWirePath).catch(() => null)
+            this.resumeWireBaseline = stats?.isFile()
+                ? { size: stats.size, mtimeMs: stats.mtimeMs }
+                : null
+        } else {
             // Snapshot pre-existing sessions: only directories that appear
             // AFTER this locator starts may belong to the process hapi just
             // spawned. Without this, an immediate retry could bind to the
@@ -227,6 +237,10 @@ class KimiWireLocatorImpl {
                 if (!(await this.matchesWorkDir(sessionDir))) {
                     continue;
                 }
+            } else if (this.resumeWireBaseline
+                && wireStats.size === this.resumeWireBaseline.size
+                && wireStats.mtimeMs === this.resumeWireBaseline.mtimeMs) {
+                continue;
             }
 
             candidates.push({ sessionId: entry.name, wirePath, statePath });
