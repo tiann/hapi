@@ -110,21 +110,39 @@ test('keeps Sort and filter accessible with the shortcut at large font size', as
     await page.setViewportSize({ width: 334, height: 844 })
     await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en&allRead')
     await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--app-font-scale').trim())).toBe('1.3')
-    const searchAndCheck = async () => {
+    const searchAndCheck = async (expectInlineFilter: boolean) => {
         await page.getByRole('button', { name: /Search sessions/ }).click()
         const search = page.getByPlaceholder(/Search title/)
         await search.fill('a very long collapsed session search query')
         await search.blur()
-        await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Sort and filter' })).toBeVisible()
+        if (expectInlineFilter) {
+            await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Sort and filter' })).toBeVisible()
+        }
     }
-    await searchAndCheck()
+    await searchAndCheck(false)
+    expect((await page.getByTestId('session-list-search').boundingBox())!.width).toBeGreaterThan(150)
+    await page.getByRole('button', { name: 'More session list actions', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Sort and filter', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
+    await page.keyboard.press('Escape')
     await page.evaluate(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
     await page.reload()
-    await searchAndCheck()
+    await searchAndCheck(true)
     await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Filter sessions by machine', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Clear search' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
+})
+
+test('keeps collapsed query text when the mobile toolbar has room', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
+    await open(page, 440)
+    await page.getByRole('button', { name: /Search sessions/ }).click()
+    const search = page.getByPlaceholder(/Search title/)
+    await search.fill('a very long collapsed session search query')
+    await search.blur()
+    const queryText = page.getByTestId('session-list-search').locator('span.truncate')
+    await expect(queryText).toHaveText('a very long collapsed session search query')
+    expect(await queryText.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(20)
 })
 
 test('uses the same mobile breakpoint as the machine chips with a larger browser font', async ({ baseURL }) => {

@@ -3273,11 +3273,13 @@ export function SessionList(props: {
             && rowBox - rowPad - fallbackBaseTrailing >= minimumSearchWidth + shortcutSpace
             ? shortcutSpace
             : 0)
-        const trailing = allActionsFit ? measuredActionsWidth : fallbackTrailing
+        const trailing = allActionsFit
+            ? measuredActionsWidth + gapPx
+            : shortcutEnabled
+                ? fallbackTrailing
+                : gapPx + morePx
         const nextSearchMax = rowBox > 0
-            ? allActionsFit
-                ? minimumSearchWidth
-                : Math.max(minimumSearchWidth, rowBox - rowPad - trailing)
+            ? Math.max(minimumSearchWidth, rowBox - rowPad - trailing)
             : 0
         setSearchMaxPx((previous) => previous === nextSearchMax ? previous : nextSearchMax)
     })
