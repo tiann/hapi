@@ -366,7 +366,7 @@ export function StatusBar(props: {
     const persistedUsageModel = props.agentFlavor === 'codex' && props.contextSize === undefined && persistedContextSize !== undefined
         ? props.contextDetails?.model
         : undefined
-    const contextHeuristicModel = props.contextModel ?? persistedUsageModel ?? props.model ?? props.contextDetails?.model
+    const contextHeuristicModel = persistedUsageModel ?? props.contextModel ?? props.model ?? props.contextDetails?.model
     const effectiveContextWindow = getEffectiveContextWindow({
         explicitContextWindow: props.contextWindow,
         details: props.contextDetails,
