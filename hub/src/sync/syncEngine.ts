@@ -6279,6 +6279,7 @@ export class SyncEngine {
             && (prev?.kimiSessionId ?? null) === (next.kimiSessionId ?? null)
             && (prev?.agySessionId ?? null) === (next.agySessionId ?? null)
             && (prev?.copilotSessionId ?? null) === (next.copilotSessionId ?? null)
+            && (prev?.dshSessionId ?? null) === (next.dshSessionId ?? null)
     }
 
     private canRunCursorDedup(session: Session): boolean {

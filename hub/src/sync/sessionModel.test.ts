@@ -255,6 +255,58 @@ describe('session model', () => {
         expect(survivors).toHaveLength(1)
     })
 
+    it('deduplicates kimi sessions that share a kimiSessionId (reopen correlation)', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const oldSession = cache.getOrCreateSession(
+            'kimi-dup-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'kimi', kimiSessionId: 'kimi-native-1' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'kimi-dup-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'kimi', kimiSessionId: 'kimi-native-1' },
+            null,
+            'default'
+        )
+
+        await cache.deduplicateByAgentSessionId(newSession.id)
+
+        // Two rows sharing the Kimi native id collapse to one. Both rows
+        // survive when extraction does not read kimiSessionId.
+        const survivors = [oldSession.id, newSession.id].filter((id) => cache.getSession(id) != null)
+        expect(survivors).toHaveLength(1)
+    })
+
+    it('deduplicates dsh sessions that share a dshSessionId (reopen correlation)', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const oldSession = cache.getOrCreateSession(
+            'dsh-dup-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'dsh', dshSessionId: 'dsh-native-1' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'dsh-dup-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'dsh', dshSessionId: 'dsh-native-1' },
+            null,
+            'default'
+        )
+
+        await cache.deduplicateByAgentSessionId(newSession.id)
+
+        // Two rows sharing the DSH native id collapse to one. Both rows
+        // survive when extraction does not read dshSessionId.
+        const survivors = [oldSession.id, newSession.id].filter((id) => cache.getSession(id) != null)
+        expect(survivors).toHaveLength(1)
+    })
+
     it('notifies onSessionMergedAway when dedup collapses a duplicate row', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
