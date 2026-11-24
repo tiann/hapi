@@ -52,6 +52,10 @@ function createFakeCacheStorage(
                     const url = typeof req === 'string' ? req : req instanceof URL ? req.href : req.url
                     return entries.delete(url)
                 }),
+                put: vi.fn(async (req: RequestInfo | URL) => {
+                    const url = typeof req === 'string' ? req : req instanceof URL ? req.href : req.url
+                    entries.add(url)
+                }),
             }
         }),
         remainingEntries: (name: string) => [...(cacheEntries.get(name) ?? [])],
@@ -134,7 +138,6 @@ describe('isOutdatedStaticCacheName and cleanupOutdatedStaticCaches', () => {
         expect(deleted).toEqual([
             oldSyntaxA,
             oldStaticA,
-            'syntax-grammars',
         ])
         expect(cacheStorage.remainingEntries('syntax-grammars')).toEqual([
             `${scopeB}assets/shiki-ts-other.js`,
@@ -151,19 +154,33 @@ describe('isOutdatedStaticCacheName and cleanupOutdatedStaticCaches', () => {
         ])
     })
 
-    it('deletes legacy syntax-grammars bucket completely when all entries belong to the scope', async () => {
-        const scope = 'https://example.com/'
+    it('preserves concurrent writes from a sibling legacy worker to syntax-grammars while migrating scoped entries', async () => {
+        const rootScope = 'https://example.com/'
+        const previewScope = 'https://example.com/preview/'
         const cacheStorage = createFakeCacheStorage(
             ['syntax-grammars'],
             {
-                'syntax-grammars': [`${scope}assets/shiki-c-old.js`],
+                'syntax-grammars': [`${rootScope}assets/shiki-c-old.js`],
             },
         )
 
-        const deleted = await cleanupOutdatedStaticCaches(cacheStorage, '0.36.5-1234abcd', { scope })
+        const clearExpiration = vi.fn()
+        const deleted = await cleanupOutdatedStaticCaches(cacheStorage, '0.36.5-1234abcd', {
+            scope: rootScope,
+            clearExpiration,
+            async migrateGrammars() {
+                // Simulate an older worker at /preview/ caching a grammar after the snapshot was taken.
+                const legacyCache = await cacheStorage.open('syntax-grammars')
+                await legacyCache.put(`${previewScope}assets/shiki-preview.js`)
+            },
+        })
 
-        expect(deleted).toEqual(['syntax-grammars'])
-        expect(cacheStorage.remaining()).toEqual([])
+        expect(deleted).toEqual([])
+        expect(clearExpiration).not.toHaveBeenCalled()
+        expect(cacheStorage.remaining()).toEqual(['syntax-grammars'])
+        expect(cacheStorage.remainingEntries('syntax-grammars')).toEqual([
+            `${previewScope}assets/shiki-preview.js`,
+        ])
     })
 
     it('deletes exact-scope legacy Workbox precaches without touching sibling subpath apps', async () => {
@@ -279,11 +296,13 @@ describe('cleanupClientStaticCachesOnVersionChange', () => {
 
         expect(result).toEqual({
             versionChanged: true,
-            deletedCaches: [oldCacheA, 'syntax-grammars'],
+            deletedCaches: [oldCacheA],
             delegatedToWorker: false,
         })
         expect(storage.getItem(STATIC_CACHE_VERSION_STORAGE_KEY)).toBe('0.36.5')
+        expect(cacheStorage.remainingEntries('syntax-grammars')).toEqual([])
         expect(cacheStorage.remaining()).toEqual([
+            'syntax-grammars',
             currentCacheA,
             siblingCacheB,
             'api-sessions',
@@ -351,6 +370,24 @@ describe('shouldCheckSwUpdateForHubHealth and recordHubWebBuildId', () => {
         // Once update check succeeds, build-2 is persisted and further checks are skipped
         recordHubWebBuildId(storage, 'build-2')
         expect(storage.getItem(HUB_WEB_BUILD_STORAGE_KEY)).toBe('build-2')
+        expect(shouldCheckSwUpdateForHubHealth(params)).toBe(false)
+    })
+
+    it('triggers an update check when no previous webBuildId baseline is stored before recording the observed build', () => {
+        const storage = createMemoryStorage()
+        const params = {
+            baseUrl: '',
+            windowOrigin: 'https://hapi.example',
+            appVersion: '0.36.5',
+            health: { version: '0.36.5', webBuildId: 'build-initial' },
+            storage,
+        }
+
+        expect(shouldCheckSwUpdateForHubHealth(params)).toBe(true)
+        expect(storage.getItem(HUB_WEB_BUILD_STORAGE_KEY)).toBeNull()
+
+        recordHubWebBuildId(storage, 'build-initial')
+        expect(storage.getItem(HUB_WEB_BUILD_STORAGE_KEY)).toBe('build-initial')
         expect(shouldCheckSwUpdateForHubHealth(params)).toBe(false)
     })
 

@@ -162,6 +162,7 @@ describe('usePwaUpdate', () => {
     let capturedOptions: {
         onNeedRefresh?: () => void
         onRegistered?: (registration: ServiceWorkerRegistration | undefined) => void
+        onRegisterError?: (error: unknown) => void
     } = {}
     const updateSW = vi.fn().mockResolvedValue(undefined)
 
@@ -256,9 +257,10 @@ describe('usePwaUpdate', () => {
             currentCache,
             'api-sessions',
         ])
+        const legacyEntryDeleteMock = vi.fn(async () => true)
         const openMock = vi.fn(async () => ({
             keys: vi.fn(async () => [{ url: `${scope}assets/shiki-old.js` }]),
-            delete: vi.fn(async () => true),
+            delete: legacyEntryDeleteMock,
         }))
         Object.defineProperty(window, 'caches', {
             configurable: true,
@@ -280,7 +282,8 @@ describe('usePwaUpdate', () => {
             await Promise.resolve()
         })
 
-        expect(deleteMock).toHaveBeenCalledWith('syntax-grammars')
+        expect(legacyEntryDeleteMock).toHaveBeenCalledWith({ url: `${scope}assets/shiki-old.js` })
+        expect(deleteMock).not.toHaveBeenCalledWith('syntax-grammars')
         expect(deleteMock).toHaveBeenCalledWith(oldCache)
         expect(deleteMock).not.toHaveBeenCalledWith(currentCache)
         expect(deleteMock).not.toHaveBeenCalledWith('api-sessions')
@@ -337,6 +340,51 @@ describe('usePwaUpdate', () => {
         await act(async () => {
             capturedOptions.onRegistered?.(registration)
             await expect(pendingPromise).resolves.toBe(true)
+        })
+        expect(registration.update).toHaveBeenCalledTimes(1)
+    })
+
+    it('settles an in-flight checkForUpdates with false when registration fails before the check queues and retries registration on a later check', async () => {
+        let resolveLookup!: (value: ServiceWorkerRegistration | undefined) => void
+        Object.defineProperty(navigator, 'serviceWorker', {
+            configurable: true,
+            value: {
+                controller: null,
+                getRegistration: vi.fn(() => new Promise<ServiceWorkerRegistration | undefined>((resolve) => {
+                    resolveLookup = resolve
+                })),
+                addEventListener: vi.fn(),
+                removeEventListener: vi.fn(),
+            },
+        })
+
+        const { result } = renderHook(() => usePwaUpdate())
+        expect(registerSWMock).toHaveBeenCalledTimes(1)
+
+        const firstCheck = result.current.checkForUpdates()
+        act(() => {
+            capturedOptions.onRegisterError?.(new Error('transient sw error'))
+        })
+        resolveLookup(undefined)
+        await expect(firstCheck).resolves.toBe(false)
+        expect(registerSWMock).toHaveBeenCalledTimes(1)
+
+        // Later health-triggered check retries registration after the transient failure
+        const registration = {
+            update: vi.fn().mockResolvedValue(undefined),
+        } as unknown as ServiceWorkerRegistration
+        ;(navigator.serviceWorker.getRegistration as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+
+        let secondCheck!: Promise<boolean>
+        await act(async () => {
+            secondCheck = result.current.checkForUpdates()
+            await Promise.resolve()
+        })
+        expect(registerSWMock).toHaveBeenCalledTimes(2)
+
+        await act(async () => {
+            capturedOptions.onRegistered?.(registration)
+            await expect(secondCheck).resolves.toBe(true)
         })
         expect(registration.update).toHaveBeenCalledTimes(1)
     })

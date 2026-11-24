@@ -349,15 +349,15 @@ function computeWebBuildId(options: {
         ? { distDir: options.distDir, indexHtmlPath: join(options.distDir, 'index.html') }
         : findWebappDistDir()
 
-    if (!existsSync(indexHtmlPath)) {
-        return null
-    }
-
-    const hash = createHash('sha256')
-    hash.update(APP_VERSION)
-    hashFileBestEffort(hash, indexHtmlPath)
-    hashFileBestEffort(hash, join(distDir, 'sw.js'))
     try {
+        if (!existsSync(indexHtmlPath)) {
+            return null
+        }
+        const indexBytes = readFileSync(indexHtmlPath)
+        const hash = createHash('sha256')
+        hash.update(APP_VERSION)
+        hash.update(indexBytes)
+        hashFileBestEffort(hash, join(distDir, 'sw.js'))
         const assetsDir = join(distDir, 'assets')
         if (existsSync(assetsDir)) {
             for (const entry of readdirSync(assetsDir).sort()) {
@@ -365,10 +365,10 @@ function computeWebBuildId(options: {
                 hash.update(entry)
             }
         }
+        return hash.digest('hex').slice(0, 12)
     } catch {
-        // Best-effort asset directory fingerprint.
+        return null
     }
-    return hash.digest('hex').slice(0, 12)
 }
 
 export function createWebApp(options: {
@@ -431,17 +431,27 @@ export function createWebApp(options: {
 
     const buildDir = options.distDir ?? findWebappDistDir().distDir
     let buildMarker: string | undefined
-    let webBuildId = computeWebBuildId(options)
+    let webBuildId: string | null = null
     function refreshDiskBuildId() {
         if (options.embeddedAssetMap || options.relayMode) return
-        const marker = ['index.html', 'sw.js', 'assets'].map(name => {
-            const stat = statSync(join(buildDir, name), { throwIfNoEntry: false, bigint: true })
-            return stat ? `${stat.ino}:${stat.ctimeNs}:${stat.size}` : ''
-        }).join('|')
-        if (marker !== buildMarker) {
-            webBuildId = computeWebBuildId(options)
-            buildMarker = marker
+        try {
+            const marker = ['index.html', 'sw.js', 'assets'].map(name => {
+                const stat = statSync(join(buildDir, name), { throwIfNoEntry: false, bigint: true })
+                return stat ? `${stat.ino}:${stat.ctimeNs}:${stat.size}` : ''
+            }).join('|')
+            if (marker !== buildMarker) {
+                webBuildId = computeWebBuildId(options)
+                buildMarker = webBuildId ? marker : undefined
+            }
+        } catch {
+            webBuildId = null
+            buildMarker = undefined
         }
+    }
+    if (options.embeddedAssetMap || options.relayMode) {
+        webBuildId = computeWebBuildId(options)
+    } else {
+        refreshDiskBuildId()
     }
 
     // Health check endpoint (no auth required).

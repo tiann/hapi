@@ -145,9 +145,9 @@ async function cleanupLegacyUnscopedSyntaxCache(
     cacheStorage: CacheStorageLike,
     scope: string,
     hooks: RetirementHooks,
-): Promise<boolean> {
+): Promise<void> {
     if (typeof cacheStorage.open !== 'function') {
-        return false
+        return
     }
     const cache = await cacheStorage.open(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME)
     const requests = await cache.keys()
@@ -156,11 +156,6 @@ async function cleanupLegacyUnscopedSyntaxCache(
         await hooks.migrateGrammars?.(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME, owned)
         await Promise.all(owned.map((req) => cache.delete(req)))
     }
-    if (owned.length === requests.length) {
-        await hooks.clearExpiration?.(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME)
-        return await cacheStorage.delete(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME)
-    }
-    return owned.length > 0
 }
 
 export async function cleanupOutdatedStaticCaches(
@@ -178,7 +173,7 @@ export async function cleanupOutdatedStaticCaches(
 
     if (outdated.length > 0) {
         for (const key of outdated) {
-            if (key.startsWith(SYNTAX_GRAMMARS_CACHE_PREFIX)) {
+            if (key.startsWith(SYNTAX_GRAMMARS_CACHE_PREFIX) || key === SYNTAX_GRAMMARS_LEGACY_CACHE_NAME) {
                 if (options?.migrateGrammars && cacheStorage.open) {
                     await options.migrateGrammars(key, await (await cacheStorage.open(key)).keys())
                 }
@@ -190,10 +185,7 @@ export async function cleanupOutdatedStaticCaches(
     }
 
     if (options?.scope && keys.includes(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME)) {
-        const cleanedLegacy = await cleanupLegacyUnscopedSyntaxCache(cacheStorage, options.scope, options)
-        if (cleanedLegacy) {
-            deleted.push(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME)
-        }
+        await cleanupLegacyUnscopedSyntaxCache(cacheStorage, options.scope, options)
     }
 
     return deleted
@@ -306,11 +298,6 @@ export function shouldCheckSwUpdateForHubHealth(options: {
             previousBuildId = options.storage?.getItem(HUB_WEB_BUILD_STORAGE_KEY) ?? null
         } catch {
             previousBuildId = null
-        }
-
-        if (!previousBuildId) {
-            recordHubWebBuildId(options.storage, hubBuildId)
-            return false
         }
 
         if (previousBuildId !== hubBuildId) {

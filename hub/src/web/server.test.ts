@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import zlib from 'node:zlib'
@@ -227,4 +227,46 @@ it('refreshes the disk build fingerprint when sw.js changes without a restart', 
     } finally {
         writeFixture('/sw.js', SW_BODY)
     }
+})
+
+it('keeps /health returning 200 without webBuildId when web assets are inaccessible and recovers once access returns', async () => {
+    const app = buildApp('distDir')
+    const initialRes = await app.request('/health')
+    expect(initialRes.status).toBe(200)
+    const initialBody = await initialRes.json() as { status: string; webBuildId?: string }
+    expect(initialBody.webBuildId).toMatch(/^[0-9a-f]{12}$/)
+
+    const backupDir = `${distDir}-backup`
+    let usedRenameFallback = false
+    chmodSync(distDir, 0o000)
+    try {
+        // Root or platforms without POSIX directory execute enforcement may still traverse 0o000.
+        statSync(join(distDir, 'index.html'))
+        chmodSync(distDir, 0o755)
+        renameSync(distDir, backupDir)
+        writeFileSync(distDir, 'not-a-directory')
+        usedRenameFallback = true
+    } catch {
+        // statSync threw EACCES as expected.
+    }
+
+    try {
+        const degradedRes = await app.request('/health')
+        expect(degradedRes.status).toBe(200)
+        const degradedBody = await degradedRes.json() as { status: string; webBuildId?: string }
+        expect(degradedBody.status).toBe('ok')
+        expect(degradedBody.webBuildId).toBeUndefined()
+    } finally {
+        if (usedRenameFallback) {
+            rmSync(distDir, { force: true })
+            renameSync(backupDir, distDir)
+        } else {
+            chmodSync(distDir, 0o755)
+        }
+    }
+
+    const recoveredRes = await app.request('/health')
+    expect(recoveredRes.status).toBe(200)
+    const recoveredBody = await recoveredRes.json() as { status: string; webBuildId?: string }
+    expect(recoveredBody.webBuildId).toBe(initialBody.webBuildId)
 })

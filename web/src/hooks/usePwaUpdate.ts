@@ -111,6 +111,8 @@ export function usePwaUpdate() {
     const updateSWRef = useRef<((reloadPage?: boolean) => Promise<void>) | null>(null)
     const registrationRef = useRef<ServiceWorkerRegistration | null>(null)
     const pendingUpdateResolversRef = useRef<Array<(ok: boolean) => void>>([])
+    const registrationStateRef = useRef<'idle' | 'pending' | 'registered' | 'failed'>('idle')
+    const startRegistrationRef = useRef<(() => void) | null>(null)
     const cleanupRef = useRef<(() => void) | null>(null)
 
     useEffect(() => {
@@ -134,50 +136,60 @@ export function usePwaUpdate() {
             })
         }
 
-        const updateSW = registerSW({
-            onNeedRefresh() {
-                setNeedRefresh(true)
-            },
-            onOfflineReady() {
-                console.log('App ready for offline use')
-            },
-            onRegistered(registration) {
-                cleanupRef.current?.()
-                cleanupRef.current = null
-                registrationRef.current = registration ?? null
+        const startRegistration = () => {
+            registrationStateRef.current = 'pending'
+            const updateSW = registerSW({
+                onNeedRefresh() {
+                    setNeedRefresh(true)
+                },
+                onOfflineReady() {
+                    console.log('App ready for offline use')
+                },
+                onRegistered(registration) {
+                    cleanupRef.current?.()
+                    cleanupRef.current = null
+                    registrationRef.current = registration ?? null
+                    registrationStateRef.current = registration ? 'registered' : 'failed'
 
-                const resolvers = pendingUpdateResolversRef.current.splice(0)
-                if (!registration) {
-                    for (const resolve of resolvers) resolve(false)
-                    return
-                }
+                    const resolvers = pendingUpdateResolversRef.current.splice(0)
+                    if (!registration) {
+                        for (const resolve of resolvers) resolve(false)
+                        return
+                    }
 
-                if (resolvers.length > 0) {
-                    void checkWorkerInstallation(registration)
-                        .then((installed) => {
-                            for (const resolve of resolvers) resolve(installed)
-                        })
-                        .catch(() => {
-                            for (const resolve of resolvers) resolve(false)
-                        })
-                }
+                    if (resolvers.length > 0) {
+                        void checkWorkerInstallation(registration)
+                            .then((installed) => {
+                                for (const resolve of resolvers) resolve(installed)
+                            })
+                            .catch(() => {
+                                for (const resolve of resolvers) resolve(false)
+                            })
+                    }
 
-                cleanupRef.current = setupRegistrationUpdateChecks(registration)
-            },
-            onRegisterError(error) {
-                console.error('SW registration error:', error)
-                for (const resolve of pendingUpdateResolversRef.current.splice(0)) {
-                    resolve(false)
-                }
-            },
-        })
+                    cleanupRef.current = setupRegistrationUpdateChecks(registration)
+                },
+                onRegisterError(error) {
+                    registrationStateRef.current = 'failed'
+                    console.error('SW registration error:', error)
+                    for (const resolve of pendingUpdateResolversRef.current.splice(0)) {
+                        resolve(false)
+                    }
+                },
+            })
 
-        updateSWRef.current = updateSW
+            updateSWRef.current = updateSW
+        }
+
+        startRegistrationRef.current = startRegistration
+        startRegistration()
 
         return () => {
             cleanupRef.current?.()
             cleanupRef.current = null
             registrationRef.current = null
+            registrationStateRef.current = 'idle'
+            startRegistrationRef.current = null
             for (const resolve of pendingUpdateResolversRef.current.splice(0)) {
                 resolve(false)
             }
@@ -203,12 +215,16 @@ export function usePwaUpdate() {
             }
         }
 
+        const shouldRetryRegistration = registrationStateRef.current === 'failed'
+
         if (typeof navigator.serviceWorker.getRegistration === 'function') {
             try {
                 const existing = await navigator.serviceWorker.getRegistration()
                 const resolved = existing ?? registrationRef.current
                 if (resolved) {
                     registrationRef.current = resolved
+                    registrationStateRef.current = 'registered'
+                    cleanupRef.current ??= setupRegistrationUpdateChecks(resolved)
                     return await checkWorkerInstallation(resolved)
                 }
             } catch {
@@ -222,6 +238,21 @@ export function usePwaUpdate() {
             } catch {
                 return false
             }
+        }
+
+        if (shouldRetryRegistration && registrationStateRef.current === 'failed') {
+            startRegistrationRef.current?.()
+            if (registrationRef.current) {
+                try {
+                    return await checkWorkerInstallation(registrationRef.current)
+                } catch {
+                    return false
+                }
+            }
+        }
+
+        if (registrationStateRef.current !== 'pending') {
+            return false
         }
 
         return await new Promise<boolean>((resolve) => {
