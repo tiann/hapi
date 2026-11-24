@@ -1945,10 +1945,17 @@ function PullRefreshIcon(props: { rotation: number }) {
 
 type SessionListPropsOnSelect = (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
 
-function StableForkFlow(props: { session: SessionSummary; api: ApiClient | null; onSelect: SessionListPropsOnSelect }) {
-    const { session, api, onSelect } = props
+function StableForkFlow(props: { session: SessionSummary; api: ApiClient | null; onSelect: SessionListPropsOnSelect; onClose: () => void }) {
+    const { session, api, onSelect, onClose } = props
     const { t } = useTranslation()
-    const forkFlow = useForkFlow({ session, api: api!, onForked: onSelect })
+    const forkFlow = useForkFlow({ session, api: api!, onForked: (childId) => {
+        onClose()
+        onSelect(childId)
+    } })
+    const closePreview = () => {
+        forkFlow.closePreview()
+        onClose()
+    }
     const supportsCompletedFork = session.metadata?.conversationHistory?.forkLatestCompleted === true
     const openedRef = useRef(false)
     useEffect(() => {
@@ -1965,14 +1972,14 @@ function StableForkFlow(props: { session: SessionSummary; api: ApiClient | null;
                     prefixMayHaveMore={forkFlow.preview.view.prefixTruncated}
                     stale={forkFlow.stale}
                     loading={forkFlow.loading}
-                    onCancel={forkFlow.closePreview}
+                    onCancel={closePreview}
                     onConfirm={forkFlow.confirmPreview}
                 />
             ) : null}
             {forkFlow.legacyFallback ? (
                 <ConfirmDialog
                     isOpen={true}
-                    onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
+                    onClose={() => { if (!forkFlow.confirming) closePreview() }}
                     title={t('dialog.sessionFork.title')}
                     description={t(session.thinking && supportsCompletedFork ? 'dialog.sessionFork.completedDescription' : 'dialog.sessionFork.description')}
                     confirmLabel={t('dialog.sessionFork.confirm')}
@@ -1986,7 +1993,7 @@ function StableForkFlow(props: { session: SessionSummary; api: ApiClient | null;
             {forkFlow.errorMessage && !forkFlow.preview ? (
                 <ConfirmDialog
                     isOpen={true}
-                    onClose={forkFlow.closePreview}
+                    onClose={closePreview}
                     title={t('dialog.sessionFork.title')}
                     description={forkFlow.errorMessage}
                     confirmLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
@@ -1997,7 +2004,7 @@ function StableForkFlow(props: { session: SessionSummary; api: ApiClient | null;
                     centerTitle
                     onConfirm={async () => {
                         if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
-                        else forkFlow.closePreview()
+                        else closePreview()
                     }}
                 />
             ) : null}
@@ -2007,7 +2014,8 @@ function StableForkFlow(props: { session: SessionSummary; api: ApiClient | null;
 
 function StableArchiveSessionDialog(props: { session: SessionSummary; api: ApiClient | null; onClose: () => void }) {
     const { session, api, onClose } = props
-    const { archiveSession, isPending } = useSessionActions(api, session.id, session.metadata?.flavor ?? null)
+    const { archiveSession } = useSessionActions(api, session.id, session.metadata?.flavor ?? null)
+    const isPending = useIsMutating({ mutationKey: sessionArchiveMutationKey(session.id), exact: true }) > 0
     return (
         <ArchiveSessionDialog
             isOpen={true}
@@ -4049,7 +4057,13 @@ export function SessionList(props: {
             ) : null}
             </div>
             {forkTarget ? (
-                <StableForkFlow key={forkTarget.id} session={forkTarget} api={api} onSelect={props.onSelect} />
+                <StableForkFlow
+                    key={forkTarget.id}
+                    session={forkTarget}
+                    api={api}
+                    onSelect={props.onSelect}
+                    onClose={() => setForkTargetId(current => current === forkTarget.id ? null : current)}
+                />
             ) : null}
             {archiveTarget ? (
                 <StableArchiveSessionDialog key={archiveTarget.id} session={archiveTarget} api={api} onClose={() => setArchiveTargetId(current => current === archiveTarget.id ? null : current)} />

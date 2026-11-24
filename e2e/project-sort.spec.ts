@@ -146,6 +146,53 @@ test('keeps a fork preview open when its Combined source disconnects', async ({ 
 })
 
 
+test('reopens a fork preview for the same row after cancel and after confirm', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?forkPreview=1`)
+    const row = page.getByRole('button', { name: /Mine task/ })
+    const dialog = page.getByRole('dialog')
+    const openFork = async () => {
+        await row.click({ button: 'right' })
+        await page.getByRole('menuitem', { name: /Fork session/ }).click()
+    }
+
+    await openFork()
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await openFork()
+    await expect(dialog).toBeVisible()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-fork-preview-reopened.png`, fullPage: true })
+    await dialog.getByTestId('fork-preview-confirm').click()
+    await expect(dialog).toHaveCount(0)
+    await openFork()
+    await expect(dialog).toBeVisible()
+})
+
+
+test('reopened archive dialog follows the pending request for its row', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=combined-count&archivePending=1`)
+    const row = page.getByRole('button', { name: /Mine task/ })
+    const dialog = page.getByRole('dialog')
+    const openArchive = async () => {
+        await row.click({ button: 'right' })
+        await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
+    }
+
+    await openArchive()
+    await dialog.getByRole('button', { name: 'Archive', exact: true }).click()
+    await expect(dialog).toContainText('Archiving this session')
+    await dialog.getByRole('button', { name: 'Close', exact: true }).last().click()
+    await expect(dialog).toHaveCount(0)
+    await openArchive()
+    await expect(dialog).toContainText('Archiving this session')
+    await expect(dialog.getByRole('button', { name: /^Archiving/ })).toBeDisabled()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-archive-reopened-pending.png`, fullPage: true })
+    await page.evaluate(() => window.finishProjectArchive())
+    await expect(dialog).toHaveCount(0)
+})
+
+
 test('keeps a Combined rename draft when its session disconnects', async ({ page }) => {
     await page.goto(`${fixtureUrl}?mode=combined-count`)
     await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })
