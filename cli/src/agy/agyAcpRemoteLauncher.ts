@@ -1368,7 +1368,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // After a Stop or a lost agy process, agy may have dropped a steer
             // it had not echoed yet.
             const endedCleanly = !turn.aborted && !this.backendLost;
-            // The final scan ends the row wait; the arrays below resolve each steer.
+            // The final scan confirms unique rows; the arrays below resolve the rest.
             this.pollSteerRows(turn, true);
             if (turn.rowPoll) clearInterval(turn.rowPoll);
             turn.rowPoll = null;
@@ -1733,10 +1733,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
 
         void steer.completed.then((stopReason) => {
-            // Stop answers an open steer with `cancelled`; it is held for an
-            // explicit Retry/Cancel.
+            // Stop answers an open steer with `cancelled`; a unique row still
+            // confirms it, otherwise it is held for an explicit Retry/Cancel.
             if (stopReason === 'cancelled') {
-                // End the row wait; the hold below resolves the steer.
+                // A unique row already in the transcript confirms the steer.
                 this.pollSteerRows(turn, true);
                 if (this.turn === turn) turn.cancelledSteers.push(markIndeterminate);
                 else markIndeterminate();
@@ -1772,8 +1772,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
      * own no row, so neither is confirmed. When the row follows a call whose
      * card is not out yet, the steer waits for that card on later polls, for
      * at most the anchor wait. `settle` (Stop, a lost transport, the turn's end)
-     * ends the row wait without a position and leaves each steer to the rest
-     * of the turn's handling.
+     * runs the same scan without that wait, so a unique row still confirms and
+     * only ambiguous or rowless steers are left to the turn's other handling.
      */
     private pollSteerRows(turn: AgyTurn, settle = false): void {
         const pending = turn.rowSteers.filter((entry) => !entry.done);
@@ -1794,10 +1794,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
         // A turn whose start was not read cannot tell its rows from earlier ones.
         if (!acpSessionId || !turn.transcriptStartKnown || pending.every((entry) => entry.done)) return;
-        if (settle) {
-            for (const entry of pending) entry.done = true;
-            return;
-        }
         const owners = turn.rowSteers.filter((entry) => entry.sessionId === acpSessionId && !entry.refused);
         const boundaries = owners.flatMap((entry) => entry.boundary === null ? [] : [entry.boundary]);
         if (boundaries.length === 0) return;
@@ -1833,7 +1829,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             const anchor = this.steerAnchor(turn, steps, entry.ownedRow);
             if (anchor === 'deferred') {
                 entry.anchorWaitFrom ??= Date.now();
-                if (Date.now() - entry.anchorWaitFrom < this.steerAnchorWaitMs) continue;
+                if (!settle && Date.now() - entry.anchorWaitFrom < this.steerAnchorWaitMs) continue;
             }
             entry.done = true;
             entry.accept(anchor === 'deferred' ? undefined : anchor, true);
@@ -2449,8 +2445,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * Stop gave up on agy: end the row wait for every steer before holding
-     * them for Retry/Cancel.
+     * Stop gave up on agy: a steer whose unique row is in the transcript is
+     * confirmed before the rest are held for Retry/Cancel.
      */
     private abandonPendingSteers(turn: AgyTurn): void {
         this.pollSteerRows(turn, true);

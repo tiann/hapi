@@ -2724,7 +2724,7 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]);
     });
 
-    it('holds every steer at Stop even when one has a row in the transcript', async () => {
+    it('confirms a steer whose row is there when Stop cancels it, and holds one without a row', async () => {
         const { backend, client, steer, releaseFirst, queue } = await startTurn();
         await steer('also lint', 'with-row');
         await steer('and test', 'no-row');
@@ -2739,17 +2739,17 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await (client.rpcHandlerManager.handlers as Handlers).get(RPC_METHODS.Abort)!();
 
         await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
-        expect(consumedFor(client, 'with-row')).toHaveLength(0);
+        expect(consumedFor(client, 'with-row')).toHaveLength(1);
         expect(consumedFor(client, 'no-row')).toHaveLength(0);
-        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['with-row']);
         expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['no-row']);
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['with-row']);
         queue.close();
     });
 
     it.each([
         ['the steer stays unanswered', false],
         ['agy ignores the cancel and is restarted', true]
-    ])('holds a steer whose row lands after the last poll when Stop gives up because %s', async (_case, cancelIgnored) => {
+    ])('confirms a steer whose row lands after the last poll when Stop gives up because %s', async (_case, cancelIgnored) => {
         // Polls far apart: only a poll when Stop gives up can see the row.
         const { backend, client, steer, releaseFirst, queue } = await startTurn(undefined, { reactivePollMs: 60_000, cancelHardStopMs: 80 });
         await steer('also lint', 'steer-1');
@@ -2762,12 +2762,12 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await (client.rpcHandlerManager.handlers as Handlers).get(RPC_METHODS.Abort)!();
 
         await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
-        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
-        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']);
+        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: 't1' } }]]);
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-1']);
         queue.close();
     });
 
-    it('holds a steer whose row lands right before the transport is lost', async () => {
+    it('confirms a steer whose row lands right before the transport is lost', async () => {
         // Polls far apart: only the poll on the lost transport can see the row.
         const { backend, client, steer, finish } = await startTurn(undefined, { reactivePollMs: 60_000 });
         await steer('also lint', 'steer-1');
@@ -2776,12 +2776,12 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         Object.defineProperty(error, ACP_INDETERMINATE_SYMBOL, { value: true });
         backend.steerCompletions[0]!.reject(error);
 
-        await vi.waitFor(() => expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']));
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: 't1' } }]]));
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-1']);
         await finish();
-        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
     });
 
-    it('holds a steer whose row lands before the turn ends after the transport is lost', async () => {
+    it('confirms a steer held after the transport is lost once its row lands before the turn ends', async () => {
         // Polls far apart: only the turn's final scan can see the row.
         const { backend, client, steer, finish } = await startTurn(undefined, { reactivePollMs: 60_000 });
         await steer('also lint', 'steer-1');
@@ -2792,7 +2792,7 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
 
         writeTranscript([...stepRows, userRow(3, 'also lint')]);
         await finish();
-        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
+        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: 't1' } }]]);
     });
 
     it('keeps a steer pending while its transcript cannot be read and confirms it from a later poll', async () => {

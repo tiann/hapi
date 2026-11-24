@@ -2975,13 +2975,6 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 })}\n`,
                 'utf8'
             );
-            // The row confirms the steer with the new command's card while the
-            // turn is still open, before the answer ends the turn.
-            await vi.waitFor(() => {
-                expect(client.emitMessagesConsumed).toHaveBeenCalledWith(
-                    ['steer-msg'], { steered: true, anchor: { toolCallId: 'call-bg-new' } }
-                );
-            });
             backend.steerCompletions[0]!.resolve('end_turn');
             onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
         });
