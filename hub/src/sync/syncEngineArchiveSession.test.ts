@@ -638,6 +638,40 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
     })
 
+    it('refuses archive when a scheduled prompt sits after an open tool call (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-scheduled-masks-tool', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = false
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: { type: 'tool-call', callId: 'call-open', name: 'Bash', input: {}, status: 'in_progress' },
+                },
+            },
+            'call-open',
+        )
+        store.messages.addMessage(
+            sessionId,
+            { role: 'user', content: { type: 'text', text: 'later' } },
+            'sched-1',
+            Date.now() + 60_000,
+        )
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+    })
+
     it('refuses archive for an active session awaiting permission input (#2020)', async () => {
         const sessionId = insertActiveSession('sess-pending-req-active', 'machine-x')
         const live = cache().getSession(sessionId)!

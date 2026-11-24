@@ -238,44 +238,81 @@ const TOOL_CALL_UPSERT_LOOKBACK = 200
 /**
  * OpenCode child tool calls can outlive the parent transcript lookback.
  * A bounded scan cannot answer "is any child still working?" — track open
- * child call ids explicitly and clear them only on settlement (#2021 Major 1).
+ * child call ids explicitly and clear them only on settlement (#2021).
+ *
+ * State is rebuilt from durable messages on first access after a hub restart
+ * so Archive cannot fail open when the in-memory WeakMap is cold. Settled ids
+ * stay latched: a late nonterminal snapshot with the same callId must not
+ * reopen work after a result or scoped turn-complete.
  */
-const openChildToolCallsByDb = new WeakMap<Database, Map<string, Set<string>>>()
-
-function openChildToolCallIds(db: Database, sessionId: string): Set<string> {
-    let bySession = openChildToolCallsByDb.get(db)
-    if (!bySession) {
-        bySession = new Map()
-        openChildToolCallsByDb.set(db, bySession)
-    }
-    let open = bySession.get(sessionId)
-    if (!open) {
-        open = new Set()
-        bySession.set(sessionId, open)
-    }
-    return open
+type ChildToolCallState = {
+    open: Set<string>
+    settled: Set<string>
+    rebuilt: boolean
 }
 
-function hasOpenChildToolWork(db: Database, sessionId: string): boolean {
-    return (openChildToolCallsByDb.get(db)?.get(sessionId)?.size ?? 0) > 0
+const childToolCallsByDb = new WeakMap<Database, Map<string, ChildToolCallState>>()
+
+function childToolCallState(db: Database, sessionId: string): ChildToolCallState {
+    let bySession = childToolCallsByDb.get(db)
+    if (!bySession) {
+        bySession = new Map()
+        childToolCallsByDb.set(db, bySession)
+    }
+    let state = bySession.get(sessionId)
+    if (!state) {
+        state = { open: new Set(), settled: new Set(), rebuilt: false }
+        bySession.set(sessionId, state)
+    }
+    return state
+}
+
+function applyChildToolCallContent(state: ChildToolCallState, content: unknown): void {
+    const resultCallId = toolCallResultCallId(content)
+    if (resultCallId !== null) {
+        state.open.delete(resultCallId)
+        state.settled.add(resultCallId)
+    }
+    for (const callId of acpTurnCompleteSettledCallIds(content)) {
+        state.open.delete(callId)
+        state.settled.add(callId)
+    }
+    const callId = getToolCallId(content)
+    if (!callId || !isChildScopedAcpToolCall(content)) return
+    if (isTerminalToolCallRow(content) || state.settled.has(callId)) {
+        state.open.delete(callId)
+        state.settled.add(callId)
+        return
+    }
+    state.open.add(callId)
+}
+
+/** Rebuild open/settled child ids from the durable transcript once per session
+ *  per process. Hub restart clears the WeakMap; archive must still see a
+ *  lookback-evicted open child that never emitted another update. */
+function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): ChildToolCallState {
+    const state = childToolCallState(db, sessionId)
+    if (state.rebuilt) return state
+    state.open.clear()
+    state.settled.clear()
+    const rows = prepareCached(db, `
+        SELECT content FROM messages
+        WHERE session_id = ?
+        ORDER BY seq ASC
+    `).all(sessionId) as Array<Pick<DbMessageRow, 'content'>>
+    for (const row of rows) {
+        applyChildToolCallContent(state, decodeMessageContent(row.content))
+    }
+    state.rebuilt = true
+    return state
 }
 
 function noteChildToolCallOpenState(db: Database, sessionId: string, content: unknown): void {
-    const callId = getToolCallId(content)
-    if (!callId || !isChildScopedAcpToolCall(content)) return
-    const open = openChildToolCallIds(db, sessionId)
-    if (isTerminalToolCallRow(content)) open.delete(callId)
-    else open.add(callId)
+    applyChildToolCallContent(ensureChildToolCallStateRebuilt(db, sessionId), content)
 }
 
 function noteToolCallSettlements(db: Database, sessionId: string, content: unknown): void {
-    const resultCallId = toolCallResultCallId(content)
-    if (resultCallId !== null) {
-        openChildToolCallIds(db, sessionId).delete(resultCallId)
-    }
-    for (const callId of acpTurnCompleteSettledCallIds(content)) {
-        openChildToolCallIds(db, sessionId).delete(callId)
-    }
+    applyChildToolCallContent(ensureChildToolCallStateRebuilt(db, sessionId), content)
 }
 
 /** `tool-call` payload fields merged newest-wins-when-non-null. */
@@ -662,22 +699,31 @@ function isChildScopedAcpToolCall(value: unknown): boolean {
 export function getLiveToolWork(db: Database, sessionId: string): boolean {
     // Child work is tracked out-of-band: a lookback scan cannot see a child
     // call older than TOOL_CALL_UPSERT_LOOKBACK, and must not fail open.
-    if (hasOpenChildToolWork(db, sessionId)) return true
+    // Settled ids are latched across restarts so a late nonterminal snapshot
+    // with the same callId cannot reopen work in the scan either (#2021).
+    const childState = ensureChildToolCallStateRebuilt(db, sessionId)
+    if (childState.open.size > 0) return true
 
     const rows = prepareCached(db, `
-        SELECT id, content FROM messages
+        SELECT id, content, scheduled_at, invoked_at FROM messages
         WHERE session_id = ?
         ORDER BY seq DESC
         LIMIT ?
-    `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
+    `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content' | 'scheduled_at' | 'invoked_at'>>
 
-    const settledAcpCallIds = new Set<string>()
+    const settledAcpCallIds = new Set<string>(childState.settled)
     const settledClaudeToolUseIds = new Set<string>()
     for (const row of rows) {
         const decoded = decodeMessageContent(row.content)
         // A human turn closes parent-scope work in the lookback window. Child
         // work is handled by the open-child registry above, not this scan.
-        if (isUserMessageRow(decoded)) return false
+        // Undispatched scheduled prompts are not turn boundaries — they insert
+        // a user row immediately but have not been delivered to the agent yet,
+        // so they must not mask an open tool call (#2021).
+        if (isUserMessageRow(decoded)) {
+            if (row.scheduled_at != null && row.invoked_at == null) continue
+            return false
+        }
 
         // ACP scoped settlement (cancelled prompts): mark those call ids
         // settled and keep scanning.

@@ -376,11 +376,12 @@ describe('cursorLegacyRemoteLauncher', () => {
         await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
 
         // A second row queues behind the in-flight turn, then a plain Stop
-        // lands: the teardown aborts the controller, which resolves the
-        // in-flight agent run (exitCode null) without touching the queue.
+        // lands: abort kills the child; close drains stdout and resolves the
+        // run (exitCode null) without touching the queue.
         queue.push('pending', { permissionMode: 'default' }, 'pending');
         const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
         await abort();
+        child1.closeChild?.(null);
 
         // Plain Stop preserves the pending queue: no reset, row intact.
         expect(reset).not.toHaveBeenCalled();
@@ -397,7 +398,7 @@ describe('cursorLegacyRemoteLauncher', () => {
         expect(queue.pendingLocalIds()).toEqual([]);
     });
 
-    it('publishes turn-complete settlement for open tools when Stop aborts mid-call (#2021)', async () => {
+    it('publishes turn-complete settlement after Stop drains, including late tool starts (#2021)', async () => {
         const child1 = makeChild({ hold: true });
         spawnMock.mockReturnValueOnce(child1);
         const queue = new MessageQueue2<EnhancedMode>(() => 'm');
@@ -429,6 +430,35 @@ describe('cursorLegacyRemoteLauncher', () => {
         const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
         await abort();
 
+        // Buffered start can arrive after abort and before close — must be
+        // settled with the earlier open call once stdout drains.
+        child1.emitStdout(JSON.stringify({
+            type: 'tool_call',
+            subtype: 'started',
+            call_id: 'legacy-tool-late',
+            tool_call: { name: 'Shell', arguments: { command: 'echo late' } },
+            session_id: 'legacy-id',
+        }));
+        await vi.waitFor(() =>
+            expect(client.sendAgentMessage.mock.calls.some(
+                ([msg]) => (msg as { type?: string; callId?: string }).type === 'tool-call'
+                    && (msg as { callId?: string }).callId === 'legacy-tool-late'
+            )).toBe(true)
+        );
+
+        // Settlement is deferred until close/drain — not published on abort alone.
+        expect(client.sendAgentMessage.mock.calls.some(
+            ([message]) => (message as { type?: string }).type === 'turn-complete'
+        )).toBe(false);
+
+        child1.closeChild?.(null);
+
+        await vi.waitFor(() =>
+            expect(client.sendAgentMessage.mock.calls.some(
+                ([message]) => (message as { type?: string }).type === 'turn-complete'
+            )).toBe(true)
+        );
+
         const settlements = client.sendAgentMessage.mock.calls
             .map(([message]) => message as { type?: string; settledCallIds?: string[]; stopReason?: string })
             .filter((message) => message?.type === 'turn-complete');
@@ -436,9 +466,10 @@ describe('cursorLegacyRemoteLauncher', () => {
             expect.objectContaining({
                 type: 'turn-complete',
                 stopReason: 'cancelled',
-                settledCallIds: ['legacy-tool-1'],
+                settledCallIds: expect.arrayContaining(['legacy-tool-1', 'legacy-tool-late']),
             }),
         ]);
+        expect(settlements[0]?.settledCallIds).toHaveLength(2);
 
         queue.close();
         await launchPromise;
@@ -470,6 +501,8 @@ describe('cursorLegacyRemoteLauncher', () => {
         } else {
             await terminalHandlers.onExit();
         }
+        // Abort waits for subprocess close before the main loop can exit.
+        child1.closeChild?.(null);
 
         // Terminal cleanup resets the queued rows exactly once; no further
         // dispatch happens after it.

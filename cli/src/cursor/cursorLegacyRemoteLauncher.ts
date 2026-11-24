@@ -124,12 +124,23 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
     private abortController = new AbortController();
     private displayPermissionMode: string | null = null;
     private consecutiveTransientFailures = 0;
-    /** In-progress tool call ids forwarded this turn — settled on Stop (#2021). */
-    private openToolCallIds = new Set<string>();
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
+    }
+
+    /** Publish scoped settlement for call ids still open after a subprocess
+     *  drains. Used after Stop (and any exit that left tools unsettled) so
+     *  Archive does not stick on in_progress rows (#2021). */
+    private publishToolSettlements(settledCallIds: string[]): void {
+        if (settledCallIds.length === 0) return;
+        const settlement = convertAgentMessage({
+            type: 'turn_complete',
+            stopReason: 'cancelled',
+            settledCallIds,
+        });
+        if (settlement) this.session.sendAgentMessage(settlement);
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -208,6 +219,10 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             logger.debug(`[cursor-remote] Spawning agent with args: ${args.join(' ')}`);
 
             session.onThinkingChange(true);
+            // Per-subprocess open ids so Stop can settle after stdout drains,
+            // including buffered tool_call starts that arrive between abort and
+            // close (#2021).
+            const processOpenToolCallIds = new Set<string>();
 
             try {
                 const { exitCode, stderr } = await this.runAgentProcess(args, session.path, (event) => {
@@ -230,15 +245,15 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                                     messageBuffer.addMessage(agentMsg.text, 'assistant');
                                     break;
                                 case 'tool_call':
-                                    this.openToolCallIds.add(agentMsg.id);
+                                    processOpenToolCallIds.add(agentMsg.id);
                                     messageBuffer.addMessage(`Tool: ${agentMsg.name}`, 'tool');
                                     break;
                                 case 'tool_result':
-                                    this.openToolCallIds.delete(agentMsg.id);
+                                    processOpenToolCallIds.delete(agentMsg.id);
                                     messageBuffer.addMessage('Tool result', 'result');
                                     break;
                                 case 'turn_complete':
-                                    this.openToolCallIds.clear();
+                                    processOpenToolCallIds.clear();
                                     break;
                                 default:
                                     break;
@@ -272,6 +287,11 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 }
                 messageBuffer.addMessage(message, 'status');
             } finally {
+                // Settle after close/drain so a late buffered tool_call start
+                // between abort and close is included in settledCallIds.
+                const unsettled = [...processOpenToolCallIds];
+                processOpenToolCallIds.clear();
+                this.publishToolSettlements(unsettled);
                 session.onThinkingChange(false);
                 if (session.queue.size() === 0 && !this.shouldExit) {
                     sendReady();
@@ -296,14 +316,21 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
 
             let stderrCapture = '';
 
+            // Abort kills the child but must NOT resolve early — wait for
+            // `close` so buffered stdout (including late tool_call starts)
+            // drains before settlement (#2021). Capture abort on a local flag:
+            // handleAbort replaces this.abortController after signalling, so
+            // reading the new controller's signal from `close` would miss it.
+            let aborted = false;
+            const runSignal = this.abortController.signal;
             const abortHandler = () => {
+                aborted = true;
                 killProcessByChildProcess(child, false).catch(() => {});
-                resolve({ exitCode: null, stderr: stderrCapture });
             };
-            this.abortController.signal.addEventListener('abort', abortHandler);
+            runSignal.addEventListener('abort', abortHandler);
 
             const cleanup = () => {
-                this.abortController.signal.removeEventListener('abort', abortHandler);
+                runSignal.removeEventListener('abort', abortHandler);
             };
 
             child.on('error', (err) => {
@@ -315,10 +342,13 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             // firing. Otherwise stderr from an agent that prints + exits quickly
             // (e.g. "Authentication required" → exit 1) can arrive after we
             // already classified the failure, turning a transient error into a
-            // dropped message.
-            child.on('close', (code, signal) => {
+            // dropped message. Stop also relies on this so settlement runs
+            // after the last buffered tool_call line is forwarded.
+            child.on('close', (code, _signal) => {
                 cleanup();
-                resolve({ exitCode: code, stderr: stderrCapture });
+                // Abort kills the child; treat that exit as a cancelled turn
+                // (exitCode null) rather than the kernel signal code.
+                resolve({ exitCode: aborted ? null : code, stderr: stderrCapture });
             });
 
             const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
@@ -441,18 +471,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         this.abortController.abort();
         this.abortController = new AbortController();
         this.messageBuffer.addMessage('Turn aborted', 'status');
-        // Subprocess exit may never emit a tool_result for the in-flight call.
-        // Publish scoped settlement so Archive is not stuck (#2021).
-        const settledCallIds = [...this.openToolCallIds];
-        this.openToolCallIds.clear();
-        if (settledCallIds.length > 0) {
-            const settlement = convertAgentMessage({
-                type: 'turn_complete',
-                stopReason: 'cancelled',
-                settledCallIds,
-            });
-            if (settlement) this.session.sendAgentMessage(settlement);
-        }
+        // Settlement waits for subprocess `close` (stdout drain) inside
+        // runAgentProcess's caller so late buffered tool_call starts are
+        // included (#2021).
     }
 
     private async handleExitFromUi(): Promise<void> {

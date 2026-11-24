@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
-import { getToolCallId } from '@hapi/protocol/messages'
 import { Store } from './index'
 
 function makeStore(): Store {
@@ -233,6 +235,100 @@ describe('getLiveToolWork', () => {
                 },
             },
         })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('rebuilds open child work from durable rows after a hub restart (#2021)', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-live-work-'))
+        const dbPath = join(dir, 'hub.db')
+        try {
+            const store = new Store(dbPath)
+            const session = makeSession(store, 'live-work-child-restart')
+            const sessionId = session.id
+            store.messages.upsertToolCallMessage(sessionId, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-restart',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child',
+                    },
+                },
+            }, 'child-restart')
+            for (let i = 0; i < 210; i += 1) {
+                store.messages.addMessage(sessionId, agentMessageContent(`filler-${i}`))
+            }
+            store.close()
+
+            // New process / hub restart: cold WeakMap, same durable DB.
+            const restarted = new Store(dbPath)
+            expect(restarted.messages.getLiveToolWork(sessionId)).toBe(true)
+            restarted.close()
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+
+    it('keeps settled child calls closed when a late nonterminal snapshot arrives (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-child-late-snapshot')
+
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'child-late',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_child',
+                },
+            },
+        }, 'child-late')
+        store.messages.addMessage(session.id, toolCallResultContent('child-late', 'done'))
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+
+        // ACP lifetime mapper can re-emit a start after the result with the
+        // same id. Settled state must stay latched.
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'child-late',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_child',
+                },
+            },
+        }, 'child-late')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('does not treat an undispatched scheduled prompt as a turn boundary (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-scheduled-mask')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-open', { status: 'in_progress' }), 'call-open')
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'later' } },
+            'sched-1',
+            Date.now() + 60_000,
+        )
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, toolCallResultContent('call-open', 'done'))
         expect(store.messages.getLiveToolWork(session.id)).toBe(false)
         store.close()
     })
