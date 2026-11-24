@@ -23,6 +23,7 @@ final class TranscriptRefreshTests: XCTestCase {
     final class Driver {
         var rows = (0..<80).map { Row(id: String($0)) }
         var version = 0
+        var appearanceVersion = 0
         var basePath = "/before"
         var dark = false
         var locale = Locale(identifier: "en")
@@ -55,7 +56,8 @@ final class TranscriptRefreshTests: XCTestCase {
             let basePath = driver.basePath
             AnchoredTranscriptList(
                 items: driver.rows, historyVersion: driver.version, jumpToken: 0,
-                historyControlID: "history", onViewport: { _ in },
+                historyControlID: "history", appearanceVersion: driver.appearanceVersion,
+                onViewport: { _ in },
                 onLayout: { version, _ in driver.layouts.append(version) }
             ) { row in
                 AnyView(ProbeRow(row: row, basePath: basePath, driver: driver))
@@ -166,12 +168,39 @@ final class TranscriptRefreshTests: XCTestCase {
         await settle { driver.samples["25"]?.dark == true }
         XCTAssertEqual(driver.samples["25"]?.dark, true, "A theme change must reach hosted rows")
         #if DEBUG
-        XCTAssertEqual(controller.cellConfigurationCount, configurations)
+        XCTAssertGreaterThan(controller.cellConfigurationCount, configurations,
+                             "Appearance changes must reconfigure hosted rows")
         #endif
         window.setDynamicTypeSize(.accessibility2)
         await settle { driver.samples["25"]?.size == .accessibility2 }
         let cell = try XCTUnwrap(view.cellForItem(at: IndexPath(item: 25, section: 0)))
         XCTAssertEqual(cell.frame.height, 180, accuracy: 1, "A system text size change must re-measure rows")
+    }
+
+    func testAppearanceVersionReconfiguresHostedRowsAfterForegrounding() async throws {
+        let driver = Driver()
+        let (window, controller, view) = try host(driver)
+        defer { window.isHidden = true }
+        await settle { driver.layouts.contains(0) }
+        await browse(view, index: 25)
+        let cell = try XCTUnwrap(view.cellForItem(at: IndexPath(item: 25, section: 0)))
+        #if DEBUG
+        let configurations = controller.cellConfigurationCount
+        #endif
+
+        driver.dark = true
+        driver.appearanceVersion += 1
+        await settle {
+            driver.samples["25"]?.dark == true
+        }
+
+        XCTAssertTrue(driver.samples["25"]?.dark == true,
+                      "Foreground appearance changes must refresh the hosted row environment")
+        XCTAssertTrue(cell === view.cellForItem(at: IndexPath(item: 25, section: 0)))
+        #if DEBUG
+        XCTAssertGreaterThan(controller.cellConfigurationCount, configurations,
+                             "Foreground appearance changes must reinstall visible hosted rows")
+        #endif
     }
 
     func testEqualItemsReceiveLatestEnvironmentValueCapturesAndActions() async throws {

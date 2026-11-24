@@ -18,6 +18,7 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
     public var items: [Item]
     public var historyVersion: Int
     public var jumpToken: Int
+    public var appearanceVersion: Int
     public var historyControlID: String
     public var isInspectionPresented: Bool
     public var onViewport: (TranscriptViewport) -> Void
@@ -28,6 +29,7 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
     fileprivate var environment = EnvironmentValues()
 
     public init(items: [Item], historyVersion: Int, jumpToken: Int, historyControlID: String,
+                appearanceVersion: Int = 0,
                 isInspectionPresented: Bool = false,
                 onViewport: @escaping (TranscriptViewport) -> Void,
                 onLayout: @escaping (Int, Bool) -> Void,
@@ -37,6 +39,7 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
         self.items = items
         self.historyVersion = historyVersion
         self.jumpToken = jumpToken
+        self.appearanceVersion = appearanceVersion
         self.historyControlID = historyControlID
         self.isInspectionPresented = isInspectionPresented
         self.onViewport = onViewport
@@ -384,7 +387,7 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
             let width = HapiReadingLayout.contentWidth(in: view.bounds.width)
             cell.contentConfiguration = UIHostingConfiguration {
                 TranscriptHostedRow(item: item, content: self.content)
-                    .id(id)
+                    .id("\(self.configuration?.appearanceVersion ?? 0):\(id)")
                     .frame(width: width, alignment: .leading)
             }.margins(.all, 0)
             cell.backgroundColor = .clear
@@ -456,7 +459,8 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
                 || $0.environment.layoutDirection != next.environment.layoutDirection
         } ?? true
         let appearanceChanged = configuration.map {
-            $0.environment.colorScheme != next.environment.colorScheme
+            $0.appearanceVersion != next.appearanceVersion
+                || $0.environment.colorScheme != next.environment.colorScheme
                 || $0.environment.hapiTheme != next.environment.hapiTheme
         } ?? true
         let spacing = next.items.enumerated().map { index, item in
