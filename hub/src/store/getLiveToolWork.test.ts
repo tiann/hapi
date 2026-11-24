@@ -347,12 +347,12 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 
-    it('does not treat child running-without-open-tool as live work (sticky → clearable) (#2021)', () => {
+    it('treats child running-without-open-tool as live work (#2021)', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-child-running')
 
-        // Running marker alone must not strand Archive — missing settlement /
-        // no open tool means not-live-work; Runner cleanup is the backstop.
+        // Between tools is live work — Runner cleanup only proves death, not
+        // idle. Prefer sticky stranding over archiving a busy child.
         store.messages.addMessage(session.id, {
             role: 'agent',
             content: {
@@ -366,7 +366,7 @@ describe('getLiveToolWork', () => {
             },
         })
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'parent idle' } })
-        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
         store.close()
     })
 
@@ -390,6 +390,28 @@ describe('getLiveToolWork', () => {
         }, 'child-orphan')
         expect(store.messages.getLiveToolWork(session.id)).toBe(true)
 
+        expect(store.messages.retireOpenChildToolWork(session.id)).toBe(true)
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('retires running-without-open-tool when the worker generation exits (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-retire-running-only')
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_child',
+                    childStatus: 'running',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
         expect(store.messages.retireOpenChildToolWork(session.id)).toBe(true)
         expect(store.messages.getLiveToolWork(session.id)).toBe(false)
         store.close()
@@ -527,7 +549,7 @@ describe('getLiveToolWork', () => {
 })
 
 describe('truncateOpenCodeRewind child settlement (#2021)', () => {
-    it('does not strand Archive when rewind keeps a running marker but drops its terminal', () => {
+    it('keeps Archive blocked when rewind drops a terminal but retains a running marker', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-rewind-settle')
 
@@ -562,9 +584,9 @@ describe('truncateOpenCodeRewind child settlement (#2021)', () => {
         expect(store.messages.getLiveToolWork(session.id)).toBe(false)
 
         store.messages.truncateOpenCodeRewind(session.id, boundary.seq, boundary.id)
-        // Sticky → clearable: no child-work ledger. Running-without-open-tool
-        // is not live work; Runner-verified cleanup decides.
-        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        // Fail-closed: no settlement ledger. Sticky orphaned running after
+        // rewind strands Archive (recoverable) rather than kill live work.
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
         store.close()
     })
 })

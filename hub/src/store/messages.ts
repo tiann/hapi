@@ -775,11 +775,16 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
     // call older than TOOL_CALL_UPSERT_LOOKBACK, and must not fail open.
     // Settled ids are latched across restarts so a late nonterminal snapshot
     // with the same callId cannot reopen work in the scan either (#2021).
-    // Open tool-call ids only. Child "running" with no open tool is the sticky
-    // stranding class under rewind — missing settlement means not-live-work;
-    // Runner-verified cleanup remains the safety net (#2021 Meta).
+    //
+    // Open tool-call ids OR a child that reported running/created without an
+    // open tool yet. "Between tools" is live work — Runner-verified cleanup
+    // only proves the process died, not that it was idle. Prefer stranding a
+    // finished-but-flagged child over archiving a busy one (#2021 Meta).
+    // Child running is ACP-published status, not parent-process liveness, so
+    // rewind that drops a terminal can leave a sticky running marker; that is
+    // intentional fail-closed (no settlement ledger) (#2021).
     const childState = ensureChildToolCallStateRebuilt(db, sessionId)
-    if (childState.open.size > 0) return true
+    if (childState.open.size > 0 || childState.runningChildren.size > 0) return true
 
     const rows = prepareCached(db, `
         SELECT id, content, scheduled_at, invoked_at FROM messages
@@ -2139,8 +2144,8 @@ export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSe
         invalidateMessageContentSearchInjectedTurnCache(db, [sessionId])
         for (const row of deletedRows) removeMessageContentSearchIndex(db, row.id)
         // Drop in-memory child-work state. Next live-work check rebuilds from
-        // the remaining transcript only — settlement deleted by rewind means
-        // not-live-work (sticky → clearable), not a child-work ledger (#2021).
+        // the remaining transcript. A running marker whose terminal rewind
+        // deleted stays sticky (fail-closed) — no settlement ledger (#2021).
         const state = childToolCallState(db, sessionId)
         state.rebuilt = false
         state.open.clear()
