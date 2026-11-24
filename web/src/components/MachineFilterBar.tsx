@@ -284,7 +284,9 @@ export function MachineFilterMenu(props: {
     const [anchor, setAnchor] = useState<(MachineFilterMenuAnchor & { viewportWidth: number }) | null>(null)
 
     useLayoutEffect(() => () => {
-        if (menuRef.current?.contains(document.activeElement)) props.onFocusedUnmount?.()
+        if (triggerRef.current === document.activeElement || menuRef.current?.contains(document.activeElement)) {
+            props.onFocusedUnmount?.()
+        }
     }, [props.onFocusedUnmount])
 
     const close = useCallback(() => {

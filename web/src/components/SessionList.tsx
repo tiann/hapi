@@ -2154,19 +2154,19 @@ export function SessionList(props: {
     // row and subtracting a guessed search reserve left empty space after More.
     const headerRowRef = useRef<HTMLDivElement>(null)
     const headerActionsRef = useRef<HTMLDivElement>(null)
-    const restoreMachineFilterFocusRef = useRef(false)
     const handleFocusedMachineFilterUnmount = useCallback(() => {
-        restoreMachineFilterFocusRef.current = true
+        // More can unmount its children without rendering SessionList. Restore
+        // after that commit, rather than leaving a flag for an unrelated render.
+        queueMicrotask(() => {
+            const focused = document.activeElement
+            if (focused && focused !== document.body && focused.isConnected) return
+            if (!headerRowRef.current?.getClientRects().length) return
+            const target = headerActionsRef.current?.querySelector<HTMLButtonElement>(
+                '[data-testid="session-toolbar-slot-machine-filter"] button, [data-testid="session-list-header-overflow"]'
+            ) ?? headerActionsRef.current?.querySelector<HTMLButtonElement>('[data-testid="session-list-view-button"]:not([inert] *)')
+            target?.focus()
+        })
     }, [])
-    useLayoutEffect(() => {
-        if (!restoreMachineFilterFocusRef.current) return
-        restoreMachineFilterFocusRef.current = false
-        if (!headerRowRef.current?.getClientRects().length) return
-        const target = headerActionsRef.current?.querySelector<HTMLButtonElement>(
-            '[data-testid="session-toolbar-slot-machine-filter"] button, [data-testid="session-list-header-overflow"]'
-        ) ?? headerActionsRef.current?.querySelector<HTMLButtonElement>('[data-testid="session-list-view-button"]:not([inert] *)')
-        target?.focus()
-    })
     const toolbarMeasureRef = useRef<HTMLDivElement>(null)
     const actionsObserverRef = useRef<ResizeObserver | null>(null)
     const [headerRowWidth, setHeaderRowWidth] = useState(0)
