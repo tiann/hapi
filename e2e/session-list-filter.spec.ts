@@ -136,6 +136,32 @@ test('uses the same mobile breakpoint as the machine chips with a larger browser
         await browser.close()
     }
 })
+
+test('keeps More usable at 320px with large browser and HAPI fonts', async ({ baseURL }) => {
+    const browser = await chromium.launch({ args: ['--no-sandbox', '--blink-settings=defaultFontSize=24'] })
+    try {
+        const page = await browser.newPage({ baseURL, viewport: { width: 320, height: 568 } })
+        await page.addInitScript(() => {
+            localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+            localStorage.setItem('hapi-font-scale', '1.3')
+            localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1')
+        })
+        await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en&allRead')
+        await page.getByRole('button', { name: /Search sessions/ }).click()
+        await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+        await page.getByPlaceholder(/Search title/).blur()
+        const more = page.getByRole('button', { name: 'More session list actions', exact: true })
+        await expect(more).toBeVisible()
+        expect((await more.boundingBox())!.x + (await more.boundingBox())!.width).toBeLessThanOrEqual(320)
+        await more.click()
+        const sortFilter = page.getByRole('button', { name: 'Sort and filter', exact: true })
+        await expect(sortFilter).toBeVisible()
+        await sortFilter.click()
+        await expect(page.getByRole('menu', { name: 'Sort and filter' })).toBeVisible()
+    } finally {
+        await browser.close()
+    }
+})
 test.beforeEach(async ({ page }) => {
     await page.clock.setFixedTime(new Date(2026, 10, 9, 15))
 })

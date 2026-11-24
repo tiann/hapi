@@ -3255,13 +3255,20 @@ export function SessionList(props: {
         const rowPad = rowStyle
             ? (Number.parseFloat(rowStyle.paddingLeft) || 0) + (Number.parseFloat(rowStyle.paddingRight) || 0)
             : 0
-        const keepFiltersVisible = showMobileMachineFilter && showMachineFilterBar && isMobileMachineFilterViewport
-        const trailing = gapPx + morePx + (keepFiltersVisible
-            ? (next.view ?? TOOLBAR_ICON_PX) + gapPx
-                + (next['machine-filter'] ?? TOOLBAR_ICON_PX) + gapPx
-                + (renderHeader ? (next.new ?? TOOLBAR_ICON_PX) + gapPx : 0)
-            : 0)
-        const nextSearchMax = rowBox > 0 ? Math.max(0, rowBox - rowPad - trailing) : 0
+        const shortcutEnabled = showMobileMachineFilter && showMachineFilterBar && isMobileMachineFilterViewport
+        const minimumSearchWidth = searchChromePx
+        const baseTrailing = gapPx + morePx
+            + (next.view ?? TOOLBAR_ICON_PX) + gapPx
+            + (renderHeader ? (next.new ?? TOOLBAR_ICON_PX) + gapPx : 0)
+        const shortcutSpace = shortcutEnabled
+            ? (next['machine-filter'] ?? TOOLBAR_ICON_PX) + gapPx
+            : 0
+        const canKeepShortcutInline = rowBox > 0
+            && rowBox - rowPad - baseTrailing - minimumSearchWidth >= shortcutSpace
+        const trailing = baseTrailing + (canKeepShortcutInline ? shortcutSpace : 0)
+        const nextSearchMax = rowBox > 0
+            ? Math.max(minimumSearchWidth, rowBox - rowPad - trailing)
+            : 0
         setSearchMaxPx((previous) => previous === nextSearchMax ? previous : nextSearchMax)
     })
 
