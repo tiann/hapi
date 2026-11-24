@@ -1533,6 +1533,29 @@ export class AcpSdkBackend implements AgentBackend {
 
         if (params.type === 'status') {
             const status = asString(params.status);
+            if (status === 'created' || status === 'running') {
+                // Child can be alive with no open tool call (between calls or
+                // before the first). Publish so Archive stays blocked (#2021).
+                const sink = this.childEmitSink;
+                if (sink) {
+                    this.sessionUpdateQueue = this.sessionUpdateQueue
+                        .then(() => {
+                            sink({
+                                type: 'turn_complete',
+                                stopReason: status,
+                                childSessionId,
+                                childStatus: status,
+                            });
+                        })
+                        .catch((error) => {
+                            logger.debug(
+                                '[AcpSdkBackend] child running status publish failed:',
+                                error instanceof Error ? error.message : String(error)
+                            );
+                        });
+                }
+                return;
+            }
             if (status === 'completed' || status === 'failed' || status === 'interrupted') {
                 const scope = childToolCallScope(childSessionId);
                 if (status === 'interrupted') this.toolCallLifetimes.cancel(scope);
@@ -1540,28 +1563,28 @@ export class AcpSdkBackend implements AgentBackend {
                 const settledCallIds = this.toolCallLifetimes.settleCancelled(scope);
                 this.toolCallLifetimes.beginGeneration(scope);
                 this.finishChildHandler(childSessionId);
-                // Interrupted children never emit per-call terminal updates —
-                // publish scoped settlement after the drain so Archive is not
-                // stuck on a tagged in_progress row (#2021).
-                if (status === 'interrupted' && settledCallIds.length > 0 && this.childEmitSink) {
+                // Publish child terminal + any interrupted-call settlement so
+                // Archive can clear running-child and sticky tool rows (#2021).
+                if (this.childEmitSink) {
                     const sink = this.childEmitSink;
                     this.sessionUpdateQueue = this.sessionUpdateQueue
                         .then(() => {
                             sink({
                                 type: 'turn_complete',
-                                stopReason: 'cancelled',
-                                settledCallIds,
+                                stopReason: status === 'interrupted' ? 'cancelled' : status,
+                                childSessionId,
+                                childStatus: status,
+                                ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
                             });
                         })
                         .catch((error) => {
                             logger.debug(
-                                '[AcpSdkBackend] child interrupt settlement failed:',
+                                '[AcpSdkBackend] child terminal settlement failed:',
                                 error instanceof Error ? error.message : String(error)
                             );
                         });
                 }
             }
-            // created/running have no handler to manage yet.
             return;
         }
         if (params.type !== 'update' || !isObject(params.update)) return;

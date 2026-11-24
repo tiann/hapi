@@ -170,6 +170,8 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
             // archive). Chat normalize returns null for this type (no UI row).
             // Scope by settledCallIds so an OpenCode parent cancel cannot
             // close a still-running child tool call that landed earlier.
+            // childSessionId/childStatus keep Archive blocked while a child is
+            // running between tool calls (#2021).
             return {
                 type: 'turn-complete',
                 stopReason: message.stopReason,
@@ -177,6 +179,8 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
                 ...(message.settledCallIds && message.settledCallIds.length > 0
                     ? { settledCallIds: message.settledCallIds }
                     : {}),
+                ...(message.childSessionId ? { childSessionId: message.childSessionId } : {}),
+                ...(message.childStatus ? { childStatus: message.childStatus } : {}),
             };
         default: {
             // Unreachable while every AgentMessage variant is handled above —

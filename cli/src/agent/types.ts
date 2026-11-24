@@ -105,6 +105,10 @@ export type AgentMessage =
         numTurns?: number;
         /** HAPI tool-call lifetime ids retired by this turn (scoped settlement). */
         settledCallIds?: string[];
+        /** OpenCode child session this marker refers to (running / terminal). */
+        childSessionId?: string;
+        /** Child lifecycle for archive live-work (`running`/`created`/terminal). */
+        childStatus?: string;
     }
     | { type: 'round_summary'; summary: AgentRoundSummary }
     | { type: 'error'; message: string };

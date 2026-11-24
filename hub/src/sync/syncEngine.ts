@@ -1036,6 +1036,12 @@ export class SyncEngine {
         if (before.machineId !== current.machineId || before.hostPid !== current.hostPid
             || before.hostStartMarker !== current.hostStartMarker) {
             this.markSteerDispatchesUncertain(after)
+            // Open child tool rows belonged to the previous worker generation —
+            // retire them so a replacement idle worker is archivable (#2021).
+            if (after?.id) {
+                this.store.messages.retireOpenChildToolWork(after.id)
+                this.sessionCache.noteDerivedWork(after.id, this.store.messages.getLiveToolWork(after.id))
+            }
         }
     }
 
@@ -1051,6 +1057,9 @@ export class SyncEngine {
 
     handleSessionEnd(payload: { sid: string; time: number; reason?: SessionEndReason }): void {
         const before = this.sessionCache.getSession(payload.sid)
+        // Worker is gone — retire open child work so a later resume does not
+        // inherit sticky live-work from the dead generation (#2021).
+        this.store.messages.retireOpenChildToolWork(payload.sid)
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
             const operation = before.metadata.opencodeClearOperation
             if (this.transitionClearOperation(payload.sid, before.namespace, operation, 'abort-needed')) {

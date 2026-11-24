@@ -248,6 +248,8 @@ const TOOL_CALL_UPSERT_LOOKBACK = 200
 type ChildToolCallState = {
     open: Set<string>
     settled: Set<string>
+    /** OpenCode children that reported running/created with no open tool yet. */
+    runningChildren: Set<string>
     rebuilt: boolean
 }
 
@@ -261,7 +263,7 @@ function childToolCallState(db: Database, sessionId: string): ChildToolCallState
     }
     let state = bySession.get(sessionId)
     if (!state) {
-        state = { open: new Set(), settled: new Set(), rebuilt: false }
+        state = { open: new Set(), settled: new Set(), runningChildren: new Set(), rebuilt: false }
         bySession.set(sessionId, state)
     }
     return state
@@ -276,6 +278,14 @@ function applyChildToolCallContent(state: ChildToolCallState, content: unknown):
     for (const callId of acpTurnCompleteSettledCallIds(content)) {
         state.open.delete(callId)
         state.settled.add(callId)
+    }
+    const childStatus = acpTurnCompleteChildStatus(content)
+    if (childStatus) {
+        if (childStatus.status === 'running' || childStatus.status === 'created') {
+            state.runningChildren.add(childStatus.childSessionId)
+        } else {
+            state.runningChildren.delete(childStatus.childSessionId)
+        }
     }
     const callId = getToolCallId(content)
     if (!callId || !isChildScopedAcpToolCall(content)) return
@@ -295,6 +305,7 @@ function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): Child
     if (state.rebuilt) return state
     state.open.clear()
     state.settled.clear()
+    state.runningChildren.clear()
     const rows = prepareCached(db, `
         SELECT content FROM messages
         WHERE session_id = ?
@@ -313,6 +324,33 @@ function noteChildToolCallOpenState(db: Database, sessionId: string, content: un
 
 function noteToolCallSettlements(db: Database, sessionId: string, content: unknown): void {
     applyChildToolCallContent(ensureChildToolCallStateRebuilt(db, sessionId), content)
+}
+
+/**
+ * Retire open child tool / running-child work when its worker generation exits
+ * or is replaced. Writes a durable turn-complete so a later rebuild stays
+ * clear (#2021).
+ */
+export function retireOpenChildToolWork(db: Database, sessionId: string): boolean {
+    const state = ensureChildToolCallStateRebuilt(db, sessionId)
+    const settledCallIds = [...state.open]
+    const hadRunning = state.runningChildren.size > 0
+    if (settledCallIds.length === 0 && !hadRunning) return false
+    state.open.clear()
+    state.runningChildren.clear()
+    for (const callId of settledCallIds) state.settled.add(callId)
+    addMessage(db, sessionId, {
+        role: 'agent',
+        content: {
+            type: AGENT_MESSAGE_PAYLOAD_TYPE,
+            data: {
+                type: 'turn-complete',
+                stopReason: 'worker-exited',
+                ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
+            },
+        },
+    })
+    return true
 }
 
 /** `tool-call` payload fields merged newest-wins-when-non-null. */
@@ -665,6 +703,20 @@ function acpTurnCompleteSettledCallIds(value: unknown): string[] {
     return data.settledCallIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
 }
 
+/** OpenCode child alive/terminal marker on a turn-complete row (#2021). */
+function acpTurnCompleteChildStatus(value: unknown): { childSessionId: string; status: string } | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return null
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return null
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'turn-complete') return null
+    const childSessionId = data.childSessionId
+    const status = data.childStatus
+    if (typeof childSessionId !== 'string' || childSessionId.trim().length === 0) return null
+    if (typeof status !== 'string' || status.trim().length === 0) return null
+    return { childSessionId, status }
+}
+
 /** OpenCode v2 child (background subagent) tool traffic outlives parent turns. */
 function isChildScopedAcpToolCall(value: unknown): boolean {
     const record = unwrapRoleWrappedRecordEnvelope(value)
@@ -702,7 +754,7 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
     // Settled ids are latched across restarts so a late nonterminal snapshot
     // with the same callId cannot reopen work in the scan either (#2021).
     const childState = ensureChildToolCallStateRebuilt(db, sessionId)
-    if (childState.open.size > 0) return true
+    if (childState.open.size > 0 || childState.runningChildren.size > 0) return true
 
     const rows = prepareCached(db, `
         SELECT id, content, scheduled_at, invoked_at FROM messages
@@ -721,7 +773,10 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
         // a user row immediately but have not been delivered to the agent yet,
         // so they must not mask an open tool call (#2021).
         if (isUserMessageRow(decoded)) {
-            if (row.scheduled_at != null && row.invoked_at == null) continue
+            // Uninvoked queued or scheduled rows are not turn boundaries — they
+            // sit in the transcript before the agent consumes them and must
+            // not mask an open tool call (#2021).
+            if (row.invoked_at == null) continue
             return false
         }
 

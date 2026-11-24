@@ -466,8 +466,30 @@ describe('AcpSdkBackend tool call lifetimes', () => {
         expect(settlement).toMatchObject({
             type: 'turn_complete',
             stopReason: 'cancelled',
+            childSessionId: 'ses_child',
+            childStatus: 'interrupted',
             settledCallIds: [expect.stringMatching(/^ses_child:shell:0#/)],
         });
+    });
+
+    it('publishes child running status so archive stays blocked between tool calls (#2021)', async () => {
+        const { backend, notify, scriptPrompts } = makeBackend({ childSessionUpdates: true });
+        const messages: AgentMessage[] = [];
+        scriptPrompts(async () => {
+            notify(childStatus('ses_child', 'running'));
+            await sleep(20);
+            return 'end_turn';
+        });
+
+        await prompt(backend, messages);
+        await sleep(40);
+
+        expect(messages).toContainEqual(expect.objectContaining({
+            type: 'turn_complete',
+            stopReason: 'running',
+            childSessionId: 'ses_child',
+            childStatus: 'running',
+        }));
     });
 
     it('asks permission under the lifetime id and answers the agent request it belongs to', async () => {

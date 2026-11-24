@@ -9,6 +9,7 @@ import {
     addMessage,
     upsertToolCallMessage,
     getLiveToolWork,
+    retireOpenChildToolWork,
     syncNativeQueuedMessage,
     addImportedMessage,
     cancelQueuedMessage,
@@ -103,6 +104,11 @@ export class MessageStore {
      *  getLiveToolWork in messages.ts for the liveness contract). */
     getLiveToolWork(sessionId: string): boolean {
         return getLiveToolWork(this.db, sessionId)
+    }
+
+    /** Clear open child / running-child work when the owning worker exits. */
+    retireOpenChildToolWork(sessionId: string): boolean {
+        return retireOpenChildToolWork(this.db, sessionId)
     }
 
     syncNativeQueuedMessage(sessionId: string, localId: string, text: string): StoredMessage {

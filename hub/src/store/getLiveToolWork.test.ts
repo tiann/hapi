@@ -333,6 +333,80 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 
+    it('does not treat an ordinary uninvoked queued prompt as a turn boundary (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-queued-mask')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-open', { status: 'in_progress' }), 'call-open')
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'queued next' } },
+            'queue-1',
+        )
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        store.close()
+    })
+
+    it('treats a running OpenCode child with no open tool as live work (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-child-running')
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_child',
+                    childStatus: 'running',
+                },
+            },
+        })
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'parent idle' } })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'completed',
+                    childSessionId: 'ses_child',
+                    childStatus: 'completed',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('retires open child work when the worker generation exits (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-worker-retire')
+
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'child-orphan',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_child',
+                },
+            },
+        }, 'child-orphan')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        expect(store.messages.retireOpenChildToolWork(session.id)).toBe(true)
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
     it('reports open claude tool_use pairs until the matching tool_result lands', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-claude-open')
