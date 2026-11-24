@@ -111,6 +111,34 @@ describe('kimiWireLocator', () => {
         }
     });
 
+    it('scans once at cleanup so a resume confirmed after the last poll is still located', async () => {
+        const sessionDir = await seedSession('session_late-resume');
+        const wirePath = getKimiWirePath(sessionDir);
+        const baselineSize = (await stat(wirePath)).size;
+
+        const located: LocatedKimiWire[] = [];
+        const locator = createKimiWireLocator({
+            cwd: workDir,
+            startupTimestampMs: Date.now(),
+            resumeSessionId: 'session_late-resume',
+            intervalMs: 60_000,
+            onLocated: (result) => located.push(result)
+        });
+
+        await locator.ready;
+        await wait(50);
+        expect(located).toHaveLength(0);
+
+        await writeFile(wirePath, JSON.stringify({ type: 'turn.prompt', time: Date.now() }) + '\n', { flag: 'a' });
+        await locator.cleanup();
+
+        expect(located).toHaveLength(1);
+        expect(located[0]).toMatchObject({
+            sessionId: 'session_late-resume',
+            wireStartOffset: baselineSize
+        });
+    });
+
     it('excludes sessions that already existed when the locator started (retry race)', async () => {
         // Simulate an immediate `hapi kimi` retry: the previous launch's
         // session dir already exists and is within the birth-time grace

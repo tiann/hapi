@@ -138,8 +138,8 @@ export async function kimiLocalLauncher(
         await locator.ready;
         return await launcher.run();
     } finally {
-        shuttingDown = true;
         await locator.cleanup();
+        shuttingDown = true;
         if (pendingScannerSetup) {
             await pendingScannerSetup;
         }

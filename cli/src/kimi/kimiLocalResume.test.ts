@@ -201,4 +201,66 @@ describe('kimiLocalLauncher failed resume', () => {
         expect(metadata.kimiSessionId).toBe('session_requested');
         expect(updateMetadata).toHaveBeenCalledTimes(1);
     });
+
+    it('forwards a first turn written just before the TUI exits', async () => {
+        harness.failLaunch = false;
+        harness.useRealWireScanner = true;
+        const sessionDir = join(homeDir, 'sessions', encodeKimiWorkDirKey(workDir), 'session_requested');
+        const wirePath = getKimiWirePath(sessionDir);
+        await appendFile(wirePath, JSON.stringify({
+            type: 'turn.prompt',
+            input: [{ type: 'text', text: 'old prompt from previous session' }],
+            origin: { kind: 'user' }
+        }) + '\n');
+
+        const publishedIds: string[] = [];
+        const userMessages: string[] = [];
+        const agentMessages: unknown[] = [];
+        let metadata: Metadata = { path: workDir, host: 'localhost' };
+        const updateMetadata = vi.fn((handler: (current: Metadata) => Metadata) => {
+            metadata = handler(metadata);
+        });
+        harness.appendResumeTurn = async () => {
+            await appendFile(wirePath, JSON.stringify({
+                type: 'turn.prompt',
+                input: [{ type: 'text', text: 'late first prompt after resume' }],
+                origin: { kind: 'user' }
+            }) + '\n');
+            await appendFile(wirePath, JSON.stringify({
+                type: 'context.append_loop_event',
+                event: { type: 'content.part', uuid: 'late', part: { type: 'text', text: 'late first reply after resume' } }
+            }) + '\n');
+        };
+
+        const session = {
+            path: workDir,
+            sessionId: 'session_requested',
+            startedBy: 'terminal' as const,
+            startingMode: 'local' as const,
+            queue: { size: () => 0, reset: () => {}, setOnMessage: () => {} },
+            client: {
+                rpcHandlerManager: { registerHandler: () => {} },
+                getMetadata: () => metadata,
+                updateMetadata,
+                sendClaudeSessionMessage: vi.fn()
+            },
+            getPermissionMode: () => 'default',
+            getModel: () => undefined,
+            onSessionFound: (sessionId: string) => {
+                publishedIds.push(sessionId);
+                updateMetadata((current) => ({ ...current, kimiSessionId: sessionId }));
+            },
+            sendUserMessage: (message: string) => userMessages.push(message),
+            sendAgentMessage: (message: unknown) => agentMessages.push(message),
+            sendSessionEvent: vi.fn(),
+            recordLocalLaunchFailure: vi.fn()
+        };
+
+        await kimiLocalLauncher(session as never, {});
+
+        expect(publishedIds).toEqual(['session_requested']);
+        expect(userMessages).toEqual(['late first prompt after resume']);
+        expect(agentMessages).toEqual([{ type: 'message', message: 'late first reply after resume' }]);
+        expect(metadata.kimiSessionId).toBe('session_requested');
+    });
 });

@@ -151,12 +151,24 @@ class KimiWireLocatorImpl {
     }
 
     async cleanup(): Promise<void> {
-        this.stopped = true;
         if (this.interval) {
             clearInterval(this.interval);
             this.interval = null;
         }
-        await this.scanPromise?.catch(() => {});
+        const pending = this.scanPromise;
+        if (pending) {
+            await pending.catch(() => {});
+        }
+        if (!this.stopped) {
+            const finalScan = this.runScan();
+            this.scanPromise = finalScan;
+            try {
+                await finalScan;
+            } finally {
+                this.scanPromise = null;
+            }
+        }
+        this.stopped = true;
     }
 
     private stopPolling(): void {
