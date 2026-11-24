@@ -60,10 +60,10 @@ if (typeof Element.prototype.scrollTo !== 'function') {
     Element.prototype.scrollTo = function scrollTo() {}
 }
 
-function makeSession(opts: { flavor: string; controlledByUser?: boolean; shared?: boolean }): Session {
+function makeSession(opts: { flavor: string; controlledByUser?: boolean; shared?: boolean; active?: boolean }): Session {
     return {
         id: 'ses-mc',
-        active: true,
+        active: opts.active ?? true,
         thinking: false,
         activeTurnStartedAt: null,
         metadata: {
@@ -173,5 +173,22 @@ describe('SessionChat locally driven model and effort controls', () => {
         const props = capturedProps()
         expect(props.onModelChange).toBeTypeOf('function')
         expect(props.piModels).toBeDefined()
+    })
+
+    it('keeps the model and effort controls for an inactive Claude session', () => {
+        renderChat(makeSession({ flavor: 'claude', controlledByUser: true, active: false }))
+        const props = capturedProps()
+        expect(props.onModelChange).toBeTypeOf('function')
+        expect(props.onEffortChange).toBeTypeOf('function')
+    })
+
+    it('keeps the model control for an inactive Kimi session', () => {
+        renderChat(makeSession({ flavor: 'kimi', controlledByUser: true, active: false }))
+        expect(capturedProps().onModelChange).toBeTypeOf('function')
+    })
+
+    it('keeps the model control for an inactive OpenCode session', () => {
+        renderChat(makeSession({ flavor: 'opencode', controlledByUser: true, active: false }))
+        expect(capturedProps().onModelChange).toBeTypeOf('function')
     })
 })

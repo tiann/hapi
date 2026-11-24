@@ -2762,17 +2762,17 @@ function SessionChatInner(props: SessionChatProps) {
                                                 ? handleModelChange
                                                 : undefined)
                                         : agentFlavor === 'claude'
-                                            ? (props.session.active && !controlledByUser
-                                                ? handleModelChange
-                                                : undefined)
+                                            ? (props.session.active && controlledByUser
+                                                ? undefined
+                                                : handleModelChange)
                                         : agentFlavor === 'kimi'
-                                            ? (props.session.active && !controlledByUser
-                                                ? handleModelChange
-                                                : undefined)
+                                            ? (props.session.active && controlledByUser
+                                                ? undefined
+                                                : handleModelChange)
                                         : agentFlavor === 'opencode'
-                                            ? (props.session.active && !controlledByUser
-                                                ? handleModelChange
-                                                : undefined)
+                                            ? (props.session.active && controlledByUser
+                                                ? undefined
+                                                : handleModelChange)
                                         : handleModelChange
                         }
                         onModelEffortChange={
@@ -2810,9 +2810,9 @@ function SessionChatInner(props: SessionChatProps) {
                                     ? handleEffortChange
                                     : undefined)
                                 : agentFlavor === 'claude'
-                                ? (props.session.active && !controlledByUser
-                                    ? handleEffortChange
-                                    : undefined)
+                                ? (props.session.active && controlledByUser
+                                    ? undefined
+                                    : handleEffortChange)
                                 : handleEffortChange
                         }
                         serviceTier={effectiveCodexServiceTier}
