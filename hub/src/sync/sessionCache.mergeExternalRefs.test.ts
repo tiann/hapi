@@ -122,7 +122,7 @@ describe('mergeSessionMetadataForSessionMerge externalRefs', () => {
         })
     })
 
-    it('lets settled childToolWork win over a stale running marker on merge (#2021)', () => {
+    it('lets the replacement running marker beat a stale source settlement (#2021)', () => {
         const merged = mergeSessionMetadataForSessionMerge(
             {
                 path: '/old',
@@ -143,8 +143,8 @@ describe('mergeSessionMetadataForSessionMerge externalRefs', () => {
         ) as Record<string, unknown>
 
         expect(merged.childToolWork).toEqual({
-            running: ['ses_live'],
-            settled: ['ses_child'],
+            running: ['ses_child', 'ses_live'],
+            settled: [],
             settledCallIds: ['call-a'],
         })
     })

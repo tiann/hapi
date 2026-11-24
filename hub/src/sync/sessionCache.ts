@@ -34,8 +34,9 @@ function stringIdList(value: unknown): string[] {
 
 /**
  * Merge hub-owned OpenCode childToolWork across session-row replacement.
- * Settled ids win over running for the same child; settledCallIds are unioned.
- * Returns `undefined` when the old row has nothing to contribute.
+ * Destination (replacement) running markers win over source settlements for the
+ * same child — a child can restart after a prior settle (#2021). settledCallIds
+ * are unioned. Returns `undefined` when the old row has nothing to contribute.
  */
 export function mergeChildToolWorkForSessionMerge(oldWork: unknown, newWork: unknown): unknown | null | undefined {
     if (!isPlainObject(oldWork)) return undefined
@@ -52,9 +53,12 @@ export function mergeChildToolWorkForSessionMerge(oldWork: unknown, newWork: unk
             settledCallIds: [...oldCalls],
         }
     }
+    const newRunning = stringIdList(newWork.running)
     const settled = new Set([...oldSettled, ...stringIdList(newWork.settled)])
+    // Active replacement's live children beat stale settlement from the source.
+    for (const id of newRunning) settled.delete(id)
     const settledCallIds = [...new Set([...oldCalls, ...stringIdList(newWork.settledCallIds)])]
-    const running = new Set([...oldRunning, ...stringIdList(newWork.running)])
+    const running = new Set([...oldRunning, ...newRunning])
     for (const id of settled) running.delete(id)
     return {
         running: [...running].sort(),

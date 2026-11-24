@@ -749,7 +749,7 @@ describe('AgyAcpRemoteLauncher', () => {
         retire.mockRestore();
     });
 
-    it('clears wakeup hard-stop when the stopped wakeup settles (#2021)', async () => {
+    it('awaits wakeup hard-stop retirement before Stop settlement (#2021)', async () => {
         const { session } = makeSession();
         const backend = new FakeAgyBackend();
         backend.getAgentVersion = () => '1.5.13';
@@ -760,18 +760,26 @@ describe('AgyAcpRemoteLauncher', () => {
         });
         (launcher as unknown as { backend: unknown }).backend = backend;
 
+        let retireResolve!: () => void;
+        const retireGate = new Promise<void>((resolve) => { retireResolve = resolve; });
+        let waitDone = false;
         const retire = vi.spyOn(
             launcher as unknown as { retireBackend: (b: unknown) => Promise<void> },
             'retireBackend'
-        ).mockResolvedValue(undefined);
+        ).mockImplementation(async () => { await retireGate; });
 
         (launcher as unknown as { armWakeupCancelHardStop: (b: unknown) => void })
             .armWakeupCancelHardStop(backend);
-        // Settlement (Stop took effect) must cancel the hard-stop so a later
-        // prompt's backend is not retired by a stale timer.
-        await (launcher as unknown as { discardStoppedWakeup: () => Promise<void> }).discardStoppedWakeup();
-        await new Promise((resolve) => setTimeout(resolve, 80));
-        expect(retire).not.toHaveBeenCalled();
+
+        const wait = (launcher as unknown as { waitForWakeupCancelHardStop: () => Promise<void> })
+            .waitForWakeupCancelHardStop()
+            .then(() => { waitDone = true; });
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(retire).toHaveBeenCalled();
+        expect(waitDone).toBe(false);
+        retireResolve();
+        await wait;
+        expect(waitDone).toBe(true);
         retire.mockRestore();
     });
 });

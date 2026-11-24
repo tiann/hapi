@@ -1650,6 +1650,10 @@ export class AcpSdkBackend implements AgentBackend {
         }
         if (params.type !== 'update' || !isObject(params.update)) return;
 
+        // Tool updates can arrive without a preceding created/running status
+        // (see toolCallLifetimes child interrupt coverage). Track the scope so
+        // disconnect's post-close snapshot settles it (#2021).
+        this.knownChildSessionIds.add(childSessionId);
         const entry = this.childHandlers.get(childSessionId) ?? this.createChildHandler(childSessionId);
         if (!entry) return;
         const update = this.withToolCallLifetimeId(params.update, childToolCallScope(childSessionId));
