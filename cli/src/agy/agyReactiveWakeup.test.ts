@@ -4736,6 +4736,14 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                     }
                     return {};
                 }),
+                // A steer is a `session/prompt` sent while the turn's own request is open.
+                sendRequestWithDispatch(
+                    this: { sendRequest: (method: string, params: Record<string, unknown>) => Promise<unknown> },
+                    method: string,
+                    params: Record<string, unknown>
+                ) {
+                    return { dispatched: Promise.resolve(), completed: this.sendRequest(method, params) };
+                },
                 sendNotification: vi.fn(), onNotification: () => {}, onStderrError: () => {}, registerRequestHandler: () => {},
                 isAlive: () => true, getProcessPid: () => 4242, close: async () => true
             };
@@ -4930,6 +4938,43 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             const byCall = (prefix: string) => h.bgEntries().find((e) => e.callId.startsWith(prefix));
             expect(byCall('call-a#')?.taskId).toBeUndefined();
             expect(byCall('call-b#')?.taskId).toBe(`${acp}/task-8`);
+            await h.finish();
+        });
+
+        it('anchors a steer to the next prompt command, not to a wakeup command forwarded during the pre-prompt quiet wait', async () => {
+            const acp = 'conv-live-quiet-steer';
+            const h = startLive(acp, async (n, notify) => {
+                if (n === 1) { turnRows(acp); return; }
+                // The steer's own request.
+                if (n === 3) return;
+                notify(bgCall('call-b', 'sleep 8'));
+                h.append([
+                    { step_index: 5, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'next' },
+                    { step_index: 6, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 8"' } }] },
+                    { step_index: 7, source: 'MODEL', type: 'RUN_COMMAND', status: 'RUNNING', content: `Tool is running as a background task with task id: ${acp}/task-8` }
+                ]);
+                h.queue.push('also lint', mode, 'steer-1');
+                expect(await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer-1' })).toEqual({ steered: true });
+                h.append([
+                    { step_index: 8, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: '<USER_REQUEST>\nalso lint\n</USER_REQUEST>' },
+                    { step_index: 9, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'OK' }
+                ]);
+            }, {}, null, (method) => {
+                if (method !== 'session/set_model') return;
+                h.notify({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '' } });
+                setTimeout(() => {
+                    h.notify(bgCall('call-a', 'sleep 9'));
+                    h.append(bgRows(2, 'sleep 9', `${acp}/task-7`, false));
+                }, 3);
+            });
+            const mode = { permissionMode: 'always-proceed' as const, model: 'gemini-3.8-flash-high' };
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', mode, 'msg-2');
+            await h.ready();
+            const consumed = h.client.emitMessagesConsumed.mock.calls.filter(([ids]) => (ids as string[]).includes('steer-1'));
+            expect(consumed).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: expect.stringMatching(/^call-b#/) } }]]);
             await h.finish();
         });
 

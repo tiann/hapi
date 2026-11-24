@@ -1818,7 +1818,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     ): void {
         turn.generation.observe(callMessage);
         this.trackOpenCommand(turn, callMessage, true);
-        this.forwardAgentMessage(this.showQuestionCard(callMessage));
+        this.forwardAgentMessage(this.showQuestionCard(callMessage), turn);
     }
 
     private flushDeferredLiveCommandCalls(turn: AgyTurn): void {
@@ -2044,7 +2044,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
                 this.trackOpenCommand(turn, effective, !reconciled.suppressForward);
                 if (!reconciled.suppressForward) {
-                    this.forwardAgentMessage(this.showQuestionCard(effective));
+                    this.forwardAgentMessage(this.showQuestionCard(effective), turn);
                 }
                 if (effective.type === 'tool_result' && this.retainedAmbiguousCompletions.length > 0) {
                     this.reconcileRetainedAmbiguousCompletions(turn);
@@ -2193,13 +2193,18 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.emitBackgroundTasksSnapshot();
     }
 
-    private forwardAgentMessage(message: AgentMessage): void {
+    /**
+     * `owner` is the turn whose handler produced the message. Only the active
+     * prompt's own calls take planner slots: a wakeup call its handler still
+     * forwards while the next prompt starts is not in that prompt's transcript.
+     */
+    private forwardAgentMessage(message: AgentMessage, owner: AgyTurn | null = null): void {
         const canonical = this.toCanonicalToolMessage(message);
         const converted = convertAgentMessage(canonical, this.currentModelId);
         if (converted) this.session.sendAgentMessage(converted);
-        if (message.type === 'tool_call' && canonical.type === 'tool_call' && this.turn
-            && !this.turn.priorBackgroundCallIds.has(canonical.id)) {
-            const calls = this.turn.plannerCalls;
+        if (message.type === 'tool_call' && canonical.type === 'tool_call' && owner && owner === this.turn
+            && !owner.priorBackgroundCallIds.has(canonical.id)) {
+            const calls = owner.plannerCalls;
             const existing = calls.find((call) => call.id === canonical.id);
             // A deferred call had a slot without a card; its card is out now.
             if (existing) existing.shown = true;
