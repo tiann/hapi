@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -99,10 +99,13 @@ describe('kimiWireLocator', () => {
 
             // The TUI writes to the journal when it actually opens the session.
             const sessionDir = join(homeDir, 'sessions', encodeKimiWorkDirKey(workDir), 'session_old-resume');
-            await writeFile(getKimiWirePath(sessionDir), JSON.stringify({ type: 'turn.prompt', time: Date.now() }) + '\n', { flag: 'a' });
+            const wirePath = getKimiWirePath(sessionDir);
+            const baselineSize = (await stat(wirePath)).size;
+            await writeFile(wirePath, JSON.stringify({ type: 'turn.prompt', time: Date.now() }) + '\n', { flag: 'a' });
             await wait(300);
             expect(located).toHaveLength(1);
             expect(located[0]?.sessionId).toBe('session_old-resume');
+            expect(located[0]?.wireStartOffset).toBe(baselineSize);
         } finally {
             await locator.cleanup();
         }

@@ -156,6 +156,53 @@ describe('kimiWireScanner', () => {
         expect(events[0]?.type).toBe('context.append_loop_event');
     });
 
+    it('forwards events after a baseline offset without replaying older lines', async () => {
+        const oldLine = JSON.stringify({
+            type: 'turn.prompt',
+            input: [{ type: 'text', text: 'old' }],
+            origin: { kind: 'user' }
+        }) + '\n';
+        const newLine = JSON.stringify({
+            type: 'turn.prompt',
+            input: [{ type: 'text', text: 'confirming prompt' }],
+            origin: { kind: 'user' }
+        }) + '\n';
+        await writeFile(wirePath, oldLine + newLine);
+
+        scanner = await createKimiWireScanner({
+            wirePath,
+            startOffset: Buffer.byteLength(oldLine),
+            onEvent: (event) => events.push(event)
+        });
+
+        await wait(300);
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({
+            type: 'turn.prompt',
+            input: [{ type: 'text', text: 'confirming prompt' }]
+        });
+        await wait(300);
+        expect(events).toHaveLength(1);
+    });
+
+    it('forwards the confirming events when the resume baseline was empty', async () => {
+        await writeFile(wirePath, JSON.stringify({
+            type: 'turn.prompt',
+            input: [{ type: 'text', text: 'first prompt' }],
+            origin: { kind: 'user' }
+        }) + '\n');
+
+        scanner = await createKimiWireScanner({
+            wirePath,
+            startOffset: 0,
+            onEvent: (event) => events.push(event)
+        });
+
+        await wait(300);
+        expect(events).toHaveLength(1);
+        expect(events[0]?.type).toBe('turn.prompt');
+    });
+
     it('handles lines split across reads', async () => {
         await writeFile(wirePath, '');
         scanner = await createKimiWireScanner({

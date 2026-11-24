@@ -34,10 +34,11 @@ export async function kimiLocalLauncher(
     let pendingTitleWatcherSetup: Promise<void> | null = null;
     const syncTitle = createNativeSessionTitleMetadataSync(session.client);
 
-    const attachWireScanner = (wirePath: string): Promise<void> => {
+    const attachWireScanner = (wirePath: string, wireStartOffset?: number): Promise<void> => {
         const setup = (async () => {
             const created = await createKimiWireScanner({
                 wirePath,
+                startOffset: wireStartOffset,
                 onEvent: (event) => {
                     const converted = convertKimiWireEvent(event, session.getModel() ?? opts.model);
                     if (!converted) {
@@ -91,12 +92,12 @@ export async function kimiLocalLauncher(
         cwd: session.path,
         startupTimestampMs,
         resumeSessionId: session.sessionId,
-        onLocated: ({ sessionId, wirePath, statePath }) => {
+        onLocated: ({ sessionId, wirePath, statePath, wireStartOffset }) => {
             if (shuttingDown) {
                 return;
             }
             session.onSessionFound(sessionId);
-            void attachWireScanner(wirePath);
+            void attachWireScanner(wirePath, wireStartOffset);
             void attachTitleWatcher(statePath);
         },
         onAmbiguous: (sessionIds) => {

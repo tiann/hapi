@@ -170,6 +170,7 @@ export function convertKimiWireEvent(event: KimiWireEvent, model?: string | null
 interface KimiWireScannerOptions {
     wirePath: string;
     onEvent: (event: KimiWireEvent) => void;
+    startOffset?: number;
 }
 
 export interface KimiWireScanner {
@@ -189,6 +190,7 @@ export async function createKimiWireScanner(opts: KimiWireScannerOptions): Promi
 class KimiWireScannerImpl extends BaseSessionScanner<KimiWireEvent> {
     private readonly wirePath: string;
     private readonly onEvent: (event: KimiWireEvent) => void;
+    private readonly startOffset: number | undefined;
     private fileEpoch = 0;
     private fileState: {
         device: number;
@@ -201,9 +203,26 @@ class KimiWireScannerImpl extends BaseSessionScanner<KimiWireEvent> {
         super({ intervalMs: 2000 });
         this.wirePath = opts.wirePath;
         this.onEvent = opts.onEvent;
+        this.startOffset = opts.startOffset;
     }
 
     protected async initialize(): Promise<void> {
+        if (this.startOffset !== undefined) {
+            // Resume: the locator recorded this offset when the launch began.
+            // Read from there so the events that confirmed the resume are
+            // forwarded, while older wire history is never read.
+            const fileStats = await stat(this.wirePath).catch(() => null);
+            if (fileStats?.isFile()) {
+                this.fileState = {
+                    device: fileStats.dev,
+                    inode: fileStats.ino,
+                    partialLine: Buffer.alloc(0),
+                    nextLineIndex: 0
+                };
+            }
+            this.setCursor(this.wirePath, this.startOffset);
+            return;
+        }
         // Prime to EOF: only events written after hapi attaches are forwarded,
         // so reopening an existing session does not replay its whole history.
         const { events, nextCursor } = await this.readWire(0);

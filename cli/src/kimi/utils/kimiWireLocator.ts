@@ -8,6 +8,9 @@ export type LocatedKimiWire = {
     sessionId: string;
     wirePath: string;
     statePath: string;
+    // Byte offset of the wire file when this launch began; events after it
+    // belong to this launch even when they confirmed the resume.
+    wireStartOffset?: number;
 };
 
 export type KimiWireLocator = {
@@ -243,7 +246,12 @@ class KimiWireLocatorImpl {
                 continue;
             }
 
-            candidates.push({ sessionId: entry.name, wirePath, statePath });
+            candidates.push({
+                sessionId: entry.name,
+                wirePath,
+                statePath,
+                ...(this.resumeWireBaseline ? { wireStartOffset: this.resumeWireBaseline.size } : {})
+            });
         }
         return candidates;
     }
