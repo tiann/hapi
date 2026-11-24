@@ -292,15 +292,17 @@ type AgySteerRow = {
  * The text of a transcript `USER_INPUT` row: agy wraps the message as
  * `<USER_REQUEST>\n…\n</USER_REQUEST>` plus metadata and keeps the text
  * byte for byte, so only line endings and the outer whitespace are
- * normalized (the queue may trim before sending).
+ * normalized (the queue may trim before sending). A row cut off before the
+ * closing tag has no text.
  */
 export function agySteerRowText(content: string | undefined): string | null {
     const head = '<USER_REQUEST>\n';
     if (!content?.startsWith(head)) return null;
     const tail = '\n</USER_REQUEST>';
-    const end = content.lastIndexOf(`${tail}\n<ADDITIONAL_METADATA>`);
-    const body = content.slice(head.length, end >= 0 ? end : content.lastIndexOf(tail));
-    return normalizeSteerText(body);
+    const withMetadata = content.lastIndexOf(`${tail}\n<ADDITIONAL_METADATA>`);
+    const close = withMetadata >= 0 ? withMetadata : content.lastIndexOf(tail);
+    if (close < 0) return null;
+    return normalizeSteerText(content.slice(head.length, close));
 }
 
 function normalizeSteerText(text: string): string {
@@ -1802,8 +1804,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, from);
         // Unreadable: the steers stay pending for the next poll, echo, or turn end.
         if (!steps) return;
+        // A row with truncated content is left out until the reader can
+        // upgrade it from the full transcript, so the match retries then.
         const userRows = steps.filter((step) =>
-            step.source === 'USER_EXPLICIT' && step.type === 'USER_INPUT' && step.step_index > turn.turnStartStepIndex);
+            step.source === 'USER_EXPLICIT' && step.type === 'USER_INPUT'
+            && step.step_index > turn.turnStartStepIndex
+            && !step.truncated_fields?.includes('content'));
         // Rows count only once the first USER_INPUT row after the turn start
         // is the turn's own prompt; agy only appends, so a different first row
         // keeps the whole turn out of row matching.

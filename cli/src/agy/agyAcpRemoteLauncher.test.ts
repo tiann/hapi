@@ -3004,6 +3004,23 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(backend.steerPrompts).toHaveLength(2);
     });
 
+    it('skips a truncated steer row until its full content is available', async () => {
+        const { client, steer, finish } = await startTurn(undefined, { reactivePollMs: 20 });
+        await steer('also lint', 'steer-1');
+        // The compact row still has the whole wrapper, but its content is
+        // marked truncated: the reader cannot upgrade it from the full file yet.
+        writeTranscript([...stepRows, { ...userRow(3, 'also lint'), truncated_fields: ['content'] }]);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
+
+        const logsDir = join(brainDir, SESSION, '.system_generated', 'logs');
+        writeFileSync(join(logsDir, 'transcript_full.jsonl'), `${JSON.stringify(userRow(3, 'also lint'))}\n`);
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toEqual([
+            [['steer-1'], { steered: true, anchor: { toolCallId: 't1' } }]
+        ]));
+        await finish();
+    });
+
     it('confirms without a position when no tool call came before the row', async () => {
         const { client, steer, finish } = await startTurn([userRow(0, 'run the tests'), genericRow(1)]);
         await steer('also lint', 'steer-1');
@@ -3427,6 +3444,10 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(agySteerRowText(wrap('crlf1\r\ncrlf2'))).toBe('crlf1\ncrlf2');
         expect(agySteerRowText(wrap('  padded  \n'))).toBe('padded');
         expect(agySteerRowText(wrap('quote </USER_REQUEST> inside'))).toBe('quote </USER_REQUEST> inside');
+        expect(agySteerRowText('<USER_REQUEST>\nwithout metadata\n</USER_REQUEST>')).toBe('without metadata');
+        // A compact row cut off before the closing tag has no text to extract.
+        expect(agySteerRowText('<USER_REQUEST>\nalso lint!')).toBeNull();
+        expect(agySteerRowText('<USER_REQUEST>\nlint.')).toBeNull();
         expect(agySteerRowText('plain text')).toBeNull();
         expect(agySteerRowText(undefined)).toBeNull();
     });
