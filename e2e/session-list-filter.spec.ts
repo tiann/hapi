@@ -274,6 +274,35 @@ test.describe('mobile machine menu pointer dismissal', () => {
     }
 })
 
+test('restores focus when the open machine shortcut moves into and out of More', async ({ page }) => {
+    await page.addInitScript(() => {
+        localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+        localStorage.setItem('hapi-font-scale', '1.3')
+    })
+    await open(page, 440)
+    await page.getByRole('button', { name: /Search sessions/ }).click()
+    await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+    await page.getByPlaceholder(/Search title/).blur()
+    const trigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+    await trigger.focus()
+    await page.keyboard.press('Enter')
+    const menu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+    await expect(menu.getByRole('menuitemradio').first()).toBeFocused()
+    await page.setViewportSize({ width: 320, height: 568 })
+    await expect(menu).toHaveCount(0)
+    const more = page.getByRole('button', { name: 'More session list actions', exact: true })
+    await expect(more).toBeFocused()
+    await page.keyboard.press('Enter')
+    await trigger.focus()
+    await page.keyboard.press('Enter')
+    await expect(menu.getByRole('menuitemradio').first()).toBeFocused()
+    await page.setViewportSize({ width: 440, height: 844 })
+    await expect(menu).toHaveCount(0)
+    await expect(trigger).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect(menu.getByRole('menuitemradio').first()).toBeFocused()
+})
+
 for (const nested of [false, true]) {
     test(`switches between filter menus by keyboard without competing arrow handlers ${nested ? 'inside More' : 'on the toolbar'}`, async ({ page }) => {
         await page.addInitScript(() => {

@@ -274,6 +274,7 @@ export function MachineFilterMenu(props: {
     /** Layout owner to check when the trigger itself is inside a portal. */
     visibilityRef?: RefObject<HTMLElement | null>
     onOpen?: (dismiss: () => void) => void
+    onFocusedUnmount?: () => void
 }) {
     const { t } = useTranslation()
     const [open, setOpen] = useState(false)
@@ -281,6 +282,10 @@ export function MachineFilterMenu(props: {
     const wrapperRef = useRef<HTMLDivElement>(null)
     const menuRef = useRef<HTMLDivElement>(null)
     const [anchor, setAnchor] = useState<(MachineFilterMenuAnchor & { viewportWidth: number }) | null>(null)
+
+    useLayoutEffect(() => () => {
+        if (menuRef.current?.contains(document.activeElement)) props.onFocusedUnmount?.()
+    }, [props.onFocusedUnmount])
 
     const close = useCallback(() => {
         setOpen(false)
