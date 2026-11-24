@@ -65,53 +65,11 @@ type PermissionResponse = {
     reason?: string
 }
 
-/**
- * Per-model `modelUsage` counters that are cumulative across --resume.
- * `contextWindow` and `maxOutputTokens` are model constants, passed through unchanged.
- */
-type CumulativeModelUsageKey =
-    | 'inputTokens'
-    | 'outputTokens'
-    | 'cacheReadInputTokens'
-    | 'cacheCreationInputTokens'
-    | 'webSearchRequests'
-    | 'costUSD'
-
-const CUMULATIVE_MODEL_USAGE_KEYS: readonly CumulativeModelUsageKey[] = [
-    'inputTokens',
-    'outputTokens',
-    'cacheReadInputTokens',
-    'cacheCreationInputTokens',
-    'webSearchRequests',
-    'costUSD'
-]
-
-type ModelUsageCounters = Partial<Record<CumulativeModelUsageKey, number>>
-
+/** Raw cumulative `total_cost_usd` and `duration_api_ms` of the previous result. */
 type CumulativeUsageBaseline = {
     totalCostUsd: number
     durationApiMs: number
-    modelUsage: Record<string, ModelUsageCounters>
-    // True when modelUsage lists every model with counters, so an absent model
-    // is new. False when a result may have advanced counters unseen.
-    modelSnapshotKnown: boolean
-    // Models whose baseline predates a result that omitted modelUsage; their
-    // counters may have advanced unseen until they are rebased.
-    staleModels: ReadonlySet<string>
-    // True once a result omitted modelUsage; an unseen model may then hold
-    // earlier counters, so only startFreshProcessBaseline restores zero.
-    modelGapSeen: boolean
-    // Per model, token counters reported earlier that are still absent, so the
-    // fallback stays active until each returns and gains a baseline.
-    missingTokenCounters: Readonly<Record<string, ReadonlySet<CumulativeModelUsageKey>>>
 }
-
-const TOKEN_COUNTER_KEYS: readonly CumulativeModelUsageKey[] = [
-    'inputTokens',
-    'outputTokens',
-    'cacheReadInputTokens',
-    'cacheCreationInputTokens'
-]
 
 /**
  * Per-round delta of a cumulative counter, or undefined when no trustworthy
@@ -170,7 +128,7 @@ export class SDKToLogConverter {
     // must not overwrite it.
     private contextUsageKeys = new Set<string>()
     private accountIdentity: string | null
-    // Cumulative cost/modelUsage/duration_api_ms survive --resume, so emit only
+    // Cumulative cost/duration_api_ms survive --resume, so emit only
     // deltas against a known baseline and omit fields when none is available.
     private previousCumulative: CumulativeUsageBaseline | null = null
     // Native session id that owns previousCumulative; null until learned.
@@ -294,15 +252,7 @@ export class SDKToLogConverter {
     startFreshProcessBaseline(): void {
         // A fresh process owns whatever session id it reports next.
         this.usageSessionId = null
-        this.previousCumulative = {
-            totalCostUsd: 0,
-            durationApiMs: 0,
-            modelUsage: {},
-            modelSnapshotKnown: true,
-            staleModels: new Set(),
-            modelGapSeen: false,
-            missingTokenCounters: {}
-        }
+        this.previousCumulative = { totalCostUsd: 0, durationApiMs: 0 }
     }
 
     /**
@@ -321,124 +271,23 @@ export class SDKToLogConverter {
     private consumeCumulativeDeltas(resultMsg: SDKResultMessage): {
         totalCostUsd: number | undefined
         durationApiMs: number | undefined
-        modelUsage: SDKResultMessage['modelUsage']
     } {
         // A result from another native session (e.g. a background task of a
         // session cleared after binding) is neither diffed nor used as a baseline.
         if (this.usageSessionId !== null && typeof resultMsg.session_id === 'string'
             && resultMsg.session_id !== this.usageSessionId) {
-            return { totalCostUsd: undefined, durationApiMs: undefined, modelUsage: undefined }
+            return { totalCostUsd: undefined, durationApiMs: undefined }
         }
         const previous = this.previousCumulative
         const totalCostUsd = perRoundDelta(resultMsg.total_cost_usd, previous?.totalCostUsd)
         const durationApiMs = typeof resultMsg.duration_api_ms === 'number'
             ? perRoundDelta(resultMsg.duration_api_ms, previous?.durationApiMs)
             : undefined
-
-        let modelUsage = resultMsg.modelUsage
-        // Retain baselines for models not present in this result (e.g. a
-        // subagent that only appears in some rounds) so their next appearance
-        // is still diffed correctly.
-        const nextModelUsage: Record<string, ModelUsageCounters> = { ...(previous?.modelUsage ?? {}) }
-        // After a result that hid modelUsage (or with no baseline) every model's
-        // counters may have advanced unseen, so none can be differenced.
-        const snapshotUnknown = previous?.modelSnapshotKnown !== true
-        const staleModels = new Set(previous?.staleModels ?? [])
-        const nextMissing: Record<string, ReadonlySet<CumulativeModelUsageKey>> = { ...(previous?.missingTokenCounters ?? {}) }
-        let tokenDeltaIncomplete = snapshotUnknown
-        if (resultMsg.modelUsage) {
-            const perRoundModelUsage: NonNullable<SDKResultMessage['modelUsage']> = {}
-            for (const [model, usage] of Object.entries(resultMsg.modelUsage)) {
-                const perRoundUsage = { ...usage } as Record<string, unknown>
-                const modelBaseline = previous?.modelUsage?.[model]
-                // Only a known snapshot proves an absent model is new in this
-                // process, so its raw counters are its per-round values.
-                const isNewModel = modelBaseline === undefined && previous?.modelSnapshotKnown === true
-                // A snapshot gap or a stale baseline means this model cannot be
-                // differenced; rebase on its raw values and fall back to usage.
-                const untrusted = snapshotUnknown
-                    || staleModels.has(model)
-                    || (modelBaseline === undefined && previous?.modelGapSeen === true)
-                if (untrusted) tokenDeltaIncomplete = true
-                staleModels.delete(model)
-                const counters: ModelUsageCounters = untrusted ? {} : { ...(modelBaseline ?? {}) }
-                const missing = new Set(previous?.missingTokenCounters?.[model] ?? [])
-                // Rebasing drops the old values but not which token counters the
-                // model reported: one still absent keeps the fallback active.
-                if (untrusted) {
-                    for (const key of TOKEN_COUNTER_KEYS) {
-                        if (modelBaseline?.[key] !== undefined) missing.add(key)
-                    }
-                }
-                let hasComparableDelta = false
-                let hasNonZeroDelta = false
-                for (const key of CUMULATIVE_MODEL_USAGE_KEYS) {
-                    const current = (usage as Record<string, unknown>)[key]
-                    if (typeof current !== 'number') {
-                        // A counter that vanished loses its baseline and rebases when it returns.
-                        if (counters[key] !== undefined || missing.has(key)) {
-                            delete counters[key]
-                            if (TOKEN_COUNTER_KEYS.includes(key)) {
-                                missing.add(key)
-                                tokenDeltaIncomplete = true
-                            }
-                        }
-                        continue
-                    }
-                    missing.delete(key)
-                    counters[key] = current
-                    if (untrusted) {
-                        delete perRoundUsage[key]
-                        continue
-                    }
-                    if (isNewModel) {
-                        perRoundUsage[key] = current
-                        continue
-                    }
-                    const delta = perRoundDelta(current, modelBaseline?.[key])
-                    if (delta !== undefined) {
-                        perRoundUsage[key] = delta
-                        hasComparableDelta = true
-                        if (delta > 0) hasNonZeroDelta = true
-                    } else {
-                        delete perRoundUsage[key]
-                        if (TOKEN_COUNTER_KEYS.includes(key)) tokenDeltaIncomplete = true
-                    }
-                }
-                nextModelUsage[model] = counters
-                nextMissing[model] = missing
-                // A baseline with no counter movement means this model did no work this round.
-                if (modelBaseline !== undefined && hasComparableDelta && !hasNonZeroDelta) continue
-                perRoundModelUsage[model] = perRoundUsage as NonNullable<SDKResultMessage['modelUsage']>[string]
-            }
-            // A partial token breakdown would be summed with the gap as zero, so
-            // drop all token counters and let the round's usage stand in.
-            // costUSD keeps its own per-model delta: nothing sums it across
-            // models and it cannot understate a token total.
-            if (tokenDeltaIncomplete) {
-                for (const usage of Object.values(perRoundModelUsage)) {
-                    for (const key of TOKEN_COUNTER_KEYS) delete (usage as Record<string, unknown>)[key]
-                }
-            }
-            modelUsage = perRoundModelUsage
-        }
-
-        if (resultMsg.modelUsage === undefined) {
-            for (const model of Object.keys(nextModelUsage)) staleModels.add(model)
-        }
-
         this.previousCumulative = {
             totalCostUsd: resultMsg.total_cost_usd,
-            durationApiMs: resultMsg.duration_api_ms,
-            modelUsage: nextModelUsage,
-            // A result without modelUsage may hide advanced counters.
-            modelSnapshotKnown: resultMsg.modelUsage !== undefined,
-            staleModels,
-            missingTokenCounters: nextMissing,
-            modelGapSeen: previous?.modelGapSeen === true || resultMsg.modelUsage === undefined
+            durationApiMs: resultMsg.duration_api_ms
         }
-
-        return { totalCostUsd, durationApiMs, modelUsage }
+        return { totalCostUsd, durationApiMs }
     }
 
     /**
@@ -710,10 +559,11 @@ export class SDKToLogConverter {
                         }
                     }
                 }
-                // These fields are cumulative across resumes; emit only a
-                // trustworthy per-round delta, never a lifetime total.
+                // Cost and API time are cumulative across resumes; emit only a
+                // trustworthy per-round delta, never a lifetime total. Token
+                // counts come from `usage`, which is already per round.
                 const perRound = resultMsg.hapi_skip_usage === true
-                    ? { totalCostUsd: undefined, durationApiMs: undefined, modelUsage: undefined }
+                    ? { totalCostUsd: undefined, durationApiMs: undefined }
                     : this.consumeCumulativeDeltas(resultMsg)
                 logMessage = {
                     ...baseFields,
@@ -722,7 +572,6 @@ export class SDKToLogConverter {
                     durationMs: resultMsg.duration_ms,
                     resultSummary: {
                         usage: resultMsg.usage,
-                        modelUsage: perRound.modelUsage,
                         ...(perRound.totalCostUsd !== undefined ? { total_cost_usd: perRound.totalCostUsd } : {}),
                         num_turns: resultMsg.num_turns,
                         duration_ms: resultMsg.duration_ms,
