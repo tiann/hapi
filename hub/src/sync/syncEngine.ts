@@ -432,15 +432,9 @@ export class SyncEngine {
     private resolveOnlineMachineForSession(
         session: Session,
         namespace: string,
-        options?: { strictMachineId?: boolean; requireMachineId?: boolean }
+        options?: { strictMachineId?: boolean }
     ): Machine | null {
         const onlineMachines = this.machineCache.getOnlineMachinesByNamespace(namespace)
-        // DSH native sessions live in the recorded machine's local store. Without
-        // that record a hostname fallback would stamp a new machine id onto the
-        // row while keeping its native id, letting dedup merge unrelated rows.
-        if (options?.requireMachineId && !session.metadata?.machineId) {
-            return null
-        }
         if (session.metadata?.machineId) {
             const exact = onlineMachines.find((machine) => machine.id === session.metadata?.machineId)
             if (exact) return exact
@@ -5511,13 +5505,20 @@ export class SyncEngine {
 
         const metadata = session.metadata!
 
+        if (flavor === 'dsh' && resumeToken !== undefined && !metadata.machineId) {
+            return {
+                type: 'error',
+                message: 'DSH session has no recorded machine; native resume requires the owning machine',
+                code: 'resume_unavailable'
+            }
+        }
+
         const targetMachine = this.resolveOnlineMachineForSession(
             session,
             namespace,
             {
                 strictMachineId: flavor === 'cursor'
-                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh') && resumeToken !== undefined),
-                requireMachineId: flavor === 'dsh' && resumeToken !== undefined
+                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh') && resumeToken !== undefined)
             }
         )
         if (!targetMachine) {

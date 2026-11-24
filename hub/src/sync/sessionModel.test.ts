@@ -397,8 +397,8 @@ describe('session model', () => {
 
             expect(await engine.reopenSession(legacy.id, 'default')).toEqual({
                 type: 'error',
-                message: 'No machine online',
-                code: 'no_machine_online'
+                message: 'DSH session has no recorded machine; native resume requires the owning machine',
+                code: 'resume_unavailable'
             })
             expect(bootstrappedMachines).toEqual([])
 
@@ -4341,6 +4341,103 @@ describe('session model', () => {
             })
             expect(spawnCalled).toBe(false)
             expect(engine.getSession(session.id)?.metadata?.lifecycleState).toBe('archived')
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('reports resume_unavailable when a DSH row has no recorded machine but runners are online', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'online-machine',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'online-machine', time: Date.now() })
+
+            const session = engine.getOrCreateSession(
+                'dsh-no-machine-resume',
+                {
+                    path: '/remote/project',
+                    host: 'localhost',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-native-unscoped',
+                    lifecycleState: 'archived'
+                },
+                null,
+                'default'
+            )
+
+            let spawnCalled = false
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                spawnCalled = true
+                return { type: 'success', sessionId: session.id }
+            }
+
+            expect(await engine.reopenSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: expect.stringContaining('no recorded machine'),
+                code: 'resume_unavailable'
+            })
+            expect(spawnCalled).toBe(false)
+            expect(engine.getSession(session.id)?.metadata?.lifecycleState).toBe('archived')
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('keeps no_machine_online when a DSH row records an offline machine', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'offline-machine',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'online-machine',
+                { host: 'other-host', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'online-machine', time: Date.now() })
+
+            const session = engine.getOrCreateSession(
+                'dsh-offline-machine-resume',
+                {
+                    path: '/remote/project',
+                    host: 'localhost',
+                    machineId: 'offline-machine',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-native-offline',
+                    lifecycleState: 'archived'
+                },
+                null,
+                'default'
+            )
+
+            expect(await engine.reopenSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'No machine online',
+                code: 'no_machine_online'
+            })
         } finally {
             engine.stop()
         }
