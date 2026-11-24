@@ -1765,17 +1765,16 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     /**
      * Confirms the steers whose USER_INPUT row has reached agy's transcript.
-     * agy writes the rows in the order it took the steers, so steers with the
-     * same text own that text's rows in send order: the oldest steer without a
-     * row takes the first unowned row with its text past its boundary, and
-     * later ones wait for it. A steer agy refused drops out as soon as its
-     * request fails, before the late output drain, so rows written during the
-     * drain belong to the next identical steer. A steer without a boundary
-     * keeps later ones waiting, since its row cannot be told apart. When the
-     * row follows a call whose card is not out yet, the steer waits for that
-     * card on later polls, for at most the anchor
-     * wait; `settle` (Stop, a lost transport, the turn's end) confirms it at
-     * once without a position.
+     * Steers with the same text own that text's rows in send order. A row is
+     * assigned only when every unsettled send with its text can own a distinct
+     * unowned row past its boundary, so a row left by a send whose refusal is
+     * still on its way cannot confirm an earlier send. A new row or a refusal
+     * leaving the unsettled set releases the assignment on a later poll. A
+     * steer without a boundary keeps later ones waiting, since its row cannot
+     * be told apart. When the row follows a call whose card is not out yet,
+     * the steer waits for that card on later polls, for at most the anchor
+     * wait; `settle` (Stop, a lost transport, the turn's end) skips the count
+     * check and confirms at once without a position.
      */
     private pollSteerRows(turn: AgyTurn, settle = false): void {
         const pending = turn.rowSteers.filter((entry) => !entry.done);
@@ -1809,11 +1808,36 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // is the turn's own prompt; agy only appends, so a different first row
         // keeps the whole turn out of row matching.
         if (!userRows[0] || agySteerRowText(userRows[0].content) !== turn.promptRowText) return;
+        // A row stays unassigned while some other unsettled send with its text
+        // could own it, including a refusal that has not reached the matcher.
+        const blocked = new Set<string>();
+        if (!settle) {
+            const ownedRows = new Set<number>();
+            const openByText = new Map<string, Array<number | null>>();
+            for (const entry of owners) {
+                if (entry.ownedRow !== undefined) ownedRows.add(entry.ownedRow);
+                if (entry.done) continue;
+                const boundaries = openByText.get(entry.text) ?? [];
+                boundaries.push(entry.boundary);
+                openByText.set(entry.text, boundaries);
+            }
+            for (const [text, boundaries] of openByText) {
+                const rows = userRows.filter((candidate) =>
+                    !ownedRows.has(candidate.step_index)
+                    && agySteerRowText(candidate.content) === text
+                    && boundaries.some((boundary) => boundary !== null && candidate.step_index > boundary)).length;
+                if (boundaries.length > rows) blocked.add(text);
+            }
+        }
         // The prompt owns the first row; each text's queue resumes after its last owned row.
         const lastRowByText = new Map<string, number>([[turn.promptRowText, userRows[0].step_index]]);
         const waiting = new Set<string>();
         for (const entry of owners) {
             if (waiting.has(entry.text)) continue;
+            if (!settle && !entry.done && entry.ownedRow === undefined && blocked.has(entry.text)) {
+                waiting.add(entry.text);
+                continue;
+            }
             if (entry.ownedRow === undefined) {
                 const after = entry.boundary === null
                     ? null

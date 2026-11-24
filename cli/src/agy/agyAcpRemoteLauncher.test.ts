@@ -2974,6 +2974,36 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(backend.steerPrompts).toHaveLength(2);
     });
 
+    it('waits for the refusal before assigning a row that could belong to either identical steer', async () => {
+        const { backend, client, launcher, steer, finish } = await startTurn(undefined, { reactivePollMs: 60_000 });
+        await steer('again', 'steer-1');
+        await steer('again', 'steer-2');
+        const internals = launcher as unknown as {
+            turn: unknown;
+            pollSteerRows: (turn: unknown) => void;
+        };
+        const pollOnce = () => internals.pollSteerRows(internals.turn);
+        // The second steer's row lands while the first request has failed but
+        // its refusal callback has not run yet.
+        writeTranscript([...stepRows, userRow(3, 'again')]);
+        pollOnce();
+        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
+        expect(consumedFor(client, 'steer-2')).toHaveLength(0);
+
+        backend.steerCompletions[0]!.reject(new Error('Can\'t add this prompt to session'));
+        await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-1'], 'queued'));
+        pollOnce();
+        expect(consumedFor(client, 'steer-2')).toEqual([
+            [['steer-2'], { steered: true, anchor: { toolCallId: 't1' } }]
+        ]);
+        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
+
+        await finish();
+        expect(consumedFor(client, 'steer-2')).toHaveLength(1);
+        expect(consumedFor(client, 'steer-1').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
+        expect(backend.steerPrompts).toHaveLength(2);
+    });
+
     it('confirms without a position when no tool call came before the row', async () => {
         const { client, steer, finish } = await startTurn([userRow(0, 'run the tests'), genericRow(1)]);
         await steer('also lint', 'steer-1');
