@@ -163,6 +163,7 @@ test('dismisses the machine filter inside More one layer at a time', async ({ pa
     const machineTrigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
     await machineTrigger.click()
     const machineMenu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+    await expect(machineMenu).toBeInViewport({ ratio: 1 })
     await expect(machineMenu.getByRole('menuitemradio').first()).toBeFocused()
     await page.keyboard.press('ArrowDown')
     await expect(machineMenu.getByRole('menuitemradio').nth(1)).toBeFocused()
@@ -181,8 +182,12 @@ test('dismisses the machine filter inside More one layer at a time', async ({ pa
     await expect(machineMenu).toHaveCount(0)
     await expect(machineTrigger).toBeFocused()
     await machineTrigger.click()
-    await page.getByRole('button', { name: 'Close', exact: true }).click({ position: { x: 3, y: 3 } })
+    // A real outside tap must be caught before it activates the Search chip.
+    const searchTrigger = page.getByRole('button', { name: /Search sessions/ })
+    const searchBox = (await searchTrigger.boundingBox())!
+    await page.mouse.click(searchBox.x + searchBox.width / 2, searchBox.y + searchBox.height / 2)
     await expect(machineMenu).toHaveCount(0)
+    await expect(page.getByPlaceholder(/Search title/)).toHaveCount(0)
     await expect(machineTrigger).toBeFocused()
     await page.keyboard.press('Escape')
     await expect(more).toBeFocused()
@@ -196,6 +201,71 @@ test('dismisses the machine filter inside More one layer at a time', async ({ pa
     await expect(sortTrigger).toBeFocused()
     await page.keyboard.press('Escape')
     await expect(more).toBeFocused()
+})
+
+test.describe('mobile machine menu pointer dismissal', () => {
+    test.use({ hasTouch: true })
+
+    for (const nested of [false, true]) {
+        test(`blocks taps on controls underneath ${nested ? 'inside More' : 'on the toolbar'}`, async ({ page }) => {
+            await page.addInitScript(() => {
+                localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+                localStorage.setItem('hapi-font-scale', '1.3')
+            })
+            await open(page, nested ? 320 : 440)
+            if (nested) {
+                await page.getByRole('button', { name: /Search sessions/ }).tap()
+                await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+                await page.getByPlaceholder(/Search title/).blur()
+                await page.getByRole('button', { name: 'More session list actions', exact: true }).tap()
+            }
+            const trigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+            const menu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+            const search = page.getByRole('button', { name: /Search sessions/ })
+
+            for (const underlying of [search, nested
+                ? page.getByRole('button', { name: 'More session list actions', exact: true })
+                : page.getByRole('button', { name: 'New Session', exact: true })]) {
+                await trigger.tap()
+                await expect(menu).toBeInViewport({ ratio: 1 })
+                const box = (await underlying.boundingBox())!
+                await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2)
+                await expect(menu).toHaveCount(0)
+                await expect(page.getByPlaceholder(/Search title/)).toHaveCount(0)
+                await expect(trigger).toBeFocused()
+            }
+
+            // A viewport-level menu must still follow its trigger when More
+            // changes position; selection must remain inside the parent layer.
+            await trigger.tap()
+            await page.setViewportSize({ width: nested ? 334 : 420, height: 568 })
+            await expect(menu).toBeInViewport({ ratio: 1 })
+            await expect.poll(async () => {
+                const menuBox = (await menu.boundingBox())!
+                const triggerBox = (await trigger.boundingBox())!
+                return Math.abs(menuBox.y - (triggerBox.y + triggerBox.height + 4))
+            }).toBeLessThanOrEqual(1)
+            await expect.poll(async () => {
+                const menuBox = (await menu.boundingBox())!
+                const triggerBox = (await trigger.boundingBox())!
+                const viewportWidth = page.viewportSize()!.width
+                const alignsStart = viewportWidth - triggerBox.x >= triggerBox.x + triggerBox.width
+                return alignsStart
+                    ? Math.abs(menuBox.x - triggerBox.x)
+                    : Math.abs(menuBox.x + menuBox.width - (triggerBox.x + triggerBox.width))
+            }).toBeLessThanOrEqual(1)
+            await menu.getByRole('menuitemradio', { name: /^Mint \(5\)$/ }).tap()
+            await expect(menu).toHaveCount(0)
+            await expect(trigger).toBeFocused()
+            await trigger.tap()
+            await expect(menu).toBeVisible()
+            await page.setViewportSize({ width: 1280, height: 844 })
+            await expect(menu).toHaveCount(0)
+            await expect(trigger).toHaveCount(0)
+            await search.tap()
+            await expect(page.getByPlaceholder(/Search title/)).toBeFocused()
+        })
+    }
 })
 
 for (const scale of [1, 1.3]) {

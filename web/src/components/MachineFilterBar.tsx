@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { CSSProperties } from 'react'
 import type { MachineHealthPresentation } from '@/lib/machineHealth'
 import { MachineHealthTooltipBody } from '@/components/MachineHealthIndicator'
@@ -300,7 +301,11 @@ export function MachineFilterMenu(props: {
         }
         updateAnchor()
         window.addEventListener('resize', updateAnchor)
-        return () => window.removeEventListener('resize', updateAnchor)
+        window.addEventListener('scroll', updateAnchor, true)
+        return () => {
+            window.removeEventListener('resize', updateAnchor)
+            window.removeEventListener('scroll', updateAnchor, true)
+        }
     }, [open])
 
     const alignStart = anchor
@@ -362,24 +367,29 @@ export function MachineFilterMenu(props: {
                     <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-link)]" />
                 ) : null}
             </button>
-            {open ? (
-                <>
+            {open && anchor ? createPortal(
+                // Escape More's transformed positioning wrapper so the backdrop
+                // covers the viewport. The portal stays in More's React tree,
+                // allowing Radix to treat pointer/focus events here as inside.
+                <div className="fixed inset-0 z-[60] md:hidden">
                     <button
                         type="button"
                         aria-label={t('button.close')}
                         tabIndex={-1}
-                        className="fixed inset-0 z-20 cursor-default"
+                        className="absolute inset-0 z-20 cursor-default"
                         onClick={close}
                     />
                     <div
                         ref={menuRef}
                         role="menu"
                         aria-label={t('sessions.machineFilter.label')}
-                        style={anchor ? getMachineFilterMenuClampStyle(anchor) : undefined}
-                        className={cn(
-                            'absolute top-full z-30 mt-1 max-h-80 w-64 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-xl',
-                            alignStart ? 'left-0' : 'right-0'
-                        )}
+                        style={{
+                            ...getMachineFilterMenuClampStyle(anchor),
+                            top: anchor.bottom + MENU_TOP_GAP_PX,
+                            left: alignStart ? anchor.left : undefined,
+                            right: alignStart ? undefined : window.innerWidth - anchor.right,
+                        }}
+                        className="absolute z-30 max-h-80 w-64 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-xl"
                     >
                         <MachineFilterMenuRow
                             label={t('sessions.machineFilter.all')}
@@ -399,7 +409,8 @@ export function MachineFilterMenu(props: {
                             />
                         ))}
                     </div>
-                </>
+                </div>,
+                document.body
             ) : null}
         </div>
     )
