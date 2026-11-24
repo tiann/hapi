@@ -249,6 +249,9 @@ type AgyTurn = {
     unechoedSteers: Array<{ text: string; echo: string; accept: () => void; absorbed?: boolean }>;
     // Steers agy answered without an echo; settled when the turn ends.
     answeredSteers: Array<{ accept: () => void; hold: () => void }>;
+    // Steers Stop answered with `cancelled`; held after the turn's final scan
+    // unless their row turned up.
+    cancelledSteers: Array<() => void>;
     // Every steer written into this turn, in send order, including settled
     // ones: steers with the same text own that text's rows in this order.
     rowSteers: AgySteerRow[];
@@ -273,6 +276,8 @@ type AgySteerRow = {
     boundary: number | null;
     // The agy conversation the steer was written to; a new one ends matching.
     sessionId: string;
+    // Confirmed by its row, refused, or written to another conversation; a
+    // steer held for Retry/Cancel stays open so its row can still confirm it.
     done: boolean;
     // agy answered the steer with an error, so the steer has no row.
     refused: boolean;
@@ -1205,6 +1210,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             promptEcho: { text: normalizeEcho(message), echo: '', done: false },
             unechoedSteers: [],
             answeredSteers: [],
+            cancelledSteers: [],
             rowSteers: [],
             rowPoll: null,
             plannerCalls: [],
@@ -1362,7 +1368,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // After a Stop or a lost agy process, agy may have dropped a steer
             // it had not echoed yet.
             const endedCleanly = !turn.aborted && !this.backendLost;
-            if (!this.backendLost) this.pollSteerRows(turn, true);
+            // The final scan: a row that turned up confirms its steer, held or not.
+            this.pollSteerRows(turn, true);
             if (turn.rowPoll) clearInterval(turn.rowPoll);
             turn.rowPoll = null;
             turn.rowSteers = [];
@@ -1370,6 +1377,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (endedCleanly) steer.accept();
                 else steer.hold();
             }
+            for (const hold of turn.cancelledSteers) hold();
             turn.answerMain();
             if (this.turn === turn) this.turn = null;
             session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
@@ -1570,6 +1578,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             return { steered: false, error: 'Steer state is indeterminate' };
         }
         let resolved = false;
+        // Held for an explicit Retry/Cancel: a row that turns up later still
+        // confirms the steer.
+        let held = false;
         let steerCounted = false;
         let forgetEcho = () => {};
         let echoEntry: AgyTurn['unechoedSteers'][number] | null = null;
@@ -1580,9 +1591,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (rowSteer && !rowSteer.done) this.pollSteerRows(turn, true);
             if (resolved) return;
             resolved = true;
-            if (rowSteer) rowSteer.done = true;
             forgetEcho();
             if (session.queue.markReservationIndeterminate(taken)) {
+                held = true;
                 session.client.emitSteerIndeterminate([localId]);
             }
         };
@@ -1665,14 +1676,20 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // turn, which is the moment it belongs in the transcript; the request
         // itself is only answered when the turn ends.
         const accept = (anchorToolCallId?: string) => {
-            if (resolved) return;
-            resolved = true;
-            // Confirmed without its echo (transcript row, answer, turn end):
-            // the entry stays to absorb the echo agy may still send for it, so
-            // that echo is not taken for the next identical steer.
-            if (echoEntry) echoEntry.absorbed = true;
-            else forgetEcho();
-            session.queue.commitReservation(taken);
+            if (resolved) {
+                // A held steer is confirmed once, unless it was retried or cancelled.
+                if (!held) return;
+                held = false;
+                if (!session.queue.commitReservation(taken)) return;
+            } else {
+                resolved = true;
+                // Confirmed without its echo (transcript row, answer, turn end):
+                // the entry stays to absorb the echo agy may still send for it, so
+                // that echo is not taken for the next identical steer.
+                if (echoEntry) echoEntry.absorbed = true;
+                else forgetEcho();
+                session.queue.commitReservation(taken);
+            }
             this.messageBuffer.addMessage(taken.item.message, 'user');
             session.client.emitMessagesConsumed([localId], {
                 steered: true,
@@ -1707,12 +1724,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
         void steer.completed.then((stopReason) => {
             // Stop answers an open steer with `cancelled`; without the echo,
-            // agy may or may not have folded it in, so hold it for an
-            // explicit Retry/Cancel.
+            // agy may or may not have folded it in, so it is held for an
+            // explicit Retry/Cancel unless its row turns up by the turn's final scan.
             if (stopReason === 'cancelled') {
                 // A row already in the transcript proves agy took it.
                 this.pollSteerRows(turn, true);
-                markIndeterminate();
+                if (this.turn === turn) turn.cancelledSteers.push(markIndeterminate);
+                else markIndeterminate();
                 return;
             }
             // A later steer makes agy answer this one's request at once, before

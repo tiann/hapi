@@ -2787,6 +2787,20 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await finish();
     });
 
+    it('confirms a steer held after the transport is lost once its row lands before the turn ends', async () => {
+        // Polls far apart: only the turn's final scan can see the row.
+        const { backend, client, steer, finish } = await startTurn(undefined, { reactivePollMs: 60_000 });
+        await steer('also lint', 'steer-1');
+        const error = new Error('agy exited');
+        Object.defineProperty(error, ACP_INDETERMINATE_SYMBOL, { value: true });
+        backend.steerCompletions[0]!.reject(error);
+        await vi.waitFor(() => expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']));
+
+        writeTranscript([...stepRows, userRow(3, 'also lint')]);
+        await finish();
+        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: 't1' } }]]);
+    });
+
     it('keeps a steer pending while its transcript cannot be read and confirms it from a later poll', async () => {
         const { client, steer, finish } = await startTurn(undefined, { reactivePollMs: 20 });
         await steer('also lint', 'steer-1');
@@ -2839,7 +2853,7 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]);
     });
 
-    it('keeps the second of two identical steers retryable when the first one\'s row lands between their Stop answers', async () => {
+    it('confirms the first of two identical steers once when its row lands between their Stop answers, holding only the second', async () => {
         const { backend, client, steer, releaseFirst, queue } = await startTurn(undefined, { reactivePollMs: 60_000 });
         await steer('also lint', 'steer-a');
         await steer('also lint', 'steer-b');
@@ -2855,6 +2869,8 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await (client.rpcHandlerManager.handlers as Handlers).get(RPC_METHODS.Abort)!();
 
         await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(consumedFor(client, 'steer-a')).toEqual([[['steer-a'], { steered: true, anchor: { toolCallId: 't1' } }]]);
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-a']);
         expect(consumedFor(client, 'steer-b')).toHaveLength(0);
         expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-b']);
         queue.close();
