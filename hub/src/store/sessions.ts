@@ -248,6 +248,14 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, CONTRIBUTION_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, ALERT_STATE_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, HUB_OWNED_METADATA_FIELDS)
+    // Spawn parent is hub telemetry stamped at allocation — never let CLI adopt/update
+    // forge or erase it (stronger than carry-forward-if-missing).
+    if (typeof prior.spawnedBySessionId === 'string' && prior.spawnedBySessionId.length > 0) {
+        const base = merged ?? { ...next }
+        if (base.spawnedBySessionId !== prior.spawnedBySessionId) {
+            merged = { ...base, spawnedBySessionId: prior.spawnedBySessionId }
+        }
+    }
     merged = preserveForkSummary(prior, next, merged)
     // A stale CLI cache may still contain the pre-launch branch state. Once
     // delivery succeeded, sparse/full CLI updates must not regress its outcome.

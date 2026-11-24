@@ -218,6 +218,53 @@ describe('getOrCreateSession: requested identity', () => {
         store.close()
     })
 
+    it('preserves spawnedBySessionId when CLI adopt supplies a conflicting parent', () => {
+        const store = makeStore()
+        const allocatedId = randomUUID()
+        const parentId = randomUUID()
+        const forgedParent = randomUUID()
+        const cliTag = randomUUID()
+        store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                spawnedBySessionId: parentId,
+            },
+            null,
+            'default',
+            'stub-model',
+            undefined,
+            undefined,
+            allocatedId
+        )
+
+        const adopted = store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            cliTag,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                hostPid: 4242,
+                spawnedBySessionId: forgedParent,
+            },
+            { controlledByUser: false },
+            'default',
+            'claude-sonnet'
+        )
+
+        expect((adopted.metadata as { spawnedBySessionId?: string }).spawnedBySessionId).toBe(parentId)
+        store.close()
+    })
+
     it('rejects adopt when the row is not a preallocated stub', () => {
         const store = makeStore()
         const id = randomUUID()

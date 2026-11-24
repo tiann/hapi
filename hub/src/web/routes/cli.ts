@@ -143,10 +143,15 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         }
 
         try {
-            const metadata = stripExternalRefsWhenAwarenessDisabled(
+            let metadata = stripExternalRefsWhenAwarenessDisabled(
                 parsed.data.metadata,
                 getConfiguration().githubPrAwareness
             )
+            // Hub stamps spawnedBySessionId at peer spawn; CLI create/adopt must not forge it.
+            if (metadata && typeof metadata === 'object' && !Array.isArray(metadata) && 'spawnedBySessionId' in metadata) {
+                const { spawnedBySessionId: _ignored, ...rest } = metadata as Record<string, unknown>
+                metadata = rest
+            }
             if (!externalRefsInMetadataValid(metadata)) {
                 return c.json({ error: 'Invalid metadata.externalRefs' }, 400)
             }

@@ -23,8 +23,8 @@ ${chalk.bold('Notes:')}
   Archive only — never hard-deletes. Prefer this (or MCP archive_peer) over JWT+curl.
   Resolves by id prefix (8 chars OK; full UUID best). Same hub token/namespace.
   Active peers with hub-visible live work (thinking / background tasks /
-  pending requests) return 409 — stop the turn first (tiann/hapi#2020).
-  Idle / Peer Done sessions take the ordinary Runner-verified archive path.
+  pending requests) return 409 — clear that work first (tiann/hapi#2020).
+  Idle peers use verified Runner cleanup; still_alive / unknown still refuse.
   When a user cites [title](/sessions/<id>) or Copy-reference
   See session "…" (/sessions/<id>) for context, pass that <id> here.
   /sessions/<id> is a hub path - not a local filesystem path.

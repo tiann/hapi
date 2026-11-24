@@ -278,7 +278,7 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
 
         expect(harness.callTool).toHaveBeenCalledWith(
             { name: 'archive_peer', arguments: { sessionIdPrefix: '05d9f0f2' } },
-            { timeout: 100_000 },
+            { timeout: 140_000 },
         )
     })
 

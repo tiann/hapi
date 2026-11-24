@@ -15,7 +15,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+
+/** Auth (10s) + session list (15s) + archive POST (100s) + transport headroom. */
+const ARCHIVE_PEER_BRIDGE_TIMEOUT_MS = 140_000;
 import { PeerDeliveryModeSchema } from '@/modules/pingPeer/deliveryMode';
 import { DISPLAY_IMAGE_TOOL_DESCRIPTION, DISPLAY_MEDIA_TOOL_DESCRIPTION, DISPLAY_VIDEO_TOOL_DESCRIPTION } from '@/modules/common/displayToolDescriptions';
 import { CHANGE_TITLE_TOOL_DESCRIPTION } from '@/modules/common/titleInstruction';
@@ -434,11 +438,11 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
         async (args: Record<string, unknown>) => {
           try {
             const client = await ensureHttpClient();
-            // Hub Runner cleanup budget is 90s; MCP SDK defaults to 60s — raise past both.
+            // MCP SDK defaults to 60s; cover auth+lookup+archive budgets (see ARCHIVE_PEER_BRIDGE_TIMEOUT_MS).
             const response = await client.callTool(
               { name: 'archive_peer', arguments: args },
-              undefined,
-              { timeout: 100_000 },
+              CallToolResultSchema,
+              { timeout: ARCHIVE_PEER_BRIDGE_TIMEOUT_MS },
             );
             return response as any;
           } catch (error) {
