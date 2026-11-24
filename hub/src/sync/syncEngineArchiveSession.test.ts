@@ -528,12 +528,27 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(body.metadata.version).toBeGreaterThan(0)
     })
 
-    it('does NOT archive when both KillSession and machine StopSession targets are missing for a WORKING peer', async () => {
+    it('does NOT archive when both KillSession and machine StopSession targets are missing (idle)', async () => {
         // #1911 bot Major: both RPC targets missing is not proof the detached
         // CLI exited (KillMode=process orphans survive). Keep the row
         // unconfirmed until StopSession can run after the runner reconnects.
-        // #2020: live work refuses before stop RPCs.
         const sessionId = insertActiveSession('sess-machine-unreachable', 'machine-x')
+        setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => { throw new RpcTargetMissingError('StopSession', 'handler-not-registered') }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-cleanup-unavailable')
+
+        const session = cache().getSession(sessionId)
+        expect(session?.active).toBe(true)
+        expect(session?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('does NOT archive when both KillSession and machine StopSession targets are missing for a WORKING peer', async () => {
+        // #2020: live work refuses before stop RPCs.
+        const sessionId = insertActiveSession('sess-machine-unreachable-working', 'machine-x')
         cache().getSession(sessionId)!.thinking = true
         setKillSessionMissingTarget()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
@@ -548,8 +563,23 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
     })
 
-    it('does NOT archive when machine StopSession is missing but KillSession was reachable for a WORKING peer', async () => {
+    it('does NOT archive when machine StopSession is missing but KillSession was reachable (idle)', async () => {
         const sessionId = insertActiveSession('sess-machine-only-missing', 'machine-x')
+        setKillSessionOk()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => { throw new RpcTargetMissingError('StopSession', 'handler-not-registered') }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-cleanup-unavailable')
+
+        const session = cache().getSession(sessionId)
+        expect(session?.active).toBe(true)
+        expect(session?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('does NOT archive when machine StopSession is missing but KillSession was reachable for a WORKING peer', async () => {
+        const sessionId = insertActiveSession('sess-machine-only-missing-working', 'machine-x')
         cache().getSession(sessionId)!.thinking = true
         setKillSessionOk()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
@@ -564,8 +594,23 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
     })
 
-    it('does NOT archive when the runner reports unknown after KillSession miss for a WORKING peer', async () => {
+    it('does NOT archive when the runner reports unknown after KillSession miss (idle)', async () => {
         const sessionId = insertActiveSession('sess-unknown-to-runner', 'machine-x')
+        setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'unknown'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-cleanup-unconfirmed')
+
+        const session = cache().getSession(sessionId)
+        expect(session?.active).toBe(true)
+        expect(session?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('does NOT archive when the runner reports unknown after KillSession miss for a WORKING peer', async () => {
+        const sessionId = insertActiveSession('sess-unknown-to-runner-working', 'machine-x')
         cache().getSession(sessionId)!.thinking = true
         setKillSessionMissingTarget()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
