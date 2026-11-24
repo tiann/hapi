@@ -296,4 +296,48 @@ describe('handleSessionChildExited owner guard', () => {
             engine.stop()
         }
     })
+
+    it('retires sticky tool work on a late exit notice after heartbeat expiry (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const { store, engine, events } = createEngine()
+        try {
+            registerMachine(engine)
+            const session = createOwnedSession(engine, 'child-exit-inactive-retire', {
+                flavor: 'cursor',
+                cursorSessionProtocol: 'acp',
+                cursorSessionId: 'cursor-1',
+            })
+            store.messages.upsertToolCallMessage(session.id, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'late-shell',
+                        name: 'Shell',
+                        input: {},
+                        status: 'in_progress',
+                    },
+                },
+            }, 'late-shell')
+            expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+            // Heartbeat expiry already flipped the row inactive — exit notice
+            // must still clear sticky work without a full session-end.
+            expect(engine.getSession(session.id)?.active).toBe(false)
+
+            expect(engine.handleSessionChildExited({
+                machineId: MACHINE,
+                namespace: NAMESPACE,
+                sid: session.id,
+                pid: PID,
+                processStartMarker: START_MARKER,
+                time: Date.now(),
+            })).toBe(false)
+            expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+            expect(events.filter((event) => event.type === 'session-ended')).toHaveLength(0)
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
 })

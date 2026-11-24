@@ -74,7 +74,10 @@ describe.each(['opencode', 'claude'] as const)('%s pending delivery ownership', 
         try {
             engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id })
             expect(engine.getQueuedState(session.id, ['pending']).dispatchingLocalIds).toEqual(['pending'])
-            clock.mockReturnValue(session.activeAt + 300_001)
+            // Use the live cache row — createEngine's local binding can lag
+            // activeAt after handleSessionAlive refreshes the session object.
+            const live = engine.getSession(session.id)!
+            clock.mockReturnValue(live.activeAt + 300_001)
             engine['expireInactive']()
             expectUnknown(store, engine, session.id)
         } finally { clock.mockRestore(); engine.stop(); store.close() }
@@ -106,6 +109,46 @@ it.each(['codex', 'cursor'] as const)('preserves the separate %s runtime deliver
         if (update.result !== 'success') throw new Error('metadata update failed')
         engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id, data: { metadata: { version: update.version, value: metadata } } })
         expect(engine.getQueuedState(session.id, ['pending']).dispatchingLocalIds).toEqual(['pending'])
+        expect(store.messages.lookupQueuedMessage(session.id, 'pending').status).toBe('dispatching')
+    } finally { engine.stop(); store.close() }
+})
+
+it('retires Cursor foreground tool work when a replacement worker identifies itself (#2021)', async () => {
+    const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+    const { store, engine, session } = createEngine(new Store(':memory:'), 'cursor')
+    try {
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'cursor-shell',
+                    name: 'Shell',
+                    input: {},
+                    status: 'in_progress',
+                },
+            },
+        }, 'cursor-shell')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        const current = engine.getSession(session.id)!
+        const metadata = {
+            ...current.metadata!,
+            hostPid: 101,
+            hostStartMarker: 'worker-B',
+            cursorSessionProtocol: 'acp' as const,
+        }
+        const update = store.sessions.updateSessionMetadata(session.id, metadata, current.metadataVersion, 'default')
+        if (update.result !== 'success') throw new Error('metadata update failed')
+        engine.handleRealtimeEvent({
+            type: 'session-updated',
+            sessionId: session.id,
+            data: { metadata: { version: update.version, value: metadata } },
+        })
+
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        // Delivery ownership for Cursor stays separate from OpenCode/Claude.
         expect(store.messages.lookupQueuedMessage(session.id, 'pending').status).toBe('dispatching')
     } finally { engine.stop(); store.close() }
 })

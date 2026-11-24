@@ -1029,19 +1029,22 @@ export class SyncEngine {
 
     private reconcileSteerDeliveryOwner(before: Session['metadata'], after: Session | undefined): void {
         const current = after?.metadata
-        if ((before?.flavor !== 'opencode' && before?.flavor !== 'claude')
-            || current?.flavor !== before.flavor) return
-        // Steer admission closes before an existing request finishes draining.
-        // Only replacement of the owning worker ends its confirmation lease.
-        if (before.machineId !== current.machineId || before.hostPid !== current.hostPid
-            || before.hostStartMarker !== current.hostStartMarker) {
+        if (!before || !current || current.flavor !== before.flavor || !after?.id) return
+        // Only replacement of the owning worker ends its confirmation lease /
+        // retires sticky tool work from the previous generation (#2021).
+        if (before.machineId === current.machineId && before.hostPid === current.hostPid
+            && before.hostStartMarker === current.hostStartMarker) {
+            return
+        }
+        // Open tool rows (child + foreground) belonged to the previous worker.
+        // Retire for every flavor — Cursor ACP misses handleSessionEnd when
+        // heartbeat expiry flips inactive before the exit notice arrives.
+        this.store.messages.retireOpenChildToolWork(after.id)
+        this.sessionCache.noteDerivedWork(after.id, this.store.messages.getLiveToolWork(after.id))
+        // Steer admission ownership is OpenCode/Claude only; Cursor/Codex keep
+        // their separate delivery owner (see steerDeliveryLifecycle tests).
+        if (before.flavor === 'opencode' || before.flavor === 'claude') {
             this.markSteerDispatchesUncertain(after)
-            // Open child tool rows belonged to the previous worker generation —
-            // retire them so a replacement idle worker is archivable (#2021).
-            if (after?.id) {
-                this.store.messages.retireOpenChildToolWork(after.id)
-                this.sessionCache.noteDerivedWork(after.id, this.store.messages.getLiveToolWork(after.id))
-            }
         }
     }
 
@@ -1151,7 +1154,14 @@ export class SyncEngine {
             const ownerRegisteredAt = session.metadata?.lifecycleStateSince
             if (ownerRegisteredAt === undefined || payload.time < ownerRegisteredAt) return false
         }
-        if (!session.active && !session.thinking) return false
+        if (!session.active && !session.thinking) {
+            // Heartbeat expiry can flip inactive before this exit notice
+            // arrives. Still retire sticky tool work so a later Cursor/ACP
+            // resume does not inherit archive-session-working (#2021).
+            this.store.messages.retireOpenChildToolWork(session.id)
+            this.sessionCache.noteDerivedWork(session.id, false)
+            return false
+        }
 
         this.handleSessionEnd({ sid: session.id, time: payload.time, reason: 'error' })
         return true
