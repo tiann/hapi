@@ -1,7 +1,7 @@
-import type { AgyPermissionMode } from '@hapi/protocol/types';
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
 import type { SessionEffort, SessionModel } from '@/api/types';
 
-export type PermissionMode = AgyPermissionMode;
+export type PermissionMode = PermissionModeOf<typeof Flavors.agy>;
 
 /** Image attachment metadata traveling with a queued turn until prompt preparation. */
 export type AgyImageAttachment = {

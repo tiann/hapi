@@ -7,7 +7,8 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentMessage, PermissionRequest, PromptContent } from '@/agent/types';
-import type { AcpSdkBackend } from '@/agent/backends/acp';
+import { AcpSdkBackend } from '@/agent/backends/acp';
+import { RPC_METHODS } from '@hapi/protocol';
 import { AgySession } from './session';
 import type { AgyMode } from './types';
 import { AgyAcpRemoteLauncher } from './agyAcpRemoteLauncher';
@@ -21,6 +22,7 @@ import {
     readAgyTranscriptStepsAfter,
     readLatestAgyTranscriptStepIndex,
     resolveAgyBackgroundTaskIds,
+    supportsAgyLiveIdleWakeups,
     type AgyOpenBackgroundCommand,
     type AgyReactiveTimingConfig,
     type AgyTranscriptStep
@@ -100,6 +102,11 @@ class WakeupTestBackend {
     isTransportAlive(): boolean {
         return this.alive;
     }
+    agentVersion: string | null = null;
+    getAgentVersion(): string | null {
+        return this.agentVersion;
+    }
+    async flushPendingMessageBuffers(): Promise<void> {}
     supportsSessionResume(): boolean {
         return true;
     }
@@ -168,7 +175,7 @@ class WakeupTestBackend {
     }
 }
 
-function makeHarness(permissionMode: AgyMode['permissionMode'] = 'always-proceed') {
+function makeHarness(permissionMode: AgyMode['permissionMode'] = 'always-proceed', sessionId: string | null = null) {
     const queue = new MessageQueue2<AgyMode>((mode) => hashObject(mode));
     const handlers = new Map<string, (payload?: unknown) => Promise<unknown>>();
     const client = {
@@ -197,7 +204,7 @@ function makeHarness(permissionMode: AgyMode['permissionMode'] = 'always-proceed
         client: client as unknown as ApiSessionClient,
         path: '/srv/work/projects',
         logPath: '/tmp/agy-wakeup.log',
-        sessionId: null,
+        sessionId,
         messageQueue: queue,
         onModeChange: vi.fn(),
         mode: 'remote',
@@ -4140,5 +4147,1536 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
 
         queue.close();
         await runPromise;
+    });
+
+    it('parses agy agentInfo.version for >= 1.5.10 live wakeup support', () => {
+        expect(supportsAgyLiveIdleWakeups('1.5.10')).toBe(true);
+        expect(supportsAgyLiveIdleWakeups('1.5.13')).toBe(true);
+        expect(supportsAgyLiveIdleWakeups('1.6.0-beta.1')).toBe(true);
+        expect(supportsAgyLiveIdleWakeups('2.0.0')).toBe(true);
+        expect(supportsAgyLiveIdleWakeups('1.5.9')).toBe(false);
+        expect(supportsAgyLiveIdleWakeups('1.5.10-beta')).toBe(false);
+        expect(supportsAgyLiveIdleWakeups('1.5.10-rc.1')).toBe(false);
+        expect(supportsAgyLiveIdleWakeups('1.5.11-rc.1')).toBe(true);
+        expect(supportsAgyLiveIdleWakeups('1.5.10+build.7')).toBe(true);
+        expect(supportsAgyLiveIdleWakeups('1.5.10foo')).toBe(false);
+        expect(supportsAgyLiveIdleWakeups('v1.5.13')).toBe(false);
+        expect(supportsAgyLiveIdleWakeups('1.4.99')).toBe(false);
+        expect(supportsAgyLiveIdleWakeups('0.9.15')).toBe(false);
+        expect(supportsAgyLiveIdleWakeups(null)).toBe(false);
+        expect(supportsAgyLiveIdleWakeups(undefined)).toBe(false);
+        expect(supportsAgyLiveIdleWakeups('')).toBe(false);
+        expect(supportsAgyLiveIdleWakeups('unknown')).toBe(false);
+    });
+
+    it('renders idle agy >= 1.5.10 wakeup once via live ACP and flushes buffers before ready without leaking into Turn 2', async () => {
+        const acpSessionId = 'conv-live-agy-1-5-13';
+        const backend = new AcpSdkBackend({
+            command: 'agy',
+            args: ['acp'],
+            flavor: 'agy',
+            textChunkMode: 'delta',
+            toolCallLifetimeStore: null
+        });
+        const internal = backend as unknown as {
+            transport: unknown;
+            initializeResult: unknown;
+            handleNotification: (method: string, params: unknown) => void;
+        };
+        const ctor = AcpSdkBackend as unknown as Record<string, number>;
+        const savedTimings = {
+            UPDATE_QUIET_PERIOD_MS: ctor.UPDATE_QUIET_PERIOD_MS,
+            UPDATE_DRAIN_TIMEOUT_MS: ctor.UPDATE_DRAIN_TIMEOUT_MS,
+            PRE_PROMPT_UPDATE_QUIET_PERIOD_MS: ctor.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
+            PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS: ctor.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS,
+            LATE_FLUSH_INTERVAL_MS: ctor.LATE_FLUSH_INTERVAL_MS,
+            LATE_FLUSH_QUIET_PERIOD_MS: ctor.LATE_FLUSH_QUIET_PERIOD_MS,
+            LATE_FLUSH_WINDOW_MS: ctor.LATE_FLUSH_WINDOW_MS
+        };
+        ctor.UPDATE_QUIET_PERIOD_MS = 10;
+        ctor.UPDATE_DRAIN_TIMEOUT_MS = 40;
+        ctor.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 10;
+        ctor.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 40;
+        ctor.LATE_FLUSH_INTERVAL_MS = 10;
+        ctor.LATE_FLUSH_QUIET_PERIOD_MS = 20;
+        ctor.LATE_FLUSH_WINDOW_MS = 60;
+
+        try {
+            let promptCount = 0;
+            let alive = true;
+            const resumeCalls: string[] = [];
+            const notify = (update: Record<string, unknown>) => {
+                internal.handleNotification('session/update', { sessionId: acpSessionId, update });
+            };
+            internal.transport = {
+                sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
+                    if (method === 'session/new') {
+                        return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
+                    }
+                    if (method === 'session/resume') {
+                        resumeCalls.push(String(params.sessionId));
+                        return { sessionId: String(params.sessionId), models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
+                    }
+                    if (method === 'session/set_mode' || method === 'session/set_model') return {};
+                    if (method === 'session/list') return { sessions: [] };
+                    if (method === 'session/prompt') {
+                        promptCount += 1;
+                        if (promptCount === 1) {
+                            notify({
+                                sessionUpdate: 'tool_call',
+                                toolCallId: 'call-bg-live-1',
+                                name: 'run_command',
+                                title: 'sleep 20 && echo DONE_BG',
+                                status: 'in_progress',
+                                rawInput: { CommandLine: 'sleep 20 && echo DONE_BG' }
+                            });
+                            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'STARTED' } });
+                            writeTranscript(tempBrainDir, acpSessionId, [
+                                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run bg' },
+                                {
+                                    step_index: 1,
+                                    source: 'MODEL',
+                                    type: 'PLANNER_RESPONSE',
+                                    status: 'DONE',
+                                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 20 && echo DONE_BG"' } }]
+                                },
+                                {
+                                    step_index: 2,
+                                    source: 'MODEL',
+                                    type: 'RUN_COMMAND',
+                                    status: 'RUNNING',
+                                    content: `Tool is running as a background task with task id: ${acpSessionId}/task-1`
+                                },
+                                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'STARTED' }
+                            ]);
+                        } else {
+                            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OK' } });
+                            const { compactPath } = agyTranscriptPaths(tempBrainDir, acpSessionId)!;
+                            appendFileSync(
+                                compactPath,
+                                [
+                                    JSON.stringify({ step_index: 6, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'Reply with only OK.' }),
+                                    JSON.stringify({ step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'OK' })
+                                ].join('\n') + '\n',
+                                'utf8'
+                            );
+                        }
+                        return { stopReason: 'end_turn', usage: { inputTokens: 40, outputTokens: 10 } };
+                    }
+                    return {};
+                }),
+                sendNotification: vi.fn(),
+                onNotification: () => {},
+                onStderrError: () => {},
+                registerRequestHandler: () => {},
+                isAlive: () => alive,
+                getProcessPid: () => 4242,
+                close: async () => { alive = false; return true; }
+            };
+            internal.initializeResult = {
+                protocolVersion: 1,
+                agentVersion: '1.5.13',
+                agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } }
+            };
+
+            const { session, queue, client } = makeHarness('always-proceed');
+            const launcher = new AgyAcpRemoteLauncher(session, {
+                createBackend: () => backend,
+                brainDir: tempBrainDir,
+                reactivePollMs: 15,
+                reactiveSettleMs: 25
+            });
+            const runPromise = launcher.launch();
+
+            queue.push('run bg', { permissionMode: 'always-proceed' }, 'msg-1');
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+            client.sendSessionEvent.mockClear();
+            client.sendAgentMessage.mockClear();
+            const resumesBeforeWakeup = resumeCalls.length;
+
+            // Idle wakeup streams tool_call_update + delta text chunks and writes transcript rows.
+            notify({
+                sessionUpdate: 'tool_call_update',
+                toolCallId: 'call-bg-live-1',
+                status: 'completed',
+                rawOutput: { output: 'Command exited with code 0.\n\nCommand output:\nDONE_BG', exit_code: 0 }
+            });
+            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n\nFINISHED:' } });
+            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'DONE_BG' } });
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, acpSessionId)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({
+                        step_index: 4,
+                        source: 'SYSTEM',
+                        type: 'SYSTEM_MESSAGE',
+                        status: 'DONE',
+                        content: `<SYSTEM_MESSAGE>\nTask id "${acpSessionId}/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDONE_BG\n</SYSTEM_MESSAGE>`
+                    }),
+                    JSON.stringify({
+                        step_index: 5,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        content: 'FINISHED:DONE_BG',
+                        input_tokens: 55,
+                        output_tokens: 8
+                    })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+
+            const wakeupMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg as {
+                type?: string;
+                message?: string;
+                output?: { stdout?: string };
+                summary?: { model?: string; num_turns?: number };
+            });
+            expect(wakeupMessages.filter((m) => m.type === 'message').map((m) => m.message?.trim())).toEqual(['FINISHED:DONE_BG']);
+            expect(wakeupMessages.filter((m) => m.type === 'tool-call-result' && m.output?.stdout === 'DONE_BG')).toHaveLength(1);
+            expect(wakeupMessages.find((m) => m.type === 'round-summary')?.summary).toMatchObject({
+                model: 'gemini-3.8-flash-low',
+                num_turns: 1
+            });
+            expect(resumeCalls).toHaveLength(resumesBeforeWakeup);
+
+            // Wait past the 1000ms AcpMessageHandler idle timer and run Turn 2: zero leaked text.
+            client.sendSessionEvent.mockClear();
+            client.sendAgentMessage.mockClear();
+            queue.push('Reply with only OK.', { permissionMode: 'always-proceed' }, 'msg-2');
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+
+            const turn2Texts = client.sendAgentMessage.mock.calls
+                .map(([msg]) => msg as { type?: string; message?: string })
+                .filter((m) => m.type === 'message')
+                .map((m) => m.message?.trim());
+            expect(turn2Texts).toEqual(['OK']);
+
+            queue.close();
+            await runPromise;
+        } finally {
+            Object.assign(ctor, savedTimings);
+        }
+    });
+
+    it('flushes live wakeups arriving during applyTurnConfig and waitForSessionUpdateQuiet before Turn 2 without duplicate rendering', async () => {
+        const acpSessionId = 'conv-live-agy-preprompt-windows';
+        const backend = new AcpSdkBackend({
+            command: 'agy',
+            args: ['acp'],
+            flavor: 'agy',
+            textChunkMode: 'delta',
+            toolCallLifetimeStore: null
+        });
+        const internal = backend as unknown as {
+            transport: unknown;
+            initializeResult: unknown;
+            handleNotification: (method: string, params: unknown) => void;
+        };
+        const ctor = AcpSdkBackend as unknown as Record<string, number>;
+        const savedTimings = {
+            PRE_PROMPT_UPDATE_QUIET_PERIOD_MS: ctor.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
+            PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS: ctor.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS,
+            LATE_FLUSH_INTERVAL_MS: ctor.LATE_FLUSH_INTERVAL_MS,
+            LATE_FLUSH_QUIET_PERIOD_MS: ctor.LATE_FLUSH_QUIET_PERIOD_MS,
+            LATE_FLUSH_WINDOW_MS: ctor.LATE_FLUSH_WINDOW_MS
+        };
+        ctor.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 40;
+        ctor.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 120;
+        ctor.LATE_FLUSH_INTERVAL_MS = 10;
+        ctor.LATE_FLUSH_QUIET_PERIOD_MS = 20;
+        ctor.LATE_FLUSH_WINDOW_MS = 60;
+
+        try {
+            let promptCount = 0;
+            let alive = true;
+            const notify = (update: Record<string, unknown>) => {
+                internal.handleNotification('session/update', { sessionId: acpSessionId, update });
+            };
+            const appendWakeup = (baseStep: number, text: string) => {
+                notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+                const { compactPath } = agyTranscriptPaths(tempBrainDir, acpSessionId)!;
+                appendFileSync(
+                    compactPath,
+                    [
+                        JSON.stringify({
+                            step_index: baseStep,
+                            source: 'SYSTEM',
+                            type: 'SYSTEM_MESSAGE',
+                            status: 'DONE',
+                            content: `<SYSTEM_MESSAGE>${text}</SYSTEM_MESSAGE>`
+                        }),
+                        JSON.stringify({
+                            step_index: baseStep + 1,
+                            source: 'MODEL',
+                            type: 'PLANNER_RESPONSE',
+                            status: 'DONE',
+                            content: text,
+                            input_tokens: 20,
+                            output_tokens: 4
+                        })
+                    ].join('\n') + '\n',
+                    'utf8'
+                );
+            };
+            internal.transport = {
+                sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
+                    if (method === 'session/new') {
+                        return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
+                    }
+                    if (method === 'session/resume') return { sessionId: String(params.sessionId) };
+                    if (method === 'session/set_mode') {
+                        if (promptCount === 1) {
+                            appendWakeup(2, 'FINISHED:DURING_CONFIG');
+                        }
+                        return {};
+                    }
+                    if (method === 'session/set_model') {
+                        if (promptCount === 1) {
+                            notify({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '' } });
+                            setTimeout(() => appendWakeup(4, '\n\nFINISHED:QUIET_WINDOW'), 10);
+                        }
+                        return {};
+                    }
+                    if (method === 'session/list') return { sessions: [] };
+                    if (method === 'session/prompt') {
+                        promptCount += 1;
+                        if (promptCount === 1) {
+                            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'STARTED' } });
+                            writeTranscript(tempBrainDir, acpSessionId, [
+                                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'STARTED' }
+                            ]);
+                        } else {
+                            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OK' } });
+                            const { compactPath } = agyTranscriptPaths(tempBrainDir, acpSessionId)!;
+                            appendFileSync(
+                                compactPath,
+                                [
+                                    JSON.stringify({ step_index: 6, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'Reply with only OK.' }),
+                                    JSON.stringify({ step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'OK' })
+                                ].join('\n') + '\n',
+                                'utf8'
+                            );
+                        }
+                        return { stopReason: 'end_turn', usage: { inputTokens: 20, outputTokens: 5 } };
+                    }
+                    return {};
+                }),
+                sendNotification: vi.fn(),
+                onNotification: () => {},
+                onStderrError: () => {},
+                registerRequestHandler: () => {},
+                isAlive: () => alive,
+                getProcessPid: () => 4242,
+                close: async () => { alive = false; return true; }
+            };
+            internal.initializeResult = {
+                protocolVersion: 1,
+                agentVersion: '1.5.13',
+                agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } }
+            };
+
+            const { session, queue, client } = makeHarness('always-proceed');
+            const launcher = new AgyAcpRemoteLauncher(session, {
+                createBackend: () => backend,
+                brainDir: tempBrainDir,
+                reactivePollMs: 15,
+                reactiveSettleMs: 25
+            });
+            const runPromise = launcher.launch();
+
+            queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+            client.sendSessionEvent.mockClear();
+            client.sendAgentMessage.mockClear();
+
+            queue.push('Reply with only OK.', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+
+            // Wait a few poll ticks to verify the post-turn watcher does not re-render either wakeup.
+            await new Promise((r) => setTimeout(r, 60));
+
+            const texts = client.sendAgentMessage.mock.calls
+                .map(([msg]) => msg as { type?: string; message?: string })
+                .filter((m) => m.type === 'message')
+                .map((m) => m.message?.trim());
+            expect(texts).toEqual(['FINISHED:DURING_CONFIG\n\nFINISHED:QUIET_WINDOW', 'OK']);
+
+            queue.close();
+            await runPromise;
+        } finally {
+            Object.assign(ctor, savedTimings);
+        }
+    });
+
+    it('closes and registers a background run_command started inside a live agy >= 1.5.10 wakeup under its live ACP callId', async () => {
+        const acpSessionId = 'conv-live-agy-wakeup-bg-cmd';
+        const backend = new AcpSdkBackend({
+            command: 'agy',
+            args: ['acp'],
+            flavor: 'agy',
+            textChunkMode: 'delta',
+            toolCallLifetimeStore: null
+        });
+        const internal = backend as unknown as {
+            transport: unknown;
+            initializeResult: unknown;
+            handleNotification: (method: string, params: unknown) => void;
+        };
+        const ctor = AcpSdkBackend as unknown as Record<string, number>;
+        const savedTimings = {
+            LATE_FLUSH_INTERVAL_MS: ctor.LATE_FLUSH_INTERVAL_MS,
+            LATE_FLUSH_QUIET_PERIOD_MS: ctor.LATE_FLUSH_QUIET_PERIOD_MS,
+            LATE_FLUSH_WINDOW_MS: ctor.LATE_FLUSH_WINDOW_MS
+        };
+        ctor.LATE_FLUSH_INTERVAL_MS = 10;
+        ctor.LATE_FLUSH_QUIET_PERIOD_MS = 20;
+        ctor.LATE_FLUSH_WINDOW_MS = 60;
+
+        try {
+            let alive = true;
+            const notify = (update: Record<string, unknown>) => {
+                internal.handleNotification('session/update', { sessionId: acpSessionId, update });
+            };
+            internal.transport = {
+                sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
+                    if (method === 'session/new') {
+                        return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
+                    }
+                    if (method === 'session/resume') return { sessionId: String(params.sessionId) };
+                    if (method === 'session/set_mode' || method === 'session/set_model') return {};
+                    if (method === 'session/list') return { sessions: [] };
+                    if (method === 'session/prompt') {
+                        notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Turn 1 ready.' } });
+                        writeTranscript(tempBrainDir, acpSessionId, [
+                            { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                            { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Turn 1 ready.' }
+                        ]);
+                        return { stopReason: 'end_turn', usage: { inputTokens: 20, outputTokens: 5 } };
+                    }
+                    return {};
+                }),
+                sendNotification: vi.fn(),
+                onNotification: () => {},
+                onStderrError: () => {},
+                registerRequestHandler: () => {},
+                isAlive: () => alive,
+                getProcessPid: () => 4242,
+                close: async () => { alive = false; return true; }
+            };
+            internal.initializeResult = {
+                protocolVersion: 1,
+                agentVersion: '1.5.13',
+                agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } }
+            };
+
+            const { session, queue, client } = makeHarness('always-proceed');
+            const launcher = new AgyAcpRemoteLauncher(session, {
+                createBackend: () => backend,
+                brainDir: tempBrainDir,
+                reactivePollMs: 15,
+                reactiveSettleMs: 25
+            });
+            const runPromise = launcher.launch();
+
+            queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+            client.sendSessionEvent.mockClear();
+            client.sendAgentMessage.mockClear();
+            client.sendClaudeSessionMessage.mockClear();
+
+            // Live wakeup starts a new background run_command and finishes its wakeup turn.
+            notify({
+                sessionUpdate: 'tool_call',
+                toolCallId: 'call-wakeup-bg-1',
+                name: 'run_command',
+                title: 'sleep 20 && echo WAKEUP_BG',
+                status: 'in_progress',
+                rawInput: { CommandLine: 'sleep 20 && echo WAKEUP_BG' }
+            });
+            notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Wakeup started bg.' } });
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, acpSessionId)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({
+                        step_index: 2,
+                        source: 'SYSTEM',
+                        type: 'SYSTEM_MESSAGE',
+                        status: 'DONE',
+                        content: '<SYSTEM_MESSAGE>timer fired</SYSTEM_MESSAGE>'
+                    }),
+                    JSON.stringify({
+                        step_index: 3,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 20 && echo WAKEUP_BG"' } }]
+                    }),
+                    JSON.stringify({
+                        step_index: 4,
+                        source: 'MODEL',
+                        type: 'RUN_COMMAND',
+                        status: 'RUNNING',
+                        content: `Tool is running as a background task with task id: ${acpSessionId}/task-7`
+                    }),
+                    JSON.stringify({
+                        step_index: 5,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        content: 'Wakeup started bg.',
+                        input_tokens: 30,
+                        output_tokens: 6
+                    })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+
+            const messages = client.sendAgentMessage.mock.calls.map(([msg]) => msg as {
+                type?: string;
+                callId?: string;
+                message?: string;
+                output?: { stdout?: string };
+            });
+            expect(messages.filter((m) => m.type === 'message').map((m) => m.message?.trim())).toEqual(['Wakeup started bg.']);
+            expect(messages.filter((m) => m.type === 'tool-call')).toHaveLength(1);
+            expect(messages).toContainEqual(expect.objectContaining({
+                type: 'tool-call-result',
+                callId: expect.stringMatching(/^call-wakeup-bg-1#/),
+                output: expect.objectContaining({
+                    stdout: 'Running in the background. The result appears when agy reports it.'
+                })
+            }));
+
+            const bgEntries = (launcher as unknown as {
+                backgroundCommands: Array<{ callId: string; taskId?: string; synthetic?: boolean }>;
+            }).backgroundCommands;
+            expect(bgEntries).toEqual([
+                expect.objectContaining({
+                    callId: expect.stringMatching(/^call-wakeup-bg-1#/)
+                })
+            ]);
+            expect(client.sendClaudeSessionMessage.mock.calls.map(([msg]) => msg)).toContainEqual(
+                expect.objectContaining({
+                    type: 'system',
+                    subtype: 'background_tasks_changed',
+                    tasks: [
+                        expect.objectContaining({
+                            task_id: expect.stringMatching(/^call-wakeup-bg-1#/),
+                            description: 'sleep 20 && echo WAKEUP_BG'
+                        })
+                    ]
+                })
+            );
+
+            queue.close();
+            await runPromise;
+        } finally {
+            Object.assign(ctor, savedTimings);
+        }
+    });
+
+    it('gates live idle wakeup mode on agentInfo.version >= 1.5.10 and preserves legacy transcript rendering for < 1.5.10 or unknown versions', async () => {
+        for (const version of ['1.5.9', null]) {
+            const backend = new WakeupTestBackend();
+            backend.sessionIdToCreate = `conv-legacy-${version ?? 'null'}`;
+            backend.agentVersion = version;
+            backend.promptScripts.push(async (onUpdate) => {
+                onUpdate({ type: 'text', text: 'Turn 1 done.' });
+                writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                    { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                    { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Turn 1 done.' }
+                ]);
+                onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            });
+
+            const { session, queue, client } = makeHarness('always-proceed');
+            const launcher = new AgyAcpRemoteLauncher(session, {
+                createBackend: () => backend as unknown as AcpSdkBackend,
+                brainDir: tempBrainDir,
+                reactivePollMs: 15,
+                reactiveSettleMs: 25
+            });
+            const runPromise = launcher.launch();
+
+            queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+            client.sendSessionEvent.mockClear();
+            client.sendAgentMessage.mockClear();
+
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({
+                        step_index: 2,
+                        source: 'SYSTEM',
+                        type: 'SYSTEM_MESSAGE',
+                        status: 'DONE',
+                        content: '<SYSTEM_MESSAGE>legacy done</SYSTEM_MESSAGE>'
+                    }),
+                    JSON.stringify({
+                        step_index: 3,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        content: `LEGACY_REPLY_${version ?? 'null'}`
+                    })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+
+            await vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+
+            const texts = client.sendAgentMessage.mock.calls
+                .map(([msg]) => msg as { type?: string; message?: string })
+                .filter((m) => m.type === 'message')
+                .map((m) => m.message?.trim());
+            expect(texts).toEqual([`LEGACY_REPLY_${version ?? 'null'}`]);
+            expect(backend.resumeCalls).toEqual([backend.sessionIdToCreate]);
+
+            queue.close();
+            await runPromise;
+        }
+    });
+
+    describe('live agy >= 1.5.10 wakeup lifecycle edges', () => {
+        const wakeup = (base: number, content: string, extra: Array<Record<string, unknown>> = [], done = true) => [
+            { step_index: base, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: `<SYSTEM_MESSAGE>${content}</SYSTEM_MESSAGE>` },
+            ...extra,
+            ...(done ? [{ step_index: base + extra.length + 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content }] : [])
+        ];
+        const bgRows = (base: number, command: string, taskId: string, done = true) => wakeup(base, 'bg', [
+            { step_index: base + 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: JSON.stringify(command) } }] },
+            { step_index: base + 2, source: 'MODEL', type: 'RUN_COMMAND', status: 'RUNNING', content: `Tool is running as a background task with task id: ${taskId}` }
+        ].slice(0, 2), done).map((row, i) => i > 0 && done ? { ...row, step_index: base + i } : row);
+
+        function startLive(
+            acpSessionId: string,
+            onPrompt: (n: number, notify: (update: Record<string, unknown>) => void) => string | void | Promise<string | void>,
+            launcherOpts: Record<string, number> = {},
+            resumeSessionId: string | null = null,
+            onMethod: (method: string) => void | Promise<void> = () => {}
+        ) {
+            const backend = new AcpSdkBackend({ command: 'agy', args: ['acp'], flavor: 'agy', textChunkMode: 'delta', toolCallLifetimeStore: null });
+            const internal = backend as unknown as { transport: unknown; initializeResult: unknown; handleNotification: (m: string, p: unknown) => void };
+            const ctor = AcpSdkBackend as unknown as Record<string, number>;
+            const saved = { ...ctor };
+            Object.assign(ctor, {
+                PRE_PROMPT_UPDATE_QUIET_PERIOD_MS: 10, PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS: 40,
+                UPDATE_QUIET_PERIOD_MS: 10, UPDATE_DRAIN_TIMEOUT_MS: 40,
+                LATE_FLUSH_INTERVAL_MS: 10, LATE_FLUSH_QUIET_PERIOD_MS: 20, LATE_FLUSH_WINDOW_MS: 60
+            });
+            const notify = (update: Record<string, unknown>) => internal.handleNotification('session/update', { sessionId: acpSessionId, update });
+            const requests: string[] = [];
+            let prompts = 0;
+            internal.transport = {
+                sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
+                    requests.push(method);
+                    await onMethod(method);
+                    if (method === 'session/new') return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
+                    if (method === 'session/resume') return { sessionId: String(params.sessionId) };
+                    if (method === 'session/list') return { sessions: [] };
+                    if (method === 'session/prompt') {
+                        prompts += 1;
+                        return { stopReason: (await onPrompt(prompts, notify)) ?? 'end_turn' };
+                    }
+                    return {};
+                }),
+                sendNotification: vi.fn(), onNotification: () => {}, onStderrError: () => {}, registerRequestHandler: () => {},
+                isAlive: () => true, getProcessPid: () => 4242, close: async () => true
+            };
+            internal.initializeResult = { protocolVersion: 1, agentVersion: '1.5.13', agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } };
+            const { session, queue, client } = makeHarness('always-proceed', resumeSessionId);
+            const launcher = new AgyAcpRemoteLauncher(session, { createBackend: () => backend, brainDir: tempBrainDir, reactivePollMs: 15, reactiveSettleMs: 25, ...launcherOpts });
+            const run = launcher.launch();
+            const append = (rows: Array<Record<string, unknown>>) => appendFileSync(
+                agyTranscriptPaths(tempBrainDir, acpSessionId)!.compactPath, rows.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+            const texts = () => client.sendAgentMessage.mock.calls
+                .map(([m]) => m as { type?: string; message?: string }).filter((m) => m.type === 'message').map((m) => m.message?.trim());
+            const ready = () => vi.waitFor(() => expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+            const bgEntries = () => (launcher as unknown as { backgroundCommands: Array<{ callId: string; taskId?: string; synthetic?: boolean }> }).backgroundCommands;
+            const finish = async () => { queue.close(); await run; Object.assign(ctor, saved); };
+            return { notify, append, texts, ready, bgEntries, finish, queue, client, requests, backend };
+        }
+        const turnRows = (acp: string) => writeTranscript(tempBrainDir, acp, [
+            { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+            { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Turn 1.' }
+        ]);
+        const bgCall = (id: string, cmd: string) => ({ sessionUpdate: 'tool_call', toolCallId: id, name: 'run_command', title: cmd, status: 'in_progress', rawInput: { CommandLine: cmd } });
+
+        it('renders a wakeup from the transcript while no prompt has installed a message handler yet (resumed session)', async () => {
+            const acp = 'conv-live-resumed';
+            turnRows(acp);
+            const h = startLive(acp, () => undefined, {}, acp);
+            await vi.waitFor(() => expect(h.requests).toContain('session/resume'));
+            h.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'FINISHED:RESUMED' } });
+            h.append(wakeup(2, 'FINISHED:RESUMED'));
+            await h.ready();
+            expect(h.texts()).toEqual(['FINISHED:RESUMED']);
+            await h.finish();
+        });
+
+        it('registers a background command started in a live wakeup after a cancelled turn', async () => {
+            const acp = 'conv-live-cancelled';
+            const h = startLive(acp, (_n, notify) => {
+                notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial' } });
+                turnRows(acp);
+                return 'cancelled';
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.notify(bgCall('call-w-1', 'sleep 9'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`));
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(1));
+            expect(h.bgEntries()).toEqual([{ callId: expect.stringMatching(/^call-w-1#/) }]);
+            await h.finish();
+        });
+
+        it('closes a live wakeup command when a queued prompt preempts the wakeup', async () => {
+            const acp = 'conv-live-preempt';
+            const h = startLive(acp, (n, notify) => {
+                if (n === 1) { turnRows(acp); return; }
+                notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OK' } });
+                h.append([
+                    { step_index: 5, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'next' },
+                    { step_index: 6, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'OK' }
+                ]);
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.notify(bgCall('call-w-2', 'sleep 9'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`, false));
+            h.queue.push('next', { permissionMode: 'always-proceed' }, 'msg-2');
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(1));
+            expect(h.bgEntries()[0]).toMatchObject({ callId: expect.stringMatching(/^call-w-2#/) });
+            await h.finish();
+        });
+
+        it('keeps a preempted wakeup command out of the next turn task id binding', async () => {
+            const acp = 'conv-live-preempt-both';
+            const h = startLive(acp, (n, notify) => {
+                if (n === 1) { turnRows(acp); return; }
+                notify(bgCall('call-t2', 'sleep 8'));
+                notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OK' } });
+                h.append([
+                    { step_index: 5, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'next' },
+                    { step_index: 6, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 8"' } }] },
+                    { step_index: 7, source: 'MODEL', type: 'RUN_COMMAND', status: 'RUNNING', content: `Tool is running as a background task with task id: ${acp}/task-8` },
+                    { step_index: 8, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'OK' }
+                ]);
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.notify(bgCall('call-w-4', 'sleep 9'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`, false));
+            h.queue.push('next', { permissionMode: 'always-proceed' }, 'msg-2');
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(2));
+            const byCall = (prefix: string) => h.bgEntries().find((e) => e.callId.startsWith(prefix));
+            expect(byCall('call-w-4#')?.taskId).toBeUndefined();
+            expect(byCall('call-t2#')?.taskId).toBe(`${acp}/task-8`);
+            await h.finish();
+        });
+
+        it('does not turn a command into a background task when the user stops its live wakeup', async () => {
+            const acp = 'conv-live-stop-cmd';
+            const h = startLive(acp, () => { turnRows(acp); });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            h.notify(bgCall('call-stopped', 'sleep 9'));
+            h.append(wakeup(2, 'w', [], false));
+            await new Promise((r) => setTimeout(r, 60));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            await h.ready();
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('call-stopped#'))).toHaveLength(0);
+            expect(h.bgEntries()).toHaveLength(0);
+            await h.finish();
+        });
+
+        it('does not close a cancelled prompt command as a background task in a later text-only wakeup', async () => {
+            const acp = 'conv-live-cancel-text';
+            const h = startLive(acp, (_n, notify) => {
+                notify(bgCall('call-cancelled', 'sleep 30'));
+                turnRows(acp);
+                return 'cancelled';
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            h.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'just text' } });
+            h.append(wakeup(2, 'just text'));
+            await h.ready();
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.filter((m) => m.type === 'tool-call-result')).toHaveLength(0);
+            expect(h.bgEntries().filter((e) => !e.synthetic)).toHaveLength(0);
+            await h.finish();
+        });
+
+        it('never gives a preempted wakeup command a task id from late rows of the previous prompt', async () => {
+            const acp = 'conv-live-late-rows';
+            const h = startLive(acp, (n, notify) => {
+                if (n === 1) { turnRows(acp); return; }
+                notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OK' } });
+                h.append([
+                    { step_index: 9, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'next' },
+                    { step_index: 10, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'OK' }
+                ]);
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.append([
+                { step_index: 2, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 5"' } }] },
+                { step_index: 3, source: 'MODEL', type: 'RUN_COMMAND', status: 'RUNNING', content: `Tool is running as a background task with task id: ${acp}/task-5` },
+                ...bgRows(4, 'sleep 9', `${acp}/task-7`, false)
+            ]);
+            h.notify(bgCall('call-w-5', 'sleep 9'));
+            h.queue.push('next', { permissionMode: 'always-proceed' }, 'msg-2');
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(1));
+            expect(h.bgEntries()).toEqual([expect.objectContaining({ callId: expect.stringMatching(/^call-w-5#/) })]);
+            expect(h.bgEntries()[0]!.taskId).toBeUndefined();
+            await h.finish();
+        });
+
+        it('settles a wakeup command that starts during the pre-prompt quiet wait and keeps the next turn command apart', async () => {
+            const acp = 'conv-live-quiet-swap';
+            const h = startLive(acp, (n, notify) => {
+                if (n === 1) { turnRows(acp); return; }
+                notify(bgCall('call-b', 'sleep 8'));
+                h.append([
+                    { step_index: 5, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'next' },
+                    { step_index: 6, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 8"' } }] },
+                    { step_index: 7, source: 'MODEL', type: 'RUN_COMMAND', status: 'RUNNING', content: `Tool is running as a background task with task id: ${acp}/task-8` },
+                    { step_index: 8, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'OK' }
+                ]);
+            }, {}, null, (method) => {
+                if (method !== 'session/set_model') return;
+                // A fresh frame opens the quiet wait; the command lands inside it, after the old settle point.
+                h.notify({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '' } });
+                setTimeout(() => {
+                    h.notify(bgCall('call-a', 'sleep 9'));
+                    h.append(bgRows(2, 'sleep 9', `${acp}/task-7`, false));
+                }, 3);
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(2));
+            const byCall = (prefix: string) => h.bgEntries().find((e) => e.callId.startsWith(prefix));
+            expect(byCall('call-a#')?.taskId).toBeUndefined();
+            expect(byCall('call-b#')?.taskId).toBe(`${acp}/task-8`);
+            await h.finish();
+        });
+
+        it('does not promote a wakeup command to a background task when Stop lands in the pre-prompt quiet wait', async () => {
+            const acp = 'conv-live-quiet-stop';
+            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => {
+                if (method !== 'session/set_model') return;
+                h.notify({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '' } });
+                setTimeout(() => {
+                    h.notify(bgCall('call-q', 'sleep 9'));
+                    h.append(bgRows(2, 'sleep 9', `${acp}/task-7`, false));
+                }, 3);
+                setTimeout(() => { void h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!(); }, 6);
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await h.ready();
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('call-q#'))).toHaveLength(0);
+            expect(h.bgEntries().filter((e) => e.callId.startsWith('call-q#'))).toHaveLength(0);
+            await h.finish();
+        });
+
+        it('never gives a prompt command the task id of a wakeup whose rows flush after the handler swap', async () => {
+            const acp = 'conv-live-rows-after';
+            const h = startLive(acp, (n, notify) => {
+                if (n === 1) { turnRows(acp); return; }
+                notify(bgCall('call-b3', 'sleep 8'));
+                h.append([
+                    ...bgRows(2, 'sleep 9', `${acp}/task-7`, false),
+                    { step_index: 5, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'next' },
+                    { step_index: 6, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 8"' } }] },
+                    { step_index: 7, source: 'MODEL', type: 'RUN_COMMAND', status: 'RUNNING', content: `Tool is running as a background task with task id: ${acp}/task-8` },
+                    { step_index: 8, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'OK' }
+                ]);
+            }, {}, null, (method) => {
+                if (method !== 'session/set_model') return;
+                h.notify({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '' } });
+                setTimeout(() => h.notify(bgCall('call-a3', 'sleep 9')), 3);
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(2));
+            const byCall = (prefix: string) => h.bgEntries().find((e) => e.callId.startsWith(prefix));
+            expect(byCall('call-a3#')?.taskId).toBeUndefined();
+            expect(byCall('call-b3#')?.taskId).toBe(`${acp}/task-8`);
+            await h.finish();
+        });
+
+        it('keeps a parked wakeup command and the command approved after reattach apart', async () => {
+            const acp = 'conv-live-parked';
+            const h = startLive(acp, (n, notify) => {
+                if (n === 1) { turnRows(acp); return; }
+                notify(bgCall('call-b4', 'sleep 8'));
+                h.append([
+                    { step_index: 6, source: 'MODEL', type: 'RUN_COMMAND', status: 'RUNNING', content: `Tool is running as a background task with task id: ${acp}/task-8` },
+                    { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'done' }
+                ]);
+            }, { reactiveToolParkMs: 40 });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.notify(bgCall('call-a4', 'sleep 9'));
+            h.append([
+                ...bgRows(2, 'sleep 9', `${acp}/task-7`, false),
+                { step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 8"' } }] }
+            ]);
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(2));
+            const byCall = (prefix: string) => h.bgEntries().find((e) => e.callId.startsWith(prefix));
+            expect(byCall('call-a4#')?.taskId).toBeUndefined();
+            expect(byCall('call-b4#')?.taskId).toBeUndefined();
+            await h.finish();
+        });
+
+        it('settles a registered wakeup command from its live completion by call id', async () => {
+            const acp = 'conv-live-complete';
+            const h = startLive(acp, () => { turnRows(acp); });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.notify(bgCall('call-c5', 'sleep 9'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`));
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(1));
+            h.client.sendAgentMessage.mockClear();
+            h.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'call-c5', status: 'completed', rawOutput: { output: 'Command output:\nDONE', exit_code: 0 } });
+            await vi.waitFor(() => expect(h.bgEntries()).toHaveLength(0));
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('call-c5#'))).toHaveLength(1);
+            await h.finish();
+        });
+
+        it('forwards the result of a transcript-rendered command that completes after a prompt installed the handler (resumed session)', async () => {
+            const acp = 'conv-live-synthetic';
+            turnRows(acp);
+            const h = startLive(acp, (_n, notify) => {
+                notify(bgCall('call-x', 'echo hi'));
+                notify({ sessionUpdate: 'tool_call_update', toolCallId: 'call-x', status: 'completed', rawOutput: { output: 'Command output:\nhi', exit_code: 0 } });
+                h.append([
+                    { step_index: 6, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                    { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"echo hi"' } }] },
+                    { step_index: 8, source: 'MODEL', type: 'RUN_COMMAND', status: 'DONE', content: 'hi' }
+                ]);
+            }, {}, acp);
+            await vi.waitFor(() => expect(h.requests).toContain('session/resume'));
+            // Handler-less wakeup: rendered from the transcript as a synthetic card.
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`));
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.synthetic)).toBe(true));
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            // The synthetic command completes: result-only ACP update first, transcript row later.
+            h.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'acp-syn', status: 'completed', rawOutput: { output: 'Command exited with code 0.\n\nCommand output:\nDONE', exit_code: 0 } });
+            await new Promise((r) => setTimeout(r, 40));
+            h.append([
+                { step_index: 9, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-7" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDONE\n</SYSTEM_MESSAGE>` },
+                { step_index: 10, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'FINISHED:DONE' }
+            ]);
+            await h.ready();
+            const out = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string; output?: { stdout?: string } });
+            const results = out.filter((m) => m.type === 'tool-call-result');
+            expect(results.some((m) => m.callId?.startsWith('agy-wakeup-') && m.output?.stdout === 'DONE')).toBe(true);
+            await h.finish();
+        });
+
+        it('does not register a stopped wakeup command when Stop lands while the next prompt configuration is pending', async () => {
+            const acp = 'conv-live-config-stop';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.notify(bgCall('call-cfg', 'sleep 9'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`, false));
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            // A late start of the stopped wakeup still reaches the old handler.
+            h.notify(bgCall('call-cfg-late', 'sleep 8'));
+            release();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            await h.ready();
+            // The same call is announced again after ready: it was suppressed during the Stop, so it stays dropped.
+            h.notify(bgCall('call-cfg-late', 'sleep 8'));
+            await new Promise((r) => setTimeout(r, 40));
+            h.queue.push('again', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-3');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await h.ready();
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('call-cfg'))).toHaveLength(0);
+            expect(h.bgEntries().filter((e) => e.callId.startsWith('call-cfg'))).toHaveLength(0);
+            // The discard ended with the stopped activity: a later wakeup registers normally.
+            h.notify(bgCall('call-after-cfg', 'sleep 7'));
+            h.append(bgRows(10, 'sleep 7', `${acp}/task-9`));
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.callId.startsWith('call-after-cfg#'))).toBe(true));
+            await h.finish();
+        });
+
+        it('registers a later wakeup command normally after the user stopped a prompt turn', async () => {
+            const acp = 'conv-live-stop-turn';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, async (n) => {
+                if (n === 1) { turnRows(acp); return; }
+                await gate;
+                return 'cancelled';
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed' }, 'msg-2');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            await h.ready();
+            h.notify(bgCall('call-after-turn', 'sleep 7'));
+            h.append(bgRows(2, 'sleep 7', `${acp}/task-9`));
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.callId.startsWith('call-after-turn#'))).toBe(true));
+            await h.finish();
+        });
+
+        it('registers a later wakeup command normally after Stop during prompt configuration', async () => {
+            const acp = 'conv-live-stop-config-later';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            await h.ready();
+            h.notify(bgCall('call-after-cfg2', 'sleep 7'));
+            h.append(bgRows(2, 'sleep 7', `${acp}/task-9`));
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.callId.startsWith('call-after-cfg2#'))).toBe(true));
+            await h.finish();
+        });
+
+        it('completes a transcript-rendered command from its transcript row when no live update arrives', async () => {
+            const acp = 'conv-live-synthetic-row';
+            turnRows(acp);
+            const h = startLive(acp, (_n, notify) => {
+                notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } });
+                h.append([
+                    { step_index: 6, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                    { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'ok' }
+                ]);
+            }, {}, acp);
+            await vi.waitFor(() => expect(h.requests).toContain('session/resume'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`));
+            await h.ready();
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.synthetic)).toBe(true));
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            await new Promise((r) => setTimeout(r, 40));
+            h.append([
+                { step_index: 8, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-7" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDONE\n</SYSTEM_MESSAGE>` },
+                { step_index: 9, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'FINISHED:DONE' }
+            ]);
+            const sent = () => h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string; output?: { stdout?: string } });
+            await vi.waitFor(() => expect(sent().filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('agy-wakeup-') && m.output?.stdout === 'DONE')).toHaveLength(1));
+            await h.ready();
+            const out = sent();
+            expect(out.filter((m) => m.type === 'tool-call')).toHaveLength(0);
+            expect(h.bgEntries()).toHaveLength(0);
+            // The live result of the same command arrives after the card ended: no second card.
+            h.client.sendAgentMessage.mockClear();
+            const done = { output: 'Command exited with code 0.\n\nCommand output:\nDONE', exit_code: 0 };
+            // A different command with identical output completes first: it keeps its own card.
+            h.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'other-call', status: 'completed', rawOutput: done });
+            // The duplicate names the task it belongs to: no second card.
+            h.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'task-7', status: 'completed', rawOutput: done });
+            await new Promise((r) => setTimeout(r, 1200)); // past the idle flush of the message handler
+            const late = sent().filter((m) => m.type === 'tool-call-result');
+            expect(late.filter((m) => m.callId?.startsWith('other-call#'))).toHaveLength(1);
+            expect(late.filter((m) => m.callId?.startsWith('task-7#'))).toHaveLength(0);
+            await h.finish();
+        });
+
+        it('emits and registers a wakeup command whose start was deferred behind a transcript-rendered command', async () => {
+            const acp = 'conv-live-deferred';
+            turnRows(acp);
+            const h = startLive(acp, (_n, notify) => {
+                notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } });
+                h.append([
+                    { step_index: 6, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                    { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'ok' }
+                ]);
+            }, {}, acp);
+            await vi.waitFor(() => expect(h.requests).toContain('session/resume'));
+            // Handler-less wakeup: command A is rendered from the transcript and keeps running.
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`));
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.synthetic)).toBe(true));
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            // A later live wakeup starts a same-args command; its ACP start precedes its planner row.
+            h.notify(bgCall('call-b7', 'sleep 9'));
+            await new Promise((r) => setTimeout(r, 40));
+            h.append([
+                { step_index: 8, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>timer</SYSTEM_MESSAGE>' },
+                { step_index: 9, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 9"' } }] },
+                { step_index: 10, source: 'MODEL', type: 'RUN_COMMAND', status: 'RUNNING', content: `Tool is running as a background task with task id: ${acp}/task-9` },
+                { step_index: 11, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'started' }
+            ]);
+            const sent = () => h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            await vi.waitFor(() => expect(sent().filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('call-b7#'))).toHaveLength(1));
+            await h.ready();
+            const out = sent();
+            expect(out.filter((m) => m.type === 'tool-call' && m.callId?.startsWith('call-b7#'))).toHaveLength(1);
+            expect(out.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('call-b7#'))).toHaveLength(1);
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-b7#'))).toBe(true);
+            await h.finish();
+        });
+
+        it('drops a late start of a stopped wakeup command after ready', async () => {
+            const acp = 'conv-live-stop-late-id';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.notify(bgCall('call-stopped-id', 'sleep 9'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`, false));
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            // The unacknowledged cancel lets one more start of the stopped command through.
+            h.notify(bgCall('call-stopped-id', 'sleep 9'));
+            await new Promise((r) => setTimeout(r, 40));
+            h.queue.push('again', { permissionMode: 'always-proceed' }, 'msg-3');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await h.ready();
+            expect(h.bgEntries().filter((e) => e.callId.startsWith('call-stopped-id#'))).toHaveLength(0);
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('call-stopped-id#'))).toHaveLength(0);
+            await h.finish();
+        });
+
+        it('lets a first-seen command start after ready through as a normal wakeup command (accepted limit)', async () => {
+            const acp = 'conv-live-first-seen';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            // After ready nothing tells a first-seen start of the stopped wakeup from a new wakeup's:
+            // it is tracked like any wakeup command (it can show as running; the next prompt registers it).
+            h.notify(bgCall('call-first-seen', 'sleep 9'));
+            await new Promise((r) => setTimeout(r, 40));
+            h.queue.push('again', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-3');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await h.ready();
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-first-seen#'))).toBe(true);
+            await h.finish();
+        });
+
+        it('registers a later wakeup command whose start precedes its row after a Stop', async () => {
+            const acp = 'conv-live-later-wakeup';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, () => { turnRows(acp); }, {}, null, (method) => (method === 'session/set_model' ? gate : undefined));
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash-high' }, 'msg-2');
+            await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            // A later autonomous wakeup: its first-seen start precedes its SYSTEM_MESSAGE row, then the row flushes.
+            h.notify(bgCall('call-new-wakeup', 'sleep 9'));
+            await new Promise((r) => setTimeout(r, 40));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-9`));
+            await h.ready();
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            expect(results.filter((m) => m.type === 'tool-call' && m.callId?.startsWith('call-new-wakeup#'))).toHaveLength(1);
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-new-wakeup#'))).toBe(true);
+            await h.finish();
+        });
+
+        it('never turns a stopped command into a background task, whichever phase the Stop landed in', async () => {
+            const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+            const abort = (h: ReturnType<typeof startLive>) => h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            const promptCount = (h: ReturnType<typeof startLive>) => h.requests.filter((r) => r === 'session/prompt').length;
+            const mode = { permissionMode: 'always-proceed' as const, model: 'gemini-3.8-flash-high' };
+            type Phase = { name: string; run: (acp: string, id: string) => Promise<ReturnType<typeof startLive>> };
+            const phases: Phase[] = [
+                {
+                    name: 'idle wakeup',
+                    run: async (acp, id) => {
+                        const h = startLive(acp, () => { turnRows(acp); });
+                        h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+                        await h.ready();
+                        h.client.sendSessionEvent.mockClear();
+                        h.notify(bgCall(id, 'sleep 9'));
+                        h.append(bgRows(2, 'sleep 9', `${acp}/task-7`, false));
+                        await sleep(60);
+                        await abort(h);
+                        return h;
+                    }
+                },
+                {
+                    name: 'prompt configuration',
+                    run: async (acp, id) => {
+                        let release = () => {};
+                        const gate = new Promise<void>((resolve) => { release = resolve; });
+                        const h = startLive(acp, () => { turnRows(acp); }, {}, null, (m) => (m === 'session/set_model' ? gate : undefined));
+                        h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+                        await h.ready();
+                        h.client.sendSessionEvent.mockClear();
+                        h.notify(bgCall(id, 'sleep 9'));
+                        h.queue.push('next', mode, 'm2');
+                        await vi.waitFor(() => expect(h.requests).toContain('session/set_model'));
+                        await abort(h);
+                        release();
+                        return h;
+                    }
+                },
+                {
+                    name: 'pre-prompt quiet wait',
+                    run: async (acp, id) => {
+                        const h = startLive(acp, () => { turnRows(acp); }, {}, null, (m) => {
+                            if (m !== 'session/set_model') return;
+                            h.notify({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '' } });
+                            setTimeout(() => { void abort(h); }, 6);
+                        });
+                        h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+                        await h.ready();
+                        h.client.sendSessionEvent.mockClear();
+                        h.notify(bgCall(id, 'sleep 9'));
+                        h.queue.push('next', mode, 'm2');
+                        return h;
+                    }
+                },
+                {
+                    name: 'normal prompt turn after the handler swap',
+                    run: async (acp, id) => {
+                        let release = () => {};
+                        const gate = new Promise<void>((resolve) => { release = resolve; });
+                        const h = startLive(acp, async (n, notify) => {
+                            if (n === 1) { turnRows(acp); return; }
+                            notify(bgCall(id, 'sleep 9'));
+                            await gate;
+                            return 'cancelled';
+                        });
+                        h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+                        await h.ready();
+                        h.client.sendSessionEvent.mockClear();
+                        h.queue.push('next', { permissionMode: 'always-proceed' }, 'm2');
+                        await vi.waitFor(() => expect(promptCount(h)).toBe(2));
+                        await abort(h);
+                        release();
+                        return h;
+                    }
+                },
+                {
+                    name: 'reattached internal wakeup turn',
+                    run: async (acp, id) => {
+                        let release = () => {};
+                        const gate = new Promise<void>((resolve) => { release = resolve; });
+                        const h = startLive(acp, async (n, notify) => {
+                            if (n === 1) { turnRows(acp); return; }
+                            notify(bgCall(id, 'sleep 9'));
+                            await gate;
+                            return 'cancelled';
+                        }, { reactiveToolParkMs: 40 });
+                        h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+                        await h.ready();
+                        h.client.sendSessionEvent.mockClear();
+                        await sleep(40);
+                        // A wakeup that parks on a tool: the launcher reattaches an internal prompt.
+                        h.append([
+                            { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>timer</SYSTEM_MESSAGE>' },
+                            { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 9"' } }] }
+                        ]);
+                        await vi.waitFor(() => expect(promptCount(h)).toBe(2));
+                        await abort(h);
+                        release();
+                        return h;
+                    }
+                }
+            ];
+            for (const [i, phase] of phases.entries()) {
+                const id = `call-phase-${i}`;
+                const h = await phase.run(`conv-live-stop-phase-${i}`, id);
+                await h.ready();
+                h.client.sendSessionEvent.mockClear();
+                const before = promptCount(h);
+                // An already-seen call reports in-progress again after ready.
+                h.notify(bgCall(id, 'sleep 9'));
+                await sleep(40);
+                h.queue.push('again', { permissionMode: 'always-proceed' }, 'm9');
+                await vi.waitFor(() => expect(promptCount(h)).toBe(before + 1), { timeout: 3000 });
+                await h.ready();
+                const sent = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+                expect.soft(sent.filter((m) => m.callId?.startsWith(`${id}#`) && m.type === 'tool-call-result'), phase.name).toHaveLength(0);
+                expect.soft(h.bgEntries().filter((e) => e.callId.startsWith(`${id}#`)), phase.name).toHaveLength(0);
+                await h.finish();
+            }
+        });
+
+        it('retires the commands of a stopped reattached wakeup, including the ones promoted at the reattach', async () => {
+            const acp = 'conv-live-reattach-stop';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, async (n) => {
+                if (n === 1) { turnRows(acp); return undefined; }
+                await gate;
+                return 'cancelled';
+            }, { reactiveToolParkMs: 40 });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            await new Promise((r) => setTimeout(r, 40));
+            // The wakeup runs command A, then parks on a tool: the launcher reattaches an internal prompt.
+            h.notify(bgCall('call-l1-a', 'sleep 9'));
+            h.append([
+                { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>timer</SYSTEM_MESSAGE>' },
+                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 7"' } }] }
+            ]);
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.callId.startsWith('call-l1-a#'))).toBe(true));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            await h.ready();
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-l1-a#'))).toBe(false);
+            await h.finish();
+        });
+
+        it('clears the discard state when a forced restart removed the handler before the stopped turn ended', async () => {
+            const acp = 'conv-live-forced-restart';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const h = startLive(acp, async (n) => {
+                if (n === 1) { turnRows(acp); return undefined; }
+                if (n === 2) { await gate; return 'cancelled'; }
+                return undefined;
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed' }, 'm2');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            (h.backend as unknown as { messageHandler: unknown }).messageHandler = null; // a forced restart drops the message handler
+            release();
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('again', { permissionMode: 'always-proceed' }, 'm3');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(3));
+            await h.ready();
+            await new Promise((r) => setTimeout(r, 100));
+            // A later wakeup's command must register normally.
+            h.notify(bgCall('call-after-restart', 'sleep 7'));
+            h.append(bgRows(2, 'sleep 7', `${acp}/task-9`));
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.callId.startsWith('call-after-restart#'))).toBe(true));
+            await h.finish();
+        });
+
+        it('rejects a repeated update of a stopped call while the next prompt is active', async () => {
+            const acp = 'conv-live-stopped-next-prompt';
+            let release = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            let release3 = () => {};
+            const gate3 = new Promise<void>((resolve) => { release3 = resolve; });
+            const h = startLive(acp, async (n, notify) => {
+                if (n === 1) { turnRows(acp); return; }
+                if (n === 2) { notify(bgCall('call-l3', 'sleep 9')); await gate; return 'cancelled'; }
+                await gate3;
+                return undefined;
+            });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'm1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('next', { permissionMode: 'always-proceed' }, 'm2');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(2));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            release();
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('again', { permissionMode: 'always-proceed' }, 'm3');
+            await vi.waitFor(() => expect(h.requests.filter((r) => r === 'session/prompt')).toHaveLength(3));
+            // The stopped call reports in-progress while the new prompt owns the handler.
+            h.notify(bgCall('call-l3', 'sleep 9'));
+            await new Promise((r) => setTimeout(r, 40));
+            release3();
+            await h.ready();
+            expect(h.bgEntries().some((e) => e.callId.startsWith('call-l3#'))).toBe(false);
+            await h.finish();
+        });
+
+        it('suppresses a repeated terminal update of a task the transcript already settled', async () => {
+            const acp = 'conv-live-settled-twice';
+            turnRows(acp);
+            const h = startLive(acp, (_n, notify) => {
+                notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } });
+                h.append([
+                    { step_index: 6, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                    { step_index: 7, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'ok' }
+                ]);
+            }, {}, acp);
+            await vi.waitFor(() => expect(h.requests).toContain('session/resume'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`));
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.synthetic)).toBe(true));
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            await new Promise((r) => setTimeout(r, 40));
+            h.append([
+                { step_index: 8, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-7" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDONE\n</SYSTEM_MESSAGE>` },
+                { step_index: 9, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'FINISHED:DONE' }
+            ]);
+            const sent = () => h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string });
+            await vi.waitFor(() => expect(sent().filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('agy-wakeup-'))).toHaveLength(1));
+            await h.ready();
+            // The same terminal update arrives twice after the card ended.
+            const done = { output: 'Command exited with code 0.\n\nCommand output:\nDONE', exit_code: 0 };
+            h.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'task-7', status: 'completed', rawOutput: done });
+            h.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'task-7', status: 'completed', rawOutput: done });
+            await new Promise((r) => setTimeout(r, 1200));
+            expect(sent().filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('task-7#'))).toHaveLength(0);
+            await h.finish();
+        });
+
+        it('does not retain a late result of a settled task against another open transcript command', async () => {
+            const acp = 'conv-live-settled-first';
+            turnRows(acp);
+            const done = (out: string) => ({ output: `Command exited with code 0.\n\nCommand output:\n${out}`, exit_code: 0 });
+            const finished = (task: string, out: string) => `<SYSTEM_MESSAGE>\nTask id "${acp}/${task}" finished with result:\nCommand exited with code 0.\n\nCommand output:\n${out}\n</SYSTEM_MESSAGE>`;
+            const h = startLive(acp, (_n, notify) => {
+                notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } });
+                h.append([
+                    { step_index: 10, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                    { step_index: 11, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'ok' }
+                ]);
+            }, {}, acp);
+            await vi.waitFor(() => expect(h.requests).toContain('session/resume'));
+            h.append(bgRows(2, 'sleep 9', `${acp}/task-7`));
+            await vi.waitFor(() => expect(h.bgEntries().filter((e) => e.synthetic)).toHaveLength(1));
+            await h.ready();
+            h.append(bgRows(6, 'sleep 8', `${acp}/task-8`));
+            await vi.waitFor(() => expect(h.bgEntries().filter((e) => e.synthetic)).toHaveLength(2));
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendAgentMessage.mockClear();
+            h.client.sendSessionEvent.mockClear();
+            await new Promise((r) => setTimeout(r, 40));
+            // Task 7 ends from its transcript row; its late result names it while task 8 is still open.
+            h.append([
+                { step_index: 12, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: finished('task-7', 'DONE') },
+                { step_index: 13, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'one done' }
+            ]);
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'task-7', status: 'completed', rawOutput: done('DONE') });
+            await new Promise((r) => setTimeout(r, 40));
+            h.append([
+                { step_index: 14, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: finished('task-8', 'OTHER') },
+                { step_index: 15, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'two done' }
+            ]);
+            await h.ready();
+            const results = h.client.sendAgentMessage.mock.calls.map(([m]) => m as { type?: string; callId?: string; output?: { stdout?: string } });
+            expect(results.filter((m) => m.type === 'tool-call-result' && m.callId?.startsWith('task-7#'))).toHaveLength(0);
+            expect(results.filter((m) => m.type === 'tool-call-result' && m.output?.stdout === 'OTHER')).toHaveLength(1);
+            await h.finish();
+        });
+
+        it('seals buffered wakeup text when the wakeup times out', async () => {
+            const acp = 'conv-live-timeout';
+            const h = startLive(acp, () => { turnRows(acp); }, { reactiveMaxIdleMs: 60 });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'PARTIAL' } });
+            h.append(wakeup(2, 'PARTIAL', [], false));
+            await h.ready();
+            expect(h.texts()).toContain('PARTIAL');
+            await h.finish();
+        });
+
+        it('seals wakeup text when the user stops a live wakeup and still registers the next wakeup command', async () => {
+            const acp = 'conv-live-stop';
+            const h = startLive(acp, () => { turnRows(acp); });
+            h.queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+            await h.ready();
+            h.client.sendSessionEvent.mockClear();
+            h.notify(bgCall('fg-1', 'ls'));
+            h.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'W1PARTIAL' } });
+            h.append(wakeup(2, 'w1', [], false));
+            await new Promise((r) => setTimeout(r, 60));
+            await h.client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            await h.ready();
+            expect(h.texts()).toContain('W1PARTIAL');
+            h.notify(bgCall('call-w-3', 'sleep 9'));
+            h.append(bgRows(10, 'sleep 9', `${acp}/task-9`));
+            await vi.waitFor(() => expect(h.bgEntries().some((e) => e.callId.startsWith('call-w-3#'))).toBe(true));
+            expect(h.bgEntries().find((e) => e.callId.startsWith('call-w-3#'))?.taskId).toBeUndefined();
+            await h.finish();
+        });
     });
 });

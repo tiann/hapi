@@ -79,6 +79,10 @@ class FakeAgyBackend {
     isTransportAlive(): boolean {
         return this.alive;
     }
+    getAgentVersion(): string | null {
+        return null;
+    }
+    async flushPendingMessageBuffers(): Promise<void> {}
     supportsSessionResume(): boolean {
         return true;
     }
@@ -366,6 +370,31 @@ describe('AgyAcpRemoteLauncher', () => {
         expect(backend.disconnected).toBe(true);
     });
 
+    it('acknowledges a prompt as soon as session/prompt is sent even without a user_message_chunk echo', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let finishPrompt!: () => void;
+        backend.promptScripts.push(async (onUpdate) => {
+            // Simulate agy 1.5.11 slow TTFB: no user_message_chunk echo and no output yet.
+            await new Promise<void>((resolve) => { finishPrompt = resolve; });
+            onUpdate({ type: 'text', text: 'answer' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('hello', REVIEW, 'local-1');
+        const { run } = launch(session, [backend]);
+
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        expect(client.emitMessagesConsumed).toHaveBeenCalledTimes(1);
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['local-1']);
+
+        finishPrompt();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+
+        expect(client.emitMessagesConsumed).toHaveBeenCalledTimes(1);
+    });
+
     it('tells the user why agy could not start', async () => {
         const { session, queue, client } = makeSession();
         const backend = new FakeAgyBackend();
@@ -633,6 +662,58 @@ describe('AgyAcpRemoteLauncher Stop', () => {
         await run;
 
         expect(sessionEvents(client)).toContainEqual({ type: 'abort-restore', text: 'build it' });
+    });
+
+    it('still restores a prompt cancelled before output when acknowledged on send without an echo', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let cancelled!: () => void;
+        backend.onCancel = () => cancelled?.();
+        backend.promptScripts.push(async (onUpdate) => {
+            // agy 1.5.11 does not echo user_message_chunk; cancel arrives before any output.
+            await new Promise<void>((resolve) => { cancelled = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+        });
+        queue.push('build it', REVIEW, 'a');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['a']);
+
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+
+        expect(sessionEvents(client)).toContainEqual({ type: 'abort-restore', text: 'build it' });
+        expect(client.emitMessagesConsumed).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips onSent acknowledgement when Stop already aborted the turn before dispatch', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.preSendDelayMs = 150;
+        let consumedAtOnSent: number | null = null;
+        let cancelled!: () => void;
+        backend.onCancel = () => { if (backend.promptInFlight) cancelled?.(); };
+        backend.promptScripts.push(async (onUpdate) => {
+            consumedAtOnSent = client.emitMessagesConsumed.mock.calls.length;
+            await new Promise<void>((resolve) => { cancelled = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+        });
+        queue.push('build it', REVIEW, 'a');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.setModeCalls).toEqual(['default']));
+        expect(backend.prompts).toHaveLength(0);
+
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+
+        expect(consumedAtOnSent).toBe(0);
+        expect(sessionEvents(client)).toContainEqual({ type: 'abort-restore', text: 'build it' });
+        expect(client.emitMessagesConsumed).toHaveBeenCalledTimes(1);
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['a']);
     });
 
     it('keeps a cancelled turn that already produced output', async () => {
@@ -2817,6 +2898,78 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
             expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-text-only']);
             expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-captioned-1']);
             expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-captioned-2']);
+        } finally {
+            await cleanupUploadDir(client.sessionId);
+        }
+    });
+
+    it('does not misattribute a coalesced image caption suffix to a shorter text steer', async () => {
+        const { session, queue, client } = makeSession();
+        registerUploadHandlers(client.rpcHandlerManager as never);
+        const pngBytes = Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+            'base64'
+        );
+        try {
+            const uploadHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.UploadFile)!;
+            const uploaded = await uploadHandler({
+                sessionId: client.sessionId,
+                filename: 'chart.png',
+                content: pngBytes.toString('base64'),
+                mimeType: 'image/png'
+            }) as { success: boolean; path: string };
+            expect(uploaded.success).toBe(true);
+
+            const backend = new FakeAgyBackend();
+            backend.supportsImages = true;
+            let releaseMain!: () => void;
+            backend.onCancel = () => {
+                for (const sc of backend.steerCompletions) {
+                    sc.resolve('cancelled');
+                }
+                releaseMain?.();
+            };
+            backend.promptScripts.push(async (onUpdate) => {
+                backend.echo!('start turn');
+                onUpdate({ type: 'tool_call', id: 't-main', name: 'run_command', input: {}, status: 'in_progress' });
+                await new Promise<void>((resolve) => { releaseMain = resolve; });
+                onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+            });
+
+            queue.push('start turn', REVIEW, 'turn-1');
+            const { run } = launch(session, [backend]);
+            await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+
+            const steerHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!;
+            queue.push('ok', REVIEW, 'steer-ok');
+            queue.push('show chart', REVIEW, 'steer-short');
+            queue.push(`@${uploaded.path}\n\nplease show chart`, {
+                ...REVIEW,
+                imageAttachments: [{ path: uploaded.path, mimeType: 'image/png', filename: 'chart.png' }]
+            }, 'steer-img');
+
+            await expect(steerHandler({ localId: 'steer-ok' })).resolves.toEqual({ steered: true });
+            await expect(steerHandler({ localId: 'steer-short' })).resolves.toEqual({ steered: true });
+            await expect(steerHandler({ localId: 'steer-img' })).resolves.toEqual({ steered: true });
+
+            // Coalesced text chunk echoes 'ok' and the image steer's caption before the image chunk arrives.
+            backend.echo!('ok\nplease show chart');
+            expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-ok'], { steered: true });
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-short'], { steered: true });
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-img'], { steered: true });
+
+            backend.echo!(formatAcpImageEchoToken('image/png', pngBytes.toString('base64')));
+            expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-img'], { steered: true });
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-short'], { steered: true });
+
+            await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+            await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+            queue.close();
+            await run;
+
+            expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-short']);
+            expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-ok']);
+            expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-img']);
         } finally {
             await cleanupUploadDir(client.sessionId);
         }

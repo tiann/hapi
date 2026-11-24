@@ -25,6 +25,16 @@ class SessionPresenceTest {
     }
 
     @Test
+    fun `archived conversation retains its job meter without rejoining Active`() {
+        val archived = SessionSummary("a", false, attachedJob = job,
+            metadata = app.hapi.protocol.wire.SessionSummaryMetadata(path = "/repo", lifecycleState = "archived"))
+        assertEquals(job, archived.runningAttachedJob)
+        assertEquals(SessionPresence.Stopped, SessionPresence.of(archived))
+        assertEquals(true, SessionListStatus.Archived.includes(archived))
+        assertEquals(false, SessionListStatus.Active.includes(archived))
+    }
+
+    @Test
     fun `job line says progress and elapsed and admits staleness`() {
         val minute = 60_000L
         fun text(job: AttachedJob, now: Long) = attachedJobText(job, now, left = { "$it left" }, noHeartbeat = { "no heartbeat $it" })

@@ -203,11 +203,56 @@ describe('listSkills', () => {
         }))
 
         const skills = await listSkills(repoRoot, { flavor: 'agy' })
-        expect(skills.map((skill) => skill.name)).toEqual(['plugin-alpha', 'plugin-beta'])
-        await expect(resolveSkill('plugin-alpha', repoRoot, { flavor: 'agy' })).resolves.toEqual({
-            name: 'plugin-alpha',
+        expect(skills.map((skill) => skill.name)).toEqual([
+            'reenabled-kit:plugin-beta',
+            'team-kit:plugin-alpha',
+        ])
+        await expect(resolveSkill('team-kit:plugin-alpha', repoRoot, { flavor: 'agy' })).resolves.toEqual({
+            name: 'team-kit:plugin-alpha',
             description: 'Native plugin skill',
             body: '# plugin-alpha'
+        })
+    })
+
+    it('qualifies colliding skill names across enabled Antigravity plugins and strips UTF-8 BOM from config.json', async () => {
+        const repoRoot = join(sandboxDir, 'agy-plugin-collision-repo')
+        await mkdir(join(repoRoot, '.git'), { recursive: true })
+
+        const alphaPlugin = join(repoRoot, '.agents', 'plugins', 'alpha-kit')
+        await mkdir(alphaPlugin, { recursive: true })
+        await writeFile(join(alphaPlugin, 'plugin.json'), JSON.stringify({ name: 'alpha-kit' }))
+        await writeSkill(join(alphaPlugin, 'skills', 'review'), 'review', 'Alpha review skill')
+
+        const betaPlugin = join(repoRoot, '.agents', 'plugins', 'beta-kit')
+        await mkdir(betaPlugin, { recursive: true })
+        await writeFile(join(betaPlugin, 'plugin.json'), JSON.stringify({ name: 'beta-kit' }))
+        await writeSkill(join(betaPlugin, 'skills', 'review'), 'review', 'Beta review skill')
+
+        const disabledByBomConfig = join(repoRoot, '.agents', 'plugins', 'muted-kit')
+        await mkdir(disabledByBomConfig, { recursive: true })
+        await writeFile(join(disabledByBomConfig, 'plugin.json'), JSON.stringify({ name: 'muted-kit' }))
+        await writeSkill(join(disabledByBomConfig, 'skills', 'review'), 'review', 'Muted review skill')
+
+        await mkdir(join(homeDir, '.gemini', 'config'), { recursive: true })
+        await writeFile(
+            join(homeDir, '.gemini', 'config', 'config.json'),
+            `\uFEFF${JSON.stringify({ plugins: { 'muted-kit': { enabled: false } } })}`
+        )
+
+        const skills = await listSkills(repoRoot, { flavor: 'agy' })
+        expect(skills.map((skill) => skill.name)).toEqual([
+            'alpha-kit:review',
+            'beta-kit:review',
+        ])
+        await expect(resolveSkill('alpha-kit:review', repoRoot, { flavor: 'agy' })).resolves.toEqual({
+            name: 'alpha-kit:review',
+            description: 'Alpha review skill',
+            body: '# review',
+        })
+        await expect(resolveSkill('beta-kit:review', repoRoot, { flavor: 'agy' })).resolves.toEqual({
+            name: 'beta-kit:review',
+            description: 'Beta review skill',
+            body: '# review',
         })
     })
 
@@ -259,14 +304,14 @@ describe('listSkills', () => {
         const skills = await listSkills(nestedCwd, { flavor: 'agy' })
         expect(skills.map((skill) => skill.name)).toEqual([
             'alpha',
-            'ext-skill',
+            'ext-kit:ext-skill',
             'lint-helper',
             'shared-tool',
             'til-skill'
         ])
         expect(skills.find((s) => s.name === 'alpha')?.description).toBe('Project standard wins')
-        await expect(resolveSkill('ext-skill', nestedCwd, { flavor: 'agy' })).resolves.toEqual({
-            name: 'ext-skill',
+        await expect(resolveSkill('ext-kit:ext-skill', nestedCwd, { flavor: 'agy' })).resolves.toEqual({
+            name: 'ext-kit:ext-skill',
             description: 'Plugin manifest skill',
             body: '# ext-skill'
         })
@@ -802,11 +847,11 @@ describe('listSkills', () => {
         expect(names).toContain(adversarialName)
         expect(names).toContain('nested-skill')
         expect(names).not.toContain('unlisted-nested')
-        expect(names).toContain('declared-root-skill')
-        expect(names).toContain('direct-plugin-skill')
-        expect(names).toContain('kept-plugin-skill')
-        expect(names).not.toContain('excluded-plugin-skill')
-        expect(names).toContain('nested-plugin-skill')
+        expect(names).toContain('custom-plugin:declared-root-skill')
+        expect(names).toContain('custom-plugin:direct-plugin-skill')
+        expect(names).toContain('custom-plugin:kept-plugin-skill')
+        expect(names).not.toContain('custom-plugin:excluded-plugin-skill')
+        expect(names).toContain('nested-plugin:nested-plugin-skill')
         expect(names).toContain('dag-leaf-skill')
     })
 
@@ -861,5 +906,45 @@ describe('listSkills', () => {
         const names = skills.map((s) => s.name)
         expect(names).toContain('shallow-reachable-skill')
         expect(names).toContain('user-budget-skill')
+    })
+
+    it('reuses converged shared manifest expansions across distinct incoming branches without exhausting the traversal budget early', async () => {
+        const repoDir = join(sandboxDir, 'converged-manifest-branches-repo')
+        await mkdir(join(repoDir, '.git'), { recursive: true })
+        await mkdir(join(repoDir, '.agents'), { recursive: true })
+        await mkdir(join(repoDir, 'manifests'), { recursive: true })
+
+        const sharedRefs: Array<{ path: string }> = []
+        for (let s = 0; s < 8; s += 1) {
+            const sharedPath = `manifests/shared-${s}.json`
+            await writeSkill(join(repoDir, 'pool', `shared-skill-${s}`), `shared-skill-${s}`, `Shared skill ${s}`)
+            await writeFile(join(repoDir, sharedPath), JSON.stringify({
+                entries: [{ path: 'pool', include_only: [`shared-skill-${s}`] }],
+            }))
+            sharedRefs.push({ path: sharedPath })
+        }
+
+        const branchRefs: Array<{ path: string }> = []
+        for (let b = 0; b < 8; b += 1) {
+            const branchPath = `manifests/branch-${b}.json`
+            await writeFile(join(repoDir, branchPath), JSON.stringify({
+                inherits: sharedRefs,
+            }))
+            branchRefs.push({ path: branchPath })
+        }
+
+        await writeSkill(join(repoDir, 'pool', 'ninth-sibling-skill'), 'ninth-sibling-skill', 'Skill from 9th root sibling')
+        await writeFile(join(repoDir, 'manifests', 'branch-8.json'), JSON.stringify({
+            entries: [{ path: 'pool', include_only: ['ninth-sibling-skill'] }],
+        }))
+        await writeFile(join(repoDir, '.agents', 'skills.json'), JSON.stringify({
+            inherits: [...branchRefs, { path: 'manifests/branch-8.json' }],
+        }))
+
+        const skills = await listSkills(repoDir, { flavor: 'agy' })
+        const names = skills.map((s) => s.name)
+        expect(names).toContain('shared-skill-0')
+        expect(names).toContain('shared-skill-7')
+        expect(names).toContain('ninth-sibling-skill')
     })
 })
