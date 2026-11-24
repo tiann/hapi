@@ -35,4 +35,36 @@ describe('effort status metadata', () => {
         expect(shouldShowReasoningStatusLabel('cursor', 'max')).toBe(false)
         expect(shouldShowReasoningStatusLabel(null, 'max')).toBe(false)
     })
+
+    it('pins the full wire-field routing matrix', () => {
+        const mre = ['codex', 'opencode']
+        const generic = ['agy', 'claude', 'copilot', 'grok', 'kimi', 'pi']
+        const none = ['cursor', 'dsh', 'gemini', 'unknown']
+        for (const flavor of [...mre, ...generic, ...none, null]) {
+            const value = getReasoningEffortForFlavor(flavor, 'mre-value', 'effort-value')
+            if (mre.includes(flavor ?? '')) expect(value, String(flavor)).toBe('mre-value')
+            else if (generic.includes(flavor ?? '')) expect(value, String(flavor)).toBe('effort-value')
+            else expect(value, String(flavor)).toBeNull()
+        }
+    })
+
+    it('pins the full default-label visibility matrix', () => {
+        const always = ['codex', 'opencode', 'claude', 'grok']
+        const realOnly = ['agy', 'copilot', 'kimi', 'pi']
+        const never = ['cursor', 'dsh', 'gemini', 'unknown']
+        for (const flavor of [...always, ...realOnly, ...never, null]) {
+            const unset = shouldShowReasoningStatusLabel(flavor, null)
+            const real = shouldShowReasoningStatusLabel(flavor, 'high')
+            if (always.includes(flavor ?? '')) {
+                expect(unset, String(flavor)).toBe(true)
+                expect(real, String(flavor)).toBe(true)
+            } else if (realOnly.includes(flavor ?? '')) {
+                expect(unset, String(flavor)).toBe(false)
+                expect(real, String(flavor)).toBe(true)
+            } else {
+                expect(unset, String(flavor)).toBe(false)
+                expect(real, String(flavor)).toBe(false)
+            }
+        }
+    })
 })

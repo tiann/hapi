@@ -81,6 +81,40 @@ describe('agent config descriptors', () => {
             expect(descriptor.fields.some((field) => field.id === 'permission')).toBe(true)
         }
     })
+
+    test('pins the exact ordered model and effort fields for every flavor', () => {
+        const model = (optionSource: string, kind = 'select') => ({
+            id: 'model', section: 'model', kind, optionSource, availability: 'both'
+        })
+        const effort = (optionSource: string) => ({
+            id: 'effort', section: 'effort', kind: 'select', optionSource, availability: 'both'
+        })
+        const permission = {
+            id: 'permission', section: 'permission', kind: 'select', optionSource: 'static', availability: 'both'
+        }
+        const managed = {
+            id: 'permission', section: 'permission', kind: 'status', availability: 'managed',
+            unavailableReason: 'Managed by agent'
+        }
+        const expected: Record<string, unknown[]> = {
+            agy: [model('machine'), effort('model'), permission],
+            claude: [model('static'), effort('static'), permission],
+            codex: [model('machine'), effort('model'), permission,
+                { id: 'serviceTier', section: 'settings', kind: 'select', optionSource: 'model', availability: 'both' },
+                { id: 'collaborationMode', section: 'settings', kind: 'select', optionSource: 'static', availability: 'both' }],
+            dsh: [managed],
+            copilot: [model('directory'), permission],
+            cursor: [model('machine', 'dependent-select'), permission],
+            gemini: [model('static'), permission],
+            grok: [model('directory'), effort('model'), permission],
+            kimi: [model('directory'), permission],
+            opencode: [model('directory'), effort('model'), permission],
+            pi: [model('machine', 'grouped-select'), effort('static'), managed]
+        }
+        for (const [flavor, fields] of Object.entries(expected)) {
+            expect(getAgentConfigDescriptor(flavor as never).fields, flavor).toEqual(fields)
+        }
+    })
 })
 
 test('runner capabilities carry descriptors for every built-in agent', async () => {
