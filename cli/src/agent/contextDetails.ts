@@ -93,6 +93,19 @@ function getClaudeModelUsageContextWindow(result: JsonRecord | null, model?: str
     return asTokenCount(selectedUsage?.contextWindow ?? selectedUsage?.context_window)
 }
 
+function normalizeClaudeCommandName(value: string): string {
+    return value.replace(/^\//, '')
+}
+
+function filterClaudeSlashCommands(
+    commands: readonly string[] | undefined,
+    skills: ClaudeContextDetails['skills']
+): string[] | undefined {
+    if (!commands || !skills) return commands as string[] | undefined
+    const skillNames = new Set(skills.map(skill => normalizeClaudeCommandName(skill.name)))
+    return commands.filter(command => !skillNames.has(normalizeClaudeCommandName(command)))
+}
+
 function buildClaudeSkills(value: unknown): ClaudeContextDetails['skills'] {
     if (!Array.isArray(value)) return undefined
     const skills = value.flatMap((item) => {
@@ -171,9 +184,7 @@ export function buildClaudeContextDetails(args: {
     const mcpTools = buildClaudeMcpTools(contextUsage?.mcp_tools ?? contextUsage?.mcpTools)
         ?? (systemToolNames ? buildClaudeMcpTools(systemMcpToolNames) : undefined)
     const systemTools = systemToolNames?.filter(name => !name.startsWith('mcp__'))
-    const skillNames = new Set((skills ?? []).map((skill) => skill.name))
-    const slashCommands = asStringList(system?.slash_commands)
-        ?.filter((command) => !skillNames.has(command))
+    const slashCommands = filterClaudeSlashCommands(asStringList(system?.slash_commands), skills)
     const claude: ClaudeContextDetails = {
         ...(skills ? { skills } : {}),
         ...(mcpTools ? { mcpTools } : {}),
@@ -362,6 +373,12 @@ export function mergeContextDetails(
     const previousForMerge: ContextDetails = modelChanged
         ? (({ contextWindow: _contextWindow, usage: _usage, ...rest }) => rest)(compactPrevious)
         : compactPrevious
+    const claude = previousForMerge.claude || compactNext.claude
+        ? { ...previousForMerge.claude, ...compactNext.claude }
+        : undefined
+    if (claude?.slashCommands && claude.skills) {
+        claude.slashCommands = filterClaudeSlashCommands(claude.slashCommands, claude.skills)
+    }
     const merged: ContextDetails = {
         ...previousForMerge,
         ...compactNext,
@@ -370,7 +387,7 @@ export function mergeContextDetails(
                 ? compactNext.usage
                 : { ...previousForMerge.usage, ...compactNext.usage }
         } : {}),
-        ...(previousForMerge.claude || compactNext.claude ? { claude: { ...previousForMerge.claude, ...compactNext.claude } } : {}),
+        ...(claude ? { claude } : {}),
         ...(previousForMerge.codex || compactNext.codex ? { codex: { ...previousForMerge.codex, ...compactNext.codex } } : {})
     }
     const unchanged = JSON.stringify(withoutUpdatedAt(compactPrevious)) === JSON.stringify(withoutUpdatedAt(merged))
@@ -396,6 +413,8 @@ export interface PublishContextDetailsOptions {
     clearUsageOnWindowChange?: boolean
     /** The launch or preset changed, even if the numeric window stayed the same. */
     clearUsageSample?: boolean
+    /** The selected preset changed, invalidating both usage and its window. */
+    clearContextSample?: boolean
 }
 
 // Per-client, not persisted: saved inventory from a prior launch is not proof
@@ -443,11 +462,13 @@ export function publishContextDetails(
                 } : undefined
             }
         }
-        const clearUsage = Boolean((options.clearUsageSample || (options.clearUsageOnWindowChange
+        const clearUsage = Boolean((options.clearUsageSample || options.clearContextSample || (options.clearUsageOnWindowChange
             && current?.contextWindow !== undefined && candidate?.contextWindow !== undefined
             && current.contextWindow !== candidate.contextWindow)) && current?.provider === 'claude'
             && candidate?.provider === 'claude')
-        const previous = clearUsage && current ? { ...current, usage: undefined } : current
+        const previous = clearUsage && current
+            ? { ...current, usage: undefined, ...(options.clearContextSample ? { contextWindow: undefined } : {}) }
+            : current
         const merged = incoming ? mergeContextDetails(previous, incoming) : previous
         const patch: Pick<Metadata, 'tools' | 'slashCommands'> = {}
         if (catalog?.tools !== undefined && !equalStrings(metadata.tools, catalog.tools)) patch.tools = catalog.tools

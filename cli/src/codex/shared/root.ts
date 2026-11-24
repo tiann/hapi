@@ -442,6 +442,8 @@ export class SharedCodexRoot {
                         // malformed/failed reads retain the saved fallback.
                         this.confirmedAbsentMcpServers.add(name);
                         this.statusMcpServerInventory.delete(name);
+                    } else {
+                        this.failedMcpStatuses.add(name);
                     }
                     if (inventory) this.publishRootContextDetails();
                 } catch (error) {

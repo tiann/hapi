@@ -320,6 +320,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         let activeContextLaunch: symbol | null = null;
         let usageSampleLaunch: symbol | null = null;
         let usageSamplePreset: ReturnType<Session['getModel']> = null;
+        let selectedContextPreset: ReturnType<Session['getModel']> = null;
+        const matchesSelectedPreset = (saved: { model?: string; contextWindow?: number }, selected: string | null | undefined): boolean => {
+            if (!selected) return true
+            const expanded = selected.toLowerCase().endsWith('[1m]')
+            if (expanded) return saved.model?.toLowerCase().endsWith('[1m]') || saved.contextWindow === 1_000_000
+            return !saved.model?.toLowerCase().endsWith('[1m]') && saved.contextWindow !== 1_000_000
+        }
         const effectiveLimitFor = (model: string | null | undefined): number | undefined => {
             if (effectiveContextWindow === undefined) return undefined;
             if (!effectiveContextModel || !model) return effectiveContextWindow;
@@ -337,7 +344,11 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     }
                     const details = buildClaudeContextDetails({ system: systemMessage, model: systemMessage.model });
                     if (details) {
-                        publishContextDetails(session.client, details);
+                        const saved = session.client.getMetadata()?.contextDetails
+                        const hasSavedSample = saved && (saved.usage !== undefined || saved.contextWindow !== undefined)
+                        publishContextDetails(session.client, details, {
+                            clearContextSample: Boolean(hasSavedSample && !matchesSelectedPreset(saved, selectedContextPreset))
+                        });
                     }
                 } else if (message.type === 'assistant') {
                     const assistantMessage = message as SDKAssistantMessage;
@@ -347,8 +358,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         || rawAssistantPayload.is_api_error_message === true
                         || typeof rawAssistantPayload.error === 'string';
                     if (!isSyntheticApiError) {
-                        const model = assistantMessage.model ?? (typeof rawAssistantPayload.model === 'string' ? rawAssistantPayload.model : null);
-                        const windowModel = model ?? (typeof rawMessage.model === 'string' ? rawMessage.model : lastSystemModel);
+                        const model = assistantMessage.model ?? (typeof rawAssistantPayload.model === 'string' ? rawAssistantPayload.model : null)
+                            ?? (typeof rawMessage.model === 'string' ? rawMessage.model : lastSystemModel);
+                        const windowModel = model ?? lastSystemModel;
                         const details = buildClaudeContextDetails({
                             contextUsage: assistantMessage.context_usage ?? rawAssistantPayload.context_usage,
                             messageUsage: rawMessage.usage,
@@ -358,7 +370,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         if (details) {
                             if (details.usage?.contextTokens !== undefined) {
                                 usageSampleLaunch = activeContextLaunch;
-                                usageSamplePreset = session.getModel();
+                                usageSamplePreset = selectedContextPreset;
                             }
                             publishContextDetails(session.client, details);
                         }
@@ -690,6 +702,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 };
                 const contextLaunch = Symbol('Claude launch');
                 activeContextLaunch = contextLaunch;
+                selectedContextPreset = mode?.model ?? session.getModel();
                 // The SDK may report usage later, or not at all, on the new
                 // process. Never seed it with the previous launch's limit.
                 effectiveContextModel = undefined;
@@ -824,6 +837,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 }
                                 modeHash = msg.hash;
                                 mode = msg.mode;
+                                selectedContextPreset = mode.model ?? null;
                                 lastDeliveredMode = msg.mode;
                                 permissionHandler.handleModeChange(mode.permissionMode);
                                 sdkToLogConverter.updateSelectedModel(mode.model ?? null);
@@ -872,7 +886,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 },
                                 effectiveContextWindow: usage.maxTokens
                             });
-                            const sameUsageSample = usageSampleLaunch === contextLaunch && usageSamplePreset === session.getModel();
+                            const sameUsageSample = usageSampleLaunch === contextLaunch && usageSamplePreset === selectedContextPreset;
                             if (details) publishContextDetails(session.client, details, { clearUsageSample: !sameUsageSample });
                         },
                         onDroppedResult: (message) => sdkToLogConverter.consumeResultForAccounting(message),
@@ -944,7 +958,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 })
                                 if (details) {
                                     usageSampleLaunch = activeContextLaunch;
-                                    usageSamplePreset = session.getModel();
+                                    usageSamplePreset = selectedContextPreset;
                                     publishContextDetails(session.client, details)
                                 }
                                 // The status bar keeps the last pre-compaction

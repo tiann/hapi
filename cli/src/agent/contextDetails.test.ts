@@ -54,6 +54,16 @@ describe('Claude context details', () => {
         })).toMatchObject({ contextWindow: 1_000_000, usage: { contextTokens: 100 } })
     })
 
+    it('excludes skills from commands when init and skills arrive separately', () => {
+        const init = buildClaudeContextDetails({
+            system: { slash_commands: ['/hapi', '/compact'] }
+        })!
+        const skills = buildClaudeContextDetails({ system: { skills: ['hapi'] } })!
+        expect(mergeContextDetails(init, skills).claude).toMatchObject({
+            slashCommands: ['/compact'], skills: [{ name: 'hapi' }]
+        })
+    })
+
     it('does not duplicate Claude skills in the Agent command inventory', () => {
         const details = buildClaudeContextDetails({
             updatedAt: 100,

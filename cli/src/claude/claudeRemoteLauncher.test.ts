@@ -953,6 +953,45 @@ describe('claudeRemoteLauncher resume anchor', () => {
         }
     })
 
+    it('clears a saved 1M sample when the resumed preset is plain', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        harness.metadata = { contextDetails: {
+            version: 1, updatedAt: 10, provider: 'claude', model: 'claude-fable-5[1m]', contextWindow: 1_000_000,
+            usage: { contextTokens: 100 }
+        } }
+        harness.messages = [{ type: 'system', subtype: 'init', model: 'claude-fable-5', tools: [] }]
+        try {
+            queue.push('hello', { permissionMode: 'default', model: 'fable' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails?.usage).toBeUndefined()
+            expect(client.getMetadata().contextDetails?.contextWindow).toBeUndefined()
+        } finally { session.stopKeepAlive() }
+    })
+
+    it('saves the nested assistant model when the envelope omits it', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        harness.metadata = { contextDetails: {
+            version: 1, updatedAt: 10, provider: 'claude', model: 'claude-opus', contextWindow: 200_000,
+            usage: { contextTokens: 90_000 }
+        } }
+        harness.messages = [{ type: 'assistant', message: { role: 'assistant', model: 'claude-fable-5',
+            content: [{ type: 'text', text: 'Fallback answer' }], usage: { input_tokens: 100 } } }]
+        try {
+            queue.push('hello', { permissionMode: 'default', model: 'fallback-model' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                model: 'claude-fable-5', usage: { contextTokens: 100 }
+            })
+            expect(client.getMetadata().contextDetails?.contextWindow).toBeUndefined()
+        } finally { session.stopKeepAlive() }
+    })
+
     it('keeps assistant usage when the matching window probe arrives late', async () => {
         const client = createClientStub()
         const { session, queue } = createSession(client, undefined)
@@ -989,16 +1028,19 @@ describe('claudeRemoteLauncher resume anchor', () => {
             version: 1, updatedAt: 10, provider: 'claude', model: 'claude-fable-5', contextWindow: 200_000,
             usage: { contextTokens: 90_000 }
         } }
-        harness.contextForLaunch = callbacks => { probe = callbacks }
+        harness.contextForLaunch = (callbacks, launch) => {
+            probe = callbacks
+            if (launch === 2) callbacks.onContextUsage({ model: 'claude-fable-5', maxTokens: 200_000 })
+        }
         harness.messages = [{ type: 'assistant', message: { role: 'assistant', model: 'claude-fable-5',
             content: [{ type: 'text', text: 'Previous preset answer' }], usage: { input_tokens: 100 } } }]
         harness.afterFirstCall = () => {
-            session.getModel = () => 'fable'
-            probe?.onContextUsage({ model: 'claude-fable-5', maxTokens: 200_000 })
+            harness.messages = []
+            queue.push('second prompt', { permissionMode: 'default', model: 'fable' }, 'local-2')
         }
         try {
             queue.push('hello', { permissionMode: 'default', model: 'fable[1m]' }, 'local-1')
-            harness.switchAfterCall = 1
+            harness.switchAfterCall = 2
             harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
             await claudeRemoteLauncher(session as any)
             expect(client.getMetadata().contextDetails?.usage).toBeUndefined()
