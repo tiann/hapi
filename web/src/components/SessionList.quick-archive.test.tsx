@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider, useToast, type Toast } from '@/lib/toast-context'
@@ -181,6 +181,34 @@ describe('session row hover archive', () => {
         renderList([makeSession({ id: 'closed', active: false })], {})
         expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull()
     })
+})
+
+it('keeps delete confirmation after clearing the meter removes its row from Active', async () => {
+    localStorage.setItem('hapi-session-list-status', 'active')
+    try {
+        const job = { key: 'batch', label: 'Batch', runId: 'original', status: 'running' as const,
+            startedAt: 1, updatedAt: 1, heartbeatAt: 1 }
+        const initial = makeSession({ id: 'stale', active: false, attachedJob: job })
+        const remove = vi.fn(async () => {}).mockRejectedValueOnce(new ApiError('conflict', 409,
+            'attached_job_running', JSON.stringify({ job, canClearStale: true })))
+        function List() {
+            const [row, setRow] = useState(initial)
+            const api = { deleteSession: remove, clearStaleSessionJob: async () => setRow({ ...row, attachedJob: null }) } as unknown as ApiClient
+            return <SessionList sessions={[row]} selectedSessionId={null} onSelect={vi.fn()} onNewSession={vi.fn()}
+                onRefresh={vi.fn()} isLoading={false} api={api} />
+        }
+        render(<QueryClientProvider client={new QueryClient()}><ToastProvider><I18nProvider><List /></I18nProvider></ToastProvider></QueryClientProvider>)
+        fireEvent.click(screen.getByTitle('/work/app'))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Title stale/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+        fireEvent.click(await screen.findByRole('button', { name: 'Remove stale job record' }))
+        const confirm = await screen.findByRole('button', { name: 'Delete' })
+        expect(screen.queryByRole('button', { name: /Title stale/ })).toBeNull()
+        expect(remove).toHaveBeenCalledTimes(1)
+        fireEvent.click(confirm)
+        await waitFor(() => expect(remove).toHaveBeenCalledTimes(2))
+    } finally { localStorage.removeItem('hapi-session-list-status') }
 })
 
 describe('session row hover archive progress', () => {

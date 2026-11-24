@@ -201,6 +201,9 @@ export const MetadataSchema = z.object({
     // Hub-owned provisional title from the first user prompt. Shown only until
     // `name` or `summary` exists; it never blocks generated/native titles.
     promptTitle: z.string().optional(),
+    // Hub-owned per-session toggle: translate user prompts to English before
+    // they reach the agent (falls back to the original text on failure).
+    translateInput: z.boolean().optional(),
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(),
     // Earlier Claude session ids of this HAPI session (Claude rotates the id on
@@ -703,6 +706,8 @@ export const AttachedJobSchema = z.object({
     wakeOnTerminal: z.boolean().optional(),
     /** Optional prescription text appended to the hub wake message. */
     wakePrompt: z.string().max(2000).optional(),
+    /** In list / primary projections, the newest heartbeat across running jobs. */
+    latestRunningHeartbeatAt: z.number().optional(),
     heartbeatAt: z.number(),
     startedAt: z.number(),
     updatedAt: z.number()

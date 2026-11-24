@@ -62,8 +62,9 @@ Read writes emit `session-updated` patches without advancing `updatedAt`.
 Automatic reads require a visible foreground chat, successful message loading,
 and the latest tail laid out on screen. Background, history browsing, hidden
 inspectors/terminals, failed loads and list navigation cannot acknowledge reading.
-A read-state-only update is not a new viewing action. Explicit “mark all read”
-uses the content revisions observed in that list action.
+A read-state-only update is not a new viewing action. Explicit “mark as read”
+and “mark all read” actions acknowledge only the selected sessions and the
+content revisions observed for that action.
 
 Latest message pages carry `page.readThroughRevision`. A completed forward
 catch-up carries it only if its snapshot still reaches the current head. Before

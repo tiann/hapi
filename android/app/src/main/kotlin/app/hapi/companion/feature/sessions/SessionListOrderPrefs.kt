@@ -22,6 +22,8 @@ import kotlinx.coroutines.flow.update
  * `useSessionListView` localStorage keys.
  */
 interface SessionListOrderStore {
+    val grouped: Flow<Boolean>
+    suspend fun setGrouped(enabled: Boolean)
     val order: Flow<SessionListOrder>
     suspend fun setSort(sort: SessionListSort)
     suspend fun setActiveFirst(enabled: Boolean)
@@ -29,6 +31,8 @@ interface SessionListOrderStore {
 
 /** Not persisted: tests, previews and surfaces that keep a fixed order (share picker passes the base order). */
 class InMemorySessionListOrderStore(initial: SessionListOrder = SessionListOrder.Default) : SessionListOrderStore {
+    override val grouped = MutableStateFlow(true)
+    override suspend fun setGrouped(enabled: Boolean) { grouped.value = enabled }
     private val state = MutableStateFlow(initial)
     override val order: Flow<SessionListOrder> = state
     override suspend fun setSort(sort: SessionListSort) = state.update { it.copy(sort = sort) }
@@ -41,6 +45,14 @@ class InMemorySessionListOrderStore(initial: SessionListOrder = SessionListOrder
  * users who never chose; unreadable prefs degrade to defaults.
  */
 class SessionListOrderPrefs(private val dataStore: DataStore<Preferences>) : SessionListOrderStore {
+
+    override val grouped = dataStore.data
+        .catch { error -> if (error is IOException) emit(emptyPreferences()) else throw error }
+        .map { it[GROUPED_KEY] ?: true }.distinctUntilChanged()
+
+    override suspend fun setGrouped(enabled: Boolean) {
+        dataStore.edit { if (enabled) it.remove(GROUPED_KEY) else it[GROUPED_KEY] = false }
+    }
 
     override val order: Flow<SessionListOrder> = dataStore.data
         .catch { error -> if (error is IOException) emit(emptyPreferences()) else throw error }
@@ -65,6 +77,7 @@ class SessionListOrderPrefs(private val dataStore: DataStore<Preferences>) : Ses
     }
 
     companion object {
+        private val GROUPED_KEY = booleanPreferencesKey("session_list_grouped")
         val SORT_KEY: Preferences.Key<String> = stringPreferencesKey("session_list_sort")
         val ACTIVE_FIRST_KEY: Preferences.Key<Boolean> = booleanPreferencesKey("session_list_active_first")
     }

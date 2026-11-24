@@ -4,7 +4,6 @@ import type { AttachedJob, AttachedJobPatch, AttachedJobUpsert } from '@hapi/pro
 import type { StoredSessionJob } from './types'
 import {
     deleteSessionJob,
-    getPrimaryRunningJob,
     getPrimaryRunningJobsBySessionIds,
     getSessionJob,
     listSessionJobs,
@@ -14,7 +13,6 @@ import {
     markSessionJobTerminalWakeDelivered,
     clearAbandonedProvisionalWakeClaims,
     listPendingTerminalWakes,
-    toAttachedJob,
     transferSessionJobs,
     upsertSessionJob,
     allocateRemappedJobKey,
@@ -39,8 +37,7 @@ export class SessionJobsStore {
     }
 
     getPrimaryRunning(sessionId: string): AttachedJob | null {
-        const job = getPrimaryRunningJob(this.db, sessionId)
-        return job ? toAttachedJob(job) : null
+        return this.getPrimaryRunningBySessionIds([sessionId]).get(sessionId) ?? null
     }
 
     getPrimaryRunningBySessionIds(sessionIds: string[]): Map<string, AttachedJob> {
