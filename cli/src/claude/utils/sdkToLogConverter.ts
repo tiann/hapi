@@ -15,7 +15,7 @@ import type {
 } from '@/claude/sdk'
 import type { RawJSONLines } from '@/claude/types'
 import { isClaudeModelPreset } from '@hapi/protocol'
-import type { ClaudePermissionMode } from '@hapi/protocol/types'
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types'
 import { logger } from '@/lib'
 
 /**
@@ -61,7 +61,7 @@ export interface ConversionContext {
 
 type PermissionResponse = {
     approved: boolean
-    mode?: ClaudePermissionMode
+    mode?: PermissionModeOf<typeof Flavors.claude>
     reason?: string
 }
 

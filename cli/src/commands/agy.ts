@@ -3,13 +3,13 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
-import { AGY_PERMISSION_MODES } from '@hapi/protocol/modes'
+import { Flavors } from '@hapi/protocol/modes'
 import { parseRemoteAgentCommandOptions } from './agentCommandOptions'
 
 export function parseAgyCommandOptions(commandArgs: string[]) {
     const options = parseRemoteAgentCommandOptions(
         commandArgs,
-        AGY_PERMISSION_MODES,
+        Flavors.agy.permissionModes,
         ['remote'],
     )
     return { ...options, startingMode: options.startingMode ?? 'remote' as const }
