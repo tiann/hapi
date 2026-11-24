@@ -1342,6 +1342,42 @@ describe('sessions routes', () => {
         expect(remoteApp.applySessionConfigCalls).toEqual([['session-1', { model }]])
     })
 
+    // The effort flavor restriction is a payload check, so it is reported before
+    // the local-mode gate. An invalid combination keeps the 400 from a remote
+    // session, while a valid model-only switch still reaches the 409.
+    it.each([
+        ['kimi', 'kimi-k2', 'Model selection can only be changed for remote Kimi sessions'],
+        ['opencode', 'ollama/exaone:4.5-33b-q8', 'Model selection can only be changed for remote OpenCode sessions'],
+        ['copilot', 'gpt-5.5', 'Model selection can only be changed for remote Copilot sessions'],
+    ] as const)('validates the model payload before the local-mode gate for %s', async (flavor, model, message) => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor },
+            agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        for (const effort of [null, 'high']) {
+            const invalid = await app.request('/api/sessions/session-1/model', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ model, effort })
+            })
+            expect(invalid.status).toBe(400)
+            expect(await invalid.json()).toEqual({
+                error: 'Effort can only be sent with a model change for Claude and Antigravity sessions'
+            })
+        }
+
+        const valid = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model })
+        })
+        expect(valid.status).toBe(409)
+        expect(await valid.json()).toEqual({ error: message })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
     it('rejects local model changes when the session has no flavor (treated as Claude)', async () => {
         const local = createSession({
             metadata: { path: '/tmp/project', host: 'localhost', flavor: undefined },
