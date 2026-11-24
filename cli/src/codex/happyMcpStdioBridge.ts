@@ -435,8 +435,44 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
           title: 'Archive Peer Session',
           inputSchema: archivePeerInputSchema,
         },
-        async (args: Record<string, unknown>) => {
+        async (args: Record<string, unknown>, extra?: {
+          _meta?: { progressToken?: string | number }
+          sendNotification?: (notification: {
+            method: string
+            params: Record<string, unknown>
+          }) => Promise<void>
+        }) => {
+          // OpenCode v1's MCP client defaults to a 60s deadline with
+          // resetTimeoutOnProgress. Keep the stdio caller's clock alive while
+          // the hub waits up to 90s for Runner cleanup.
+          const progressToken = extra?._meta?.progressToken
+          let progress = 0
+          let heartbeat: ReturnType<typeof setInterval> | undefined
+          const sendProgress = async (message: string) => {
+            if (progressToken === undefined || !extra?.sendNotification) return
+            progress += 1
+            try {
+              await extra.sendNotification({
+                method: 'notifications/progress',
+                params: {
+                  progressToken,
+                  progress,
+                  message,
+                },
+              })
+            } catch {
+              // Progress is best-effort; a closed caller must not fail archive.
+            }
+          }
           try {
+            if (progressToken !== undefined && extra?.sendNotification) {
+              heartbeat = setInterval(() => {
+                void sendProgress('archive still waiting on Runner cleanup')
+              }, 15_000)
+              // Unref so a hung interval cannot keep the bridge process alive.
+              heartbeat.unref?.()
+            }
+            await sendProgress('archive requested')
             const client = await ensureHttpClient();
             // MCP SDK defaults to 60s; cover auth+lookup+archive budgets (see ARCHIVE_PEER_BRIDGE_TIMEOUT_MS).
             const response = await client.callTool(
@@ -452,6 +488,8 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
               ],
               isError: true,
             };
+          } finally {
+            if (heartbeat) clearInterval(heartbeat)
           }
         }
       );

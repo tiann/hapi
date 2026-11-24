@@ -357,6 +357,26 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(stopCalls).toBe(0)
     })
 
+    it('refuses archive before stop RPCs for derivedToolWork-only sessions (#2020)', async () => {
+        const sessionId = insertActiveSession('sess-derived-tool-block', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = true
+        let killCalls = 0
+        let stopCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => { stopCalls++; return 'already_gone' }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+        expect(stopCalls).toBe(0)
+    })
+
     it('refuses archive for an active session awaiting permission input (#2020)', async () => {
         const sessionId = insertActiveSession('sess-pending-req-active', 'machine-x')
         const live = cache().getSession(sessionId)!

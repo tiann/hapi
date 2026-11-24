@@ -4,11 +4,13 @@
  */
 export function sessionHasLiveWork(session: {
     thinking?: boolean | null
+    derivedToolWork?: boolean | null
     backgroundTaskCount?: number | null
     pendingRequestsCount?: number | null
     agentState?: { requests?: Record<string, unknown> | null } | null
 }): boolean {
     if (session.thinking) return true
+    if (session.derivedToolWork === true) return true
     if ((session.backgroundTaskCount ?? 0) > 0) return true
     if ((session.pendingRequestsCount ?? 0) > 0) return true
     const requests = session.agentState?.requests

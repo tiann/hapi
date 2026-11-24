@@ -51,6 +51,7 @@ import { isLiveLifecycleState } from '@hapi/protocol'
 import type { CursorMigrateOutcome, CursorMigrateRefusalReason } from '@hapi/protocol/apiTypes'
 import type { Metadata } from '@hapi/protocol/schemas'
 import type { Session } from '@hapi/protocol/types'
+import { ArchiveCleanupError } from '../sync/archiveCleanupError'
 import { AcpVerifyProbe, tryAcquireAcpActiveLock, type AcpActiveLockHandle } from './acpVerifyProbe'
 
 /* ---------- types ---------- */
@@ -730,6 +731,17 @@ export class CursorLegacyMigrator {
                 log.info('[migrator] archiving running session before migrate', { sessionId: session.id })
                 await this.deps.archiveSession(session.id)
             } catch (err) {
+                // Live-work refusal is a resolvable session-state conflict, not a
+                // server failure — surface as running_refused → HTTP 409.
+                if (err instanceof ArchiveCleanupError && err.code === 'archive-session-working') {
+                    return refusal(
+                        session.id,
+                        'running_refused',
+                        err.message,
+                        start,
+                        this.deps.now,
+                    )
+                }
                 return refusal(session.id, 'archive_failed', err instanceof Error ? err.message : String(err), start, this.deps.now)
             }
         } else if (isLiveLifecycleState(metadata.lifecycleState)) {

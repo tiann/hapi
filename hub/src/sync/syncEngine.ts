@@ -3849,10 +3849,10 @@ export class SyncEngine {
             }
         }
         // tiann/hapi#2020: refuse archive while the session is still connected
-        // with hub-visible work (thinking / background / pending requests).
-        // Stop the turn via /abort first. Disconnected rows may retain stale
-        // agentState.requests after heartbeat expiry — those must not block
-        // Runner-verified cleanup (/abort requires active).
+        // with hub-visible work (thinking / derivedToolWork / background /
+        // pending requests). Clear that work first. Disconnected rows may
+        // retain stale agentState.requests after heartbeat expiry — those
+        // must not block Runner-verified cleanup (/abort requires active).
         const liveBeforeStop = this.sessionCache.getSession(sessionId)
         if (liveBeforeStop?.active === true && hasLiveWork(liveBeforeStop)) {
             throw new ArchiveCleanupError('working')

@@ -41,6 +41,9 @@ export function resolveSessionIdleTimeoutMs(
 /** Work the hub can see that must never be reconciled away as a zombie. */
 export function hasLiveWork(session: Session): boolean {
     if (session.thinking) return true
+    // Hub-derived open tool work in the transcript tail (autonomous rounds
+    // that miss the CLI's turn-scoped thinking flag).
+    if (session.derivedToolWork === true) return true
     if ((session.backgroundTaskCount ?? 0) > 0) return true
     // A permission / input request waiting on the operator is real state the
     // agent is blocked on, not an abandoned socket.

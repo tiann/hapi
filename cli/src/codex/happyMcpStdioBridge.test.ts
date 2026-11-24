@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>
+type ToolHandler = (
+    args: Record<string, unknown>,
+    extra?: {
+        _meta?: { progressToken?: string | number }
+        sendNotification?: (notification: {
+            method: string
+            params: Record<string, unknown>
+        }) => Promise<void>
+    },
+) => Promise<unknown>
 
 const harness = vi.hoisted(() => ({
     tools: new Map<string, ToolHandler>(),
@@ -280,6 +289,32 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
             { name: 'archive_peer', arguments: { sessionIdPrefix: '05d9f0f2' } },
             { timeout: 140_000 },
         )
+    })
+
+    it('emits progress notifications while archive_peer waits (OpenCode 60s deadline)', async () => {
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'archive_peer'
+        ])
+
+        const handler = harness.tools.get('archive_peer')
+        expect(handler).toBeTypeOf('function')
+        const sendNotification = vi.fn(async () => {})
+        await handler!(
+            { sessionIdPrefix: '05d9f0f2' },
+            { _meta: { progressToken: 'tok-1' }, sendNotification },
+        )
+
+        expect(sendNotification).toHaveBeenCalledWith({
+            method: 'notifications/progress',
+            params: expect.objectContaining({
+                progressToken: 'tok-1',
+                progress: 1,
+                message: 'archive requested',
+            }),
+        })
     })
 
     it('registers list_peers when included in --tools', async () => {

@@ -77,6 +77,7 @@ describe('shouldMarkKeepaliveIdle', () => {
     it('never marks work the hub can see', () => {
         const stale = NOW - 87 * HOUR
         expect(shouldMarkKeepaliveIdle(session({ thinking: true }), stale, NOW, window)).toBe(false)
+        expect(shouldMarkKeepaliveIdle(session({ derivedToolWork: true }), stale, NOW, window)).toBe(false)
         expect(shouldMarkKeepaliveIdle(session({ backgroundTaskCount: 1 }), stale, NOW, window)).toBe(false)
         expect(shouldMarkKeepaliveIdle(
             session({ agentState: { requests: { 'req-1': { tool: 'Bash', arguments: {} } } } as Session['agentState'] }),
