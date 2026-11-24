@@ -2754,6 +2754,24 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]);
     });
 
+    it('does not confirm an identical steer by the row of an earlier send that had no transcript snapshot', async () => {
+        const { backend, client, steer, finish } = await startTurn(undefined, { reactivePollMs: 20 });
+        breakTranscript();
+        await steer('also lint', 'steer-a');
+        repairTranscript(stepRows);
+        await steer('also lint', 'steer-b');
+        // Only the first send's row has been written.
+        writeTranscript([...stepRows, userRow(3, 'also lint')]);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(consumedFor(client, 'steer-b')).toHaveLength(0);
+
+        backend.steerCompletions[1]!.reject(new Error('Can\'t add this prompt to session'));
+        await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-b'], 'queued'));
+        await finish();
+        expect(consumedFor(client, 'steer-a')).toHaveLength(1);
+        expect(consumedFor(client, 'steer-b').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
+    });
+
     it('retries the turn cursor sync on an unreadable transcript without advancing the cursor', () => {
         const { session } = makeSession();
         const launcher = new AgyAcpRemoteLauncher(session, { brainDir });
