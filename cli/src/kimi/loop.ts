@@ -42,10 +42,8 @@ export async function kimiLoop(opts: KimiLoopOptions): Promise<void> {
         permissionMode: opts.permissionMode ?? 'default'
     });
 
-    if (opts.resumeSessionId) {
-        session.onSessionFound(opts.resumeSessionId);
-    }
-
+    // The requested id stays in session state; the launcher publishes it to
+    // metadata only after the native session is confirmed or replaced.
     const getCurrentModel = (): string | undefined => {
         const sessionModel = session.getModel();
         return sessionModel != null ? sessionModel : opts.model;

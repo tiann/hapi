@@ -448,3 +448,43 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
         ])
     })
 })
+
+describe('kimiRemoteLauncher session id publish order', () => {
+    function sessionWithRequest() {
+        const session = createSession()
+        session.sessionId = 'kimi-requested-1'
+        const foundIds: string[] = []
+        session.onSessionFound = vi.fn((id: string) => {
+            foundIds.push(id)
+            session.sessionId = id
+        })
+        return { session, foundIds }
+    }
+
+    it('publishes the loaded id only after a successful resume', async () => {
+        const { session, foundIds } = sessionWithRequest()
+
+        await kimiRemoteLauncher(session as never, { model: 'kimi-k2' })
+
+        expect(harness.backends.at(-1)!.loadSession).toHaveBeenCalledWith(
+            expect.objectContaining({ sessionId: 'kimi-requested-1' })
+        )
+        expect(foundIds).toEqual(['kimi-session-1'])
+    })
+
+    it('publishes the fresh id when the resume fails', async () => {
+        const { session, foundIds } = sessionWithRequest()
+        const create = vi.mocked(createKimiBackend)
+        const factory = create.getMockImplementation()!
+        create.mockImplementationOnce((...args) => {
+            const backend = factory(...args)
+            vi.mocked(backend.loadSession).mockRejectedValueOnce(new Error('native session missing'))
+            vi.mocked(backend.newSession).mockResolvedValueOnce('kimi-fresh-1')
+            return backend
+        })
+
+        await kimiRemoteLauncher(session as never, { model: 'kimi-k2' })
+
+        expect(foundIds).toEqual(['kimi-fresh-1'])
+    })
+})
