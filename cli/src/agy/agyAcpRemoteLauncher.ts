@@ -265,12 +265,14 @@ type AgyTurn = {
 type AgySteerRow = {
     text: string;
     // Highest transcript step when the steer was written: its row comes after.
-    // Null when the transcript could not be read then: the steer is tracked
-    // but cannot match a row itself.
+    // Null when the transcript could not be read then: the steer never matches
+    // a row, and neither does a later identical steer until agy refuses it.
     boundary: number | null;
     // The agy conversation the steer was written to; a new one ends matching.
     sessionId: string;
     done: boolean;
+    // agy refused the steer, so it has no row.
+    refused: boolean;
     accept: (anchorToolCallId?: string) => void;
 };
 
@@ -1575,7 +1577,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const restoreQueued = async (): Promise<void> => {
             if (resolved) return;
             resolved = true;
-            if (rowSteer) rowSteer.done = true;
+            if (rowSteer) {
+                rowSteer.done = true;
+                rowSteer.refused = true;
+            }
             forgetEcho();
             if (steerCounted) {
                 steerCounted = false;
@@ -1606,9 +1611,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             return { steered: false, error: 'Antigravity is waiting for your approval or answer; respond to it, then steer' };
         }
 
-        // The steer's row comes after everything agy has written so far. An
-        // unreadable transcript only costs the row match: the echo and the
-        // turn's end still settle the steer.
+        // The steer's row comes after everything agy has written so far. When
+        // the transcript cannot be read now, the steer gives up the row match:
+        // the echo, a refusal, Stop, and the turn's end still settle it.
         const rowBoundary = readLatestAgyTranscriptStepIndex(this.brainDir, acpSessionId);
         let steer: ReturnType<AcpSdkBackend['beginSoftSteerPrompt']>;
         try {
@@ -1625,7 +1630,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     // The refusal arrives before the output drain; drop this
                     // steer from row matching so a later identical steer's row
                     // is not claimed for it.
-                    onRefused: () => { if (rowSteer) rowSteer.done = true; }
+                    onRefused: () => {
+                        if (!rowSteer) return;
+                        rowSteer.done = true;
+                        rowSteer.refused = true;
+                    }
                 }
             );
         } catch (error) {
@@ -1677,9 +1686,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // (agy <= 1.5.8) and the turn's end remain the other ways to confirm.
         // A late echo can confirm the next identical steer instead; that path
         // is best effort for those versions.
-        // Without a boundary the steer still owns the next row with its text in
-        // send order, so a later identical steer must not take that row.
-        rowSteer = { text: normalizeSteerText(taken.item.message), boundary: rowBoundary, sessionId: acpSessionId, done: false, accept };
+        rowSteer = { text: normalizeSteerText(taken.item.message), boundary: rowBoundary, sessionId: acpSessionId, done: false, refused: false, accept };
         turn.rowSteers.push(rowSteer);
         this.startSteerRowPoll(turn);
 
@@ -1751,7 +1758,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             turn.unechoedSteers = turn.unechoedSteers.filter((entry) => !entry.absorbed);
         }
         const live = pending.filter((entry): entry is AgySteerRow & { boundary: number } =>
-            !entry.done && entry.boundary !== null);
+            !entry.done && this.canMatchSteerRow(turn, entry));
         if (live.length === 0 || !acpSessionId) return;
         const from = Math.min(turn.turnStartStepIndex, ...live.map((entry) => entry.boundary));
         const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, from);
@@ -1763,11 +1770,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // must not take it.
         const promptRow = userRows[0] && agySteerRowText(userRows[0].content) === turn.promptRowText ? userRows[0] : null;
         for (const entry of live) {
-            // An earlier identical send without a boundary could own the next
-            // row: this one settles by its echo or the turn's end instead.
-            const entryIdx = turn.rowSteers.indexOf(entry);
-            if (turn.rowSteers.some((other, idx) =>
-                idx < entryIdx && !other.done && other.boundary === null && other.text === entry.text)) continue;
             const row = userRows.find((candidate) =>
                 candidate !== promptRow
                 && candidate.step_index > entry.boundary
@@ -1778,6 +1780,19 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             entry.done = true;
             entry.accept(this.steerAnchor(turn, steps, row.step_index));
         }
+    }
+
+    /**
+     * A steer matches a row only with a boundary from a read of the current
+     * transcript, and only while no earlier identical send without one may
+     * own the row: such a send keeps it until agy refuses that send, so Stop
+     * or a lost transport do not hand its row on.
+     */
+    private canMatchSteerRow(turn: AgyTurn, entry: AgySteerRow): entry is AgySteerRow & { boundary: number } {
+        if (entry.boundary === null) return false;
+        const entryIdx = turn.rowSteers.indexOf(entry);
+        return !turn.rowSteers.some((other, idx) =>
+            idx < entryIdx && other.boundary === null && !other.refused && other.text === entry.text);
     }
 
     /**

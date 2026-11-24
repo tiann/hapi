@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
@@ -2770,6 +2770,65 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await finish();
         expect(consumedFor(client, 'steer-a')).toHaveLength(1);
         expect(consumedFor(client, 'steer-b').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
+    });
+
+    it('keeps an identical steer retryable when Stop gives up and only the row of an earlier send without a snapshot is there', async () => {
+        const { backend, client, steer, releaseFirst, queue } = await startTurn(undefined, { reactivePollMs: 60_000, cancelHardStopMs: 80 });
+        breakTranscript();
+        await steer('also lint', 'steer-a');
+        repairTranscript(stepRows);
+        await steer('also lint', 'steer-b');
+        backend.onCancel = () => {
+            // Only the first send's row has been written.
+            writeTranscript([...stepRows, userRow(3, 'also lint')]);
+            releaseFirst();
+        };
+        await (client.rpcHandlerManager.handlers as Handlers).get(RPC_METHODS.Abort)!();
+
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(consumedFor(client, 'steer-b')).toHaveLength(0);
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-b']);
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-a']);
+        queue.close();
+    });
+
+    it('does not confirm an identical steer by the row of an earlier echoed send without a snapshot', async () => {
+        const { backend, client, steer, finish } = await startTurn(undefined, { reactivePollMs: 20 });
+        breakTranscript();
+        await steer('also lint', 'steer-a');
+        repairTranscript(stepRows);
+        await steer('also lint', 'steer-b');
+        backend.echo!('also lint');
+        expect(consumedFor(client, 'steer-a')).toHaveLength(1);
+        // The echoed send's row lands after the second send's snapshot.
+        writeTranscript([...stepRows, userRow(3, 'also lint')]);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(consumedFor(client, 'steer-b')).toHaveLength(0);
+        await finish();
+    });
+
+    it('does not confirm a steer sent while the transcript cannot be stat-ed by an identical row from an earlier turn', async () => {
+        // The turn's cursor could not place this turn either: it starts at -1.
+        const { client, steer, finish } = await startTurn([
+            userRow(0, 'fix the build'),
+            userRow(1, 'also lint'),
+            plannerRow(2, ['run_command']),
+            userRow(3, 'run the tests'),
+            plannerRow(4, ['run_command']),
+            genericRow(5)
+        ], { reactivePollMs: 20 });
+        const logsDir = join(brainDir, SESSION, '.system_generated', 'logs');
+        chmodSync(logsDir, 0o000);
+        try {
+            expect(await steer('also lint', 'steer-1')).toEqual({ steered: true });
+        } finally {
+            chmodSync(logsDir, 0o755);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
+
+        await finish();
+        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]);
     });
 
     it('retries the turn cursor sync on an unreadable transcript without advancing the cursor', () => {

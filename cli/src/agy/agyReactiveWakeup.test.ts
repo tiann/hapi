@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { watch, type FSWatcher, mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
+import { watch, type FSWatcher, chmodSync, mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -264,6 +264,34 @@ describe('agyReactiveWakeup pure helpers', () => {
         const steps = readAgyTranscriptStepsAfter(tempBrainDir, 'conv-1', 0);
         expect(steps).toHaveLength(1);
         expect(steps?.[0]?.content).toBe('full untruncated response text');
+    });
+
+    it('reports an unknown transcript instead of no rows or earlier rows when it cannot be stat-ed or opened', () => {
+        const { logsDir, compactPath } = agyTranscriptPaths(tempBrainDir, 'conv-1')!;
+        mkdirSync(logsDir, { recursive: true });
+        writeFileSync(compactPath, '{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT"}\n');
+        expect(readLatestAgyTranscriptStepIndex(tempBrainDir, 'conv-1')).toBe(0);
+
+        appendFileSync(compactPath, '{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE"}\n');
+        chmodSync(compactPath, 0o000);
+        try {
+            expect(readLatestAgyTranscriptStepIndex(tempBrainDir, 'conv-1')).toBeNull();
+            expect(readAgyTranscriptStepsAfter(tempBrainDir, 'conv-1', -1)).toBeNull();
+        } finally {
+            chmodSync(compactPath, 0o644);
+        }
+
+        chmodSync(logsDir, 0o000);
+        try {
+            expect(readLatestAgyTranscriptStepIndex(tempBrainDir, 'conv-1')).toBeNull();
+            expect(readAgyTranscriptStepsAfter(tempBrainDir, 'conv-1', -1)).toBeNull();
+        } finally {
+            chmodSync(logsDir, 0o755);
+        }
+
+        expect(readLatestAgyTranscriptStepIndex(tempBrainDir, 'conv-1')).toBe(1);
+        rmSync(compactPath);
+        expect(readLatestAgyTranscriptStepIndex(tempBrainDir, 'conv-1')).toBe(-1);
     });
 
     it('classifies completed wakeups vs gated tool parks vs in-workspace read_file waits', () => {

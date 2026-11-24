@@ -163,16 +163,17 @@ function parseJsonlChunk(raw: string, out: AgyTranscriptStep[]): void {
 /**
  * Incrementally reads newline-terminated JSONL steps from `filePath`.
  * Unchanged files cost a single `statSync` (0 bytes read); appended turns read
- * and parse only the newly written tail bytes. An I/O error while reading
- * returns null, which callers tell apart from a file with no steps.
+ * and parse only the newly written tail bytes. A missing file has no steps;
+ * any other error that leaves the current content unknown returns null,
+ * never an empty or earlier list, so callers can tell it apart.
  */
 function readCompleteJsonlSteps(filePath: string): AgyTranscriptStep[] | null {
     let stat: ReturnType<typeof statSync>;
     try {
         stat = statSync(filePath);
-    } catch {
+    } catch (error) {
         jsonlFileCache.delete(filePath);
-        return [];
+        return (error as NodeJS.ErrnoException).code === 'ENOENT' ? [] : null;
     }
     if (stat.size === 0) {
         jsonlFileCache.delete(filePath);
@@ -188,7 +189,7 @@ function readCompleteJsonlSteps(filePath: string): AgyTranscriptStep[] | null {
     try {
         fd = openSync(filePath, 'r');
     } catch {
-        return cached?.steps ?? [];
+        return null;
     }
 
     try {
