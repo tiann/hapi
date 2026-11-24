@@ -493,8 +493,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
         // A steer that names its anchor tool call goes right after it, on the
         // hub's own clock; without an anchor, or when it is gone, it is stamped now.
-        // Two steers after one call, or tool rows stored in the same millisecond,
-        // can show in queue order instead of transcript order.
+        // Two steers after one call can show in queue order instead of transcript order.
         const anchorId = typeof data.anchor?.toolCallId === 'string' ? data.anchor.toolCallId : null
         let anchorAt: number | null = null
         if (anchorId) {
@@ -505,6 +504,8 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 console.error('findToolCallPositionAt failed', err)
             }
         }
+        // Calls sharing a millisecond timestamp have no guaranteed order, so a
+        // steer anchored to one of them may render after the other.
         const invokedAt = anchorAt !== null ? anchorAt + 1 : Date.now()
         let sessionUpdatedAt: number
         try {
