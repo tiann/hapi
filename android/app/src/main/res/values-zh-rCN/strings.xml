@@ -680,6 +680,11 @@
     <string name="tool_custom_answer">自定义答案</string>
     <string name="tool_answer_note">备注</string>
     <string name="chat_view_full_message">查看完整消息</string>
+    <string name="chat_translate_input_on">将我的消息翻译为英文</string>
+    <string name="chat_translate_input_off">停止翻译我的消息</string>
+    <string name="chat_translated_label">已翻译</string>
+    <string name="chat_translated_show_sent">查看发送给 Agent 的英文</string>
+    <string name="chat_translated_show_original">查看原文</string>
     <string name="chat_full_message">完整消息</string>
     <string name="chat_previous_part">上一段</string>
     <string name="chat_next_part">下一段</string>
@@ -818,4 +823,8 @@
     <string name="passkey_enter_hub">手动输入 Hub 地址</string>
     <string name="passkey_hub_address_required">此通行密钥未包含 Hub 地址。请输入地址，然后使用通行密钥继续。</string>
     <string name="passkey_error_wrong_hub">此通行密钥属于其他 Hub。请选择此 Hub 的通行密钥，或检查地址。</string>
+    <string name="sessions_grouped">按项目目录分组</string>
+    <string name="sessions_other_project">其他</string>
+    <string name="sessions_folder_expanded">已展开</string>
+    <string name="sessions_folder_collapsed">已收起</string>
 </resources>

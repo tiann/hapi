@@ -380,6 +380,19 @@ function requiredParkMsForToolCalls(
 }
 
 /**
+ * `agy acp` streams reactive wakeup updates live from 1.5.10 on
+ * (google-antigravity/antigravity-cli#1461); an unknown or unparseable version
+ * keeps the transcript-rendered behavior.
+ */
+export function supportsAgyLiveIdleWakeups(version: string | null | undefined): boolean {
+    const match = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.exec(version ?? '');
+    if (!match) return false;
+    const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3])];
+    // 1.5.10-beta sorts below 1.5.10.
+    return major !== 1 ? major > 1 : minor !== 5 ? minor > 5 : patch > 10 || (patch === 10 && !match[4]);
+}
+
+/**
  * Classifies new transcript steps written after a user turn finished.
  * Only autonomous `SYSTEM_MESSAGE` entries start a reactive wakeup.
  */
@@ -864,7 +877,8 @@ export function inspectSyntheticBackgroundCommandMatch(
         (entry) => entry.taskId === undefined || !completedTasks.has(entry.taskId)
     );
 
-    const turnPlannedCompatibleCommand = recentSteps.some((step) => {
+    // A result-only update names no command, so any planned call would "match" it.
+    const turnPlannedCompatibleCommand = (liveCommandLine !== undefined || liveArgs !== undefined) && recentSteps.some((step) => {
         if (step.step_index <= turnStartStepIndex) return false;
         if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') return false;
         return (step.tool_calls ?? []).some((call) => {

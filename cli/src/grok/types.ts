@@ -1,6 +1,6 @@
-import type { GrokPermissionMode } from '@hapi/protocol/types'
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types'
 
-export type PermissionMode = GrokPermissionMode
+export type PermissionMode = PermissionModeOf<typeof Flavors.grok>
 
 export interface GrokMode {
     permissionMode: PermissionMode

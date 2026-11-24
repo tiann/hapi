@@ -1,4 +1,5 @@
 import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { windowsSystemTool } from '@/utils/windowsSystemTools'
 
 const { existsSyncMock, execFileSyncMock, execSyncMock, homedirMock } = vi.hoisted(() => ({
     existsSyncMock: vi.fn(),
@@ -96,7 +97,7 @@ describe('getDefaultClaudeCodePath', () => {
         const shim = 'C:\\nvm4w\\nodejs\\claude.cmd'
         const executable = 'C:\\nvm4w\\nodejs\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe'
         execFileSyncMock.mockImplementation((command: string, args: string[]) => {
-            if (command === 'where.exe' && args[0] === 'claude.cmd') {
+            if (command === windowsSystemTool('where') && args[0] === 'claude.cmd') {
                 return `${shim}\r\n`
             }
             throw new Error('not found')
@@ -113,7 +114,7 @@ describe('getDefaultClaudeCodePath', () => {
         const validShim = 'C:\\nvm4w\\nodejs\\claude.cmd'
         const executable = 'C:\\nvm4w\\nodejs\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe'
         execFileSyncMock.mockImplementation((command: string, args: string[]) => {
-            if (command === 'where.exe' && args[0] === 'claude.cmd') {
+            if (command === windowsSystemTool('where') && args[0] === 'claude.cmd') {
                 return `${staleShim}\r\n${validShim}\r\n`
             }
             throw new Error('not found')
@@ -131,7 +132,7 @@ describe('getDefaultClaudeCodePath', () => {
         const shim = 'C:\\nvm4w\\nodejs\\claude'
         const executable = 'C:\\nvm4w\\nodejs\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe'
         execFileSyncMock.mockImplementation((command: string, args: string[]) => {
-            if (command === 'where.exe' && args[0] === 'claude') {
+            if (command === windowsSystemTool('where') && args[0] === 'claude') {
                 return `${shim}\r\n`
             }
             throw new Error('not found')
@@ -146,7 +147,7 @@ describe('getDefaultClaudeCodePath', () => {
         setPlatform('win32')
         const executable = 'C:\\tools\\claude.exe'
         execFileSyncMock.mockImplementation((command: string, args: string[]) => {
-            if (command === 'where.exe' && args[0] === 'claude.exe') {
+            if (command === windowsSystemTool('where') && args[0] === 'claude.exe') {
                 return `${executable}\r\n`
             }
             throw new Error('not found')
