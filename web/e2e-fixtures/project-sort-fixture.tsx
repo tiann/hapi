@@ -9,12 +9,17 @@ import '../src/index.css'
 
 const params = new URLSearchParams(window.location.search)
 const crossTab = params.has('crossTab')
+const actionSearch = params.get('mode') === 'action-search'
 if (params.get('mode') === 'count' || crossTab) {
     window.localStorage.setItem('hapi-session-project-sort-mode', 'count')
 } else {
     window.localStorage.removeItem('hapi-session-project-sort-mode')
 }
-if (params.get('mode') === 'combined-count') {
+if (actionSearch) {
+    window.localStorage.setItem('hapi-session-project-sort-mode', 'count')
+    window.localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+    window.localStorage.removeItem('hapi-pin-in-progress-sessions-mode')
+} else if (params.get('mode') === 'combined-count') {
     window.localStorage.setItem('hapi-session-project-sort-mode', 'count')
     window.localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
     window.localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
@@ -74,6 +79,15 @@ const sessions: SessionSummary[] = [
     }),
 ]
 
+const actionSearchSessions: SessionSummary[] = [
+    makeSession({ id: 'strong-title', active: true, thinking: true, updatedAt: now,
+        metadata: { path: '/projects/strong', name: 'home', flavor: 'codex' } }),
+    makeSession({ id: 'weak-path-1', active: true, thinking: true, updatedAt: now + 1,
+        metadata: { path: '/projects/home-weak', name: 'Task one', flavor: 'codex' } }),
+    makeSession({ id: 'weak-path-2', active: true, thinking: true, updatedAt: now + 2,
+        metadata: { path: '/projects/home-weak', name: 'Task two', flavor: 'codex' } }),
+]
+
 const queryClient = new QueryClient({
     defaultOptions: {
         queries: { retry: false },
@@ -89,7 +103,7 @@ declare global {
 }
 
 function ProjectSortFixture() {
-    const [currentSessions, setCurrentSessions] = useState<SessionSummary[]>(crossTab ? [] : sessions)
+    const [currentSessions, setCurrentSessions] = useState<SessionSummary[]>(crossTab ? [] : actionSearch ? actionSearchSessions : sessions)
     window.showProjectSortProjects = (names) => {
         setCurrentSessions(names.map((name, index) => makeSession({
             id: name,
@@ -112,7 +126,7 @@ function ProjectSortFixture() {
                 onNewSession={() => {}}
                 onRefresh={async () => {}}
                 isLoading={false}
-                renderHeader={false}
+                renderHeader={actionSearch}
                 api={null}
             />
         </div>

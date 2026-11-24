@@ -130,8 +130,9 @@ See [Installation → Runner setup](./installation.md#runner-setup).
 ### `hapi resume [session-id]`
 
 Reopens an existing HAPI session on this machine in the terminal, with its
-original agent and settings. Without an id it shows a picker; in a
-non-interactive shell it prints the resumable sessions and exits. If the
+original agent and settings. Without an ID, it opens a picker where you can
+search by title, first message, or directory. In a non-interactive shell,
+it prints the resumable sessions and exits. If the
 session is running remotely, control is handed back to this terminal.
 
 ### `hapi set-mode <session> <mode>`
@@ -167,6 +168,22 @@ hapi detach <hapi-session-id>
 
 `attach` runs in the foreground. Ctrl-C, `detach`, and ending the session in
 HAPI disconnect HAPI only; the external thread keeps running.
+
+### `hapi codex-desktop setup` / `hapi codex-desktop remove` (experimental, macOS)
+
+Syncs loaded Codex conversations from the official ChatGPT desktop app to the
+configured HAPI Hub. Open a Codex chat in ChatGPT and it appears in HAPI without
+running `hapi attach`. Requires a saved HAPI connection.
+
+```bash
+hapi codex-desktop setup             # Set up this login and future GUI logins
+hapi codex-desktop setup --restart   # Also quit and reopen ChatGPT normally
+hapi codex-desktop remove            # Undo the setup without stopping the daemon
+hapi codex-desktop remove --restart  # Undo and reopen ChatGPT to apply the change
+```
+
+See [desktop shared sessions](./codex-shared-sessions#experimental-external-desktop-bridge-macos)
+for prerequisites and troubleshooting.
 
 ## Peer sessions
 

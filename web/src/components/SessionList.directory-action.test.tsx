@@ -1241,7 +1241,7 @@ describe('SessionList collapse behavior', () => {
                     label: 'beets import',
                     status: 'running',
                     remaining: 12,
-                    heartbeatAt: 1,
+                    heartbeatAt: Date.now(),
                     startedAt: 1,
                     updatedAt: 1,
                 },
@@ -1264,6 +1264,27 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Thinking agent/ })).toBeInTheDocument()
     })
 
+    it('moves a disconnected job back to its project when its heartbeat expires without an SSE event', () => {
+        vi.useFakeTimers()
+        try {
+            const now = Date.now()
+            localStorage.setItem('hapi-pin-in-progress-sessions', 'jobs')
+            const sessions = [makeSession({ id: 'stale', active: false, updatedAt: now,
+                metadata: { path: '/batch', name: 'History' }, attachedJob: {
+                    key: 'job', label: 'Batch', status: 'running', startedAt: now - 900_000,
+                    heartbeatAt: now - 899_999, updatedAt: now,
+                } })]
+            render(renderSessionList(sessions, null))
+            expect(screen.getByTitle('In progress')).toBeInTheDocument()
+            act(() => vi.advanceTimersByTime(60_000))
+            expect(screen.queryByTitle('In progress')).toBeNull()
+            fireEvent.click(screen.getByTitle('/batch'))
+            expect(screen.getByTestId('attached-job-status')).toHaveTextContent('no heartbeat')
+            expect(screen.getByTestId('attached-job-status')).not.toHaveTextContent('running')
+            expect(screen.queryByTestId('session-activity')).toBeNull()
+        } finally { vi.useRealTimers() }
+    })
+
     it('keeps a real agent turn in Running when a job is also attached (#1553)', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
@@ -1278,7 +1299,7 @@ describe('SessionList collapse behavior', () => {
                     label: 'Animate stills',
                     status: 'running',
                     remaining: 16,
-                    heartbeatAt: 1,
+                    heartbeatAt: Date.now(),
                     startedAt: 1,
                     updatedAt: 1,
                 },
@@ -1308,7 +1329,7 @@ describe('SessionList collapse behavior', () => {
                     label: 'beets import',
                     status: 'running',
                     remaining: 8,
-                    heartbeatAt: 1,
+                    heartbeatAt: Date.now(),
                     startedAt: 1,
                     updatedAt: 1,
                 },
@@ -1488,6 +1509,41 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: 'Expand 1' })).toBeInTheDocument()
     })
 
+    it('ranks action-only projects by search relevance instead of session count', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-session-project-sort-mode', 'count')
+        const sessions = [
+            makeSession({ id: 'strong-title', active: true, thinking: true, updatedAt: 100,
+                metadata: { path: '/work/strong', name: 'home', flavor: 'codex' } }),
+            makeSession({ id: 'weak-path-1', active: true, thinking: true, updatedAt: 200,
+                metadata: { path: '/home/weak', name: 'Task one', flavor: 'codex' } }),
+            makeSession({ id: 'weak-path-2', active: true, thinking: true, updatedAt: 300,
+                metadata: { path: '/home/weak', name: 'Task two', flavor: 'codex' } }),
+        ]
+        render(renderSessionList(sessions, null))
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        fireEvent.change(screen.getByPlaceholderText(SEARCH_PLACEHOLDER), { target: { value: 'home' } })
+
+        const headers = screen.getAllByTitle(/^\/(?:work|home)\//)
+        expect(headers.map(header => header.getAttribute('title'))).toEqual(['/work/strong', '/home/weak'])
+        expect(headers.every(header => header.nextElementSibling === null)).toBe(true)
+    })
+
+    it('keeps a Combined rename draft mounted when its session disconnects', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const connected = makeSession({ id: 'rename-draft', active: true, metadata: { path: '/work/rename', name: 'Original title' } })
+        const { rerender } = render(renderSessionList([connected], null))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Original title/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Unsaved draft title' } })
+
+        rerender(renderSessionList([{ ...connected, active: false }], null))
+
+        await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Unsaved draft title'))
+        expect(screen.getAllByTitle('/work/rename')).toHaveLength(1)
+    })
+
     it('preserves combined project collapse state when a temporary search hides it', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
         localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
@@ -1603,6 +1659,20 @@ describe('SessionList collapse behavior', () => {
             machineId: 'machine-1',
             directory: '/work/hapi',
         })
+    })
+
+    it('keeps an explicit fold when a selected job expires and moves back into its project', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        const idle = makeSession({ id: 'idle', active: true, metadata: { path: '/work/hapi', name: 'Idle' } })
+        const job = makeSession({ id: 'job', active: false, metadata: { path: '/work/hapi', name: 'Batch' },
+            attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: Date.now() } })
+        const { rerender } = render(renderSessionList([idle, job], null))
+        fireEvent.click(screen.getByTitle('/work/hapi'))
+        expect(getProjectPanel().getAttribute('data-open')).toBeNull()
+        rerender(renderSessionList([idle, job], 'job'))
+        rerender(renderSessionList([idle, { ...job, attachedJob: { ...job.attachedJob!, heartbeatAt: 1 } }], 'job'))
+        await waitFor(() => expect(screen.queryByTitle('In progress')).toBeNull())
+        expect(getProjectPanel().getAttribute('data-open')).toBeNull()
     })
 
     it('auto-expands the path again when the selected session changes', async () => {

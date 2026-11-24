@@ -30,6 +30,8 @@ class SessionListOrderPrefsTest {
             val dataStore = PreferenceDataStoreFactory.create(scope = firstScope) { file }
             val prefs = SessionListOrderPrefs(dataStore)
             assertEquals(SessionListOrder.Default, prefs.order.first())
+            assertEquals(true, prefs.grouped.first())
+            prefs.setGrouped(false)
             prefs.setSort(SessionListSort.Created)
             prefs.setActiveFirst(false)
             assertEquals(SessionListOrder(SessionListSort.Created, activeFirst = false), prefs.order.first())
@@ -42,6 +44,7 @@ class SessionListOrderPrefsTest {
         val secondScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         try {
             val prefs = SessionListOrderPrefs(PreferenceDataStoreFactory.create(scope = secondScope) { file })
+            assertEquals(false, prefs.grouped.first())
             assertEquals(SessionListOrder(SessionListSort.Created, activeFirst = true), prefs.order.first())
         } finally {
             secondScope.coroutineContext[Job]?.cancelAndJoin()

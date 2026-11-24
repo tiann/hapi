@@ -44,7 +44,7 @@ can therefore be idle; see [active is transport liveness, not agent health](../a
 section shown above the project folders (global pins stay above it):
 
 - **Off** keeps every session in its project folder.
-- **Long-running jobs** (the default) lifts sessions with a running
+- **Long-running jobs** (the default) lifts unarchived sessions with a running
   [session job](./session-jobs.md) meter.
 - **Working & pending** also lifts sessions whose agent is working or waiting
   on you.
@@ -53,7 +53,11 @@ Connected-but-idle sessions stay in their project folders in every mode. Rows
 move into and out of the section as their status changes, but are ordered by
 user input rather than ongoing output. **Active sessions only** in the same
 settings group hides inactive sessions, except the open session and sessions
-with a running long-running job.
+with a running job that have not been archived. A disconnected, archived
+conversation stays in **Archived** even if its job is still reporting. Its row
+retains the job meter. After 15 minutes without a heartbeat the job no longer floats
+into **In progress** by itself. A job meter never spins the agent indicator. An independent process can keep reporting after archive;
+work in the stopped session process tree can be terminated.
 
 A session counts as working while it has open tool calls, even between agent
 rounds. Autonomous loops that keep running tools therefore show as working
@@ -112,11 +116,10 @@ matching rows.
   chips under the toolbar on wide screens, a filter button in the toolbar on
   narrow ones. The selection is remembered locally in the browser and falls
   back to All when that machine is no longer available.
-- **Keep unread sessions visible** (Settings → Display, on by default): a
-  collapsed project still lists its unread sessions under its header, and the
-  preview limit never hides one. Turn it off to fold collapsed projects
-  completely. The toolbar shows **Mark all as read** with the unread count
-  while any session is unread.
+- **Keep unread sessions visible** (Settings → Display, on by default) keeps unread rows
+  beyond the preview limit in **expanded** folders. A closed folder hides every row,
+  including on first load. Explicit folds are remembered in this browser for the current hub and namespace.
+  The toolbar still shows the unread count.
 - **Session preview limit** controls how many rows are initially visible within
   each project group. Unread sessions, sessions with pending requests, and the
   selected session can remain visible; a project can reveal more rows in
@@ -130,6 +133,9 @@ matching rows.
 - **Session rows.** Hover a row (desktop) to archive it or unpin it directly.
   The row menu also offers rename, global or project pin, and **Open in
   separate window**.
+- **Deleting a session with a job.** Wait for a reporting job to finish. If its heartbeat
+  is stale and you have confirmed the process has ended, the delete dialog lets you
+  remove just that record. Confirm deletion separately afterward.
 - **Status indicators.** The agent icon carries the presence badge. A spinner
   beside the title combines running activity with unread state; an unread
   session at rest shows a dot.

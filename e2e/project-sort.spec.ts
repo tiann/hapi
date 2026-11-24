@@ -43,6 +43,39 @@ test.describe('project sort modes', () => {
 })
 
 
+test('ranks action-only projects by relevance when count sorting is active', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=action-search`)
+    await page.getByRole('button', { name: /Search sessions/ }).click()
+    await page.getByPlaceholder('Search title/path/Agent/machine/ID…').fill('home')
+    const headers = page.locator('[title^="/projects/"]')
+    await expect(headers).toHaveCount(2)
+    await expect(headers.nth(0)).toHaveAttribute('title', '/projects/strong')
+    await expect(headers.nth(1)).toHaveAttribute('title', '/projects/home-weak')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-action-search.png`, fullPage: true })
+})
+
+
+test('keeps a Combined rename draft when its session disconnects', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=combined-count`)
+    await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Rename' }).click()
+    await page.getByRole('textbox').fill('Unsaved draft title')
+    await page.evaluate(() => window.updateProjectSession('mine-session', { active: false }))
+    await expect(page.getByRole('textbox')).toHaveValue('Unsaved draft title')
+    await expect(page.locator('[role="separator"][aria-label="Archived project sessions"]')).toBeVisible()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-rename-draft-after-disconnect.png`, fullPage: true })
+})
+
+
+test('localizes the Combined archived separator', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem('hapi-lang', 'ja'))
+    await page.goto(`${fixtureUrl}?mode=combined-count`)
+    await expect(page.getByRole('separator', { name: 'アーカイブ済みプロジェクトのセッション' })).toBeVisible()
+})
+
+
 test('an older tab keeps another tab’s first-seen rank for tied projects', async ({ page, context }) => {
     const olderTab = await context.newPage()
     await olderTab.goto(`${fixtureUrl}?crossTab=1`)

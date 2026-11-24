@@ -2,6 +2,24 @@ import { expect, test } from '@playwright/test'
 
 const fixture = '/e2e-fixtures/settings-fixture.html'
 
+for (const fixtureCase of [
+    { locale: 'ja', projectOrder: 'プロジェクトの並び順', recent: '最近のユーザー入力', layout: '進行中セッションの固定レイアウト', combined: '統合' },
+    { locale: 'ru', projectOrder: 'Порядок проектов', recent: 'Последний ввод пользователя', layout: 'Макет закрепления сессий в работе', combined: 'Объединённо' },
+]) {
+    test(`localizes project and pinning settings in ${fixtureCase.locale}`, async ({ page }) => {
+        await page.setViewportSize({ width: 1280, height: 900 })
+        await page.addInitScript(locale => window.localStorage.setItem('hapi-lang', locale), fixtureCase.locale)
+        await page.goto(fixture)
+        await expect(page.getByRole('radiogroup', { name: fixtureCase.projectOrder })).toBeVisible()
+        await expect(page.getByRole('radio', { name: fixtureCase.recent })).toBeVisible()
+        await expect(page.getByRole('radiogroup', { name: fixtureCase.layout })).toBeVisible()
+        await expect(page.getByRole('radio', { name: fixtureCase.combined })).toBeVisible()
+        await page.getByRole('radiogroup', { name: fixtureCase.projectOrder }).scrollIntoViewIfNeeded()
+        const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+        if (screenshots) await page.screenshot({ path: `${screenshots}/settings-display-${fixtureCase.locale}.png` })
+    })
+}
+
 test.describe('settings responsive layout', () => {
     test('mobile drills from the category hub into a full-width detail page', async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 844 })

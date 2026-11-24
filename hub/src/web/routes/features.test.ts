@@ -33,7 +33,8 @@ describe('features routes', () => {
         expect(response.status).toBe(200)
         expect(await response.json()).toEqual({
             githubPrAwareness: { enabled: false, source: 'default' },
-            prChipDisplay: DEFAULT_PR_CHIP_DISPLAY
+            prChipDisplay: DEFAULT_PR_CHIP_DISPLAY,
+            inputTranslation: { available: false }
         })
     })
 
@@ -57,9 +58,20 @@ describe('features routes', () => {
         expect(response.status).toBe(200)
         expect(await response.json()).toEqual({
             githubPrAwareness: { enabled: true, source: 'file' },
-            prChipDisplay: DEFAULT_PR_CHIP_DISPLAY
+            prChipDisplay: DEFAULT_PR_CHIP_DISPLAY,
+            inputTranslation: { available: false }
         })
         expect(enabled).toBe(true)
+    })
+
+    it('reports input translation availability from deps', async () => {
+        const app = createApp({
+            getGithubPrAwareness: () => ({ enabled: false, source: 'default' }),
+            setGithubPrAwareness: async () => {},
+            isInputTranslationAvailable: () => true
+        })
+        const body = await (await app.request('/api/features')).json() as { inputTranslation: unknown }
+        expect(body.inputTranslation).toEqual({ available: true })
     })
 
     it('refuses patch when pinned by env', async () => {

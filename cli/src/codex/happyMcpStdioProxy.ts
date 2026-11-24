@@ -8,6 +8,7 @@
 import { execFileSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import spawn from 'cross-spawn';
+import { windowsSystemTool } from '@/utils/windowsSystemTools';
 
 type StdioProxySpec = {
     command: string;
@@ -50,7 +51,7 @@ function resolveWindowsCommand(command: string): string {
     }
 
     try {
-        const entries = execFileSync('where.exe', [command], {
+        const entries = execFileSync(windowsSystemTool('where'), [command], {
             encoding: 'utf8',
             windowsHide: true
         })

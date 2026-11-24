@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentBackend, FormElicitationRequest, FormElicitationResponse } from '@/agent/types';
-import type { OpencodePermissionMode } from '@hapi/protocol/types';
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
 import { OpencodePermissionHandler } from './permissionHandler';
 
 vi.mock('@/ui/logger', () => ({
@@ -43,7 +43,7 @@ function elicitation(overrides: Partial<FormElicitationRequest> = {}): FormElici
     };
 }
 
-function createHarness(mode: OpencodePermissionMode = 'default') {
+function createHarness(mode: PermissionModeOf<typeof Flavors.opencode> = 'default') {
     let agentState: FakeAgentState = { requests: {}, completedRequests: {} };
     const rpcHandlers = new Map<string, (params: unknown) => Promise<unknown> | unknown>();
     let elicitationHandler: ((request: FormElicitationRequest) => Promise<FormElicitationResponse>) | null = null;
@@ -159,7 +159,7 @@ describe('OpencodePermissionHandler question forms', () => {
     it.each(['yolo', 'safe-yolo', 'always-proceed', 'read-only', 'plan', 'default'] as const)(
         'never answers the question on its own in %s mode',
         async (mode) => {
-            const harness = createHarness(mode as OpencodePermissionMode);
+            const harness = createHarness(mode as PermissionModeOf<typeof Flavors.opencode>);
 
             const pending = harness.ask();
 
