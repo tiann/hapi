@@ -10,9 +10,9 @@ const params = new URLSearchParams(location.search)
 const isClaude = params.get('provider') === 'claude'
 const details: ContextDetails = isClaude
     ? { version: 1, updatedAt: 1, provider: 'claude', claude: {
-        skills: params.has('emptyRuntime') ? [] : [{ name: 'automatic-skill' }],
+        skills: params.has('emptyRuntime') || params.has('restoredCommand') ? [] : [{ name: 'automatic-skill' }],
         systemTools: [],
-        slashCommands: ['/compact']
+        slashCommands: params.has('restoredCommand') ? ['/compact', '/review'] : ['/compact']
     } }
     : { version: 1, updatedAt: 1, provider: 'codex', codex: {
         mcpServers: params.has('knownNamesOnly') ? [{ name: 'docs' }] : [{ name: 'runtime-only', status: 'disabled', toolNames: [] }],

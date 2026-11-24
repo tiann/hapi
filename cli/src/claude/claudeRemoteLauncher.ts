@@ -319,6 +319,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         let effectiveContextWindow: number | undefined;
         let activeContextLaunch: symbol | null = null;
         let usageSampleLaunch: symbol | null = null;
+        let assistantSampleModel: string | null = null;
         let usageSamplePreset: ReturnType<Session['getModel']> = null;
         let selectedContextPreset: ReturnType<Session['getModel']> = null;
         const matchesSelectedPreset = (saved: { model?: string; contextWindow?: number }, selected: string | null | undefined): boolean => {
@@ -371,6 +372,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             if (details.usage?.contextTokens !== undefined) {
                                 usageSampleLaunch = activeContextLaunch;
                                 usageSamplePreset = selectedContextPreset;
+                                assistantSampleModel = details.model ?? null;
                             }
                             publishContextDetails(session.client, details);
                         }
@@ -378,7 +380,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 } else if (message.type === 'result') {
                     const resultMessage = message as SDKResultMessage;
                     if (resultMessage.hapi_skip_usage !== true && (!resultMessage.is_error || hasPositiveClaudeUsage(resultMessage.usage))) {
-                        const resultModel = resultMessage.model ?? lastSystemModel;
+                        const sameSample = usageSampleLaunch === activeContextLaunch && usageSamplePreset === selectedContextPreset;
+                        const resultModel = resultMessage.model ?? (sameSample ? assistantSampleModel : null) ?? lastSystemModel;
                         const details = buildClaudeContextDetails({
                             result: resultMessage,
                             messageUsage: resultMessage.usage,

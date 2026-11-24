@@ -978,17 +978,23 @@ describe('claudeRemoteLauncher resume anchor', () => {
             version: 1, updatedAt: 10, provider: 'claude', model: 'claude-opus', contextWindow: 200_000,
             usage: { contextTokens: 90_000 }
         } }
+        let probe: ContextCallbacks | undefined
+        harness.contextForLaunch = callbacks => { probe = callbacks }
         harness.messages = [{ type: 'assistant', message: { role: 'assistant', model: 'claude-fable-5',
             content: [{ type: 'text', text: 'Fallback answer' }], usage: { input_tokens: 100 } } }]
+        harness.afterFirstCall = () => {
+            probe?.onMessage({ type: 'result', subtype: 'success',
+                total_cost_usd: 0, duration_ms: 1, num_turns: 1,
+                modelUsage: { 'claude-fable-5': { contextWindow: 1_000_000 } } })
+        }
         try {
             queue.push('hello', { permissionMode: 'default', model: 'fallback-model' }, 'local-1')
             harness.switchAfterCall = 1
             harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
             await claudeRemoteLauncher(session as any)
             expect(client.getMetadata().contextDetails).toMatchObject({
-                model: 'claude-fable-5', usage: { contextTokens: 100 }
+                model: 'claude-fable-5', contextWindow: 1_000_000, usage: { contextTokens: 100 }
             })
-            expect(client.getMetadata().contextDetails?.contextWindow).toBeUndefined()
         } finally { session.stopKeepAlive() }
     })
 

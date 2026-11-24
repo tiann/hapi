@@ -101,6 +101,7 @@ export class SharedCodexRoot {
     private readonly statusMcpServerInventory = new Map<string, CodexMcpServerInventory>();
     private readonly confirmedAbsentMcpServers = new Set<string>();
     private readonly notifiedMcpServers = new Set<string>();
+    private readonly earlyMcpServerNotices = new Map<string, Set<string>>();
     private readonly pendingMcpStatuses = new Set<string>();
     private mcpInventoryStarted = false;
     private readingMcpStatuses = false;
@@ -116,7 +117,16 @@ export class SharedCodexRoot {
             if (method === 'mcpServer/startupStatus/updated') {
                 const notice = record(params);
                 const name = string(notice.name);
-                if (!this.closed && !this.stopping && this.threadId && notice.threadId === this.threadId && name?.trim()) {
+                if (this.closed || this.stopping || !name?.trim()) return;
+                const noticeThreadId = string(notice.threadId);
+                if (!noticeThreadId) return;
+                if (!this.threadId) {
+                    const names = this.earlyMcpServerNotices.get(noticeThreadId) ?? new Set<string>();
+                    names.add(name);
+                    this.earlyMcpServerNotices.set(noticeThreadId, names);
+                    return;
+                }
+                if (noticeThreadId === this.threadId) {
                     const first = !this.notifiedMcpServers.has(name);
                     this.notifiedMcpServers.add(name);
                     if (this.mcpInventoryStarted) {
@@ -318,6 +328,9 @@ export class SharedCodexRoot {
     async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean): Promise<void> {
         if (this.threadId && this.threadId !== threadId) throw new Error('Cannot retarget a shared HAPI session');
         this.threadId = threadId;
+        const earlyNotices = this.earlyMcpServerNotices.get(threadId);
+        this.earlyMcpServerNotices.clear();
+        for (const name of earlyNotices ?? []) this.notifiedMcpServers.add(name);
         this.queue = new SharedCodexQueue(this.client, threadId, join(this.host.directory, `${this.session.sessionId}.queue.json`),
             (ids, steered) => {
                 this.session.emitMessagesConsumed(ids, { steered });

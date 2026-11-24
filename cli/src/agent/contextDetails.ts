@@ -141,6 +141,9 @@ function buildClaudeMcpTools(value: unknown): ClaudeContextDetails['mcpTools'] {
     return tools
 }
 
+// Keep the raw command inventory local; only filtered names go onto the wire.
+const rawClaudeCommands = new WeakMap<ContextDetails, readonly string[]>()
+
 export function buildClaudeContextDetails(args: {
     contextUsage?: unknown
     system?: unknown
@@ -184,7 +187,8 @@ export function buildClaudeContextDetails(args: {
     const mcpTools = buildClaudeMcpTools(contextUsage?.mcp_tools ?? contextUsage?.mcpTools)
         ?? (systemToolNames ? buildClaudeMcpTools(systemMcpToolNames) : undefined)
     const systemTools = systemToolNames?.filter(name => !name.startsWith('mcp__'))
-    const slashCommands = filterClaudeSlashCommands(asStringList(system?.slash_commands), skills)
+    const rawCommands = asStringList(system?.slash_commands)
+    const slashCommands = filterClaudeSlashCommands(rawCommands, skills)
     const claude: ClaudeContextDetails = {
         ...(skills ? { skills } : {}),
         ...(mcpTools ? { mcpTools } : {}),
@@ -195,7 +199,7 @@ export function buildClaudeContextDetails(args: {
 
     if (!model && contextWindow === undefined && !hasUsage && !hasClaudeDetails) return null
 
-    return {
+    const details: ContextDetails = {
         version: 1,
         updatedAt: args.updatedAt ?? Date.now(),
         provider: 'claude',
@@ -204,6 +208,8 @@ export function buildClaudeContextDetails(args: {
         ...(hasUsage ? { usage } : {}),
         ...(hasClaudeDetails ? { claude } : {})
     }
+    if (rawCommands) rawClaudeCommands.set(details, rawCommands)
+    return details
 }
 
 function buildCodexUsage(value: unknown, explicitContextTokens?: number): ContextUsageSnapshot | undefined {
@@ -363,7 +369,12 @@ export function mergeContextDetails(
 ): ContextDetails {
     const compactPrevious = previous ? compactContextDetails(previous) : null
     const compactNext = compactContextDetails(next)
-    if (!previous || !compactPrevious || compactPrevious.provider !== compactNext.provider) return compactNext
+    if (!previous || !compactPrevious || compactPrevious.provider !== compactNext.provider) {
+        if (compactNext.claude?.slashCommands && compactNext.claude.skills) {
+            compactNext.claude.slashCommands = filterClaudeSlashCommands(compactNext.claude.slashCommands, compactNext.claude.skills)
+        }
+        return compactNext
+    }
 
     const modelChanged = compactPrevious.model !== undefined
         && compactNext.model !== undefined
@@ -420,6 +431,7 @@ export interface PublishContextDetailsOptions {
 // Per-client, not persisted: saved inventory from a prior launch is not proof
 // that this CLI has already observed a live catalog. Empty lists do count.
 const observedClaudeInventory = new WeakMap<ContextDetailsClient, Set<keyof ClaudeContextDetails>>()
+const observedClaudeSlashCommands = new WeakMap<ContextDetailsClient, readonly string[]>()
 
 function equalStrings(previous: readonly string[] | undefined, next: readonly string[]): boolean {
     return previous?.length === next.length && previous.every((value, index) => value === next[index])
@@ -435,6 +447,8 @@ export function publishContextDetails(
     let candidate: ContextDetails | null = next
     if (next.provider === 'claude' && next.claude) {
         const observed = observedClaudeInventory.get(client) ?? new Set<keyof ClaudeContextDetails>()
+        const commands = rawClaudeCommands.get(next) ?? next.claude.slashCommands
+        if (commands && (!catalog || !observed.has('slashCommands'))) observedClaudeSlashCommands.set(client, commands)
         if (catalog) {
             const claude = { ...next.claude }
             for (const key of observed) delete claude[key]
@@ -445,6 +459,10 @@ export function publishContextDetails(
             }
             observedClaudeInventory.set(client, observed)
         }
+    }
+    const commandCandidates = observedClaudeSlashCommands.get(client)
+    if (candidate?.provider === 'claude' && candidate.claude && commandCandidates) {
+        candidate = { ...candidate, claude: { ...candidate.claude, slashCommands: [...commandCandidates] } }
     }
     client.updateMetadata((metadata) => {
         const current = metadata.contextDetails

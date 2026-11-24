@@ -245,6 +245,11 @@ export class SharedCodexProjection {
             } else if (event.type === 'token_count' || event.type.startsWith('thread_goal_')) {
                 const model = event.type === 'token_count' && turnId ? this.turnModels.get(turnId) : undefined;
                 if (event.type === 'token_count' && !this.parentThreadId) {
+                    const saved = this.session.getMetadata()?.contextDetails;
+                    // Resume can replay a previous turn without the model that
+                    // produced it. Preserve the attributed snapshot rather than
+                    // relabeling it or showing an unattributed event in the Web.
+                    if (!model && saved?.provider === 'codex' && saved.model && saved.usage?.contextTokens !== undefined) return;
                     this.onTokenUsage?.(event.info, model);
                 }
                 send({ ...event, ...(model ? { model } : {}), flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);

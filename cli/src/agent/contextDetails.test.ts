@@ -54,6 +54,29 @@ describe('Claude context details', () => {
         })).toMatchObject({ contextWindow: 1_000_000, usage: { contextTokens: 100 } })
     })
 
+    it('restores live commands when a later catalog clears the saved skill', () => {
+        let metadata: Metadata = { path: '/tmp/test', host: 'test', contextDetails: buildClaudeContextDetails({ system: { skills: ['hapi'] } })! }
+        const client = { updateMetadata: (handler: (current: Metadata) => Metadata) => { metadata = handler(metadata) } }
+        publishContextDetails(client, buildClaudeContextDetails({ system: { slash_commands: ['hapi', 'compact'] } })!)
+        expect(metadata.contextDetails?.claude?.slashCommands).toEqual(['compact'])
+        publishContextDetails(client, buildClaudeContextDetails({ system: { skills: [] } })!, {
+            claudeStartupCatalog: { tools: [], slashCommands: [] }
+        })
+        expect(metadata.contextDetails?.claude).toMatchObject({
+            skills: [], slashCommands: ['hapi', 'compact']
+        })
+    })
+
+    it('recomputes commands after a live skill list changes without mutating previous snapshots', () => {
+        let metadata: Metadata = { path: '/tmp/test', host: 'test' }
+        const client = { updateMetadata: (handler: (current: Metadata) => Metadata) => { metadata = handler(metadata) } }
+        publishContextDetails(client, buildClaudeContextDetails({ system: { skills: ['hapi'], slash_commands: ['hapi', 'compact'] } })!)
+        const before = metadata
+        publishContextDetails(client, buildClaudeContextDetails({ contextUsage: { skills: [] } })!)
+        expect(metadata.contextDetails?.claude?.slashCommands).toEqual(['hapi', 'compact'])
+        expect(before.contextDetails?.claude?.slashCommands).toEqual(['compact'])
+    })
+
     it('excludes skills from commands when init and skills arrive separately', () => {
         const init = buildClaudeContextDetails({
             system: { slash_commands: ['/hapi', '/compact'] }

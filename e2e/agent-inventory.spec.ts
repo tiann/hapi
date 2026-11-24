@@ -83,3 +83,14 @@ test('known MCP server names remain visible when scoped discovery is unavailable
     const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
     if (screenshots) await dialog.screenshot({ path: `${screenshots}/agent-inventory-known-mcp-names.png` })
 })
+
+
+test('a refreshed Claude inventory can show a restored slash command', async ({ page }) => {
+    await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=claude&restoredCommand=1')
+    await page.getByRole('button', { name: 'Open agent details' }).click()
+    const details = page.getByRole('dialog', { name: 'Agent details' })
+    await expect(details.getByText('/review', { exact: true })).toBeVisible()
+    await expect(details.getByRole('heading', { name: 'Skills' })).toHaveCount(0)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await details.screenshot({ path: `${screenshots}/agent-inventory-restored-command.png` })
+})

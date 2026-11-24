@@ -116,7 +116,7 @@ afterEach(async () => {
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
     attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState;
-    contextDetails?: Metadata['contextDetails']; resumeSettings?: Record<string, unknown> }) {
+    beforeBind?: (root: SharedCodexRoot) => void; contextDetails?: Metadata['contextDetails']; resumeSettings?: Record<string, unknown> }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
     let state: AgentState = opts?.initialState ?? { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex', contextDetails: opts?.contextDetails };
@@ -161,6 +161,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
     await root.prepare();
+    opts?.beforeBind?.(root);
     await root.bind('thread', { model: 'mock', thread: { turns: [] }, ...opts?.resumeSettings }, opts?.attached ?? false);
     const native = root.client as unknown as {
         initialized: boolean;
@@ -318,6 +319,20 @@ describe('shared root startup collaboration mode', () => {
 });
 
 describe('externally attached root', () => {
+    it('buffers startup notices by native thread ID until binding', async () => {
+        sharedHarness.runtimeInventory = Promise.resolve({ data: [{ name: 'early', tools: ['fresh'] }] });
+        const f = await fixture({ attached: true, beforeBind: root => {
+            const native = root.client as unknown as { notify(method: string, params: unknown): void };
+            native.notify('mcpServer/startupStatus/updated', { threadId: 'thread', name: 'early' });
+            native.notify('mcpServer/startupStatus/updated', { threadId: 'sibling', name: 'other' });
+        } });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([
+            { name: 'early', toolNames: ['fresh'] }
+        ]));
+        expect(sharedHarness.mcpStatusRequests).toEqual([['thread', 'early']]);
+    })
+
     it('reports the runtime disabled status for an attached MCP server', async () => {
         sharedHarness.runtimeInventory = Promise.resolve({ data: [{
             name: 'runtime-only', runtimeStatus: 'disabled', authStatus: 'unsupported', tools: {}
@@ -1154,6 +1169,28 @@ describe('shared steering availability', () => {
         await vi.waitFor(() => expect(sharedHarness.mcpInventoryArgs).toEqual([
             '-c', 'mcp_servers.qmd.enabled=false'
         ]));
+    });
+
+    it('preserves a rerouted usage snapshot during resume replay, then accepts attributed updates', async () => {
+        const f = await fixture({ contextDetails: {
+            version: 1, provider: 'codex', updatedAt: 10,
+            model: 'actual-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        } });
+        await f.root.activate();
+        f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', turnId: 'previous-turn',
+            tokenUsage: { last: { inputTokens: 75_000 }, total: { inputTokens: 75_000 } } });
+        await f.drain();
+        expect(f.metadata().contextDetails).toMatchObject({
+            model: 'actual-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        });
+
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'new-turn', status: 'inProgress' } });
+        f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', turnId: 'new-turn',
+            tokenUsage: { modelContextWindow: 128_000, last: { inputTokens: 10_000 }, total: { inputTokens: 85_000 } } });
+        await f.drain();
+        expect(f.metadata().contextDetails).toMatchObject({
+            model: 'mock', contextWindow: 128_000, usage: { contextTokens: 10_000 }
+        });
     });
 
     it('keeps the rerouted usage model and window while publishing inventory-only updates', async () => {
