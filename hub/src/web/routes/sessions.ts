@@ -1531,6 +1531,18 @@ export function createSessionsRoutes(
             if (flavor === 'grok') {
                 return c.json({ error: 'Model selection can only be changed for remote Grok sessions' }, 409)
             }
+            if (flavor === 'claude') {
+                return c.json({ error: 'Model selection can only be changed for remote Claude sessions' }, 409)
+            }
+            if (flavor === 'kimi') {
+                return c.json({ error: 'Model selection can only be changed for remote Kimi sessions' }, 409)
+            }
+            if (flavor === 'opencode') {
+                return c.json({ error: 'Model selection can only be changed for remote OpenCode sessions' }, 409)
+            }
+            if (flavor === 'copilot') {
+                return c.json({ error: 'Model selection can only be changed for remote Copilot sessions' }, 409)
+            }
         }
 
         // Pi commits the model before setting its thinking level, so a failure
@@ -1606,8 +1618,19 @@ export function createSessionsRoutes(
         if (!supportsEffort(flavor)) {
             return c.json({ error: 'Effort selection is not supported for this session type' }, 400)
         }
-        if (flavor === 'grok' && sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
-            return c.json({ error: 'Effort can only be changed for remote Grok sessions' }, 409)
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
+            if (flavor === 'claude') {
+                return c.json({ error: 'Effort can only be changed for remote Claude sessions' }, 409)
+            }
+            if (flavor === 'kimi') {
+                return c.json({ error: 'Effort can only be changed for remote Kimi sessions' }, 409)
+            }
+            if (flavor === 'copilot') {
+                return c.json({ error: 'Effort can only be changed for remote Copilot sessions' }, 409)
+            }
+            if (flavor === 'grok') {
+                return c.json({ error: 'Effort can only be changed for remote Grok sessions' }, 409)
+            }
         }
 
         try {
