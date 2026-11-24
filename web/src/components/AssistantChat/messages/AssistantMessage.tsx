@@ -99,6 +99,10 @@ export function HappyAssistantMessage() {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.sourceMessageIds
     })
+    const replySourceMessageIds = useAuiState((s) => {
+        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        return custom?.replySourceMessageIds
+    })
     const isCliOutput = useAuiState((s) => {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.kind === 'cli-output'
@@ -161,6 +165,7 @@ export function HappyAssistantMessage() {
             id={elementId}
             data-hapi-message-role="assistant"
             data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
+            data-hapi-reply-source-message-ids={replySourceMessageIds?.join(' ') || undefined}
             className={`happy-message ${rootClass} scroll-mt-4`}
         >
             {isCliOutput

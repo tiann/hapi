@@ -59,6 +59,7 @@ export type HappyChatMessageMetadata = {
     replyToMessageId?: string | null
     /** Raw HAPI message ids represented by this rendered assistant-ui card. */
     sourceMessageIds?: string[]
+    replySourceMessageIds?: string[]
 }
 
 export type HappyRuntimeExtras = Readonly<{
@@ -434,7 +435,7 @@ export function assignThreadMessageIds(
     return assignThreadMessageIdsWithStableWrappers(blocks, new WeakMap())
 }
 
-function getSourceMessageIdsForBlock(block: VisibleChatBlock): string[] {
+function getSourceMessageIdsForBlock(block: VisibleChatBlock, includeToolIdentities = false): string[] {
     if (
         block.kind === 'agent-text'
         || block.kind === 'agent-reasoning'
@@ -459,8 +460,8 @@ function getSourceMessageIdsForBlock(block: VisibleChatBlock): string[] {
         return [block.id]
     }
 
-    if (block.kind === 'tool-call') return [block.id]
-    if (block.kind === 'tool-group') return block.tools.map(tool => tool.id)
+    if (includeToolIdentities && block.kind === 'tool-call') return [block.id]
+    if (includeToolIdentities && block.kind === 'tool-group') return block.tools.map(tool => tool.id)
 
     return []
 }
@@ -517,14 +518,15 @@ function mergeUniqueMessageIds(target: string[], ids: readonly string[]): void {
  * a search hit can still locate the card after the join.
  */
 export function buildSourceMessageIdsByBlock(
-    blocks: readonly VisibleChatBlock[]
+    blocks: readonly VisibleChatBlock[],
+    includeToolIdentities = false
 ): Map<VisibleChatBlock, string[]> {
     const sourceIdsByBlock = new Map<VisibleChatBlock, string[]>()
 
     for (let index = 0; index < blocks.length; index += 1) {
         const block = blocks[index]
         if (visibleBlockRole(block) !== 'assistant') {
-            sourceIdsByBlock.set(block, getSourceMessageIdsForBlock(block))
+            sourceIdsByBlock.set(block, getSourceMessageIdsForBlock(block, includeToolIdentities))
             continue
         }
 
@@ -537,7 +539,7 @@ export function buildSourceMessageIdsByBlock(
 
         const sourceIds: string[] = []
         for (const groupBlock of group) {
-            mergeUniqueMessageIds(sourceIds, getSourceMessageIdsForBlock(groupBlock))
+            mergeUniqueMessageIds(sourceIds, getSourceMessageIdsForBlock(groupBlock, includeToolIdentities))
         }
         for (const groupBlock of group) {
             sourceIdsByBlock.set(groupBlock, sourceIds)
@@ -1057,6 +1059,10 @@ export function useHappyRuntime(props: {
         () => buildSourceMessageIdsByBlock(props.blocks),
         [props.blocks]
     )
+    const replySourceMessageIdsByBlock = useMemo(
+        () => buildSourceMessageIdsByBlock(props.blocks, true),
+        [props.blocks]
+    )
 
     const aggregates = useMemo(
         () => aggregateResponseGroups(props.blocks),
@@ -1082,7 +1088,10 @@ export function useHappyRuntime(props: {
             const aggregate = aggregates.get(block.id)
             const replyToMessageId = replyTargets.get(threadMessageId)
             const sourceMessageIds = sourceMessageIdsByBlock.get(block)
-            if (!aggregate && replyToMessageId === undefined && (!sourceMessageIds || sourceMessageIds.length === 0)) return message
+            const replySourceMessageIds = replySourceMessageIdsByBlock.get(block)
+            if (!aggregate && replyToMessageId === undefined
+                && (!sourceMessageIds || sourceMessageIds.length === 0)
+                && (!replySourceMessageIds || replySourceMessageIds.length === 0)) return message
             const existing = message.metadata?.custom as HappyChatMessageMetadata | undefined
             return {
                 ...message,
@@ -1099,12 +1108,13 @@ export function useHappyRuntime(props: {
                             roundSummary: aggregate.roundSummary
                         } : {}),
                         replyToMessageId,
-                        ...(sourceMessageIds && sourceMessageIds.length > 0 ? { sourceMessageIds } : {})
+                        ...(sourceMessageIds && sourceMessageIds.length > 0 ? { sourceMessageIds } : {}),
+                        ...(replySourceMessageIds && replySourceMessageIds.length > 0 ? { replySourceMessageIds } : {})
                     } satisfies HappyChatMessageMetadata
                 }
             }
         },
-        [aggregates, replyTargets, responseGroupTimestamps, sourceMessageIdsByBlock]
+        [aggregates, replyTargets, responseGroupTimestamps, sourceMessageIdsByBlock, replySourceMessageIdsByBlock]
     )
 
     // Use cached message converter for performance optimization

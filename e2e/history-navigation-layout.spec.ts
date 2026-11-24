@@ -191,6 +191,7 @@ test('selecting an outline item reveals it after the mobile composer returns', a
 
 test('reply navigation finds the prompt after a prepend joins and re-keys the tail reply', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&rekeyReply=1')
+    await page.addStyleTag({ content: '[data-hapi-message-role="assistant"] { min-height: 1200px; }' })
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Last part of the reply' })
     await expect(reply).toHaveAttribute('data-hapi-source-message-ids', 'm-3')
     const initialAnchor = await reply.getAttribute('id')
@@ -200,6 +201,7 @@ test('reply navigation finds the prompt after a prepend joins and re-keys the ta
     await expect(reply).not.toHaveAttribute('id', initialAnchor!)
     await expect(reply).toContainText('Earlier part of the reply')
     const prompt = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Prompt from the older page' })
+    await expect(page.getByText('Reached turn input', { exact: true })).toBeVisible()
     await expect(prompt).toBeFocused()
     await expect(prompt).toBeInViewport({ ratio: 0.9 })
     const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR

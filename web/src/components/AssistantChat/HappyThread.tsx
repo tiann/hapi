@@ -490,7 +490,7 @@ type PromptAnchorState = {
 }
 
 function getPromptAnchorSourceMessageIds(anchor: HTMLElement): string[] {
-    return anchor.dataset.hapiSourceMessageIds?.split(/\s+/).filter(Boolean) ?? []
+    return (anchor.dataset.hapiReplySourceMessageIds ?? anchor.dataset.hapiSourceMessageIds)?.split(/\s+/).filter(Boolean) ?? []
 }
 
 function findRekeyedReply(messages: HTMLElement[], sourceIds: readonly string[]): HTMLElement | undefined {
@@ -533,6 +533,31 @@ function findPromptBeforeWithOverlap(messages: HTMLElement[], end: number, state
         }
     }
     return target
+}
+
+export async function waitForPromptScrollSettlement(
+    viewport: HTMLElement,
+    target: HTMLElement,
+    isCancelled?: () => boolean
+): Promise<boolean> {
+    const deadline = Date.now() + 3_000
+    let lastTargetRect: { top: number; bottom: number } | null = null
+    let stableFrames = 0
+    while (Date.now() < deadline) {
+        await new Promise<void>(resolve => {
+            if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(() => resolve())
+            else window.setTimeout(resolve, 16)
+        })
+        if (isCancelled?.() || !target.isConnected) return false
+        const viewportRect = viewport.getBoundingClientRect()
+        const targetRect = target.getBoundingClientRect()
+        const visible = targetRect.top >= viewportRect.top - 1 && targetRect.bottom <= viewportRect.bottom + 1
+        const stable = lastTargetRect?.top === targetRect.top && lastTargetRect.bottom === targetRect.bottom
+        stableFrames = visible && stable ? stableFrames + 1 : 0
+        if (stableFrames >= 2) return true
+        lastTargetRect = { top: targetRect.top, bottom: targetRect.bottom }
+    }
+    return false
 }
 
 export function findPreviousUserMessage(
@@ -2973,6 +2998,8 @@ export function HappyThread(props: {
             if (!target) throw new Error('No preceding user message found')
             if (focusTarget) target.focus({ preventScroll: true })
             target.scrollIntoView({ block: 'start', behavior: 'smooth' })
+            const settled = await waitForPromptScrollSettlement(viewport, target, isCancelled)
+            if (!settled) throw new Error('Prompt scroll did not settle')
             const completionStatus = getPromptNavigationCompletionStatus(loadedOlderHistory)
             setPromptNavigationStatus(completionStatus)
             if (completionStatus === 'success') {

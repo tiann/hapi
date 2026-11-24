@@ -1610,7 +1610,7 @@ export function markMessagesInvoked(
              SET invoked_at = COALESCE(invoked_at, ?), delivery_state = ?
              WHERE session_id = ?
                AND local_id IN (${placeholders})
-               ${steered ? '' : 'AND invoked_at IS NULL'}`
+               ${steered ? "AND delivery_state IS NOT 'steered'" : 'AND invoked_at IS NULL'}`
         ).run(invokedAt, steered ? 'steered' : 'queued', sessionId, ...localIds).changes
         if (changes > 0) {
             const rows = prepareCached(db, `

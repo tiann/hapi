@@ -112,12 +112,15 @@ describe('MessageService durable turn inputs', () => {
         store.recordMessagesConsumed(session.id, ['original'], 1_000, 'default')
         store.recordMessagesConsumed(session.id, ['steer'], 1_500, 'default')
         store.recordMessagesConsumed(session.id, ['steer'], 2_000, 'default', true)
+        const updatedAtBeforeReplay = store.sessions.getSession(session.id)?.updatedAt
+        store.recordMessagesConsumed(session.id, ['steer'], 3_000, 'default', true)
         const service = new MessageService(store, makeIo(() => {}), makePublisher() as unknown as EventPublisher)
 
         const history = service.getMessages(session.id)
         expect(history.find(message => message.localId === 'original')?.steered).toBeUndefined()
         expect(history.find(message => message.localId === 'steer')?.steered).toBe(true)
         expect(history.find(message => message.localId === 'steer')?.invokedAt).toBe(1_500)
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(updatedAtBeforeReplay)
     })
 })
 
