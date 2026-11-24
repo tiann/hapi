@@ -534,6 +534,9 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
                 outlineOpen={navigationShell && outlineOpen}
                 outlineItems={navigationShell ? buildConversationOutline(reconciled.blocks) : []}
                 onOutlineOpenChange={setOutlineOpen}
+                initialTargetMessageId={fixtureParams.get('target') ?? undefined}
+                searchRequestId={fixtureParams.has('target') ? 1 : 0}
+                targetHighlightKind={fixtureParams.has('target') ? 'search' : undefined}
             />
             {navigationShell ? (
                 <footer data-testid="navigation-composer" className={`h-[150px] shrink-0 p-3 ${outlineOpen ? 'max-sm:hidden' : ''}`}>

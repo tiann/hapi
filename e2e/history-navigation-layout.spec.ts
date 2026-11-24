@@ -189,6 +189,50 @@ test('selecting an outline item reveals it after the mobile composer returns', a
 })
 
 
+test('keeps a footer destination when search recentering is still scheduled', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&rekeyReply=1&target=m-3')
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Last part of the reply' })
+    await reply.hover()
+    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter')
+    await page.evaluate(() => window.__probe.releaseBefore())
+    const prompt = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Prompt from the older page' })
+    await expect(prompt).toBeInViewport({ ratio: 0.9 })
+    await page.waitForTimeout(2_000)
+    await expect(prompt).toBeInViewport({ ratio: 0.9 })
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/response-navigation-search-recentering.png` })
+})
+
+
+test('settles at the start of a prompt taller than the viewport', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&rekeyReply=1')
+    await page.addStyleTag({ content: '[data-hapi-message-role="assistant"] { min-height: 1200px; } [data-hapi-turn-input="true"] { min-height: 1400px; }' })
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Last part of the reply' })
+    await reply.hover()
+    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter')
+    await page.evaluate(() => window.__probe.releaseBefore())
+    const prompt = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Prompt from the older page' })
+    await expect(page.getByText('Reached turn input', { exact: true })).toBeVisible()
+    await expect(prompt).toBeInViewport({ ratio: 0.1 })
+    await expect(page.getByText('Failed to locate', { exact: false })).toHaveCount(0)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/response-navigation-tall-prompt.png` })
+})
+
+
+test('keeps following new output after loading an older page that completes a short chat', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&rekeyReply=1')
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Last part of the reply' })
+    await reply.hover()
+    await reply.getByRole('button', { name: 'Jump to conversation start' }).click()
+    await page.evaluate(() => window.__probe.releaseBefore())
+    await page.evaluate(() => window.__probe.appendReply())
+    await expect(page.getByText('New reply line 25', { exact: true })).toBeInViewport()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/response-navigation-short-tail.png` })
+})
+
+
 test('reply navigation finds the prompt after a prepend joins and re-keys the tail reply', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&rekeyReply=1')
     await page.addStyleTag({ content: '[data-hapi-message-role="assistant"] { min-height: 1200px; }' })

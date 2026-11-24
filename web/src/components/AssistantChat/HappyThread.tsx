@@ -551,7 +551,9 @@ export async function waitForPromptScrollSettlement(
         if (isCancelled?.() || !target.isConnected) return false
         const viewportRect = viewport.getBoundingClientRect()
         const targetRect = target.getBoundingClientRect()
-        const visible = targetRect.top >= viewportRect.top - 1 && targetRect.bottom <= viewportRect.bottom + 1
+        // The intended destination is the prompt's start. Oversized prompts
+        // may extend below the viewport without being a failed jump.
+        const visible = targetRect.top >= viewportRect.top - 1 && targetRect.top < viewportRect.bottom - 1
         const stable = lastTargetRect?.top === targetRect.top && lastTargetRect.bottom === targetRect.bottom
         stableFrames = visible && stable ? stableFrames + 1 : 0
         if (stableFrames >= 2) return true
@@ -3027,6 +3029,7 @@ export function HappyThread(props: {
         historyNavigationRef.current = true
         setIsNavigationInFlight(true)
         clearConversationStartFeedback()
+        releaseSearchTargetHistoryLock()
         try {
             const assistantAnchorState = capturePromptAnchorState(viewportRef.current, messageId)
             // Resolve the prompt through the history-aware path even when its
@@ -3055,11 +3058,13 @@ export function HappyThread(props: {
                 setIsNavigationInFlight(false)
             }
         }
-    }, [clearConversationStartFeedback, scrollToPromptForMessage])
+    }, [clearConversationStartFeedback, releaseSearchTargetHistoryLock, scrollToPromptForMessage])
 
     const scrollToConversationStart = useCallback(async (): Promise<boolean> => {
         if (navigationInFlightRef.current) return false
         const currentViewport = viewportRef.current
+        releaseSearchTargetHistoryLock()
+        const wasTailFollowing = autoScrollEnabledRef.current && atBottomRef.current
         // A short, fully loaded conversation is already at both ends. There
         // is no scroll event to restore tail follow if we enter history mode.
         if (!hasMoreMessagesRef.current && currentViewport
@@ -3137,9 +3142,12 @@ export function HappyThread(props: {
             return false
         } finally {
             if (!isCancelled()) {
+                const restoreTail = wasTailFollowing && !hasMoreMessagesRef.current && currentViewport
+                    && currentViewport.scrollHeight - currentViewport.clientHeight <= 1
                 historyNavigationRef.current = false
-                autoScrollEnabledRef.current = false
-                atBottomRef.current = false
+                autoScrollEnabledRef.current = Boolean(restoreTail)
+                atBottomRef.current = Boolean(restoreTail)
+                if (restoreTail) onViewModeChangeRef.current('tail')
                 navigationInFlightRef.current = false
                 setIsNavigationInFlight(false)
             }
@@ -3148,7 +3156,8 @@ export function HappyThread(props: {
         clearInitialScrollTimers,
         clearPromptNavigationFeedback,
         loadOlderForNavigation,
-        markExplicitNavigationAwayFromBottom
+        markExplicitNavigationAwayFromBottom,
+        releaseSearchTargetHistoryLock
     ])
 
     useEffect(() => () => {
