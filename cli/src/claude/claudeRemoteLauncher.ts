@@ -318,6 +318,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         let effectiveContextModel: string | undefined;
         let effectiveContextWindow: number | undefined;
         let activeContextLaunch: symbol | null = null;
+        let usageSampleLaunch: symbol | null = null;
+        let usageSamplePreset: ReturnType<Session['getModel']> = null;
         const effectiveLimitFor = (model: string | null | undefined): number | undefined => {
             if (effectiveContextWindow === undefined) return undefined;
             if (!effectiveContextModel || !model) return effectiveContextWindow;
@@ -354,6 +356,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             effectiveContextWindow: effectiveLimitFor(windowModel)
                         });
                         if (details) {
+                            if (details.usage?.contextTokens !== undefined) {
+                                usageSampleLaunch = activeContextLaunch;
+                                usageSamplePreset = session.getModel();
+                            }
                             publishContextDetails(session.client, details);
                         }
                     }
@@ -866,7 +872,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 },
                                 effectiveContextWindow: usage.maxTokens
                             });
-                            if (details) publishContextDetails(session.client, details, { clearUsageOnWindowChange: true });
+                            const sameUsageSample = usageSampleLaunch === contextLaunch && usageSamplePreset === session.getModel();
+                            if (details) publishContextDetails(session.client, details, { clearUsageSample: !sameUsageSample });
                         },
                         onDroppedResult: (message) => sdkToLogConverter.consumeResultForAccounting(message),
                         onSpawn: (fresh) => {
@@ -935,7 +942,11 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                     model: lastSystemModel,
                                     effectiveContextWindow: contextWindow
                                 })
-                                if (details) publishContextDetails(session.client, details)
+                                if (details) {
+                                    usageSampleLaunch = activeContextLaunch;
+                                    usageSamplePreset = session.getModel();
+                                    publishContextDetails(session.client, details)
+                                }
                                 // The status bar keeps the last pre-compaction
                                 // usage until the next model response; refresh
                                 // it with the boundary's post-tokens the same

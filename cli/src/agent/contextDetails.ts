@@ -388,6 +388,8 @@ export interface PublishContextDetailsOptions {
     claudeStartupCatalog?: Pick<Metadata, 'tools' | 'slashCommands'>
     /** An authoritative preset/window change invalidates usage from the old sample. */
     clearUsageOnWindowChange?: boolean
+    /** The launch or preset changed, even if the numeric window stayed the same. */
+    clearUsageSample?: boolean
 }
 
 // Per-client, not persisted: saved inventory from a prior launch is not proof
@@ -422,22 +424,22 @@ export function publishContextDetails(
     client.updateMetadata((metadata) => {
         const current = metadata.contextDetails
         let incoming = candidate
-        if (candidate && options.preserveUsageSnapshot && current?.provider === 'claude') {
-            const sameModel = current.model === candidate.model
+        if (candidate && options.preserveUsageSnapshot) {
+            const savedUsage = current?.provider === 'claude' && current.model === candidate.model ? current.usage : undefined
             incoming = {
                 ...candidate,
                 // Result totals are cumulative conversation counters, never a
-                // current context sample. Only retain an existing actual sample.
-                usage: sameModel && current.usage ? {
-                    ...candidate.usage,
-                    ...(current.usage.contextTokens !== undefined ? { contextTokens: current.usage.contextTokens } : {}),
-                    ...(current.usage.cacheReadTokens !== undefined ? { cacheReadTokens: current.usage.cacheReadTokens } : {})
+                // current context sample. Preserve only the actual saved fields.
+                usage: savedUsage ? {
+                    ...(savedUsage.contextTokens !== undefined ? { contextTokens: savedUsage.contextTokens } : {}),
+                    ...(savedUsage.cacheReadTokens !== undefined ? { cacheReadTokens: savedUsage.cacheReadTokens } : {})
                 } : undefined
             }
         }
-        const clearUsage = Boolean(options.clearUsageOnWindowChange && current?.provider === 'claude'
-            && candidate?.provider === 'claude' && current.contextWindow !== undefined
-            && candidate.contextWindow !== undefined && current.contextWindow !== candidate.contextWindow)
+        const clearUsage = Boolean((options.clearUsageSample || (options.clearUsageOnWindowChange
+            && current?.contextWindow !== undefined && candidate?.contextWindow !== undefined
+            && current.contextWindow !== candidate.contextWindow)) && current?.provider === 'claude'
+            && candidate?.provider === 'claude')
         const previous = clearUsage && current ? { ...current, usage: undefined } : current
         const merged = incoming ? mergeContextDetails(previous, incoming) : previous
         const patch: Pick<Metadata, 'tools' | 'slashCommands'> = {}

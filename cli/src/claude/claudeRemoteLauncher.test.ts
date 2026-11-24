@@ -953,6 +953,58 @@ describe('claudeRemoteLauncher resume anchor', () => {
         }
     })
 
+    it('keeps assistant usage when the matching window probe arrives late', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        let probe: ContextCallbacks | undefined
+        harness.metadata = { contextDetails: {
+            version: 1, updatedAt: 10, provider: 'claude', model: 'claude-fable-5', contextWindow: 200_000,
+            usage: { contextTokens: 90_000 }
+        } }
+        harness.contextForLaunch = callbacks => { probe = callbacks }
+        harness.messages = [{ type: 'assistant', message: { role: 'assistant', model: 'claude-fable-5',
+            content: [{ type: 'text', text: 'Fresh answer' }], usage: { input_tokens: 100 } } }]
+        harness.afterFirstCall = () => {
+            probe?.onContextUsage({ model: 'claude-fable-5', maxTokens: 1_000_000 })
+            probe?.onMessage({ type: 'result', subtype: 'success', model: 'claude-fable-5',
+                total_cost_usd: 0, duration_ms: 1, num_turns: 1,
+                modelUsage: { 'claude-fable-5': { contextWindow: 1_000_000 } } })
+        }
+        try {
+            queue.push('hello', { permissionMode: 'default', model: 'fable[1m]' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                model: 'claude-fable-5', contextWindow: 1_000_000, usage: { contextTokens: 100 }
+            })
+        } finally { session.stopKeepAlive() }
+    })
+
+    it('clears inherited usage when the preset changes before the window probe', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        let probe: ContextCallbacks | undefined
+        harness.metadata = { contextDetails: {
+            version: 1, updatedAt: 10, provider: 'claude', model: 'claude-fable-5', contextWindow: 200_000,
+            usage: { contextTokens: 90_000 }
+        } }
+        harness.contextForLaunch = callbacks => { probe = callbacks }
+        harness.messages = [{ type: 'assistant', message: { role: 'assistant', model: 'claude-fable-5',
+            content: [{ type: 'text', text: 'Previous preset answer' }], usage: { input_tokens: 100 } } }]
+        harness.afterFirstCall = () => {
+            session.getModel = () => 'fable'
+            probe?.onContextUsage({ model: 'claude-fable-5', maxTokens: 200_000 })
+        }
+        try {
+            queue.push('hello', { permissionMode: 'default', model: 'fable[1m]' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails?.usage).toBeUndefined()
+        } finally { session.stopKeepAlive() }
+    })
+
     it('does not publish context details from a stale result marked hapi_skip_usage', async () => {
         const client = createClientStub()
         const { session, queue } = createSession(client, undefined)

@@ -390,8 +390,8 @@ export class SharedCodexRoot {
         const savedFallback = this.configuredMcpServerInventory === undefined
             ? normalizedSaved.filter(entry => !this.confirmedAbsentMcpServers.has(entry.name))
             : [];
-        const inventory = mergeCodexMcpInventories(bridgeInventory, savedFallback,
-            this.configuredMcpServerInventory ?? [], savedRuntime,
+        const inventory = mergeCodexMcpInventories(bridgeInventory, savedFallback, savedRuntime,
+            this.configuredMcpServerInventory ?? [],
             [...this.notifiedMcpServers].filter(name => !this.confirmedAbsentMcpServers.has(name)).map(name => ({ name })), runtime);
         return inventory.length > 0 || this.configuredMcpServerInventory !== undefined || this.confirmedAbsentMcpServers.size > 0
             ? { mcpServerInventory: inventory }

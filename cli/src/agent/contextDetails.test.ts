@@ -525,6 +525,26 @@ describe('mergeContextDetails', () => {
         expect(metadata.contextDetails?.usage).toBeUndefined()
     })
 
+    it('does not seed usage from a result as the first snapshot', () => {
+        let metadata: Metadata = { path: '/tmp/test', host: 'test' }
+        const client = { updateMetadata: (handler: (current: Metadata) => Metadata) => { metadata = handler(metadata) } }
+        publishContextDetails(client, buildClaudeContextDetails({
+            model: 'claude-opus', result: { model: 'claude-opus', usage: { input_tokens: 500_000 } }
+        })!, { preserveUsageSnapshot: true })
+        expect(metadata.contextDetails?.usage).toBeUndefined()
+    })
+
+    it('does not fill a missing cache count from aggregate result totals', () => {
+        let metadata: Metadata = { path: '/tmp/test', host: 'test', contextDetails: buildClaudeContextDetails({
+            model: 'claude-opus', messageUsage: { input_tokens: 100 }
+        })! }
+        const client = { updateMetadata: (handler: (current: Metadata) => Metadata) => { metadata = handler(metadata) } }
+        publishContextDetails(client, buildClaudeContextDetails({
+            model: 'claude-opus', result: { model: 'claude-opus', usage: { input_tokens: 500_000, cache_read_input_tokens: 20_000 } }
+        })!, { preserveUsageSnapshot: true })
+        expect(metadata.contextDetails?.usage).toEqual({ contextTokens: 100 })
+    })
+
     it('keeps fresh assistant usage when the result corrects its window', () => {
         const updates: Array<(metadata: Metadata) => Metadata> = []
         const client = { updateMetadata: (handler: (metadata: Metadata) => Metadata) => updates.push(handler) }
