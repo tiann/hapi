@@ -102,6 +102,26 @@ test('keeps Sort and filter on the toolbar before the shortcut with a long searc
     await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Sort and filter' })).toBeVisible()
 })
 
+test('keeps Sort and filter accessible with the shortcut at large font size', async ({ page }) => {
+    await page.addInitScript(() => {
+        document.addEventListener('DOMContentLoaded', () => document.documentElement.style.setProperty('--app-font-scale', '1.3'))
+    })
+    await page.addInitScript(() => localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1'))
+    await page.setViewportSize({ width: 364, height: 844 })
+    await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en&allRead')
+    const searchAndCheck = async () => {
+        await page.getByRole('button', { name: /Search sessions/ }).click()
+        const search = page.getByPlaceholder(/Search title/)
+        await search.fill('a very long collapsed session search query')
+        await search.blur()
+        await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Sort and filter' })).toBeVisible()
+    }
+    await searchAndCheck()
+    await page.evaluate(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
+    await page.reload()
+    await searchAndCheck()
+})
+
 test('uses the same mobile breakpoint as the machine chips with a larger browser font', async ({ baseURL }) => {
     const browser = await chromium.launch({ args: ['--no-sandbox', '--blink-settings=defaultFontSize=20'] })
     try {

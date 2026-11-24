@@ -3248,15 +3248,17 @@ export function SessionList(props: {
                 ? previous
                 : { morePx, gapPx }
         ))
-        // Reserve padding + gap + More so search cannot eat the trailing controls (#2040).
+        // Preserve the main filter and New alongside More when the optional shortcut is enabled.
         const row = headerRowRef.current
         const rowBox = row && row.clientWidth > 0 ? row.clientWidth : toolbarRowBoxPx
         const rowStyle = row ? getComputedStyle(row) : null
         const rowPad = rowStyle
             ? (Number.parseFloat(rowStyle.paddingLeft) || 0) + (Number.parseFloat(rowStyle.paddingRight) || 0)
             : 0
-        const trailing = gapPx
-            + morePx
+        const keepFiltersVisible = showMobileMachineFilter && showMachineFilterBar && isMobileMachineFilterViewport
+        const trailing = gapPx + morePx + (keepFiltersVisible
+            ? (next.view ?? TOOLBAR_ICON_PX) + gapPx + (renderHeader ? (next.new ?? TOOLBAR_ICON_PX) + gapPx : 0)
+            : 0)
         const nextSearchMax = rowBox > 0 ? Math.max(0, rowBox - rowPad - trailing) : 0
         setSearchMaxPx((previous) => previous === nextSearchMax ? previous : nextSearchMax)
     })

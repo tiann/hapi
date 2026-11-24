@@ -21,6 +21,7 @@ jobs:
                   session-list-fork-menu.spec.ts
                   composer-copy.spec.ts
                   session-list-scroll.spec.ts
+                  session-list-filter.spec.ts
                   session-activity.spec.ts
                   cold-initial-tail.spec.ts
                   scrollbar-auto-hide.spec.ts

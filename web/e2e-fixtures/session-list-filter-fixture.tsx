@@ -9,6 +9,7 @@ import type { SessionSummary } from '../src/types/api'
 import '../src/index.css'
 
 const lang = new URLSearchParams(location.search).get('lang')
+const allRead = new URLSearchParams(location.search).has('allRead')
 if (lang) localStorage.setItem('hapi-lang', lang)
 const sessions = [
     ['match', 'HAPI filter integration', 'mint', true, true, 9],
@@ -23,7 +24,7 @@ const sessions = [
     updatedAt: new Date(2026, 10, Number(day), 12).getTime(),
     lastUserMessageAt: new Date(2026, 10, Number(day), 12).getTime(),
     contentRevision: 1,
-    readState: { readRevision: unread ? 0 : 1, version: 0, manualUnread: false },
+    readState: { readRevision: unread && !allRead ? 0 : 1, version: 0, manualUnread: false },
     metadata: { path: '/work/hapi', name, machineId, flavor: 'codex', agentSessionId: id },
     metadataVersion: 0, agentStateVersion: 0, todosUpdatedAt: 0, todoProgress: null,
     pendingRequestsCount: 0, pendingRequestKinds: [], pendingRequests: [], backgroundTaskCount: 0,
