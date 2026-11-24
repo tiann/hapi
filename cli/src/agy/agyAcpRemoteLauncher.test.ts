@@ -579,6 +579,46 @@ describe('AgyAcpRemoteLauncher', () => {
         // updates for the cancelled tool calls still render.
         expect(backend.abortSoftSteersCalls).toBe(0);
     });
+
+    it('publishes a hub turn-complete settlement for open commands cancelled by Stop (#2021)', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let release!: () => void;
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'cmd-1',
+                name: 'Bash',
+                nativeName: 'run_command',
+                input: { command: 'sleep 60' },
+                status: 'in_progress',
+            });
+            await new Promise<void>((resolve) => { release = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+        });
+        queue.push('long command', REVIEW, 'a');
+
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        const abort = client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!;
+        const aborted = abort();
+        await vi.waitFor(() => expect(backend.cancelCalls).toEqual(['agy-conv-new']));
+        release();
+        await aborted;
+        queue.close();
+        await run;
+
+        const settlements = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { type?: string; stopReason?: string; settledCallIds?: string[] })
+            .filter((message) => message?.type === 'turn-complete');
+        expect(settlements).toEqual([
+            expect.objectContaining({
+                type: 'turn-complete',
+                stopReason: 'cancelled',
+                settledCallIds: expect.arrayContaining(['cmd-1']),
+            }),
+        ]);
+    });
 });
 
 describe('AgyAcpRemoteLauncher Stop', () => {

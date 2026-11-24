@@ -131,26 +131,31 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 
-    it('closes cancelled ACP calls at a turn-complete boundary while newer open calls still block', () => {
+    it('closes cancelled ACP calls listed on turn-complete while unlisted child calls stay live', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-acp-turn-complete')
 
         store.messages.upsertToolCallMessage(session.id, toolCallContent('call-cancelled', { status: 'in_progress' }), 'call-cancelled')
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-child', { status: 'in_progress' }), 'call-child')
         expect(store.messages.getLiveToolWork(session.id)).toBe(true)
 
-        // Cancelled prompts settle locally but never emit a terminal tool update;
-        // the converter's turn-complete row is the hub-visible boundary.
+        // Parent cancel settles only the ids retired by that prompt — an
+        // OpenCode child call that landed earlier must keep blocking archive.
         store.messages.addMessage(session.id, {
             role: 'agent',
             content: {
                 type: AGENT_MESSAGE_PAYLOAD_TYPE,
-                data: { type: 'turn-complete', stopReason: 'cancelled' },
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'cancelled',
+                    settledCallIds: ['call-cancelled'],
+                },
             },
         })
-        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
-
-        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-live', { status: 'in_progress' }), 'call-live')
         expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, toolCallResultContent('call-child', 'done'))
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
         store.close()
     })
 

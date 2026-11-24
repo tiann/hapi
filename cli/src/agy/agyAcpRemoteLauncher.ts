@@ -1263,9 +1263,37 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             this.closeBackgroundCommands(turn, commandWindowAfterStepIndex, false, internalWakeup);
         } finally {
             if (turn.aborted) {
+                // Snapshot open call ids before discard clears them — the hub
+                // needs a scoped turn-complete settlement so Archive is not
+                // stuck on a cancelled in_progress tool_call (#2021).
+                const settledCallIds = [...new Set([
+                    ...turn.openCommands,
+                    ...turn.commandCallIds,
+                    ...turn.deferredLiveCommandCalls.keys(),
+                ])]
                 // The stopped activity ends here: discard its late starts before ready.
                 await this.discardStoppedWakeup(turn);
                 this.syncTranscriptCursor();
+                if (settledCallIds.length > 0) {
+                    const settlement = convertAgentMessage({
+                        type: 'turn_complete',
+                        stopReason: turn.stopReason ?? 'cancelled',
+                        settledCallIds,
+                    })
+                    if (settlement) session.sendAgentMessage(settlement)
+                }
+            } else if (turn.stopReason === 'cancelled') {
+                // Agent-cancelled prompt (no local abort): still publish
+                // settlement for any command that never got a terminal update.
+                const settledCallIds = [...turn.openCommands]
+                if (settledCallIds.length > 0) {
+                    const settlement = convertAgentMessage({
+                        type: 'turn_complete',
+                        stopReason: 'cancelled',
+                        settledCallIds,
+                    })
+                    if (settlement) session.sendAgentMessage(settlement)
+                }
             }
             this.questionLabels.clear();
             // After a Stop or a lost agy process, agy may have dropped a steer

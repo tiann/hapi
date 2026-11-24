@@ -210,18 +210,22 @@ export class AcpToolCallLifetimes {
         }
     }
 
-    /** The cancelled prompt or child turn has ended. */
-    settleCancelled(scope: ToolCallScope = MAIN_TOOL_CALL_SCOPE): void {
-        let changed = false;
+    /** The cancelled prompt or child turn has ended.
+     *  Returns the HAPI lifetime ids closed by this settle so callers can
+     *  publish a scoped hub settlement (parent cancel must not close child
+     *  scopes that keep running). */
+    settleCancelled(scope: ToolCallScope = MAIN_TOOL_CALL_SCOPE): string[] {
+        const settledIds: string[] = [];
         for (const [key, lifetime] of this.lifetimes) {
             if (lifetime.scope === scope && lifetime.cancelled && !lifetime.closedForRequest) {
                 lifetime.closedForStart = true;
                 lifetime.closedForRequest = true;
                 this.touch(key, lifetime);
-                changed = true;
+                settledIds.push(lifetime.id);
             }
         }
-        if (changed) this.changed('close');
+        if (settledIds.length > 0) this.changed('close');
+        return settledIds;
     }
 
     /**

@@ -42,7 +42,7 @@ export type CodexMessage =
     }
     | { type: 'plan'; entries: PlanItem[] }
     | { type: 'error'; message: string }
-    | { type: 'turn-complete'; stopReason: string; numTurns?: number }
+    | { type: 'turn-complete'; stopReason: string; numTurns?: number; settledCallIds?: string[] }
     | {
         type: 'round-summary';
         summary: {
@@ -164,12 +164,17 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
         case 'error':
             return { type: 'error', message: message.message };
         case 'turn_complete':
-            // Hub-visible settlement boundary for derivedToolWork / archive.
-            // Chat normalize returns null for this type (no row in the UI).
+            // Hub-visible settlement for specific call ids (derivedToolWork /
+            // archive). Chat normalize returns null for this type (no UI row).
+            // Scope by settledCallIds so an OpenCode parent cancel cannot
+            // close a still-running child tool call that landed earlier.
             return {
                 type: 'turn-complete',
                 stopReason: message.stopReason,
                 ...(message.numTurns !== undefined ? { numTurns: message.numTurns } : {}),
+                ...(message.settledCallIds && message.settledCallIds.length > 0
+                    ? { settledCallIds: message.settledCallIds }
+                    : {}),
             };
         default: {
             // Unreachable while every AgentMessage variant is handled above —

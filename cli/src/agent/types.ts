@@ -90,7 +90,13 @@ export type AgentMessage =
     }
     | { type: 'plan'; items: PlanItem[] }
     | { type: 'generated_image'; imageId: string; fileName: string; mimeType: string; source?: InlineMediaSource }
-    | { type: 'turn_complete'; stopReason: string; numTurns?: number }
+    | {
+        type: 'turn_complete';
+        stopReason: string;
+        numTurns?: number;
+        /** HAPI tool-call lifetime ids retired by this turn (scoped settlement). */
+        settledCallIds?: string[];
+    }
     | { type: 'round_summary'; summary: AgentRoundSummary }
     | { type: 'error'; message: string };
 

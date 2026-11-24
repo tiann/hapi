@@ -944,8 +944,10 @@ export class AcpSdkBackend implements AgentBackend {
             await this.sessionUpdateQueue;
             this.messageHandler?.drainBuffers();
             // A call cancelled in this prompt has had its tail; the agent
-            // starting that id again from now on is a new call.
-            this.toolCallLifetimes.settleCancelled();
+            // starting that id again from now on is a new call. Only the
+            // main (prompt) scope is settled here — OpenCode child scopes
+            // keep running after a cancelled parent turn.
+            const settledCallIds = this.toolCallLifetimes.settleCancelled();
             try {
                 const latestUsageUpdate = this.readLatestUsageUpdate();
                 if (promptUsage) {
@@ -983,7 +985,8 @@ export class AcpSdkBackend implements AgentBackend {
                     onUpdate({
                         type: 'turn_complete',
                         stopReason,
-                        ...(numTurns !== undefined ? { numTurns } : {})
+                        ...(numTurns !== undefined ? { numTurns } : {}),
+                        ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
                     });
                 }
             } finally {

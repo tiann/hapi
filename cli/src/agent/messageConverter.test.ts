@@ -246,10 +246,12 @@ describe('convertAgentMessage', () => {
             type: 'turn_complete',
             stopReason: 'cancelled',
             numTurns: 2,
+            settledCallIds: ['shell:0#abc'],
         })).toEqual({
             type: 'turn-complete',
             stopReason: 'cancelled',
             numTurns: 2,
+            settledCallIds: ['shell:0#abc'],
         });
     });
 

@@ -570,15 +570,17 @@ function isTerminalToolCallRow(value: unknown): boolean {
     return toolCallStatusRank(data.status) === TOOL_CALL_STATUS_RANK.completed
 }
 
-/** ACP turn-end marker (`turn_complete` from the CLI converter). Closes every
- *  older open tool call the same way a Claude `result` row does — including
- *  cancelled prompts that never emitted a terminal tool-call update. */
-function isAcpTurnCompleteRow(value: unknown): boolean {
+/** ACP turn-end marker (`turn_complete` from the CLI converter). Carries the
+ *  specific call ids retired by that prompt — never a blanket "settle all
+ *  older rows", so an OpenCode parent cancel cannot hide a still-open child. */
+function acpTurnCompleteSettledCallIds(value: unknown): string[] {
     const record = unwrapRoleWrappedRecordEnvelope(value)
-    if (record?.role !== 'agent' || !isRecord(record.content)) return false
-    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    if (record?.role !== 'agent' || !isRecord(record.content)) return []
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return []
     const data = isRecord(record.content.data) ? record.content.data : null
-    return data?.type === 'turn-complete'
+    if (!data || data.type !== 'turn-complete') return []
+    if (!Array.isArray(data.settledCallIds)) return []
+    return data.settledCallIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
 }
 
 /** Whether the session tail still holds tool work that started but never
@@ -591,7 +593,8 @@ function isAcpTurnCompleteRow(value: unknown): boolean {
  *  is closed by a later human turn. Walking newest-first:
  *
  *  - ACP flavors: an unsettled, non-terminal `tool-call` row means open work.
- *    A later `turn-complete` row (cancelled or normal) closes every older call.
+ *    A later `turn-complete.settledCallIds` entry settles those ids only
+ *    (scoped — parent cancel must not close OpenCode child calls).
  *  - Claude passthrough: an assistant `tool_use` block with no later user
  *    `tool_result` for its id means open work. Tool-result carriers do NOT
  *    close the turn (the agent loop continues through them); a user row with
@@ -615,9 +618,13 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
         // closes every tool call older than it — stop, nothing is open.
         if (isUserMessageRow(decoded)) return false
 
-        // ACP turn boundary (including cancelled prompts): everything older
-        // is settled even when the last tool-call never got a terminal update.
-        if (isAcpTurnCompleteRow(decoded)) return false
+        // ACP scoped settlement (cancelled prompts): mark those call ids
+        // settled and keep scanning — a still-open child call must remain live.
+        const turnCompleteSettled = acpTurnCompleteSettledCallIds(decoded)
+        if (turnCompleteSettled.length > 0) {
+            for (const callId of turnCompleteSettled) settledAcpCallIds.add(callId)
+            continue
+        }
 
         const claudeData = claudeOutputData(decoded)
         if (claudeData !== null) {
