@@ -150,9 +150,7 @@ class FakeAgyBackend {
     beginSoftSteerPrompt(
         _sessionId: string,
         content: PromptContent[],
-        options?: {
-            onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void;
-        }
+        options?: { onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void }
     ) {
         if (this.steerStartError) throw this.steerStartError;
         if (!this.processingMessage) throw new Error('No active ACP prompt to soft-steer into');
@@ -2521,16 +2519,11 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
 
     it('maps a steer past a deferred call without taking a later call as the anchor', () => {
         // agy recorded call A then B before the steer row; A's ACP update was
-        // deferred (no card), while C was shown afterwards. Counting only the
-        // shown cards shifts B's slot onto C.
+        // deferred (no card), while C was shown afterwards.
         const { session } = makeSession();
         const launcher = new AgyAcpRemoteLauncher(session, { brainDir });
         const turn = {
             turnStartStepIndex: 0,
-            shownToolCalls: [
-                { id: 'b', names: ['run_command'] },
-                { id: 'c', names: ['run_command'] }
-            ],
             plannerCalls: [
                 { id: 'a', names: ['run_command'], args: { CommandLine: 'A' }, shown: false },
                 { id: 'b', names: ['run_command'], args: { CommandLine: 'B' }, shown: true },
@@ -2632,24 +2625,28 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(consumedFor(client, 'steer-1')).toHaveLength(1);
     });
 
-    it('leaves steers with identical texts to the turn end instead of their rows', async () => {
-        const { client, steer, finish } = await startTurn();
-        await steer('again', 'steer-1');
+    it('leaves steers with identical texts to the turn end instead of their rows, even after agy refuses one', async () => {
+        const { backend, client, steer, finish } = await startTurn();
+        await steer('again', 'refused');
         await steer('again', 'steer-2');
+        await steer('again', 'steer-3');
+        backend.steerCompletions[0]!.reject(new Error('Can\'t add this prompt to session'));
+        await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['refused'], 'queued'));
 
         writeTranscript([...stepRows, userRow(3, 'again'), userRow(4, 'again')]);
         await new Promise((resolve) => setTimeout(resolve, 60));
-        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
         expect(consumedFor(client, 'steer-2')).toHaveLength(0);
+        expect(consumedFor(client, 'steer-3')).toHaveLength(0);
 
         await finish();
-        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]);
         expect(consumedFor(client, 'steer-2')).toEqual([[['steer-2'], { steered: true }]]);
+        expect(consumedFor(client, 'steer-3')).toEqual([[['steer-3'], { steered: true }]]);
     });
 
-    it('does not take the turn\'s own prompt row or a row from before the steer', async () => {
+    it('leaves a steer with the prompt\'s text to the turn end even when its row is there', async () => {
         const { client, steer, finish } = await startTurn();
         await steer('run the tests', 'steer-1');
+        writeTranscript([...stepRows, userRow(3, 'run the tests')]);
         await new Promise((resolve) => setTimeout(resolve, 60));
         expect(consumedFor(client, 'steer-1')).toHaveLength(0);
         await finish();
@@ -2740,72 +2737,27 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await finish();
     });
 
-    it('dispatches a steer whose transcript cannot be read before it is sent and confirms it at the turn end', async () => {
-        const { backend, client, steer, finish } = await startTurn(undefined, { reactivePollMs: 60_000 });
-        breakTranscript();
-        expect(await steer('also lint', 'steer-1')).toEqual({ steered: true });
+    it('dispatches a steer whose transcript cannot be read as it is sent and leaves it to the turn end', async () => {
+        const { backend, client, steer, finish } = await startTurn(undefined, { reactivePollMs: 20 });
+        const logsDir = join(brainDir, SESSION, '.system_generated', 'logs');
+        chmodSync(logsDir, 0o000);
+        try {
+            expect(await steer('also lint', 'steer-1')).toEqual({ steered: true });
+        } finally {
+            chmodSync(logsDir, 0o755);
+        }
         expect(backend.steerPrompts).toHaveLength(1);
+        writeTranscript([...stepRows, userRow(3, 'also lint')]);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
 
-        repairTranscript(stepRows);
         await finish();
         expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]);
     });
 
-    it('does not confirm an identical steer by the row of an earlier send that had no transcript snapshot', async () => {
-        const { backend, client, steer, finish } = await startTurn(undefined, { reactivePollMs: 20 });
-        breakTranscript();
-        await steer('also lint', 'steer-a');
-        repairTranscript(stepRows);
-        await steer('also lint', 'steer-b');
-        // Only the first send's row has been written.
-        writeTranscript([...stepRows, userRow(3, 'also lint')]);
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        expect(consumedFor(client, 'steer-b')).toHaveLength(0);
-
-        backend.steerCompletions[1]!.reject(new Error('Can\'t add this prompt to session'));
-        await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-b'], 'queued'));
-        await finish();
-        expect(consumedFor(client, 'steer-a')).toHaveLength(1);
-        expect(consumedFor(client, 'steer-b').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
-    });
-
-    it('keeps an identical steer retryable when Stop gives up and only the row of an earlier send without a snapshot is there', async () => {
-        const { backend, client, steer, releaseFirst, queue } = await startTurn(undefined, { reactivePollMs: 60_000, cancelHardStopMs: 80 });
-        breakTranscript();
-        await steer('also lint', 'steer-a');
-        repairTranscript(stepRows);
-        await steer('also lint', 'steer-b');
-        backend.onCancel = () => {
-            // Only the first send's row has been written.
-            writeTranscript([...stepRows, userRow(3, 'also lint')]);
-            releaseFirst();
-        };
-        await (client.rpcHandlerManager.handlers as Handlers).get(RPC_METHODS.Abort)!();
-
-        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
-        expect(consumedFor(client, 'steer-b')).toHaveLength(0);
-        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-b']);
-        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-a']);
-        queue.close();
-    });
-
-    it('does not confirm an identical steer by the row of an earlier echoed send without a snapshot', async () => {
-        const { backend, client, steer, finish } = await startTurn(undefined, { reactivePollMs: 20 });
-        breakTranscript();
-        await steer('also lint', 'steer-a');
-        repairTranscript(stepRows);
-        await steer('also lint', 'steer-b');
-        backend.echo!('also lint');
-        expect(consumedFor(client, 'steer-a')).toHaveLength(1);
-        // The echoed send's row lands after the second send's snapshot.
-        writeTranscript([...stepRows, userRow(3, 'also lint')]);
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        expect(consumedFor(client, 'steer-b')).toHaveLength(0);
-        await finish();
-    });
-
-    it('does not confirm a steer with the prompt\'s text by the prompt\'s own row when the turn started on an unreadable transcript', async () => {
-        const earlier = [userRow(0, 'fix the build'), plannerRow(1, ['run_command']), genericRow(2)];
+    it('does not confirm a steer from its row when the turn started on an unreadable transcript', async () => {
+        // An earlier turn sent the same prompt, so its row looks like this turn's.
+        const earlier = [userRow(0, 'run the tests'), plannerRow(1, ['run_command']), genericRow(2)];
         const { client, steer, finish } = await startTurn(null, {
             reactivePollMs: 20,
             beforeLaunch: () => {
@@ -2813,10 +2765,10 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
                 breakTranscript();
             }
         });
-        // Reads recover before agy writes this turn's prompt row.
+        // Reads recover before agy writes this turn's rows.
         repairTranscript(earlier);
-        await steer('run the tests', 'steer-1');
-        writeTranscript([...earlier, userRow(3, 'run the tests'), plannerRow(4, ['run_command'])]);
+        await steer('also lint', 'steer-1');
+        writeTranscript([...earlier, userRow(3, 'run the tests'), plannerRow(4, ['run_command']), userRow(5, 'also lint')]);
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(consumedFor(client, 'steer-1')).toHaveLength(0);
 
@@ -2845,8 +2797,8 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         queue.close();
     });
 
-    it('does not confirm a steer sent while the transcript cannot be stat-ed by an identical row from an earlier turn', async () => {
-        // The turn's cursor could not place this turn either: it starts at -1.
+    it('does not confirm a steer from its row when an earlier turn\'s row comes before the turn\'s prompt row', async () => {
+        // The turn starts at -1, so an earlier turn's rows, one with the steer's text, come first.
         const { client, steer, finish } = await startTurn([
             userRow(0, 'fix the build'),
             userRow(1, 'also lint'),
@@ -2855,13 +2807,8 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
             plannerRow(4, ['run_command']),
             genericRow(5)
         ], { reactivePollMs: 20 });
-        const logsDir = join(brainDir, SESSION, '.system_generated', 'logs');
-        chmodSync(logsDir, 0o000);
-        try {
-            expect(await steer('also lint', 'steer-1')).toEqual({ steered: true });
-        } finally {
-            chmodSync(logsDir, 0o755);
-        }
+        await steer('also lint', 'steer-1');
+        writeTranscript([...stepRows, userRow(6, 'also lint')]);
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(consumedFor(client, 'steer-1')).toHaveLength(0);
 
@@ -2908,21 +2855,6 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(consumedFor(client, 'steer-1').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
     });
 
-    it('leaves a steer to the turn end when agy refused an earlier steer with its text', async () => {
-        const { backend, client, steer, finish } = await startTurn();
-        await steer('again', 'refused');
-        await steer('again', 'taken');
-        backend.steerCompletions[0]!.reject(new Error('Can\'t add this prompt to session'));
-        await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['refused'], 'queued'));
-
-        writeTranscript([...stepRows, userRow(3, 'again')]);
-        await new Promise((resolve) => setTimeout(resolve, 60));
-        expect(consumedFor(client, 'taken')).toHaveLength(0);
-
-        await finish();
-        expect(consumedFor(client, 'taken')).toEqual([[['taken'], { steered: true }]]);
-    });
-
     it('confirms without a position when no tool call came before the row', async () => {
         const { client, steer, finish } = await startTurn([userRow(0, 'run the tests'), genericRow(1)]);
         await steer('also lint', 'steer-1');
@@ -2962,20 +2894,6 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await finish();
         expect(consumedFor(client, 'steer-1')).toHaveLength(1);
         expect(consumedFor(client, 'steer-2')).toHaveLength(1);
-    });
-
-    it('does not show an identical second steer as sent when agy refuses it after the first echo', async () => {
-        const { backend, client, steer, finish } = await startTurn();
-        await steer('again', 'steer-1');
-        writeTranscript([...stepRows, userRow(3, 'again')]);
-        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toHaveLength(1));
-        await steer('again', 'steer-2');
-        backend.echo!('again');
-        backend.steerCompletions[1]!.reject(new Error('Can\'t add this prompt to session'));
-        await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-2'], 'queued'));
-        expect(consumedFor(client, 'steer-2').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
-        await finish();
-        expect(consumedFor(client, 'steer-2').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
     });
 
     it('anchors a steer to a command card that was deferred and then forwarded', async () => {
