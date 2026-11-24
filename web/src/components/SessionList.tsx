@@ -1437,8 +1437,10 @@ type SessionItemProps = {
     onRequestDelete: (session: SessionSummary) => void
     onRequestRename: (sessionId: string) => void
     onRequestExport: (sessionId: string) => void
+    onRequestLinkPr: (sessionId: string) => void
     renameOpen: boolean
     exportOpen: boolean
+    linkPrOpen: boolean
     session: SessionSummary
     onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     showPath?: boolean
@@ -1476,8 +1478,10 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         onSelect,
         onRequestRename,
         onRequestExport,
+        onRequestLinkPr,
         renameOpen,
         exportOpen,
+        linkPrOpen,
         showPath = true,
         api,
         features,
@@ -1498,7 +1502,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
-    const [linkPrOpen, setLinkPrOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
     const prChipDisplay = features?.prChipDisplay
@@ -1857,7 +1860,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 sessionGlobalPinned={Boolean(s.globalPinned)}
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
                 onRename={() => onRequestRename(s.id)}
-                onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
+                onLinkPr={githubPrAwarenessEnabled ? () => onRequestLinkPr(s.id) : undefined}
                 linkedPr={linkedPr}
                 onExport={() => onRequestExport(s.id)}
                 readTarget={s}
@@ -1933,15 +1936,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 />
             ) : null}
 
-            <LinkPrDialog
-                isOpen={linkPrOpen}
-                onClose={() => setLinkPrOpen(false)}
-                currentPrimaryLabel={primaryPrRef ? `${primaryPrRef.repo}#${primaryPrRef.number}` : null}
-                onUpsert={upsertExternalRef}
-                onRemovePrimary={primaryPrRef ? removePrimaryExternalRef : undefined}
-                isPending={isPending}
-            />
-
             {archiveOpen ? (
                 <ArchiveSessionDialog
                     isOpen={true}
@@ -2006,6 +2000,22 @@ function PullRefreshIcon(props: { rotation: number }) {
     )
 }
 
+function StableLinkPrDialog(props: { session: SessionSummary; api: ApiClient | null; onClose: () => void }) {
+    const { session, api, onClose } = props
+    const { upsertExternalRef, removePrimaryExternalRef, isPending } = useSessionActions(api, session.id, session.metadata?.flavor ?? null)
+    const primaryPrRef = getPrimaryGithubPrRef(session.metadata?.externalRefs)
+    return (
+        <LinkPrDialog
+            isOpen={true}
+            onClose={onClose}
+            currentPrimaryLabel={primaryPrRef ? `${primaryPrRef.repo}#${primaryPrRef.number}` : null}
+            onUpsert={upsertExternalRef}
+            onRemovePrimary={primaryPrRef ? removePrimaryExternalRef : undefined}
+            isPending={isPending}
+        />
+    )
+}
+
 function StableRenameSessionDialog(props: {
     session: SessionSummary
     api: ApiClient | null
@@ -2064,6 +2074,8 @@ export function SessionList(props: {
     const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null)
     const [renameTargetId, setRenameTargetId] = useState<string | null>(null)
     const [exportTargetId, setExportTargetId] = useState<string | null>(null)
+    const [linkPrTargetId, setLinkPrTargetId] = useState<string | null>(null)
+    const linkPrTarget = props.sessions.find(session => session.id === linkPrTargetId) ?? null
     const renameTarget = props.sessions.find(session => session.id === renameTargetId) ?? null
     const { features } = useFeatures(api)
     const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
@@ -2917,8 +2929,10 @@ export function SessionList(props: {
                                             onRequestDelete={setDeleteTarget}
                                             onRequestRename={setRenameTargetId}
                                             onRequestExport={setExportTargetId}
+                                            onRequestLinkPr={setLinkPrTargetId}
                                             renameOpen={renameTargetId === s.id}
                                             exportOpen={exportTargetId === s.id}
+                                            linkPrOpen={linkPrTargetId === s.id}
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}
@@ -3006,8 +3020,10 @@ export function SessionList(props: {
             onRequestDelete={setDeleteTarget}
             onRequestRename={setRenameTargetId}
             onRequestExport={setExportTargetId}
+            onRequestLinkPr={setLinkPrTargetId}
             renameOpen={renameTargetId === s.id}
             exportOpen={exportTargetId === s.id}
+            linkPrOpen={linkPrTargetId === s.id}
             session={s}
             onSelect={props.onSelect}
             showPath={false}
@@ -3923,8 +3939,10 @@ export function SessionList(props: {
                                             onRequestDelete={setDeleteTarget}
                                             onRequestRename={setRenameTargetId}
                                             onRequestExport={setExportTargetId}
+                                            onRequestLinkPr={setLinkPrTargetId}
                                             renameOpen={renameTargetId === s.id}
                                             exportOpen={exportTargetId === s.id}
+                                            linkPrOpen={linkPrTargetId === s.id}
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}
@@ -4006,6 +4024,9 @@ export function SessionList(props: {
                 />
             ) : null}
             </div>
+            {linkPrTarget ? (
+                <StableLinkPrDialog key={linkPrTarget.id} session={linkPrTarget} api={api} onClose={() => setLinkPrTargetId(null)} />
+            ) : null}
             {exportTargetId ? (
                 <SessionExportDialog
                     key={exportTargetId}

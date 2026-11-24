@@ -49,6 +49,30 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
 }
 
 describe('SessionList PR chip', () => {
+    it('keeps an unsaved PR link mounted when a Combined session disconnects', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const connected = makeSession({ id: 'link-draft', active: true, metadata: { path: '/tmp/demo', name: 'Link draft' } })
+        const renderList = (session: SessionSummary) => (
+            <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>
+                <ToastProvider>
+                    <I18nProvider>
+                        <SessionList sessions={[session]} selectedSessionId={null} onSelect={vi.fn()}
+                            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false} api={null} />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+        const { rerender } = render(renderList(connected))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Link draft/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Link pull request…' }))
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'https://github.com/tiann/hapi/pull/2093' } })
+
+        rerender(renderList({ ...connected, active: false }))
+
+        expect(screen.getByRole('textbox')).toHaveValue('https://github.com/tiann/hapi/pull/2093')
+    })
+
     it('renders an interactive PR chip beside the row button that opens the PR', async () => {
         const onSelect = vi.fn()
         render(

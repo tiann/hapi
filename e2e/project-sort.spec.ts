@@ -96,6 +96,18 @@ test('keeps a Combined export alive when its session disconnects', async ({ page
 })
 
 
+test('keeps an unsaved PR link when a Combined session disconnects', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=combined-count&linkPr=1`)
+    await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Link pull request…' }).click()
+    await page.getByRole('textbox').fill('https://github.com/tiann/hapi/pull/2093')
+    await page.evaluate(() => window.updateProjectSession('mine-session', { active: false }))
+    await expect(page.getByRole('textbox')).toHaveValue('https://github.com/tiann/hapi/pull/2093')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-link-pr-after-disconnect.png`, fullPage: true })
+})
+
+
 test('keeps a Combined rename draft when its session disconnects', async ({ page }) => {
     await page.goto(`${fixtureUrl}?mode=combined-count`)
     await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })

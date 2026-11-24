@@ -102,6 +102,10 @@ const queryClient = new QueryClient({
     },
 })
 
+const linkPrApi = {
+    getFeatures: async () => ({ githubPrAwareness: { enabled: true, source: 'default' }, prChipDisplay: undefined })
+} as unknown as ApiClient
+
 const exportApi = {
     getSessionExport: () => new Promise(resolve => {
         window.finishProjectExport = () => resolve({ type: 'warning', count: 1, limit: 0, estimatedBytes: 100 })
@@ -141,7 +145,7 @@ function ProjectSortFixture() {
                 onRefresh={async () => {}}
                 isLoading={false}
                 renderHeader={actionSearch}
-                api={params.has('exportPending') ? exportApi : null}
+                api={params.has('linkPr') ? linkPrApi : params.has('exportPending') ? exportApi : null}
             />
         </div>
     )
