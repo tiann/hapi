@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AuthProxyRedirectError } from '@/api/authProxy'
 import { ApiClient, ApiError } from '@/api/client'
 import type { AuthResponse } from '@/types/api'
+import { isAuthRejectionStatus, TELEGRAM_AUTH_DISABLED_MESSAGE, type AuthConnectionFailure } from '@/lib/authConnection'
+
+const AUTH_REQUEST_TIMEOUT_MS = 15_000
 
 export type AuthSource =
     | { type: 'telegram'; initData: string }
@@ -47,7 +50,7 @@ function classifyAuthError(error: unknown): AuthErrorKind {
         if (error.status === 401 && error.code === 'not_bound') {
             return 'not_bound'
         }
-        if (error.status === 400 || error.status === 401 || error.status === 403) {
+        if (isAuthRejectionStatus(error.status)) {
             return 'rejected'
         }
         return 'transient'
@@ -82,6 +85,9 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     isLoading: boolean
     error: string | null
     needsBinding: boolean
+    connectionError: AuthConnectionFailure | null
+    retryConnection: () => void
+    cancelRecovery: () => void
     bind: (accessToken: string) => Promise<void>
     handleSseClosed: () => void
 } {
@@ -91,11 +97,14 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         authSource: AuthSource
         baseUrl: string
     } | null>(null)
+    const [connectionFailure, setConnectionFailure] = useState<{ source: AuthSource; baseUrl: string; failure: AuthConnectionFailure } | null>(null)
+    const connectionError = connectionFailure?.source === authSource && connectionFailure.baseUrl === baseUrl ? connectionFailure.failure : null
     const [isLoading, setIsLoading] = useState<boolean>(false)
     const [error, setError] = useState<string | null>(null)
     const [needsBinding, setNeedsBinding] = useState<boolean>(false)
     const [transientRetryTick, setTransientRetryTick] = useState<number>(0)
     const refreshPromiseRef = useRef<Promise<string | null> | null>(null)
+    const authAbortRef = useRef<AbortController | null>(null)
     const tokenRef = useRef<string | null>(null)
     const lastRefreshAttemptRef = useRef<number>(0)
     const authEpochRef = useRef<number>(0)
@@ -149,10 +158,14 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
 
         const run = async () => {
             lastRefreshAttemptRef.current = now
-
+            const controller = new AbortController()
+            authAbortRef.current = controller
+            let timedOut = false
+            const timeout = setTimeout(() => { timedOut = true; controller.abort() }, AUTH_REQUEST_TIMEOUT_MS)
             try {
                 const client = new ApiClient('', { baseUrl })
-                const auth = await client.authenticate(getAuthPayload(currentSource))
+                const auth = await client.authenticate(getAuthPayload(currentSource), { signal: controller.signal })
+                if (controller.signal.aborted) throw controller.signal.reason
                 if (authEpochRef.current !== epoch) {
                     return null
                 }
@@ -162,6 +175,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                 tokenRef.current = auth.token
                 setSession({ token: auth.token, user: auth.user, authSource: currentSource, baseUrl })
                 setError(null)
+                setConnectionFailure(null)
                 setNeedsBinding(false)
                 setTransientRetryTick(0)
                 return auth.token
@@ -169,7 +183,9 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                 if (authEpochRef.current !== epoch) {
                     return null
                 }
-                const kind = classifyAuthError(error)
+                if (controller.signal.aborted && !timedOut) return tokenRef.current
+                setConnectionFailure(null)
+                const kind = controller.signal.aborted ? 'transient' : classifyAuthError(error)
                 lastErrorKindRef.current = kind
 
                 if (currentSource.type === 'telegram' && kind === 'not_bound') {
@@ -178,6 +194,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                     tokenRef.current = null
                     setSession(null)
                     setError(null)
+                    setConnectionFailure(null)
                     setNeedsBinding(true)
                     return null
                 }
@@ -216,6 +233,8 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                 // Transient network / gateway failure: schedule bounded retries.
                 // Preserve an active session even past JWT expMs so flaky networks
                 // do not dump authenticated users onto the login prompt.
+                setConnectionFailure({ source: currentSource, baseUrl, failure: error instanceof ApiError && (!controller.signal.aborted || !isAuthRejectionStatus(error.status)) ? { status: error.status,
+                    ...(error.status === 503 && error.code === TELEGRAM_AUTH_DISABLED_MESSAGE ? { diagnostic: TELEGRAM_AUTH_DISABLED_MESSAGE } : {}) } : {} })
                 const attempt = transientFailureCountRef.current + 1
                 transientFailureCountRef.current = attempt
                 nextTransientRetryAtRef.current = Date.now() + getTransientRetryDelayMs(attempt, hadToken)
@@ -225,6 +244,9 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                     setError(error instanceof Error ? error.message : 'Auth failed')
                 }
                 return null
+            } finally {
+                clearTimeout(timeout)
+                if (authAbortRef.current === controller) authAbortRef.current = null
             }
         }
 
@@ -250,6 +272,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         const epoch = authEpochRef.current
         setIsLoading(true)
         setError(null)
+        setConnectionFailure(null)
         try {
             const client = new ApiClient('', { baseUrl })
             const auth = await client.bind({ initData: currentSource.initData, accessToken })
@@ -300,6 +323,8 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
 
     useEffect(() => {
         authEpochRef.current += 1
+        authAbortRef.current?.abort()
+        authAbortRef.current = null
         const epoch = authEpochRef.current
         authSourceRef.current = authSource
         tokenRef.current = null
@@ -311,12 +336,15 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         setTransientRetryTick(0)
         setSession(null)
         setError(null)
+        setConnectionFailure(null)
         setNeedsBinding(false)
 
         if (!authSource) {
             setIsLoading(false)
             return () => {
                 authEpochRef.current += 1
+                authAbortRef.current?.abort()
+                authAbortRef.current = null
                 refreshPromiseRef.current = null
             }
         }
@@ -330,6 +358,8 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
 
         return () => {
             authEpochRef.current += 1
+            authAbortRef.current?.abort()
+            authAbortRef.current = null
             refreshPromiseRef.current = null
         }
     }, [authSource, baseUrl, refreshAuth])
@@ -439,5 +469,20 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         }
     }, [refreshAuth])
 
-    return { token, user, api, isLoading, error, needsBinding, bind, handleSseClosed }
+    const retryConnection = useCallback(() => {
+        const epoch = authEpochRef.current
+        const retry = () => { void refreshAuth({ force: true, expectedEpoch: epoch }) }
+        const pending = refreshPromiseRef.current
+        if (pending) {
+            authAbortRef.current?.abort()
+            void pending.then(retry, retry)
+        } else retry()
+    }, [refreshAuth])
+    const cancelRecovery = useCallback(() => {
+        authEpochRef.current += 1
+        authAbortRef.current?.abort()
+        authAbortRef.current = null
+        refreshPromiseRef.current = null
+    }, [])
+    return { token, user, api, isLoading, error, needsBinding, connectionError, retryConnection, cancelRecovery, bind, handleSseClosed }
 }

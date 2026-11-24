@@ -69,7 +69,8 @@ afterEach(async () => {
 });
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
-    attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
+    attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState;
+    resumeSettings?: Record<string, unknown> }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
     let state: AgentState = opts?.initialState ?? { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
@@ -111,7 +112,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
     await root.prepare();
-    await root.bind('thread', { model: 'mock', thread: { turns: [] } }, opts?.attached ?? false);
+    await root.bind('thread', { model: 'mock', thread: { turns: [] }, ...opts?.resumeSettings }, opts?.attached ?? false);
     const native = root.client as unknown as {
         initialized: boolean;
         thread: { id: string; turns: NativeTurn[] };
@@ -133,6 +134,26 @@ session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
         end,
     };
 }
+
+describe('shared root startup collaboration mode', () => {
+    it.each(['default', 'plan'] as const)('keeps the reported %s mode without sending another update', async mode => {
+        const f = await fixture({ resumeSettings: { collaborationMode: { mode } } });
+        const request = vi.spyOn(f.root.client, 'request');
+        await f.root.activate({ collaborationMode: mode });
+        expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+        expect(f.sessionReady).toHaveBeenCalledOnce();
+    });
+
+    it.each(['plan', null])('requests Default when the resume response reports %s', async mode => {
+        const f = await fixture({ resumeSettings: { collaborationMode: mode ? { mode } : null } });
+        const request = vi.spyOn(f.root.client, 'request');
+        await f.root.activate({ collaborationMode: 'default' });
+        expect(request).toHaveBeenCalledWith('thread/settings/update', expect.objectContaining({
+            collaborationMode: expect.objectContaining({ mode: 'default' })
+        }));
+        expect(f.sessionReady).toHaveBeenCalledOnce();
+    });
+});
 
 describe('externally attached root', () => {
     it('skips MCP, instructions and initial settings injection, and disables lifecycle actions', async () => {

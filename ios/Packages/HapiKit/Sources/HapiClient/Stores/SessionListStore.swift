@@ -293,6 +293,21 @@ public final class SessionListStore: SessionListStoring {
         }
     }
 
+    /// `PATCH /sessions/:id {translateInput}` — optimistic
+    /// `metadata.translateInput` on the cached detail (the list summary does
+    /// not project it); a failure refetches the detail and rethrows.
+    public func setTranslateInput(sessionId: String, enabled: Bool) async throws {
+        updateDetailLocal(sessionId) { $0.metadata?.translateInput = enabled }
+        do {
+            try await api.setSessionTranslateInput(id: sessionId, enabled: enabled)
+        } catch {
+            if details[sessionId] != nil {
+                Task { _ = try? await self.loadSessionDetail(sessionId) }
+            }
+            throw error
+        }
+    }
+
     public func deleteSession(sessionId: String) async throws {
         let removed = sessions.first { $0.id == sessionId }
         let removedDetail = details[sessionId]

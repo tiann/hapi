@@ -5,7 +5,9 @@ import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DeleteUploadResponse
+import app.hapi.protocol.wire.FeaturesResponse
 import app.hapi.protocol.wire.FileSearchResponse
+import app.hapi.protocol.wire.HubSettingsResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.SlashCommandsResponse
@@ -63,6 +65,15 @@ interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
 
     /** `POST /api/sessions/:id/abort` — active sessions only, confirm-free. */
     suspend fun abortSession(sessionId: String)
+
+    /** `GET /api/features` — hub feature discovery (input translation availability). */
+    suspend fun getFeatures(): FeaturesResponse
+
+    /** `GET /api/hub-settings` — hub-wide settings (input-translation default). */
+    suspend fun getHubSettings(): HubSettingsResponse
+
+    /** `PATCH /api/sessions/:id {translateInput}` — 400 when enabling without a hub provider. */
+    suspend fun setSessionTranslateInput(sessionId: String, enabled: Boolean)
 
     /** `POST /api/sessions/:id/resume` — the returned id may differ (superseding spawn). */
     suspend fun resumeSession(sessionId: String, permissionMode: String? = null): ResumeSessionResponse
