@@ -337,18 +337,46 @@ function noteToolCallSettlements(db: Database, sessionId: string, content: unkno
 }
 
 /**
- * Retire open child tool / running-child work when its worker generation exits
- * or is replaced. Writes a durable turn-complete so a later rebuild stays
- * clear (#2021).
+ * Retire open tool / running-child work when its worker generation exits or is
+ * replaced. Covers child-scoped registry entries and foreground ACP tool-call
+ * rows still open in the lookback — a dead worker cannot settle them, and the
+ * replacement idle session must stay archivable (#2021).
  */
 export function retireOpenChildToolWork(db: Database, sessionId: string): boolean {
     const state = ensureChildToolCallStateRebuilt(db, sessionId)
-    const settledCallIds = [...state.open]
+    const settledCallIds = new Set<string>(state.open)
     const retiredChildSessionIds = [...state.runningChildren]
-    if (settledCallIds.length === 0 && retiredChildSessionIds.length === 0) return false
+
+    // Foreground (non-child) ACP calls live only in the lookback scan — collect
+    // any still-open ids so worker-exit settlement clears them too.
+    const rows = prepareCached(db, `
+        SELECT content FROM messages
+        WHERE session_id = ?
+        ORDER BY seq DESC
+        LIMIT ?
+    `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'content'>>
+    const settledInWindow = new Set<string>()
+    for (const row of rows) {
+        const decoded = decodeMessageContent(row.content)
+        for (const callId of acpTurnCompleteSettledCallIds(decoded)) settledInWindow.add(callId)
+        const resultCallId = toolCallResultCallId(decoded)
+        if (resultCallId !== null) settledInWindow.add(resultCallId)
+        const callId = getToolCallId(decoded)
+        if (
+            callId !== null
+            && !settledInWindow.has(callId)
+            && !state.settled.has(callId)
+            && !isTerminalToolCallRow(decoded)
+        ) {
+            settledCallIds.add(callId)
+        }
+    }
+
+    if (settledCallIds.size === 0 && retiredChildSessionIds.length === 0) return false
     state.open.clear()
     state.runningChildren.clear()
     for (const callId of settledCallIds) state.settled.add(callId)
+    const settledList = [...settledCallIds]
     addMessage(db, sessionId, {
         role: 'agent',
         content: {
@@ -356,7 +384,7 @@ export function retireOpenChildToolWork(db: Database, sessionId: string): boolea
             data: {
                 type: 'turn-complete',
                 stopReason: 'worker-exited',
-                ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
+                ...(settledList.length > 0 ? { settledCallIds: settledList } : {}),
                 ...(retiredChildSessionIds.length > 0 ? { retiredChildSessionIds } : {}),
             },
         },

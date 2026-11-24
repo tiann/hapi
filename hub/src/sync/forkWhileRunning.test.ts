@@ -73,6 +73,49 @@ describe('historical forks while the source runs', () => {
         } finally { engine.stop() }
     })
 
+    it('allows Codex historical fork while a later open tool call is live (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const { store, engine, source, rpc } = fixture()
+        try {
+            // Live tool in a later turn — fork copies, does not truncate, so
+            // the rewind fence must not block historical fork.
+            store.messages.upsertToolCallMessage(source.id, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'later-shell',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                    },
+                },
+            }, 'later-shell')
+            expect(store.messages.getLiveToolWork(source.id)).toBe(true)
+            let calls = 0
+            rpc.forkConversation = async () => {
+                calls++
+                return { nativeSessionId: 'child-native' }
+            }
+            rpc.spawnSession = async (...args) => ({ type: 'success', sessionId: args[12]! })
+            expect(await engine.forkConversation(source.id, 'default', 'boundary')).toMatchObject({
+                type: 'success',
+            })
+            expect(calls).toBe(1)
+            // Current fork still refuses while thinking (existing busy guard).
+            expect(await engine.forkConversation(source.id, 'default')).toMatchObject({
+                type: 'error',
+                message: 'Session is busy',
+            })
+            // Rewind is truncating — still fenced while live tool work exists.
+            expect(await engine.rewindConversation(source.id, 'default', 'boundary')).toMatchObject({
+                type: 'error',
+                message: 'Session is busy',
+            })
+        } finally { engine.stop() }
+    })
+
     it('retains diverged-history and capability checks for a running Codex source', async () => {
         const { store, engine, source, rpc } = fixture()
         try {
