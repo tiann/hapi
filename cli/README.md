@@ -29,6 +29,7 @@ Choose a supported coding agent from your terminal and control its sessions remo
 - `hapi claude` - Start a Claude Code session (passes through Claude CLI flags).
 - `hapi codex` - Start Codex mode. See `src/codex/runCodex.ts`.
 - `hapi codex resume <native-thread-id>` - Resume a Codex conversation by its native thread ID. For a HAPI session ID, use `hapi resume <id>`.
+- `hapi codex-desktop setup [--restart]` - Opt in once on macOS to sync loaded ChatGPT Codex conversations with HAPI automatically. `hapi codex-desktop remove [--restart]` stops that sync without stopping the daemon.
 - `hapi attach <native-thread-id> --socket /absolute/private/engine.sock` - Experimental macOS foreground bridge to an already-loaded external Codex thread. Independent of owned `hapi codex`; no server launch, native config injection or automatic Runner discovery. `--list` lists eligible loaded threads; `--new-view` explicitly replaces a history-rewrite-frozen projection.
 - `hapi detach <hapi-session-id>` - Disconnect an attached worker only; leave the external server, turn and native queue intact. See [external bridge limits and acceptance status](../docs/guide/codex-shared-sessions.md#experimental-external-desktop-bridge-macos).
 - `hapi cursor` - Start Cursor Agent mode. See `src/cursor/runCursor.ts`.

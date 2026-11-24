@@ -169,6 +169,22 @@ hapi detach <hapi-session-id>
 `attach` runs in the foreground. Ctrl-C, `detach`, and ending the session in
 HAPI disconnect HAPI only; the external thread keeps running.
 
+### `hapi codex-desktop setup` / `hapi codex-desktop remove` (experimental, macOS)
+
+Syncs loaded Codex conversations from the official ChatGPT desktop app to the
+configured HAPI Hub. Open a Codex chat in ChatGPT and it appears in HAPI without
+running `hapi attach`. Requires a saved HAPI connection.
+
+```bash
+hapi codex-desktop setup             # Set up this login and future GUI logins
+hapi codex-desktop setup --restart   # Also quit and reopen ChatGPT normally
+hapi codex-desktop remove            # Undo the setup without stopping the daemon
+hapi codex-desktop remove --restart  # Undo and reopen ChatGPT to apply the change
+```
+
+See [desktop shared sessions](./codex-shared-sessions#experimental-external-desktop-bridge-macos)
+for prerequisites and troubleshooting.
+
 ## Peer sessions
 
 These commands let one session, script or agent work with another session on
