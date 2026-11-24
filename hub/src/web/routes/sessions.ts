@@ -1522,13 +1522,6 @@ export function createSessionsRoutes(
             return c.json({ error: 'Model selection is not supported for this session' }, 400)
         }
 
-        // Pi commits the model before setting its thinking level, so a failure
-        // in between would leave half of the request applied.
-        const { model, effort } = parsed.data
-        if (effort !== undefined && flavor !== 'claude' && flavor !== 'agy') {
-            return c.json({ error: 'Effort can only be sent with a model change for Claude and Antigravity sessions' }, 400)
-        }
-
         if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             if (flavor === 'codex') {
                 return c.json({ error: 'Model selection can only be changed for remote Codex sessions' }, 409)
@@ -1539,6 +1532,16 @@ export function createSessionsRoutes(
             if (flavor === 'grok') {
                 return c.json({ error: 'Model selection can only be changed for remote Grok sessions' }, 409)
             }
+        }
+
+        // Pi commits the model before setting its thinking level, so a failure
+        // in between would leave half of the request applied.
+        const { model, effort } = parsed.data
+        if (effort !== undefined && flavor !== 'claude' && flavor !== 'agy') {
+            return c.json({ error: 'Effort can only be sent with a model change for Claude and Antigravity sessions' }, 400)
+        }
+
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             if (flavor === 'claude') {
                 return c.json({ error: 'Model selection can only be changed for remote Claude sessions' }, 409)
             }

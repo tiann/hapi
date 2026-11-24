@@ -1165,6 +1165,57 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([])
     })
 
+    // The existing local-mode gate runs before the combined payload check, so a
+    // locally driven Codex session keeps its 409 even when effort is included.
+    it.each([null, 'high'])('rejects a model change with effort %s for a locally driven Codex session', async (effort) => {
+        const session = createSession({
+            agentState: {
+                controlledByUser: true,
+                requests: {},
+                completedRequests: {}
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.5', effort })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Model selection can only be changed for remote Codex sessions'
+        })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    // Claude allows effort with the model, so the local-mode gate is reached
+    // after the combined payload check and still returns the Claude 409.
+    it('rejects a model change with effort for a locally driven Claude session', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            agentState: {
+                controlledByUser: true,
+                requests: {},
+                completedRequests: {}
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'haiku', effort: null })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Model selection can only be changed for remote Claude sessions'
+        })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
     it('applies model changes for OpenCode sessions', async () => {
         const session = createSession({
             metadata: {
