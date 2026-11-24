@@ -548,6 +548,7 @@ describe('SDKToLogConverter', () => {
                 converter.resetParentChain()
                 converter.updateSessionId('native-1')
                 converter.convert(result({
+                    session_id: 'native-1',
                     total_cost_usd: 1,
                     duration_api_ms: 1000,
                     usage: { input_tokens: 1, output_tokens: 10 },
@@ -557,6 +558,7 @@ describe('SDKToLogConverter', () => {
                 converter.resetParentChain()
                 converter.updateSessionId('native-1')
                 const next = converter.convert(result({
+                    session_id: 'native-1',
                     total_cost_usd: 1.5,
                     duration_api_ms: 1400,
                     usage: { input_tokens: 1, output_tokens: 20 },
@@ -571,6 +573,7 @@ describe('SDKToLogConverter', () => {
                 converter.startFreshProcessBaseline()
                 converter.updateSessionId('native-1')
                 converter.convert(result({
+                    session_id: 'native-1',
                     total_cost_usd: 1,
                     duration_api_ms: 1000,
                     usage: { input_tokens: 1, output_tokens: 10 },
@@ -579,12 +582,14 @@ describe('SDKToLogConverter', () => {
 
                 converter.updateSessionId('native-2')
                 converter.consumeResultForAccounting(result({
+                    session_id: 'native-2',
                     total_cost_usd: 1.2,
                     duration_api_ms: 1100,
                     usage: { input_tokens: 1, output_tokens: 1 },
                     modelUsage: { 'claude-opus-5': { outputTokens: 120 } }
                 }))
                 const next = converter.convert(result({
+                    session_id: 'native-2',
                     total_cost_usd: 1.7,
                     duration_api_ms: 1600,
                     usage: { input_tokens: 1, output_tokens: 20 },
@@ -634,6 +639,7 @@ describe('SDKToLogConverter', () => {
                 converter.startFreshProcessBaseline()
                 converter.updateSessionId('native-1')
                 converter.convert(result({
+                    session_id: 'native-1',
                     total_cost_usd: 1,
                     duration_api_ms: 1000,
                     usage: { input_tokens: 1, output_tokens: 10 },
@@ -642,6 +648,7 @@ describe('SDKToLogConverter', () => {
                 converter.updateSessionId('native-2')
 
                 const stale = converter.convert(result({
+                    session_id: 'native-2',
                     total_cost_usd: 1.2,
                     duration_api_ms: 1100,
                     usage: { input_tokens: 1, output_tokens: 1 },
@@ -654,12 +661,14 @@ describe('SDKToLogConverter', () => {
 
                 // The first reply seeds the new session's baseline; the next reports its own delta.
                 converter.convert(result({
+                    session_id: 'native-2',
                     total_cost_usd: 2,
                     duration_api_ms: 2000,
                     usage: { input_tokens: 1, output_tokens: 20 },
                     modelUsage: { 'claude-opus-5': { outputTokens: 200 } }
                 }))
                 const next = converter.convert(result({
+                    session_id: 'native-2',
                     total_cost_usd: 2.5,
                     duration_api_ms: 2400,
                     usage: { input_tokens: 1, output_tokens: 20 },
@@ -669,10 +678,73 @@ describe('SDKToLogConverter', () => {
                 expect(summaryOf(next)?.modelUsage).toMatchObject({ 'claude-opus-5': { outputTokens: 50 } })
             })
 
+            it('ignores results from another native session than the bound one', () => {
+                converter.startFreshProcessBaseline()
+                converter.updateSessionId('native-old')
+                converter.convert(result({
+                    session_id: 'native-old',
+                    total_cost_usd: 1,
+                    duration_api_ms: 1000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 100 } }
+                }))
+                // The clear hook binds the rotated session before Claude reports the clear.
+                converter.updateSessionId('native-new')
+
+                const background = converter.convert(result({
+                    session_id: 'native-old',
+                    total_cost_usd: 1.2,
+                    duration_api_ms: 1100,
+                    usage: { input_tokens: 1, output_tokens: 5 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 120 } }
+                }))
+                expect(summaryOf(background)).not.toHaveProperty('total_cost_usd')
+                expect(summaryOf(background)).not.toHaveProperty('generation_ms')
+                expect(summaryOf(background)?.modelUsage).toBeUndefined()
+                converter.consumeResultForAccounting(result({
+                    session_id: 'native-old',
+                    total_cost_usd: 1.3,
+                    duration_api_ms: 1150,
+                    modelUsage: { 'claude-opus-5': { outputTokens: 130 } }
+                }))
+                converter.convert(result({
+                    session_id: 'native-old',
+                    total_cost_usd: 1.3,
+                    duration_api_ms: 1150,
+                    modelUsage: { 'claude-opus-5': { outputTokens: 130 } },
+                    hapi_skip_usage: true
+                }))
+                converter.updateSessionId('native-new')
+
+                // The rotated session has no baseline yet, so its first reply omits deltas.
+                const first = converter.convert(result({
+                    session_id: 'native-new',
+                    total_cost_usd: 1.5,
+                    duration_api_ms: 1500,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 150 } }
+                }))
+                expect(summaryOf(first)).not.toHaveProperty('total_cost_usd')
+                expect(summaryOf(first)).not.toHaveProperty('generation_ms')
+                expect(summaryOf(first)?.modelUsage).toEqual({ 'claude-opus-5': {} })
+
+                const next = converter.convert(result({
+                    session_id: 'native-new',
+                    total_cost_usd: 1.75,
+                    duration_api_ms: 1900,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 170 } }
+                }))
+                expect(summaryOf(next)?.total_cost_usd).toBeCloseTo(0.25, 9)
+                expect(summaryOf(next)).toMatchObject({ generation_ms: 400, generation_output_tokens: 20 })
+                expect(summaryOf(next)?.modelUsage).toMatchObject({ 'claude-opus-5': { outputTokens: 20 } })
+            })
+
             it('clears the baseline when the native session id changes', () => {
                 converter.startFreshProcessBaseline()
                 converter.updateSessionId('native-1')
                 converter.convert(result({
+                    session_id: 'native-1',
                     total_cost_usd: 100,
                     duration_api_ms: 50_000,
                     usage: { input_tokens: 1, output_tokens: 10 },
@@ -685,6 +757,7 @@ describe('SDKToLogConverter', () => {
                 // No baseline after a new session: the first result omits all
                 // cumulative fields, even though their values look like deltas.
                 const first = converter.convert(result({
+                    session_id: 'native-2',
                     total_cost_usd: 2,
                     duration_api_ms: 700,
                     usage: { input_tokens: 1, output_tokens: 20 },
@@ -696,6 +769,7 @@ describe('SDKToLogConverter', () => {
 
                 // That first result still seeds the new baseline.
                 const second = converter.convert(result({
+                    session_id: 'native-2',
                     total_cost_usd: 5,
                     duration_api_ms: 1000,
                     usage: { input_tokens: 1, output_tokens: 60 },

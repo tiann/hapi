@@ -323,6 +323,12 @@ export class SDKToLogConverter {
         durationApiMs: number | undefined
         modelUsage: SDKResultMessage['modelUsage']
     } {
+        // A result from another native session (e.g. a background task of a
+        // session cleared after binding) is neither diffed nor used as a baseline.
+        if (this.usageSessionId !== null && typeof resultMsg.session_id === 'string'
+            && resultMsg.session_id !== this.usageSessionId) {
+            return { totalCostUsd: undefined, durationApiMs: undefined, modelUsage: undefined }
+        }
         const previous = this.previousCumulative
         const totalCostUsd = perRoundDelta(resultMsg.total_cost_usd, previous?.totalCostUsd)
         const durationApiMs = typeof resultMsg.duration_api_ms === 'number'
