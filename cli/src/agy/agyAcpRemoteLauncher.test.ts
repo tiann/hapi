@@ -2814,6 +2814,130 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await run;
     });
 
+    it('anchors a steer to the new command after a held call turns out to be an earlier turn\'s command', async () => {
+        const backend = new FakeAgyBackend();
+        const { session, queue, client } = makeSession();
+        const oldArgs = { CommandLine: 'sleep 30' };
+        const newArgs = { CommandLine: 'echo new' };
+        let releaseTurn!: () => void;
+        let launcherRef!: AgyAcpRemoteLauncher;
+        backend.promptScripts.push(async (onUpdate) => {
+            // A background command from an earlier wakeup has finished in agy.
+            (launcherRef as unknown as { backgroundCommands: unknown[] }).backgroundCommands.push({
+                callId: 'agy-wakeup-1', synthetic: true, commandLine: 'sleep 30', nativeArgs: oldArgs,
+                stepIndex: 0, taskId: `${SESSION}/task-1`
+            });
+            writeTranscript([
+                userRow(0, 'run it'),
+                {
+                    step_index: 1, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${SESSION}/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nslept\n</SYSTEM_MESSAGE>`
+                },
+                { ...plannerRow(2, []), tool_calls: [{ name: 'run_command', args: newArgs }] },
+                genericRow(3)
+            ]);
+            // The earlier command's completion arrives under a live id and is held back.
+            onUpdate({
+                type: 'tool_call', id: 'old', name: 'sleep 30', input: oldArgs, status: 'completed',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: oldArgs
+            });
+            // Its output identifies the earlier command's card.
+            onUpdate({
+                type: 'tool_result', id: 'old', status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nslept', exit_code: 0 }
+            });
+            // The turn's own first command.
+            onUpdate({
+                type: 'tool_call', id: 'c2', name: 'echo new', input: newArgs, status: 'in_progress',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: newArgs
+            });
+            await new Promise<void>((resolve) => { releaseTurn = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('run it', REVIEW, 'first');
+        const { run, launcher } = launch(session, [backend], { brainDir, reactivePollMs: 10 });
+        launcherRef = launcher;
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        await vi.waitFor(() => expect(client.sendAgentMessage.mock.calls.some(([message]) =>
+            (message as { type?: string; callId?: string }).type === 'tool-call-result'
+            && (message as { callId?: string }).callId === 'agy-wakeup-1')).toBe(true));
+        await vi.waitFor(() => expect(client.sendAgentMessage.mock.calls.some(([message]) =>
+            (message as { callId?: string }).callId === 'c2')).toBe(true));
+        const handlers = client.rpcHandlerManager.handlers as Handlers;
+        queue.push('also lint', REVIEW, 'steer-1');
+        await handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer-1' });
+
+        writeTranscript([...stepRows, userRow(4, 'also lint')]);
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toHaveLength(1));
+        expect(consumedFor(client, 'steer-1')[0]).toEqual([['steer-1'], { steered: true, anchor: { toolCallId: 'c2' } }]);
+        releaseTurn();
+        for (const completion of backend.steerCompletions) completion.resolve('end_turn');
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+    });
+
+    it('anchors a steer to the new command after a held result settles on an earlier turn\'s command', async () => {
+        const backend = new FakeAgyBackend();
+        const { session, queue, client } = makeSession();
+        const oldArgs = { CommandLine: 'sleep 30' };
+        const newArgs = { CommandLine: 'echo new' };
+        const taskRow = (stepIndex: number, task: string, output: string) => ({
+            step_index: stepIndex, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE',
+            content: `<SYSTEM_MESSAGE>\nTask id "${SESSION}/${task}" finished with result:\n${output}\n</SYSTEM_MESSAGE>`
+        });
+        let releaseTurn!: () => void;
+        let launcherRef!: AgyAcpRemoteLauncher;
+        backend.promptScripts.push(async (onUpdate) => {
+            // Two background commands with the same command line from earlier
+            // wakeups; only the first has finished in agy.
+            (launcherRef as unknown as { backgroundCommands: unknown[] }).backgroundCommands.push(
+                { callId: 'agy-wakeup-1', synthetic: true, commandLine: 'sleep 30', nativeArgs: oldArgs, stepIndex: 0, taskId: `${SESSION}/task-1` },
+                { callId: 'agy-wakeup-2', synthetic: true, commandLine: 'sleep 30', nativeArgs: oldArgs, stepIndex: 0, taskId: `${SESSION}/task-2` }
+            );
+            writeTranscript([
+                userRow(0, 'run it'),
+                taskRow(1, 'task-1', 'slept'),
+                { ...plannerRow(2, []), tool_calls: [{ name: 'run_command', args: newArgs }] },
+                genericRow(3)
+            ]);
+            onUpdate({
+                type: 'tool_call', id: 'old', name: 'sleep 30', input: oldArgs, status: 'completed',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: oldArgs
+            });
+            // Without an exit code the output could still be the unfinished command's.
+            onUpdate({ type: 'tool_result', id: 'old', status: 'completed', output: 'slept' });
+            // The second command finishes with other output, which settles the held result.
+            writeTranscript([...stepRows, taskRow(4, 'task-2', 'other')]);
+            onUpdate({
+                type: 'tool_call', id: 'c2', name: 'echo new', input: newArgs, status: 'in_progress',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: newArgs
+            });
+            onUpdate({ type: 'tool_result', id: 'c2', status: 'completed', output: 'new' });
+            await new Promise<void>((resolve) => { releaseTurn = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('run it', REVIEW, 'first');
+        const { run, launcher } = launch(session, [backend], { brainDir, reactivePollMs: 10 });
+        launcherRef = launcher;
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        await vi.waitFor(() => expect(client.sendAgentMessage.mock.calls.some(([message]) =>
+            (message as { type?: string; callId?: string }).type === 'tool-call-result'
+            && (message as { callId?: string }).callId === 'agy-wakeup-1')).toBe(true));
+        const handlers = client.rpcHandlerManager.handlers as Handlers;
+        queue.push('also lint', REVIEW, 'steer-1');
+        await handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer-1' });
+
+        writeTranscript([...stepRows, userRow(5, 'also lint')]);
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toHaveLength(1));
+        expect(consumedFor(client, 'steer-1')[0]).toEqual([['steer-1'], { steered: true, anchor: { toolCallId: 'c2' } }]);
+        releaseTurn();
+        for (const completion of backend.steerCompletions) completion.resolve('end_turn');
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+    });
+
     it('reads the steer text out of the row wrapper without touching it', () => {
         const wrap = (text: string) => `<USER_REQUEST>\n${text}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nlocal time\n</ADDITIONAL_METADATA>`;
         expect(agySteerRowText(wrap('한국어 테스트 🎉'))).toBe('한국어 테스트 🎉');

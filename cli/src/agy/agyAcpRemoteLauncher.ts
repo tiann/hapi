@@ -1802,6 +1802,16 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    /**
+     * A held call that proves to be an earlier turn's command has no planner
+     * entry in this turn's transcript, so the slot it reserved is dropped to
+     * keep later calls aligned with their transcript ordinals.
+     */
+    private dropProvisionalPlannerCall(turn: AgyTurn, callId: string): void {
+        const idx = turn.plannerCalls.findIndex((call) => call.id === callId && !call.shown);
+        if (idx >= 0) turn.plannerCalls.splice(idx, 1);
+    }
+
     private emitDeferredLiveCommandCall(
         turn: AgyTurn,
         callMessage: Extract<AgentMessage, { type: 'tool_call' }>
@@ -1847,7 +1857,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     this.retainedAmbiguousCompletions.splice(idx, 1);
                     idx -= 1;
                     progressed = true;
-                    if (turn) turn.corroboratedSyntheticMatches += 1;
+                    if (turn) {
+                        turn.corroboratedSyntheticMatches += 1;
+                        this.dropProvisionalPlannerCall(turn, item.resultMessage.id);
+                    }
                     this.nativeToolNames.set(match.entry.callId, 'run_command');
                     const effectiveResult: AgentMessage = { ...item.resultMessage, id: match.entry.callId };
                     if (turn) {
@@ -1915,6 +1928,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (match.kind === 'matched') {
                 turn.deferredLiveCommandCalls.delete(message.id);
                 turn.commandArrivalOrder = turn.commandArrivalOrder.filter((id) => id !== message.id);
+                this.dropProvisionalPlannerCall(turn, message.id);
                 turn.corroboratedSyntheticMatches += 1;
                 this.syntheticCallAliases.set(message.id, match.entry.callId);
                 return { message: { ...message, id: match.entry.callId }, suppressForward: true };
@@ -1963,6 +1977,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 );
                 if (match.kind === 'matched') {
                     turn.corroboratedSyntheticMatches += 1;
+                    this.dropProvisionalPlannerCall(turn, message.id);
                     this.nativeToolNames.set(match.entry.callId, 'run_command');
                     return { message: { ...message, id: match.entry.callId }, suppressForward: false };
                 }
