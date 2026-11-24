@@ -30,8 +30,10 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
     Client: class {
         async connect(): Promise<void> {}
 
-        async callTool(request: unknown): Promise<unknown> {
-            return harness.callTool(request)
+        async callTool(request: unknown, _schema?: unknown, options?: unknown): Promise<unknown> {
+            return options === undefined
+                ? harness.callTool(request)
+                : harness.callTool(request, options)
         }
     }
 }))
@@ -260,6 +262,24 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
             'display_media',
             'archive_peer'
         ])
+    })
+
+    it('forwards archive_peer with a timeout past the hub Runner cleanup budget', async () => {
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'archive_peer'
+        ])
+
+        const handler = harness.tools.get('archive_peer')
+        expect(handler).toBeTypeOf('function')
+        await handler!({ sessionIdPrefix: '05d9f0f2' })
+
+        expect(harness.callTool).toHaveBeenCalledWith(
+            { name: 'archive_peer', arguments: { sessionIdPrefix: '05d9f0f2' } },
+            { timeout: 100_000 },
+        )
     })
 
     it('registers list_peers when included in --tools', async () => {

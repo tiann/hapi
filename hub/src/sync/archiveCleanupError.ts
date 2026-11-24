@@ -13,7 +13,7 @@ export class ArchiveCleanupError extends Error {
     ) {
         super(
             reason === 'working'
-                ? 'Session is still working. Finish or stop the active turn, then archive.'
+                ? 'Session still has live work (thinking, background tasks, or pending requests). Clear that work, then archive.'
                 : reason === 'timeout'
                     ? 'Timed out waiting for Runner to confirm session cleanup. Cleanup may still be running; retry to verify its result.'
                     : reason === 'unavailable'

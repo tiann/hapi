@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     ArchivePeerError,
     archivePeer,
@@ -33,6 +33,24 @@ function createHttpMock(handlers: {
 describe('archivePeer', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        vi.stubEnv('HAPI_DISABLE_PEER_TOOLS', '')
+    })
+
+    afterEach(() => {
+        vi.unstubAllEnvs()
+    })
+
+    it('refuses when HAPI_DISABLE_PEER_TOOLS is set before authenticating', async () => {
+        vi.stubEnv('HAPI_DISABLE_PEER_TOOLS', '1')
+        const http = createHttpMock({})
+        await expect(archivePeer({
+            sessionIdPrefix: '05d9f0f2',
+            accessToken: 'tok',
+            apiUrl: 'http://hub.test',
+            http: http as never
+        })).rejects.toMatchObject({ code: 'disabled' })
+        expect(http.post).not.toHaveBeenCalled()
+        expect(http.get).not.toHaveBeenCalled()
     })
 
     it('archives an active Peer Done session via POST /archive (no hand JWT)', async () => {
@@ -179,6 +197,7 @@ describe('archivePeer', () => {
 
     it('maps error codes to exit codes', () => {
         expect(exitCodeForArchivePeerError(new ArchivePeerError('bad_args', 'x'))).toBe(2)
+        expect(exitCodeForArchivePeerError(new ArchivePeerError('disabled', 'x'))).toBe(2)
         expect(exitCodeForArchivePeerError(new ArchivePeerError('not_found', 'x'))).toBe(2)
         expect(exitCodeForArchivePeerError(new ArchivePeerError('archive_failed', 'x'))).toBe(4)
     })

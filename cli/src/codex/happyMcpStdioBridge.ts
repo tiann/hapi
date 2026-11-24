@@ -434,7 +434,12 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
         async (args: Record<string, unknown>) => {
           try {
             const client = await ensureHttpClient();
-            const response = await client.callTool({ name: 'archive_peer', arguments: args });
+            // Hub Runner cleanup budget is 90s; MCP SDK defaults to 60s — raise past both.
+            const response = await client.callTool(
+              { name: 'archive_peer', arguments: args },
+              undefined,
+              { timeout: 100_000 },
+            );
             return response as any;
           } catch (error) {
             return {

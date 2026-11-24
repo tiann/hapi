@@ -20,9 +20,11 @@ import {
     resolveSessionByPrefix,
     type PingPeerSessionSummary
 } from '@/modules/pingPeer/pingPeer'
+import { isPeerToolsDisabled } from '@/modules/common/peerTools'
 
 export type ArchivePeerErrorCode =
     | 'bad_args'
+    | 'disabled'
     | 'auth_failed'
     | 'not_found'
     | 'ambiguous'
@@ -206,6 +208,15 @@ async function postArchive(
  * Never deletes. Prefer this (or MCP archive_peer) over hand JWT+curl.
  */
 export async function archivePeer(options: ArchivePeerOptions): Promise<ArchivePeerResult> {
+    // Defense in depth with MCP registration: honor the Runner peer-tools kill switch
+    // so `hapi archive-peer` from a wrapped agent shell cannot bypass HAPI_DISABLE_PEER_TOOLS.
+    if (isPeerToolsDisabled()) {
+        throw new ArchivePeerError(
+            'disabled',
+            'peer session tools are disabled on this machine (HAPI_DISABLE_PEER_TOOLS is set)'
+        )
+    }
+
     const prefix = normalizeSessionIdPrefix(options.sessionIdPrefix ?? '')
     if (!prefix) {
         throw new ArchivePeerError('bad_args', 'session id prefix is required')
@@ -241,6 +252,7 @@ export async function archivePeer(options: ArchivePeerOptions): Promise<ArchiveP
 export function exitCodeForArchivePeerError(error: ArchivePeerError): number {
     switch (error.code) {
         case 'bad_args':
+        case 'disabled':
         case 'auth_failed':
         case 'not_found':
         case 'ambiguous':
