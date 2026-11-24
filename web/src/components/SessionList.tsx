@@ -3248,7 +3248,7 @@ export function SessionList(props: {
                 ? previous
                 : { morePx, gapPx }
         ))
-        // Preserve the main filter and New alongside More when the optional shortcut is enabled.
+        // Reserve the shortcut alongside the main filter, New and More when space permits.
         const row = headerRowRef.current
         const rowBox = row && row.clientWidth > 0 ? row.clientWidth : toolbarRowBoxPx
         const rowStyle = row ? getComputedStyle(row) : null
@@ -3257,7 +3257,9 @@ export function SessionList(props: {
             : 0
         const keepFiltersVisible = showMobileMachineFilter && showMachineFilterBar && isMobileMachineFilterViewport
         const trailing = gapPx + morePx + (keepFiltersVisible
-            ? (next.view ?? TOOLBAR_ICON_PX) + gapPx + (renderHeader ? (next.new ?? TOOLBAR_ICON_PX) + gapPx : 0)
+            ? (next.view ?? TOOLBAR_ICON_PX) + gapPx
+                + (next['machine-filter'] ?? TOOLBAR_ICON_PX) + gapPx
+                + (renderHeader ? (next.new ?? TOOLBAR_ICON_PX) + gapPx : 0)
             : 0)
         const nextSearchMax = rowBox > 0 ? Math.max(0, rowBox - rowPad - trailing) : 0
         setSearchMaxPx((previous) => previous === nextSearchMax ? previous : nextSearchMax)

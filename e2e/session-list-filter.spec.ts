@@ -120,6 +120,8 @@ test('keeps Sort and filter accessible with the shortcut at large font size', as
     await page.evaluate(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
     await page.reload()
     await searchAndCheck()
+    await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Filter sessions by machine', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Clear search' })).toBeVisible()
 })
 
 test('uses the same mobile breakpoint as the machine chips with a larger browser font', async ({ baseURL }) => {
