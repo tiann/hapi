@@ -108,6 +108,16 @@ export function mergeSessionMetadataForSessionMerge(
         changed = true
     }
 
+    // Peer spawn parent is telemetry stamped at create time. Resume / dedup
+    // row replacement must keep it when the destination never set a parent,
+    // or the orchestrator session tree loses the edge (#2021).
+    if (typeof oldObj.spawnedBySessionId === 'string'
+        && oldObj.spawnedBySessionId.trim().length > 0
+        && typeof newObj.spawnedBySessionId !== 'string') {
+        merged.spawnedBySessionId = oldObj.spawnedBySessionId
+        changed = true
+    }
+
     const claudeHistory = mergeClaudeSessionIdHistory(oldObj, newObj)
     if (claudeHistory) {
         merged.claudeSessionIdHistory = claudeHistory

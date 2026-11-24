@@ -570,6 +570,17 @@ function isTerminalToolCallRow(value: unknown): boolean {
     return toolCallStatusRank(data.status) === TOOL_CALL_STATUS_RANK.completed
 }
 
+/** ACP turn-end marker (`turn_complete` from the CLI converter). Closes every
+ *  older open tool call the same way a Claude `result` row does — including
+ *  cancelled prompts that never emitted a terminal tool-call update. */
+function isAcpTurnCompleteRow(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return false
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    const data = isRecord(record.content.data) ? record.content.data : null
+    return data?.type === 'turn-complete'
+}
+
 /** Whether the session tail still holds tool work that started but never
  *  settled — the transcript-derived "the agent is demonstrably working"
  *  signal for the hub's work-scoped liveness sweep.
@@ -580,6 +591,7 @@ function isTerminalToolCallRow(value: unknown): boolean {
  *  is closed by a later human turn. Walking newest-first:
  *
  *  - ACP flavors: an unsettled, non-terminal `tool-call` row means open work.
+ *    A later `turn-complete` row (cancelled or normal) closes every older call.
  *  - Claude passthrough: an assistant `tool_use` block with no later user
  *    `tool_result` for its id means open work. Tool-result carriers do NOT
  *    close the turn (the agent loop continues through them); a user row with
@@ -602,6 +614,10 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
         // A human turn (web prompt, native user row) starts a new round and
         // closes every tool call older than it — stop, nothing is open.
         if (isUserMessageRow(decoded)) return false
+
+        // ACP turn boundary (including cancelled prompts): everything older
+        // is settled even when the last tool-call never got a terminal update.
+        if (isAcpTurnCompleteRow(decoded)) return false
 
         const claudeData = claudeOutputData(decoded)
         if (claudeData !== null) {

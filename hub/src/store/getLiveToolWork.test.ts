@@ -131,6 +131,29 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 
+    it('closes cancelled ACP calls at a turn-complete boundary while newer open calls still block', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-acp-turn-complete')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-cancelled', { status: 'in_progress' }), 'call-cancelled')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        // Cancelled prompts settle locally but never emit a terminal tool update;
+        // the converter's turn-complete row is the hub-visible boundary.
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'turn-complete', stopReason: 'cancelled' },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-live', { status: 'in_progress' }), 'call-live')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        store.close()
+    })
+
     it('reports open claude tool_use pairs until the matching tool_result lands', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-claude-open')

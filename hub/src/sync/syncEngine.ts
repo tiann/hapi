@@ -3853,9 +3853,21 @@ export class SyncEngine {
         // pending requests). Clear that work first. Disconnected rows may
         // retain stale agentState.requests after heartbeat expiry — those
         // must not block Runner-verified cleanup (/abort requires active).
+        //
+        // Refresh transcript-derived work synchronously: tool_call rows land
+        // on the socket path immediately, but derivedToolWork only updates on
+        // the 5s sweep. Archiving in that window would otherwise stop a peer
+        // the hub already knows is working.
         const liveBeforeStop = this.sessionCache.getSession(sessionId)
-        if (liveBeforeStop?.active === true && hasLiveWork(liveBeforeStop)) {
-            throw new ArchiveCleanupError('working')
+        if (liveBeforeStop?.active === true) {
+            this.sessionCache.noteDerivedWork(
+                sessionId,
+                this.store.messages.getLiveToolWork(sessionId),
+            )
+            const live = this.sessionCache.getSession(sessionId)
+            if (live && hasLiveWork(live)) {
+                throw new ArchiveCleanupError('working')
+            }
         }
         // tiann/hapi#916 / #1910: KillSession is a session-socket RPC. A missing
         // target does not prove the runner child is dead (stale registration,

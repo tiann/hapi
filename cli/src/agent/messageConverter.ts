@@ -42,6 +42,7 @@ export type CodexMessage =
     }
     | { type: 'plan'; entries: PlanItem[] }
     | { type: 'error'; message: string }
+    | { type: 'turn-complete'; stopReason: string; numTurns?: number }
     | {
         type: 'round-summary';
         summary: {
@@ -163,7 +164,13 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
         case 'error':
             return { type: 'error', message: message.message };
         case 'turn_complete':
-            return null;
+            // Hub-visible settlement boundary for derivedToolWork / archive.
+            // Chat normalize returns null for this type (no row in the UI).
+            return {
+                type: 'turn-complete',
+                stopReason: message.stopReason,
+                ...(message.numTurns !== undefined ? { numTurns: message.numTurns } : {}),
+            };
         default: {
             // Unreachable while every AgentMessage variant is handled above —
             // the `never` binding is what enforces that at compile time. The

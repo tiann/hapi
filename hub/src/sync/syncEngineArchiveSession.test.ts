@@ -357,12 +357,41 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(stopCalls).toBe(0)
     })
 
-    it('refuses archive before stop RPCs for derivedToolWork-only sessions (#2020)', async () => {
-        const sessionId = insertActiveSession('sess-derived-tool-block', 'machine-x')
+    it('clears a stale derivedToolWork flag when the transcript has no open work (#2021)', async () => {
+        // A leftover flag with an idle transcript must not invent live work —
+        // archive refreshes from the transcript before the guard.
+        const sessionId = insertActiveSession('sess-derived-stale-clear', 'machine-x')
         const live = cache().getSession(sessionId)!
         live.thinking = false
         live.backgroundTaskCount = 0
         live.derivedToolWork = true
+        setKillSessionOk()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'already_gone'
+
+        await engine.archiveSession(sessionId)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+        expect(cache().getSession(sessionId)?.derivedToolWork).toBe(false)
+    })
+
+    it('refuses archive when an open tool call is in the transcript before the derived sweep (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-derived-race', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = false
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: { type: 'tool-call', callId: 'race-1', name: 'Bash', input: {}, status: 'in_progress' },
+                },
+            },
+            'race-1',
+        )
         let killCalls = 0
         let stopCalls = 0
         ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
@@ -375,6 +404,41 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
         expect(killCalls).toBe(0)
         expect(stopCalls).toBe(0)
+        expect(cache().getSession(sessionId)?.derivedToolWork).toBe(true)
+    })
+
+    it('archives after an ACP turn-complete settles a sticky cancelled tool call (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-acp-cancel-settle', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = true
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: { type: 'tool-call', callId: 'cancelled-1', name: 'Bash', input: {}, status: 'in_progress' },
+                },
+            },
+            'cancelled-1',
+        )
+        store.messages.addMessage(sessionId, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'turn-complete', stopReason: 'cancelled' },
+            },
+        })
+        setKillSessionOk()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'already_gone'
+
+        await engine.archiveSession(sessionId)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+        expect(cache().getSession(sessionId)?.derivedToolWork).toBe(false)
     })
 
     it('refuses archive for an active session awaiting permission input (#2020)', async () => {

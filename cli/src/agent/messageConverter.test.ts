@@ -241,6 +241,18 @@ describe('convertAgentMessage', () => {
         expect(convertAgentMessage({ type: 'not_a_real_type' } as never)).toBeNull();
     });
 
+    it('converts turn_complete into a hub-visible settlement marker', () => {
+        expect(convertAgentMessage({
+            type: 'turn_complete',
+            stopReason: 'cancelled',
+            numTurns: 2,
+        })).toEqual({
+            type: 'turn-complete',
+            stopReason: 'cancelled',
+            numTurns: 2,
+        });
+    });
+
     it('converts generated_image messages into generated-image wire payloads', () => {
         const converted = convertAgentMessage({
             type: 'generated_image',
