@@ -101,6 +101,9 @@ type CumulativeUsageBaseline = {
     // True once a result omitted modelUsage; an unseen model may then hold
     // earlier counters, so only startFreshProcessBaseline restores zero.
     modelGapSeen: boolean
+    // Per model, token counters reported earlier that are still absent, so the
+    // fallback stays active until each returns and gains a baseline.
+    missingTokenCounters: Readonly<Record<string, ReadonlySet<CumulativeModelUsageKey>>>
 }
 
 const TOKEN_COUNTER_KEYS: readonly CumulativeModelUsageKey[] = [
@@ -297,7 +300,8 @@ export class SDKToLogConverter {
             modelUsage: {},
             modelSnapshotKnown: true,
             staleModels: new Set(),
-            modelGapSeen: false
+            modelGapSeen: false,
+            missingTokenCounters: {}
         }
     }
 
@@ -334,6 +338,7 @@ export class SDKToLogConverter {
         // counters may have advanced unseen, so none can be differenced.
         const snapshotUnknown = previous?.modelSnapshotKnown !== true
         const staleModels = new Set(previous?.staleModels ?? [])
+        const nextMissing: Record<string, ReadonlySet<CumulativeModelUsageKey>> = { ...(previous?.missingTokenCounters ?? {}) }
         let tokenDeltaIncomplete = snapshotUnknown
         if (resultMsg.modelUsage) {
             const perRoundModelUsage: NonNullable<SDKResultMessage['modelUsage']> = {}
@@ -351,18 +356,23 @@ export class SDKToLogConverter {
                 if (untrusted) tokenDeltaIncomplete = true
                 staleModels.delete(model)
                 const counters: ModelUsageCounters = untrusted ? {} : { ...(modelBaseline ?? {}) }
+                const missing = new Set(untrusted ? [] : previous?.missingTokenCounters?.[model] ?? [])
                 let hasComparableDelta = false
                 let hasNonZeroDelta = false
                 for (const key of CUMULATIVE_MODEL_USAGE_KEYS) {
                     const current = (usage as Record<string, unknown>)[key]
                     if (typeof current !== 'number') {
                         // A counter that vanished loses its baseline and rebases when it returns.
-                        if (counters[key] !== undefined) {
+                        if (counters[key] !== undefined || missing.has(key)) {
                             delete counters[key]
-                            if (TOKEN_COUNTER_KEYS.includes(key)) tokenDeltaIncomplete = true
+                            if (TOKEN_COUNTER_KEYS.includes(key)) {
+                                missing.add(key)
+                                tokenDeltaIncomplete = true
+                            }
                         }
                         continue
                     }
+                    missing.delete(key)
                     counters[key] = current
                     if (untrusted) {
                         delete perRoundUsage[key]
@@ -383,6 +393,7 @@ export class SDKToLogConverter {
                     }
                 }
                 nextModelUsage[model] = counters
+                nextMissing[model] = missing
                 // A baseline with no counter movement means this model did no work this round.
                 if (modelBaseline !== undefined && hasComparableDelta && !hasNonZeroDelta) continue
                 perRoundModelUsage[model] = perRoundUsage as NonNullable<SDKResultMessage['modelUsage']>[string]
@@ -410,6 +421,7 @@ export class SDKToLogConverter {
             // A result without modelUsage may hide advanced counters.
             modelSnapshotKnown: resultMsg.modelUsage !== undefined,
             staleModels,
+            missingTokenCounters: nextMissing,
             modelGapSeen: previous?.modelGapSeen === true || resultMsg.modelUsage === undefined
         }
 

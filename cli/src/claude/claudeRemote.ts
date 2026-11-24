@@ -891,9 +891,12 @@ export async function claudeRemote(opts: {
             }
             const initialClearSessionId = !clear && message.type === 'result' && resultSeq === 0
                 ? opts.getClearHookSessionId?.() : undefined;
+            let staleUsageSession = false;
             if (initialClearSessionId && initialClearSessionId !== currentSessionId) {
                 bindClearSession(initialClearSessionId);
                 waitingForClearFollowUp = !inputEnded;
+                // The result may still carry the previous session's counters.
+                staleUsageSession = message.session_id !== initialClearSessionId;
             }
             const compactMetadata =
                 message.type === 'system' && message.subtype === 'compact_boundary'
@@ -906,7 +909,11 @@ export async function claudeRemote(opts: {
             const isCompactTurnResult = compact !== null
                 && isCommandResult(message, compact.uuid, 'compact', compact.initial && compact.sawCompactSignal);
             if (!isClearResult && !isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
-                opts.onMessage(isCompactTurnResult ? { ...message, hapi_compact_turn: true } : message);
+                opts.onMessage(isCompactTurnResult || staleUsageSession ? {
+                    ...message,
+                    ...(isCompactTurnResult ? { hapi_compact_turn: true } : {}),
+                    ...(staleUsageSession ? { hapi_skip_usage: true } : {})
+                } : message);
             }
 
             // Handle special system messages

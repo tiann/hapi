@@ -1595,6 +1595,52 @@ describe('claudeRemote compact summary promotion', () => {
         }
     });
 
+    it('keeps a stale first-prompt alias result out of usage accounting', async () => {
+        const { claudeRemote } = await import('./claudeRemote');
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        transcriptDir = await mkdtemp(join(tmpdir(), 'claude-stale-alias-'));
+        const projectDir = getProjectPath(transcriptDir);
+        await mkdir(projectDir, { recursive: true });
+        const rotatedId = 'rotated-by-alias';
+        const inputs = ['/reset', 'ordinary prompt'];
+        let clearHookId: string | undefined;
+        const results: SDKMessage[] = [];
+        queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string }> }) => ({
+            async *[Symbol.asyncIterator]() {
+                const input = prompt[Symbol.asyncIterator]();
+                await input.next();
+                yield initMessage;
+                clearHookId = rotatedId;
+                // The alias result still carries the previous session id.
+                yield { ...resultMessage, session_id: 's-9' };
+                const ordinary = await input.next();
+                yield { ...resultMessage, session_id: rotatedId, user_message_uuid: ordinary.value.uuid };
+            }
+        }));
+        try {
+            await claudeRemote({
+                sessionId: 's-9',
+                path: transcriptDir,
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => {
+                    const message = inputs.shift();
+                    return message ? { message, mode: { permissionMode: 'default' } } : null;
+                },
+                onReady: () => {},
+                isAborted: () => false,
+                onMessage: (message) => { if (message.type === 'result') results.push(message); },
+                onSessionFound: () => {},
+                getClearHookSessionId: () => clearHookId
+            });
+            expect(results.map((m) => m.hapi_skip_usage === true)).toEqual([true, false]);
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+
     async function runCompactWithSummary(
         mockSummary: string | null
     ): Promise<{ completionEvents: string[]; compactSummaries: CompactSummaryPayload[]; contextTokens: Array<number | undefined> }> {
