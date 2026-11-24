@@ -243,7 +243,7 @@ type AgyTurn = {
     steerAnswers: Promise<void>[];
     // agy echoes the prompt first, and that echo may contain a steer's text.
     promptEcho: { text: string; echo: string; done: boolean };
-    unechoedSteers: Array<{ text: string; echo: string; accept: () => void }>;
+    unechoedSteers: Array<{ text: string; echo: string; accept: () => void; absorbed?: boolean }>;
     // Steers agy answered without an echo; settled when the turn ends.
     answeredSteers: Array<{ accept: () => void; hold: () => void }>;
     // Steers still waiting for their USER_INPUT row in agy's transcript, in
@@ -1537,6 +1537,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         let resolved = false;
         let steerCounted = false;
         let forgetEcho = () => {};
+        let echoEntry: AgyTurn['unechoedSteers'][number] | null = null;
         let rowSteer: AgySteerRow | null = null;
         const markIndeterminate = () => {
             if (resolved) return;
@@ -1627,7 +1628,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const accept = (anchorToolCallId?: string) => {
             if (resolved) return;
             resolved = true;
-            forgetEcho();
+            // Confirmed without its echo (transcript row, answer, turn end):
+            // the entry stays to absorb the echo agy may still send for it, so
+            // that echo is not taken for the next identical steer.
+            if (echoEntry) echoEntry.absorbed = true;
+            else forgetEcho();
             session.queue.commitReservation(taken);
             this.messageBuffer.addMessage(taken.item.message, 'user');
             session.client.emitMessagesConsumed([localId], {
@@ -1638,7 +1643,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         forgetEcho = () => {
             turn.unechoedSteers = turn.unechoedSteers.filter((entry) => entry.accept !== accept);
         };
-        turn.unechoedSteers.push({ text: normalizeEcho(taken.item.message), echo: '', accept });
+        echoEntry = { text: normalizeEcho(taken.item.message), echo: '', accept };
+        turn.unechoedSteers.push(echoEntry);
         turn.abandonSteers.push(markIndeterminate);
         // agy writes the steer to its transcript when it folds it in: that row
         // confirms the steer and says where it entered the turn. The echo
@@ -1711,6 +1717,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // leave these steers to the end of the turn.
         for (const entry of pending) {
             if (entry.sessionId !== acpSessionId) entry.done = true;
+        }
+        // Agy versions that never echo would otherwise keep the entries.
+        if (pending.some((entry) => entry.done && entry.sessionId !== acpSessionId)) {
+            turn.unechoedSteers = turn.unechoedSteers.filter((entry) => !entry.absorbed);
         }
         const live = pending.filter((entry) => !entry.done);
         if (live.length === 0 || !acpSessionId) return;
@@ -1786,8 +1796,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             for (const entry of turn.unechoedSteers) {
                 if (entry !== match) entry.echo = normalizeEcho(entry.echo.replace(match.text, ' '));
             }
-            match.accept();
-            if (turn.unechoedSteers.includes(match)) return;
+            // An absorbed entry was confirmed already: its echo only uses it up.
+            if (!match.absorbed) match.accept();
+            turn.unechoedSteers = turn.unechoedSteers.filter((entry) => entry !== match);
         }
     }
 

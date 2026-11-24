@@ -2729,6 +2729,42 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(consumedFor(client, 'steer-1')).toHaveLength(1);
     });
 
+    it('lets a row-confirmed steer absorb its own late echo instead of confirming the next identical steer', async () => {
+        const { backend, client, steer, finish } = await startTurn();
+        await steer('again', 'steer-1');
+        await steer('again', 'steer-2');
+
+        writeTranscript([...stepRows, userRow(3, 'again')]);
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toHaveLength(1));
+        // The first steer's echo arrives after its row confirmed it.
+        backend.echo!('again');
+        expect(consumedFor(client, 'steer-1')).toHaveLength(1);
+        expect(consumedFor(client, 'steer-2')).toHaveLength(0);
+
+        // The second steer never reaches agy: only the turn's end could settle it.
+        // A second echo is the one that belongs to it.
+        backend.echo!('again');
+        expect(consumedFor(client, 'steer-2')).toHaveLength(1);
+        await finish();
+        expect(consumedFor(client, 'steer-1')).toHaveLength(1);
+        expect(consumedFor(client, 'steer-2')).toHaveLength(1);
+    });
+
+    it('does not show an identical second steer as sent when agy refuses it after the first echo', async () => {
+        const { backend, client, steer, finish } = await startTurn();
+        await steer('again', 'steer-1');
+        await steer('again', 'steer-2');
+
+        writeTranscript([...stepRows, userRow(3, 'again')]);
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toHaveLength(1));
+        backend.echo!('again');
+        backend.steerCompletions[1]!.reject(new Error('Can\'t add this prompt to session'));
+        await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-2'], 'queued'));
+        expect(consumedFor(client, 'steer-2').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
+        await finish();
+        expect(consumedFor(client, 'steer-2').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
+    });
+
     it('reads the steer text out of the row wrapper without touching it', () => {
         const wrap = (text: string) => `<USER_REQUEST>\n${text}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nlocal time\n</ADDITIONAL_METADATA>`;
         expect(agySteerRowText(wrap('한국어 테스트 🎉'))).toBe('한국어 테스트 🎉');
