@@ -139,6 +139,8 @@ class FakeAgyBackend {
     readonly steerPrompts: PromptContent[][] = [];
     steerDispatchError: Error | null = null;
     steerStartError: Error | null = null;
+    steerRejectDrainMs = 0;
+    steerDrainCount = 0;
     steerCompletions: Array<{
         resolve: (stopReason: string | null) => void;
         reject: (error: unknown) => void;
@@ -150,7 +152,10 @@ class FakeAgyBackend {
     beginSoftSteerPrompt(
         _sessionId: string,
         content: PromptContent[],
-        options?: { onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void }
+        options?: {
+            onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void;
+            onRequestFailed?: (error: unknown) => void;
+        }
     ) {
         if (this.steerStartError) throw this.steerStartError;
         if (!this.processingMessage) throw new Error('No active ACP prompt to soft-steer into');
@@ -158,7 +163,18 @@ class FakeAgyBackend {
         this.openSteers += 1;
         let resolve!: (stopReason: string | null) => void;
         let reject!: (error: unknown) => void;
-        const completed = new Promise<string | null>((res, rej) => { resolve = res; reject = rej; });
+        const completed = new Promise<string | null>((res, rej) => {
+            resolve = res;
+            reject = (error: unknown) => {
+                options?.onRequestFailed?.(error);
+                if (this.steerRejectDrainMs > 0) {
+                    setTimeout(() => { this.steerDrainCount += 1; rej(error); }, this.steerRejectDrainMs);
+                } else {
+                    this.steerDrainCount += 1;
+                    rej(error);
+                }
+            };
+        });
         void completed.then(() => { this.openSteers -= 1; }, () => { this.openSteers -= 1; });
         let answer!: () => void;
         const answered = new Promise<void>((res) => { answer = res; });
@@ -2932,6 +2948,31 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await finish();
         // It went back to the queue and ran as the next prompt, not as a steer.
         expect(consumedFor(client, 'steer-1').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
+    });
+
+    it('keeps a refused steer from taking a row that belongs to a later identical steer while it drains', async () => {
+        const { backend, client, steer, finish } = await startTurn();
+        backend.steerRejectDrainMs = 300;
+        await steer('again', 'refused');
+        await steer('again', 'taken');
+
+        backend.steerCompletions[0]!.reject(new Error('Can\'t add this prompt to session'));
+        // agy records the second steer while the first refusal is still draining.
+        writeTranscript([...stepRows, userRow(3, 'again')]);
+        await vi.waitFor(() => expect(consumedFor(client, 'taken')).toEqual([
+            [['taken'], { steered: true, anchor: { toolCallId: 't1' } }]
+        ]));
+        // The refusal is visible to the row matcher while the drain is still open.
+        expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['refused'], 'queued');
+        expect(backend.steerDrainCount).toBe(0);
+
+        await vi.waitFor(() => expect(backend.steerDrainCount).toBe(1));
+        expect(consumedFor(client, 'refused').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
+        expect(backend.steerPrompts).toHaveLength(2);
+        await finish();
+        expect(consumedFor(client, 'taken')).toHaveLength(1);
+        expect(consumedFor(client, 'refused').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
+        expect(backend.steerPrompts).toHaveLength(2);
     });
 
     it('confirms without a position when no tool call came before the row', async () => {

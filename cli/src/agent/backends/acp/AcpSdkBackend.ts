@@ -1042,6 +1042,8 @@ export class AcpSdkBackend implements AgentBackend {
         // Agents that answer each request with its own share (Antigravity)
         // need every response's usage to total the turn.
         onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void;
+        // Called when the JSON-RPC request fails, before late output is drained.
+        onRequestFailed?: (error: unknown) => void;
     }): {
         dispatched: Promise<void>;
         /** Settles when the agent answers, before late output is drained. */
@@ -1062,6 +1064,9 @@ export class AcpSdkBackend implements AgentBackend {
             sessionId,
             prompt: content
         }, { timeoutMs: Infinity, dispatchTimeoutMs: 20_000 });
+        void request.completed.catch((error: unknown) => {
+            options?.onRequestFailed?.(error);
+        });
         const completed = (async () => {
             try {
                 const response = await request.completed;

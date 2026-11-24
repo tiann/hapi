@@ -1814,6 +1814,42 @@ describe('AcpSdkBackend', () => {
         warn.mockRestore();
     });
 
+    it('beginSoftSteerPrompt reports a refused request before it drains late output', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const events: string[] = [];
+        const failures: unknown[] = [];
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequestWithDispatch: () => { dispatched: Promise<void>; completed: Promise<unknown> };
+                close: () => Promise<void>;
+            } | null;
+            isProcessingMessage: boolean;
+            waitForSessionUpdateQuiet: () => Promise<void>;
+            drainLateBuffers: () => Promise<void>;
+            messageHandler: { drainBuffers: () => void } | null;
+        };
+        backendInternal.isProcessingMessage = true;
+        let releaseDrain!: () => void;
+        backendInternal.waitForSessionUpdateQuiet = () => new Promise((resolve) => { releaseDrain = resolve; });
+        backendInternal.messageHandler = { drainBuffers: () => events.push('drain') };
+        backendInternal.drainLateBuffers = async () => { events.push('late'); };
+        const failure = new Error('Can\'t add this prompt to session');
+        backendInternal.transport = {
+            sendRequestWithDispatch: () => ({ dispatched: Promise.resolve(), completed: Promise.reject(failure) }),
+            close: async () => {}
+        };
+
+        const steer = backend.beginSoftSteerPrompt('session-1', [{ type: 'text', text: 'again' }], {
+            onRequestFailed: (error) => { failures.push(error); events.push('refused'); }
+        });
+        await vi.waitFor(() => expect(failures).toEqual([failure]));
+        await vi.waitFor(() => expect(releaseDrain).toBeTypeOf('function'));
+        expect(events).toEqual(['refused']);
+        releaseDrain();
+        await expect(steer.completed).rejects.toBe(failure);
+        expect(events).toEqual(['refused', 'drain', 'late', 'drain']);
+    });
+
     it('beginSoftSteerPrompt settles answered before it drains late output', async () => {
         const backend = new AcpSdkBackend({ command: 'agent' });
         const events: string[] = [];

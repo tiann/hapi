@@ -1649,6 +1649,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         // out, and a second one would read as another turn.
                         if (this.turn !== turn) return;
                         turn.usage = addAgyUsage(turn.usage, usage);
+                    },
+                    onRequestFailed: (error) => {
+                        // An explicit refusal settles the steer before late output is
+                        // drained, so a row written during the drain stays available
+                        // to a later steer with the same text.
+                        if (!isAcpIndeterminateError(error)) void restoreQueued();
                     }
                 }
             );
@@ -1762,10 +1768,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
      * agy writes the rows in the order it took the steers, so steers with the
      * same text own that text's rows in send order: the oldest steer without a
      * row takes the first unowned row with its text past its boundary, and
-     * later ones wait for it. A steer agy refused has no row and drops out; a
-     * steer without a boundary keeps later ones waiting, since its row cannot
-     * be told apart. When the row follows a call whose card is not out yet,
-     * the steer waits for that card on later polls, for at most the anchor
+     * later ones wait for it. A steer agy refused drops out as soon as its
+     * request fails, before the late output drain, so rows written during the
+     * drain belong to the next identical steer. A steer without a boundary
+     * keeps later ones waiting, since its row cannot be told apart. When the
+     * row follows a call whose card is not out yet, the steer waits for that
+     * card on later polls, for at most the anchor
      * wait; `settle` (Stop, a lost transport, the turn's end) confirms it at
      * once without a position.
      */
