@@ -2722,7 +2722,8 @@ describe('AcpSdkBackend OpenCode child session updates', () => {
     type ChildBackendInternal = {
         transport: {
             sendRequest: (...args: unknown[]) => Promise<unknown>;
-            close: () => Promise<void>;
+            /** Real transport returns true when the process tree exited. */
+            close: () => Promise<boolean | void>;
         } | null;
         handleNotification: (method: string, params: unknown) => void;
     };
