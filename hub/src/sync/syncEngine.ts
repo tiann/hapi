@@ -3808,14 +3808,26 @@ export class SyncEngine {
         return 'ready'
     }
 
+    /** Session ids whose in-flight archive used softStandDown (ordinary joiners must not inherit). */
+    private readonly softStandDownArchiveInFlight = new Set<string>()
+
     async archiveSession(sessionId: string, opts?: { softStandDown?: boolean }): Promise<void> {
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const existing = this.archiveRequests.get(sessionId)
-        if (existing) return existing
+        if (existing) {
+            // Ordinary archive must not share success with an in-flight soft stand-down
+            // (verified cleanup vs pendingCleanup — bot Approach on #2021).
+            if (!opts?.softStandDown && this.softStandDownArchiveInFlight.has(sessionId)) {
+                throw new ArchiveCleanupError('unconfirmed')
+            }
+            return existing
+        }
+        if (opts?.softStandDown) this.softStandDownArchiveInFlight.add(sessionId)
         const operation = this.archiveSessionOnce(sessionId, opts)
         this.archiveRequests.set(sessionId, operation)
         try { await operation } finally {
             if (this.archiveRequests.get(sessionId) === operation) this.archiveRequests.delete(sessionId)
+            this.softStandDownArchiveInFlight.delete(sessionId)
             this.archiveDrainedGenerations.delete(sessionId)
         }
     }
@@ -4002,8 +4014,8 @@ export class SyncEngine {
                 // Keep polling — Runner may be briefly unavailable mid-shutdown.
             }
         }
-        // Do not leave DELETE blocked forever if confirmation never arrives.
-        this.sessionCache.clearSoftStandDownPending(sessionId)
+        // Leave softStandDownPending set if every probe was still_alive/unknown —
+        // DELETE stays gated until exit is confirmed (bot Approach on #2021).
     }
 
     /**
