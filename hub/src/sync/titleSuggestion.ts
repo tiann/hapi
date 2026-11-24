@@ -41,7 +41,7 @@ export class TitleSuggestionError extends Error {
     constructor(
         readonly code: TitleSuggestionErrorCode,
         message: string,
-        readonly status: 422 | 429 | 500 | 502 | 503,
+        readonly status: 422 | 429 | 500 | 503,
         readonly reason?: TitleSuggestionProviderReason,
         readonly providerStatus?: number
     ) {
@@ -571,7 +571,8 @@ export class TitleSuggestionService {
             throw new TitleSuggestionError(
                 'provider',
                 detail ?? 'The title suggestion provider failed',
-                502,
+                // Proxies such as Cloudflare Tunnel can replace 502/504 bodies.
+                500,
                 reason,
                 providerStatus
             )

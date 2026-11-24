@@ -450,7 +450,7 @@ describe('TitleSuggestionService', () => {
 
         await expect(service.suggestTitle(sessionId)).rejects.toMatchObject({
             code: 'provider',
-            status: 502,
+            status: 500,
             message: 'The title suggestion provider failed'
         })
     })

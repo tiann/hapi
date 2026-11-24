@@ -90,9 +90,22 @@ for (const status of [502, 422]) {
     })
 }
 
-test('title generation diagnostics preserve only validated fields for a known provider error', async ({ page }) => {
+test('a plain-text gateway error is not treated as a structured Hub error', async ({ page }) => {
     await page.route('**/api/sessions/fixture-title/title-suggestion', route => route.fulfill({
         status: 502,
+        contentType: 'text/plain',
+        body: 'error code: 502'
+    }))
+    await page.goto('/e2e-fixtures/rename-session-error-fixture.html?locale=en&apiResponse=1')
+    await page.getByRole('button', { name: 'Generate' }).click()
+    await expect(page.getByText('Failed to generate a title. Please try again.', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Show error details' }).click()
+    await expect(page.getByTestId('title-suggestion-diagnostics')).toHaveText('HTTP 502')
+})
+
+test('title generation diagnostics preserve only validated fields for a known provider error', async ({ page }) => {
+    await page.route('**/api/sessions/fixture-title/title-suggestion', route => route.fulfill({
+        status: 500,
         json: {
             code: 'provider',
             reason: 'rate-limited',
@@ -105,7 +118,7 @@ test('title generation diagnostics preserve only validated fields for a known pr
     await page.getByRole('button', { name: 'Generate' }).click()
     await page.getByRole('button', { name: 'Show error details' }).click()
     await expect(page.getByTestId('title-suggestion-diagnostics')).toHaveText(
-        'HTTP 502 Error code: provider Provider HTTP 429 Provider reason: rate-limited'
+        'HTTP 500 Error code: provider Provider HTTP 429 Provider reason: rate-limited'
     )
     await expect(page.getByRole('dialog')).not.toContainText(/internal provider detail|unexpected debug field/i)
     const screenshot = process.env.HAPI_TITLE_DIAGNOSTICS_PROVIDER_SCREENSHOT

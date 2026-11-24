@@ -570,7 +570,7 @@ describe('sessions routes', () => {
                 throw new TitleSuggestionError(
                     'provider',
                     'Title provider request failed (HTTP 404): endpoint or model not found',
-                    502,
+                    500,
                     'endpoint-or-model-not-found',
                     404
                 )
@@ -579,7 +579,7 @@ describe('sessions routes', () => {
 
         const response = await app.request('/api/sessions/session-1/title-suggestion', { method: 'POST' })
 
-        expect(response.status).toBe(502)
+        expect(response.status).toBe(500)
         expect(await response.json()).toEqual({
             error: 'Title provider request failed (HTTP 404): endpoint or model not found',
             code: 'provider',

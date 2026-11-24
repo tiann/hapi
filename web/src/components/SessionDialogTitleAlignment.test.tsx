@@ -153,8 +153,8 @@ describe('session dialog title alignment', () => {
                 onRename={vi.fn(async () => {})}
                 onSuggestTitle={async () => {
                     throw new ApiError(
-                        'HTTP 502 Bad Gateway',
-                        502,
+                        'HTTP 500 Internal Server Error',
+                        500,
                         'provider',
                         JSON.stringify({
                             error: 'Title provider request failed (HTTP 404): endpoint or model not found',
@@ -185,8 +185,8 @@ describe('session dialog title alignment', () => {
                 onRename={vi.fn(async () => {})}
                 onSuggestTitle={async () => {
                     throw new ApiError(
-                        'HTTP 502 Bad Gateway',
-                        502,
+                        'HTTP 500 Internal Server Error',
+                        500,
                         'provider',
                         JSON.stringify({
                             error: 'Title provider request failed (HTTP 401): authentication failed',
