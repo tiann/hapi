@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { watch, type FSWatcher, chmodSync, mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
+import { watch, type FSWatcher, mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync, appendFileSync, openSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,7 +30,7 @@ import {
 
 vi.mock('node:fs', async (load) => {
     const fs = await load<typeof import('node:fs')>();
-    return { ...fs, watch: vi.fn(fs.watch) };
+    return { ...fs, watch: vi.fn(fs.watch), statSync: vi.fn(fs.statSync), openSync: vi.fn(fs.openSync) };
 });
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
@@ -273,21 +273,14 @@ describe('agyReactiveWakeup pure helpers', () => {
         expect(readLatestAgyTranscriptStepIndex(tempBrainDir, 'conv-1')).toBe(0);
 
         appendFileSync(compactPath, '{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE"}\n');
-        chmodSync(compactPath, 0o000);
-        try {
-            expect(readLatestAgyTranscriptStepIndex(tempBrainDir, 'conv-1')).toBeNull();
-            expect(readAgyTranscriptStepsAfter(tempBrainDir, 'conv-1', -1)).toBeNull();
-        } finally {
-            chmodSync(compactPath, 0o644);
-        }
+        const denied = () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); };
+        vi.mocked(statSync).mockImplementationOnce(denied);
+        vi.mocked(statSync).mockImplementationOnce(denied);
+        expect(readLatestAgyTranscriptStepIndex(tempBrainDir, 'conv-1')).toBeNull();
+        expect(readAgyTranscriptStepsAfter(tempBrainDir, 'conv-1', -1)).toBeNull();
 
-        chmodSync(logsDir, 0o000);
-        try {
-            expect(readLatestAgyTranscriptStepIndex(tempBrainDir, 'conv-1')).toBeNull();
-            expect(readAgyTranscriptStepsAfter(tempBrainDir, 'conv-1', -1)).toBeNull();
-        } finally {
-            chmodSync(logsDir, 0o755);
-        }
+        vi.mocked(openSync).mockImplementationOnce(denied);
+        expect(readLatestAgyTranscriptStepIndex(tempBrainDir, 'conv-1')).toBeNull();
 
         expect(readLatestAgyTranscriptStepIndex(tempBrainDir, 'conv-1')).toBe(1);
         rmSync(compactPath);

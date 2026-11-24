@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
@@ -23,6 +23,10 @@ import {
 } from './agyAcpRemoteLauncher';
 import { generationTimeMs } from '@/agent/generationClock';
 
+vi.mock('node:fs', async (load) => {
+    const fs = await load<typeof import('node:fs')>();
+    return { ...fs, statSync: vi.fn(fs.statSync) };
+});
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
@@ -2832,13 +2836,8 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
 
     it('dispatches a steer whose transcript cannot be read as it is sent and leaves it to the turn end', async () => {
         const { backend, client, steer, finish } = await startTurn(undefined, { reactivePollMs: 20 });
-        const logsDir = join(brainDir, SESSION, '.system_generated', 'logs');
-        chmodSync(logsDir, 0o000);
-        try {
-            expect(await steer('also lint', 'steer-1')).toEqual({ steered: true });
-        } finally {
-            chmodSync(logsDir, 0o755);
-        }
+        vi.mocked(statSync).mockImplementationOnce(() => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); });
+        expect(await steer('also lint', 'steer-1')).toEqual({ steered: true });
         expect(backend.steerPrompts).toHaveLength(1);
         writeTranscript([...stepRows, userRow(3, 'also lint')]);
         await new Promise((resolve) => setTimeout(resolve, 100));
