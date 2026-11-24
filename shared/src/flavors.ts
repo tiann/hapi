@@ -37,13 +37,13 @@ type FlavorSpec<TModes extends readonly PermissionMode[]> = {
     capabilities: ReadonlySet<Capability>
     permissionReplyStyle: PermissionReplyStyle
     permissionModes: TModes
-    decisionToolNamePrefix?: string
+    decisionToolNamePrefix: string | null
     /** The new-session form keeps this flavor's mode in its own state instead of the shared one. */
-    ownPermissionFormState?: boolean
+    ownPermissionFormState: boolean
     /** Saved new-session YOLO toggles from before permission modes migrate to the auto-approve mode. */
-    migratesYoloToggle?: boolean
-    creatable?: boolean
-    steering?: SteeringCapability
+    migratesYoloToggle: boolean
+    creatable: boolean
+    steering: SteeringCapability | null
 }
 
 const AUTO_APPROVE_MODES: readonly PermissionMode[] = ['yolo', 'bypassPermissions', 'always-proceed']
@@ -70,9 +70,9 @@ function defineFlavor<const TModes extends readonly PermissionMode[]>(
             : spec.ownPermissionFormState ? 'separate' : 'shared',
         yoloToggleMigrationMode: spec.migratesYoloToggle ? yoloPermissionMode : null,
         yoloPermissionMode,
-        decisionToolNamePrefix: spec.decisionToolNamePrefix ?? null,
-        creatable: spec.creatable ?? true,
-        steering: spec.steering ?? null,
+        decisionToolNamePrefix: spec.decisionToolNamePrefix,
+        creatable: spec.creatable,
+        steering: spec.steering,
     }
 }
 
@@ -92,7 +92,10 @@ const agy = defineFlavor({
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'generic',
     permissionModes: ['request-review', 'acceptEdits', 'plan', 'always-proceed'],
+    decisionToolNamePrefix: null,
+    ownPermissionFormState: false,
     migratesYoloToggle: true,
+    creatable: true,
     // Concurrent ACP `session/prompt` (`agy acp`); agy answers the interrupted request at once and folds the steer in after any running tool call finishes.
     steering: { activeTurnState: 'steeringActive', supportsSession: isAgyAcpSession },
 })
@@ -102,7 +105,10 @@ const claude = defineFlavor({
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'allowTools',
     permissionModes: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
+    decisionToolNamePrefix: null,
+    ownPermissionFormState: false,
     migratesYoloToggle: true,
+    creatable: true,
     // Stream-json stdin write during the turn (TUI Ctrl+X Ctrl+S); folded in at the next tool boundary, remote mode only.
     steering: { activeTurnState: 'steeringActive' },
 })
@@ -113,7 +119,9 @@ const codex = defineFlavor({
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'autoReview', 'yolo'],
     decisionToolNamePrefix: 'Codex',
+    ownPermissionFormState: false,
     migratesYoloToggle: true,
+    creatable: true,
     // App-server `turn/steer` (true mid-turn inject).
     steering: { activeTurnState: 'steeringActive' },
 })
@@ -124,6 +132,11 @@ const dsh = defineFlavor({
     permissionReplyStyle: 'generic',
     // DSH applies its own server-side permission policy, so no modes are offered.
     permissionModes: [],
+    decisionToolNamePrefix: null,
+    ownPermissionFormState: false,
+    migratesYoloToggle: false,
+    creatable: true,
+    steering: null,
 })
 
 const copilot = defineFlavor({
@@ -132,6 +145,10 @@ const copilot = defineFlavor({
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
     decisionToolNamePrefix: 'Copilot',
+    ownPermissionFormState: false,
+    migratesYoloToggle: false,
+    creatable: true,
+    steering: null,
 })
 
 const cursor = defineFlavor({
@@ -140,7 +157,9 @@ const cursor = defineFlavor({
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'plan', 'ask', 'debug', 'autoReview', 'yolo'],
     decisionToolNamePrefix: 'Cursor',
+    ownPermissionFormState: false,
     migratesYoloToggle: true,
+    creatable: true,
     // ACP: concurrent `session/prompt` soft-send without cancel; legacy stream-json sessions cannot steer.
     steering: { activeTurnState: 'steeringActive', supportsSession: isCursorAcpSession },
 })
@@ -151,8 +170,11 @@ const gemini = defineFlavor({
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
     decisionToolNamePrefix: 'Gemini',
+    ownPermissionFormState: false,
+    migratesYoloToggle: false,
     // Google sunset the consumer Gemini CLI, so it cannot be launched; stored sessions stay viewable.
     creatable: false,
+    steering: null,
 })
 
 const grok = defineFlavor({
@@ -160,8 +182,12 @@ const grok = defineFlavor({
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'auto', 'plan', 'bypassPermissions'],
+    decisionToolNamePrefix: null,
     // Its Auto mode depends on a machine capability, so the form keeps grok's mode apart.
     ownPermissionFormState: true,
+    migratesYoloToggle: false,
+    creatable: true,
+    steering: null,
 })
 
 const kimi = defineFlavor({
@@ -169,6 +195,11 @@ const kimi = defineFlavor({
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
+    decisionToolNamePrefix: null,
+    ownPermissionFormState: false,
+    migratesYoloToggle: false,
+    creatable: true,
+    steering: null,
 })
 
 const opencode = defineFlavor({
@@ -177,6 +208,9 @@ const opencode = defineFlavor({
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'plan', 'yolo'],
     decisionToolNamePrefix: 'OpenCode',
+    ownPermissionFormState: false,
+    migratesYoloToggle: false,
+    creatable: true,
     // v1: concurrent ACP `session/prompt`; v2: durable REST inbox steering at a native step boundary. Both require live steeringActive.
     steering: { activeTurnState: 'steeringActive' },
 })
@@ -187,6 +221,10 @@ const pi = defineFlavor({
     permissionReplyStyle: 'generic',
     // Pi RPC always auto-approves, so no modes are offered.
     permissionModes: [],
+    decisionToolNamePrefix: null,
+    ownPermissionFormState: false,
+    migratesYoloToggle: false,
+    creatable: true,
     // Native steer over the Pi runtime.
     steering: { activeTurnState: 'thinking' },
 })
