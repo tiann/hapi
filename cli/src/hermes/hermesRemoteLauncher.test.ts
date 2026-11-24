@@ -39,12 +39,22 @@ vi.mock('./utils/hermesBackend', () => ({
                 if (harness.loadSessionError) throw harness.loadSessionError
                 return config.sessionId
             }),
-            prompt: vi.fn(async (_sessionId: string, content: unknown[], onUpdate: (message: unknown) => void) => {
+            prompt: vi.fn(async (
+                _sessionId: string,
+                content: unknown[],
+                onUpdate: (message: unknown) => void,
+                options?: { shouldSend?: () => boolean; timing?: { onSent?: () => void } }
+            ) => {
+                if (options?.shouldSend && !options.shouldSend()) {
+                    return false
+                }
+                options?.timing?.onSent?.()
                 harness.prompts.push(content)
                 if (harness.promptBlocker) {
                     await harness.promptBlocker
                 }
                 onUpdate({ type: 'text', text: 'answer' })
+                return true
             }),
             cancelPrompt: vi.fn(async () => {}),
             getSessionModelsMetadata: vi.fn(() => harness.modelsMetadata),
@@ -318,7 +328,7 @@ describe('HermesRemoteLauncher', () => {
         }
     })
 
-    it('falls back to newSession when loadSession fails on resume', async () => {
+    it('preserves the existing native session ID and surfaces the error when loadSession fails on resume', async () => {
         harness.loadSessionError = new Error('session not found')
         harness.modelsMetadata = {
             availableModels: [{ modelId: 'openrouter:anthropic/claude-sonnet-4', name: 'claude-sonnet-4' }],
@@ -327,10 +337,104 @@ describe('HermesRemoteLauncher', () => {
 
         const { session } = createSessionWithBatches([], { sessionId: 'stale-hermes-id' })
         const launcher = new HermesRemoteLauncher(session as never)
-        await launcher.launch()
+        await expect(launcher.launch()).rejects.toThrow('session not found')
 
         expect(harness.backend?.loadSession).toHaveBeenCalled()
-        expect(harness.backend?.newSession).toHaveBeenCalled()
-        expect(session.onSessionFound).toHaveBeenCalledWith('hermes-session-1')
+        expect(harness.backend?.newSession).not.toHaveBeenCalled()
+        expect(session.onSessionFound).not.toHaveBeenCalled()
+        expect(session.sessionId).toBe('stale-hermes-id')
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Hermes resume failed: session not found'
+        })
+    })
+
+    it('defers acknowledgement and requeues a batch when Stop arrives during the ACP pre-send wait', async () => {
+        const { session, handlers } = createSessionWithBatches([], { keepQueueOpen: true })
+        const commit = vi.spyOn(session.queue, 'commitBatch')
+        const running = new HermesRemoteLauncher(session as never).launch()
+        let releasePreSend!: () => void
+        try {
+            await vi.waitFor(() => expect(handlers.has('abort')).toBe(true))
+            harness.backend!.prompt.mockImplementationOnce(async (
+                _sessionId: string,
+                content: unknown[],
+                onUpdate: (message: unknown) => void,
+                options?: { shouldSend?: () => boolean; timing?: { onSent?: () => void } }
+            ) => {
+                await new Promise<void>((resolve) => {
+                    releasePreSend = resolve
+                })
+                if (options?.shouldSend && !options.shouldSend()) {
+                    return false
+                }
+                options?.timing?.onSent?.()
+                harness.prompts.push(content)
+                onUpdate({ type: 'text', text: 'answer' })
+                return true
+            })
+
+            session.queue.push('stopped during pre-send drain', { permissionMode: 'default' })
+            await vi.waitFor(() => expect(releasePreSend).toBeDefined())
+            expect(commit).not.toHaveBeenCalled()
+
+            await handlers.get('abort')!()
+            expect(commit).not.toHaveBeenCalled()
+            expect(harness.prompts).toHaveLength(0)
+
+            releasePreSend()
+            await vi.waitFor(() => expect(harness.prompts).toEqual([
+                [{ type: 'text', text: 'stopped during pre-send drain' }]
+            ]))
+            expect(commit).toHaveBeenCalledTimes(1)
+        } finally {
+            releasePreSend?.()
+            session.queue.close()
+            await running
+        }
+    })
+
+    it('reconnects and reloads the native session when the transport closes before mode setup', async () => {
+        const { session } = createSessionWithBatches([['first', { permissionMode: 'default' }]], { keepQueueOpen: true })
+        const commit = vi.spyOn(session.queue, 'commitBatch')
+        const running = new HermesRemoteLauncher(session as never).launch()
+        try {
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            const firstBackend = harness.backend!
+            firstBackend.setMode.mockRejectedValueOnce(new Error('ACP transport is closed'))
+
+            session.queue.push('after transport closed', { permissionMode: 'yolo' })
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(2))
+
+            expect(firstBackend.disconnect).toHaveBeenCalledTimes(1)
+            expect(harness.backend).not.toBe(firstBackend)
+            expect(harness.backend!.loadSession).toHaveBeenCalledWith(
+                expect.objectContaining({ sessionId: 'hermes-session-1' })
+            )
+            expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'after transport closed' }])
+            expect(commit).toHaveBeenCalledTimes(2)
+        } finally {
+            session.queue.close()
+            await running
+        }
+    })
+
+    it('exits with an error and keeps the batch unacknowledged when transport reconnect fails', async () => {
+        const { session } = createSessionWithBatches([['first', { permissionMode: 'default' }]], { keepQueueOpen: true })
+        const commit = vi.spyOn(session.queue, 'commitBatch')
+        const release = vi.spyOn(session.queue, 'releaseBatch')
+        const running = new HermesRemoteLauncher(session as never).launch()
+
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+        expect(commit).toHaveBeenCalledTimes(1)
+
+        harness.backend!.setMode.mockRejectedValueOnce(new Error('ACP transport is closed'))
+        harness.loadSessionError = new Error('ACP transport is closed')
+        session.queue.push('unsent turn', { permissionMode: 'yolo' }, 'unsent-local-id')
+
+        await expect(running).rejects.toThrow('ACP transport is closed')
+        expect(commit).toHaveBeenCalledTimes(1)
+        expect(release).toHaveBeenCalledTimes(1)
+        expect(harness.prompts).toHaveLength(1)
     })
 })

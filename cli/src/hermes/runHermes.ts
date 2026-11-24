@@ -1,3 +1,4 @@
+import { BUILTIN_SLASH_COMMANDS } from '@hapi/protocol'
 import { hashObject } from '@/utils/deterministicJson'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
@@ -13,6 +14,32 @@ import type { HermesPermissionMode } from '@hapi/protocol/modes'
 import { HermesRemoteLauncher } from './hermesRemoteLauncher'
 import { HermesSession } from './session'
 import { hermesModeForPreference, type HermesMode } from './types'
+
+const HERMES_SLASH_COMMAND_NAMES = new Set<string>(
+    BUILTIN_SLASH_COMMANDS.hermes.map((command) => command.name.toLowerCase())
+)
+
+export function isHermesSlashCommand(text: string): boolean {
+    const trimmed = text.trim()
+    if (!trimmed.startsWith('/')) return false
+    const match = /^\/([a-z0-9_-]+)(?:\s|$)/i.exec(trimmed)
+    if (!match) return false
+    return HERMES_SLASH_COMMAND_NAMES.has(match[1].toLowerCase())
+}
+
+export function enqueueHermesUserMessage(
+    queue: MessageQueue2<HermesMode>,
+    rawText: string,
+    formattedText: string,
+    mode: HermesMode,
+    localId?: string
+): void {
+    if (isHermesSlashCommand(rawText) || isHermesSlashCommand(formattedText)) {
+        queue.pushIsolated(formattedText, mode, localId)
+        return
+    }
+    queue.push(formattedText, mode, localId)
+}
 
 export async function runHermes(opts: {
     startedBy?: 'runner' | 'terminal'
@@ -65,7 +92,9 @@ export async function runHermes(opts: {
     }
 
     session.onUserMessage((message, localId) => {
-        queue.push(
+        enqueueHermesUserMessage(
+            queue,
+            message.content.text,
             formatMessageWithAttachments(message.content.text, message.content.attachments),
             hermesModeForPreference(currentPermissionMode, currentModel),
             localId

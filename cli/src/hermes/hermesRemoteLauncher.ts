@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { HermesPermissionMode } from '@hapi/protocol/modes'
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle'
+import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport'
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge'
 import { logger } from '@/ui/logger'
 import { convertAgentMessage } from '@/agent/messageConverter'
@@ -40,6 +41,22 @@ function toAcpMcpServers(config: Record<string, { command: string; args: string[
     }))
 }
 
+function isClosedTransportError(
+    backend: ReturnType<typeof createHermesBackend>,
+    error: unknown
+): boolean {
+    if (isAcpIndeterminateError(error)) return true
+    if (typeof (backend as { isTransportAlive?: () => boolean }).isTransportAlive === 'function'
+        && !(backend as { isTransportAlive: () => boolean }).isTransportAlive()) {
+        return true
+    }
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase()
+    return message.includes('acp transport is closed')
+        || message.includes('acp transport not initialized')
+        || message.includes('acp transport closed')
+        || message.includes('acp process exited')
+}
+
 export class HermesRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createHermesBackend> | null = null
     private permissionHandler: AcpPermissionHandler | null = null
@@ -66,7 +83,7 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
 
     async kill(): Promise<void> {
         if (!this.backend) return
-        await this.handleAbort()
+        await this.runAbortUnderBarrier(() => this.handleAbort(true))
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
@@ -84,14 +101,9 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         })
         this.happyServer = happyServer
 
-        const backend = createHermesBackend()
+        let backend = createHermesBackend()
         this.backend = backend
-        registerAcpSessionTitleSync(backend, this.session.client, titleSync)
-        backend.onStderrError((error) => {
-            logger.debug('[hermes-acp] stderr error', error)
-            this.session.sendSessionEvent({ type: 'message', message: error.message })
-            this.messageBuffer.addMessage(error.message, 'status')
-        })
+        this.attachBackendListeners(backend, titleSync)
 
         // Register catalog RPC before initialize() so a picker opened during
         // startup parks on readiness instead of hitting an unregistered-method error.
@@ -101,6 +113,7 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             markReady = resolve
             markFailed = reject
         })
+        void ready.catch(() => {})
         this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListHermesModels, async () => {
             let acpSessionId: string
             try {
@@ -109,7 +122,8 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 const message = error instanceof Error ? error.message : String(error)
                 return { success: false, error: `Hermes session is not available: ${message}` }
             }
-            const metadata = backend.getSessionModelsMetadata(acpSessionId)
+            const activeBackend = this.backend ?? backend
+            const metadata = activeBackend.getSessionModelsMetadata(acpSessionId)
             const currentModelId = this.currentBackendModel ?? metadata?.currentModelId ?? null
             const configuredModels = resolveHermesConfigModels(undefined, currentModelId)
             const availableModels = configuredModels ?? metadata?.availableModels ?? []
@@ -138,15 +152,14 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                     })
                     acpSessionId = resumeSessionId
                 } catch (error) {
-                    logger.warn('[hermes-acp] loadSession failed, starting a new session', error)
+                    const message = error instanceof Error ? error.message : String(error)
+                    logger.warn('[hermes-acp] loadSession failed', error)
                     this.session.sendSessionEvent({
                         type: 'message',
-                        message: 'Hermes resume failed; starting a new session.'
+                        message: `Hermes resume failed: ${message}`
                     })
-                    acpSessionId = await backend.newSession({
-                        cwd: this.session.path,
-                        mcpServers: acpMcpServers
-                    })
+                    this.messageBuffer.addMessage(`Hermes resume failed: ${message}`, 'status')
+                    throw error
                 }
             } else {
                 acpSessionId = await backend.newSession({
@@ -187,9 +200,49 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         this.setupAbortHandlers(this.session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleExitFromUi()
-        }, () => this.abortController.abort(), () => { this.abortController = new AbortController() })
+        }, () => this.abortController.abort(), () => {
+            if (this.abortController.signal.aborted) {
+                this.abortController = new AbortController()
+            }
+        })
 
         let retryDelay = 1000
+        let consecutiveReconnects = 0
+        const recoverFromClosedTransport = async (
+            cause: unknown,
+            uncommittedBatch?: NonNullable<Awaited<ReturnType<HermesSession['queue']['waitForDeferredBatch']>>>
+        ): Promise<ReturnType<typeof createHermesBackend>> => {
+            if (consecutiveReconnects < 1) {
+                consecutiveReconnects += 1
+                try {
+                    return await this.reconnectBackend(acpSessionId, acpMcpServers, titleSync)
+                } catch (reconnectError) {
+                    if (uncommittedBatch) {
+                        this.session.queue.releaseBatch(uncommittedBatch)
+                    }
+                    const message = reconnectError instanceof Error ? reconnectError.message : String(reconnectError)
+                    logger.warn('[hermes-acp] transport reconnect failed', { message })
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: `Hermes transport closed: ${message}`
+                    })
+                    this.messageBuffer.addMessage(`Hermes transport closed: ${message}`, 'status')
+                    throw reconnectError
+                }
+            }
+            if (uncommittedBatch) {
+                this.session.queue.releaseBatch(uncommittedBatch)
+            }
+            const message = cause instanceof Error ? cause.message : String(cause)
+            logger.warn('[hermes-acp] transport closed repeatedly', { message })
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: `Hermes transport closed: ${message}`
+            })
+            this.messageBuffer.addMessage(`Hermes transport closed: ${message}`, 'status')
+            throw cause instanceof Error ? cause : new Error(message)
+        }
+
         while (!this.shouldExit) {
             await this.waitForAbortBarrier()
             if (this.shouldExit) break
@@ -200,6 +253,17 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 break
             }
 
+            if (typeof (backend as { isTransportAlive?: () => boolean }).isTransportAlive === 'function'
+                && !(backend as { isTransportAlive: () => boolean }).isTransportAlive()) {
+                if (this.shouldExit || this.session.queue.isClosed()) {
+                    this.session.queue.releaseBatch(batch)
+                    break
+                }
+                backend = await recoverFromClosedTransport(new Error('ACP transport is closed'), batch)
+                this.session.queue.unshiftBatch(batch)
+                continue
+            }
+
             try {
                 await this.syncAcpPermissionMode(backend, acpSessionId, batch.mode.permissionMode)
                 retryDelay = 1000
@@ -208,12 +272,32 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                     this.session.queue.releaseBatch(batch)
                     break
                 }
+                if (isClosedTransportError(backend, error)) {
+                    backend = await recoverFromClosedTransport(error, batch)
+                    retryDelay = 1000
+                    this.session.queue.unshiftBatch(batch)
+                    continue
+                }
                 this.session.queue.unshiftBatch(batch)
                 if (retryDelay === 1000) this.session.sendSessionEvent({
                     type: 'message', message: `Hermes permission change failed. Prompt remains queued for retry or cancellation: ${error}`
                 })
                 await delay(retryDelay, undefined, { signal }).catch(() => {})
                 retryDelay = Math.min(retryDelay * 2, 10000)
+                continue
+            }
+
+            if (this.shouldExit) {
+                this.session.queue.releaseBatch(batch)
+                break
+            }
+            if (signal.aborted) {
+                await this.waitForAbortBarrier()
+                if (this.shouldExit || this.session.queue.isClosed()) {
+                    this.session.queue.releaseBatch(batch)
+                    break
+                }
+                this.session.queue.unshiftBatch(batch)
                 continue
             }
 
@@ -225,6 +309,15 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                         this.currentBackendModel = this.initialBackendModel
                         this.messageBuffer.addMessage(`[MODEL:${this.initialBackendModel}]`, 'system')
                     } catch (err) {
+                        if (isClosedTransportError(backend, err)) {
+                            if (this.shouldExit || this.session.queue.isClosed()) {
+                                this.session.queue.releaseBatch(batch)
+                                break
+                            }
+                            backend = await recoverFromClosedTransport(err, batch)
+                            this.session.queue.unshiftBatch(batch)
+                            continue
+                        }
                         logger.debug('[hermes-acp] reset setModel failed', err)
                         this.opts.onModelRollback?.(this.currentBackendModel)
                     }
@@ -235,6 +328,15 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                     this.currentBackendModel = requestedModel
                     this.messageBuffer.addMessage(`[MODEL:${requestedModel}]`, 'system')
                 } catch (err) {
+                    if (isClosedTransportError(backend, err)) {
+                        if (this.shouldExit || this.session.queue.isClosed()) {
+                            this.session.queue.releaseBatch(batch)
+                            break
+                        }
+                        backend = await recoverFromClosedTransport(err, batch)
+                        this.session.queue.unshiftBatch(batch)
+                        continue
+                    }
                     logger.debug('[hermes-acp] setModel failed', err)
                     this.opts.onModelRollback?.(this.currentBackendModel)
                 }
@@ -245,28 +347,153 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 break
             }
             if (signal.aborted) {
+                await this.waitForAbortBarrier()
+                if (this.shouldExit || this.session.queue.isClosed()) {
+                    this.session.queue.releaseBatch(batch)
+                    break
+                }
                 this.session.queue.unshiftBatch(batch)
                 continue
             }
-            this.session.queue.commitBatch(batch)
-            this.session.onThinkingChange(true)
-            this.messageBuffer.addMessage(batch.message, 'user')
+
             const prompt: PromptContent[] = [{ type: 'text', text: batch.message }]
+            let batchDispatched = false
+            const markDispatched = () => {
+                if (batchDispatched) return
+                batchDispatched = true
+                consecutiveReconnects = 0
+                this.session.queue.commitBatch(batch)
+                this.session.onThinkingChange(true)
+                this.messageBuffer.addMessage(batch.message, 'user')
+            }
+            let promptClosedTransportError: unknown = null
             try {
-                await backend.prompt(acpSessionId, prompt, (message) => this.handleAgentMessage(message))
+                const isAlive = () =>
+                    typeof (backend as { isTransportAlive?: () => boolean }).isTransportAlive !== 'function'
+                    || (backend as { isTransportAlive: () => boolean }).isTransportAlive()
+                const sent = await backend.prompt(
+                    acpSessionId,
+                    prompt,
+                    (message) => {
+                        markDispatched()
+                        this.handleAgentMessage(message)
+                    },
+                    {
+                        shouldSend: () => !this.shouldExit && !signal.aborted && isAlive(),
+                        timing: {
+                            onSent: markDispatched
+                        }
+                    }
+                )
+                if (sent === false) {
+                    await this.waitForAbortBarrier()
+                    if (this.shouldExit || this.session.queue.isClosed()) {
+                        this.session.queue.releaseBatch(batch)
+                        break
+                    }
+                    if (!signal.aborted && !isAlive()) {
+                        promptClosedTransportError = new Error('ACP transport is closed')
+                    } else {
+                        this.session.queue.unshiftBatch(batch)
+                        continue
+                    }
+                } else {
+                    markDispatched()
+                }
             } catch (error) {
-                const message = error instanceof Error ? error.message : String(error)
-                logger.warn('[hermes-acp] prompt failed', { message })
-                this.session.sendSessionEvent({ type: 'message', message: `Hermes prompt failed: ${message}` })
-                this.messageBuffer.addMessage(`Hermes prompt failed: ${message}`, 'status')
+                if (isClosedTransportError(backend, error)) {
+                    promptClosedTransportError = error
+                } else {
+                    markDispatched()
+                    const message = error instanceof Error ? error.message : String(error)
+                    logger.warn('[hermes-acp] prompt failed', { message })
+                    this.session.sendSessionEvent({ type: 'message', message: `Hermes prompt failed: ${message}` })
+                    this.messageBuffer.addMessage(`Hermes prompt failed: ${message}`, 'status')
+                }
             } finally {
-                this.session.onThinkingChange(false)
-                await this.permissionHandler?.cancelAll('Prompt finished')
-                if (this.session.queue.size() === 0 && !this.shouldExit) {
-                    this.session.sendSessionEvent({ type: 'ready' })
+                if (batchDispatched) {
+                    this.session.onThinkingChange(false)
+                    await this.permissionHandler?.cancelAll('Prompt finished')
                 }
             }
+
+            if (promptClosedTransportError !== null) {
+                if (this.shouldExit || this.session.queue.isClosed()) {
+                    if (!batchDispatched) {
+                        this.session.queue.releaseBatch(batch)
+                    }
+                    break
+                }
+                if (!batchDispatched) {
+                    backend = await recoverFromClosedTransport(promptClosedTransportError, batch)
+                    this.session.queue.unshiftBatch(batch)
+                    continue
+                }
+                const message = promptClosedTransportError instanceof Error
+                    ? promptClosedTransportError.message
+                    : String(promptClosedTransportError)
+                logger.warn('[hermes-acp] prompt transport failed after dispatch', { message })
+                this.session.sendSessionEvent({ type: 'message', message: `Hermes prompt failed: ${message}` })
+                this.messageBuffer.addMessage(`Hermes prompt failed: ${message}`, 'status')
+                backend = await recoverFromClosedTransport(promptClosedTransportError)
+            }
+
+            if (this.session.queue.size() === 0 && !this.shouldExit) {
+                this.session.sendSessionEvent({ type: 'ready' })
+            }
         }
+    }
+
+    private attachBackendListeners(
+        backend: ReturnType<typeof createHermesBackend>,
+        titleSync: ReturnType<typeof createAcpSessionTitleSync>
+    ): void {
+        registerAcpSessionTitleSync(backend, this.session.client, titleSync)
+        backend.onStderrError((error) => {
+            logger.debug('[hermes-acp] stderr error', error)
+            this.session.sendSessionEvent({ type: 'message', message: error.message })
+            this.messageBuffer.addMessage(error.message, 'status')
+        })
+    }
+
+    private async reconnectBackend(
+        acpSessionId: string,
+        acpMcpServers: McpServerStdio[],
+        titleSync: ReturnType<typeof createAcpSessionTitleSync>
+    ): Promise<ReturnType<typeof createHermesBackend>> {
+        await this.permissionHandler?.cancelAll('Transport closed')
+        this.permissionHandler = null
+        await this.backend?.disconnect().catch(() => {})
+        this.backend = null
+        this.currentBackendAcpMode = null
+
+        const nextBackend = createHermesBackend()
+        this.backend = nextBackend
+        this.attachBackendListeners(nextBackend, titleSync)
+        await nextBackend.initialize()
+        await nextBackend.loadSession({
+            sessionId: acpSessionId,
+            cwd: this.session.path,
+            mcpServers: acpMcpServers
+        })
+        const discoveredModel = nextBackend.getSessionModelsMetadata(acpSessionId)?.currentModelId ?? null
+        const desiredModel = this.currentBackendModel
+        this.currentBackendModel = discoveredModel
+        if (desiredModel && desiredModel !== discoveredModel) {
+            try {
+                await nextBackend.setModel(acpSessionId, desiredModel, { flavor: 'hermes' })
+                this.currentBackendModel = desiredModel
+            } catch (err) {
+                logger.debug('[hermes-acp] reconnect setModel failed', err)
+                this.opts.onModelRollback?.(this.currentBackendModel)
+            }
+        }
+        this.permissionHandler = new AcpPermissionHandler(
+            this.session.client,
+            nextBackend,
+            () => this.session.getPermissionMode() as HermesPermissionMode | undefined
+        )
+        return nextBackend
     }
 
     protected async cleanup(): Promise<void> {
@@ -328,6 +555,8 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(terminal = false): Promise<void> {
+        this.abortController.abort()
+        this.abortController = new AbortController()
         if (this.backend && this.session.sessionId) {
             await this.backend.cancelPrompt(this.session.sessionId)
         }
