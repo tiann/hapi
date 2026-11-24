@@ -41,3 +41,21 @@ test.describe('project sort modes', () => {
         await expect(projectHeaders.nth(2)).toHaveAttribute('title', '/projects/mine')
     })
 })
+
+
+test('an older tab keeps another tab’s first-seen rank for tied projects', async ({ page, context }) => {
+    const olderTab = await context.newPage()
+    await olderTab.goto(`${fixtureUrl}?crossTab=1`)
+    await olderTab.waitForFunction(() => typeof window.showProjectSortProjects === 'function')
+    await page.goto(`${fixtureUrl}?crossTab=1`)
+    await page.waitForFunction(() => typeof window.showProjectSortProjects === 'function')
+    await page.evaluate(() => window.showProjectSortProjects(['first']))
+    await expect(page.locator('[title="/projects/first"]')).toBeVisible()
+    await olderTab.evaluate(() => window.showProjectSortProjects(['second', 'first']))
+    const headers = olderTab.locator('[title^="/projects/"]')
+    await expect(headers).toHaveCount(2)
+    await expect(headers.nth(0)).toHaveAttribute('title', '/projects/first')
+    await expect(headers.nth(1)).toHaveAttribute('title', '/projects/second')
+    const screenshotPath = process.env.HAPI_PROJECT_RANK_SCREENSHOT
+    if (screenshotPath) await olderTab.screenshot({ path: screenshotPath })
+})

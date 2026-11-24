@@ -1542,7 +1542,7 @@ describe('SessionList collapse behavior', () => {
             const [sessions, setSessions] = useState(initialSessions)
             return (
                 <>
-                    <button type="button" data-testid="activate-a" onClick={() => setSessions((current) => current.map((session) => session.id === 'a' ? { ...session, active: true } : session))}>Activate A</button>
+                    <button type="button" data-testid="activate-a" onClick={() => setSessions((current) => current.map((session) => session.id === 'a' ? { ...session, active: true, thinking: true } : session))}>Activate A</button>
                     <SessionList
                         sessions={sessions}
                         selectedSessionId={null}
@@ -1560,6 +1560,7 @@ describe('SessionList collapse behavior', () => {
         renderWithProviders(<StatefulSessionList />)
         fireEvent.click(screen.getByTestId('activate-a'))
         await waitFor(() => {
+            expect(screen.getByTitle('In progress').nextElementSibling).toContainElement(screen.getByRole('button', { name: /^A(?:\s|$)/ }))
             const headers = screen.getAllByTitle(/^\/work\/[ab]$/)
             expect(headers[0]).toHaveAttribute('title', '/work/a')
             expect(headers[1]).toHaveAttribute('title', '/work/b')

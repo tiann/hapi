@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { beforeEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import { sortSessionGroupsBySessionCount, useSessionProjectOrder } from './useSessionProjectOrder'
 
 beforeEach(() => {
@@ -8,6 +8,21 @@ beforeEach(() => {
 })
 
 describe('useSessionProjectOrder', () => {
+    it('uses another tab’s saved rank even before its storage event, and syncs live updates', () => {
+        const key = 'hapi-session-project-order'
+        const hook = renderHook(({ keys }: { keys: string[] }) => useSessionProjectOrder(keys), { initialProps: { keys: [] as string[] } })
+        localStorage.setItem(key, JSON.stringify(['first']))
+        hook.rerender({ keys: ['second'] })
+        expect(hook.result.current).toEqual(['first', 'second'])
+        expect(JSON.parse(localStorage.getItem(key)!)).toEqual(['first', 'second'])
+        act(() => {
+            const next = JSON.stringify(['first', 'second', 'third'])
+            localStorage.setItem(key, next)
+            window.dispatchEvent(new StorageEvent('storage', { key, newValue: next, storageArea: localStorage }))
+        })
+        expect(hook.result.current).toEqual(['first', 'second', 'third'])
+    })
+
     it('persists first-seen project order and appends newly discovered projects', () => {
         const hook = renderHook(({ keys }: { keys: string[] }) => useSessionProjectOrder(keys), {
             initialProps: { keys: ['mine', 'hapi'] },

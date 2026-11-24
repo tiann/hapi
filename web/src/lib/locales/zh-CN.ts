@@ -1158,7 +1158,7 @@ export default {
   'settings.display.pinInProgressMode.jobs': '长时间任务',
   'settings.display.pinInProgressMode.all': '工作中与待处理',
   'settings.display.pinInProgressSessions.mode': '置顶进行中会话布局',
-  'settings.display.pinInProgressSessions.mode.desc': '默认详细模式保持“进行中”和“活跃会话”分区；合并模式按项目目录分组显示全部活跃会话。',
+  'settings.display.pinInProgressSessions.mode.desc': '默认详细模式保留“进行中”分区和项目文件夹；合并模式按项目目录分组显示全部活跃会话。',
   'settings.display.pinInProgressSessions.mode.detailed': '详细',
   'settings.display.pinInProgressSessions.mode.combined': '合并',
   'settings.display.projectSort': '项目排序',

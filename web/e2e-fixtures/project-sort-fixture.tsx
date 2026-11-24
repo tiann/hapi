@@ -8,7 +8,8 @@ import { ToastProvider } from '@/lib/toast-context'
 import '../src/index.css'
 
 const params = new URLSearchParams(window.location.search)
-if (params.get('mode') === 'count') {
+const crossTab = params.has('crossTab')
+if (params.get('mode') === 'count' || crossTab) {
     window.localStorage.setItem('hapi-session-project-sort-mode', 'count')
 } else {
     window.localStorage.removeItem('hapi-session-project-sort-mode')
@@ -21,7 +22,7 @@ if (params.get('mode') === 'combined-count') {
     window.localStorage.removeItem('hapi-pin-in-progress-sessions')
     window.localStorage.removeItem('hapi-pin-in-progress-sessions-mode')
 }
-window.localStorage.removeItem('hapi-session-project-order')
+if (!crossTab) window.localStorage.removeItem('hapi-session-project-order')
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     return {
@@ -83,11 +84,21 @@ const queryClient = new QueryClient({
 declare global {
     interface Window {
         updateProjectSession: (id: string, patch: Partial<SessionSummary>) => void
+        showProjectSortProjects: (names: string[]) => void
     }
 }
 
 function ProjectSortFixture() {
-    const [currentSessions, setCurrentSessions] = useState(sessions)
+    const [currentSessions, setCurrentSessions] = useState<SessionSummary[]>(crossTab ? [] : sessions)
+    window.showProjectSortProjects = (names) => {
+        setCurrentSessions(names.map((name, index) => makeSession({
+            id: name,
+            active: true,
+            updatedAt: now + index,
+            lastUserMessageAt: now + index,
+            metadata: { path: `/projects/${name}`, name: `Session ${name}` },
+        })))
+    }
     window.updateProjectSession = (id, patch) => {
         setCurrentSessions((previous) => previous.map((session) => session.id === id ? { ...session, ...patch } : session))
     }
