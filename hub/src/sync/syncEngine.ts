@@ -3808,11 +3808,11 @@ export class SyncEngine {
         return 'ready'
     }
 
-    async archiveSession(sessionId: string): Promise<void> {
+    async archiveSession(sessionId: string, opts?: { softStandDown?: boolean }): Promise<void> {
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const existing = this.archiveRequests.get(sessionId)
         if (existing) return existing
-        const operation = this.archiveSessionOnce(sessionId)
+        const operation = this.archiveSessionOnce(sessionId, opts)
         this.archiveRequests.set(sessionId, operation)
         try { await operation } finally {
             if (this.archiveRequests.get(sessionId) === operation) this.archiveRequests.delete(sessionId)
@@ -3820,17 +3820,17 @@ export class SyncEngine {
         }
     }
 
-    private async archiveSessionOnce(sessionId: string): Promise<void> {
+    private async archiveSessionOnce(sessionId: string, opts?: { softStandDown?: boolean }): Promise<void> {
         if (this.historyActionsInFlight.has(sessionId) || this.archivedForkPending(sessionId)) {
             throw new Error('Archived fork is in progress; retry the fork to reconcile it before archiving')
         }
         this.historyActionsInFlight.add(sessionId)
         try {
-            await this.archiveSessionUnlocked(sessionId)
+            await this.archiveSessionUnlocked(sessionId, opts)
         } finally { this.historyActionsInFlight.delete(sessionId) }
     }
 
-    private async archiveSessionUnlocked(sessionId: string): Promise<void> {
+    private async archiveSessionUnlocked(sessionId: string, opts?: { softStandDown?: boolean }): Promise<void> {
         // Windows may need longer than the ordinary 30s RPC timeout to prove a
         // complete tree exited. All PID fallbacks share this bounded operation
         // budget; an acknowledgement timeout must never become archive success.
@@ -3922,13 +3922,14 @@ export class SyncEngine {
                 }
             }
             if (status === 'still_alive' || status === 'unknown') {
-                // tiann/hapi#2020: Peer Done workers may still report
-                // still_alive after KillSession+StopSession (ghost keepalive).
-                // Soft stand-down only while still connected with no live work
-                // - never trust cleared thinking or stale lifecycle=idle after
-                // transport expiry (#2021 Majors). Hub-authored archive metadata
-                // then triggers async CLI shutdown; WORKING peers still throw
-                // ArchiveCleanupError('unconfirmed') (verified-cleanup path).
+                // Ordinary archive (web UI / bare REST) keeps verified cleanup.
+                // Soft stand-down is CLI/MCP opt-in only (`softStandDown: true`)
+                // for Peer Done ghosts (#2020): still-connected + no hub-visible
+                // live work. Hub-authored archive metadata then triggers async
+                // CLI shutdown. WORKING / disconnected stale-idle still 409.
+                if (!opts?.softStandDown) {
+                    throw new ArchiveCleanupError('unconfirmed')
+                }
                 const live = this.sessionCache.getSession(sessionId)
                 if (!live || !canSoftStandDownUnconfirmedStop(live)) {
                     throw new ArchiveCleanupError('unconfirmed')

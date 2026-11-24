@@ -1155,15 +1155,20 @@ export function createSessionsRoutes(
             return c.json({ error: 'Session is inactive' }, 409)
         }
 
+        // #2020: CLI/MCP archive_peer may opt into Peer Done soft stand-down.
+        // Ordinary web archive omits the flag and keeps verified Runner cleanup.
+        const body = await c.req.json().catch(() => null) as { softStandDown?: unknown } | null
+        const softStandDown = body?.softStandDown === true
+
         try {
-            await engine.archiveSession(sessionResult.sessionId)
+            await engine.archiveSession(sessionResult.sessionId, { softStandDown })
         } catch (error) {
             if (error instanceof ArchiveCleanupError) {
                 return c.json({ error: error.message, code: error.code }, error.status)
             }
             throw error
         }
-        return c.json({ ok: true })
+        return c.json({ ok: true, ...(softStandDown ? { softStandDown: true } : {}) })
     })
 
     app.post('/sessions/:id/model-error/acknowledge', async (c) => {

@@ -183,7 +183,9 @@ async function postArchive(
 ): Promise<{ alreadyArchived: boolean }> {
     const response = await http.post(
         `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/archive`,
-        {},
+        // Opt into Peer Done soft stand-down (#2020). Ordinary web archive omits
+        // this and keeps verified Runner cleanup on still_alive/unknown.
+        { softStandDown: true },
         {
             headers: authHeaders(jwt),
             timeout: 60_000,

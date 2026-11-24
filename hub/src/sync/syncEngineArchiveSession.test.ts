@@ -325,19 +325,29 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
     it('archives a still-connected non-thinking Peer Done when StopSession still reports still_alive (#2020)', async () => {
         // Soft stand-down: KillSession+StopSession could not confirm death, but
         // transport is still alive and the agent is not WORKING - hub-author
-        // archive instead of forcing DELETE.
+        // archive instead of forcing DELETE. Requires softStandDown opt-in.
         const sessionId = insertActiveSession('sess-peer-done-alive', 'machine-x')
         setKillSessionMissingTarget()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'still_alive'
 
-        await engine.archiveSession(sessionId)
+        await engine.archiveSession(sessionId, { softStandDown: true })
 
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(false)
         expect(session?.metadata?.lifecycleState).toBe('archived')
         expect(session?.metadata?.archivedBy).toBe('hub')
         expect(session?.metadata?.archiveReason).toContain('Peer Done soft stand-down')
+    })
+
+    it('keeps verified cleanup for ordinary archive of Peer Done still_alive (no softStandDown opt-in)', async () => {
+        const sessionId = insertActiveSession('sess-peer-done-no-optin', 'machine-x')
+        setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'still_alive'
+
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
     it('still refuses still_alive when the peer is thinking (WORKING) (#2020)', async () => {
@@ -401,7 +411,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'still_alive'
 
-        await engine.archiveSession(sessionId)
+        await engine.archiveSession(sessionId, { softStandDown: true })
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
     })
 
@@ -542,7 +552,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'unknown'
 
-        await engine.archiveSession(sessionId)
+        await engine.archiveSession(sessionId, { softStandDown: true })
 
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(false)
@@ -726,7 +736,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'unknown'
 
-        await engine.archiveSession(sessionId)
+        await engine.archiveSession(sessionId, { softStandDown: true })
         expect(cache().getSession(sessionId)?.active).toBe(false)
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
     })

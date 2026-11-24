@@ -38,6 +38,7 @@ describe('archivePeer', () => {
     it('archives an active Peer Done session via POST /archive (no hand JWT)', async () => {
         const sessionId = '05d9f0f2-9273-4137-933c-07459a1146a2'
         const posts: string[] = []
+        const archiveBodies: unknown[] = []
         const http = createHttpMock({
             post: (url, body) => {
                 posts.push(url)
@@ -46,7 +47,8 @@ describe('archivePeer', () => {
                     return { status: 200, data: { token: 'jwt' } }
                 }
                 if (url.endsWith(`/api/sessions/${sessionId}/archive`)) {
-                    return { status: 200, data: { ok: true } }
+                    archiveBodies.push(body)
+                    return { status: 200, data: { ok: true, softStandDown: true } }
                 }
                 throw new Error(`unexpected POST ${url}`)
             },
@@ -81,6 +83,7 @@ describe('archivePeer', () => {
             alreadyArchived: false
         })
         expect(posts.some((url) => url.endsWith(`/api/sessions/${sessionId}/archive`))).toBe(true)
+        expect(archiveBodies).toEqual([{ softStandDown: true }])
     })
 
     it('treats alreadyArchived as success (idempotent)', async () => {
