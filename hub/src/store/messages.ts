@@ -279,6 +279,9 @@ function applyChildToolCallContent(state: ChildToolCallState, content: unknown):
         state.open.delete(callId)
         state.settled.add(callId)
     }
+    for (const childSessionId of acpTurnCompleteRetiredChildSessionIds(content)) {
+        state.runningChildren.delete(childSessionId)
+    }
     const childStatus = acpTurnCompleteChildStatus(content)
     if (childStatus) {
         if (childStatus.status === 'running' || childStatus.status === 'created') {
@@ -334,8 +337,8 @@ function noteToolCallSettlements(db: Database, sessionId: string, content: unkno
 export function retireOpenChildToolWork(db: Database, sessionId: string): boolean {
     const state = ensureChildToolCallStateRebuilt(db, sessionId)
     const settledCallIds = [...state.open]
-    const hadRunning = state.runningChildren.size > 0
-    if (settledCallIds.length === 0 && !hadRunning) return false
+    const retiredChildSessionIds = [...state.runningChildren]
+    if (settledCallIds.length === 0 && retiredChildSessionIds.length === 0) return false
     state.open.clear()
     state.runningChildren.clear()
     for (const callId of settledCallIds) state.settled.add(callId)
@@ -347,6 +350,7 @@ export function retireOpenChildToolWork(db: Database, sessionId: string): boolea
                 type: 'turn-complete',
                 stopReason: 'worker-exited',
                 ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
+                ...(retiredChildSessionIds.length > 0 ? { retiredChildSessionIds } : {}),
             },
         },
     })
@@ -715,6 +719,17 @@ function acpTurnCompleteChildStatus(value: unknown): { childSessionId: string; s
     if (typeof childSessionId !== 'string' || childSessionId.trim().length === 0) return null
     if (typeof status !== 'string' || status.trim().length === 0) return null
     return { childSessionId, status }
+}
+
+/** Child session ids retired with a worker-exited turn-complete (#2021). */
+function acpTurnCompleteRetiredChildSessionIds(value: unknown): string[] {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return []
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return []
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'turn-complete') return []
+    if (!Array.isArray(data.retiredChildSessionIds)) return []
+    return data.retiredChildSessionIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
 }
 
 /** OpenCode v2 child (background subagent) tool traffic outlives parent turns. */

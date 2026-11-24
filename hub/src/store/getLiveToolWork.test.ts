@@ -407,6 +407,38 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 
+    it('persists running-child retirement across hub restart (#2021)', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-live-work-retire-'))
+        const dbPath = join(dir, 'hub.db')
+        try {
+            const store = new Store(dbPath)
+            const session = makeSession(store, 'live-work-retire-running')
+            const sessionId = session.id
+            store.messages.addMessage(sessionId, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'turn-complete',
+                        stopReason: 'running',
+                        childSessionId: 'ses_child',
+                        childStatus: 'running',
+                    },
+                },
+            })
+            expect(store.messages.getLiveToolWork(sessionId)).toBe(true)
+            expect(store.messages.retireOpenChildToolWork(sessionId)).toBe(true)
+            expect(store.messages.getLiveToolWork(sessionId)).toBe(false)
+            store.close()
+
+            const restarted = new Store(dbPath)
+            expect(restarted.messages.getLiveToolWork(sessionId)).toBe(false)
+            restarted.close()
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+
     it('reports open claude tool_use pairs until the matching tool_result lands', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-claude-open')

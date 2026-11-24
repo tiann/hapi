@@ -492,6 +492,48 @@ describe('AcpSdkBackend tool call lifetimes', () => {
         }));
     });
 
+    it('settles outstanding child tools when the child fails (#2021)', async () => {
+        const { backend, notify, scriptPrompts } = makeBackend({ childSessionUpdates: true });
+        const messages: AgentMessage[] = [];
+        scriptPrompts(async () => {
+            notify(childUpdate('ses_child', {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'ses_child:shell:0',
+                title: 'shell',
+                kind: 'execute',
+                status: 'in_progress',
+                rawInput: { command: 'sleep 5' },
+            }));
+            notify(childUpdate('ses_other', {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'ses_other:shell:0',
+                title: 'shell',
+                kind: 'execute',
+                status: 'in_progress',
+                rawInput: { command: 'sleep 5' },
+            }));
+            await sleep(10);
+            notify(childStatus('ses_child', 'failed'));
+            await sleep(40);
+            return 'end_turn';
+        });
+
+        await prompt(backend, messages);
+        await sleep(50);
+
+        const failedSettlement = messages.find(
+            (m): m is Extract<AgentMessage, { type: 'turn_complete' }> =>
+                m.type === 'turn_complete'
+                && m.childSessionId === 'ses_child'
+                && m.childStatus === 'failed'
+        );
+        expect(failedSettlement?.settledCallIds).toEqual([
+            expect.stringMatching(/^ses_child:shell:0#/),
+        ]);
+        // Other child's open call must not be settled by this terminal.
+        expect(failedSettlement?.settledCallIds?.some((id) => id.startsWith('ses_other:'))).toBeFalsy();
+    });
+
     it('asks permission under the lifetime id and answers the agent request it belongs to', async () => {
         const { backend, internal, notify, scriptPrompts } = makeBackend();
         const requests: PermissionRequest[] = [];

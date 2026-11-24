@@ -1558,13 +1558,15 @@ export class AcpSdkBackend implements AgentBackend {
             }
             if (status === 'completed' || status === 'failed' || status === 'interrupted') {
                 const scope = childToolCallScope(childSessionId);
-                if (status === 'interrupted') this.toolCallLifetimes.cancel(scope);
-                // Capture ids before beginGeneration's settle (empty second pass).
+                // Any terminal child status must retire outstanding calls in
+                // that scope — failed/completed can omit per-call terminals
+                // the same way interrupted does (#2021).
+                this.toolCallLifetimes.cancel(scope);
                 const settledCallIds = this.toolCallLifetimes.settleCancelled(scope);
                 this.toolCallLifetimes.beginGeneration(scope);
                 this.finishChildHandler(childSessionId);
-                // Publish child terminal + any interrupted-call settlement so
-                // Archive can clear running-child and sticky tool rows (#2021).
+                // Publish child terminal + scope settlement so Archive can
+                // clear running-child and sticky tool rows (#2021).
                 if (this.childEmitSink) {
                     const sink = this.childEmitSink;
                     this.sessionUpdateQueue = this.sessionUpdateQueue
