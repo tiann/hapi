@@ -4,6 +4,8 @@ import {
     commandMatchesRunnerSpawnedSession,
     findRunnerSpawnedOrphanTargets,
     findStopSessionOrphanTargets,
+    normalizeStartMarker,
+    START_MARKER_INVALID,
     parseWindowsProcessSnapshot,
     reapRunnerSpawnedOrphans,
     selectOrphanPidsForSession,
@@ -144,6 +146,42 @@ describe('orphanReap argv matching', () => {
             sessionId
         )
         expect(pids).toEqual([99])
+    })
+})
+
+describe('silent-success scar (dropped-await / non-string marker)', () => {
+    it('normalizeStartMarker rejects Promise objects that fooled marker !== string', () => {
+        // Absorb bug shape: getStartMarker returned a Promise; Promise !== 'gen'
+        // took the PID-reuse branch; kill never ran; function still returned stopped.
+        expect(normalizeStartMarker(Promise.resolve('gen'))).toBe(START_MARKER_INVALID)
+        expect(normalizeStartMarker('gen')).toBe('gen')
+        expect(normalizeStartMarker(null)).toBe(null)
+    })
+
+    it('positive control: async getStartMarker still reaches killTree (assert kill, not status alone)', async () => {
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('sess-silent-success', {
+            findTargets: async () => [{ pid: 4242, startMarker: 'gen-a' }],
+            getStartMarker: async () => 'gen-a',
+            isAlive: () => true,
+            killTree: async (pid) => { killed.push(pid); return true },
+        })
+        // During the absorb bug this assertion failed: Promise !== marker skipped
+        // killTree while status still came back 'stopped'. Assert on the kill.
+        expect(killed).toEqual([4242])
+        expect(status).toBe('stopped')
+    })
+
+    it('fail-closed: non-string settled marker must not count as PID-reuse success', async () => {
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('sess-invalid-marker', {
+            findTargets: async () => [{ pid: 4242, startMarker: 'gen-a' }],
+            getStartMarker: () => ({ not: 'a-marker' }) as unknown as string,
+            isAlive: () => true,
+            killTree: async (pid) => { killed.push(pid); return true },
+        })
+        expect(killed).toEqual([])
+        expect(status).toBe('still_alive')
     })
 })
 
