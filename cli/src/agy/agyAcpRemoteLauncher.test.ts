@@ -662,6 +662,42 @@ describe('AgyAcpRemoteLauncher', () => {
             }),
         ]);
     });
+
+    it('publishes settlement when Stop tears down a live autonomous wakeup (#2021)', async () => {
+        const { session, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.getAgentVersion = () => '1.5.13';
+        (backend as { hasMessageHandler?: () => boolean }).hasMessageHandler = () => true;
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+        });
+        // Live wakeup owns the handler between prompts; Stop must settle its
+        // open commands even though the prompt finalizer already ran.
+        const ownerTurn = {
+            openCommands: new Set(['wakeup-cmd-1']),
+            commandCallIds: ['wakeup-cmd-1'],
+            deferredLiveCommandCalls: new Map(),
+            backendSettledCallIds: [] as string[],
+            bgTaskDescriptions: new Map(),
+        };
+        (launcher as unknown as { backend: unknown; handlerOwnerTurn: unknown; acpSessionId: string }).backend = backend;
+        (launcher as unknown as { handlerOwnerTurn: unknown }).handlerOwnerTurn = ownerTurn;
+        (launcher as unknown as { acpSessionId: string }).acpSessionId = 'agy-conv-new';
+
+        await (launcher as unknown as { discardStoppedWakeup: () => Promise<void> }).discardStoppedWakeup();
+
+        const settlements = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { type?: string; stopReason?: string; settledCallIds?: string[] })
+            .filter((message) => message?.type === 'turn-complete');
+        expect(settlements).toEqual([
+            expect.objectContaining({
+                type: 'turn-complete',
+                stopReason: 'cancelled',
+                settledCallIds: expect.arrayContaining(['wakeup-cmd-1']),
+            }),
+        ]);
+        expect(ownerTurn.openCommands.size).toBe(0);
+    });
 });
 
 describe('AgyAcpRemoteLauncher Stop', () => {

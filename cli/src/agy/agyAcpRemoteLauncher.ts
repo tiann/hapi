@@ -1403,7 +1403,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    /** Stop: drop what the stopped wakeup left open, and remember its commands so a late start of one is dropped. */
+    /** Stop: drop what the stopped wakeup left open, remember its commands so a
+     *  late start of one is dropped, and publish hub settlement for every call
+     *  id torn down — including autonomous wakeup Stop, which never reaches the
+     *  prompt finalizer (#2021 termination axis). */
     private async discardStoppedWakeup(abortedTurn: AgyTurn | null = null): Promise<void> {
         await this.backend?.flushPendingMessageBuffers();
         const owner = this.handlerOwnerTurn;
@@ -1411,8 +1414,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.discardingStoppedStarts = false;
         // Without a live handler (never live, or the process was restarted) there is nothing more to retire.
         if (!this.usesLiveWakeupRendering()) return;
+        const settledCallIds = new Set<string>();
         for (const turn of new Set([owner, abortedTurn])) {
             if (!turn) continue;
+            for (const id of [
+                ...turn.commandCallIds,
+                ...turn.deferredLiveCommandCalls.keys(),
+                ...turn.openCommands,
+                ...turn.backendSettledCallIds,
+            ]) {
+                settledCallIds.add(id);
+            }
             for (const id of [...turn.commandCallIds, ...turn.deferredLiveCommandCalls.keys()]) {
                 this.rememberStoppedWakeupCall(parseToolCallLifetimeId(id) ?? id);
                 const tracked = this.backgroundCommands.findIndex((entry) => entry.callId === id);
@@ -1423,6 +1435,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             turn.deferredLiveCommandCalls.clear();
             turn.openCommands.clear();
         }
+        if (settledCallIds.size === 0) return;
+        const settlement = convertAgentMessage({
+            type: 'turn_complete',
+            stopReason: 'cancelled',
+            settledCallIds: [...settledCallIds],
+        });
+        if (settlement) this.session.sendAgentMessage(settlement);
     }
 
     private noteSettledFromTranscript(taskId: string | undefined): void {
