@@ -137,7 +137,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     catalog
                 });
                 if (staticContextDetails) {
-                    publishContextDetails(session, staticContextDetails);
+                    publishContextDetails(session, staticContextDetails, { claudeInventorySource: 'startup-probe' });
                 }
                 if (sdkMetadata.slashCommands === undefined) {
                     catalogPromise = null;

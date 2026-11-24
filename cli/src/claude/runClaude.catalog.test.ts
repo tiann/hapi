@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { mergeContextDetails } from '@/agent/contextDetails'
+import { mergeContextDetails, publishContextDetails } from '@/agent/contextDetails'
+import type { Metadata } from '@/api/types'
 import { buildClaudeStaticContextDetails } from './runClaude'
 
 describe('Claude static context catalog', () => {
@@ -46,6 +47,19 @@ describe('Claude static context catalog', () => {
         })
         expect(details?.claude?.skills).toEqual(skills.map(name => ({ name })))
         expect(details?.claude?.slashCommands).toEqual(['/compact'])
+    })
+
+    it('a late startup probe fills missing fields without replacing empty live inventories', () => {
+        const pending: Array<(metadata: Metadata) => Metadata> = []
+        const client = { updateMetadata: (handler: (metadata: Metadata) => Metadata) => { pending.push(handler) } }
+        const probe = buildClaudeStaticContextDetails({
+            sdkMetadata: { skills: ['startup-only'], tools: ['StartupTool'], slashCommands: ['/compact'] },
+            catalog: { commands: ['/compact'], skills: [] }
+        })!
+        publishContextDetails(client, { version: 1, provider: 'claude', updatedAt: 100, claude: { skills: [], systemTools: [] } })
+        publishContextDetails(client, probe, { claudeInventorySource: 'startup-probe' })
+        const metadata = pending.reduce((current, update) => update(current), {} as Metadata)
+        expect(metadata.contextDetails?.claude).toEqual({ skills: [], systemTools: [], slashCommands: ['/compact'] })
     })
 
     it('does not overwrite the resolved runtime model or context window', () => {

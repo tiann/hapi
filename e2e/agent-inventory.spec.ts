@@ -27,3 +27,14 @@ test('Agent details can list a custom project /agent command', async ({ page }) 
     const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
     if (screenshots) await details.screenshot({ path: `${screenshots}/agent-inventory-custom-agent.png` })
 })
+
+
+test('Agent details shows no skill or tool section for an empty live Claude inventory', async ({ page }) => {
+    await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=claude&emptyRuntime=1')
+    await page.getByRole('button', { name: 'Open agent details' }).click()
+    const details = page.getByRole('dialog', { name: 'Agent details' })
+    await expect(details.getByText('/compact', { exact: true })).toBeVisible()
+    await expect(details.getByRole('heading', { name: /skills|tools/i })).toHaveCount(0)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await details.screenshot({ path: `${screenshots}/agent-inventory-claude-empty.png` })
+})

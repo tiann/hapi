@@ -369,7 +369,12 @@ export interface ContextDetailsClient {
 export interface PublishContextDetailsOptions {
     /** Result totals cover the whole conversation; keep the latest actual usage snapshot. */
     preserveUsageSnapshot?: boolean
+    claudeInventorySource?: 'startup-probe'
 }
+
+// Per-client, not persisted: saved inventory from a prior launch is not proof
+// that this CLI has already observed a live catalog. Empty lists do count.
+const observedClaudeInventory = new WeakMap<ContextDetailsClient, Set<keyof ClaudeContextDetails>>()
 
 export function publishContextDetails(
     client: ContextDetailsClient,
@@ -377,14 +382,29 @@ export function publishContextDetails(
     options: PublishContextDetailsOptions = {}
 ): void {
     if (!client.updateMetadata) return
+    let candidate = next
+    if (next.provider === 'claude' && next.claude) {
+        const observed = observedClaudeInventory.get(client) ?? new Set<keyof ClaudeContextDetails>()
+        if (options.claudeInventorySource === 'startup-probe') {
+            const claude = { ...next.claude }
+            for (const key of observed) delete claude[key]
+            if (Object.keys(claude).length === 0) return
+            candidate = { ...next, claude }
+        } else {
+            for (const key of Object.keys(next.claude) as Array<keyof ClaudeContextDetails>) {
+                if (next.claude[key] !== undefined) observed.add(key)
+            }
+            observedClaudeInventory.set(client, observed)
+        }
+    }
     client.updateMetadata((metadata) => {
         const current = metadata.contextDetails
-        let incoming = next
+        let incoming = candidate
         if (options.preserveUsageSnapshot && current?.provider === 'claude' && current.usage) {
             incoming = {
-                ...next,
+                ...candidate,
                 usage: {
-                    ...next.usage,
+                    ...candidate.usage,
                     ...(current.usage.contextTokens !== undefined ? { contextTokens: current.usage.contextTokens } : {}),
                     ...(current.usage.cacheReadTokens !== undefined ? { cacheReadTokens: current.usage.cacheReadTokens } : {})
                 }
