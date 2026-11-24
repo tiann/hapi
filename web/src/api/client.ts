@@ -27,6 +27,8 @@ import type {
     MessagesResponse,
     ClaudeImportSessionsResponse,
     ClaudeLocalSessionsResponse,
+    CursorImportSessionsResponse,
+    CursorLocalSessionsResponse,
     OpencodeImportSessionsResponse,
     OpencodeLocalSessionsResponse,
     PermissionMode,
@@ -572,6 +574,21 @@ export class ApiClient {
 
     async importClaudeSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; effort?: string | null; permissionMode?: PermissionMode }): Promise<ClaudeImportSessionsResponse> {
         return await this.request<ClaudeImportSessionsResponse>('/api/claude/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
+
+    async getCursorSessions(cwd?: string | null, machineId?: string | null): Promise<CursorLocalSessionsResponse> {
+        const params = new URLSearchParams()
+        if (cwd?.trim()) params.set('cwd', cwd.trim())
+        if (machineId?.trim()) params.set('machineId', machineId.trim())
+        const query = params.size ? `?${params.toString()}` : ''
+        return await this.request<CursorLocalSessionsResponse>(`/api/cursor/sessions${query}`)
+    }
+
+    async importCursorSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null }): Promise<CursorImportSessionsResponse> {
+        return await this.request<CursorImportSessionsResponse>('/api/cursor/import-sessions', {
             method: 'POST',
             body: JSON.stringify(payload)
         })

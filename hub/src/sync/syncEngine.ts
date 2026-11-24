@@ -6854,6 +6854,14 @@ export class SyncEngine {
         return await this.rpcGateway.listLocalSessionsForMachine(machineId, params)
     }
 
+    async prepareCursorImportForMachine(
+        machineId: string,
+        uuid: string,
+        workspacePath?: string | null
+    ) {
+        return await this.rpcGateway.prepareCursorImportForMachine(machineId, uuid, workspacePath)
+    }
+
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {
         return await this.rpcGateway.listCursorModelsForSession(sessionId)
     }
