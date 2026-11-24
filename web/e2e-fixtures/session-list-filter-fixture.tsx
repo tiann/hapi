@@ -10,6 +10,8 @@ import '../src/index.css'
 
 const lang = new URLSearchParams(location.search).get('lang')
 const allRead = new URLSearchParams(location.search).has('allRead')
+const fontScale = localStorage.getItem('hapi-font-scale')
+if (fontScale) document.documentElement.style.setProperty('--app-font-scale', fontScale)
 if (lang) localStorage.setItem('hapi-lang', lang)
 const sessions = [
     ['match', 'HAPI filter integration', 'mint', true, true, 9],
@@ -39,7 +41,7 @@ function Fixture() {
         <SessionList sessions={sessions} selectedSessionId={selected} onSelect={setSelected}
             onNewSession={() => {}} onRefresh={() => {}} isLoading={false} api={api}
             machineLabelsById={{ mint: 'Mint', server: 'Server' }}
-            headerActions={<button type="button" aria-label="Settings">⚙</button>} />
+            headerActions={<button type="button" aria-label="Settings" className="flex h-9 w-9 shrink-0 items-center justify-center">⚙</button>} />
     </main>
 }
 createRoot(document.getElementById('root')!).render(

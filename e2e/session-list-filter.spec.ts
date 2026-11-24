@@ -107,8 +107,9 @@ test('keeps Sort and filter accessible with the shortcut at large font size', as
         document.addEventListener('DOMContentLoaded', () => document.documentElement.style.setProperty('--app-font-scale', '1.3'))
     })
     await page.addInitScript(() => localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1'))
-    await page.setViewportSize({ width: 364, height: 844 })
+    await page.setViewportSize({ width: 334, height: 844 })
     await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en&allRead')
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--app-font-scale').trim())).toBe('1.3')
     const searchAndCheck = async () => {
         await page.getByRole('button', { name: /Search sessions/ }).click()
         const search = page.getByPlaceholder(/Search title/)
@@ -117,11 +118,13 @@ test('keeps Sort and filter accessible with the shortcut at large font size', as
         await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Sort and filter' })).toBeVisible()
     }
     await searchAndCheck()
+    await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
     await page.evaluate(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
     await page.reload()
     await searchAndCheck()
     await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Filter sessions by machine', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Clear search' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
 })
 
 test('uses the same mobile breakpoint as the machine chips with a larger browser font', async ({ baseURL }) => {
@@ -147,6 +150,7 @@ test('keeps More usable at 320px with large browser and HAPI fonts', async ({ ba
             localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1')
         })
         await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en&allRead')
+        await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--app-font-scale').trim())).toBe('1.3')
         await page.getByRole('button', { name: /Search sessions/ }).click()
         await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
         await page.getByPlaceholder(/Search title/).blur()

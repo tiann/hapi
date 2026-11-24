@@ -3248,7 +3248,7 @@ export function SessionList(props: {
                 ? previous
                 : { morePx, gapPx }
         ))
-        // Reserve the shortcut alongside the main filter, New and More when space permits.
+        // Shrink the query before shedding the main filters or New for the optional shortcut.
         const row = headerRowRef.current
         const rowBox = row && row.clientWidth > 0 ? row.clientWidth : toolbarRowBoxPx
         const rowStyle = row ? getComputedStyle(row) : null
@@ -3257,17 +3257,27 @@ export function SessionList(props: {
             : 0
         const shortcutEnabled = showMobileMachineFilter && showMachineFilterBar && isMobileMachineFilterViewport
         const minimumSearchWidth = searchChromePx
-        const baseTrailing = gapPx + morePx
-            + (next.view ?? TOOLBAR_ICON_PX) + gapPx
-            + (renderHeader ? (next.new ?? TOOLBAR_ICON_PX) + gapPx : 0)
+        const viewWidth = next.view ?? TOOLBAR_ICON_PX
+        const newWidth = renderHeader ? (next.new ?? TOOLBAR_ICON_PX) : 0
         const shortcutSpace = shortcutEnabled
             ? (next['machine-filter'] ?? TOOLBAR_ICON_PX) + gapPx
             : 0
-        const canKeepShortcutInline = rowBox > 0
-            && rowBox - rowPad - baseTrailing - minimumSearchWidth >= shortcutSpace
-        const trailing = baseTrailing + (canKeepShortcutInline ? shortcutSpace : 0)
+        const measuredActions = Object.values(next)
+        const measuredActionsWidth = measuredActions.reduce((total, width) => total + width, 0)
+            + gapPx * Math.max(0, measuredActions.length - 1)
+        const allActionsFit = shortcutEnabled && rowBox > 0
+            && measuredActionsWidth + minimumSearchWidth <= rowBox - rowPad
+        const fallbackBaseTrailing = gapPx + morePx + viewWidth + gapPx
+            + (renderHeader ? newWidth + gapPx : 0)
+        const fallbackTrailing = fallbackBaseTrailing + (shortcutEnabled
+            && rowBox - rowPad - fallbackBaseTrailing >= minimumSearchWidth + shortcutSpace
+            ? shortcutSpace
+            : 0)
+        const trailing = allActionsFit ? measuredActionsWidth : fallbackTrailing
         const nextSearchMax = rowBox > 0
-            ? Math.max(minimumSearchWidth, rowBox - rowPad - trailing)
+            ? allActionsFit
+                ? minimumSearchWidth
+                : Math.max(minimumSearchWidth, rowBox - rowPad - trailing)
             : 0
         setSearchMaxPx((previous) => previous === nextSearchMax ? previous : nextSearchMax)
     })
