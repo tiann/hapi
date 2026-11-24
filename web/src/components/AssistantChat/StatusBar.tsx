@@ -248,9 +248,12 @@ function addLegacyClaudeLists(args: {
     const legacyTools = normalizeLegacyList(args.tools)
     const legacySlashCommands = normalizeLegacyList(args.slashCommands)
     const claude = args.details?.claude
-    const systemTools = claude && 'systemTools' in claude ? claude.systemTools : legacyTools
+    const legacySystemTools = normalizeLegacyList(legacyTools?.filter(name => !name.startsWith('mcp__')))
+    const legacyMcpTools = normalizeLegacyList(legacyTools?.filter(name => name.startsWith('mcp__')))?.map(name => ({ name }))
+    const systemTools = claude && 'systemTools' in claude ? claude.systemTools : legacySystemTools
+    const mcpTools = claude && 'mcpTools' in claude ? claude.mcpTools : legacyMcpTools
     const slashCommands = claude && 'slashCommands' in claude ? claude.slashCommands : legacySlashCommands
-    if (!systemTools && !slashCommands) return args.details
+    if (!systemTools && !mcpTools && !slashCommands) return args.details
 
     return {
         ...(args.details ?? { version: 1, updatedAt: 0, provider: 'claude' as const }),
@@ -259,6 +262,9 @@ function addLegacyClaudeLists(args: {
             ...claude,
             ...(systemTools
                 ? { systemTools }
+                : {}),
+            ...(mcpTools
+                ? { mcpTools }
                 : {}),
             ...(slashCommands
                 ? { slashCommands }

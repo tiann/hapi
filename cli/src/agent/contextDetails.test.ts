@@ -126,7 +126,7 @@ describe('Claude context details', () => {
         })
     })
 
-    it('persists the effective context callback after an earlier base limit', () => {
+    it('keeps usage paired with its window across same-model preset changes', () => {
         const updates: Array<(metadata: Metadata) => Metadata> = []
         const client = {
             updateMetadata: (handler: (metadata: Metadata) => Metadata) => updates.push(handler)
@@ -145,12 +145,17 @@ describe('Claude context details', () => {
             effectiveContextWindow: 1_000_000
         })!)
 
+        publishContextDetails(client, buildClaudeContextDetails({
+            messageUsage: { input_tokens: 100 }, model: 'claude-opus', effectiveContextWindow: 1_000_000
+        })!)
+
         let metadata = {} as Metadata
-        for (const update of updates) metadata = update(metadata)
+        for (const update of updates.slice(0, 3)) metadata = update(metadata)
+        expect(metadata.contextDetails).toMatchObject({ model: 'claude-opus', contextWindow: 1_000_000 })
+        expect(metadata.contextDetails?.usage).toBeUndefined()
+        metadata = updates[3]!(metadata)
         expect(metadata.contextDetails).toMatchObject({
-            model: 'claude-opus',
-            contextWindow: 1_000_000,
-            usage: { contextTokens: 26_000 }
+            model: 'claude-opus', contextWindow: 1_000_000, usage: { contextTokens: 100 }
         })
     })
     it('prefers the effective result context limit over the base context-usage limit', () => {

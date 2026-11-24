@@ -357,9 +357,14 @@ export function mergeContextDetails(
         && compactPrevious.model !== compactNext.model
     // Model, window, and usage belong to one sample. Never pair a newly
     // reported model/window with the previous model's saved token count.
+    const contextWindowChanged = compactPrevious.contextWindow !== undefined
+        && compactNext.contextWindow !== undefined
+        && compactPrevious.contextWindow !== compactNext.contextWindow
     const previousForMerge: ContextDetails = modelChanged
         ? (({ contextWindow: _contextWindow, usage: _usage, ...rest }) => rest)(compactPrevious)
-        : compactPrevious
+        : contextWindowChanged
+            ? (({ usage: _usage, ...rest }) => rest)(compactPrevious)
+            : compactPrevious
     const merged: ContextDetails = {
         ...previousForMerge,
         ...compactNext,
@@ -422,13 +427,15 @@ export function publishContextDetails(
         let incoming = candidate
         if (candidate && options.preserveUsageSnapshot && current?.provider === 'claude') {
             const sameModel = current.model === candidate.model
+            const sameUsageSample = sameModel && !(current.contextWindow !== undefined
+                && candidate.contextWindow !== undefined && current.contextWindow !== candidate.contextWindow)
             incoming = {
                 ...candidate,
-                usage: sameModel && current.usage ? {
+                usage: sameUsageSample && current.usage ? {
                     ...candidate.usage,
                     ...(current.usage.contextTokens !== undefined ? { contextTokens: current.usage.contextTokens } : {}),
                     ...(current.usage.cacheReadTokens !== undefined ? { cacheReadTokens: current.usage.cacheReadTokens } : {})
-                } : sameModel ? candidate.usage : undefined
+                } : sameUsageSample ? candidate.usage : undefined
             }
         }
         const merged = incoming ? mergeContextDetails(current, incoming) : current

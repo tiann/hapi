@@ -314,6 +314,24 @@ describe('externally attached root', () => {
         ]));
     });
 
+    it.each([{ failure: false }, { failure: true }])('queues a refresh notified during an in-flight read (failure=$failure)', async ({ failure }) => {
+        const f = await fixture({ attached: true, contextDetails: { version: 1, updatedAt: 10, provider: 'codex',
+            codex: { mcpServers: [{ name: 'qmd', toolNames: ['saved'] }] } } });
+        const first = Promise.withResolvers<unknown>();
+        const read = vi.spyOn(f.root.client, 'readThreadMcpServerStatus')
+            .mockImplementationOnce(() => first.promise as never)
+            .mockResolvedValue({ data: [{ name: 'qmd', tools: ['fresh'] }] } as never);
+        await f.root.activate();
+        await vi.waitFor(() => expect(read).toHaveBeenCalledExactlyOnceWith('thread', 'qmd'));
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: 'thread', name: 'qmd' });
+        if (failure) first.reject(new Error('timed out'));
+        else first.resolve({ data: [{ name: 'qmd', tools: ['stale'] }] });
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([
+            { name: 'qmd', toolNames: ['fresh'] }
+        ]));
+        expect(read).toHaveBeenCalledTimes(2);
+    });
+
     it('queries only known servers for the bound thread without reading the wrapper config', async () => {
         sharedHarness.configuredInventory = [{ name: 'foreign-config' }];
         sharedHarness.runtimeInventory = Promise.resolve({ data: [{ name: 'runtime-only' }] });

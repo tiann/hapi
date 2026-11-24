@@ -21,7 +21,10 @@ const details: ContextDetails = isClaude
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
     <I18nProvider>
-        {params.has('savedClaudeAlias') ? <div data-testid="saved-claude-alias-usage" className="m-4">
+        {params.has('legacyMcp') ? <div data-testid="legacy-claude-mcp" className="m-4">
+            <StatusBar active thinking={false} agentState={null} agentFlavor="claude"
+                contextDetails={{ ...details, claude: {} }} legacyTools={['Read', 'mcp__hapi__list_peers']} />
+        </div> : params.has('savedClaudeAlias') ? <div data-testid="saved-claude-alias-usage" className="m-4">
             <StatusBar active thinking={false} agentState={null} agentFlavor="claude" model="sonnet"
                 contextDetails={{ ...details, model: 'claude-sonnet-4-5', contextWindow: 1_000_000, usage: { contextTokens: 100_000 } }} />
         </div> : params.has('savedUsage') ? <div data-testid="saved-codex-usage" className="m-4">

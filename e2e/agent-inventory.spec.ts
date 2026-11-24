@@ -60,6 +60,20 @@ test('the status bar uses the saved Claude window behind a configured model alia
 })
 
 
+test('classifies legacy Claude MCP entries separately from system tools', async ({ page }) => {
+    await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=claude&legacyMcp=1')
+    await page.getByRole('button', { name: /Agent context details/ }).click()
+    const dialog = page.getByRole('dialog', { name: 'Agent details' })
+    const mcp = dialog.getByRole('heading', { name: 'MCP tools' })
+    const system = dialog.getByRole('heading', { name: 'System tools' })
+    await expect(mcp).toBeVisible()
+    await expect(mcp.locator('xpath=ancestor::section[1]').getByText('mcp__hapi__list_peers', { exact: true })).toBeVisible()
+    await expect(system.locator('xpath=ancestor::section[1]').getByText('mcp__hapi__list_peers', { exact: true })).toHaveCount(0)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await dialog.screenshot({ path: `${screenshots}/agent-inventory-legacy-mcp.png` })
+})
+
+
 test('known MCP server names remain visible when scoped discovery is unavailable', async ({ page }) => {
     await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=codex&knownNamesOnly=1')
     await page.getByRole('button', { name: 'Open agent details' }).click()

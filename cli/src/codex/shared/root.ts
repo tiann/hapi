@@ -104,6 +104,7 @@ export class SharedCodexRoot {
     private readonly pendingMcpStatuses = new Set<string>();
     private mcpInventoryStarted = false;
     private readingMcpStatuses = false;
+    private inFlightMcpStatus?: string;
     private ready!: () => void;
     private readonly bound = new Promise<void>(resolve => { this.ready = resolve; });
 
@@ -376,6 +377,7 @@ export class SharedCodexRoot {
                 ? { ...entry, status: undefined } : entry) : savedMcpServers.map(entry => ({ name: entry.name }));
         const currentRuntimeNames = new Set([
             ...this.pendingMcpStatuses,
+            ...(this.inFlightMcpStatus ? [this.inFlightMcpStatus] : []),
             ...this.notifiedMcpServers,
             ...this.statusMcpServerInventory.keys()
         ]);
@@ -421,6 +423,8 @@ export class SharedCodexRoot {
             while (!this.closed && !this.stopping && this.client.canReadThreadMcpServerStatus()) {
                 const name = this.pendingMcpStatuses.values().next().value;
                 if (name === undefined) break;
+                this.pendingMcpStatuses.delete(name);
+                this.inFlightMcpStatus = name;
                 try {
                     const result = await this.client.readThreadMcpServerStatus(this.threadId, name);
                     if (this.closed || this.stopping || !this.client.canReadThreadMcpServerStatus()) break;
@@ -440,7 +444,7 @@ export class SharedCodexRoot {
                     logger.debug('[Codex shared] thread-scoped MCP inventory unavailable', error);
                     // Never fall back to the unscoped list: it can open a second connection.
                 } finally {
-                    this.pendingMcpStatuses.delete(name);
+                    this.inFlightMcpStatus = undefined;
                     if (!this.closed && !this.stopping) this.publishRootContextDetails();
                 }
             }

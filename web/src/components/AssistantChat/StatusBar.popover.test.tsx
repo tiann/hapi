@@ -416,7 +416,7 @@ describe('StatusBar context details dialog', () => {
                         provider: 'claude',
                         claude: {}
                     }}
-                    legacyTools={['Read', 'Bash']}
+                    legacyTools={['Read', 'Bash', 'mcp__hapi__list_peers']}
                     legacySlashCommands={['/context', '/compact']}
                 />
             </I18nProvider>
@@ -428,6 +428,9 @@ describe('StatusBar context details dialog', () => {
         expect(screen.getByText('Read')).toBeInTheDocument()
         expect(screen.getByText('Agent commands')).toBeInTheDocument()
         expect(screen.getByText('/compact')).toBeInTheDocument()
+        expect(screen.getByText('MCP tools')).toBeInTheDocument()
+        expect(screen.getByText('mcp__hapi__list_peers')).toBeInTheDocument()
+        expect(screen.getByRole('heading', { name: 'System tools' }).parentElement?.textContent).not.toContain('mcp__hapi__list_peers')
         expect(screen.queryByText('No detailed context information available.')).not.toBeInTheDocument()
     })
 
@@ -446,10 +449,11 @@ describe('StatusBar context details dialog', () => {
                         provider: 'claude',
                         claude: {
                             systemTools: [],
+                            mcpTools: [],
                             slashCommands: []
                         }
                     }}
-                    legacyTools={['Read']}
+                    legacyTools={['Read', 'mcp__old__tool']}
                     legacySlashCommands={['/compact']}
                 />
             </I18nProvider>
@@ -458,6 +462,7 @@ describe('StatusBar context details dialog', () => {
         fireEvent.click(screen.getByRole('button', { name: /Agent context details/ }))
 
         expect(screen.queryByText('Read')).not.toBeInTheDocument()
+        expect(screen.queryByText('mcp__old__tool')).not.toBeInTheDocument()
         expect(screen.queryByText('/compact')).not.toBeInTheDocument()
         expect(screen.getByText('This agent has not reported additional context details yet.')).toBeInTheDocument()
     })
