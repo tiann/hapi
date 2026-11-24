@@ -583,16 +583,25 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         this.exitReason = null;
     }
 
+    /**
+     * Confirm process-tree kill *before* requestExit commits shouldExit /
+     * exitReason. A rejected Switch must leave remote mode runnable (#2021).
+     */
+    private async confirmLeaveThenExit(reason: 'switch' | 'exit'): Promise<void> {
+        await this.handleAbort(true);
+        await this.requestExit(reason, async () => {});
+    }
+
     private async handleExitFromUi(): Promise<void> {
-        await this.requestExit('exit', () => this.handleAbort(true));
+        await this.confirmLeaveThenExit('exit');
     }
 
     private async handleSwitchFromUi(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort(true));
+        await this.confirmLeaveThenExit('switch');
     }
 
     private async handleSwitchRequest(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort(true));
+        await this.confirmLeaveThenExit('switch');
     }
 }
 

@@ -1379,50 +1379,22 @@ export class AcpSdkBackend implements AgentBackend {
         this.sessionInfoRefreshTimers.clear();
         this.clearRunningThinkingTimer();
         await this.sessionUpdateQueue;
-        // Remote→local (and other disconnect paths) keep the same HAPI wrapper
-        // PID, so hub worker-exit retirement never fires. Publish interrupted
-        // for every known child (handler or status-only) before dropping the
-        // sink so Archive cannot stay blocked (#2021).
+        // Remote→local keeps the same HAPI wrapper PID, so hub worker-exit
+        // retirement never fires. Order matters (#2021 tip Majors):
+        //   1. Drain child buffers while the emit sink is still installed
+        //   2. Close the transport and wait for verified process-tree exit
+        //   3. Only then publish interrupted for known children (status-only
+        //      or with handlers). Unconfirmed close leaves hub running markers.
         const sink = this.childEmitSink;
-        const childIds = new Set([...this.knownChildSessionIds, ...this.childHandlers.keys()]);
-        if (sink && childIds.size > 0) {
-            for (const childSessionId of childIds) {
-                const scope = childToolCallScope(childSessionId);
-                this.toolCallLifetimes.cancel(scope);
-                const settledCallIds = this.toolCallLifetimes.settleCancelled(scope);
-                this.toolCallLifetimes.beginGeneration(scope);
-                try {
-                    sink({
-                        type: 'turn_complete',
-                        stopReason: 'cancelled',
-                        childSessionId,
-                        childStatus: 'interrupted',
-                        ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
-                    });
-                } catch (error) {
-                    logger.debug(
-                        '[AcpSdkBackend] child interrupt-on-disconnect publish failed:',
-                        error instanceof Error ? error.message : String(error)
-                    );
-                }
-                if (this.childHandlers.has(childSessionId)) {
-                    this.finishChildHandler(childSessionId);
-                }
-                this.knownChildSessionIds.delete(childSessionId);
-            }
-            // finishChildHandler queues drainBuffers — flush before clearing sink
-            // so pending child text is not discarded (#2021).
-            await this.sessionUpdateQueue;
-        } else {
-            for (const entry of this.childHandlers.values()) {
-                this.clearChildQuietTimer(entry);
-                entry.handler.drainBuffers();
-            }
-            this.childHandlers.clear();
-            this.knownChildSessionIds.clear();
+        const childIds = [...new Set([...this.knownChildSessionIds, ...this.childHandlers.keys()])];
+        for (const entry of this.childHandlers.values()) {
+            this.clearChildQuietTimer(entry);
+            entry.handler.drainBuffers();
         }
+        this.childHandlers.clear();
+        await this.sessionUpdateQueue;
+
         const recordSessionId = this.activeSessionId;
-        this.childEmitSink = null;
         this.messageHandler?.drainBuffers();
         this.messageHandler = null;
         this.activeSessionId = null;
@@ -1446,6 +1418,31 @@ export class AcpSdkBackend implements AgentBackend {
             // record stays for a restore.
             this.settleToolCallLifetimeRecord(recordSessionId, agentEnded);
         }
+
+        if (sink && agentEnded) {
+            for (const childSessionId of childIds) {
+                const scope = childToolCallScope(childSessionId);
+                this.toolCallLifetimes.cancel(scope);
+                const settledCallIds = this.toolCallLifetimes.settleCancelled(scope);
+                this.toolCallLifetimes.beginGeneration(scope);
+                try {
+                    sink({
+                        type: 'turn_complete',
+                        stopReason: 'cancelled',
+                        childSessionId,
+                        childStatus: 'interrupted',
+                        ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
+                    });
+                } catch (error) {
+                    logger.debug(
+                        '[AcpSdkBackend] child interrupt-on-disconnect publish failed:',
+                        error instanceof Error ? error.message : String(error)
+                    );
+                }
+            }
+        }
+        this.knownChildSessionIds.clear();
+        this.childEmitSink = null;
     }
 
     /**

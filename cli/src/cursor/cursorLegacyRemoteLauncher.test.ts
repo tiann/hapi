@@ -585,15 +585,23 @@ describe('cursorLegacyRemoteLauncher', () => {
         await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
         await new Promise((resolve) => setTimeout(resolve, 30));
 
-        // Unconfirmed kill must not hand off to local Cursor.
+        // Unconfirmed kill must not hand off to local Cursor — and must not
+        // commit shouldExit before the throw (confirm-then-requestExit).
         await expect(
             (client.rpcHandlerManager.handlers.get('switch')! as () => Promise<void>)()
         ).rejects.toThrow(/still open after force kill/);
         expect(killMock.mock.calls.some((call) => call[1] === true)).toBe(true);
 
-        // Recover: confirm kill + close so the launcher can exit cleanly.
-        killMock.mockResolvedValue(true);
+        // Late close after a rejected Switch must not complete the handoff.
         child1.closeChild?.(null);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(await Promise.race([
+            launchPromise.then((reason) => reason),
+            new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 100)),
+        ])).toBe('pending');
+
+        // Recover: confirm kill on a fresh Stop path, then close the queue.
+        killMock.mockResolvedValue(true);
         queue.close();
         await launchPromise;
         killMock.mockResolvedValue(true);

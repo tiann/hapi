@@ -712,7 +712,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (abortController.signal.aborted) {
                     // Stop: nothing the wakeup left open may become a background task.
                     // Hard-stop for ignored cancel is armed in cancelActiveTurn and
-                    // must not delay ready — settlement uses cancelled lifetimes (#2021).
+                    // retires the backend in the background after cancelHardStopMs;
+                    // settlement uses cancelled lifetimes so Stop→ready stays snappy
+                    // (awaiting retirement here hung live-wakeup Stop tests) (#2021).
                     await this.discardStoppedWakeup();
                     this.syncTranscriptCursor();
                     if (!this.usesLiveWakeupRendering()) await this.advanceBackendCursor();
@@ -2144,9 +2146,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (turn.steers.length > 0) this.dropUnansweredSteers(backend, turn);
                 this.restartIfCancelIgnored(backend, turn);
             } else if (wakeupAbort) {
-                // Cancel first, then signal the wakeup loop. Hard-stop runs in
-                // the background so Stop→ready stays snappy; settlement comes
-                // from cancelled lifetimes in discardStoppedWakeup (#2021).
+                // Cancel first, then signal the wakeup loop. Hard-stop retires
+                // the backend in the background if AGY ignores cancel; settlement
+                // still publishes cancelled lifetimes immediately (#2021).
                 await backend.cancelPrompt(acpSessionId);
                 this.armWakeupCancelHardStop(backend);
             }
@@ -2160,18 +2162,20 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     /**
      * If AGY ignores wakeup cancel, retire the backend after cancelHardStopMs.
-     * Does not block the Stop→ready path (#2021).
+     * Awaits retirement internally but does not block Stop→ready (#2021).
      */
     private armWakeupCancelHardStop(backend: AcpSdkBackend): void {
         const timer = setTimeout(() => {
-            if (this.backend !== backend || !backend.isTransportAlive()) return;
-            logger.warn('[agy-acp] agy did not stop the wakeup after cancel; restarting it');
-            this.session.sendSessionEvent({
-                type: 'message',
-                message: 'Antigravity did not stop the wakeup; restarting it.',
-            });
-            this.backendLost = true;
-            void this.retireBackend(backend);
+            void (async () => {
+                if (this.backend !== backend || !backend.isTransportAlive()) return;
+                logger.warn('[agy-acp] agy did not stop the wakeup after cancel; restarting it');
+                this.session.sendSessionEvent({
+                    type: 'message',
+                    message: 'Antigravity did not stop the wakeup; restarting it.',
+                });
+                this.backendLost = true;
+                await this.retireBackend(backend);
+            })();
         }, this.cancelHardStopMs);
         timer.unref?.();
     }

@@ -726,7 +726,7 @@ describe('AgyAcpRemoteLauncher', () => {
         expect(settlements[0]?.settledCallIds).toEqual(expect.arrayContaining(['question:0#wake']));
     });
 
-    it('arms wakeup cancel hard-stop without blocking (#2021)', async () => {
+    it('arms wakeup cancel hard-stop that awaits retirement (#2021)', async () => {
         const { session } = makeSession();
         const backend = new FakeAgyBackend();
         backend.getAgentVersion = () => '1.5.13';
