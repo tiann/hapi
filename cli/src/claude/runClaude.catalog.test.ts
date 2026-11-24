@@ -57,9 +57,12 @@ describe('Claude static context catalog', () => {
             catalog: { commands: ['/compact'], skills: [] }
         })!
         publishContextDetails(client, { version: 1, provider: 'claude', updatedAt: 100, claude: { skills: [], systemTools: [] } })
-        publishContextDetails(client, probe, { claudeInventorySource: 'startup-probe' })
+        publishContextDetails(client, probe, { claudeStartupCatalog: { tools: ['StartupTool'], slashCommands: ['/compact'] } })
+        expect(pending).toHaveLength(2)
         const metadata = pending.reduce((current, update) => update(current), {} as Metadata)
         expect(metadata.contextDetails?.claude).toEqual({ skills: [], systemTools: [], slashCommands: ['/compact'] })
+        expect(metadata.tools).toEqual(['StartupTool'])
+        expect(metadata.slashCommands).toEqual(['/compact'])
     })
 
     it('does not overwrite the resolved runtime model or context window', () => {

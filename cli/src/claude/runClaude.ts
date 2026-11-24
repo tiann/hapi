@@ -137,25 +137,17 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     catalog
                 });
                 if (staticContextDetails) {
-                    publishContextDetails(session, staticContextDetails, { claudeInventorySource: 'startup-probe' });
+                    publishContextDetails(session, staticContextDetails, { claudeStartupCatalog: {
+                        tools: sdkMetadata.tools,
+                        slashCommands: sdkMetadata.slashCommands === undefined ? undefined : catalog.commands
+                    } });
                 }
                 if (sdkMetadata.slashCommands === undefined) {
                     catalogPromise = null;
-                    if (sdkMetadata.tools !== undefined) {
-                        session.updateMetadata((currentMetadata) => ({
-                            ...currentMetadata,
-                            tools: sdkMetadata.tools
-                        }));
-                    }
                     return result;
                 }
                 nativeSkills = catalog.skills;
                 currentSessionRef.current?.setNativeSkillNames(catalog.skills.map((skill) => skill.name));
-                session.updateMetadata((currentMetadata) => ({
-                    ...currentMetadata,
-                    tools: sdkMetadata.tools,
-                    slashCommands: catalog.commands
-                }));
                 logger.debug('[start] Session metadata updated with SDK capabilities');
                 return result;
             }).catch((error) => {

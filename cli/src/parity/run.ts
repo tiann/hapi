@@ -7,7 +7,7 @@ import { createInterface } from 'node:readline'
 import { connect } from 'node:net'
 import { EventEmitter, once } from 'node:events'
 import { createHash } from 'node:crypto'
-import { reached, type Fence } from './fences'
+import { hasAcknowledgedStartupCatalog, reached, type Fence } from './fences'
 import { readLaunches } from './launchLog'
 import assert from 'node:assert/strict'
 import { fakeHub, type ScriptStep } from './fakeHub'
@@ -130,8 +130,7 @@ export async function run(name: string, binary?: string) {
             { event: 'update-metadata', contains: '"startingMode":"remote"', result: 'success' }
         ]))
         writeFileSync(join(out, 'catalog-ready'), '')
-        await wait('catalog acknowledgement', () => reached(hub.rows,
-            { event: 'update-metadata', contains: '"slashCommands"', result: 'success' }))
+        await wait('catalog acknowledgement', () => hasAcknowledgedStartupCatalog(hub.rows))
         const endpoint = new URL((hub.session.metadata as unknown as { hapiMcpUrl: string }).hapiMcpUrl)
         assert.equal(endpoint.hostname, '127.0.0.1')
         const mcpPort = Number(endpoint.port)

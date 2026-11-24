@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { claimLaunch, readLaunches } from './launchLog'
-import { reached } from './fences'
+import { hasAcknowledgedStartupCatalog, reached } from './fences'
 import { fakeHub, flushState, sid, type Row } from './fakeHub'
 
 it('retains concurrent invocation records when an older process writes last', () => {
@@ -54,6 +54,18 @@ it('holds the step until both documents acknowledge their final writes', () => {
     expect(reached(rows, fences)).toBe(false)
     rows.push({ ...update, event: 'update-metadata' })
     expect(reached(rows, fences)).toBe(true)
+})
+
+it('does not start a parity scenario on a nested Claude inventory or an unacknowledged catalog', () => {
+    const nested = { contextDetails: { claude: { slashCommands: ['compact'] } } }
+    const catalog = { ...nested, slashCommands: ['compact'] }
+    const rows: Row[] = [{ event: 'update-metadata', connection: 1, step: 0, ackRequested: true,
+        args: [{ metadata: nested }], ack: [{ result: 'success', metadata: nested }] }]
+    expect(hasAcknowledgedStartupCatalog(rows)).toBe(false)
+    rows.push({ ...rows[0]!, args: [{ metadata: catalog }], ack: undefined })
+    expect(hasAcknowledgedStartupCatalog(rows)).toBe(false)
+    rows[1].ack = [{ result: 'success', metadata: catalog }]
+    expect(hasAcknowledgedStartupCatalog(rows)).toBe(true)
 })
 
 it('distinguishes a flush before session end, before archive, and before the write acknowledgement', () => {

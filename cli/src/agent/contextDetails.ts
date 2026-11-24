@@ -369,12 +369,17 @@ export interface ContextDetailsClient {
 export interface PublishContextDetailsOptions {
     /** Result totals cover the whole conversation; keep the latest actual usage snapshot. */
     preserveUsageSnapshot?: boolean
-    claudeInventorySource?: 'startup-probe'
+    /** Legacy composer fields issued in the same CAS write as the startup inventory. */
+    claudeStartupCatalog?: Pick<Metadata, 'tools' | 'slashCommands'>
 }
 
 // Per-client, not persisted: saved inventory from a prior launch is not proof
 // that this CLI has already observed a live catalog. Empty lists do count.
 const observedClaudeInventory = new WeakMap<ContextDetailsClient, Set<keyof ClaudeContextDetails>>()
+
+function equalStrings(previous: readonly string[] | undefined, next: readonly string[]): boolean {
+    return previous?.length === next.length && previous.every((value, index) => value === next[index])
+}
 
 export function publishContextDetails(
     client: ContextDetailsClient,
@@ -382,14 +387,14 @@ export function publishContextDetails(
     options: PublishContextDetailsOptions = {}
 ): void {
     if (!client.updateMetadata) return
-    let candidate = next
+    const catalog = options.claudeStartupCatalog
+    let candidate: ContextDetails | null = next
     if (next.provider === 'claude' && next.claude) {
         const observed = observedClaudeInventory.get(client) ?? new Set<keyof ClaudeContextDetails>()
-        if (options.claudeInventorySource === 'startup-probe') {
+        if (catalog) {
             const claude = { ...next.claude }
             for (const key of observed) delete claude[key]
-            if (Object.keys(claude).length === 0) return
-            candidate = { ...next, claude }
+            candidate = Object.keys(claude).length ? { ...next, claude } : null
         } else {
             for (const key of Object.keys(next.claude) as Array<keyof ClaudeContextDetails>) {
                 if (next.claude[key] !== undefined) observed.add(key)
@@ -400,7 +405,7 @@ export function publishContextDetails(
     client.updateMetadata((metadata) => {
         const current = metadata.contextDetails
         let incoming = candidate
-        if (options.preserveUsageSnapshot && current?.provider === 'claude' && current.usage) {
+        if (candidate && options.preserveUsageSnapshot && current?.provider === 'claude' && current.usage) {
             incoming = {
                 ...candidate,
                 usage: {
@@ -410,12 +415,13 @@ export function publishContextDetails(
                 }
             }
         }
-        const merged = mergeContextDetails(current, incoming)
-        return merged === current
-            ? metadata
-            : {
-                ...metadata,
-                contextDetails: merged
-            }
+        const merged = incoming ? mergeContextDetails(current, incoming) : current
+        const patch: Pick<Metadata, 'tools' | 'slashCommands'> = {}
+        if (catalog?.tools !== undefined && !equalStrings(metadata.tools, catalog.tools)) patch.tools = catalog.tools
+        if (catalog?.slashCommands !== undefined && !equalStrings(metadata.slashCommands, catalog.slashCommands)) {
+            patch.slashCommands = catalog.slashCommands
+        }
+        if (merged === current && Object.keys(patch).length === 0) return metadata
+        return { ...metadata, ...patch, contextDetails: merged }
     }, { skipUnchanged: true })
 }
