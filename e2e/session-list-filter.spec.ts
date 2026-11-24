@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { chromium, expect, test, type Page } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -87,6 +87,32 @@ test('optional mobile machine filter does not occupy the desktop toolbar', async
     await open(page, 1280)
     await expect(page.getByRole('button', { name: 'Filter sessions by machine', exact: true })).toHaveCount(0)
     await expect(page.getByTestId('session-toolbar-slot-machine-filter')).toHaveCount(0)
+})
+
+test('keeps Sort and filter on the toolbar before the shortcut with a long search', async ({ page }) => {
+    await page.addInitScript(() => {
+        localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+        document.addEventListener('DOMContentLoaded', () => document.documentElement.style.setProperty('--app-font-scale', '1.1'))
+    })
+    await open(page, 320)
+    await page.getByRole('button', { name: /Search sessions/ }).click()
+    const search = page.getByPlaceholder(/Search title/)
+    await search.fill('a very long collapsed session search query')
+    await search.blur()
+    await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Sort and filter' })).toBeVisible()
+})
+
+test('uses the same mobile breakpoint as the machine chips with a larger browser font', async ({ baseURL }) => {
+    const browser = await chromium.launch({ args: ['--no-sandbox', '--blink-settings=defaultFontSize=20'] })
+    try {
+        const page = await browser.newPage({ baseURL })
+        await page.addInitScript(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
+        await open(page, 820)
+        expect(await page.evaluate(() => matchMedia('(width < 48rem)').matches)).toBe(true)
+        await expect(page.getByRole('button', { name: 'Filter sessions by machine', exact: true })).toBeVisible()
+    } finally {
+        await browser.close()
+    }
 })
 test.beforeEach(async ({ page }) => {
     await page.clock.setFixedTime(new Date(2026, 10, 9, 15))

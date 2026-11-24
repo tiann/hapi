@@ -168,7 +168,7 @@ import {
 } from '@/components/sessionToolbarShed'
 
 function useMobileMachineFilterViewport(): boolean {
-    const query = '(max-width: 767px)'
+    const query = '(width < 48rem)'
     const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined'
         && typeof window.matchMedia === 'function' && window.matchMedia(query).matches)
     useEffect(() => {
@@ -3561,7 +3561,7 @@ export function SessionList(props: {
                                 if (showMobileMachineFilter && showMachineFilterBar && isMobileMachineFilterViewport) {
                                     definedSlots.push({
                                         id: 'machine-filter',
-                                        keep: 5,
+                                        keep: 5.5,
                                         widthPx: slotWidth('machine-filter', TOOLBAR_ICON_PX),
                                         node: (
                                             <MachineFilterMenu

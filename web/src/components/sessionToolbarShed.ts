@@ -12,7 +12,7 @@
  * Upstream controls:
  *   4 New
  *   5 Sort and filter
- *   5 Optional mobile machine filter
+ *   5.5 Optional mobile machine filter
  *   6 Settings
  *   7 Mark all read (#1773 bulk hygiene — reachable, not a neighbor of New)
  *   8 Browse
