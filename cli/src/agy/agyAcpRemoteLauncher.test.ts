@@ -2980,6 +2980,74 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await run;
     });
 
+    it('anchors a turn-two steer to its own call after a turn-one held call is released with no match', async () => {
+        const backend = new FakeAgyBackend();
+        const { session, queue, client } = makeSession();
+        const oldArgs = { CommandLine: 'sleep 30' };
+        const newArgs = { CommandLine: 'echo new' };
+        let releaseTurnTwo!: () => void;
+        let launcherRef!: AgyAcpRemoteLauncher;
+
+        // Turn one: the live completion stays held because an earlier synthetic
+        // command could still own it, and the turn ends while it is retained.
+        backend.promptScripts.push(async (onUpdate) => {
+            (launcherRef as unknown as { backgroundCommands: unknown[] }).backgroundCommands.push({
+                callId: 'agy-wakeup-1', synthetic: true, commandLine: 'sleep 30', nativeArgs: oldArgs, stepIndex: 0
+            });
+            writeTranscript([userRow(0, 'first'), plannerRow(1, ['run_command']), genericRow(2)]);
+            onUpdate({
+                type: 'tool_call', id: 'old', name: 'sleep 30', title: 'sleep 30', input: oldArgs,
+                status: 'completed', kind: 'execute', nativeName: 'run_command', nativeArgs: oldArgs
+            });
+            onUpdate({ type: 'tool_result', id: 'old', status: 'completed', output: 'sleeping' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        // Turn two: the synthetic command is gone, so a fresh result releases
+        // the held completion. The turn's own command must own the steer anchor.
+        backend.promptScripts.push(async (onUpdate) => {
+            (launcherRef as unknown as { backgroundCommands: unknown[] }).backgroundCommands.length = 0;
+            onUpdate({ type: 'tool_result', id: 'unrelated', status: 'completed', output: 'ok' });
+            onUpdate({
+                type: 'tool_call', id: 'c2', name: 'echo new', title: 'echo new', input: newArgs,
+                status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: newArgs
+            });
+            await new Promise<void>((resolve) => { releaseTurnTwo = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('first', REVIEW, 'first');
+        const { run, launcher } = launch(session, [backend], { brainDir, reactivePollMs: 10 });
+        launcherRef = launcher;
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        client.sendSessionEvent.mockClear();
+        queue.push('next', REVIEW, 'next');
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
+        await vi.waitFor(() => expect(client.sendAgentMessage.mock.calls.some(([message]) =>
+            (message as { callId?: string }).callId === 'c2')).toBe(true));
+        expect((launcher as unknown as { retainedAmbiguousCompletions: unknown[] }).retainedAmbiguousCompletions).toHaveLength(0);
+
+        const handlers = client.rpcHandlerManager.handlers as Handlers;
+        queue.push('also lint', REVIEW, 'steer-1');
+        await handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer-1' });
+
+        const start = Math.max((launcher as unknown as { turn: { turnStartStepIndex: number } }).turn.turnStartStepIndex, 2);
+        writeTranscript([
+            userRow(start, 'next'),
+            { ...plannerRow(start + 1, ['run_command']), tool_calls: [{ name: 'run_command', args: { CommandLine: '"echo new"' } }] },
+            userRow(start + 2, 'also lint')
+        ]);
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toHaveLength(1));
+        expect(consumedFor(client, 'steer-1')[0]).toEqual([['steer-1'], { steered: true, anchor: { toolCallId: 'c2' } }]);
+
+        releaseTurnTwo();
+        for (const completion of backend.steerCompletions) completion.resolve('end_turn');
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+    });
+
     it('reads the steer text out of the row wrapper without touching it', () => {
         const wrap = (text: string) => `<USER_REQUEST>\n${text}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nlocal time\n</ADDITIONAL_METADATA>`;
         expect(agySteerRowText(wrap('한국어 테스트 🎉'))).toBe('한국어 테스트 🎉');

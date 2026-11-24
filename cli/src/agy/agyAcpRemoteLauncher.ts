@@ -317,6 +317,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     // Live ACP completions held while multiple compatible synthetic commands
     // remain open with incomplete `SYSTEM_MESSAGE` persistence.
     private readonly retainedAmbiguousCompletions: Array<{
+        // The turn that produced the call; only it may give the call a planner slot.
+        owner: AgyTurn;
         turnStartStepIndex: number;
         callMessage?: Extract<AgentMessage, { type: 'tool_call' }>;
         resultMessage: Extract<AgentMessage, { type: 'tool_result' }>;
@@ -1880,7 +1882,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     idx -= 1;
                     progressed = true;
                     if (item.callMessage && turn) {
-                        this.emitDeferredLiveCommandCall(turn, item.callMessage);
+                        this.emitDeferredLiveCommandCall(item.owner, item.callMessage);
                     } else if (item.callMessage) {
                         this.forwardAgentMessage(this.showQuestionCard(item.callMessage));
                     }
@@ -1986,6 +1988,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
                 if (match.kind === 'ambiguous') {
                     this.retainedAmbiguousCompletions.push({
+                        owner: turn,
                         turnStartStepIndex: turn.turnStartStepIndex,
                         callMessage: deferredCall,
                         resultMessage: message,
