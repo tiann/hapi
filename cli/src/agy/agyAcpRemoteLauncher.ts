@@ -1541,6 +1541,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         let rowSteer: AgySteerRow | null = null;
         const markIndeterminate = () => {
             if (resolved) return;
+            // agy may have written the row just before the transport was lost.
+            if (rowSteer && !rowSteer.done) this.pollSteerRows(turn);
+            if (resolved) return;
             resolved = true;
             if (rowSteer) rowSteer.done = true;
             forgetEcho();

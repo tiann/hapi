@@ -1101,7 +1101,10 @@ export class AcpSdkBackend implements AgentBackend {
             });
         });
 
-        const answered = request.completed.then(() => {}, () => { options?.onRefused?.(); });
+        // A lost transport does not say whether agy took the prompt.
+        const answered = request.completed.then(() => {}, (error) => {
+            if (!isAcpIndeterminateError(error)) options?.onRefused?.();
+        });
         return { dispatched: request.dispatched, answered, completed };
     }
 

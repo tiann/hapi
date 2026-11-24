@@ -2706,6 +2706,20 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         queue.close();
     });
 
+    it('confirms a steer whose row lands right before the transport is lost', async () => {
+        // Polls far apart: only the poll on the lost transport can see the row.
+        const { backend, client, steer, finish } = await startTurn(undefined, { reactivePollMs: 60_000 });
+        await steer('also lint', 'steer-1');
+        writeTranscript([...stepRows, userRow(3, 'also lint')]);
+        const error = new Error('agy exited');
+        Object.defineProperty(error, ACP_INDETERMINATE_SYMBOL, { value: true });
+        backend.steerCompletions[0]!.reject(error);
+
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: 't1' } }]]));
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-1']);
+        await finish();
+    });
+
     it('restores a refused steer and ignores a later row with its text', async () => {
         const { backend, client, steer, finish } = await startTurn();
         await steer('also lint', 'steer-1');
