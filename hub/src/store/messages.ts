@@ -300,9 +300,14 @@ function applyChildToolCallContent(state: ChildToolCallState, content: unknown):
     state.open.add(callId)
 }
 
-/** Rebuild open/settled child ids from the durable transcript once per session
- *  per process. Hub restart clears the WeakMap; archive must still see a
- *  lookback-evicted open child that never emitted another update. */
+/**
+ * Rebuild open/settled child ids from the durable transcript once per session
+ * per process. Hub restart clears the WeakMap; archive must still see a
+ * lookback-evicted open child that never emitted another update.
+ *
+ * Full replay stays off the ingestion hot path — only archive / live-work
+ * evaluation and worker-exit retirement call this (#2021).
+ */
 function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): ChildToolCallState {
     const state = childToolCallState(db, sessionId)
     if (state.rebuilt) return state
@@ -321,12 +326,14 @@ function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): Child
     return state
 }
 
+/** Incremental update only — never full-scan the transcript on ingest. */
 function noteChildToolCallOpenState(db: Database, sessionId: string, content: unknown): void {
-    applyChildToolCallContent(ensureChildToolCallStateRebuilt(db, sessionId), content)
+    applyChildToolCallContent(childToolCallState(db, sessionId), content)
 }
 
+/** Incremental update only — never full-scan the transcript on ingest. */
 function noteToolCallSettlements(db: Database, sessionId: string, content: unknown): void {
-    applyChildToolCallContent(ensureChildToolCallStateRebuilt(db, sessionId), content)
+    applyChildToolCallContent(childToolCallState(db, sessionId), content)
 }
 
 /**
@@ -768,8 +775,11 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
     // call older than TOOL_CALL_UPSERT_LOOKBACK, and must not fail open.
     // Settled ids are latched across restarts so a late nonterminal snapshot
     // with the same callId cannot reopen work in the scan either (#2021).
+    // Open tool-call ids only. Child "running" with no open tool is the sticky
+    // stranding class under rewind — missing settlement means not-live-work;
+    // Runner-verified cleanup remains the safety net (#2021 Meta).
     const childState = ensureChildToolCallStateRebuilt(db, sessionId)
-    if (childState.open.size > 0 || childState.runningChildren.size > 0) return true
+    if (childState.open.size > 0) return true
 
     const rows = prepareCached(db, `
         SELECT id, content, scheduled_at, invoked_at FROM messages
@@ -778,19 +788,17 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
         LIMIT ?
     `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content' | 'scheduled_at' | 'invoked_at'>>
 
-    const settledAcpCallIds = new Set<string>(childState.settled)
+    // Lookback-local settled set only — do not copy the unbounded lifetime
+    // latch into every derived-work scan. Latched ids are membership-checked
+    // below (#2021 ingestion/scan cost).
+    const settledAcpCallIds = new Set<string>()
     const settledClaudeToolUseIds = new Set<string>()
     for (const row of rows) {
         const decoded = decodeMessageContent(row.content)
         // A human turn closes parent-scope work in the lookback window. Child
         // work is handled by the open-child registry above, not this scan.
-        // Undispatched scheduled prompts are not turn boundaries — they insert
-        // a user row immediately but have not been delivered to the agent yet,
-        // so they must not mask an open tool call (#2021).
+        // Undispatched scheduled / queued prompts are not turn boundaries.
         if (isUserMessageRow(decoded)) {
-            // Uninvoked queued or scheduled rows are not turn boundaries — they
-            // sit in the transcript before the agent consumes them and must
-            // not mask an open tool call (#2021).
             if (row.invoked_at == null) continue
             return false
         }
@@ -829,7 +837,12 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
             continue
         }
         const callId = getToolCallId(decoded)
-        if (callId !== null && !settledAcpCallIds.has(callId) && !isTerminalToolCallRow(decoded)) {
+        if (
+            callId !== null
+            && !settledAcpCallIds.has(callId)
+            && !childState.settled.has(callId)
+            && !isTerminalToolCallRow(decoded)
+        ) {
             // Child-scoped rows are already covered by the registry; still
             // report them from the scan while they remain in-window.
             return true
@@ -2112,33 +2125,11 @@ export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSe
         `).get(sessionId, boundaryId, cutoffSeq) as { seq: number; position_at: number } | undefined
         if (!target) throw new Error('Rewind boundary not found')
         const deletedRows = prepareCached(db, `
-            SELECT id, content FROM messages WHERE session_id = ? AND (
+            SELECT id FROM messages WHERE session_id = ? AND (
                 COALESCE(invoked_at, created_at) > ?
                 OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
             )
-        `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<Pick<DbMessageRow, 'id' | 'content'>>
-        // Child settlements past the rewind boundary must survive: a retained
-        // running marker without its later terminal would fail Archive open
-        // after rebuild (#2021).
-        const settledCallIds = new Set<string>()
-        const retiredChildSessionIds = new Set<string>()
-        for (const row of deletedRows) {
-            const decoded = decodeMessageContent(row.content)
-            for (const callId of acpTurnCompleteSettledCallIds(decoded)) settledCallIds.add(callId)
-            for (const childId of acpTurnCompleteRetiredChildSessionIds(decoded)) {
-                retiredChildSessionIds.add(childId)
-            }
-            const childStatus = acpTurnCompleteChildStatus(decoded)
-            if (childStatus && childStatus.status !== 'running' && childStatus.status !== 'created') {
-                retiredChildSessionIds.add(childStatus.childSessionId)
-            }
-            const resultCallId = toolCallResultCallId(decoded)
-            if (resultCallId !== null) settledCallIds.add(resultCallId)
-            const callId = getToolCallId(decoded)
-            if (callId && isChildScopedAcpToolCall(decoded) && isTerminalToolCallRow(decoded)) {
-                settledCallIds.add(callId)
-            }
-        }
+        `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<{ id: string }>
         prepareCached(db, `
             DELETE FROM messages WHERE session_id = ? AND (
                 COALESCE(invoked_at, created_at) > ?
@@ -2147,30 +2138,14 @@ export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSe
         `).run(sessionId, target.position_at, target.position_at, target.seq)
         invalidateMessageContentSearchInjectedTurnCache(db, [sessionId])
         for (const row of deletedRows) removeMessageContentSearchIndex(db, row.id)
-        // Force rebuild — WeakMap state still reflects pre-rewind rows.
+        // Drop in-memory child-work state. Next live-work check rebuilds from
+        // the remaining transcript only — settlement deleted by rewind means
+        // not-live-work (sticky → clearable), not a child-work ledger (#2021).
         const state = childToolCallState(db, sessionId)
         state.rebuilt = false
         state.open.clear()
         state.settled.clear()
         state.runningChildren.clear()
-        if (settledCallIds.size > 0 || retiredChildSessionIds.size > 0) {
-            addMessage(db, sessionId, {
-                role: 'agent',
-                content: {
-                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
-                    data: {
-                        type: 'turn-complete',
-                        stopReason: 'rewind-preserved-settlement',
-                        ...(settledCallIds.size > 0 ? { settledCallIds: [...settledCallIds] } : {}),
-                        ...(retiredChildSessionIds.size > 0
-                            ? { retiredChildSessionIds: [...retiredChildSessionIds] }
-                            : {}),
-                    },
-                },
-            })
-        } else {
-            ensureChildToolCallStateRebuilt(db, sessionId)
-        }
         prepareCached(db, `UPDATE sessions SET read_revision = content_revision, read_state_version = read_state_version + 1
             WHERE id = ? AND read_revision < content_revision AND NOT EXISTS (
                 SELECT 1 FROM messages WHERE session_id = sessions.id AND content_revision > sessions.read_revision

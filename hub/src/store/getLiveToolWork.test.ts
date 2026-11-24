@@ -347,10 +347,12 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 
-    it('treats a running OpenCode child with no open tool as live work (#2021)', () => {
+    it('does not treat child running-without-open-tool as live work (sticky → clearable) (#2021)', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-child-running')
 
+        // Running marker alone must not strand Archive — missing settlement /
+        // no open tool means not-live-work; Runner cleanup is the backstop.
         store.messages.addMessage(session.id, {
             role: 'agent',
             content: {
@@ -364,20 +366,6 @@ describe('getLiveToolWork', () => {
             },
         })
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'parent idle' } })
-        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
-
-        store.messages.addMessage(session.id, {
-            role: 'agent',
-            content: {
-                type: AGENT_MESSAGE_PAYLOAD_TYPE,
-                data: {
-                    type: 'turn-complete',
-                    stopReason: 'completed',
-                    childSessionId: 'ses_child',
-                    childStatus: 'completed',
-                },
-            },
-        })
         expect(store.messages.getLiveToolWork(session.id)).toBe(false)
         store.close()
     })
@@ -407,25 +395,27 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 
-    it('persists running-child retirement across hub restart (#2021)', () => {
+    it('persists open-child retirement across hub restart (#2021)', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-live-work-retire-'))
         const dbPath = join(dir, 'hub.db')
         try {
             const store = new Store(dbPath)
             const session = makeSession(store, 'live-work-retire-running')
             const sessionId = session.id
-            store.messages.addMessage(sessionId, {
+            store.messages.upsertToolCallMessage(sessionId, {
                 role: 'agent',
                 content: {
                     type: AGENT_MESSAGE_PAYLOAD_TYPE,
                     data: {
-                        type: 'turn-complete',
-                        stopReason: 'running',
+                        type: 'tool-call',
+                        callId: 'child-retire',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
                         childSessionId: 'ses_child',
-                        childStatus: 'running',
                     },
                 },
-            })
+            }, 'child-retire')
             expect(store.messages.getLiveToolWork(sessionId)).toBe(true)
             expect(store.messages.retireOpenChildToolWork(sessionId)).toBe(true)
             expect(store.messages.getLiveToolWork(sessionId)).toBe(false)
@@ -537,7 +527,7 @@ describe('getLiveToolWork', () => {
 })
 
 describe('truncateOpenCodeRewind child settlement (#2021)', () => {
-    it('preserves child terminal settlement when rewind removes it past the boundary', () => {
+    it('does not strand Archive when rewind keeps a running marker but drops its terminal', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-rewind-settle')
 
@@ -572,6 +562,8 @@ describe('truncateOpenCodeRewind child settlement (#2021)', () => {
         expect(store.messages.getLiveToolWork(session.id)).toBe(false)
 
         store.messages.truncateOpenCodeRewind(session.id, boundary.seq, boundary.id)
+        // Sticky → clearable: no child-work ledger. Running-without-open-tool
+        // is not live work; Runner-verified cleanup decides.
         expect(store.messages.getLiveToolWork(session.id)).toBe(false)
         store.close()
     })
