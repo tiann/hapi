@@ -2112,11 +2112,33 @@ export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSe
         `).get(sessionId, boundaryId, cutoffSeq) as { seq: number; position_at: number } | undefined
         if (!target) throw new Error('Rewind boundary not found')
         const deletedRows = prepareCached(db, `
-            SELECT id FROM messages WHERE session_id = ? AND (
+            SELECT id, content FROM messages WHERE session_id = ? AND (
                 COALESCE(invoked_at, created_at) > ?
                 OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
             )
-        `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<{ id: string }>
+        `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<Pick<DbMessageRow, 'id' | 'content'>>
+        // Child settlements past the rewind boundary must survive: a retained
+        // running marker without its later terminal would fail Archive open
+        // after rebuild (#2021).
+        const settledCallIds = new Set<string>()
+        const retiredChildSessionIds = new Set<string>()
+        for (const row of deletedRows) {
+            const decoded = decodeMessageContent(row.content)
+            for (const callId of acpTurnCompleteSettledCallIds(decoded)) settledCallIds.add(callId)
+            for (const childId of acpTurnCompleteRetiredChildSessionIds(decoded)) {
+                retiredChildSessionIds.add(childId)
+            }
+            const childStatus = acpTurnCompleteChildStatus(decoded)
+            if (childStatus && childStatus.status !== 'running' && childStatus.status !== 'created') {
+                retiredChildSessionIds.add(childStatus.childSessionId)
+            }
+            const resultCallId = toolCallResultCallId(decoded)
+            if (resultCallId !== null) settledCallIds.add(resultCallId)
+            const callId = getToolCallId(decoded)
+            if (callId && isChildScopedAcpToolCall(decoded) && isTerminalToolCallRow(decoded)) {
+                settledCallIds.add(callId)
+            }
+        }
         prepareCached(db, `
             DELETE FROM messages WHERE session_id = ? AND (
                 COALESCE(invoked_at, created_at) > ?
@@ -2125,6 +2147,30 @@ export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSe
         `).run(sessionId, target.position_at, target.position_at, target.seq)
         invalidateMessageContentSearchInjectedTurnCache(db, [sessionId])
         for (const row of deletedRows) removeMessageContentSearchIndex(db, row.id)
+        // Force rebuild — WeakMap state still reflects pre-rewind rows.
+        const state = childToolCallState(db, sessionId)
+        state.rebuilt = false
+        state.open.clear()
+        state.settled.clear()
+        state.runningChildren.clear()
+        if (settledCallIds.size > 0 || retiredChildSessionIds.size > 0) {
+            addMessage(db, sessionId, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'turn-complete',
+                        stopReason: 'rewind-preserved-settlement',
+                        ...(settledCallIds.size > 0 ? { settledCallIds: [...settledCallIds] } : {}),
+                        ...(retiredChildSessionIds.size > 0
+                            ? { retiredChildSessionIds: [...retiredChildSessionIds] }
+                            : {}),
+                    },
+                },
+            })
+        } else {
+            ensureChildToolCallStateRebuilt(db, sessionId)
+        }
         prepareCached(db, `UPDATE sessions SET read_revision = content_revision, read_state_version = read_state_version + 1
             WHERE id = ? AND read_revision < content_revision AND NOT EXISTS (
                 SELECT 1 FROM messages WHERE session_id = sessions.id AND content_revision > sessions.read_revision

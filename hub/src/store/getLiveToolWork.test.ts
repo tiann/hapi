@@ -535,3 +535,44 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 })
+
+describe('truncateOpenCodeRewind child settlement (#2021)', () => {
+    it('preserves child terminal settlement when rewind removes it past the boundary', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-rewind-settle')
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_child',
+                    childStatus: 'running',
+                },
+            },
+        })
+        const boundary = store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'rewind here' },
+        })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'completed',
+                    childSessionId: 'ses_child',
+                    childStatus: 'completed',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+
+        store.messages.truncateOpenCodeRewind(session.id, boundary.seq, boundary.id)
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+})
