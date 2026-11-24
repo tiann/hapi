@@ -318,6 +318,12 @@ export function createMachinesRoutes(
                 ? resolved.effort
                 : undefined
 
+        // Parent telemetry must resolve in this namespace; omit rather than stamp a dangling id.
+        let spawnedBySessionId = parsed.data.spawnedBySessionId
+        if (spawnedBySessionId && !engine.getSessionByNamespace(spawnedBySessionId, namespace)) {
+            spawnedBySessionId = undefined
+        }
+
         const result = await engine.spawnSession(
             machineId,
             parsed.data.directory,
@@ -337,7 +343,7 @@ export function createMachinesRoutes(
             startingMode,
             namespace,
             undefined, // resumeSessionAt
-            parsed.data.spawnedBySessionId,
+            spawnedBySessionId,
         )
         return c.json(result)
     })

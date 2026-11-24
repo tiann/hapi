@@ -238,7 +238,12 @@ function preserveModelErrorHubFields(
 }
 
 export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
-    if (!isPlainObject(prior) || !isPlainObject(next)) {
+    // CLI adopt may send metadata: null. Never wipe a persisted hub blob
+    // (including spawnedBySessionId) for a non-object replacement.
+    if (!isPlainObject(next)) {
+        return isPlainObject(prior) ? prior : next
+    }
+    if (!isPlainObject(prior)) {
         return next
     }
     let merged: Record<string, unknown> | null = null
