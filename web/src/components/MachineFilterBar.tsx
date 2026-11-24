@@ -277,7 +277,7 @@ export function MachineFilterMenu(props: {
     const triggerRef = useRef<HTMLButtonElement>(null)
     const wrapperRef = useRef<HTMLDivElement>(null)
     const menuRef = useRef<HTMLDivElement>(null)
-    const [anchor, setAnchor] = useState<MachineFilterMenuAnchor | null>(null)
+    const [anchor, setAnchor] = useState<(MachineFilterMenuAnchor & { viewportWidth: number }) | null>(null)
 
     const close = useCallback(() => {
         setOpen(false)
@@ -294,22 +294,27 @@ export function MachineFilterMenu(props: {
             setAnchor(null)
             return
         }
+        // More can reflow when actions appear, moving the trigger without a
+        // resize or scroll. Track viewport position only while the menu is open.
+        let frame = 0
         const updateAnchor = () => {
             const rect = wrapperRef.current?.getBoundingClientRect()
-            if (!rect) return
-            setAnchor({ left: rect.left, right: rect.right, bottom: rect.bottom })
+            if (rect) {
+                const viewportWidth = window.innerWidth
+                setAnchor(previous => previous?.left === rect.left
+                    && previous.right === rect.right && previous.bottom === rect.bottom
+                    && previous.viewportWidth === viewportWidth
+                    ? previous
+                    : { left: rect.left, right: rect.right, bottom: rect.bottom, viewportWidth })
+            }
+            frame = window.requestAnimationFrame(updateAnchor)
         }
         updateAnchor()
-        window.addEventListener('resize', updateAnchor)
-        window.addEventListener('scroll', updateAnchor, true)
-        return () => {
-            window.removeEventListener('resize', updateAnchor)
-            window.removeEventListener('scroll', updateAnchor, true)
-        }
+        return () => window.cancelAnimationFrame(frame)
     }, [open])
 
     const alignStart = anchor
-        ? machineFilterMenuAlignsStart(anchor, window.innerWidth)
+        ? machineFilterMenuAlignsStart(anchor, anchor.viewportWidth)
         : false
 
     // Focus the selected (or first) row on open; Escape closes and Arrow keys
@@ -324,6 +329,12 @@ export function MachineFilterMenu(props: {
         })
 
         const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Tab') {
+                // Let the browser continue in either direction from the trigger,
+                // rather than from the menu's portal at the end of the body.
+                close()
+                return
+            }
             if (event.key === 'Escape') {
                 event.preventDefault()
                 close()
@@ -387,7 +398,7 @@ export function MachineFilterMenu(props: {
                             ...getMachineFilterMenuClampStyle(anchor),
                             top: anchor.bottom + MENU_TOP_GAP_PX,
                             left: alignStart ? anchor.left : undefined,
-                            right: alignStart ? undefined : window.innerWidth - anchor.right,
+                            right: alignStart ? undefined : anchor.viewportWidth - anchor.right,
                         }}
                         className="absolute z-30 max-h-80 w-64 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-xl"
                     >

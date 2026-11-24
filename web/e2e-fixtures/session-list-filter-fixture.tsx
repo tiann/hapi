@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ApiClient } from '../src/api/client'
@@ -38,8 +38,24 @@ const api = {
 } as unknown as ApiClient
 function Fixture() {
     const [selected, setSelected] = useState<string | null>(null)
+    const [liveSessions, setLiveSessions] = useState(sessions)
+    useEffect(() => {
+        const updateUnread = (event: Event) => {
+            const unread = (event as CustomEvent<boolean>).detail
+            setLiveSessions(previous => previous.map(session => session.id === 'match' ? {
+                ...session,
+                readState: {
+                    readRevision: 1,
+                    version: (session.readState?.version ?? 0) + 1,
+                    manualUnread: unread,
+                },
+            } : session))
+        }
+        window.addEventListener('fixture-unread', updateUnread)
+        return () => window.removeEventListener('fixture-unread', updateUnread)
+    }, [])
     return <main style={{ width: 'min(440px, 100vw)', height: '100vh', display: 'flex', flexDirection: 'column' }}>
-        <SessionList sessions={sessions} selectedSessionId={selected} onSelect={setSelected}
+        <SessionList sessions={liveSessions} selectedSessionId={selected} onSelect={setSelected}
             onNewSession={() => {}} onRefresh={() => {}} isLoading={false} api={api}
             machineLabelsById={{ mint: 'Mint', server: 'Server' }}
             toolbarExtras={[

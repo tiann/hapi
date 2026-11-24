@@ -259,12 +259,83 @@ test.describe('mobile machine menu pointer dismissal', () => {
             await expect(trigger).toBeFocused()
             await trigger.tap()
             await expect(menu).toBeVisible()
+            if (!nested) {
+                // A fixed-width sidebar can retain the same trigger coordinates
+                // while the mobile viewport grows around it.
+                await page.setViewportSize({ width: 700, height: 844 })
+                await expect.poll(async () => Math.abs((await menu.boundingBox())!.x - (await trigger.boundingBox())!.x)).toBeLessThanOrEqual(1)
+            }
             await page.setViewportSize({ width: 1280, height: 844 })
             await expect(menu).toHaveCount(0)
             await expect(trigger).toHaveCount(0)
             await search.tap()
             await expect(page.getByPlaceholder(/Search title/)).toBeFocused()
         })
+    }
+})
+
+for (const nested of [false, true]) {
+    for (const reverse of [false, true]) {
+        test(`resumes ${reverse ? 'backward' : 'forward'} tab order from machine trigger ${nested ? 'inside More' : 'on the toolbar'}`, async ({ page }) => {
+            await page.addInitScript(() => {
+                localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+                localStorage.setItem('hapi-font-scale', '1.3')
+            })
+            await open(page, nested ? 320 : 440)
+            if (nested) {
+                await page.getByRole('button', { name: /Search sessions/ }).click()
+                await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+                await page.getByPlaceholder(/Search title/).blur()
+                await page.getByRole('button', { name: 'More session list actions', exact: true }).click()
+            }
+            const trigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+            const adjacent = page.getByRole('button', { name: reverse ? 'Sort and filter' : nested ? 'Settings' : 'New Session', exact: true })
+            await trigger.click()
+            const menu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+            await expect(menu.getByRole('menuitemradio').first()).toBeFocused()
+            await page.keyboard.press(reverse ? 'Shift+Tab' : 'Tab')
+            await expect(menu).toHaveCount(0)
+            await expect(adjacent).toBeFocused()
+            // Closing removes the document arrow-key handler as well.
+            await page.keyboard.press('ArrowDown')
+            await expect(adjacent).toBeFocused()
+        })
+    }
+}
+
+test('tracks the machine trigger while unread actions reflow More', async ({ page }) => {
+    await page.addInitScript(() => {
+        localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+        localStorage.setItem('hapi-font-scale', '1.3')
+        localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1')
+    })
+    await page.setViewportSize({ width: 320, height: 568 })
+    await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en&allRead')
+    await page.getByRole('button', { name: /Search sessions/ }).click()
+    await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+    await page.getByPlaceholder(/Search title/).blur()
+    await page.getByRole('button', { name: 'More session list actions', exact: true }).click()
+    const trigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+    await trigger.click()
+    const menu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+    await expect(menu).toBeVisible()
+    const initialTrigger = (await trigger.boundingBox())!
+    for (const unread of [true, false]) {
+        await page.evaluate(unread => window.dispatchEvent(new CustomEvent('fixture-unread', { detail: unread })), unread)
+        await expect(page.getByRole('button', { name: /Mark all as read/ })).toHaveCount(unread ? 1 : 0)
+        if (unread) {
+            await expect.poll(async () => Math.abs((await trigger.boundingBox())!.x - initialTrigger.x)).toBeGreaterThan(20)
+        }
+        await expect.poll(async () => {
+            const menuBox = (await menu.boundingBox())!
+            const triggerBox = (await trigger.boundingBox())!
+            const alignsStart = 320 - triggerBox.x >= triggerBox.x + triggerBox.width
+            const horizontal = alignsStart
+                ? Math.abs(menuBox.x - triggerBox.x)
+                : Math.abs(menuBox.x + menuBox.width - (triggerBox.x + triggerBox.width))
+            return Math.max(horizontal, Math.abs(menuBox.y - (triggerBox.y + triggerBox.height + 4)))
+        }).toBeLessThanOrEqual(1)
+        await expect(menu).toBeInViewport({ ratio: 1 })
     }
 })
 
