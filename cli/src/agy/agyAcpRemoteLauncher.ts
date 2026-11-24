@@ -252,8 +252,7 @@ type AgyTurn = {
     // Steers Stop answered with `cancelled`; held after the turn's final scan
     // unless their row turned up.
     cancelledSteers: Array<() => void>;
-    // Every steer written into this turn, in send order, including settled
-    // ones: steers with the same text own that text's rows in this order.
+    // Every steer written into this turn, including settled ones, for the row poll.
     rowSteers: AgySteerRow[];
     rowPoll: ReturnType<typeof setInterval> | null;
     // Every tool call of this turn in planner (ACP arrival) order, including
@@ -271,8 +270,7 @@ type AgyTurn = {
 type AgySteerRow = {
     text: string;
     // Highest transcript step when the steer was written: its row comes after.
-    // Null when the transcript could not be read then: the steer never matches
-    // a row, and later steers with its text wait behind it.
+    // Null when the transcript could not be read then: the steer never matches a row.
     boundary: number | null;
     // The agy conversation the steer was written to; a new one ends matching.
     sessionId: string;
@@ -285,7 +283,7 @@ type AgySteerRow = {
     ownedRow?: number;
     // When the steer's row was first found after a call whose card is not out.
     anchorWaitFrom?: number;
-    accept: (anchorToolCallId?: string) => void;
+    accept: (anchorToolCallId?: string, byRow?: boolean) => void;
 };
 
 /**
@@ -1370,7 +1368,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // After a Stop or a lost agy process, agy may have dropped a steer
             // it had not echoed yet.
             const endedCleanly = !turn.aborted && !this.backendLost;
-            // The final scan: a row that turned up confirms its steer, held or not.
+            // The final scan ends the row wait; the arrays below resolve each steer.
             this.pollSteerRows(turn, true);
             if (turn.rowPoll) clearInterval(turn.rowPoll);
             turn.rowPoll = null;
@@ -1580,6 +1578,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             return { steered: false, error: 'Steer state is indeterminate' };
         }
         let resolved = false;
+        let confirmedByRow = false;
+        let restored = false;
         // Held for an explicit Retry/Cancel: a row that turns up later still
         // confirms the steer.
         let held = false;
@@ -1600,7 +1600,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
         };
         const restoreQueued = async (): Promise<void> => {
-            if (resolved) return;
+            if (restored || confirmedByRow) return;
+            restored = true;
             resolved = true;
             if (rowSteer) {
                 rowSteer.done = true;
@@ -1683,7 +1684,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // agy echoes a steer (user_message_chunk) when it folds it into the
         // turn, which is the moment it belongs in the transcript; the request
         // itself is only answered when the turn ends.
-        const accept = (anchorToolCallId?: string) => {
+        const accept = (anchorToolCallId?: string, byRow = false) => {
+            if (byRow) confirmedByRow = true;
             if (resolved) {
                 // A held steer is confirmed once, unless it was retried or cancelled.
                 if (!held) return;
@@ -1710,9 +1712,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         echoEntry = { text: normalizeEcho(taken.item.message), echo: '', accept };
         turn.unechoedSteers.push(echoEntry);
         turn.abandonSteers.push(markIndeterminate);
-        // agy writes the steer to its transcript when it folds it in: that row
-        // confirms the steer and says where it entered the turn. The echo
-        // (agy <= 1.5.8) and the turn's end remain the other ways to confirm.
+        // agy writes the steer to its transcript when it folds it in: an
+        // unambiguous row confirms the steer and says where it entered the turn.
+        // The echo (agy <= 1.5.8) and the turn's end remain other ways to confirm.
         // A late echo can confirm the next identical steer instead; that path
         // is best effort for those versions.
         rowSteer = { text: normalizeSteerText(taken.item.message), boundary: rowBoundary, sessionId: acpSessionId, done: false, refused: false, accept };
@@ -1731,11 +1733,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
 
         void steer.completed.then((stopReason) => {
-            // Stop answers an open steer with `cancelled`; without the echo,
-            // agy may or may not have folded it in, so it is held for an
-            // explicit Retry/Cancel unless its row turns up by the turn's final scan.
+            // Stop answers an open steer with `cancelled`; it is held for an
+            // explicit Retry/Cancel.
             if (stopReason === 'cancelled') {
-                // A row already in the transcript proves agy took it.
+                // End the row wait; the hold below resolves the steer.
                 this.pollSteerRows(turn, true);
                 if (this.turn === turn) turn.cancelledSteers.push(markIndeterminate);
                 else markIndeterminate();
@@ -1766,17 +1767,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * Confirms the steers whose USER_INPUT row has reached agy's transcript.
-     * Steers with the same text own that text's rows in send order. A row is
-     * assigned only when every unsettled send with its text can own a distinct
-     * unowned row past its boundary, so a row left by a send whose refusal is
-     * still on its way cannot confirm an earlier send. A new row or a refusal
-     * leaving the unsettled set releases the assignment on a later poll. A
-     * steer without a boundary keeps later ones waiting, since its row cannot
-     * be told apart. When the row follows a call whose card is not out yet,
-     * the steer waits for that card on later polls, for at most the anchor
-     * wait; `settle` (Stop, a lost transport, the turn's end) skips the count
-     * check and confirms at once without a position.
+     * A row confirms its steer only when one unsettled send has that text and
+     * the row is not the turn's own prompt row. Two sends with the same text
+     * own no row, so neither is confirmed. When the row follows a call whose
+     * card is not out yet, the steer waits for that card on later polls, for
+     * at most the anchor wait. `settle` (Stop, a lost transport, the turn's end)
+     * ends the row wait without a position and leaves each steer to the rest
+     * of the turn's handling.
      */
     private pollSteerRows(turn: AgyTurn, settle = false): void {
         const pending = turn.rowSteers.filter((entry) => !entry.done);
@@ -1797,6 +1794,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
         // A turn whose start was not read cannot tell its rows from earlier ones.
         if (!acpSessionId || !turn.transcriptStartKnown || pending.every((entry) => entry.done)) return;
+        if (settle) {
+            for (const entry of pending) entry.done = true;
+            return;
+        }
         const owners = turn.rowSteers.filter((entry) => entry.sessionId === acpSessionId && !entry.refused);
         const boundaries = owners.flatMap((entry) => entry.boundary === null ? [] : [entry.boundary]);
         if (boundaries.length === 0) return;
@@ -1814,57 +1815,28 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // is the turn's own prompt; agy only appends, so a different first row
         // keeps the whole turn out of row matching.
         if (!userRows[0] || agySteerRowText(userRows[0].content) !== turn.promptRowText) return;
-        // A row stays unassigned while some other unsettled send with its text
-        // could own it, including a refusal that has not reached the matcher.
-        const blocked = new Set<string>();
-        if (!settle) {
-            const ownedRows = new Set<number>();
-            const openByText = new Map<string, Array<number | null>>();
-            for (const entry of owners) {
-                if (entry.ownedRow !== undefined) ownedRows.add(entry.ownedRow);
-                if (entry.done) continue;
-                const boundaries = openByText.get(entry.text) ?? [];
-                boundaries.push(entry.boundary);
-                openByText.set(entry.text, boundaries);
-            }
-            for (const [text, boundaries] of openByText) {
-                const rows = userRows.filter((candidate) =>
-                    !ownedRows.has(candidate.step_index)
-                    && agySteerRowText(candidate.content) === text
-                    && boundaries.some((boundary) => boundary !== null && candidate.step_index > boundary)).length;
-                if (boundaries.length > rows) blocked.add(text);
-            }
+        const unsettled = new Map<string, number>();
+        for (const entry of pending) {
+            if (entry.done) continue;
+            unsettled.set(entry.text, (unsettled.get(entry.text) ?? 0) + 1);
         }
-        // The prompt owns the first row; each text's queue resumes after its last owned row.
-        const lastRowByText = new Map<string, number>([[turn.promptRowText, userRows[0].step_index]]);
-        const waiting = new Set<string>();
         for (const entry of owners) {
-            if (waiting.has(entry.text)) continue;
-            if (!settle && !entry.done && entry.ownedRow === undefined && blocked.has(entry.text)) {
-                waiting.add(entry.text);
-                continue;
-            }
+            if (entry.done) continue;
             if (entry.ownedRow === undefined) {
-                const after = entry.boundary === null
-                    ? null
-                    : Math.max(entry.boundary, lastRowByText.get(entry.text) ?? -1);
-                const row = after === null ? undefined : userRows.find((candidate) =>
-                    candidate.step_index > after && agySteerRowText(candidate.content) === entry.text);
-                if (!row) {
-                    waiting.add(entry.text);
-                    continue;
-                }
+                const boundary = entry.boundary;
+                if (boundary === null || unsettled.get(entry.text) !== 1) continue;
+                const row = userRows.slice(1).find((candidate) =>
+                    candidate.step_index > boundary && agySteerRowText(candidate.content) === entry.text);
+                if (!row) continue;
                 entry.ownedRow = row.step_index;
             }
-            lastRowByText.set(entry.text, entry.ownedRow);
-            if (entry.done) continue;
             const anchor = this.steerAnchor(turn, steps, entry.ownedRow);
-            if (anchor === 'deferred' && !settle) {
+            if (anchor === 'deferred') {
                 entry.anchorWaitFrom ??= Date.now();
                 if (Date.now() - entry.anchorWaitFrom < this.steerAnchorWaitMs) continue;
             }
             entry.done = true;
-            entry.accept(anchor === 'deferred' ? undefined : anchor);
+            entry.accept(anchor === 'deferred' ? undefined : anchor, true);
         }
     }
 
@@ -2477,8 +2449,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * Stop gave up on agy: a steer whose row agy wrote since the last poll
-     * was taken, so it is confirmed before the rest are held for Retry/Cancel.
+     * Stop gave up on agy: end the row wait for every steer before holding
+     * them for Retry/Cancel.
      */
     private abandonPendingSteers(turn: AgyTurn): void {
         this.pollSteerRows(turn, true);
