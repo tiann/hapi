@@ -1,12 +1,7 @@
 import type { AgentConfigFieldShape, AgentConfigSettingField } from './agentConfig'
 import type { PermissionMode, SteeringCapability, SteeringSessionMetadata, SteeringSessionState } from './modes'
 
-export const Capabilities = {
-    ModelChange: 'model-change',
-    Effort: 'effort',
-} as const
-
-export type Capability = typeof Capabilities[keyof typeof Capabilities]
+export type Capability = 'model-change' | 'effort-change'
 
 /** `decision`: approve / approve-for-session / abort. `allowTools`: allow / allow-tools-for-session / allow-all-edits. `generic`: allow / allow-for-session / deny. */
 export type PermissionReplyStyle = 'decision' | 'allowTools' | 'generic'
@@ -82,10 +77,8 @@ function defineFlavor<const TModes extends readonly PermissionMode[]>(
         throw new Error(`Flavor ${spec.label} lists more than one auto-approve mode: ${autoApproveModes.join(', ')}`)
     }
     const yoloPermissionMode = autoApproveModes[0] ?? null
-    const capabilities = new Set<Capability>([
-        Capabilities.ModelChange,
-        ...(spec.effort?.wireField === 'effort' ? [Capabilities.Effort] : [])
-    ])
+    const capabilities = new Set<Capability>(['model-change'])
+    if (spec.effort?.wireField === 'effort') capabilities.add('effort-change')
     return {
         label: spec.label,
         capabilities,
@@ -374,11 +367,11 @@ export function getSettingsConfigFields(flavor: string | null | undefined): read
 
 // --- Convenience functions ---
 export function supportsModelChange(flavor: string | null | undefined): boolean {
-    return hasCapability(flavor, Capabilities.ModelChange)
+    return hasCapability(flavor, 'model-change')
 }
 
 export function supportsEffort(flavor: string | null | undefined): boolean {
-    return hasCapability(flavor, Capabilities.Effort)
+    return hasCapability(flavor, 'effort-change')
 }
 
 const DECISION_TOOL_NAME_PREFIXES: readonly string[] = Object.values(Flavors)
