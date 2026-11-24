@@ -833,7 +833,8 @@ describe('SessionList collapse behavior', () => {
     function renderSessionList(
         sessions: SessionSummary[],
         selectedSessionId: string | null = 'session-running',
-        machineLabelsById: Record<string, string> = {}
+        machineLabelsById: Record<string, string> = {},
+        api: ApiClient | null = null
     ) {
         return (
             <QueryClientProvider client={new QueryClient({
@@ -852,7 +853,7 @@ describe('SessionList collapse behavior', () => {
                             onRefresh={vi.fn()}
                             isLoading={false}
                             renderHeader={false}
-                            api={null}
+                            api={api}
                             machineLabelsById={machineLabelsById}
                         />
                     </I18nProvider>
@@ -1527,6 +1528,26 @@ describe('SessionList collapse behavior', () => {
         const headers = screen.getAllByTitle(/^\/(?:work|home)\//)
         expect(headers.map(header => header.getAttribute('title'))).toEqual(['/work/strong', '/home/weak'])
         expect(headers.every(header => header.nextElementSibling === null)).toBe(true)
+    })
+
+    it('keeps a Combined export alive when its session disconnects', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const pending = Promise.withResolvers<unknown>()
+        const getSessionExport = vi.fn(() => pending.promise)
+        const api = { getSessionExport } as unknown as ApiClient
+        const connected = makeSession({ id: 'export-draft', active: true, metadata: { path: '/work/export', name: 'Export session' } })
+        const renderList = (session: SessionSummary) => renderSessionList([session], null, {}, api)
+        const { rerender } = render(renderList(connected))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Export session/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Export conversation' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+        expect(getSessionExport).toHaveBeenCalledOnce()
+
+        rerender(renderList({ ...connected, active: false }))
+        pending.resolve({ type: 'warning', count: 1, limit: 0, estimatedBytes: 100 })
+
+        await screen.findByRole('button', { name: 'Download anyway' })
     })
 
     it('keeps a Combined rename draft mounted when its session disconnects', async () => {

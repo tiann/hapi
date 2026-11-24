@@ -83,6 +83,19 @@ test('keeps an archived session with a running job below the Combined divider', 
 })
 
 
+test('keeps a Combined export alive when its session disconnects', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=combined-count&exportPending=1`)
+    await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Export conversation' }).click()
+    await page.getByRole('button', { name: 'Download', exact: true }).click()
+    await page.evaluate(() => window.updateProjectSession('mine-session', { active: false }))
+    await page.evaluate(() => window.finishProjectExport())
+    await expect(page.getByRole('button', { name: 'Download anyway' })).toBeVisible()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-export-after-disconnect.png`, fullPage: true })
+})
+
+
 test('keeps a Combined rename draft when its session disconnects', async ({ page }) => {
     await page.goto(`${fixtureUrl}?mode=combined-count`)
     await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })

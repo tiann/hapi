@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client'
 import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { SessionSummary } from '@/types/api'
+import type { ApiClient } from '@/api/client'
 import { SessionList } from '@/components/SessionList'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
@@ -101,10 +102,17 @@ const queryClient = new QueryClient({
     },
 })
 
+const exportApi = {
+    getSessionExport: () => new Promise(resolve => {
+        window.finishProjectExport = () => resolve({ type: 'warning', count: 1, limit: 0, estimatedBytes: 100 })
+    })
+} as unknown as ApiClient
+
 declare global {
     interface Window {
         updateProjectSession: (id: string, patch: Partial<SessionSummary>) => void
         showProjectSortProjects: (names: string[]) => void
+        finishProjectExport: () => void
     }
 }
 
@@ -133,7 +141,7 @@ function ProjectSortFixture() {
                 onRefresh={async () => {}}
                 isLoading={false}
                 renderHeader={actionSearch}
-                api={null}
+                api={params.has('exportPending') ? exportApi : null}
             />
         </div>
     )
