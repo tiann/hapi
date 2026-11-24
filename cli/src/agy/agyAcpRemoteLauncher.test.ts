@@ -2625,22 +2625,39 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(consumedFor(client, 'steer-1')).toHaveLength(1);
     });
 
-    it('leaves steers with identical texts to the turn end instead of their rows, even after agy refuses one', async () => {
-        const { backend, client, steer, finish } = await startTurn();
-        await steer('again', 'refused');
+    it('leaves steers with identical texts to the turn end instead of their rows', async () => {
+        const { client, steer, finish } = await startTurn();
+        await steer('again', 'steer-1');
         await steer('again', 'steer-2');
-        await steer('again', 'steer-3');
-        backend.steerCompletions[0]!.reject(new Error('Can\'t add this prompt to session'));
-        await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['refused'], 'queued'));
 
         writeTranscript([...stepRows, userRow(3, 'again'), userRow(4, 'again')]);
         await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
         expect(consumedFor(client, 'steer-2')).toHaveLength(0);
-        expect(consumedFor(client, 'steer-3')).toHaveLength(0);
 
         await finish();
+        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]);
         expect(consumedFor(client, 'steer-2')).toEqual([[['steer-2'], { steered: true }]]);
-        expect(consumedFor(client, 'steer-3')).toEqual([[['steer-3'], { steered: true }]]);
+    });
+
+    it('confirms a steer by its row at Stop when agy refused an earlier steer with its text', async () => {
+        // Polls far apart: only the poll when Stop answers the steer can see the row.
+        const { backend, client, steer, releaseFirst, queue } = await startTurn(undefined, { reactivePollMs: 60_000 });
+        await steer('again', 'refused');
+        backend.steerCompletions[0]!.reject(new Error('Can\'t add this prompt to session'));
+        await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['refused'], 'queued'));
+        await steer('again', 'taken');
+        writeTranscript([...stepRows, userRow(3, 'again')]);
+        backend.onCancel = () => {
+            releaseFirst();
+            backend.steerCompletions[1]!.resolve('cancelled');
+        };
+        await (client.rpcHandlerManager.handlers as Handlers).get(RPC_METHODS.Abort)!();
+
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(consumedFor(client, 'taken')).toEqual([[['taken'], { steered: true, anchor: { toolCallId: 't1' } }]]);
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['taken']);
+        queue.close();
     });
 
     it('leaves a steer with the prompt\'s text to the turn end even when its row is there', async () => {

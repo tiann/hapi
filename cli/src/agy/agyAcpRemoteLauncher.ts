@@ -247,7 +247,8 @@ type AgyTurn = {
     // Steers agy answered without an echo; settled when the turn ends.
     answeredSteers: Array<{ accept: () => void; hold: () => void }>;
     // Every steer written into this turn, in send order, including settled
-    // ones, so a later steer with the same text still makes the text ambiguous.
+    // ones, so a later steer with the same text still makes the text ambiguous
+    // unless agy refused the earlier one.
     rowSteers: AgySteerRow[];
     rowPoll: ReturnType<typeof setInterval> | null;
     // Every tool call of this turn in planner (ACP arrival) order, including
@@ -271,6 +272,8 @@ type AgySteerRow = {
     // The agy conversation the steer was written to; a new one ends matching.
     sessionId: string;
     done: boolean;
+    // agy answered the steer with an error, so the steer has no row.
+    refused: boolean;
     accept: (anchorToolCallId?: string) => void;
 };
 
@@ -1577,7 +1580,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const restoreQueued = async (): Promise<void> => {
             if (resolved) return;
             resolved = true;
-            if (rowSteer) rowSteer.done = true;
+            if (rowSteer) {
+                rowSteer.done = true;
+                rowSteer.refused = true;
+            }
             forgetEcho();
             if (steerCounted) {
                 steerCounted = false;
@@ -1675,7 +1681,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // (agy <= 1.5.8) and the turn's end remain the other ways to confirm.
         // A late echo can confirm the next identical steer instead; that path
         // is best effort for those versions.
-        rowSteer = { text: normalizeSteerText(taken.item.message), boundary: rowBoundary, sessionId: acpSessionId, done: false, accept };
+        rowSteer = { text: normalizeSteerText(taken.item.message), boundary: rowBoundary, sessionId: acpSessionId, done: false, refused: false, accept };
         turn.rowSteers.push(rowSteer);
         this.startSteerRowPoll(turn);
 
@@ -1772,14 +1778,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     /**
      * A row confirms a steer only when nothing else could have written it:
      * the steer has a boundary, the turn started on a successful read, and
-     * neither the turn's prompt nor any other steer of the turn has its text.
+     * neither the turn's prompt nor any other steer of the turn that agy did
+     * not refuse has its text.
      * Otherwise the steer settles without its row for the rest of the turn.
      */
     private canMatchSteerRow(turn: AgyTurn, entry: AgySteerRow): entry is AgySteerRow & { boundary: number } {
         return entry.boundary !== null
             && turn.transcriptStartKnown
             && entry.text !== turn.promptRowText
-            && turn.rowSteers.every((other) => other === entry || other.text !== entry.text);
+            && turn.rowSteers.every((other) => other === entry || other.refused || other.text !== entry.text);
     }
 
     /**
