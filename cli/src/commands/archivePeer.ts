@@ -78,8 +78,7 @@ export async function handleArchivePeerCommand(args: string[]): Promise<void> {
         console.log(chalk.green(`hapi archive-peer: OK - already archived ${result.sessionId} (${result.name})`))
         return
     }
-    const pending = result.pendingCleanup ? ' (runner cleanup pending)' : ''
-    console.log(chalk.green(`hapi archive-peer: OK - archived ${result.sessionId} (${result.name})${pending}`))
+    console.log(chalk.green(`hapi archive-peer: OK - archived ${result.sessionId} (${result.name})`))
 }
 
 export const archivePeerCommand: CommandDefinition = {

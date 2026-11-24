@@ -48,7 +48,7 @@ describe('archivePeer', () => {
                 }
                 if (url.endsWith(`/api/sessions/${sessionId}/archive`)) {
                     archiveBodies.push(body)
-                    return { status: 200, data: { ok: true, softStandDown: true } }
+                    return { status: 200, data: { ok: true } }
                 }
                 throw new Error(`unexpected POST ${url}`)
             },
@@ -81,54 +81,9 @@ describe('archivePeer', () => {
             sessionId,
             name: 'Peer Done Worker',
             alreadyArchived: false,
-            pendingCleanup: false,
         })
         expect(posts.some((url) => url.endsWith(`/api/sessions/${sessionId}/archive`))).toBe(true)
-        expect(archiveBodies).toEqual([{ softStandDown: true }])
-    })
-
-    it('surfaces pendingCleanup from the hub archive response', async () => {
-        const sessionId = 'cccccccc-2222-2222-2222-222222222222'
-        const http = createHttpMock({
-            post: (url) => {
-                if (url.endsWith('/api/auth')) {
-                    return { status: 200, data: { token: 'jwt' } }
-                }
-                if (url.endsWith(`/api/sessions/${sessionId}/archive`)) {
-                    return {
-                        status: 200,
-                        data: { ok: true, softStandDown: true, pendingCleanup: true },
-                    }
-                }
-                throw new Error(`unexpected POST ${url}`)
-            },
-            get: (url) => {
-                if (url.endsWith('/api/sessions')) {
-                    return {
-                        status: 200,
-                        data: {
-                            sessions: [{
-                                id: sessionId,
-                                active: true,
-                                thinking: false,
-                                metadata: { name: 'Pending Peer', flavor: 'cursor' },
-                            }],
-                        },
-                    }
-                }
-                throw new Error(`unexpected GET ${url}`)
-            },
-        })
-
-        const result = await archivePeer({
-            sessionIdPrefix: 'cccccccc',
-            accessToken: 'tok',
-            apiUrl: 'http://hub.test',
-            http: http as never,
-        })
-
-        expect(result.pendingCleanup).toBe(true)
-        expect(result.alreadyArchived).toBe(false)
+        expect(archiveBodies).toEqual([{}])
     })
 
     it('treats alreadyArchived as success (idempotent)', async () => {

@@ -702,14 +702,11 @@ function createHapiMcpServer(
                     sessionIdPrefix: args.sessionIdPrefix,
                 });
                 const verb = result.alreadyArchived ? 'Already archived' : 'Archived';
-                const pending = !result.alreadyArchived && result.pendingCleanup
-                    ? ' (runner cleanup pending)'
-                    : '';
                 return {
                     content: [
                         {
                             type: 'text' as const,
-                            text: `${verb} ${result.sessionId} (${result.name})${pending}`,
+                            text: `${verb} ${result.sessionId} (${result.name})`,
                         },
                     ],
                     isError: false,

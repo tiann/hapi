@@ -1,13 +1,12 @@
 /**
- * Soft stand-down for a peer session via POST /api/sessions/:id/archive.
+ * Soft-archive a peer session via POST /api/sessions/:id/archive.
  *
  * Shared by `hapi archive-peer` and MCP `archive_peer`. Uses the same hub JWT
  * flow as ping-peer / inspect-peer (`POST /api/auth` with CLI_API_TOKEN),
  * scoped to the token's namespace. No hand JWT/curl. Archive only — never delete.
  *
- * Authz: same-namespace CLI credentials (orchestrator parent or self-archive
- * on Peer Done). Capability binding beyond namespace is TBD when parent-stamp
- * lands upstream; do not invent a god-mode token path.
+ * Same rules as ordinary archive (#2020 reframe): hub refuses while the session
+ * has live work; verified Runner cleanup required. No softStandDown opt-in.
  */
 
 import axios, { type AxiosInstance } from 'axios'
@@ -51,8 +50,6 @@ export type ArchivePeerResult = {
     sessionId: string
     name: string
     alreadyArchived: boolean
-    /** True when hub archived but Runner exit is still pending confirmation. */
-    pendingCleanup: boolean
 }
 
 const AUTH_RECOVERY_HINT =
@@ -182,12 +179,10 @@ async function postArchive(
     jwt: string,
     sessionId: string,
     http: AxiosInstance
-): Promise<{ alreadyArchived: boolean; pendingCleanup: boolean }> {
+): Promise<{ alreadyArchived: boolean }> {
     const response = await http.post(
         `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/archive`,
-        // Opt into Peer Done soft stand-down (#2020). Ordinary web archive omits
-        // this and keeps verified Runner cleanup on still_alive/unknown.
-        { softStandDown: true },
+        {},
         {
             headers: authHeaders(jwt),
             timeout: 60_000,
@@ -195,10 +190,7 @@ async function postArchive(
         }
     )
     if (response.status >= 200 && response.status < 300 && response.data?.ok === true) {
-        return {
-            alreadyArchived: response.data?.alreadyArchived === true,
-            pendingCleanup: response.data?.pendingCleanup === true,
-        }
+        return { alreadyArchived: response.data?.alreadyArchived === true }
     }
     const detail = typeof response.data?.error === 'string'
         ? response.data.error
@@ -235,20 +227,13 @@ export async function archivePeer(options: ArchivePeerOptions): Promise<ArchiveP
     onProgress?.(`resolved ${matched.id}  active=${matched.active}  name="${name}"`)
     onProgress?.('requesting archive...')
 
-    const { alreadyArchived, pendingCleanup } = await postArchive(apiUrl, jwt, matched.id, http)
-    onProgress?.(
-        alreadyArchived
-            ? 'already archived'
-            : pendingCleanup
-                ? 'archived (runner cleanup pending)'
-                : 'archived'
-    )
+    const { alreadyArchived } = await postArchive(apiUrl, jwt, matched.id, http)
+    onProgress?.(alreadyArchived ? 'already archived' : 'archived')
 
     return {
         sessionId: matched.id,
         name,
         alreadyArchived,
-        pendingCleanup,
     }
 }
 

@@ -50,20 +50,6 @@ export function hasLiveWork(session: Session): boolean {
 }
 
 /**
- * Positive evidence that archive may soft stand-down past an unconfirmed
- * StopSession (`still_alive` / `unknown`) - tiann/hapi#2020.
- *
- * Only a still-connected row (`active`) with no hub-visible work is fresh
- * enough. `expireInactive` clears thinking without clearing a stale
- * `lifecycleState=idle`, and cache restore initializes thinking=false - so
- * idle lifecycle alone is unknown after transport loss (#2021 Major).
- */
-export function canSoftStandDownUnconfirmedStop(session: Session): boolean {
-    if (hasLiveWork(session)) return false
-    return session.active === true
-}
-
-/**
  * Should this session be reconciled `running` → `idle` right now?
  *
  * `agentProgressAt` is the last time the hub observed actual agent progress

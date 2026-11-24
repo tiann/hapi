@@ -90,7 +90,7 @@ import {
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
 import { ArchiveCleanupError } from './archiveCleanupError'
-import { canSoftStandDownUnconfirmedStop } from './sessionIdle'
+import { hasLiveWork } from './sessionIdle'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
@@ -227,7 +227,7 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
 }
 
 export class SyncEngine {
-    private readonly archiveRequests = new Map<string, Promise<{ pendingCleanup: boolean }>>()
+    private readonly archiveRequests = new Map<string, Promise<void>>()
     // KillSession's beforeKill drain completes before the CLI's async cleanup
     // closes the session socket, so a runner prepare-stop that loses that race
     // can still be honored for the exact killed generation while its archive
@@ -3808,52 +3808,31 @@ export class SyncEngine {
         return 'ready'
     }
 
-    /** Session ids whose in-flight archive used softStandDown (ordinary joiners must not inherit). */
-    private readonly softStandDownArchiveInFlight = new Set<string>()
-
-    async archiveSession(
-        sessionId: string,
-        opts?: { softStandDown?: boolean }
-    ): Promise<{ pendingCleanup: boolean }> {
+    async archiveSession(sessionId: string): Promise<void> {
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const existing = this.archiveRequests.get(sessionId)
-        if (existing) {
-            // Ordinary archive must not share success with an in-flight soft stand-down
-            // (verified cleanup vs pendingCleanup — bot Approach on #2021).
-            if (!opts?.softStandDown && this.softStandDownArchiveInFlight.has(sessionId)) {
-                throw new ArchiveCleanupError('unconfirmed')
-            }
-            return existing
-        }
-        if (opts?.softStandDown) this.softStandDownArchiveInFlight.add(sessionId)
-        const operation = this.archiveSessionOnce(sessionId, opts)
+        if (existing) return existing
+        const operation = this.archiveSessionOnce(sessionId)
         this.archiveRequests.set(sessionId, operation)
         try {
-            return await operation
+            await operation
         } finally {
             if (this.archiveRequests.get(sessionId) === operation) this.archiveRequests.delete(sessionId)
-            this.softStandDownArchiveInFlight.delete(sessionId)
             this.archiveDrainedGenerations.delete(sessionId)
         }
     }
 
-    private async archiveSessionOnce(
-        sessionId: string,
-        opts?: { softStandDown?: boolean }
-    ): Promise<{ pendingCleanup: boolean }> {
+    private async archiveSessionOnce(sessionId: string): Promise<void> {
         if (this.historyActionsInFlight.has(sessionId) || this.archivedForkPending(sessionId)) {
             throw new Error('Archived fork is in progress; retry the fork to reconcile it before archiving')
         }
         this.historyActionsInFlight.add(sessionId)
         try {
-            return await this.archiveSessionUnlocked(sessionId, opts)
+            await this.archiveSessionUnlocked(sessionId)
         } finally { this.historyActionsInFlight.delete(sessionId) }
     }
 
-    private async archiveSessionUnlocked(
-        sessionId: string,
-        opts?: { softStandDown?: boolean }
-    ): Promise<{ pendingCleanup: boolean }> {
+    private async archiveSessionUnlocked(sessionId: string): Promise<void> {
         // Windows may need longer than the ordinary 30s RPC timeout to prove a
         // complete tree exited. All PID fallbacks share this bounded operation
         // budget; an acknowledgement timeout must never become archive success.
@@ -3869,32 +3848,22 @@ export class SyncEngine {
                 throw new ArchiveCleanupError(error instanceof RunnerStopRpcError && error.timedOut ? 'timeout' : 'unavailable', error)
             }
         }
+        // tiann/hapi#2020: refuse archive while hub-visible work is in flight
+        // (thinking / background tasks / pending permission|input). Killing a
+        // mid-turn agent is the case most likely to leave still_alive — stop
+        // the turn via /abort first. No KillSession/StopSession until clear.
+        const liveBeforeStop = this.sessionCache.getSession(sessionId)
+        if (liveBeforeStop && hasLiveWork(liveBeforeStop)) {
+            throw new ArchiveCleanupError('working')
+        }
         // tiann/hapi#916 / #1910: KillSession is a session-socket RPC. A missing
         // target does not prove the runner child is dead (stale registration,
         // mid-reconnect, id rotation on resume). Always fall through to the
         // machine-level StopSession RPC when we know a machineId, and refuse
         // to archive while the runner reports still_alive / unknown.
         let cliUnreachable = false
-        let peerDoneSoftStandDown = false
         let killPid: number | undefined
         let killProcessStartMarker: string | undefined
-        // #2020 soft stand-down: refuse WORKING / non-runner / ineligible peers
-        // before any stop RPC so archive_peer cannot yank a live turn or an
-        // unrelated non-runner session (bot Approach).
-        if (opts?.softStandDown) {
-            const live = this.sessionCache.getSession(sessionId)
-            if (!live || !canSoftStandDownUnconfirmedStop(live)) {
-                throw new ArchiveCleanupError('unconfirmed')
-            }
-            const preMeta = live.metadata
-            const preMachineId = preMeta?.codexResumePending?.machineId ?? preMeta?.machineId
-            const preRunnerOwned = Boolean(preMeta?.codexResumePending)
-                || preMeta?.startedBy === 'runner'
-                || preMeta?.startedFromRunner === true
-            if (!preMachineId || !preRunnerOwned) {
-                throw new ArchiveCleanupError('unconfirmed')
-            }
-        }
         try {
             const killResult = (await this.rpcGateway.killSession(sessionId)) ?? {}
             killPid = killResult.pid
@@ -3962,21 +3931,10 @@ export class SyncEngine {
                 }
             }
             if (status === 'still_alive' || status === 'unknown') {
-                // Ordinary archive (web UI / bare REST) keeps verified cleanup.
-                // Soft stand-down is CLI/MCP opt-in only (`softStandDown: true`)
-                // for Peer Done ghosts (#2020): still-connected + no hub-visible
-                // live work. Hub-authored archive metadata then triggers async
-                // CLI shutdown. WORKING / disconnected stale-idle still 409.
-                if (!opts?.softStandDown) {
-                    throw new ArchiveCleanupError('unconfirmed')
-                }
-                // Recheck eligibility after stop RPCs (turn may have started).
-                const live = this.sessionCache.getSession(sessionId)
-                if (!live || !canSoftStandDownUnconfirmedStop(live)) {
-                    throw new ArchiveCleanupError('unconfirmed')
-                }
-                peerDoneSoftStandDown = true
-                // Fall through: hub-author archive metadata below.
+                // Verified cleanup for every caller (#2020 reframe): no soft
+                // stand-down exception. Idle agents that still fail to die are
+                // a separate escalation/sweep problem, not an archive success.
+                throw new ArchiveCleanupError('unconfirmed')
             }
         } else if (machineId && !runnerSpawned) {
             // Terminal / non-runner sessions: KillSession is the primary stop.
@@ -3996,75 +3954,16 @@ export class SyncEngine {
         if (lifecycleState !== 'archived') {
             this.sessionCache.markSessionArchivedFromHub(
                 sessionId,
-                peerDoneSoftStandDown
-                    ? 'Archived from hub (Peer Done soft stand-down; CLI shutdown pending)'
-                    : cliUnreachable
-                        ? 'Archived from hub (CLI unreachable)'
-                        : 'Archived from hub (CLI stopped before archive metadata)',
-                peerDoneSoftStandDown ? { softStandDownPending: true } : undefined
+                cliUnreachable
+                    ? 'Archived from hub (CLI unreachable)'
+                    : 'Archived from hub (CLI stopped before archive metadata)',
             )
             this.emitCliSessionMetadataUpdate(sessionId)
         }
         this.releaseSessionEnumerations(sessionId)
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
-        if (peerDoneSoftStandDown && machineId) {
-            // Capture generation before archiveSession's finally clears the map —
-            // delayed StopSession must not target a reopened worker under the
-            // same session id (bot Approach on #2021).
-            const drained = this.archiveDrainedGenerations.get(sessionId)
-            const hostPid = typeof sessionMeta?.hostPid === 'number' && sessionMeta.hostPid > 0
-                ? sessionMeta.hostPid
-                : undefined
-            void this.confirmSoftStandDownExit(sessionId, machineId, drained, hostPid)
-        }
         const archivedSession = this.sessionCache.getSession(sessionId)
         if (archivedSession?.metadata?.codexResumePending) this.writeCodexResumePending(sessionId, archivedSession.namespace, undefined)
-        return { pendingCleanup: peerDoneSoftStandDown }
-    }
-
-    /** Poll Runner until soft-stand-down peer exit is confirmed, then lift DELETE gate. */
-    private async confirmSoftStandDownExit(
-        sessionId: string,
-        machineId: string,
-        drained?: { pid: number; processStartMarker: string },
-        hostPid?: number
-    ): Promise<void> {
-        // Immediate first probe, then short backoff. Cap wall time ~90s in prod;
-        // keep tests from sleeping (0ms delay, few attempts).
-        const delayMs = process.env.BUN_TEST === '1' || process.env.NODE_ENV === 'test' ? 0 : 2_000
-        const maxAttempts = delayMs === 0 ? 2 : 45
-        // Prefer OS-pid + start-marker so a reopen under the same HAPI id cannot
-        // be killed by a stale confirm poll.
-        const stopTarget = drained
-            ? { id: `PID-${drained.pid}`, processStartMarker: drained.processStartMarker }
-            : typeof hostPid === 'number'
-                ? { id: `PID-${hostPid}`, processStartMarker: undefined as string | undefined }
-                : null
-        if (!stopTarget) {
-            // No generation to pin — leave DELETE gated rather than StopSession
-            // by session id (could hit a replacement worker).
-            return
-        }
-        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-            if (attempt > 0 && delayMs > 0) {
-                await new Promise((resolve) => setTimeout(resolve, delayMs))
-            }
-            try {
-                const status = await this.rpcGateway.stopRunnerSession(machineId, stopTarget.id, {
-                    ...(stopTarget.processStartMarker
-                        ? { processStartMarker: stopTarget.processStartMarker }
-                        : {}),
-                })
-                if (status === 'already_gone' || status === 'stopped') {
-                    this.sessionCache.clearSoftStandDownPending(sessionId)
-                    return
-                }
-            } catch {
-                // Keep polling — Runner may be briefly unavailable mid-shutdown.
-            }
-        }
-        // Leave softStandDownPending set if every probe was still_alive/unknown —
-        // DELETE stays gated until exit is confirmed (bot Approach on #2021).
     }
 
     /**

@@ -37,6 +37,7 @@ import { formatGithubPrChipDetailParts } from '@/components/SessionPrChip'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
 import { formatAbsoluteDateTime, formatRelativeTime } from '@/lib/relativeTime'
+import { sessionHasLiveWork } from '@/lib/sessionHasLiveWork'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { selectMobileSessionHeaderSecondary } from '@/lib/sessionHeaderMobileMetadata'
@@ -611,7 +612,10 @@ export function SessionHeader(props: {
                 sessionId={session.id}
                 sessionTitle={title}
                 sessionActive={session.active}
-                canArchive={session.active || isLiveLifecycleState(session.metadata?.lifecycleState)}
+                canArchive={
+                    !sessionHasLiveWork(session)
+                    && (session.active || isLiveLifecycleState(session.metadata?.lifecycleState))
+                }
                 sessionPinned={Boolean(session.pinned)}
                 sessionGlobalPinned={Boolean(session.globalPinned)}
                 onRename={() => setRenameOpen(true)}

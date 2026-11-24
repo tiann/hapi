@@ -145,20 +145,17 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `POST /api/sessions/:id/uploads/:uploadId/abort` - Abort chunked upload and delete partial file.
 - `POST /api/sessions/:id/upload/delete` - Delete uploaded file.
 - `POST /api/sessions/:id/archive` - Archive active session.
-  Runner-owned sessions wait for verified cleanup, including retries after an
-  early inactive/archived update. Concurrent requests join the same operation.
-  Cleanup confirmation has a 90-second budget; failure returns a structured
-  `archive-cleanup-unconfirmed` (409), `archive-cleanup-unavailable` (503), or
-  `archive-cleanup-timeout` (503) error. A timeout does not cancel Runner cleanup
-  or prove the process is still alive; retry to verify the final result.
-  **Peer Done soft stand-down (`tiann/hapi#2020`, opt-in):** request body
-  `{ softStandDown: true }` (sent by `hapi archive-peer` / MCP `archive_peer`
-  only). Eligibility (`canSoftStandDownUnconfirmedStop`) is checked before stop
-  RPCs and again if cleanup stays unconfirmed. On success the response includes
-  `softStandDown` + `pendingCleanup`, metadata carries `softStandDownPending`
-  (DELETE stays 409 until Runner confirms exit), and hub-authored archive
-  metadata triggers async CLI shutdown. Ordinary web/REST archive omits the
-  flag and keeps verified cleanup. WORKING / disconnected stale-idle always 409.
+  Sessions with hub-visible live work (`thinking`, `backgroundTaskCount`, or
+  pending `agentState.requests`) return 409 `archive-session-working` before any
+  stop RPC — stop the turn via `POST /api/sessions/:id/abort` first
+  (`tiann/hapi#2020`). Runner-owned sessions then wait for verified cleanup,
+  including retries after an early inactive/archived update. Concurrent requests
+  join the same operation. Cleanup confirmation has a 90-second budget; failure
+  returns a structured `archive-cleanup-unconfirmed` (409),
+  `archive-cleanup-unavailable` (503), or `archive-cleanup-timeout` (503) error.
+  A timeout does not cancel Runner cleanup or prove the process is still alive;
+  retry to verify the final result. DELETE stays 409 while
+  `metadata.softStandDownPending` is set (pending-cleanup plumbing).
 - `PATCH /api/sessions/:id` - Rename session.
 - `DELETE /api/sessions/:id` - Delete inactive session.
 - `GET /api/sessions/:id/slash-commands` - List slash commands.

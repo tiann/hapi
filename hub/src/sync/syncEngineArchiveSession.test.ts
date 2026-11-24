@@ -322,78 +322,24 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
     })
 
-    it('archives a still-connected non-thinking Peer Done when StopSession still reports still_alive (#2020)', async () => {
-        // Soft stand-down: KillSession+StopSession could not confirm death, but
-        // transport is still alive and the agent is not WORKING - hub-author
-        // archive instead of forcing DELETE. Requires softStandDown opt-in.
-        const sessionId = insertActiveSession('sess-peer-done-alive', 'machine-x')
-        setKillSessionMissingTarget()
-        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
-            async () => 'still_alive'
-
-        const result = await engine.archiveSession(sessionId, { softStandDown: true })
-        expect(result.pendingCleanup).toBe(true)
-
-        const session = cache().getSession(sessionId)
-        expect(session?.active).toBe(false)
-        expect(session?.metadata?.lifecycleState).toBe('archived')
-        expect(session?.metadata?.archivedBy).toBe('hub')
-        expect(session?.metadata?.archiveReason).toContain('Peer Done soft stand-down')
-        expect(session?.metadata?.softStandDownPending).toBe(true)
-        // Without KillSession pid/marker or hostPid, confirm poll refuses to
-        // StopSession by session id (reopen-safe) and leaves DELETE gated.
-    })
-
-    it('pins soft stand-down confirm StopSession to drained pid+marker (not session id)', async () => {
-        const sessionId = insertActiveSession('sess-soft-gen-pin', 'machine-x')
-        setKillSessionOk({ pid: 4242, processStartMarker: 'start-abc' })
-        const stopCalls: Array<{ id: string; marker?: string }> = []
-        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
-            async (_machineId: string, id: string, opts?: { processStartMarker?: string }) => {
-                stopCalls.push({ id, marker: opts?.processStartMarker })
-                // First call (archive path) still_alive → soft stand-down; confirm
-                // poll uses PID- target and eventually already_gone.
-                if (id.startsWith('PID-')) return 'already_gone'
-                return 'still_alive'
-            }
-
-        const result = await engine.archiveSession(sessionId, { softStandDown: true })
-        expect(result.pendingCleanup).toBe(true)
-        // Allow async confirmSoftStandDownExit to run (BUN_TEST uses 0ms delay).
-        await new Promise((r) => setTimeout(r, 10))
-        expect(stopCalls.some((c) => c.id === 'PID-4242' && c.marker === 'start-abc')).toBe(true)
-        expect(cache().getSession(sessionId)?.metadata?.softStandDownPending).not.toBe(true)
-    })
-
-    it('refuses softStandDown for non-runner sessions before KillSession', async () => {
-        const sessionId = insertActiveSession('sess-soft-terminal', 'machine-x', undefined, {
-            startedBy: 'terminal',
-            startedFromRunner: false,
-        })
-        let killCalls = 0
-        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
-            async () => { killCalls++; return {} }
-
-        await expect(engine.archiveSession(sessionId, { softStandDown: true })).rejects.toThrow(/not yet confirmed/)
-        expect(killCalls).toBe(0)
-    })
-
-    it('refuses softStandDown before stop RPCs when the peer is WORKING', async () => {
-        const sessionId = insertActiveSession('sess-soft-before-kill', 'machine-x')
+    it('refuses archive before stop RPCs when the session has live work (#2020)', async () => {
+        const sessionId = insertActiveSession('sess-live-work-block', 'machine-x')
         cache().getSession(sessionId)!.thinking = true
         let killCalls = 0
         ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
             async () => { killCalls++; return {} }
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
-            async () => 'still_alive'
+            async () => 'already_gone'
 
-        await expect(engine.archiveSession(sessionId, { softStandDown: true })).rejects.toThrow(/not yet confirmed/)
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
         expect(killCalls).toBe(0)
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
-    it('keeps verified cleanup for ordinary archive of Peer Done still_alive (no softStandDown opt-in)', async () => {
-        const sessionId = insertActiveSession('sess-peer-done-no-optin', 'machine-x')
+    it('refuses still_alive for idle Peer Done — verified cleanup, no soft stand-down (#2020 reframe)', async () => {
+        const sessionId = insertActiveSession('sess-peer-done-alive', 'machine-x')
         setKillSessionMissingTarget()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'still_alive'
@@ -409,14 +355,15 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'still_alive'
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
         expect(cache().getSession(sessionId)?.active).toBe(true)
     })
 
     it('refuses still_alive when thinking was cleared by heartbeat expiry (disconnected mid-turn) (#2021 Major)', async () => {
         // expireInactive flips active=false and thinking=false after missed
-        // keepalives - that is NOT positive idle evidence. Soft stand-down
-        // must refuse so reconnect does not hub-archive a mid-turn worker.
+        // keepalives - that is NOT a reason to skip verified cleanup.
         const sessionId = insertActiveSession('sess-expired-thinking', 'machine-x')
         const live = cache().getSession(sessionId)!
         live.thinking = true
@@ -435,9 +382,6 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
     })
 
     it('refuses still_alive when lifecycle is idle but transport already expired (#2021 Major)', async () => {
-        // Stale lifecycleState=idle after disconnect is not fresh idle evidence:
-        // the OS process may have started local work while the hub still shows
-        // idle + thinking=false (expireInactive / cache restore).
         const sessionId = insertActiveSession('sess-idle-lifecycle-stale', 'machine-x')
         const live = cache().getSession(sessionId)!
         live.active = false
@@ -452,7 +396,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('idle')
     })
 
-    it('archives still-connected keepalive-idle Peer Done when StopSession is still_alive (#2020)', async () => {
+    it('refuses still_alive for still-connected keepalive-idle sessions (#2020 reframe)', async () => {
         const sessionId = insertActiveSession('sess-idle-lifecycle-connected', 'machine-x')
         const live = cache().getSession(sessionId)!
         live.thinking = false
@@ -463,8 +407,8 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'still_alive'
 
-        await engine.archiveSession(sessionId, { softStandDown: true })
-        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('idle')
     })
 
     it('always calls stopRunnerSession after a successful KillSession', async () => {
@@ -552,14 +496,16 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         // #1911 bot Major: both RPC targets missing is not proof the detached
         // CLI exited (KillMode=process orphans survive). Keep the row
         // unconfirmed until StopSession can run after the runner reconnects.
-        // #2020: only Peer Done (non-thinking) may soft stand-down past this.
+        // #2020: live work refuses before stop RPCs.
         const sessionId = insertActiveSession('sess-machine-unreachable', 'machine-x')
         cache().getSession(sessionId)!.thinking = true
         setKillSessionMissingTarget()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => { throw new RpcTargetMissingError('StopSession', 'handler-not-registered') }
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
 
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(true)
@@ -567,15 +513,15 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
     })
 
     it('does NOT archive when machine StopSession is missing but KillSession was reachable for a WORKING peer', async () => {
-        // Machine socket alone missing is not proof the detached child is gone
-        // (KillMode=process). KillSession succeeded → refuse without confirm while WORKING.
         const sessionId = insertActiveSession('sess-machine-only-missing', 'machine-x')
         cache().getSession(sessionId)!.thinking = true
         setKillSessionOk()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => { throw new RpcTargetMissingError('StopSession', 'handler-not-registered') }
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
 
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(true)
@@ -589,31 +535,29 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'unknown'
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
 
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(true)
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
     })
 
-    it('archives Peer Done when KillSession succeeded but StopSession stays unknown without a confirmable pid (#2020)', async () => {
-        // KillSession ack alone is not exit proof (#1910), but a non-thinking
-        // Peer Done may soft stand-down with hub-authored archive (#2020).
+    it('refuses when KillSession succeeded but StopSession stays unknown without a confirmable pid (#2020 reframe)', async () => {
+        // KillSession ack alone is not exit proof (#1910). Verified cleanup
+        // refuses unknown without a confirmable pid (#2020 reframe).
         const sessionId = insertActiveSession('sess-kill-ok-unknown-no-pid', 'machine-x')
         setKillSessionOk()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'unknown'
 
-        await engine.archiveSession(sessionId, { softStandDown: true })
-
-        const session = cache().getSession(sessionId)
-        expect(session?.active).toBe(false)
-        expect(session?.metadata?.lifecycleState).toBe('archived')
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
-    it('does NOT archive when KillSession pid confirm lacks a start marker for a WORKING peer (PID reuse guard)', async () => {
+    it('does NOT archive when KillSession pid confirm lacks a start marker (PID reuse guard)', async () => {
         const sessionId = insertActiveSession('sess-kill-ok-pid-no-marker', 'machine-x')
-        cache().getSession(sessionId)!.thinking = true
         setKillSessionOk({ pid: 4242 })
         const stopCalls: Array<{ sid: string; marker?: string }> = []
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
@@ -622,16 +566,15 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
                 return 'unknown'
             }
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
 
         // Without a marker, do not attempt the raw-PID confirm kill.
         expect(stopCalls).toEqual([{ sid: sessionId, marker: undefined }])
         expect(cache().getSession(sessionId)?.active).toBe(true)
     })
 
-    it('does NOT archive when KillSession pid confirm still reports unknown for a WORKING peer', async () => {
+    it('does NOT archive when KillSession pid confirm still reports unknown', async () => {
         const sessionId = insertActiveSession('sess-kill-ok-pid-unknown', 'machine-x')
-        cache().getSession(sessionId)!.thinking = true
         setKillSessionOk({ pid: 4242, processStartMarker: 'started-at-1' })
         const stopCalls: Array<{ sid: string; marker?: string }> = []
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
@@ -640,7 +583,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
                 return 'unknown'
             }
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
 
         expect(stopCalls).toEqual([
             { sid: sessionId, marker: undefined },
@@ -691,9 +634,8 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
     })
 
-    it('does NOT archive when metadata.hostPid confirm reports still_alive for a WORKING peer', async () => {
+    it('does NOT archive when metadata.hostPid confirm reports still_alive', async () => {
         const sessionId = insertActiveSession('sess-hostpid-alive', 'machine-x', 3704400)
-        cache().getSession(sessionId)!.thinking = true
         setKillSessionMissingTarget()
         const stopCalls: string[] = []
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
@@ -702,16 +644,15 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
                 return sid === 'PID-3704400' ? 'still_alive' : 'unknown'
             }
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
 
         expect(stopCalls).toEqual([sessionId, 'PID-3704400'])
         expect(cache().getSession(sessionId)?.active).toBe(true)
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
-    it('does NOT archive when StopSession fails ambiguously for a WORKING peer', async () => {
+    it('does NOT archive when StopSession fails ambiguously', async () => {
         const sessionId = insertActiveSession('sess-machine-ambiguous-failure', 'machine-x')
-        cache().getSession(sessionId)!.thinking = true
         setKillSessionMissingTarget()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => { throw new Error('ack timeout') }
@@ -771,25 +712,13 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(stubId)?.metadata?.lifecycleState).toBe('archived')
     })
 
-    it('does NOT archive a WORKING non-stub runner session on unknown without hostPid', async () => {
+    it('refuses a non-stub runner session on unknown without hostPid', async () => {
         const sessionId = insertActiveSession('sess-live-unknown-no-pid', 'machine-x')
-        cache().getSession(sessionId)!.thinking = true
         setKillSessionMissingTarget()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'unknown'
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
         expect(cache().getSession(sessionId)?.active).toBe(true)
-    })
-
-    it('archives a Peer Done non-stub runner session on unknown without hostPid (#2020)', async () => {
-        const sessionId = insertActiveSession('sess-peer-done-unknown-no-pid', 'machine-x')
-        setKillSessionMissingTarget()
-        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
-            async () => 'unknown'
-
-        await engine.archiveSession(sessionId, { softStandDown: true })
-        expect(cache().getSession(sessionId)?.active).toBe(false)
-        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
     })
 })
