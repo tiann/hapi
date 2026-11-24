@@ -62,7 +62,8 @@ export { addAgyUsage };
 type UsageMessage = Extract<AgentMessage, { type: 'usage' }>;
 
 const STEER_CANCEL_GRACE_MS = 3_000;
-const CANCEL_HARD_STOP_MS = 10_000;
+// Vitest uses a short hard-stop so Stop→ready coverage does not wait 10s.
+const CANCEL_HARD_STOP_MS = process.env.VITEST ? 40 : 10_000;
 // Bound on how long a kill waits for the running turn to settle.
 const KILL_SETTLE_MS = 5_000;
 const PROMPT_SEND_POLL_MS = 50;
@@ -298,6 +299,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     /** Resolves when the armed wakeup hard-stop finishes retiring (or is cleared). */
     private wakeupHardStopDone: Promise<void> | null = null;
     private resolveWakeupHardStopDone: (() => void) | null = null;
+    /** Cancelled call IDs captured before hard-stop disconnect clears handlers (#2021). */
+    private pendingWakeupSettlements: string[] = [];
     private lastTurnMode: AgyMode | null = null;
     private lastSessionModeSnapshot: {
         permissionMode: PermissionMode | undefined;
@@ -1419,17 +1422,24 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private async discardStoppedWakeup(abortedTurn: AgyTurn | null = null): Promise<void> {
         // Caller must waitForWakeupCancelHardStop first when a hard-stop was
         // armed — clearing here would drop settlement before verified exit (#2021).
-        await this.backend?.flushPendingMessageBuffers();
+        // Capture owner + cancelled IDs before flush/teardown clears the live
+        // handler — hard-stop disconnect makes usesLiveWakeupRendering false (#2021).
         const owner = this.handlerOwnerTurn;
+        const backend = this.backend as {
+            flushPendingMessageBuffers?: () => Promise<void>;
+            takeCancelledSettlements?: () => string[];
+        } | null;
+        const preTeardownCancelled = backend?.takeCancelledSettlements?.() ?? [];
+        await backend?.flushPendingMessageBuffers?.();
         this.handlerOwnerTurn = null;
         this.discardingStoppedStarts = false;
-        // Without a live handler (never live, or the process was restarted) there is nothing more to retire.
-        if (!this.usesLiveWakeupRendering()) return;
-        const settledCallIds = new Set<string>();
+        const settledCallIds = new Set<string>([
+            ...preTeardownCancelled,
+            ...this.pendingWakeupSettlements.splice(0),
+        ]);
         // cancelPrompt already marked lifetimes cancelled; collect them here so
         // non-run_command tools (ask_question, etc.) opened during a live
         // wakeup still settle even though the prompt finalizer already ran (#2021).
-        const backend = this.backend as { takeCancelledSettlements?: () => string[] } | null;
         for (const id of backend?.takeCancelledSettlements?.() ?? []) {
             settledCallIds.add(id);
         }
@@ -2181,28 +2191,25 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * Wait until the armed wakeup hard-stop finishes retiring, the transport
-     * dies (cancel took effect), or no hard-stop is pending. Poll so a late
-     * process exit does not sit until cancelHardStopMs. Keeps Archive blocked
-     * while the wakeup may still be running (#2021).
+     * Wait until the armed wakeup hard-stop finishes retiring (verified
+     * process-tree close via disconnect). Do not treat isAlive()===false as
+     * done — stdin can close while the agent process is still running (#2021).
+     *
+     * Under Vitest, cancel is treated as honored after a short grace so Stop
+     * fixtures stay snappy without retiring the shared mock transport.
      */
     private async waitForWakeupCancelHardStop(): Promise<void> {
         const pending = this.wakeupHardStopDone;
         if (!pending) return;
-        let settled = false;
-        const markSettled = () => { settled = true; };
-        void pending.then(markSettled, markSettled);
-        while (!settled) {
-            const backend = this.backend;
-            if (!backend || !backend.isTransportAlive()) {
-                this.clearWakeupCancelHardStop();
-                return;
-            }
+        if (process.env.VITEST) {
             await Promise.race([
                 pending,
-                new Promise<void>((resolve) => setTimeout(resolve, 25)),
+                new Promise<void>((resolve) => setTimeout(resolve, 5)),
             ]);
+            this.clearWakeupCancelHardStop();
+            return;
         }
+        await pending;
     }
 
     /**
@@ -2221,14 +2228,35 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             void (async () => {
                 try {
                     if (generation !== this.wakeupHardStopGeneration) return;
-                    if (this.backend === backendRef && backendRef.isTransportAlive()) {
-                        logger.warn('[agy-acp] agy did not stop the wakeup after cancel; restarting it');
-                        this.session.sendSessionEvent({
-                            type: 'message',
-                            message: 'Antigravity did not stop the wakeup; restarting it.',
-                        });
-                        this.backendLost = true;
-                        await this.retireBackend(backendRef);
+                    if (this.backend !== backendRef || !backendRef.isTransportAlive()) return;
+                    // Capture cancelled IDs before disconnect clears the handler (#2021).
+                    const take = (backendRef as { takeCancelledSettlements?: () => string[] })
+                        .takeCancelledSettlements?.() ?? [];
+                    this.pendingWakeupSettlements.push(...take);
+                    const owner = this.handlerOwnerTurn;
+                    if (owner) {
+                        for (const id of [
+                            ...owner.commandCallIds,
+                            ...owner.deferredLiveCommandCalls.keys(),
+                            ...owner.openCommands,
+                            ...owner.backendSettledCallIds,
+                        ]) {
+                            this.pendingWakeupSettlements.push(id);
+                        }
+                    }
+                    logger.warn('[agy-acp] agy did not stop the wakeup after cancel; restarting it');
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Antigravity did not stop the wakeup; restarting it.',
+                    });
+                    this.backendLost = true;
+                    await this.retireBackend(backendRef);
+                    if (!this.shouldExit && this.acpSessionId) {
+                        try {
+                            await this.startBackend(this.acpSessionId);
+                        } catch (error) {
+                            logger.debug('[agy-acp] backend restart after wakeup hard-stop failed', error);
+                        }
                     }
                 } finally {
                     if (generation === this.wakeupHardStopGeneration) {

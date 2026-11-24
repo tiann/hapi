@@ -39,6 +39,7 @@ import {
     setMessagesDeliveryState,
     markUninvokedImmediateMessages,
     mergeSessionMessages,
+    invalidateChildToolWorkState,
     moveUninvokedScheduledMessages,
     moveUninvokedMessages,
     copyMessageToSession as copyStoredMessageToSession,
@@ -327,6 +328,11 @@ export class MessageStore {
 
     mergeSessionMessages(fromSessionId: string, toSessionId: string): { moved: number; oldMaxSeq: number; newMaxSeq: number } {
         return mergeSessionMessages(this.db, fromSessionId, toSessionId)
+    }
+
+    /** Rebuild OpenCode child-work registry on next live-work check (#2021). */
+    invalidateChildToolWorkState(sessionId: string): void {
+        invalidateChildToolWorkState(this.db, sessionId)
     }
 
     truncateMessagesFromLocalId(

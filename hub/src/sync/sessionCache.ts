@@ -2213,6 +2213,12 @@ export class SessionCache {
         if (!metadataTransferred) throw new Error('Failed to preserve session metadata during merge')
 
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        // Dedup may have written a fresh childToolWork ledger onto a destination
+        // whose in-memory registry was already warm — force rebuild (#2021).
+        this.store.messages.invalidateChildToolWorkState(newSessionId)
+        if (!options.deleteOldSession) {
+            this.store.messages.invalidateChildToolWorkState(oldSessionId)
+        }
         this.syncReadState(newSessionId)
         if (!options.deleteOldSession) this.syncReadState(oldSessionId)
         // mergeSessions deletes the source. mergeSessionHistory keeps it alive

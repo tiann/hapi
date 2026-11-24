@@ -703,6 +703,23 @@ function invalidateLiveTail(db: Database, sessionId: string): void {
     liveTailByDb.get(db)?.delete(sessionId)
 }
 
+/**
+ * Drop the in-memory OpenCode child-work registry so the next live-work check
+ * rebuilds from transcript + durable childToolWork (e.g. after session-row
+ * dedup merge writes a new ledger onto a warmed destination) (#2021).
+ */
+export function invalidateChildToolWorkState(db: Database, sessionId: string): void {
+    const state = childToolCallsByDb.get(db)?.get(sessionId)
+    if (!state) return
+    state.rebuilt = false
+    state.durableSeeded = false
+    state.open.clear()
+    state.settled.clear()
+    state.runningChildren.clear()
+    state.settledChildren.clear()
+    invalidateLiveTail(db, sessionId)
+}
+
 function classifyTailRow(id: string, seq: number, decoded: unknown): TailRowMeta {
     const reasoningStreamId = getLiveReasoningStreamId(decoded)
     const callId = getToolCallId(decoded)
