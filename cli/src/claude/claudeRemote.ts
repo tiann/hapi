@@ -121,7 +121,10 @@ export async function claudeRemote(opts: {
     onSessionFound: (id: string, extras?: { forkedFrom?: string }) => void,
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
-    /** Called with a late result of a timed-out command that is dropped from the transcript. */
+    /**
+     * Called with a result that counts for usage but is not forwarded: a late
+     * result of a timed-out command, or a command result held until its echo.
+     */
     onDroppedResult?: (message: SDKResultMessage) => void,
     /** Called once per spawn with whether the process starts fresh, before SDK messages arrive. */
     onSpawn?: (fresh: boolean) => void,
@@ -866,7 +869,11 @@ export async function claudeRemote(opts: {
             if (clearFollowUp && matchesFollowUpCommand && message.user_message_uuid == null
                 && clearFollowUp.sessionId !== null && message.session_id === clearFollowUp.sessionId
                 && pushedUuids.has(clearFollowUp.uuid)) {
-                clearFollowUp.earlyResult ??= message;
+                if (!clearFollowUp.earlyResult) {
+                    // Usage counts the result in arrival order; its echo only ends the turn.
+                    clearFollowUp.earlyResult = message;
+                    opts.onDroppedResult?.(message as SDKResultMessage);
+                }
                 continue;
             }
 
@@ -908,7 +915,10 @@ export async function claudeRemote(opts: {
             const compact = compactState.active;
             const isCompactTurnResult = compact !== null
                 && isCommandResult(message, compact.uuid, 'compact', compact.initial && compact.sawCompactSignal);
-            if (!isClearResult && !isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
+            // A held command result is not shown: its summary would land on a reply
+            // that arrived while it was held.
+            const isHeldResult = message === clearFollowUp?.earlyResult;
+            if (!isClearResult && !isHeldResult && !isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
                 opts.onMessage(isCompactTurnResult || staleUsageSession ? {
                     ...message,
                     ...(isCompactTurnResult ? { hapi_compact_turn: true } : {}),
