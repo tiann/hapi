@@ -3187,7 +3187,8 @@ export class SyncEngine {
                     createdAt: message.createdAt,
                     localId: message.localId,
                     invokedAt: message.invokedAt,
-                    scheduledAt: message.scheduledAt
+                    scheduledAt: message.scheduledAt,
+                    steered: message.steered
                 }))
             )
             this.sessionCache.rebuildTodosFromTranscript(childId)

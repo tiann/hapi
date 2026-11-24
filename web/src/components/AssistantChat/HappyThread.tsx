@@ -484,6 +484,7 @@ type PromptAnchorState = {
     current: boolean
     nextAnchorId: string | null
     oldestAnchorId?: string | null
+    oldestSourceMessageIds?: readonly string[]
     sourceMessageIds?: readonly string[]
     blockedBySystemTurn?: boolean
 }
@@ -497,6 +498,13 @@ function findRekeyedReply(messages: HTMLElement[], sourceIds: readonly string[])
     const ids = new Set(sourceIds)
     const candidates = messages.filter(message => message.dataset.hapiMessageRole === 'assistant'
         && getPromptAnchorSourceMessageIds(message).some(id => ids.has(id)))
+    return candidates.length === 1 ? candidates[0] : undefined
+}
+
+function findRekeyedSourceBoundary(messages: HTMLElement[], sourceIds: readonly string[]): HTMLElement | undefined {
+    if (sourceIds.length === 0) return
+    const ids = new Set(sourceIds)
+    const candidates = messages.filter(message => getPromptAnchorSourceMessageIds(message).some(id => ids.has(id)))
     return candidates.length === 1 ? candidates[0] : undefined
 }
 
@@ -514,10 +522,15 @@ function findPromptBefore(messages: HTMLElement[], end: number, state?: PromptAn
 
 function findPromptBeforeWithOverlap(messages: HTMLElement[], end: number, state: PromptAnchorState): HTMLElement | null {
     const target = findPromptBefore(messages, end, state)
-    if (!target && !state.blockedBySystemTurn && end > 0) {
+    if (!target && !state.blockedBySystemTurn) {
         // Older pages retain an overlap. Carry the oldest verified boundary
         // into it even when the selected reply and its source IDs are evicted.
-        state.oldestAnchorId = messages[0]?.id ?? state.oldestAnchorId
+        const oldest = messages[0]
+        if (oldest) {
+            state.oldestAnchorId = oldest.id
+            const sourceIds = getPromptAnchorSourceMessageIds(oldest)
+            state.oldestSourceMessageIds = sourceIds.length > 0 ? sourceIds : undefined
+        }
     }
     return target
 }
@@ -570,7 +583,9 @@ export function findPromptTarget(
         if (boundaryIndex >= 0) return findPromptBeforeWithOverlap(messages, boundaryIndex, assistantAnchorState)
     }
     if (assistantAnchorState.oldestAnchorId) {
-        const boundaryIndex = messages.findIndex((message) => message.id === assistantAnchorState.oldestAnchorId)
+        const boundary = messages.find(message => message.id === assistantAnchorState.oldestAnchorId)
+            ?? findRekeyedSourceBoundary(messages, assistantAnchorState.oldestSourceMessageIds ?? [])
+        const boundaryIndex = boundary ? messages.indexOf(boundary) : -1
         if (boundaryIndex >= 0) return findPromptBeforeWithOverlap(messages, boundaryIndex, assistantAnchorState)
     }
     // The transcript may grow at the tail while we load older pages. Never

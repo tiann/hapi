@@ -271,6 +271,24 @@ describe('assistant prompt lookup', () => {
         viewport.remove()
     })
 
+    it('carries a joined reply boundary by source rows after its card is evicted', () => {
+        const viewport = document.createElement('div')
+        document.body.append(viewport)
+        const state = { current: false, nextAnchorId: null as string | null }
+        viewport.innerHTML = '<div class="happy-thread-messages"><div id="hapi-message-agent-text:joined-0" data-hapi-message-role="assistant" data-hapi-source-message-ids="raw-tail"></div></div>'
+        expect(findPromptTarget(viewport, 'agent-text:joined-0', state)).toBeNull()
+
+        viewport.firstElementChild!.innerHTML = '<div id="hapi-message-agent-text:joined-1" data-hapi-message-role="assistant" data-hapi-source-message-ids="raw-middle raw-tail"></div>'
+        expect(findPromptTarget(viewport, 'agent-text:joined-0', state)).toBeNull()
+
+        viewport.firstElementChild!.innerHTML = `
+            <div id="hapi-message-user-text:prompt" data-hapi-turn-input="true"></div>
+            <div id="hapi-message-agent-text:joined-2" data-hapi-message-role="assistant" data-hapi-source-message-ids="raw-middle"></div>
+        `
+        expect(findPromptTarget(viewport, 'agent-text:joined-0', state)?.id).toBe('hapi-message-user-text:prompt')
+        viewport.remove()
+    })
+
     it('recovers a re-keyed last reply by its source identity after a prepend', () => {
         const viewport = document.createElement('div')
         viewport.innerHTML = `
