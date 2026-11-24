@@ -584,6 +584,42 @@ describe('getLiveToolWork', () => {
     })
 })
 
+describe('periodic derived-work scan cost (#2021)', () => {
+    it('skips durable childToolWork seeding for non-OpenCode cold rebuilds', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-live-work-claude-skip-'))
+        const path = join(dir, 'hub.db')
+        try {
+            const store = new Store(path)
+            const session = store.sessions.getOrCreateSession(
+                'claude-skip-rebuild',
+                { path: '/tmp/claude-skip', flavor: 'claude' },
+                null,
+                'default',
+            )
+            for (let i = 0; i < 50; i += 1) {
+                store.messages.addMessage(session.id, claudeAssistantContent([
+                    { type: 'text', text: `filler-${i}` },
+                ]))
+            }
+            expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+            store.close()
+
+            // Non-OpenCode cold path must not seed childToolWork (that seed is
+            // the OpenCode full-replay side effect). Lookback still answers
+            // Claude live-work without decoding the whole history.
+            const restarted = new Store(path)
+            expect(restarted.messages.getLiveToolWork(session.id)).toBe(false)
+            const meta = restarted.sessions.getSession(session.id)?.metadata as
+                | { childToolWork?: unknown }
+                | undefined
+            expect(meta?.childToolWork).toBeUndefined()
+            restarted.close()
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+})
+
 describe('truncateOpenCodeRewind child settlement (#2021)', () => {
     it('keeps Archive clear when rewind drops a terminal but durable settlement remembers it', () => {
         const store = makeStore()
