@@ -29,7 +29,7 @@ export function matchAnchored(options: {
     cursor: string | null
     /** Source-specific compare form (defaults to the full content). */
     canonicalContent?: (content: unknown) => unknown
-    liveCompareKey?: (content: unknown) => string | null
+    liveCompareKey?: (content: unknown, callIds?: Map<string, number>) => string | null
 }): AnchoredMatchResult {
     const { storedMessages, transcript, importPrefix, cursor } = options
     const canonical = options.canonicalContent ?? ((content: unknown) => content)
@@ -90,21 +90,28 @@ export function matchAnchored(options: {
     }
 
     if (options.liveCompareKey && imported.length && storedMessages.length > imported.length) {
+        const storedCallIds = new Map<string, number>()
+        const sourceCallIds = new Map<string, number>()
         let index = 0
         for (const stored of storedMessages) {
             const source = sourceMessages[index]
             const isImported = stored.localId?.startsWith(importPrefix)
-            if (!source && !isImported) continue
-            const liveKey = isImported ? null : options.liveCompareKey(stored.content)
-            if (!isImported && liveKey === null) continue
-            const nativeContent = source && sourceContentById.get(source.id)
             const payload = stored.content as { role?: unknown } | null
             const undelivered = payload?.role === 'user' && (stored.deliveryState === 'indeterminate'
                 || (stored.localId != null && stored.invokedAt == null))
-            const key = undelivered ? null : liveKey
-            const matches = source && (isImported
+            if (!isImported && undelivered) continue
+            const liveKey = isImported ? null : options.liveCompareKey(stored.content, storedCallIds)
+            if (!isImported && liveKey === null) continue
+            const nativeContent = source && sourceContentById.get(source.id)
+            if (isImported) {
+                options.liveCompareKey(stored.content, storedCallIds)
+                if (nativeContent !== undefined) {
+                    options.liveCompareKey(nativeContent, sourceCallIds)
+                }
+            }
+            const matches = Boolean(source && (isImported
                 ? stored.localId === source.id && sameContent(nativeContent, stored.content)
-                : key !== null && key === options.liveCompareKey(nativeContent))
+                : liveKey === options.liveCompareKey(nativeContent, sourceCallIds)))
             if (!matches) {
                 return { status: 'transcript_diverged', message: 'The stored conversation no longer matches the native transcript prefix' }
             }

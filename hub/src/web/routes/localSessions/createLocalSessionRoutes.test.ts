@@ -585,20 +585,100 @@ describe('generic local session routes', () => {
         const prompt = { type: 'text', text: 'live follow-up' } as const
         store.messages.addMessage(hapiId, { role: 'user', content: prompt, meta: { sentFrom: 'web' } }, 'live')
         store.messages.markMessagesInvoked(hapiId, ['live'], 20)
-        store.messages.addMessage(hapiId, { role: 'agent', content: { type: 'event', data: { type: 'round-summary', summary: { provider: 'agy' } } } })
+        store.messages.addMessage(hapiId, {
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: { type: 'reasoning', message: 'Checking workspace files', id: 'acp-generated-reasoning-uuid' }
+            }
+        })
+        store.messages.addMessage(hapiId, {
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'tool-call',
+                    callId: 'acp_call_1',
+                    name: 'Bash',
+                    input: { command: 'ls -la' },
+                    status: 'in_progress',
+                    nativeTitle: 'ls -la',
+                    nativeKind: 'execute'
+                }
+            }
+        })
+        store.messages.addMessage(hapiId, {
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'tool-call-result',
+                    callId: 'acp_call_1',
+                    output: { stdout: 'README.md', exit_code: 0 }
+                }
+            }
+        })
+        store.messages.addMessage(hapiId, {
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: { type: 'message', message: 'Found README.md', id: 'acp-text-stream-uuid' }
+            }
+        })
+        store.messages.addMessage(hapiId, {
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'round-summary',
+                    summary: { provider: 'agy', model: 'gemini-3-pro', duration_ms: 1200 }
+                }
+            }
+        })
         const native = (id: string, text: string) => ({
             id: `agy:agy-continued:${id}`, createdAt: 20,
             content: { role: 'user', content: { type: 'text', text }, meta: { sentFrom: 'cli' } } as const
         })
+        const nativeAgent = (id: string, data: Record<string, unknown>) => ({
+            id: `agy:agy-continued:${id}`, createdAt: 20,
+            content: { role: 'agent', content: { type: 'codex', data }, meta: { sentFrom: 'cli' } } as const
+        })
+        const nativeTurn = (userText: string, stdout = 'README.md') => [
+            native('step:1:0', userText),
+            nativeAgent('step:2:reasoning', {
+                type: 'reasoning',
+                message: 'Checking workspace files',
+                id: 'agy:agy-continued:step:2:reasoning'
+            }),
+            nativeAgent('step:2:call:0', {
+                type: 'tool-call',
+                callId: 'agy-wakeup-agy-continued-2-0',
+                name: 'Bash',
+                input: { command: 'ls -la' },
+                status: 'completed',
+                nativeTitle: 'run_command'
+            }),
+            nativeAgent('step:3:0', {
+                type: 'tool-call-result',
+                callId: 'agy-wakeup-agy-continued-2-0',
+                output: { stdout, exit_code: 0 }
+            }),
+            nativeAgent('step:4:text', {
+                type: 'message',
+                message: 'Found README.md'
+            })
+        ]
         const initial = agyContinued.messages
         const sync = async () => (await app.request('/api/agy/import-sessions', {
             method: 'POST', body: JSON.stringify({ sessionIds: ['agy-continued'], cwd: '/work' })
         })).json() as Promise<{ results: Array<{ action?: string; appended?: number; error?: { code: string } }> }>
-        agyContinued = { ...agyContinued, messages: [...initial, native('next', prompt.text), native('tail', 'external')] }
+        agyContinued = { ...agyContinued, messages: [...initial, ...nativeTurn(prompt.text), native('tail', 'external')] }
         expect((await sync()).results[0]).toMatchObject({ hapiSessionId: hapiId, appended: 1 })
         expect((await sync()).results[0]).toMatchObject({ hapiSessionId: hapiId, appended: 0 })
         const prior = store.messages.getAllMessages(hapiId)
-        agyContinued = { ...agyContinued, messages: [...initial, native('next', 'different'), native('tail', 'external')] }
+        agyContinued = { ...agyContinued, messages: [...initial, ...nativeTurn(prompt.text, 'DIFFERENT.md'), native('tail', 'external')] }
+        expect((await sync()).results[0]?.error?.code).toBe('transcript_diverged')
+        agyContinued = { ...agyContinued, messages: [...initial, ...nativeTurn('different'), native('tail', 'external')] }
         expect((await sync()).results[0]?.error?.code).toBe('transcript_diverged')
         expect(store.messages.getAllMessages(hapiId)).toEqual(prior)
         expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)

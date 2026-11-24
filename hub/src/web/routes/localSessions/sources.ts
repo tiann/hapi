@@ -54,7 +54,7 @@ export type HubLocalSessionSource = {
         cursorKey?: 'piHistoryLeafEntryId'
         /** Maps stored and transcript content to the fields that must stay equal. */
         canonicalContent?: (content: unknown) => unknown
-        liveCompareKey?: (content: unknown) => string | null
+        liveCompareKey?: (content: unknown, callIds?: Map<string, number>) => string | null
     }
         | { strategy: 'contentPrefix'; compareKey?: (content: unknown) => string | null }
     /** Lifecycle stamped on create. */
@@ -235,13 +235,93 @@ export const CLAUDE_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
 
 // Delivery metadata differs between native and live messages. Keep the complete
 // payload, including attachments, tool identities, results and exit codes.
-function agyLiveCompareKey(content: unknown): string | null {
-    if (!content || typeof content !== 'object' || !('role' in content) || !('content' in content)) return stableSerializeContent(content)
-    const body = content.content
-    if (content.role === 'agent' && body && typeof body === 'object' && 'type' in body && body.type === 'event'
-        && 'data' in body && body.data && typeof body.data === 'object' && 'type' in body.data
-        && body.data.type === 'round-summary') return null
-    return stableSerializeContent({ role: content.role, content: content.content })
+function normalizeAgyComparableToolOutput(output: unknown): unknown {
+    if (typeof output === 'string') return normalizeComparableText(output)
+    if (!output || typeof output !== 'object' || Array.isArray(output)) return output
+    const record = output as Record<string, unknown>
+    const keys = Object.keys(record)
+    if (keys.length === 1 && keys[0] === 'output' && typeof record.output === 'string') {
+        return normalizeComparableText(record.output)
+    }
+    if (typeof record.stdout === 'string') {
+        return { ...record, stdout: normalizeComparableText(record.stdout) }
+    }
+    return output
+}
+
+function agyLiveCompareKey(content: unknown, callIds?: Map<string, number>): string | null {
+    if (!content || typeof content !== 'object' || !('role' in content) || !('content' in content)) {
+        return stableSerializeContent(content)
+    }
+    const record = content as { role?: unknown; content?: unknown }
+    const body = record.content && typeof record.content === 'object' && !Array.isArray(record.content)
+        ? record.content as Record<string, unknown>
+        : null
+    if (record.role === 'user') {
+        if (body?.type === 'text' && typeof body.text === 'string') {
+            return stableSerializeContent({
+                role: 'user',
+                content: { ...body, text: normalizeComparableText(body.text) }
+            })
+        }
+        return stableSerializeContent({ role: 'user', content: record.content })
+    }
+    if (record.role !== 'agent' || !body) {
+        return stableSerializeContent({ role: record.role, content: record.content })
+    }
+    if (body.type === 'event') return null
+    if (body.type !== AGENT_MESSAGE_PAYLOAD_TYPE) {
+        return stableSerializeContent({ role: 'agent', content: record.content })
+    }
+    const data = body.data && typeof body.data === 'object' && !Array.isArray(body.data)
+        ? body.data as Record<string, unknown>
+        : null
+    if (!data) return stableSerializeContent({ role: 'agent', content: record.content })
+    if (
+        data.type === 'round-summary'
+        || data.type === 'token_count'
+        || data.type === 'error'
+        || data.live === true
+        || data.streamSnapshot === true
+    ) {
+        return null
+    }
+    if (data.type === 'reasoning' || data.type === 'message') {
+        return stableSerializeContent({
+            role: 'agent',
+            type: data.type,
+            message: typeof data.message === 'string' ? normalizeComparableText(data.message) : data.message
+        })
+    }
+    if (data.type === 'tool-call') {
+        const callId = typeof data.callId === 'string' ? data.callId : ''
+        let callOrdinal = callIds?.get(callId)
+        if (callOrdinal === undefined) {
+            callOrdinal = callIds ? callIds.size : 0
+            if (callId) callIds?.set(callId, callOrdinal)
+        }
+        return stableSerializeContent({
+            role: 'agent',
+            type: 'tool-call',
+            callOrdinal,
+            name: data.name,
+            input: data.input ?? null
+        })
+    }
+    if (data.type === 'tool-call-result') {
+        const callId = typeof data.callId === 'string' ? data.callId : ''
+        const callOrdinal = callIds?.get(callId) ?? -1
+        return stableSerializeContent({
+            role: 'agent',
+            type: 'tool-call-result',
+            callOrdinal,
+            output: normalizeAgyComparableToolOutput(data.output),
+            is_error: Boolean(data.is_error)
+        })
+    }
+    const rest = { ...data }
+    delete rest.id
+    return stableSerializeContent({ role: 'agent', data: rest })
 }
 
 export const AGY_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
