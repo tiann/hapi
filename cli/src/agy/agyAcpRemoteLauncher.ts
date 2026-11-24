@@ -2333,11 +2333,20 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 message: 'Antigravity did not stop; restarting it.'
             });
             this.backendLost = true;
-            for (const abandon of turn.abandonSteers) abandon();
+            this.abandonPendingSteers(turn);
             turn.releaseSteerWait();
             void this.retireBackend(backend);
         }, this.cancelHardStopMs);
         timer.unref?.();
+    }
+
+    /**
+     * Stop gave up on agy: a steer whose row agy wrote since the last poll
+     * was taken, so it is confirmed before the rest are held for Retry/Cancel.
+     */
+    private abandonPendingSteers(turn: AgyTurn): void {
+        this.pollSteerRows(turn);
+        for (const abandon of turn.abandonSteers) abandon();
     }
 
     /**
@@ -2353,7 +2362,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const timer = setTimeout(() => {
             if (answered || this.turn !== turn || this.backend !== backend) return;
             logger.warn('[agy-acp] agy did not answer a steer after cancel; dropping it');
-            for (const abandon of turn.abandonSteers) abandon();
+            this.abandonPendingSteers(turn);
             this.backendLost = true;
             turn.releaseSteerWait();
             void this.retireBackend(backend);

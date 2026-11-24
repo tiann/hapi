@@ -2576,7 +2576,10 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         ]), steps('run_command', 'B'), 3)).toBeUndefined();
     });
 
-    async function startTurn(initialRows?: Array<Record<string, unknown>>) {
+    async function startTurn(
+        initialRows?: Array<Record<string, unknown>>,
+        opts: { reactivePollMs?: number; cancelHardStopMs?: number } = {}
+    ) {
         const backend = new FakeAgyBackend();
         const { session, queue, client } = makeSession();
         let releaseFirst!: () => void;
@@ -2586,7 +2589,11 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
             onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
         });
         queue.push('run the tests', REVIEW, 'first');
-        const { run, launcher } = launch(session, [backend], { brainDir, reactivePollMs: 10 });
+        const { run, launcher } = launch(session, [backend], {
+            brainDir,
+            reactivePollMs: opts.reactivePollMs ?? 10,
+            cancelHardStopMs: opts.cancelHardStopMs
+        });
         await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
         const handlers = client.rpcHandlerManager.handlers as Handlers;
         // agy has written the prompt and the first tool call by now.
@@ -2675,6 +2682,27 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(consumedFor(client, 'no-row')).toHaveLength(0);
         expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['no-row']);
         expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['with-row']);
+        queue.close();
+    });
+
+    it.each([
+        ['the steer stays unanswered', false],
+        ['agy ignores the cancel and is restarted', true]
+    ])('confirms a steer whose row lands after the last poll when Stop gives up because %s', async (_case, cancelIgnored) => {
+        // Polls far apart: only a poll when Stop gives up can see the row.
+        const { backend, client, steer, releaseFirst, queue } = await startTurn(undefined, { reactivePollMs: 60_000, cancelHardStopMs: 80 });
+        await steer('also lint', 'steer-1');
+        backend.onCancel = () => {
+            writeTranscript([...stepRows, userRow(3, 'also lint')]);
+            if (cancelIgnored) backend.steerCompletions[0]!.answer();
+            else releaseFirst();
+        };
+        backend.onDisconnect = () => releaseFirst();
+        await (client.rpcHandlerManager.handlers as Handlers).get(RPC_METHODS.Abort)!();
+
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: 't1' } }]]);
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-1']);
         queue.close();
     });
 
