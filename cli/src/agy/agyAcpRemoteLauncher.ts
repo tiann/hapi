@@ -209,6 +209,8 @@ type AgyTurn = {
     // Ambiguous `run_command` tool_calls held briefly until `tool_result`
     // output disambiguates multiple synthetic background candidates.
     deferredLiveCommandCalls: Map<string, Extract<AgentMessage, { type: 'tool_call' }>>;
+    /** Lifetime ids the ACP backend settled on turn_complete (ask_question, etc.). */
+    backendSettledCallIds: string[];
     corroboratedSyntheticMatches: number;
     turnStartStepIndex: number;
     // Settled non-live assistant text segments streamed during this turn, used
@@ -1094,6 +1096,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             commandArrivalOrder: [],
             priorBackgroundCallIds: new Set(this.backgroundCommands.map((entry) => entry.callId)),
             deferredLiveCommandCalls: new Map(),
+            backendSettledCallIds: [],
             corroboratedSyntheticMatches: 0,
             turnStartStepIndex: this.lastTranscriptStepIndex,
             streamedTextCounts: new Map(),
@@ -1262,34 +1265,25 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             this.closeBackgroundCommands(turn, commandWindowAfterStepIndex, false, internalWakeup);
         } finally {
-            if (turn.aborted) {
-                // Snapshot open call ids before discard clears them — the hub
-                // needs a scoped turn-complete settlement so Archive is not
-                // stuck on a cancelled in_progress tool_call (#2021).
+            if (turn.aborted || turn.stopReason === 'cancelled') {
+                // Union launcher command bookkeeping with the backend's own
+                // settledCallIds (ask_question and other non-run_command calls
+                // live only on the backend list — #2021).
                 const settledCallIds = [...new Set([
                     ...turn.openCommands,
                     ...turn.commandCallIds,
                     ...turn.deferredLiveCommandCalls.keys(),
+                    ...turn.backendSettledCallIds,
                 ])]
-                // The stopped activity ends here: discard its late starts before ready.
-                await this.discardStoppedWakeup(turn);
-                this.syncTranscriptCursor();
+                if (turn.aborted) {
+                    // The stopped activity ends here: discard its late starts before ready.
+                    await this.discardStoppedWakeup(turn);
+                    this.syncTranscriptCursor();
+                }
                 if (settledCallIds.length > 0) {
                     const settlement = convertAgentMessage({
                         type: 'turn_complete',
                         stopReason: turn.stopReason ?? 'cancelled',
-                        settledCallIds,
-                    })
-                    if (settlement) session.sendAgentMessage(settlement)
-                }
-            } else if (turn.stopReason === 'cancelled') {
-                // Agent-cancelled prompt (no local abort): still publish
-                // settlement for any command that never got a terminal update.
-                const settledCallIds = [...turn.openCommands]
-                if (settledCallIds.length > 0) {
-                    const settlement = convertAgentMessage({
-                        type: 'turn_complete',
-                        stopReason: 'cancelled',
                         settledCallIds,
                     })
                     if (settlement) session.sendAgentMessage(settlement)
@@ -1851,6 +1845,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 turn.stopReason = message.stopReason;
                 if (typeof message.numTurns === 'number' && Number.isFinite(message.numTurns) && message.numTurns > 0) {
                     turn.numTurns = message.numTurns;
+                }
+                if (Array.isArray(message.settledCallIds) && message.settledCallIds.length > 0) {
+                    for (const id of message.settledCallIds) {
+                        if (typeof id === 'string' && id.trim().length > 0) {
+                            turn.backendSettledCallIds.push(id);
+                        }
+                    }
                 }
                 return;
             default: {

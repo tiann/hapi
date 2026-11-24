@@ -583,6 +583,16 @@ function acpTurnCompleteSettledCallIds(value: unknown): string[] {
     return data.settledCallIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
 }
 
+/** OpenCode v2 child (background subagent) tool traffic outlives parent turns. */
+function isChildScopedAcpToolCall(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return false
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || (data.type !== 'tool-call' && data.type !== 'tool-call-result')) return false
+    return typeof data.childSessionId === 'string' && data.childSessionId.trim().length > 0
+}
+
 /** Whether the session tail still holds tool work that started but never
  *  settled — the transcript-derived "the agent is demonstrably working"
  *  signal for the hub's work-scoped liveness sweep.
@@ -594,7 +604,9 @@ function acpTurnCompleteSettledCallIds(value: unknown): string[] {
  *
  *  - ACP flavors: an unsettled, non-terminal `tool-call` row means open work.
  *    A later `turn-complete.settledCallIds` entry settles those ids only
- *    (scoped — parent cancel must not close OpenCode child calls).
+ *    (scoped — parent cancel must not close OpenCode child calls). A newer
+ *    human turn settles parent-scope ACP calls but leaves `childSessionId`
+ *    calls open across parent prompts.
  *  - Claude passthrough: an assistant `tool_use` block with no later user
  *    `tool_result` for its id means open work. Tool-result carriers do NOT
  *    close the turn (the agent loop continues through them); a user row with
@@ -612,11 +624,17 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
 
     const settledAcpCallIds = new Set<string>()
     const settledClaudeToolUseIds = new Set<string>()
+    // A newer parent human turn settles parent-scope ACP calls, but OpenCode
+    // child calls keep scanning — they outlive the parent prompt.
+    let parentHumanTurnSeen = false
     for (const row of rows) {
         const decoded = decodeMessageContent(row.content)
-        // A human turn (web prompt, native user row) starts a new round and
-        // closes every tool call older than it — stop, nothing is open.
-        if (isUserMessageRow(decoded)) return false
+        if (isUserMessageRow(decoded)) {
+            parentHumanTurnSeen = true
+            // Claude / plain parent work is closed by a human turn. Keep
+            // walking for child-scoped ACP calls that may sit below.
+            continue
+        }
 
         // ACP scoped settlement (cancelled prompts): mark those call ids
         // settled and keep scanning — a still-open child call must remain live.
@@ -628,9 +646,15 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
 
         const claudeData = claudeOutputData(decoded)
         if (claudeData !== null) {
+            // Claude work never outlives a newer human turn on this session.
+            if (parentHumanTurnSeen) continue
             if (isHiddenClaudeOutput(claudeData)) continue
             if (claudeData.type === 'user') {
-                if (!collectClaudeToolResultIds(claudeData, settledClaudeToolUseIds)) return false
+                if (!collectClaudeToolResultIds(claudeData, settledClaudeToolUseIds)) {
+                    // Prompt-shaped Claude user row — same as a human turn.
+                    parentHumanTurnSeen = true
+                    continue
+                }
                 continue
             }
             if (claudeData.type === 'result') {
@@ -653,6 +677,7 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
         }
         const callId = getToolCallId(decoded)
         if (callId !== null && !settledAcpCallIds.has(callId) && !isTerminalToolCallRow(decoded)) {
+            if (parentHumanTurnSeen && !isChildScopedAcpToolCall(decoded)) continue
             return true
         }
     }

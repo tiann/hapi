@@ -469,7 +469,14 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
                 role: 'agent',
                 content: {
                     type: AGENT_MESSAGE_PAYLOAD_TYPE,
-                    data: { type: 'tool-call', callId: 'child-still-open', name: 'Bash', input: {}, status: 'in_progress' },
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-still-open',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child',
+                    },
                 },
             },
             'child-still-open',
@@ -484,6 +491,45 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
                     settledCallIds: ['parent-cancelled'],
                 },
             },
+        })
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+    })
+
+    it('refuses archive when an OpenCode child call outlives a newer parent prompt (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-opencode-child-across-prompt', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = false
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-long',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child',
+                    },
+                },
+            },
+            'child-long',
+        )
+        store.messages.addMessage(sessionId, {
+            role: 'user',
+            content: { type: 'text', text: 'parent follow-up after child started' },
         })
         let killCalls = 0
         ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =

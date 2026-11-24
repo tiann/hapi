@@ -124,6 +124,14 @@ function userMessageChunkText(update: unknown): string | null {
     return isObject(content) && content.type === 'text' ? asString(content.text) : null;
 }
 
+/** Tag OpenCode child tool traffic so hub live-work can outlive parent turns. */
+function stampChildSessionId(message: AgentMessage, childSessionId: string): AgentMessage {
+    if (message.type === 'tool_call' || message.type === 'tool_result') {
+        return { ...message, childSessionId };
+    }
+    return message;
+}
+
 export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
@@ -1558,7 +1566,9 @@ export class AcpSdkBackend implements AgentBackend {
             return null;
         }
         const handler = new AcpMessageHandler((message) => {
-            this.childEmitSink?.(message);
+            // Stamp child scope on tool traffic so the hub's live-work scan can
+            // keep Archive blocked across newer parent prompts (#2021).
+            this.childEmitSink?.(stampChildSessionId(message, childSessionId));
         }, {
             textChunkMode: this.options.textChunkMode,
             flavor: this.options.flavor,

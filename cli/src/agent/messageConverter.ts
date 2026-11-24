@@ -120,14 +120,16 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
                 status: message.status,
                 ...(message.title ? { nativeTitle: message.title } : {}),
                 ...(message.kind ? { nativeKind: message.kind } : {}),
-                ...(message.progress !== undefined ? { progress: message.progress } : {})
+                ...(message.progress !== undefined ? { progress: message.progress } : {}),
+                ...(message.childSessionId ? { childSessionId: message.childSessionId } : {}),
             };
         case 'tool_result':
             return {
                 type: 'tool-call-result',
                 callId: message.id,
                 output: message.output,
-                is_error: message.status === 'failed'
+                is_error: message.status === 'failed',
+                ...(message.childSessionId ? { childSessionId: message.childSessionId } : {}),
             };
         case 'plan':
             return {

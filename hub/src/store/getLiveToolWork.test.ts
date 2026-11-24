@@ -136,7 +136,20 @@ describe('getLiveToolWork', () => {
         const session = makeSession(store, 'live-work-acp-turn-complete')
 
         store.messages.upsertToolCallMessage(session.id, toolCallContent('call-cancelled', { status: 'in_progress' }), 'call-cancelled')
-        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-child', { status: 'in_progress' }), 'call-child')
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'call-child',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_child',
+                },
+            },
+        }, 'call-child')
         expect(store.messages.getLiveToolWork(session.id)).toBe(true)
 
         // Parent cancel settles only the ids retired by that prompt — an
@@ -155,6 +168,32 @@ describe('getLiveToolWork', () => {
         expect(store.messages.getLiveToolWork(session.id)).toBe(true)
 
         store.messages.addMessage(session.id, toolCallResultContent('call-child', 'done'))
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('keeps OpenCode child tool work live across a newer parent human turn (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-child-across-parent')
+
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'child-long',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_child',
+                },
+            },
+        }, 'child-long')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'parent follow-up' } })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, toolCallResultContent('child-long', 'done'))
         expect(store.messages.getLiveToolWork(session.id)).toBe(false)
         store.close()
     })

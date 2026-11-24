@@ -75,8 +75,17 @@ export type AgentMessage =
         // standard fields (agy does: `name`, `args`).
         nativeName?: string;
         nativeArgs?: unknown;
+        /** OpenCode v2 background child session this call belongs to. */
+        childSessionId?: string;
     }
-    | { type: 'tool_result'; id: string; output: unknown; status: 'completed' | 'failed' }
+    | {
+        type: 'tool_result';
+        id: string;
+        output: unknown;
+        status: 'completed' | 'failed';
+        /** OpenCode v2 background child session this result belongs to. */
+        childSessionId?: string;
+    }
     | {
         type: 'usage';
         inputTokens: number;

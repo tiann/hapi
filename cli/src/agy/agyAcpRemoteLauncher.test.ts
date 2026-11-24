@@ -619,6 +619,49 @@ describe('AgyAcpRemoteLauncher', () => {
             }),
         ]);
     });
+
+    it('unions backend settledCallIds so ask_question Stop settles Archive (#2021)', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let release!: () => void;
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'question:0#abc',
+                name: 'ask_question',
+                input: { questions: [{ prompt: 'Ship it?' }] },
+                status: 'in_progress',
+            });
+            await new Promise<void>((resolve) => { release = resolve; });
+            // Backend settles the question lifetime; launcher command sets miss it.
+            onUpdate({
+                type: 'turn_complete',
+                stopReason: 'cancelled',
+                settledCallIds: ['question:0#abc'],
+            });
+        });
+        queue.push('ask something', REVIEW, 'a');
+
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        const abort = client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!;
+        const aborted = abort();
+        await vi.waitFor(() => expect(backend.cancelCalls).toEqual(['agy-conv-new']));
+        release();
+        await aborted;
+        queue.close();
+        await run;
+
+        const settlements = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { type?: string; settledCallIds?: string[] })
+            .filter((message) => message?.type === 'turn-complete');
+        expect(settlements).toEqual([
+            expect.objectContaining({
+                type: 'turn-complete',
+                settledCallIds: expect.arrayContaining(['question:0#abc']),
+            }),
+        ]);
+    });
 });
 
 describe('AgyAcpRemoteLauncher Stop', () => {
