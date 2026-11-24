@@ -260,7 +260,7 @@ function makeSession(sessionId: string | null = null) {
 function launch(
     session: AgySession,
     backends: FakeAgyBackend[],
-    opts: { cancelHardStopMs?: number; killSettleMs?: number; brainDir?: string; reactivePollMs?: number } = {}
+    opts: { cancelHardStopMs?: number; killSettleMs?: number; brainDir?: string; reactivePollMs?: number; steerAnchorWaitMs?: number } = {}
 ) {
     const created: FakeAgyBackend[] = [];
     const launcher = new AgyAcpRemoteLauncher(session, {
@@ -269,6 +269,7 @@ function launch(
         killSettleMs: opts.killSettleMs,
         brainDir: opts.brainDir,
         ...(opts.reactivePollMs ? { reactivePollMs: opts.reactivePollMs } : {}),
+        ...(opts.steerAnchorWaitMs ? { steerAnchorWaitMs: opts.steerAnchorWaitMs } : {}),
         createBackend: () => {
             const backend = backends.shift() ?? new FakeAgyBackend();
             created.push(backend);
@@ -2544,11 +2545,11 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(anchor).toBe('b');
     });
 
-    it('sends no anchor when the matching call is deferred or disagrees on name or args', () => {
+    it('waits on a matching call without a card and sends no anchor when it disagrees on name or args', () => {
         const { session } = makeSession();
         const launcher = new AgyAcpRemoteLauncher(session, { brainDir });
         const steerAnchor = (launcher as unknown as {
-            steerAnchor: (turn: unknown, steps: unknown[], rowStepIndex: number) => string | undefined;
+            steerAnchor: (turn: unknown, steps: unknown[], rowStepIndex: number) => string | undefined | 'deferred';
         }).steerAnchor.bind(launcher);
         const steps = (name: string, line: string) => [
             { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"A"' } }] },
@@ -2556,11 +2557,11 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         ];
         const turnWith = (plannerCalls: unknown[]) => ({ turnStartStepIndex: 0, plannerCalls });
 
-        // The matching call was deferred, so no card was shown to anchor to.
+        // The matching call was deferred, so its card may still be shown.
         expect(steerAnchor(turnWith([
             { id: 'a', names: ['run_command'], args: { CommandLine: 'A' }, shown: false },
             { id: 'b', names: ['run_command'], args: { CommandLine: 'B' }, shown: false }
-        ]), steps('run_command', 'B'), 3)).toBeUndefined();
+        ]), steps('run_command', 'B'), 3)).toBe('deferred');
 
         // A name or argument that disagrees with the transcript cannot corroborate.
         expect(steerAnchor(turnWith([
@@ -2956,6 +2957,72 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         writeTranscript([...stepRows, userRow(3, 'also lint')]);
         await vi.waitFor(() => expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-1'], { steered: true, anchor: { toolCallId: 'c1' } }));
         releaseTurn();
+        for (const completion of backend.steerCompletions) completion.resolve('end_turn');
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+    });
+
+    it.each([
+        ['anchors it once the card is forwarded', false],
+        ['confirms it without a position once the wait runs out', true]
+    ])('waits for a deferred card before confirming a steer whose row follows it, and %s', async (_case, expire) => {
+        const backend = new FakeAgyBackend();
+        const { session, queue, client } = makeSession();
+        const args = { CommandLine: 'sleep 30' };
+        let releaseResult: (() => void) | undefined;
+        let releaseTurn: (() => void) | undefined;
+        let launcherRef!: AgyAcpRemoteLauncher;
+        backend.promptScripts.push(async (onUpdate) => {
+            // A background command from an earlier wakeup is still open.
+            (launcherRef as unknown as { backgroundCommands: unknown[] }).backgroundCommands.push({
+                callId: 'agy-wakeup-1', synthetic: true, commandLine: 'sleep 30', nativeArgs: args, stepIndex: 0
+            });
+            writeTranscript([
+                userRow(0, 'run it'),
+                { ...plannerRow(1, []), tool_calls: [{ name: 'run_command', args }] },
+                genericRow(2)
+            ]);
+            // The call may belong to the earlier command, so its card is held back.
+            onUpdate({
+                type: 'tool_call', id: 'c1', name: 'sleep 30', input: args, status: 'completed',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: args
+            });
+            await new Promise<void>((resolve) => { releaseResult = resolve; });
+            onUpdate({
+                type: 'tool_result', id: 'c1', status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\ndone', exit_code: 0 }
+            });
+            await new Promise<void>((resolve) => { releaseTurn = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('run it', REVIEW, 'first');
+        const { run, launcher } = launch(session, [backend], { brainDir, reactivePollMs: 10, ...(expire ? { steerAnchorWaitMs: 150 } : {}) });
+        launcherRef = launcher;
+        await vi.waitFor(() => expect(releaseResult).toBeDefined());
+        const cardSent = () => client.sendAgentMessage.mock.calls.some(([message]) =>
+            (message as { callId?: string }).callId === 'c1');
+        expect(cardSent()).toBe(false);
+        const handlers = client.rpcHandlerManager.handlers as Handlers;
+        queue.push('also lint', REVIEW, 'steer-1');
+        await handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer-1' });
+
+        // The row lands before the card it follows is shown.
+        writeTranscript([...stepRows, userRow(3, 'also lint')]);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
+
+        if (expire) {
+            await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]));
+            expect(cardSent()).toBe(false);
+            releaseResult!();
+        } else {
+            releaseResult!();
+            await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: 'c1' } }]]));
+            expect(cardSent()).toBe(true);
+        }
+        await vi.waitFor(() => expect(releaseTurn).toBeDefined());
+        releaseTurn!();
         for (const completion of backend.steerCompletions) completion.resolve('end_turn');
         await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
         queue.close();

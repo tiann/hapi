@@ -70,6 +70,9 @@ const KILL_SETTLE_MS = 5_000;
 const PROMPT_SEND_POLL_MS = 50;
 const ECHO_BUFFER_LIMIT = 64 * 1024;
 const REACTIVE_POLL_MS = 350;
+// How long a steer whose row follows a call without a card yet waits for that
+// card before it is confirmed without a position.
+const STEER_ANCHOR_WAIT_MS = 2_000;
 const REACTIVE_SETTLE_MS = 250;
 const REACTIVE_TOOL_PARK_MS = 1_500;
 const REACTIVE_SLOW_TOOL_PARK_MS = 10_000;
@@ -274,6 +277,8 @@ type AgySteerRow = {
     done: boolean;
     // agy answered the steer with an error, so the steer has no row.
     refused: boolean;
+    // When the steer's row was first found after a call whose card is not out.
+    anchorWaitFrom?: number;
     accept: (anchorToolCallId?: string) => void;
 };
 
@@ -308,6 +313,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly killSettleMs: number;
     private readonly brainDir: string;
     private readonly reactivePollMs: number;
+    private readonly steerAnchorWaitMs: number;
     private readonly reactiveTimings: AgyReactiveTimingConfig;
     private turnSettled: Promise<void> | null = null;
     // Option labels each question card showed, by agy tool call id.
@@ -384,6 +390,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         killSettleMs?: number;
         brainDir?: string;
         reactivePollMs?: number;
+        steerAnchorWaitMs?: number;
         reactiveSettleMs?: number;
         reactiveToolParkMs?: number;
         reactiveSlowToolParkMs?: number;
@@ -397,6 +404,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.killSettleMs = opts.killSettleMs ?? KILL_SETTLE_MS;
         this.brainDir = opts.brainDir ?? defaultAgyBrainDir();
         this.reactivePollMs = opts.reactivePollMs ?? REACTIVE_POLL_MS;
+        this.steerAnchorWaitMs = opts.steerAnchorWaitMs ?? STEER_ANCHOR_WAIT_MS;
         this.reactiveTimings = {
             settleMs: opts.reactiveSettleMs ?? REACTIVE_SETTLE_MS,
             toolParkMs: opts.reactiveToolParkMs ?? REACTIVE_TOOL_PARK_MS,
@@ -1353,7 +1361,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // After a Stop or a lost agy process, agy may have dropped a steer
             // it had not echoed yet.
             const endedCleanly = !turn.aborted && !this.backendLost;
-            if (!this.backendLost) this.pollSteerRows(turn);
+            if (!this.backendLost) this.pollSteerRows(turn, true);
             if (turn.rowPoll) clearInterval(turn.rowPoll);
             turn.rowPoll = null;
             turn.rowSteers = [];
@@ -1568,7 +1576,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const markIndeterminate = () => {
             if (resolved) return;
             // agy may have written the row just before the transport was lost.
-            if (rowSteer && !rowSteer.done) this.pollSteerRows(turn);
+            if (rowSteer && !rowSteer.done) this.pollSteerRows(turn, true);
             if (resolved) return;
             resolved = true;
             if (rowSteer) rowSteer.done = true;
@@ -1702,7 +1710,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // explicit Retry/Cancel.
             if (stopReason === 'cancelled') {
                 // A row already in the transcript proves agy took it.
-                this.pollSteerRows(turn);
+                this.pollSteerRows(turn, true);
                 markIndeterminate();
                 return;
             }
@@ -1733,9 +1741,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     /**
      * Confirms the steers whose USER_INPUT row has reached agy's transcript:
      * each steer that can match a row takes the first row with its text past
-     * its own boundary.
+     * its own boundary. When the row follows a call whose card is not out yet,
+     * the steer waits for that card on later polls, for at most the anchor
+     * wait; `settle` (Stop, a lost transport, the turn's end) confirms it at
+     * once without a position.
      */
-    private pollSteerRows(turn: AgyTurn): void {
+    private pollSteerRows(turn: AgyTurn, settle = false): void {
         const pending = turn.rowSteers.filter((entry) => !entry.done);
         if (pending.length === 0) {
             if (turn.rowPoll) clearInterval(turn.rowPoll);
@@ -1770,8 +1781,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 candidate.step_index > entry.boundary
                 && agySteerRowText(candidate.content) === entry.text);
             if (!row) continue;
+            const anchor = this.steerAnchor(turn, steps, row.step_index);
+            if (anchor === 'deferred' && !settle) {
+                entry.anchorWaitFrom ??= Date.now();
+                if (Date.now() - entry.anchorWaitFrom < this.steerAnchorWaitMs) continue;
+            }
             entry.done = true;
-            entry.accept(this.steerAnchor(turn, steps, row.step_index));
+            entry.accept(anchor === 'deferred' ? undefined : anchor);
         }
     }
 
@@ -1793,9 +1809,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
      * The tool call a steer row follows: agy's transcript has no call ids, so
      * the Nth planner call before the row maps to the Nth call of this turn.
      * A steer folded in after model text lands after the preceding call, since
-     * text rows have no id to anchor to.
+     * text rows have no id to anchor to. `deferred` means that call has no card
+     * yet: it is held back or has not arrived over ACP.
      */
-    private steerAnchor(turn: AgyTurn, steps: AgyTranscriptStep[], rowStepIndex: number): string | undefined {
+    private steerAnchor(turn: AgyTurn, steps: AgyTranscriptStep[], rowStepIndex: number): string | undefined | 'deferred' {
         const transcriptCalls: NonNullable<AgyTranscriptStep['tool_calls']> = [];
         // An earlier turn's planner row may be flushed after this turn's snapshot
         // but before its prompt row; only calls after the prompt row are this turn's.
@@ -1810,7 +1827,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
         const last = transcriptCalls[transcriptCalls.length - 1];
         const candidate = turn.plannerCalls[transcriptCalls.length - 1];
-        if (!last || !candidate?.shown) return undefined;
+        if (!last) return undefined;
+        if (!candidate?.shown) return 'deferred';
         if (candidate.names.length > 0 && !candidate.names.includes(last.name)) return undefined;
         if (candidate.args && !argsAgree(decodeAgyTranscriptArgs(last.args), candidate.args)) return undefined;
         return candidate.id;
@@ -2397,7 +2415,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
      * was taken, so it is confirmed before the rest are held for Retry/Cancel.
      */
     private abandonPendingSteers(turn: AgyTurn): void {
-        this.pollSteerRows(turn);
+        this.pollSteerRows(turn, true);
         for (const abandon of turn.abandonSteers) abandon();
     }
 
