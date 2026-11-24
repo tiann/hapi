@@ -1544,6 +1544,59 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getAllByTitle('/work/rename')).toHaveLength(1)
     })
 
+    it('keeps an explicitly archived session with a running job below the Combined divider', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const active = makeSession({ id: 'active', active: true, metadata: { path: '/work/active', name: 'Active session' } })
+        const archivedJob = makeSession({ id: 'archived-job', active: false,
+            metadata: { path: '/work/archived', name: 'Archived running job', lifecycleState: 'archived' },
+            attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: Date.now() } })
+        render(renderSessionList([active, archivedJob], null))
+
+        const separator = screen.getByRole('separator', { name: 'Archived project sessions' })
+        const archivedRow = screen.getByRole('button', { name: /Archived running job/ })
+        expect(separator.compareDocumentPosition(archivedRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('restores only the collapsed Combined section after a fresh mount', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const sessions = [
+            makeSession({ id: 'active-fold', active: true, metadata: { path: '/work/shared', name: 'Active fold' } }),
+            makeSession({ id: 'archived-fold', metadata: { path: '/work/shared', name: 'Archived fold' } }),
+        ]
+        const api = { getReadStateScope: () => 'combined-test' } as ApiClient
+        const first = renderWithProviders(<SessionList sessions={sessions} selectedSessionId={null} onSelect={vi.fn()}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false} api={api} />)
+        fireEvent.click(screen.getAllByTitle('/work/shared')[1]!)
+        first.unmount()
+
+        renderWithProviders(<SessionList sessions={sessions} selectedSessionId={null} onSelect={vi.fn()}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false} api={api} />)
+        const headers = screen.getAllByTitle('/work/shared')
+        expect(headers[0]?.nextElementSibling).toHaveAttribute('data-open', 'true')
+        expect(headers[1]?.nextElementSibling).not.toHaveAttribute('data-open', 'true')
+    })
+
+    it('keeps count order for action-only projects during an Exclude query', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-session-project-sort-mode', 'count')
+        const sessions = [
+            makeSession({ id: 'large-1', active: true, thinking: true, metadata: { path: '/work/large', name: 'Large one' } }),
+            makeSession({ id: 'large-2', active: true, thinking: true, metadata: { path: '/work/large', name: 'Large two' } }),
+            makeSession({ id: 'small-quiet', active: true, metadata: { path: '/work/small', name: 'Small quiet' } }),
+        ]
+        render(renderSessionList(sessions, null))
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        fireEvent.click(screen.getByRole('button', { name: 'Search scope' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Exclude' }))
+        fireEvent.change(screen.getByPlaceholderText(SEARCH_PLACEHOLDER), { target: { value: 'no-such-session' } })
+
+        const headers = screen.getAllByTitle(/^\/work\//)
+        expect(headers.map(header => header.getAttribute('title'))).toEqual(['/work/large', '/work/small'])
+        expect(headers[0]?.nextElementSibling).toBeNull()
+    })
+
     it('preserves combined project collapse state when a temporary search hides it', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
         localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')

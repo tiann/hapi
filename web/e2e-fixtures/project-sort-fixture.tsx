@@ -88,6 +88,12 @@ const actionSearchSessions: SessionSummary[] = [
         metadata: { path: '/projects/home-weak', name: 'Task two', flavor: 'codex' } }),
 ]
 
+const archivedJobSession = makeSession({
+    id: 'archived-job', active: false, updatedAt: now,
+    metadata: { path: '/projects/archived-job', name: 'Archived running job', flavor: 'codex', lifecycleState: 'archived' },
+    attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: now, updatedAt: now, heartbeatAt: now },
+})
+
 const queryClient = new QueryClient({
     defaultOptions: {
         queries: { retry: false },
@@ -103,7 +109,7 @@ declare global {
 }
 
 function ProjectSortFixture() {
-    const [currentSessions, setCurrentSessions] = useState<SessionSummary[]>(crossTab ? [] : actionSearch ? actionSearchSessions : sessions)
+    const [currentSessions, setCurrentSessions] = useState<SessionSummary[]>(crossTab ? [] : actionSearch ? actionSearchSessions : params.has('archivedJob') ? [...sessions, archivedJobSession] : sessions)
     window.showProjectSortProjects = (names) => {
         setCurrentSessions(names.map((name, index) => makeSession({
             id: name,

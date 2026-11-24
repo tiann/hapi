@@ -2661,7 +2661,7 @@ export function SessionList(props: {
         () => {
             if (!isCombinedPinLayout) return []
             const grouped = groupSessionsByDirectory(
-                machineFilteredSessions.filter((session) => !session.globalPinned && (session.active || hasRunningAttachedJob(session))),
+                machineFilteredSessions.filter((session) => !session.globalPinned && (session.active || hasUnarchivedJob(session))),
                 hasTextQuery ? undefined : listView
             )
             if (searchScoreIndex && hasTextQuery) {
@@ -2677,7 +2677,7 @@ export function SessionList(props: {
         () => {
             if (!isCombinedPinLayout) return []
             const grouped = groupSessionsByDirectory(
-                machineFilteredSessions.filter((session) => !session.globalPinned && !session.active && !hasRunningAttachedJob(session)),
+                machineFilteredSessions.filter((session) => !session.globalPinned && !session.active && !hasUnarchivedJob(session)),
                 hasTextQuery ? undefined : listView
             )
             if (searchScoreIndex && hasTextQuery) {
@@ -2721,10 +2721,10 @@ export function SessionList(props: {
         return allDirectoryGroups.filter((group) => !visibleKeys.has(group.key))
     }, [groups, allDirectoryGroups, effectivePinInProgressMode])
     const countSortedDirectoryGroups = useMemo(
-        () => shouldSortProjectsByCount && !hasTextQuery
+        () => shouldSortProjectsByCount && !(searchScoreIndex && hasTextQuery)
             ? sortSessionGroupsBySessionCount([...groups, ...actionOnlyGroups], projectOrder, projectSessionCounts)
             : [],
-        [actionOnlyGroups, groups, hasTextQuery, projectOrder, projectSessionCounts, shouldSortProjectsByCount]
+        [actionOnlyGroups, groups, searchScoreIndex, hasTextQuery, projectOrder, projectSessionCounts, shouldSortProjectsByCount]
     )
     const normalDirectoryKeys = useMemo(
         () => new Set(groups.map((group) => group.key)),
@@ -2756,7 +2756,7 @@ export function SessionList(props: {
         // Keep matching groups open by default while filtering. Explicit
         // header clicks use a temporary override for the active filter.
         if (ephemeralFilter) return false
-        if (savedFolds.has(group.key)) return true
+        if (savedFolds.has(stateKey)) return true
         // Archived-only would otherwise collapse every group (none has an
         // active session), hiding exactly what was asked for.
         if (listView.status === 'archived') return false
@@ -3982,7 +3982,7 @@ export function SessionList(props: {
                     count: runningSessionTotal,
                     bucketKeys: ['jobs', 'working', 'pending'],
                 })}
-                {shouldSortProjectsByCount && !hasTextQuery
+                {shouldSortProjectsByCount && !(searchScoreIndex && hasTextQuery)
                     ? countSortedDirectoryGroups.map((group) => normalDirectoryKeys.has(group.key)
                         ? renderDirectoryGroup(group)
                         : renderActionOnlyGroupHeader(group))

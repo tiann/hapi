@@ -56,6 +56,33 @@ test('ranks action-only projects by relevance when count sorting is active', asy
 })
 
 
+test('uses count order for action-only projects during Exclude search', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=action-search`)
+    await page.getByRole('button', { name: /Search sessions/ }).click()
+    await page.getByRole('button', { name: 'Search scope' }).click()
+    await page.getByRole('button', { name: 'Exclude' }).click()
+    await page.getByPlaceholder('Search title/path/Agent/machine/ID…').fill('no-such-session')
+    const headers = page.locator('[title^="/projects/"]')
+    await expect(headers).toHaveCount(2)
+    await expect(headers.nth(0)).toHaveAttribute('title', '/projects/home-weak')
+    await expect(headers.nth(1)).toHaveAttribute('title', '/projects/strong')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-exclude-count.png`, fullPage: true })
+})
+
+
+test('keeps an archived session with a running job below the Combined divider', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=combined-count&archivedJob=1`)
+    const separator = page.getByRole('separator', { name: 'Archived project sessions' })
+    const archivedRow = page.getByRole('button', { name: /Archived running job/ })
+    await expect(separator).toBeVisible()
+    await expect(archivedRow).toBeVisible()
+    expect(await separator.evaluate((element, row) => element.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING, await archivedRow.elementHandle())).toBeTruthy()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-archived-running-job.png`, fullPage: true })
+})
+
+
 test('keeps a Combined rename draft when its session disconnects', async ({ page }) => {
     await page.goto(`${fixtureUrl}?mode=combined-count`)
     await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })
