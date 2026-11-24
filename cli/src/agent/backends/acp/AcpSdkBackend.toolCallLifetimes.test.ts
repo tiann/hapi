@@ -5,6 +5,7 @@ import type { AgentMessage, FormElicitationResponse, PermissionRequest } from '@
 import { OpencodePermissionHandler } from '@/opencode/utils/permissionHandler';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { AcpSdkBackend } from './AcpSdkBackend';
+import { ACP_INDETERMINATE_SYMBOL } from './AcpStdioTransport';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
 import { createFileToolCallLifetimeStore, type ToolCallLifetimeStore } from './toolCallLifetimeStore';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -467,6 +468,31 @@ describe('AcpSdkBackend tool call lifetimes', () => {
             settledCallIds: [expect.stringMatching(/^shell:0#/)],
         });
         expect(settlement?.settledCallIds).toHaveLength(1);
+    });
+
+    it('retains open tool work after an indeterminate ACP cancel reject (#2021)', async () => {
+        const { backend, notify, scriptPrompts } = makeBackend({
+            flavor: 'cursor',
+            toolCallLifetimeStore: memoryStore(),
+        });
+        const messages: AgentMessage[] = [];
+        scriptPrompts(async () => {
+            notify(toolCall('shell:0', { status: 'in_progress' }));
+            await sleep(10);
+            await backend.cancelPrompt(SESSION);
+            const error = new Error('ACP transport closed during cancel');
+            Object.defineProperty(error, ACP_INDETERMINATE_SYMBOL, { value: true });
+            throw error;
+        });
+
+        await expect(prompt(backend, messages)).rejects.toThrow(/transport closed/i);
+        await sleep(40);
+
+        const settlement = messages.find(
+            (m): m is Extract<AgentMessage, { type: 'turn_complete' }> =>
+                m.type === 'turn_complete' && Array.isArray(m.settledCallIds) && m.settledCallIds.length > 0
+        );
+        expect(settlement).toBeUndefined();
     });
 
     it('publishes turn_complete settlement when a child is interrupted (#2021)', async () => {

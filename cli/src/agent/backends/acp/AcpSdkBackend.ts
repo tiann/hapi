@@ -204,6 +204,8 @@ export class AcpSdkBackend implements AgentBackend {
      * handler yet (between tool calls). Disconnect must interrupt these too (#2021).
      */
     private readonly knownChildSessionIds = new Set<string>();
+    /** Latched once `transport.close()` confirms the agent process tree is gone (#2021). */
+    private agentTreeEnded = false;
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -900,6 +902,7 @@ export class AcpSdkBackend implements AgentBackend {
         let stopReason: string | null = null;
         let numTurns: number | undefined = undefined;
         let promptUsage: AcpPromptUsage | null = null;
+        let promptError: unknown = null;
 
         try {
             // No timeout for prompt requests - they can run for extended periods
@@ -925,6 +928,9 @@ export class AcpSdkBackend implements AgentBackend {
                     options?.timing?.onSent?.();
                     response = await request;
                 }
+            } catch (error) {
+                promptError = error;
+                throw error;
             } finally {
                 this.promptRequestInFlight = false;
                 options?.timing?.onAnswered?.();
@@ -956,11 +962,15 @@ export class AcpSdkBackend implements AgentBackend {
             // before turn_complete so generated_image precedes turn boundary.
             await this.sessionUpdateQueue;
             this.messageHandler?.drainBuffers();
-            // A call cancelled in this prompt has had its tail; the agent
-            // starting that id again from now on is a new call. Only the
-            // main (prompt) scope is settled here — OpenCode child scopes
-            // keep running after a cancelled parent turn.
-            const settledCallIds = this.toolCallLifetimes.settleCancelled();
+            // Transport-indeterminate rejection (cancel write / stdin loss) is
+            // not proof tools stopped — keep cancelled lifetimes unsettled so
+            // Archive stays blocked until a terminal stopReason or verified
+            // tree exit (#2021). Cursor's deterministic `T: [canceled]` reject
+            // is not indeterminate and still settles below.
+            const indeterminateCancel = isAcpIndeterminateError(promptError) && !stopReason;
+            const settledCallIds = indeterminateCancel
+                ? []
+                : this.toolCallLifetimes.settleCancelled();
             try {
                 const latestUsageUpdate = this.readLatestUsageUpdate();
                 if (promptUsage) {
@@ -999,8 +1009,8 @@ export class AcpSdkBackend implements AgentBackend {
                 // settleCancelled() still collected open call ids. Publish
                 // those ids with a cancelled reason so Archive can clear —
                 // the original rejection still propagates after this finally
-                // (#2021).
-                if (stopReason || settledCallIds.length > 0) {
+                // (#2021). Skip when the reject is transport-indeterminate.
+                if (!indeterminateCancel && (stopReason || settledCallIds.length > 0)) {
                     onUpdate({
                         type: 'turn_complete',
                         stopReason: stopReason ?? 'cancelled',
@@ -1323,6 +1333,11 @@ export class AcpSdkBackend implements AgentBackend {
         return this.transport?.isAlive() ?? false;
     }
 
+    /** True once a disconnect confirmed the agent process tree exited (#2021). */
+    wasAgentTreeEnded(): boolean {
+        return this.agentTreeEnded;
+    }
+
     /** PID of the spawned ACP agent process, when known (used by the opencode v2 REST discovery). */
     getProcessPid(): number | null {
         return this.transport ? this.transport.getProcessPid() : null;
@@ -1383,7 +1398,9 @@ export class AcpSdkBackend implements AgentBackend {
         // retirement never fires. Order matters (#2021 tip Majors):
         //   1. Drain child buffers while the emit sink is still installed
         //   2. Close the transport (buffered stdout may still report children)
-        //   3. Snapshot known children *after* close, then interrupt if verified
+        //   3. Drain the post-close session-update queue (image registration /
+        //      late running status) before publishing interruptions
+        //   4. Snapshot known children, then interrupt if verified
         const sink = this.childEmitSink;
         for (const entry of this.childHandlers.values()) {
             this.clearChildQuietTimer(entry);
@@ -1405,6 +1422,7 @@ export class AcpSdkBackend implements AgentBackend {
         let agentEnded = false;
         try {
             agentEnded = (await this.transport.close()) === true;
+            if (agentEnded) this.agentTreeEnded = true;
         } finally {
             this.transport = null;
             // Delete transition: only once the agent process tree is confirmed
@@ -1414,7 +1432,13 @@ export class AcpSdkBackend implements AgentBackend {
             this.settleToolCallLifetimeRecord(recordSessionId, agentEnded);
         }
 
-        // Snapshot after close so children first reported during teardown are included.
+        // Close can enqueue async child updates (e.g. image registration then
+        // running). Drain those — and any handlers they create — *before*
+        // interrupt so a late running publish cannot land after interrupted (#2021).
+        await this.drainChildSessionUpdatesAfterClose();
+
+        // Snapshot after the post-close drain so children first reported during
+        // teardown (and any queued status that ran above) are included.
         const childIds = [...this.knownChildSessionIds];
         if (sink && agentEnded) {
             for (const childSessionId of childIds) {
@@ -1445,6 +1469,20 @@ export class AcpSdkBackend implements AgentBackend {
         this.initialAvailableCommands.clear();
         this.sessionAvailableCommands.clear();
         this.autoPermissionModeEnabled = null;
+    }
+
+    /** Drain session-update work and child handlers created during/after close. */
+    private async drainChildSessionUpdatesAfterClose(): Promise<void> {
+        for (let pass = 0; pass < 3; pass++) {
+            await this.sessionUpdateQueue;
+            if (this.childHandlers.size === 0) break;
+            for (const entry of this.childHandlers.values()) {
+                this.clearChildQuietTimer(entry);
+                entry.handler.drainBuffers();
+            }
+            this.childHandlers.clear();
+        }
+        await this.sessionUpdateQueue;
     }
 
     /**

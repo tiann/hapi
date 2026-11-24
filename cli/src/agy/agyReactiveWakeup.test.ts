@@ -152,6 +152,11 @@ class WakeupTestBackend {
     }
     async disconnect(): Promise<void> {
         this.alive = false;
+        this.agentTreeEnded = true;
+    }
+    agentTreeEnded = false;
+    wasAgentTreeEnded(): boolean {
+        return this.agentTreeEnded;
     }
 }
 

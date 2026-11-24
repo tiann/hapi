@@ -2726,6 +2726,7 @@ describe('AcpSdkBackend OpenCode child session updates', () => {
             close: () => Promise<boolean | void>;
         } | null;
         handleNotification: (method: string, params: unknown) => void;
+        sessionUpdateQueue: Promise<void>;
     };
 
     function useFastDrains(): void {
@@ -2946,6 +2947,41 @@ describe('AcpSdkBackend OpenCode child session updates', () => {
             childStatus: 'interrupted',
             stopReason: 'cancelled',
         }));
+    });
+
+    it('drains a queued child running status across close before interrupt (#2021)', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend();
+        let releaseQueue!: () => void;
+        const hold = new Promise<void>((resolve) => { releaseQueue = resolve; });
+        internal.transport = {
+            sendRequest: async () => ({ stopReason: 'end_turn' }),
+            close: async () => {
+                // Async work already on the queue (e.g. image registration);
+                // a close-time running status chains behind it. Interrupt must
+                // await that drain so running cannot land after interrupted.
+                internal.sessionUpdateQueue = internal.sessionUpdateQueue.then(() => hold);
+                notify(internal, childStatus('ses_queued', 'running'));
+                return true;
+            },
+        };
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+        const disconnected = backend.disconnect();
+        await sleep(20);
+        releaseQueue();
+        await disconnected;
+
+        const childStatuses = messages.filter(
+            (m) => m.type === 'turn_complete' && m.childSessionId === 'ses_queued'
+        );
+        expect(childStatuses.at(-1)).toMatchObject({
+            type: 'turn_complete',
+            childSessionId: 'ses_queued',
+            childStatus: 'interrupted',
+            stopReason: 'cancelled',
+        });
     });
 
     it('interrupts children that only sent tool updates before verified close (#2021)', async () => {

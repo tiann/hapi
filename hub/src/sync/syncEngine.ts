@@ -1940,11 +1940,11 @@ export class SyncEngine {
             }
         }
         if (candidates.length === 0) return
-        // One batched primary-job read: a session with a running attached
-        // job already renders work; the sweep must not double-report.
-        const primaryJobs = this.getPrimaryAttachedJobsBySessionIds(candidates.map((session) => session.id))
+        // Refresh derivedToolWork even when a primary attached job is running.
+        // Archive eligibility reads derivedToolWork independently of the job
+        // meter; skipping left a stale true flag that hid Archive while the
+        // endpoint would accept (#2021 Minor). Display still shows the job.
         for (const session of candidates) {
-            if ((primaryJobs.get(session.id) ?? null) !== null) continue
             this.sessionCache.noteDerivedWork(session.id, this.store.messages.getLiveToolWork(session.id))
         }
     }

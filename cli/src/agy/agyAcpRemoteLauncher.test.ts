@@ -39,6 +39,10 @@ class FakeAgyBackend {
     setModelError: Error | null = null;
     promptScripts: PromptScript[] = [];
     disconnected = false;
+    agentTreeEnded = false;
+    wasAgentTreeEnded(): boolean {
+        return this.agentTreeEnded;
+    }
 
     initializeGate: Promise<void> | null = null;
     async initialize(): Promise<void> {
@@ -207,6 +211,7 @@ class FakeAgyBackend {
     onDisconnect: (() => void) | null = null;
     async disconnect(): Promise<void> {
         this.disconnected = true;
+        this.agentTreeEnded = true;
         this.onDisconnect?.();
     }
 }
@@ -727,9 +732,9 @@ describe('AgyAcpRemoteLauncher', () => {
         (launcher as unknown as { backend: unknown }).backend = backend;
 
         const retire = vi.spyOn(
-            launcher as unknown as { retireBackend: (b: unknown) => Promise<void> },
+            launcher as unknown as { retireBackend: (b: unknown) => Promise<boolean> },
             'retireBackend'
-        ).mockResolvedValue(undefined);
+        ).mockResolvedValue(true);
 
         (launcher as unknown as { armWakeupCancelHardStop: (b: unknown) => void })
             .armWakeupCancelHardStop(backend);
@@ -750,21 +755,59 @@ describe('AgyAcpRemoteLauncher', () => {
         (launcher as unknown as { backend: unknown }).backend = backend;
 
         const retire = vi.spyOn(
-            launcher as unknown as { retireBackend: (b: unknown) => Promise<void> },
+            launcher as unknown as { retireBackend: (b: unknown) => Promise<boolean> },
             'retireBackend'
-        ).mockResolvedValue(undefined);
+        ).mockResolvedValue(true);
 
         (launcher as unknown as { armWakeupCancelHardStop: (b: unknown) => void })
             .armWakeupCancelHardStop(backend);
 
         // Vitest path: grace clears the hard-stop without retiring so shared
         // mock transports survive for later idle wakeups.
-        await (launcher as unknown as { waitForWakeupCancelHardStop: () => Promise<void> })
+        const verified = await (launcher as unknown as { waitForWakeupCancelHardStop: () => Promise<boolean> })
             .waitForWakeupCancelHardStop();
+        expect(verified).toBe(true);
         expect(retire).not.toHaveBeenCalled();
         await new Promise((resolve) => setTimeout(resolve, 250));
         expect(retire).not.toHaveBeenCalled();
         retire.mockRestore();
+    });
+
+    it('does not settle wakeup Stop when process-tree exit is unverified (#2021)', async () => {
+        const { session, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.getAgentVersion = () => '1.5.13';
+        (backend as { hasMessageHandler?: () => boolean }).hasMessageHandler = () => true;
+        backend.agentTreeEnded = false;
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            cancelHardStopMs: 20,
+        });
+        (launcher as unknown as { backend: unknown }).backend = backend;
+
+        vi.spyOn(
+            launcher as unknown as { retireBackend: (b: unknown) => Promise<boolean> },
+            'retireBackend'
+        ).mockResolvedValue(false);
+
+        // Simulate production wait (not Vitest grace) by clearing VITEST briefly.
+        const prev = process.env.VITEST;
+        delete process.env.VITEST;
+        try {
+            (launcher as unknown as { armWakeupCancelHardStop: (b: unknown) => void })
+                .armWakeupCancelHardStop(backend);
+            const verified = await (launcher as unknown as { waitForWakeupCancelHardStop: () => Promise<boolean> })
+                .waitForWakeupCancelHardStop();
+            expect(verified).toBe(false);
+        } finally {
+            if (prev !== undefined) process.env.VITEST = prev;
+            else process.env.VITEST = 'true';
+        }
+
+        const settlements = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { settledCallIds?: string[] })
+            .filter((message) => Array.isArray(message?.settledCallIds));
+        expect(settlements).toEqual([]);
     });
 });
 

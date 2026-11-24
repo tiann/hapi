@@ -219,8 +219,8 @@ export function addMessage(
         const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to create message')
         updateLiveTailAfterAppend(db, sessionId, row.id, row.seq, canonicalContent)
-        noteChildToolCallOpenState(db, sessionId, canonicalContent)
-        noteToolCallSettlements(db, sessionId, canonicalContent)
+        // One settlement pass per stored row — the prior twin helpers were identical (#2021).
+        noteChildToolCallState(db, sessionId, canonicalContent)
         return toStoredMessage(row)
     })()
 }
@@ -352,12 +352,18 @@ function writeDurableChildToolWork(db: Database, sessionId: string, state: Child
     // settledCallIds are an OpenCode rewind latch (null flavor uses the same
     // full-rebuild path). Named non-OpenCode flavors still settle in memory
     // but must not grow metadata on every foreground tool result (#2021 Minor).
+    // Cap the latch so ordinary tool-result ingest stays O(bound) instead of
+    // rewriting an unbounded growing JSON blob each time (#2021 Minor).
+    const SETTLED_CALL_ID_LATCH_CAP = 256
     let settledCallIds: string[]
     if (flavor === null || flavor === 'opencode') {
         const priorSet = new Set(priorSettledCalls)
         settledCallIds = [...priorSettledCalls]
         for (const id of state.settled) {
             if (!priorSet.has(id)) settledCallIds.push(id)
+        }
+        if (settledCallIds.length > SETTLED_CALL_ID_LATCH_CAP) {
+            settledCallIds = settledCallIds.slice(settledCallIds.length - SETTLED_CALL_ID_LATCH_CAP)
         }
     } else {
         settledCallIds = priorSettledCalls
@@ -488,23 +494,7 @@ function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): Child
 }
 
 /** Incremental update only — never full-scan the transcript on ingest. */
-function noteChildToolCallOpenState(db: Database, sessionId: string, content: unknown): void {
-    const state = childToolCallState(db, sessionId)
-    seedDurableChildToolWorkIfNeeded(db, sessionId, state)
-    applyChildToolCallContent(state, content)
-    if (
-        acpTurnCompleteChildStatus(content)
-        || acpTurnCompleteRetiredChildSessionIds(content).length > 0
-        || toolCallResultCallId(content) !== null
-        || isChildScopedAcpToolCall(content)
-        || acpTurnCompleteSettledCallIds(content).length > 0
-    ) {
-        writeDurableChildToolWork(db, sessionId, state)
-    }
-}
-
-/** Incremental update only — never full-scan the transcript on ingest. */
-function noteToolCallSettlements(db: Database, sessionId: string, content: unknown): void {
+function noteChildToolCallState(db: Database, sessionId: string, content: unknown): void {
     const state = childToolCallState(db, sessionId)
     seedDurableChildToolWorkIfNeeded(db, sessionId, state)
     applyChildToolCallContent(state, content)
@@ -1180,7 +1170,7 @@ export function upsertToolCallMessage(
         // A re-emitted tick that changes nothing must not rewrite the row:
         // only observable content changes touch the database.
         if (isDeepStrictEqual(mergedContent, storedContent)) {
-            noteChildToolCallOpenState(db, sessionId, mergedContent)
+            noteChildToolCallState(db, sessionId, mergedContent)
             return { message: toStoredMessage(existing), updated: true }
         }
         const encoded = encodeMessageContent(mergedContent)
@@ -1189,7 +1179,7 @@ export function upsertToolCallMessage(
         prepareCached(db, 'UPDATE messages SET content = ? WHERE id = ?').run(encoded, existing.id)
         const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(existing.id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to update tool-call message')
-        noteChildToolCallOpenState(db, sessionId, mergedContent)
+        noteChildToolCallState(db, sessionId, mergedContent)
         return { message: toStoredMessage(row), updated: true }
     })()
 }

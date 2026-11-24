@@ -107,7 +107,7 @@ describe('sync engine derived tool work sweep', () => {
         }
     })
 
-    it('skips sessions that already render work: background tasks or a running attached job', () => {
+    it('skips sessions that already render work via background tasks', () => {
         const store = new Store(':memory:')
         const { engine } = createEngine(store)
         try {
@@ -125,6 +125,20 @@ describe('sync engine derived tool work sweep', () => {
                 { id: 'b1', type: 'local_bash', description: 'long job' }
             ])
 
+            tick(engine)
+
+            // backgroundTaskCount > 0 makes the session ineligible for the sweep.
+            expect(engine.getSession(withTasks.id)?.derivedToolWork ?? false).toBe(false)
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
+    it('refreshes derivedToolWork while a primary attached job runs (#2021)', () => {
+        const store = new Store(':memory:')
+        const { engine } = createEngine(store)
+        try {
             const withJob = engine.getOrCreateSession(
                 'engine-derived-job',
                 { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
@@ -136,8 +150,12 @@ describe('sync engine derived tool work sweep', () => {
             engine.upsertSessionJob(withJob.id, 'import', { label: 'beets import', status: 'running' })
 
             tick(engine)
+            // Open tool → derived true even with an attached job (Archive UI).
+            expect(engine.getSession(withJob.id)?.derivedToolWork).toBe(true)
 
-            expect(engine.getSession(withTasks.id)?.derivedToolWork ?? false).toBe(false)
+            store.messages.addMessage(withJob.id, acpToolCallResult('call-j'))
+            tick(engine)
+            // Tool finished — clear derived so Archive can show while the job runs.
             expect(engine.getSession(withJob.id)?.derivedToolWork ?? false).toBe(false)
         } finally {
             engine.stop()
