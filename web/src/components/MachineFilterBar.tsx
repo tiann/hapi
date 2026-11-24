@@ -273,6 +273,7 @@ export function MachineFilterMenu(props: {
     onChange: (id: string | null) => void
     /** Layout owner to check when the trigger itself is inside a portal. */
     visibilityRef?: RefObject<HTMLElement | null>
+    onOpen?: (dismiss: () => void) => void
 }) {
     const { t } = useTranslation()
     const [open, setOpen] = useState(false)
@@ -377,7 +378,10 @@ export function MachineFilterMenu(props: {
             <button
                 ref={triggerRef}
                 type="button"
-                onClick={() => setOpen(value => !value)}
+                onClick={() => {
+                    if (!open) props.onOpen?.(() => setOpen(false))
+                    setOpen(value => !value)
+                }}
                 aria-label={t('sessions.machineFilter.label')}
                 title={t('sessions.machineFilter.label')}
                 aria-haspopup="menu"

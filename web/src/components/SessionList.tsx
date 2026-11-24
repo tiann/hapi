@@ -2130,6 +2130,13 @@ export function SessionList(props: {
     const effectivePinInProgressMode: PinInProgressMode = pinInProgressMode
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
     const { showMobileMachineFilter } = useShowMobileMachineFilter()
+    const dismissFilterMenuRef = useRef<(() => void) | null>(null)
+    const handleFilterMenuOpen = useCallback((dismiss: () => void) => {
+        // Only one custom filter menu may own the document keyboard handlers.
+        // Switching menus closes the old one without restoring its focus.
+        dismissFilterMenuRef.current?.()
+        dismissFilterMenuRef.current = dismiss
+    }, [])
     const isMobileMachineFilterViewport = useMobileMachineFilterViewport()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
@@ -3566,6 +3573,7 @@ export function SessionList(props: {
                                     widthPx: slotWidth('view', TOOLBAR_ICON_PX),
                                     node: (
                                         <SessionListViewMenu
+                                            onOpen={handleFilterMenuOpen}
                                             view={listView}
                                             onChange={setListView}
                                             onReset={() => {
@@ -3606,6 +3614,7 @@ export function SessionList(props: {
                                         widthPx: slotWidth('machine-filter', TOOLBAR_ICON_PX),
                                         node: (
                                             <MachineFilterMenu
+                                                onOpen={handleFilterMenuOpen}
                                                 visibilityRef={headerRowRef}
                                                 machines={machineFilterItems}
                                                 totalCount={allSessions.length}

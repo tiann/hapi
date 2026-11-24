@@ -275,6 +275,48 @@ test.describe('mobile machine menu pointer dismissal', () => {
 })
 
 for (const nested of [false, true]) {
+    test(`switches between filter menus by keyboard without competing arrow handlers ${nested ? 'inside More' : 'on the toolbar'}`, async ({ page }) => {
+        await page.addInitScript(() => {
+            localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+            localStorage.setItem('hapi-font-scale', '1.3')
+        })
+        await open(page, nested ? 320 : 440)
+        if (nested) {
+            await page.getByRole('button', { name: /Search sessions/ }).click()
+            await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+            await page.getByPlaceholder(/Search title/).blur()
+            await page.getByRole('button', { name: 'More session list actions', exact: true }).click()
+        }
+        const viewTrigger = page.getByRole('button', { name: 'Sort and filter', exact: true })
+        const machineTrigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+        const viewMenu = page.getByRole('menu', { name: 'Sort and filter', exact: true })
+        const machineMenu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+        await viewTrigger.click()
+        // The combined menu remains open while tabbing through its own choices.
+        // Reach the adjacent shortcut through the browser's native tab order.
+        for (let index = 0; index < 30 && !(await machineTrigger.evaluate(element => element === document.activeElement)); index++) {
+            await page.keyboard.press('Tab')
+        }
+        await expect(machineTrigger).toBeFocused()
+        await page.keyboard.press('Enter')
+        await expect(viewMenu).toHaveCount(0)
+        const options = machineMenu.getByRole('menuitemradio')
+        await expect(options.first()).toBeFocused()
+        await page.keyboard.press('ArrowDown')
+        await expect(options.nth(1)).toBeFocused()
+        await page.keyboard.press('ArrowDown')
+        await expect(options.nth(2)).toBeFocused()
+        await page.keyboard.press('Shift+Tab')
+        await expect(viewTrigger).toBeFocused()
+        await page.keyboard.press('Enter')
+        await expect(machineMenu).toHaveCount(0)
+        await expect(viewMenu.getByRole('menuitemradio').first()).toBeFocused()
+        await page.keyboard.press('ArrowDown')
+        await expect(viewMenu.getByRole('menuitemradio').nth(1)).toBeFocused()
+    })
+}
+
+for (const nested of [false, true]) {
     for (const reverse of [false, true]) {
         test(`resumes ${reverse ? 'backward' : 'forward'} tab order from machine trigger ${nested ? 'inside More' : 'on the toolbar'}`, async ({ page }) => {
             await page.addInitScript(() => {
