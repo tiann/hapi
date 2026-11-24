@@ -816,7 +816,7 @@ describe('claudeRemote in-process /clear', () => {
                 const command = await input.next();
                 expect(command.value?.message.content).toBe('/help');
                 // The command result arrives before its input echo and is held until the echo.
-                yield result({ session_id: freshId, local_command: 'help', total_cost_usd: 5, duration_api_ms: 5000 });
+                yield result({ session_id: freshId, local_command: 'help', total_cost_usd: 5.25, duration_api_ms: 5250 });
                 // A background round of the same session completes meanwhile.
                 yield result({ session_id: freshId, total_cost_usd: 6, duration_api_ms: 6000 });
                 yield { type: 'user', isReplay: true, uuid: command.value?.uuid };
@@ -850,7 +850,8 @@ describe('claudeRemote in-process /clear', () => {
                 onDroppedResult: (message) => converter.consumeResultForAccounting(message),
                 onSpawn: (fresh) => { if (fresh) converter.startFreshProcessBaseline(); }
             });
-            expect(summaries.get('background')?.total_cost_usd).toBeCloseTo(1, 9);
+            // The held result counts before the background round, which reports only its own share.
+            expect(summaries.get('background')?.total_cost_usd).toBeCloseTo(0.75, 9);
             // A summary for the held result would land on the background reply shown before it.
             expect(summaries.has('help')).toBe(false);
             // The follow-up reports only its own cost and API time.
