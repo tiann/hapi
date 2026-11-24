@@ -227,6 +227,18 @@ describe('thread MCP inventory', () => {
         expect(sharedHarness.mcpStatusRequests).toEqual([]);
     });
 
+    it('clears a saved disabled status when current config re-enables the server', async () => {
+        sharedHarness.configuredInventory = [{ name: 'qmd', enabled: true, auth_status: 'unsupported' }];
+        const f = await fixture({ contextDetails: { version: 1, provider: 'codex', updatedAt: 10,
+            codex: { mcpServers: [{ name: 'qmd', status: 'disabled', toolNames: ['last_known'] }] },
+        } });
+        vi.spyOn(f.root.client, 'readThreadMcpServerStatus').mockRejectedValue(new Error('timed out'));
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toContainEqual({
+            name: 'qmd', toolNames: ['last_known']
+        }));
+    })
+
     it('keeps current disabled config ahead of a saved connected status after a failed scoped read', async () => {
         sharedHarness.configuredInventory = [{ name: 'qmd', status: 'disabled' }];
         const f = await fixture({ contextDetails: { version: 1, provider: 'codex', updatedAt: 10,

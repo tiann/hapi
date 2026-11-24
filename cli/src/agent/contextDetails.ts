@@ -13,6 +13,8 @@ export interface CodexMcpServerInventory {
     name: string
     toolNames?: string[]
     status?: string
+    /** Explicit config enablement, used only to resolve saved status fallback. */
+    enabled?: boolean
 }
 
 function asRecord(value: unknown): JsonRecord | null {
@@ -354,7 +356,7 @@ export function mergeContextDetails(
 
     const modelChanged = compactPrevious.model !== undefined
         && compactNext.model !== undefined
-        && compactPrevious.model !== compactNext.model
+        && !sameClaudeModelID(compactPrevious.model, compactNext.model)
     // Model, window, and usage belong to one sample. Never pair a newly
     // reported model/window with the previous model's saved token count.
     const previousForMerge: ContextDetails = modelChanged
@@ -363,7 +365,11 @@ export function mergeContextDetails(
     const merged: ContextDetails = {
         ...previousForMerge,
         ...compactNext,
-        ...(previousForMerge.usage || compactNext.usage ? { usage: { ...previousForMerge.usage, ...compactNext.usage } } : {}),
+        ...(previousForMerge.usage || compactNext.usage ? {
+            usage: compactNext.usage?.contextTokens !== undefined
+                ? compactNext.usage
+                : { ...previousForMerge.usage, ...compactNext.usage }
+        } : {}),
         ...(previousForMerge.claude || compactNext.claude ? { claude: { ...previousForMerge.claude, ...compactNext.claude } } : {}),
         ...(previousForMerge.codex || compactNext.codex ? { codex: { ...previousForMerge.codex, ...compactNext.codex } } : {})
     }
@@ -425,7 +431,8 @@ export function publishContextDetails(
         const current = metadata.contextDetails
         let incoming = candidate
         if (candidate && options.preserveUsageSnapshot) {
-            const savedUsage = current?.provider === 'claude' && current.model === candidate.model ? current.usage : undefined
+            const savedUsage = current?.provider === 'claude' && current.model && candidate.model
+                && sameClaudeModelID(current.model, candidate.model) ? current.usage : undefined
             incoming = {
                 ...candidate,
                 // Result totals are cumulative conversation counters, never a

@@ -525,6 +525,27 @@ describe('mergeContextDetails', () => {
         expect(metadata.contextDetails?.usage).toBeUndefined()
     })
 
+    it('keeps usage when a late result uses the equivalent bare model ID', () => {
+        let metadata: Metadata = { path: '/tmp/test', host: 'test', contextDetails: buildClaudeContextDetails({
+            model: 'claude-fable-5[1m]', messageUsage: { input_tokens: 100 }, effectiveContextWindow: 1_000_000
+        })! }
+        const client = { updateMetadata: (handler: (current: Metadata) => Metadata) => { metadata = handler(metadata) } }
+        publishContextDetails(client, buildClaudeContextDetails({
+            model: 'claude-fable-5', result: { model: 'claude-fable-5', modelUsage: { 'claude-fable-5': { contextWindow: 1_000_000 } } }
+        })!, { preserveUsageSnapshot: true })
+        expect(metadata.contextDetails).toMatchObject({ contextWindow: 1_000_000, usage: { contextTokens: 100 } })
+    })
+
+    it('replaces cache usage with each new context sample', () => {
+        const first = buildClaudeContextDetails({
+            model: 'claude-opus', messageUsage: { input_tokens: 100, cache_read_input_tokens: 50 }
+        })!
+        const next = buildClaudeContextDetails({
+            model: 'claude-opus', contextUsage: { total_tokens: 80 }
+        })!
+        expect(mergeContextDetails(first, next).usage).toEqual({ contextTokens: 80 })
+    })
+
     it('does not seed usage from a result as the first snapshot', () => {
         let metadata: Metadata = { path: '/tmp/test', host: 'test' }
         const client = { updateMetadata: (handler: (current: Metadata) => Metadata) => { metadata = handler(metadata) } }

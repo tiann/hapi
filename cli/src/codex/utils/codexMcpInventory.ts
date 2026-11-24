@@ -92,6 +92,7 @@ function parseInventoryEntries(value: unknown): CodexMcpServerInventory[] | unde
         const inventoryStatus = toolsUnavailable && status !== 'disabled' ? 'unavailable' : status
         return [{
             name,
+            ...(enabled === true ? { enabled: true } : {}),
             ...(toolNames ? { toolNames } : {}),
             ...(inventoryStatus && inventoryStatus !== 'unsupported' ? { status: inventoryStatus } : {})
         }]
@@ -123,7 +124,10 @@ export function mergeCodexMcpInventories(
                 ...(server.toolNames === undefined && previous?.toolNames
                     ? { toolNames: previous.toolNames }
                     : {}),
-                ...(server.status === undefined && previous?.status
+                ...(server.enabled === true && previous?.status === 'disabled' && server.status === undefined
+                    ? { status: undefined }
+                    : {}),
+                ...(server.status === undefined && previous?.status && server.enabled !== true && previous?.enabled !== true
                     ? { status: previous.status }
                     : {})
             })

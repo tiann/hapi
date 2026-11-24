@@ -21,7 +21,7 @@ describe('codex MCP inventory', () => {
             auth_status: 'unsupported'
         }]))
 
-        expect(inventory).toEqual([{ name: 'qmd' }])
+        expect(inventory).toEqual([{ name: 'qmd', enabled: true }])
         expect(JSON.stringify(inventory)).not.toContain('secret')
         expect(JSON.stringify(inventory)).not.toContain('server.js')
     })
