@@ -263,7 +263,7 @@ describe('agyReactiveWakeup pure helpers', () => {
         expect(readLatestAgyTranscriptStepIndex(tempBrainDir, 'conv-1')).toBe(1);
         const steps = readAgyTranscriptStepsAfter(tempBrainDir, 'conv-1', 0);
         expect(steps).toHaveLength(1);
-        expect(steps[0]?.content).toBe('full untruncated response text');
+        expect(steps?.[0]?.content).toBe('full untruncated response text');
     });
 
     it('classifies completed wakeups vs gated tool parks vs in-workspace read_file waits', () => {

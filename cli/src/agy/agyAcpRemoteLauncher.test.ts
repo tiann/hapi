@@ -2514,6 +2514,16 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
     }
     const consumedFor = (client: ReturnType<typeof makeClient>, localId: string) =>
         client.emitMessagesConsumed.mock.calls.filter(([ids]) => (ids as string[])[0] === localId);
+    // A directory opens but fails on read, like a transcript with an I/O error.
+    function breakTranscript(): void {
+        const path = join(brainDir, SESSION, '.system_generated', 'logs', 'transcript.jsonl');
+        rmSync(path, { force: true });
+        mkdirSync(path);
+    }
+    function repairTranscript(rows: Array<Record<string, unknown>>): void {
+        rmSync(join(brainDir, SESSION, '.system_generated', 'logs', 'transcript.jsonl'), { recursive: true, force: true });
+        writeTranscript(rows);
+    }
 
     it('maps a steer past a deferred call without taking a later call as the anchor', () => {
         // agy recorded call A then B before the steer row; A's ACP update was
@@ -2718,6 +2728,55 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: 't1' } }]]));
         expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-1']);
         await finish();
+    });
+
+    it('keeps a steer pending while its transcript cannot be read and confirms it from a later poll', async () => {
+        const { client, steer, finish } = await startTurn(undefined, { reactivePollMs: 20 });
+        await steer('also lint', 'steer-1');
+        breakTranscript();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-1']);
+
+        repairTranscript([...stepRows, userRow(3, 'also lint')]);
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: 't1' } }]]));
+        await finish();
+    });
+
+    it('dispatches a steer whose transcript cannot be read before it is sent and confirms it at the turn end', async () => {
+        const { backend, client, steer, finish } = await startTurn(undefined, { reactivePollMs: 60_000 });
+        breakTranscript();
+        expect(await steer('also lint', 'steer-1')).toEqual({ steered: true });
+        expect(backend.steerPrompts).toHaveLength(1);
+
+        repairTranscript(stepRows);
+        await finish();
+        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]);
+    });
+
+    it('retries the turn cursor sync on an unreadable transcript without advancing the cursor', () => {
+        const { session } = makeSession();
+        const launcher = new AgyAcpRemoteLauncher(session, { brainDir });
+        const internals = launcher as unknown as {
+            acpSessionId: string | null;
+            lastTranscriptStepIndex: number;
+            lastTurnTranscriptState: { turnStartStepIndex: number; streamedTextCounts: Map<string, number> } | null;
+            syncTranscriptCursor: () => void;
+        };
+        internals.acpSessionId = SESSION;
+        internals.lastTurnTranscriptState = { turnStartStepIndex: -1, streamedTextCounts: new Map() };
+        const rows = [userRow(0, 'run the tests'), plannerRow(1, ['run_command']), genericRow(2)];
+        writeTranscript(rows);
+        breakTranscript();
+
+        expect(() => internals.syncTranscriptCursor()).not.toThrow();
+        expect(internals.lastTranscriptStepIndex).toBe(-1);
+        expect(internals.lastTurnTranscriptState).not.toBeNull();
+
+        repairTranscript(rows);
+        internals.syncTranscriptCursor();
+        expect(internals.lastTranscriptStepIndex).toBe(2);
+        expect(internals.lastTurnTranscriptState).toBeNull();
     });
 
     it('restores a refused steer and ignores a later row with its text', async () => {

@@ -163,9 +163,10 @@ function parseJsonlChunk(raw: string, out: AgyTranscriptStep[]): void {
 /**
  * Incrementally reads newline-terminated JSONL steps from `filePath`.
  * Unchanged files cost a single `statSync` (0 bytes read); appended turns read
- * and parse only the newly written tail bytes.
+ * and parse only the newly written tail bytes. An I/O error while reading
+ * returns null, which callers tell apart from a file with no steps.
  */
-function readCompleteJsonlSteps(filePath: string): AgyTranscriptStep[] {
+function readCompleteJsonlSteps(filePath: string): AgyTranscriptStep[] | null {
     let stat: ReturnType<typeof statSync>;
     try {
         stat = statSync(filePath);
@@ -238,16 +239,22 @@ function readCompleteJsonlSteps(filePath: string): AgyTranscriptStep[] {
             steps
         });
         return steps;
+    } catch {
+        return null;
     } finally {
         closeSync(fd);
     }
 }
 
-/** Reads the highest `step_index` currently persisted in `transcript.jsonl` (-1 when absent). */
-export function readLatestAgyTranscriptStepIndex(brainDir: string, sessionId: string): number {
+/**
+ * Reads the highest `step_index` currently persisted in `transcript.jsonl`
+ * (-1 when absent, null when the file cannot be read).
+ */
+export function readLatestAgyTranscriptStepIndex(brainDir: string, sessionId: string): number | null {
     const paths = agyTranscriptPaths(brainDir, sessionId);
     if (!paths) return -1;
     const steps = readCompleteJsonlSteps(paths.compactPath);
+    if (!steps) return null;
     let maxStep = -1;
     for (const step of steps) {
         if (step.step_index > maxStep) maxStep = step.step_index;
@@ -258,16 +265,19 @@ export function readLatestAgyTranscriptStepIndex(brainDir: string, sessionId: st
 /**
  * Reads steps with `step_index > afterStepIndex`, upgrading any truncated rows
  * from `transcript_full.jsonl` so long messages and tool outputs stay intact.
+ * Returns null when the transcript cannot be read, so a failed read is not
+ * taken for "no new steps".
  */
 export function readAgyTranscriptStepsAfter(
     brainDir: string,
     sessionId: string,
     afterStepIndex: number
-): AgyTranscriptStep[] {
+): AgyTranscriptStep[] | null {
     const paths = agyTranscriptPaths(brainDir, sessionId);
     if (!paths) return [];
-    const compactSteps = readCompleteJsonlSteps(paths.compactPath)
-        .filter((step) => step.step_index > afterStepIndex);
+    const allCompact = readCompleteJsonlSteps(paths.compactPath);
+    if (!allCompact) return null;
+    const compactSteps = allCompact.filter((step) => step.step_index > afterStepIndex);
     if (compactSteps.length === 0) return [];
 
     const needsFull = compactSteps.some(
@@ -275,8 +285,9 @@ export function readAgyTranscriptStepsAfter(
     );
     if (!needsFull) return compactSteps;
 
+    // Without the full rows the truncated ones are still usable.
     const fullSteps = readCompleteJsonlSteps(paths.fullPath);
-    if (fullSteps.length === 0) return compactSteps;
+    if (!fullSteps || fullSteps.length === 0) return compactSteps;
     const fullByIndex = new Map<number, AgyTranscriptStep>();
     for (const step of fullSteps) {
         if (step.step_index > afterStepIndex) {
@@ -543,6 +554,8 @@ export function resolveAgyBackgroundTaskIds(
     for (const entry of unresolved) {
         if (entry.stepIndex !== undefined) {
             const steps = readAgyTranscriptStepsAfter(brainDir, sessionId, entry.stepIndex - 1);
+            // Unreadable: the task id stays unresolved for the next attempt.
+            if (!steps) continue;
             const exactStep = steps.find((step) => step.step_index === entry.stepIndex);
             const taskId = extractAgyBackgroundTaskId(exactStep?.content);
             if (taskId) entry.taskId = taskId;
@@ -558,6 +571,7 @@ export function resolveAgyBackgroundTaskIds(
         let taskIds = taskIdsByWindow.get(key);
         if (!taskIds) {
             let steps = readAgyTranscriptStepsAfter(brainDir, sessionId, entry.afterStepIndex);
+            if (!steps) continue;
             if (maxStep !== undefined) {
                 steps = steps.filter((step) => step.step_index <= maxStep);
             }
@@ -834,6 +848,8 @@ export function inspectSyntheticBackgroundCommandMatch(
         }
     }
     const recentSteps = readAgyTranscriptStepsAfter(brainDir, sessionId, Math.max(-1, earliestStep - 1));
+    // Without the transcript nothing settles the match: hold the completion.
+    if (!recentSteps) return { kind: 'ambiguous' };
     const completedTasks = new Map<string, { stdout: string; exitCode?: number }>();
     for (const step of recentSteps) {
         if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {

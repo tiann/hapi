@@ -477,9 +477,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const acpSessionId = this.acpSessionId;
         if (!acpSessionId) return;
         this.reconcileRetainedAmbiguousCompletions(null);
-        this.advanceCursorFromLastTurnState();
-        this.lastTurnTranscriptState = null;
+        const advanced = this.advanceCursorFromLastTurnState();
         const latest = readLatestAgyTranscriptStepIndex(this.brainDir, acpSessionId);
+        // An unreadable transcript leaves the cursor and the turn state as
+        // they are, so the next sync retries.
+        if (advanced === 'unreadable' || latest === null) return;
+        this.lastTurnTranscriptState = null;
         if (latest > this.lastTranscriptStepIndex) {
             this.lastTranscriptStepIndex = latest;
         }
@@ -500,11 +503,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.pausedWakeupStepIndex = null;
     }
 
-    private advanceCursorFromLastTurnState(turn?: AgyTurn): number | null {
+    private advanceCursorFromLastTurnState(turn?: AgyTurn): number | null | 'unreadable' {
         const acpSessionId = this.acpSessionId;
         const state = this.lastTurnTranscriptState;
         if (!acpSessionId || !state) return null;
         const stepsAfterStart = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, state.turnStartStepIndex);
+        if (!stepsAfterStart) return 'unreadable';
         const nextCursor = advanceAgyTurnTranscriptCursor(
             stepsAfterStart,
             state.turnStartStepIndex,
@@ -525,13 +529,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             const countSteps = countFrom < state.turnStartStepIndex
                 ? readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, countFrom)
                 : stepsAfterStart;
-            turn.transcriptNumTurns = countSteps.filter((step) =>
-                step.source === 'MODEL'
-                && step.type === 'PLANNER_RESPONSE'
-                && step.status === 'DONE'
-                && step.step_index > countFrom
-                && step.step_index <= nextCursor
-            ).length;
+            if (countSteps) {
+                turn.transcriptNumTurns = countSteps.filter((step) =>
+                    step.source === 'MODEL'
+                    && step.type === 'PLANNER_RESPONSE'
+                    && step.status === 'DONE'
+                    && step.step_index > countFrom
+                    && step.step_index <= nextCursor
+                ).length;
+            }
         }
         return nextCursor;
     }
@@ -544,7 +550,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
         this.advanceCursorFromLastTurnState();
         const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, this.lastTranscriptStepIndex);
-        if (steps.length === 0) return false;
+        if (!steps || steps.length === 0) return false;
         if (!steps.some((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')) {
             return false;
         }
@@ -778,6 +784,16 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
                 const nowMs = Date.now();
                 const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, this.lastTranscriptStepIndex);
+                if (!steps) {
+                    // Unreadable: try again on the next tick, giving up with the
+                    // idle bound like a wakeup that stopped progressing.
+                    if (nowMs - lastProgressAtMs >= this.reactiveTimings.maxIdleMs) {
+                        session.onThinkingChange(false);
+                        return;
+                    }
+                    await this.waitWakeupTick(acpSessionId, pollIntervalMs, abortController.signal);
+                    continue;
+                }
                 const inspection = inspectAgyReactiveSteps(
                     steps,
                     session.path,
@@ -1251,7 +1267,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 // from the already-completed previous turn. Live prompts get no replay.
                 const firstWakeupStep = !relaunched && (!live || internalWakeup) && baseAfterStep < turnStartStepIndex
                     ? readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, baseAfterStep)
-                        .find((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')
+                        ?.find((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')
                     : undefined;
                 if (live) {
                     // A reattached wakeup is the same wakeup: its commands count as this turn's, so a Stop retires them too.
@@ -1381,7 +1397,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const live = this.usesLiveWakeupRendering();
         let bindFrom: number | null = idle || (live && internal) ? null : turnStartStepIndex;
         let turnSteps = bindFrom !== null && openIds.length > 0 && this.acpSessionId
-            ? readAgyTranscriptStepsAfter(this.brainDir, this.acpSessionId, turnStartStepIndex)
+            // Unreadable: the task ids resolve on a later attempt.
+            ? readAgyTranscriptStepsAfter(this.brainDir, this.acpSessionId, turnStartStepIndex) ?? []
             : [];
         if (live && bindFrom !== null) {
             const own = turnSteps.findIndex((step) => step.source === 'USER_EXPLICIT' && step.type === 'USER_INPUT');
@@ -1587,7 +1604,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             return { steered: false, error: 'Antigravity is waiting for your approval or answer; respond to it, then steer' };
         }
 
-        // The steer's row comes after everything agy has written so far.
+        // The steer's row comes after everything agy has written so far. An
+        // unreadable transcript only costs the row match: the echo and the
+        // turn's end still settle the steer.
         const rowBoundary = readLatestAgyTranscriptStepIndex(this.brainDir, acpSessionId);
         let steer: ReturnType<AcpSdkBackend['beginSoftSteerPrompt']>;
         try {
@@ -1656,9 +1675,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // (agy <= 1.5.8) and the turn's end remain the other ways to confirm.
         // A late echo can confirm the next identical steer instead; that path
         // is best effort for those versions.
-        rowSteer = { text: normalizeSteerText(taken.item.message), boundary: rowBoundary, sessionId: acpSessionId, done: false, accept };
-        turn.rowSteers.push(rowSteer);
-        this.startSteerRowPoll(turn);
+        if (rowBoundary !== null) {
+            rowSteer = { text: normalizeSteerText(taken.item.message), boundary: rowBoundary, sessionId: acpSessionId, done: false, accept };
+            turn.rowSteers.push(rowSteer);
+            this.startSteerRowPoll(turn);
+        }
 
         try {
             await steer.dispatched;
@@ -1731,6 +1752,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (live.length === 0 || !acpSessionId) return;
         const from = Math.min(turn.turnStartStepIndex, ...live.map((entry) => entry.boundary));
         const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, from);
+        // Unreadable: the steers stay pending for the next poll, echo, or turn end.
+        if (!steps) return;
         const userRows = steps.filter((step) =>
             step.source === 'USER_EXPLICIT' && step.type === 'USER_INPUT' && step.step_index > turn.turnStartStepIndex);
         // The turn's own prompt is the first row; a steer with the same text
