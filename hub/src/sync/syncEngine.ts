@@ -3852,6 +3852,7 @@ export class SyncEngine {
         // machine-level StopSession RPC when we know a machineId, and refuse
         // to archive while the runner reports still_alive / unknown.
         let cliUnreachable = false
+        let peerDoneSoftStandDown = false
         let killPid: number | undefined
         let killProcessStartMarker: string | undefined
         try {
@@ -3925,11 +3926,14 @@ export class SyncEngine {
                 // still_alive after KillSession+StopSession (ghost keepalive).
                 // Soft stand-down only while still connected with no live work
                 // - never trust cleared thinking or stale lifecycle=idle after
-                // transport expiry (#2021 Majors).
+                // transport expiry (#2021 Majors). Hub-authored archive metadata
+                // then triggers async CLI shutdown; WORKING peers still throw
+                // ArchiveCleanupError('unconfirmed') (verified-cleanup path).
                 const live = this.sessionCache.getSession(sessionId)
                 if (!live || !canSoftStandDownUnconfirmedStop(live)) {
                     throw new ArchiveCleanupError('unconfirmed')
                 }
+                peerDoneSoftStandDown = true
                 // Fall through: hub-author archive metadata below.
             }
         } else if (machineId && !runnerSpawned) {
@@ -3950,9 +3954,11 @@ export class SyncEngine {
         if (lifecycleState !== 'archived') {
             this.sessionCache.markSessionArchivedFromHub(
                 sessionId,
-                cliUnreachable
-                    ? 'Archived from hub (CLI unreachable)'
-                    : 'Archived from hub (CLI stopped before archive metadata)'
+                peerDoneSoftStandDown
+                    ? 'Archived from hub (Peer Done soft stand-down; CLI shutdown pending)'
+                    : cliUnreachable
+                        ? 'Archived from hub (CLI unreachable)'
+                        : 'Archived from hub (CLI stopped before archive metadata)'
             )
             this.emitCliSessionMetadataUpdate(sessionId)
         }

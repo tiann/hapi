@@ -337,6 +337,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(session?.active).toBe(false)
         expect(session?.metadata?.lifecycleState).toBe('archived')
         expect(session?.metadata?.archivedBy).toBe('hub')
+        expect(session?.metadata?.archiveReason).toContain('Peer Done soft stand-down')
     })
 
     it('still refuses still_alive when the peer is thinking (WORKING) (#2020)', async () => {

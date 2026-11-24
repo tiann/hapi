@@ -151,6 +151,13 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
   `archive-cleanup-unconfirmed` (409), `archive-cleanup-unavailable` (503), or
   `archive-cleanup-timeout` (503) error. A timeout does not cancel Runner cleanup
   or prove the process is still alive; retry to verify the final result.
+  **Peer Done soft stand-down (`tiann/hapi#2020`):** when KillSession+StopSession
+  still report `still_alive` / `unknown` but the session is still connected with
+  no hub-visible live work (`canSoftStandDownUnconfirmedStop`), the hub authors
+  archive metadata (`archiveReason` notes soft stand-down) so the CLI shuts down
+  asynchronously and RAM is reclaimed without hard `DELETE`. WORKING peers
+  (thinking / background tasks / pending requests) and disconnected stale-idle
+  rows still take the verified-cleanup 409 path.
 - `PATCH /api/sessions/:id` - Rename session.
 - `DELETE /api/sessions/:id` - Delete inactive session.
 - `GET /api/sessions/:id/slash-commands` - List slash commands.
