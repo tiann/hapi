@@ -12,6 +12,7 @@ import '../src/index.css'
 const lang = new URLSearchParams(location.search).get('lang')
 const allRead = new URLSearchParams(location.search).has('allRead')
 const browse = new URLSearchParams(location.search).has('browse')
+const historyLayout = new URLSearchParams(location.search).has('historyLayout')
 initializeFontScale()
 if (lang) localStorage.setItem('hapi-lang', lang)
 const sessions = [
@@ -39,7 +40,17 @@ const api = {
 function Fixture() {
     const [selected, setSelected] = useState<string | null>(null)
     const [liveSessions, setLiveSessions] = useState(sessions)
+    const [chatVisible, setChatVisible] = useState(false)
+    const selectSession = (id: string) => {
+        setSelected(id)
+        if (historyLayout) {
+            history.pushState({ fixtureChat: true }, '', '#chat')
+            setChatVisible(true)
+        }
+    }
     useEffect(() => {
+        const updateLocation = () => setChatVisible(Boolean(history.state?.fixtureChat))
+        window.addEventListener('popstate', updateLocation)
         const updateUnread = (event: Event) => {
             const unread = (event as CustomEvent<boolean>).detail
             setLiveSessions(previous => previous.map(session => session.id === 'match' ? {
@@ -52,10 +63,14 @@ function Fixture() {
             } : session))
         }
         window.addEventListener('fixture-unread', updateUnread)
-        return () => window.removeEventListener('fixture-unread', updateUnread)
+        return () => {
+            window.removeEventListener('fixture-unread', updateUnread)
+            window.removeEventListener('popstate', updateLocation)
+        }
     }, [])
-    return <main style={{ width: 'min(440px, 100vw)', height: '100vh', display: 'flex', flexDirection: 'column' }}>
-        <SessionList sessions={liveSessions} selectedSessionId={selected} onSelect={setSelected}
+    return <>
+        <main style={{ width: 'min(440px, 100vw)', height: '100vh', display: chatVisible ? 'none' : 'flex', flexDirection: 'column' }}>
+        <SessionList sessions={liveSessions} selectedSessionId={selected} onSelect={selectSession}
             onNewSession={() => {}} onRefresh={() => {}} isLoading={false} api={api}
             machineLabelsById={{ mint: 'Mint', server: 'Server' }}
             toolbarExtras={[
@@ -70,7 +85,9 @@ function Fixture() {
                     </button>
                 ) },
             ]} />
-    </main>
+        </main>
+        {chatVisible ? <button type="button">Chat input</button> : null}
+    </>
 }
 createRoot(document.getElementById('root')!).render(
     <React.StrictMode><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>

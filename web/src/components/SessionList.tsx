@@ -1,5 +1,5 @@
 import { isLiveLifecycleState } from '@hapi/protocol/sessionLifecycle'
-import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from 'react'
 import * as Popover from '@radix-ui/react-popover'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionContentSearchResponse, SessionSummary } from '@/types/api'
@@ -70,11 +70,25 @@ function LowRatePulseDot({ pulse, className }: { pulse: boolean; className: stri
 }
 
 /** Narrow-header overflow for shed secondary actions (tiann/hapi#2039). */
-function SessionListHeaderOverflow(props: { children: ReactNode }) {
+function SessionListHeaderOverflow(props: { children: ReactNode; visibilityRef: RefObject<HTMLElement | null> }) {
     const { t } = useTranslation()
     const contentRef = useRef<HTMLDivElement>(null)
+    const [open, setOpen] = useState(false)
+    useLayoutEffect(() => {
+        if (!open) return
+        const owner = props.visibilityRef.current
+        if (!owner) return
+        const closeWhenHidden = () => {
+            if (!owner.getClientRects().length) setOpen(false)
+        }
+        closeWhenHidden()
+        if (typeof ResizeObserver === 'undefined') return
+        const observer = new ResizeObserver(closeWhenHidden)
+        observer.observe(owner)
+        return () => observer.disconnect()
+    }, [open, props.visibilityRef])
     return (
-        <Popover.Root>
+        <Popover.Root open={open} onOpenChange={setOpen}>
             <Popover.Trigger asChild>
                 <button
                     type="button"
@@ -91,6 +105,9 @@ function SessionListHeaderOverflow(props: { children: ReactNode }) {
                     ref={contentRef}
                     align="end"
                     sideOffset={6}
+                    onCloseAutoFocus={(event) => {
+                        if (!props.visibilityRef.current?.getClientRects().length) event.preventDefault()
+                    }}
                     onEscapeKeyDown={(event) => {
                         // The custom filter menus handle Escape themselves.
                         // Keep their trigger mounted so they can restore focus.
@@ -3589,6 +3606,7 @@ export function SessionList(props: {
                                         widthPx: slotWidth('machine-filter', TOOLBAR_ICON_PX),
                                         node: (
                                             <MachineFilterMenu
+                                                visibilityRef={headerRowRef}
                                                 machines={machineFilterItems}
                                                 totalCount={allSessions.length}
                                                 value={activeMachineFilter}
@@ -3679,7 +3697,7 @@ export function SessionList(props: {
                                             </span>
                                         ))}
                                         {overflow.length > 0 ? (
-                                            <SessionListHeaderOverflow>
+                                            <SessionListHeaderOverflow visibilityRef={headerRowRef}>
                                                 {overflow.map((slot) => (
                                                     <span key={slot.id} data-testid={`session-toolbar-slot-${slot.id}`} className="contents">
                                                         {slot.node}

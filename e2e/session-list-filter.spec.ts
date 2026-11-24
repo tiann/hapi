@@ -303,6 +303,48 @@ for (const nested of [false, true]) {
     }
 }
 
+for (const nested of [false, true]) {
+    test(`cleans up the machine menu on same-layout history navigation ${nested ? 'inside More' : 'on the toolbar'}`, async ({ page }) => {
+        await page.addInitScript(() => {
+            localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+            localStorage.setItem('hapi-font-scale', '1.3')
+            localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1')
+        })
+        await page.setViewportSize({ width: nested ? 320 : 440, height: 568 })
+        await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en&historyLayout')
+        await page.getByRole('button', { name: /HAPI filter integration/ }).click()
+        const chat = page.getByRole('button', { name: 'Chat input', exact: true })
+        await expect(chat).toBeVisible()
+        await page.goBack()
+        await expect(chat).toHaveCount(0)
+        if (nested) {
+            await page.getByRole('button', { name: /Search sessions/ }).click()
+            await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+            await page.getByPlaceholder(/Search title/).blur()
+            await page.getByRole('button', { name: 'More session list actions', exact: true }).click()
+        }
+        const trigger = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+        await trigger.click()
+        const menu = page.getByRole('menu', { name: 'Filter sessions by machine', exact: true })
+        await expect(menu).toBeVisible()
+        await page.goForward()
+        await expect(chat).toBeVisible()
+        await expect(menu).toHaveCount(0)
+        await expect(page.getByRole('button', { name: 'Close', exact: true })).toHaveCount(0)
+        await chat.click()
+        await page.keyboard.press('ArrowDown')
+        await expect(chat).toBeFocused()
+        await page.goBack()
+        await expect(chat).toHaveCount(0)
+        await expect(menu).toHaveCount(0)
+        if (nested) {
+            const more = page.getByRole('button', { name: 'More session list actions', exact: true })
+            if (await more.getAttribute('aria-expanded') === 'false') await more.click()
+        }
+        await expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    })
+}
+
 test('tracks the machine trigger while unread actions reflow More', async ({ page }) => {
     await page.addInitScript(() => {
         localStorage.setItem('hapi-show-mobile-machine-filter', 'true')

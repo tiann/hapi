@@ -198,6 +198,7 @@ describe('SessionList machine filter', () => {
     it('shows the optional mobile machine filter button while keeping machine choices in Sort and filter', () => {
         window.localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
         vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
+        const layoutRects = vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue([new DOMRect(0, 0, 32, 32)] as unknown as DOMRectList)
         try {
             renderSessionList(multiMachineSessions)
 
@@ -217,6 +218,7 @@ describe('SessionList machine filter', () => {
             expect(within(sortMenu).getByRole('group', { name: 'Filter sessions by machine' })).toBeTruthy()
             expect(within(sortMenu).getByRole('menuitemradio', { name: /^Teemo \(1\)$/ })).toHaveAttribute('aria-checked', 'true')
         } finally {
+            layoutRects.mockRestore()
             vi.unstubAllGlobals()
         }
     })

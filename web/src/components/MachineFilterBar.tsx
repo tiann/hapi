@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, RefObject } from 'react'
 import type { MachineHealthPresentation } from '@/lib/machineHealth'
 import { MachineHealthTooltipBody } from '@/components/MachineHealthIndicator'
 import { HoverTooltip } from '@/components/HoverTooltip'
@@ -271,6 +271,8 @@ export function MachineFilterMenu(props: {
     totalCount: number
     value: string | null
     onChange: (id: string | null) => void
+    /** Layout owner to check when the trigger itself is inside a portal. */
+    visibilityRef?: RefObject<HTMLElement | null>
 }) {
     const { t } = useTranslation()
     const [open, setOpen] = useState(false)
@@ -298,6 +300,15 @@ export function MachineFilterMenu(props: {
         // resize or scroll. Track viewport position only while the menu is open.
         let frame = 0
         const updateAnchor = () => {
+            const trigger = triggerRef.current
+            const owner = props.visibilityRef?.current
+            // The sessions layout can hide the list without unmounting it.
+            // Inside More, even the trigger is portaled, so check its owner too.
+            if (!trigger?.getClientRects().length || (owner && !owner.getClientRects().length)) {
+                setOpen(false)
+                setAnchor(null)
+                return
+            }
             const rect = wrapperRef.current?.getBoundingClientRect()
             if (rect) {
                 const viewportWidth = window.innerWidth
@@ -311,7 +322,7 @@ export function MachineFilterMenu(props: {
         }
         updateAnchor()
         return () => window.cancelAnimationFrame(frame)
-    }, [open])
+    }, [open, props.visibilityRef])
 
     const alignStart = anchor
         ? machineFilterMenuAlignsStart(anchor, anchor.viewportWidth)

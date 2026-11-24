@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     MachineFilterBar,
     MachineFilterMenu,
@@ -184,6 +184,10 @@ describe('MachineSummaryRow', () => {
 })
 
 describe('MachineFilterMenu', () => {
+    // jsdom has no layout; give the visible trigger a browser-like layout box.
+    beforeEach(() => vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue([new DOMRect(0, 0, 32, 32)] as unknown as DOMRectList))
+    afterEach(() => vi.restoreAllMocks())
+
     it('renders a compact icon button only below the md breakpoint', () => {
         const { container } = renderMenu()
 
