@@ -331,15 +331,51 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'still_alive'
 
-        await engine.archiveSession(sessionId, { softStandDown: true })
+        const result = await engine.archiveSession(sessionId, { softStandDown: true })
+        expect(result.pendingCleanup).toBe(true)
 
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(false)
         expect(session?.metadata?.lifecycleState).toBe('archived')
         expect(session?.metadata?.archivedBy).toBe('hub')
         expect(session?.metadata?.archiveReason).toContain('Peer Done soft stand-down')
-        // softStandDownPending is set then cleared once Runner confirms (or the
-        // confirm poll gives up); race with the async poll — reason is durable.
+        expect(session?.metadata?.softStandDownPending).toBe(true)
+        // Without KillSession pid/marker or hostPid, confirm poll refuses to
+        // StopSession by session id (reopen-safe) and leaves DELETE gated.
+    })
+
+    it('pins soft stand-down confirm StopSession to drained pid+marker (not session id)', async () => {
+        const sessionId = insertActiveSession('sess-soft-gen-pin', 'machine-x')
+        setKillSessionOk({ pid: 4242, processStartMarker: 'start-abc' })
+        const stopCalls: Array<{ id: string; marker?: string }> = []
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async (_machineId: string, id: string, opts?: { processStartMarker?: string }) => {
+                stopCalls.push({ id, marker: opts?.processStartMarker })
+                // First call (archive path) still_alive → soft stand-down; confirm
+                // poll uses PID- target and eventually already_gone.
+                if (id.startsWith('PID-')) return 'already_gone'
+                return 'still_alive'
+            }
+
+        const result = await engine.archiveSession(sessionId, { softStandDown: true })
+        expect(result.pendingCleanup).toBe(true)
+        // Allow async confirmSoftStandDownExit to run (BUN_TEST uses 0ms delay).
+        await new Promise((r) => setTimeout(r, 10))
+        expect(stopCalls.some((c) => c.id === 'PID-4242' && c.marker === 'start-abc')).toBe(true)
+        expect(cache().getSession(sessionId)?.metadata?.softStandDownPending).not.toBe(true)
+    })
+
+    it('refuses softStandDown for non-runner sessions before KillSession', async () => {
+        const sessionId = insertActiveSession('sess-soft-terminal', 'machine-x', undefined, {
+            startedBy: 'terminal',
+            startedFromRunner: false,
+        })
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+
+        await expect(engine.archiveSession(sessionId, { softStandDown: true })).rejects.toThrow(/not yet confirmed/)
+        expect(killCalls).toBe(0)
     })
 
     it('refuses softStandDown before stop RPCs when the peer is WORKING', async () => {

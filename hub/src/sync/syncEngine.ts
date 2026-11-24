@@ -227,7 +227,7 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
 }
 
 export class SyncEngine {
-    private readonly archiveRequests = new Map<string, Promise<void>>()
+    private readonly archiveRequests = new Map<string, Promise<{ pendingCleanup: boolean }>>()
     // KillSession's beforeKill drain completes before the CLI's async cleanup
     // closes the session socket, so a runner prepare-stop that loses that race
     // can still be honored for the exact killed generation while its archive
@@ -3811,7 +3811,10 @@ export class SyncEngine {
     /** Session ids whose in-flight archive used softStandDown (ordinary joiners must not inherit). */
     private readonly softStandDownArchiveInFlight = new Set<string>()
 
-    async archiveSession(sessionId: string, opts?: { softStandDown?: boolean }): Promise<void> {
+    async archiveSession(
+        sessionId: string,
+        opts?: { softStandDown?: boolean }
+    ): Promise<{ pendingCleanup: boolean }> {
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const existing = this.archiveRequests.get(sessionId)
         if (existing) {
@@ -3825,24 +3828,32 @@ export class SyncEngine {
         if (opts?.softStandDown) this.softStandDownArchiveInFlight.add(sessionId)
         const operation = this.archiveSessionOnce(sessionId, opts)
         this.archiveRequests.set(sessionId, operation)
-        try { await operation } finally {
+        try {
+            return await operation
+        } finally {
             if (this.archiveRequests.get(sessionId) === operation) this.archiveRequests.delete(sessionId)
             this.softStandDownArchiveInFlight.delete(sessionId)
             this.archiveDrainedGenerations.delete(sessionId)
         }
     }
 
-    private async archiveSessionOnce(sessionId: string, opts?: { softStandDown?: boolean }): Promise<void> {
+    private async archiveSessionOnce(
+        sessionId: string,
+        opts?: { softStandDown?: boolean }
+    ): Promise<{ pendingCleanup: boolean }> {
         if (this.historyActionsInFlight.has(sessionId) || this.archivedForkPending(sessionId)) {
             throw new Error('Archived fork is in progress; retry the fork to reconcile it before archiving')
         }
         this.historyActionsInFlight.add(sessionId)
         try {
-            await this.archiveSessionUnlocked(sessionId, opts)
+            return await this.archiveSessionUnlocked(sessionId, opts)
         } finally { this.historyActionsInFlight.delete(sessionId) }
     }
 
-    private async archiveSessionUnlocked(sessionId: string, opts?: { softStandDown?: boolean }): Promise<void> {
+    private async archiveSessionUnlocked(
+        sessionId: string,
+        opts?: { softStandDown?: boolean }
+    ): Promise<{ pendingCleanup: boolean }> {
         // Windows may need longer than the ordinary 30s RPC timeout to prove a
         // complete tree exited. All PID fallbacks share this bounded operation
         // budget; an acknowledgement timeout must never become archive success.
@@ -3867,11 +3878,20 @@ export class SyncEngine {
         let peerDoneSoftStandDown = false
         let killPid: number | undefined
         let killProcessStartMarker: string | undefined
-        // #2020 soft stand-down: refuse WORKING / ineligible peers before any
-        // stop RPC so archive_peer cannot yank a live turn (bot Approach).
+        // #2020 soft stand-down: refuse WORKING / non-runner / ineligible peers
+        // before any stop RPC so archive_peer cannot yank a live turn or an
+        // unrelated non-runner session (bot Approach).
         if (opts?.softStandDown) {
             const live = this.sessionCache.getSession(sessionId)
             if (!live || !canSoftStandDownUnconfirmedStop(live)) {
+                throw new ArchiveCleanupError('unconfirmed')
+            }
+            const preMeta = live.metadata
+            const preMachineId = preMeta?.codexResumePending?.machineId ?? preMeta?.machineId
+            const preRunnerOwned = Boolean(preMeta?.codexResumePending)
+                || preMeta?.startedBy === 'runner'
+                || preMeta?.startedFromRunner === true
+            if (!preMachineId || !preRunnerOwned) {
                 throw new ArchiveCleanupError('unconfirmed')
             }
         }
@@ -3988,24 +4008,53 @@ export class SyncEngine {
         this.releaseSessionEnumerations(sessionId)
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
         if (peerDoneSoftStandDown && machineId) {
-            void this.confirmSoftStandDownExit(sessionId, machineId)
+            // Capture generation before archiveSession's finally clears the map —
+            // delayed StopSession must not target a reopened worker under the
+            // same session id (bot Approach on #2021).
+            const drained = this.archiveDrainedGenerations.get(sessionId)
+            const hostPid = typeof sessionMeta?.hostPid === 'number' && sessionMeta.hostPid > 0
+                ? sessionMeta.hostPid
+                : undefined
+            void this.confirmSoftStandDownExit(sessionId, machineId, drained, hostPid)
         }
         const archivedSession = this.sessionCache.getSession(sessionId)
         if (archivedSession?.metadata?.codexResumePending) this.writeCodexResumePending(sessionId, archivedSession.namespace, undefined)
+        return { pendingCleanup: peerDoneSoftStandDown }
     }
 
     /** Poll Runner until soft-stand-down peer exit is confirmed, then lift DELETE gate. */
-    private async confirmSoftStandDownExit(sessionId: string, machineId: string): Promise<void> {
+    private async confirmSoftStandDownExit(
+        sessionId: string,
+        machineId: string,
+        drained?: { pid: number; processStartMarker: string },
+        hostPid?: number
+    ): Promise<void> {
         // Immediate first probe, then short backoff. Cap wall time ~90s in prod;
         // keep tests from sleeping (0ms delay, few attempts).
         const delayMs = process.env.BUN_TEST === '1' || process.env.NODE_ENV === 'test' ? 0 : 2_000
         const maxAttempts = delayMs === 0 ? 2 : 45
+        // Prefer OS-pid + start-marker so a reopen under the same HAPI id cannot
+        // be killed by a stale confirm poll.
+        const stopTarget = drained
+            ? { id: `PID-${drained.pid}`, processStartMarker: drained.processStartMarker }
+            : typeof hostPid === 'number'
+                ? { id: `PID-${hostPid}`, processStartMarker: undefined as string | undefined }
+                : null
+        if (!stopTarget) {
+            // No generation to pin — leave DELETE gated rather than StopSession
+            // by session id (could hit a replacement worker).
+            return
+        }
         for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             if (attempt > 0 && delayMs > 0) {
                 await new Promise((resolve) => setTimeout(resolve, delayMs))
             }
             try {
-                const status = await this.rpcGateway.stopRunnerSession(machineId, sessionId)
+                const status = await this.rpcGateway.stopRunnerSession(machineId, stopTarget.id, {
+                    ...(stopTarget.processStartMarker
+                        ? { processStartMarker: stopTarget.processStartMarker }
+                        : {}),
+                })
                 if (status === 'already_gone' || status === 'stopped') {
                     this.sessionCache.clearSoftStandDownPending(sessionId)
                     return

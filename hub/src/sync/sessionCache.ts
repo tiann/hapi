@@ -1352,8 +1352,12 @@ export class SessionCache {
         for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
             const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
             if (!session?.metadata || session.metadata.softStandDownPending !== true) return
-            const next: Record<string, unknown> = { ...session.metadata }
-            delete next.softStandDownPending
+            // Hub-owned field: use null clear sentinel so carryForwardIfMissing
+            // does not restore softStandDownPending from the prior blob.
+            const next: Record<string, unknown> = {
+                ...session.metadata,
+                softStandDownPending: null,
+            }
             const result = this.store.sessions.updateSessionMetadata(
                 sessionId,
                 next,

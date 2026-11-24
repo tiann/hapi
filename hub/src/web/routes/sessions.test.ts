@@ -64,7 +64,7 @@ function createApp(session: Session, opts?: {
     listSlashCommands?: SyncEngine['listSlashCommands']
     getSessionExport?: (sessionId: string, session: Session, options?: { force?: boolean }) => unknown
     sessionExists?: boolean
-    archiveSession?: (sessionId: string) => Promise<void>
+    archiveSession?: (sessionId: string) => Promise<{ pendingCleanup: boolean }>
     acknowledgeModelError?: (sessionId: string, eventId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     setSessionExternalRefs?: SyncEngine['setSessionExternalRefs']
@@ -150,7 +150,7 @@ function createApp(session: Session, opts?: {
         resumed: true
     }))
     const sessionExists = opts?.sessionExists !== false
-    const archiveSessionMock = opts?.archiveSession ?? (async () => {})
+    const archiveSessionMock = opts?.archiveSession ?? (async () => ({ pendingCleanup: false }))
     const acknowledgeModelErrorMock = opts?.acknowledgeModelError ?? (async () => {})
     const engine = {
         resolveSessionAccess: () => sessionExists
@@ -1869,7 +1869,7 @@ describe('sessions routes', () => {
                 path: '/tmp/project', host: 'localhost', flavor: 'codex', machineId: 'machine-1',
                 lifecycleState: 'archived', startedBy: 'runner',
             } })
-            const { app } = createApp(session, { archiveSession: async () => { calls++ } })
+            const { app } = createApp(session, { archiveSession: async () => { calls++; return { pendingCleanup: false } } })
             const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
             expect(response.status).toBe(200)
             expect(calls).toBe(1)
@@ -1878,7 +1878,7 @@ describe('sessions routes', () => {
             const calls: string[] = []
             const session = createSession({ active: true })
             const { app } = createApp(session, {
-                archiveSession: async (sessionId: string) => { calls.push(sessionId) }
+                archiveSession: async (sessionId: string) => { calls.push(sessionId); return { pendingCleanup: false } }
             })
 
             const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
@@ -1900,7 +1900,7 @@ describe('sessions routes', () => {
                 }
             })
             const { app } = createApp(session, {
-                archiveSession: async (sessionId: string) => { calls.push(sessionId) }
+                archiveSession: async (sessionId: string) => { calls.push(sessionId); return { pendingCleanup: false } }
             })
 
             const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
@@ -1926,7 +1926,7 @@ describe('sessions routes', () => {
                 }
             })
             const { app } = createApp(session, {
-                archiveSession: async (sessionId: string) => { calls.push(sessionId) }
+                archiveSession: async (sessionId: string) => { calls.push(sessionId); return { pendingCleanup: false } }
             })
 
             const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
@@ -1950,7 +1950,7 @@ describe('sessions routes', () => {
                 }
             })
             const { app } = createApp(session, {
-                archiveSession: async () => { called = true }
+                archiveSession: async () => { called = true; return { pendingCleanup: false } }
             })
 
             const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
@@ -1970,6 +1970,7 @@ describe('sessions routes', () => {
                     // Simulates the post-fix behavior: engine catches the
                     // RpcTargetMissingError, calls markSessionArchivedFromHub,
                     // and returns normally.
+                    return { pendingCleanup: false }
                 }
             })
 
@@ -2008,7 +2009,7 @@ describe('sessions routes', () => {
             let called = false
             const session = createSession({ active: false })
             const { app } = createApp(session, {
-                archiveSession: async () => { called = true }
+                archiveSession: async () => { called = true; return { pendingCleanup: false } }
             })
 
             const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
@@ -2030,7 +2031,7 @@ describe('sessions routes', () => {
                 }
             })
             const { app } = createApp(session, {
-                archiveSession: async (sessionId: string) => { calls.push(sessionId) }
+                archiveSession: async (sessionId: string) => { calls.push(sessionId); return { pendingCleanup: false } }
             })
 
             const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })

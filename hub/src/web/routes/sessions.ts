@@ -1161,17 +1161,23 @@ export function createSessionsRoutes(
         const softStandDown = body?.softStandDown === true
 
         try {
-            await engine.archiveSession(sessionResult.sessionId, { softStandDown })
+            const archiveResult = await engine.archiveSession(sessionResult.sessionId, { softStandDown })
+            return c.json({
+                ok: true,
+                ...(softStandDown
+                    ? {
+                        softStandDown: true,
+                        // Actual cleanup outcome — not the request opt-in flag.
+                        pendingCleanup: archiveResult.pendingCleanup === true,
+                    }
+                    : {}),
+            })
         } catch (error) {
             if (error instanceof ArchiveCleanupError) {
                 return c.json({ error: error.message, code: error.code }, error.status)
             }
             throw error
         }
-        return c.json({
-            ok: true,
-            ...(softStandDown ? { softStandDown: true, pendingCleanup: true } : {}),
-        })
     })
 
     app.post('/sessions/:id/model-error/acknowledge', async (c) => {
