@@ -1263,8 +1263,18 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     // Keep /compact's dequeue-time consumption and cancellation
                     // semantics separate and unchanged (see runOpencode.ts's
                     // "No manual emitMessagesConsumed" comment).
+                    //
+                    // `maintenance`: this acknowledgement fires when the
+                    // command is DEQUEUED, before compaction starts, and it
+                    // consumes a command rather than delivering a prompt. The
+                    // hub was reading it as an answer and clearing an
+                    // unanswered blocker — and if the operator then cancelled
+                    // during setup, the second acknowledgement consumed no
+                    // rows, so the blocker stayed gone (#1717). Deliberately
+                    // NOT `clearQueuedThinkingGrace`: /compact must keep that
+                    // grace for the prompts queued behind it.
                     batchSettled = true;
-                    session.queue.commitBatch(batch);
+                    session.queue.commitBatch(batch, { maintenance: true });
                 }
                 const compactAbortController = isCompactBatch ? new AbortController() : null;
                 if (compactAbortController) {

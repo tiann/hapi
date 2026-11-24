@@ -5,7 +5,13 @@ import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { InfoIcon, LoaderIcon, ScheduleIcon, StoppedBadgeIcon } from '@/components/icons'
 import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS, useSessionRowTooltipIds } from '@/components/HoverTooltip'
 import { getAttentionLabel, SessionAttentionIndicator, SessionRequestIcon } from '@/components/SessionAttentionIndicator'
-import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
+import {
+    classifySessionAttention,
+    getSessionBlockedLabelKey,
+    getSessionBlockedState,
+    sessionBlockedIsError,
+    sessionIsUnread
+} from '@/lib/sessionAttention'
 import { getSessionLastSeenAt, getSessionManualUnreadAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { getStoppedSessionTime } from '@/lib/sessionListOrder'
@@ -180,6 +186,11 @@ export function SessionRowSummary(props: {
     // Unread rows hand the agent icon to the attention tooltip as the "unread"
     // symbol, so it is no longer the presence badge and must not pulse.
     const plainUnreadTarget = attention?.kind === 'unread' && nestedTooltips && !attentionTooltipIdProp
+    // Blocked rides a different visual channel to the attention dot (chip +
+    // row rail), so a session can be both blocked and awaiting a permission
+    // without either signal having to win.
+    const blocked = getSessionBlockedState(s, { now: Date.now() })
+    const blockedLabel = blocked ? t(getSessionBlockedLabelKey(blocked)) : null
     const urgentAttention = attention !== null
         && (attention.kind === 'permission' || attention.kind === 'input')
     const modelErrorActive = hasUrgentModelError(s.metadata)
@@ -292,6 +303,22 @@ export function SessionRowSummary(props: {
                         >
                             {sessionName}
                         </div>
+                        {blocked && blockedLabel ? (
+                            <span
+                                data-testid="session-blocked-chip"
+                                className={`inline-flex shrink-0 items-center rounded border px-1 py-px text-[10px] font-semibold uppercase leading-none tracking-wide ${
+                                    blocked.stale
+                                        ? 'border-[var(--app-border)] text-[var(--app-hint)]'
+                                        : sessionBlockedIsError(blocked)
+                                            ? 'border-[var(--app-badge-error-border)] bg-[var(--app-badge-error-bg)] text-[var(--app-badge-error-text)]'
+                                            : 'border-[var(--app-badge-warning-border)] bg-[var(--app-badge-warning-bg)] text-[var(--app-badge-warning-text)]'
+                                }`}
+                                title={blocked.note ?? blockedLabel}
+                                aria-label={blocked.note ? `${blockedLabel} — ${blocked.note}` : blockedLabel}
+                            >
+                                {blockedLabel}
+                            </span>
+                        ) : null}
                         {/* Model error outranks activity/unread: the turn looked
                             finished but failed, so this must not be collapsed
                             into the combined indicator below. */}
@@ -366,7 +393,9 @@ export function SessionRowSummary(props: {
                                 {todoProgress.completed}/{todoProgress.total}
                             </span>
                         ) : null}
-                        {!attention && s.active && s.pendingRequestsCount > 0 ? (
+                        {/* The blocked chip already names the reason; repeating
+                            "pending N" here just crowds the title out of a narrow row. */}
+                        {!attention && !blocked && s.active && s.pendingRequestsCount > 0 ? (
                             <span className="shrink-0 text-[var(--app-badge-warning-text)]">
                                 {t('session.item.pending')} {s.pendingRequestsCount}
                             </span>

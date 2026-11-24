@@ -3,11 +3,14 @@ import { toSessionSummary, type Session } from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
 import { sessionIsUnread } from '@/lib/sessionAttention'
 import {
+    chooseBlockedJumpTarget,
+    collectOffscreenBlockers,
     computeOpenSessionTickRatio,
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
     groupSessionsByDirectory,
     filterActiveSessionsOnly,
+    restoreSelectedSessionExemption,
     filterScratchlistSessionsOnly,
     filterUnreadSessionsOnly,
     filterWorkingSessionsOnly,
@@ -659,6 +662,78 @@ describe('filterActiveSessionsOnly', () => {
     })
 })
 
+describe('restoreSelectedSessionExemption (#1717)', () => {
+    it('re-adds the selected session when a DIFFERENT jump target replaced its exemption', () => {
+        // With Active-only enabled, the selected stopped session stays
+        // visible through its own exemption. Jumping to a different
+        // stopped blocker sets `filterExemptId` to the jump target instead
+        // — the selected session's exemption is gone, and a lens filter
+        // upstream (e.g. `filterActiveSessionsOnly`) already dropped its row.
+        const unfiltered = [
+            makeSession({ id: 'selected-stopped', metadata: { path: '/p' } }),
+            makeSession({ id: 'jump-target-stopped', metadata: { path: '/p' } })
+        ]
+        const filtered = [unfiltered[1]!] // only the jump target survived the lens above
+        const result = restoreSelectedSessionExemption(filtered, unfiltered, 'selected-stopped', 'jump-target-stopped')
+        expect(result.map(s => s.id).sort()).toEqual(['jump-target-stopped', 'selected-stopped'])
+    })
+
+    it('does nothing when the selected session already survived the filter', () => {
+        const unfiltered = [makeSession({ id: 'a', metadata: { path: '/p' } })]
+        const filtered = [unfiltered[0]!]
+        const result = restoreSelectedSessionExemption(filtered, unfiltered, 'a', 'a')
+        expect(result).toBe(filtered)
+    })
+
+    it('does nothing when there is no selection', () => {
+        const unfiltered = [makeSession({ id: 'a', metadata: { path: '/p' } })]
+        const result = restoreSelectedSessionExemption([], unfiltered, null, null)
+        expect(result).toEqual([])
+    })
+
+    it('does nothing when the selected session no longer exists at all', () => {
+        const unfiltered = [makeSession({ id: 'a', metadata: { path: '/p' } })]
+        const result = restoreSelectedSessionExemption([], unfiltered, 'gone', null)
+        expect(result).toEqual([])
+    })
+
+    it('must be given a base the saved status filter has not already run against (#1717 cold-review round 29)', () => {
+        // `SessionList`'s own call site feeds this `sidebarSessions` (never
+        // touched by `listView.status`), not `visibleSessions` (already
+        // run through `filterSessionsForListStatus` against the CURRENT
+        // `filterExemptId`). Composing the two pure functions the way the
+        // broken wiring did proves why: with Active-only on, a jump target
+        // replacing the selected session's exemption drops the selected
+        // session from `visibleSessions` BEFORE this function ever runs —
+        // there is nothing left in that array to restore from.
+        const selected = makeSession({ id: 'selected-stopped', active: false, metadata: { path: '/p' } })
+        const jumpTarget = makeSession({ id: 'jump-target-stopped', active: false, metadata: { path: '/p' } })
+        const sidebarSessions = [selected, jumpTarget] // never filtered by status
+        const statusFilteredWithJumpTargetExempt = filterSessionsForListStatus(
+            sidebarSessions, 'active', 'jump-target-stopped'
+        )
+        // Confirms the premise: the saved filter really did drop the
+        // selected session once the jump target took its exemption slot.
+        expect(statusFilteredWithJumpTargetExempt.map(s => s.id)).toEqual(['jump-target-stopped'])
+
+        const brokenWiring = restoreSelectedSessionExemption(
+            statusFilteredWithJumpTargetExempt,
+            statusFilteredWithJumpTargetExempt, // `visibleSessions` stand-in — already status-filtered
+            'selected-stopped',
+            'jump-target-stopped'
+        )
+        expect(brokenWiring.map(s => s.id)).toEqual(['jump-target-stopped'])
+
+        const correctWiring = restoreSelectedSessionExemption(
+            statusFilteredWithJumpTargetExempt,
+            sidebarSessions, // the real call site's base
+            'selected-stopped',
+            'jump-target-stopped'
+        )
+        expect(correctWiring.map(s => s.id).sort()).toEqual(['jump-target-stopped', 'selected-stopped'])
+    })
+})
+
 describe('filterUnreadSessionsOnly', () => {
     const lastSeen = (id: string): number => {
         if (id === 'unread' || id === 'unread-a') return 1000
@@ -1155,5 +1230,184 @@ describe('shouldShowOpenSessionTick', () => {
             insideCollapsedPanel: false,
             tickRatio: null,
         })).toBe(false)
+    })
+})
+
+describe('collectOffscreenBlockers (#1717 one list for arrow and target)', () => {
+    const bounds = { top: 100, bottom: 500 }
+    const row = (id: string, top: number, collapsed = false) => ({
+        id, top, bottom: top + 20, height: 20, collapsed
+    })
+
+    it('splits mounted rows by where they sit', () => {
+        expect(collectOffscreenBlockers({
+            bounds,
+            mounted: [row('up', 10), row('visible', 200), row('down', 600)],
+            collapsedSections: []
+        })).toEqual({ above: ['up'], below: ['down'] })
+    })
+
+    it("includes a collapsed section's rows at its header, even unmounted", () => {
+        // Once the collapse transition settles the rows leave the DOM, so the
+        // arrow counted them via the header while the click could not see them
+        // at all — an up arrow answered by a click on a visible row below it.
+        expect(collectOffscreenBlockers({
+            bounds,
+            mounted: [row('visible', 200)],
+            collapsedSections: [{ ids: ['pinned-blocker'], headerRect: { top: 20, bottom: 40 } }]
+        })).toEqual({ above: ['pinned-blocker'], below: [] })
+    })
+
+    it('ignores a row still mounted inside a closing panel', () => {
+        // During the transition the rows are mounted at full size, so a height
+        // check would read them as visible; the section list covers them.
+        expect(collectOffscreenBlockers({
+            bounds,
+            mounted: [row('collapsing', 200, true)],
+            collapsedSections: [{ ids: ['collapsing'], headerRect: { top: 20, bottom: 40 } }]
+        })).toEqual({ above: ['collapsing'], below: [] })
+    })
+
+    it('does not list a row twice when it is both mounted and in a section', () => {
+        expect(collectOffscreenBlockers({
+            bounds,
+            mounted: [row('dup', 10)],
+            collapsedSections: [{ ids: ['dup'], headerRect: { top: 600, bottom: 620 } }]
+        })).toEqual({ above: ['dup'], below: [] })
+    })
+
+    it('orders a collapsed section against mounted rows by actual position, not by which pass found them (#1717 cold-review round 30)', () => {
+        // A collapsed Pinned section sitting ABOVE an expanded Blocked
+        // section, both off-screen: appending every collapsed section's
+        // ids after all mounted ones put Pinned last in `above` regardless
+        // of its header's real position, so the "up" jump (which takes
+        // `above`'s LAST entry as nearest the viewport) picked Pinned over
+        // the mounted Blocked row that actually sits closer.
+        const result = collectOffscreenBlockers({
+            bounds,
+            mounted: [row('blocked-row', 60)],
+            collapsedSections: [{ ids: ['pinned-header'], headerRect: { top: 10, bottom: 30 } }]
+        })
+        expect(result.above).toEqual(['pinned-header', 'blocked-row'])
+    })
+
+    it('gives a header already on screen no direction', () => {
+        expect(collectOffscreenBlockers({
+            bounds,
+            mounted: [],
+            collapsedSections: [{ ids: ['x'], headerRect: { top: 200, bottom: 220 } }]
+        })).toEqual({ above: [], below: [] })
+    })
+
+    it('drops filter-hidden blockers, which have no header to sit at', () => {
+        expect(collectOffscreenBlockers({
+            bounds, mounted: [], collapsedSections: [{ ids: ['x'], headerRect: null }]
+        })).toEqual({ above: [], below: [] })
+    })
+})
+
+describe('chooseBlockedJumpTarget (#1717 jump follows its own arrow)', () => {
+    const noneVisited: ReadonlySet<string> = new Set()
+
+    it('travels down to the off-screen row when the arrow points down', () => {
+        // The bug: with a newer blocker already visible and an older one below
+        // the fold, the arrow pointed down but the cursor selected the visible
+        // row, so the first click appeared to do nothing and the operator had
+        // to click again to go where the arrow said.
+        expect(chooseBlockedJumpTarget({
+            direction: 'down',
+            above: [],
+            below: ['older-below'],
+            visited: noneVisited,
+            fallbackOrder: ['newer-visible', 'older-below']
+        })).toBe('older-below')
+    })
+
+    it('travels to the NEAREST row above when the arrow points up', () => {
+        // `above` is in document order, so the last entry is the closest one.
+        expect(chooseBlockedJumpTarget({
+            direction: 'up',
+            above: ['far-above', 'near-above'],
+            below: [],
+            visited: noneVisited,
+            fallbackOrder: ['visible', 'far-above', 'near-above']
+        })).toBe('near-above')
+    })
+
+    it('keeps cycling when blockers lie both ways', () => {
+        // The arrow is not promising a direction, so repeated clicks should
+        // still reach everything rather than pinning one side.
+        expect(chooseBlockedJumpTarget({
+            direction: 'both',
+            above: ['a'],
+            below: ['b'],
+            visited: noneVisited,
+            fallbackOrder: ['cursor-pick', 'a', 'b']
+        })).toBe('cursor-pick')
+    })
+
+    it('falls back when the arrow points somewhere with nothing measurable', () => {
+        // Filter-hidden blockers are not in the DOM, so a direction can be
+        // drawn with no row to travel to; the fallback order still has to work.
+        expect(chooseBlockedJumpTarget({
+            direction: 'down',
+            above: [],
+            below: [],
+            visited: noneVisited,
+            fallbackOrder: ['cursor-pick']
+        })).toBe('cursor-pick')
+    })
+
+    it('falls back when there is no direction at all', () => {
+        expect(chooseBlockedJumpTarget({
+            direction: 'none',
+            above: ['a'],
+            below: ['b'],
+            visited: noneVisited,
+            fallbackOrder: ['cursor-pick', 'a', 'b']
+        })).toBe('cursor-pick')
+    })
+
+    // Cold-review round 21: a one-way arrow always re-selects the nearest
+    // off-screen row in that direction, so a blocker hidden entirely by a
+    // filter (never present in `above`/`below`) could never be reached —
+    // repeated clicks alternated between the two directionally-visible rows
+    // forever. Without `visited`, this would return 'below-one' again.
+    it('skips an already-visited directional target and reaches a filtered blocker instead', () => {
+        // 'pinned-visible' and 'below-one' were already visited earlier in
+        // this cycle (the pinned row is on screen; the arrow already sent a
+        // click to the one below the fold) — only 'filtered-out' is new.
+        const visited = new Set(['pinned-visible', 'below-one'])
+        expect(chooseBlockedJumpTarget({
+            direction: 'down',
+            above: [],
+            below: ['below-one'],
+            visited,
+            fallbackOrder: ['pinned-visible', 'below-one', 'filtered-out']
+        })).toBe('filtered-out')
+    })
+
+    it('prefers an unvisited directional candidate over the fallback order', () => {
+        const visited = new Set(['near-above'])
+        expect(chooseBlockedJumpTarget({
+            direction: 'up',
+            above: ['far-above', 'near-above'],
+            below: [],
+            visited,
+            fallbackOrder: ['far-above', 'near-above']
+        })).toBe('far-above')
+    })
+
+    it('still returns a target when every candidate has already been visited', () => {
+        // Defensive only: the caller clears `visited` before this can happen
+        // in practice, but the picker must not return an empty id.
+        const visited = new Set(['only-one'])
+        expect(chooseBlockedJumpTarget({
+            direction: 'down',
+            above: [],
+            below: ['only-one'],
+            visited,
+            fallbackOrder: ['only-one']
+        })).toBe('only-one')
     })
 })

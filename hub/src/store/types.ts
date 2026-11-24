@@ -24,6 +24,16 @@ export type StoredSession = {
     todosUpdatedAt: number | null
     teamState: unknown | null
     teamStateUpdatedAt: number | null
+    lastNotifyStatus: string | null
+    lastNotifyAt: number | null
+    lastNotifyNote: string | null
+    blockedAckAt: number | null
+    blockedAckReason: string | null
+    blockedAckKeys: string[] | null
+    lastNotifyClearedAt: number | null
+    lastNotifyReceivedAt: number | null
+    lastNotifyClearedAuthorAt: number | null
+    lastNotifyUpdatedAt: number | null
     active: boolean
     activeAt: number | null
     seq: number
@@ -55,6 +65,13 @@ export type StoredMessage = {
     seq: number
     localId: string | null
     invokedAt: number | null
+    /** Set when the session-end sweep stamped `invokedAt` without a runtime
+     *  ACK, so a reply can be told apart from one the agent actually got. */
+    sweptAt?: number | null
+    /** When the HUB received this message, vs `createdAt`'s runner clock (#1717). */
+    receivedAt?: number | null
+    /** 1 if the delivery reached the agent, 0 if handled locally, NULL if unknown (#1717). */
+    agentDelivered?: number | null
     scheduledAt: number | null
     /** Omitted for ordinary queued/delivered rows; set when steer outcome is unknown. */
     deliveryState?: MessageDeliveryState

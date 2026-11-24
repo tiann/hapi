@@ -67,6 +67,7 @@ function createImportSyncEngine(store: Store, machines: Machine[]): SyncEngine {
             store.sessions.getOrCreateSession(tag, metadata, agentState, namespace) as unknown as ReturnType<SyncEngine['getOrCreateSession']>
         ),
         handleRealtimeEvent: () => {},
+        reconcileNotifySignalAfterImport: () => {},
         recordSessionActivity: () => {}
     } as unknown as SyncEngine
 }

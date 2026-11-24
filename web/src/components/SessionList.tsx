@@ -115,11 +115,26 @@ import {
     hasUnarchivedJob,
 } from '@/lib/sessionInProgress'
 import {
+    BLOCKED_ALERT_PULSE_MS,
+    useBlockedAlertMode,
+    type BlockedAlertMode
+} from '@/hooks/useBlockedAlertMode'
+import { playBlockedAlertSound } from '@/lib/blockedAlertSound'
+import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
+import {
+    BLOCKED_NOTIFY_STALE_MS,
     compareDescWithKeyTiebreak,
     compareSessionsByOrderKeyDesc
 } from '@hapi/protocol'
 import { createSessionComparator, getSessionSortKey } from '@/lib/sessionListOrder'
-import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
+import {
+    classifySessionAttention,
+    getSessionBlockedLabelKey,
+    getSessionBlockedState,
+    sessionBlockedIsError,
+    sessionIsBlocked,
+    sessionIsUnread
+} from '@/lib/sessionAttention'
 import {
     getSessionLastSeenAt,
     getSessionLastSeenSnapshot,
@@ -154,6 +169,7 @@ import {
 import { formatGithubPrChipDetailParts, SessionPrChip } from '@/components/SessionPrChip'
 import { useScratchlistSessionIds } from '@/hooks/queries/useScratchlistSessionIds'
 import { CalendarIcon, formatDateValue, parseLocalDate, SessionDateRangePicker } from '@/components/SessionDateFilter'
+import { UnblockReasonDialog } from '@/components/UnblockReasonDialog'
 import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { useAddToast } from '@/lib/toast-context'
@@ -297,6 +313,168 @@ export function isPinnedInProgressSession(
     return hasInProgressJobSession(session, now) || hasAgentInProgressActivity(session)
 }
 
+/**
+ * Fires the arrival alert when a session *becomes* blocked (#1717).
+ *
+ * Keyed on session ids rather than the count, because a count alone cannot
+ * tell "one resolved, another arrived" from "nothing happened" — that swap
+ * nets to zero and would silently skip the alert on the new blocker.
+ *
+ * The alert deadline is state, not a timer owned by this effect: the blocked
+ * id list churns constantly at fleet scale, and an effect that re-runs would
+ * otherwise cancel its own pending clear and leave the counter pulsing
+ * forever.
+ *
+ * `ready` gates the baseline. The router mounts this list with `sessions={[]}`
+ * while `/sessions` is in flight, so seeding on the literal first render would
+ * make every cold page load read its entire pre-existing backlog as brand new
+ * and — in sound mode — buzz at you on every refresh.
+ */
+function useBlockedArrivalAlert(
+    blockedIds: string[],
+    mode: BlockedAlertMode,
+    ready: boolean
+): boolean {
+    const [alertUntil, setAlertUntil] = useState(0)
+    const [now, setNow] = useState(0)
+    const seenRef = useRef<Set<string> | null>(null)
+
+    const key = blockedIds.join(',')
+    useEffect(() => {
+        if (!ready) return
+        const current = new Set(blockedIds)
+        const seen = seenRef.current
+        seenRef.current = current
+
+        if (seen === null) return
+        const arrived = blockedIds.some(id => !seen.has(id))
+        if (!arrived || mode === 'count') return
+
+        setAlertUntil(Date.now() + BLOCKED_ALERT_PULSE_MS)
+        if (mode === 'sound') playBlockedAlertSound()
+    }, [key, mode, ready]) // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+        if (alertUntil === 0) return
+        const remaining = alertUntil - Date.now()
+        if (remaining <= 0) {
+            setAlertUntil(0)
+            return
+        }
+        const timer = setTimeout(() => {
+            setAlertUntil(0)
+            setNow(value => value + 1)
+        }, remaining)
+        return () => clearTimeout(timer)
+    }, [alertUntil])
+
+    void now
+    return alertUntil > 0
+}
+
+export type BlockedJumpDirection = 'none' | 'up' | 'down' | 'both'
+
+const BLOCKED_DIRECTION_GLYPH: Record<BlockedJumpDirection, string | null> = {
+    none: null,
+    up: '\u2191',
+    down: '\u2193',
+    both: '\u2195'
+}
+
+function BlockedFilterIcon(props: { className?: string }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className} aria-hidden="true">
+            <path d="M3 5h18l-7 8v6l-4 2v-8Z" />
+        </svg>
+    )
+}
+
+function BlockedFlagIcon(props: { className?: string }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={props.className} aria-hidden="true">
+            <path d="M4 21V4h13l-2 4 2 4H4" />
+        </svg>
+    )
+}
+
+/**
+ * Always-visible blocked counter (#1717).
+ *
+ * This is the off-viewport answer. Edge chevrons cannot do this job: the
+ * session list collapses directory groups and caps each group's preview, so a
+ * blocked row is frequently not merely scrolled out of view but absent from
+ * the DOM entirely — a "scroll down" hint would strand the operator on a
+ * collapsed header. A header counter is always on screen, states a number, and
+ * its click makes the row reachable before travelling to it.
+ *
+ * Deliberately a plain action button, not a toggle: the blocked-only lens is
+ * its own sibling control below, so keyboard and assistive activation reach
+ * both behaviours natively rather than depending on a long-press gesture.
+ */
+function BlockedJumpPill(props: {
+    count: number
+    direction: BlockedJumpDirection
+    /** Briefly true after a NEW blocker arrives — see `useBlockedArrivalAlert`. */
+    alerting: boolean
+    onJump: (viaKeyboard: boolean) => void
+}) {
+    const { t } = useTranslation()
+    const glyph = BLOCKED_DIRECTION_GLYPH[props.direction]
+    const label = t('sessions.blocked.jump', { count: props.count })
+
+    return (
+        <button
+            type="button"
+            onClick={(event) => props.onJump(event.detail === 0)}
+            data-testid="blocked-jump-pill"
+            title={label}
+            aria-label={label}
+            className={cn(
+                'flex h-9 shrink-0 items-center gap-1 rounded-full border px-2.5 text-xs font-semibold tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
+                'border-[var(--app-badge-warning-border)] text-[var(--app-badge-warning-text)] hover:bg-[var(--app-badge-warning-bg)]',
+                // Pulse only on arrival, never continuously: a permanent pulse
+                // at fleet scale is wallpaper within a day, and this needs to
+                // still mean something on day 200.
+                props.alerting ? 'bg-[var(--app-badge-warning-bg)] animate-blocked-alert' : ''
+            )}
+        >
+            <BlockedFlagIcon className="h-3.5 w-3.5" />
+            <span>{props.count}</span>
+            {glyph ? <span aria-hidden="true">{glyph}</span> : null}
+        </button>
+    )
+}
+
+/** Blocked-only lens, mirroring the existing unread-only header toggle. */
+function BlockedLensToggle(props: {
+    active: boolean
+    count: number
+    onToggle: () => void
+}) {
+    const { t } = useTranslation()
+    const label = props.active
+        ? t('sessions.blockedFilter.showingOnly', { count: props.count })
+        : t('sessions.blockedFilter.hint')
+
+    return (
+        <button
+            type="button"
+            onClick={props.onToggle}
+            data-testid="blocked-lens-toggle"
+            aria-pressed={props.active}
+            title={label}
+            aria-label={label}
+            className={cn(
+                'flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
+                props.active
+                    ? 'bg-[var(--app-badge-warning-bg)] text-[var(--app-badge-warning-text)]'
+                    : 'text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)]'
+            )}
+        >
+            <BlockedFilterIcon className="h-4 w-4" />
+        </button>
+    )
+}
 
 export type SessionTimeRange = {
     start: number | null
@@ -490,9 +668,202 @@ export function filterActiveSessionsOnly(sessions: SessionSummary[], selectedSes
 }
 
 /**
+ * Re-add the selected session to a filtered list if the pipeline above
+ * dropped it (#1717).
+ *
+ * The jump-reveal exemption and the selected session's own exemption are
+ * not interchangeable: every lens filter above takes ONE exempt id
+ * (`revealBlockedSessionId ?? selectedSessionId`), so revealing a
+ * DIFFERENT stopped blocker replaces the selected session's exemption
+ * rather than adding to it, and the operator's already-open chat row
+ * disappears while the jump target is shown. `unfiltered` is searched
+ * (not `filtered`) because the session being restored is, by definition,
+ * the one a filter above already removed — it MUST be a base no
+ * `filterExemptId`-dependent filter has touched (e.g. `sidebarSessions`,
+ * not `visibleSessions`), or the saved "Active sessions only" status
+ * filter upstream (`listView.status`, applied against the CURRENT
+ * `filterExemptId` before this function ever runs) can have already
+ * dropped the selected session from `unfiltered` itself, leaving nothing
+ * to restore from (#1717 cold-review round 29).
+ */
+export function restoreSelectedSessionExemption<T extends SessionSummary>(
+    filtered: T[],
+    unfiltered: T[],
+    selectedSessionId: string | null | undefined,
+    filterExemptId: string | null | undefined
+): T[] {
+    if (selectedSessionId == null || selectedSessionId === filterExemptId) {
+        return filtered
+    }
+    if (filtered.some(session => session.id === selectedSessionId)) {
+        return filtered
+    }
+    const selectedSession = unfiltered.find(session => session.id === selectedSessionId)
+    return selectedSession ? [...filtered, selectedSession] : filtered
+}
+
+/**
  * List-view status filter with the #1404 jobs exception on "active": idle rows
  * that still have a running attachedJob stay visible (and stay out of archived).
  */
+/**
+ * Owns the dismissal dialog and its mutation for as long as one is open.
+ *
+ * Deliberately a separate component rather than a hook on `SessionList`: the
+ * row-render-isolation guard watches `useSessionActions` as its proxy for "no
+ * row re-rendered", and calling it on every `SessionList` render would both
+ * trip that guard and run a mutation hook for a null session continuously.
+ * Mounted while a target exists and unmounted when it clears, so the draft
+ * inside the dialog survives the row moving between sections — which is the
+ * whole point — without the row owning it.
+ */
+function UnblockDialogHost(props: {
+    target: UnblockDialogTarget
+    api: ApiClient | null
+    scrollContainer: React.RefObject<HTMLDivElement | null>
+    onClose: (token: UnblockDialogTarget) => void
+}) {
+    const { target } = props
+    const { acknowledgeBlocked, isPending } = useSessionActions(props.api, target.sessionId)
+    return (
+        <UnblockReasonDialog
+            isOpen
+            sessionTitle={target.title}
+            blockedLabel={target.label}
+            blockedNote={target.note}
+            isPending={isPending}
+            // Resolved at restore time rather than captured: the row this was
+            // opened from may have moved, or be gone from the DOM entirely.
+            // The jump pill is the stable fallback, so focus never lands on
+            // the document body.
+            // The element carrying `data-session-id` IS the row button, so a
+            // descendant selector found nothing. And the jump pill is not a
+            // safe fallback: dismissing the LAST blocker unmounts it, which
+            // left focus on the document body. The header row is always
+            // mounted and carries `tabIndex={-1}` for exactly this.
+            returnFocusTo={() => props.scrollContainer.current
+                ?.querySelector<HTMLElement>(
+                    `[data-session-id="${CSS.escape(target.sessionId)}"]`
+                )
+                ?? document.querySelector<HTMLElement>('[data-testid="blocked-jump-pill"]')
+                ?? document.querySelector<HTMLElement>('[data-testid="session-list-header-row"]')}
+            onClose={() => props.onClose(props.target)}
+            onConfirm={async (reason) => {
+                await acknowledgeBlocked({
+                    reason,
+                    observed: { at: target.at, key: target.key }
+                })
+            }}
+        />
+    )
+}
+
+/**
+ * Which blocked row the jump pill should travel to (#1717).
+ *
+ * The pill draws an arrow from measured off-screen counts, but the target was
+ * chosen by a cursor cycling through every blocker in update order — so with a
+ * newer blocker already visible and an older one below the fold, the arrow
+ * pointed down and the first click selected the row already on screen. The
+ * operator had to click twice to go where the arrow said.
+ *
+ * A single direction is honoured by travelling to the nearest off-screen row
+ * that way. With blockers both above and below, the arrow is not promising one
+ * direction, so the fallback order keeps cycling and repeated clicks still
+ * reach everything.
+ *
+ * `visited` breaks a second failure (cold-review round 21): a one-way arrow
+ * always re-selects the nearest off-screen row in that direction, so with a
+ * blocker pinned on screen, a second below the fold, and a third hidden by a
+ * machine filter (never present in `above`/`below` at all), a down arrow
+ * alternates between the first two forever and the third — which the pill's
+ * own count promises exists — is never reached. Skipping an already-visited
+ * directional candidate drops through to `fallbackOrder`, which the caller
+ * builds from every counted blocker, filtered ones included.
+ */
+export function chooseBlockedJumpTarget(options: {
+    direction: BlockedJumpDirection
+    above: string[]
+    below: string[]
+    visited: ReadonlySet<string>
+    fallbackOrder: string[]
+}): string {
+    const { direction, above, below, visited, fallbackOrder } = options
+    // `above` is in document order, so the LAST entry is nearest the viewport.
+    if (direction === 'up') {
+        for (let i = above.length - 1; i >= 0; i -= 1) {
+            if (!visited.has(above[i]!)) return above[i]!
+        }
+    }
+    if (direction === 'down') {
+        for (const id of below) {
+            if (!visited.has(id)) return id
+        }
+    }
+    for (const id of fallbackOrder) {
+        if (!visited.has(id)) return id
+    }
+    // Every counted blocker was visited this cycle. The caller clears
+    // `visited` before the lap that would hit this, so it is only reachable
+    // from a stale snapshot mid-render — keep moving rather than return
+    // nothing.
+    return fallbackOrder[0] ?? above[above.length - 1] ?? below[0] ?? ''
+}
+
+/**
+ * Off-screen blocked rows, above and below, as IDENTITIES (#1717).
+ *
+ * One list feeding both the arrow and the jump target, because two
+ * computations of "which blockers are off-screen" drifted apart twice: the
+ * arrow counted collapsed rows via their section header while the click could
+ * only see mounted rows, so an up arrow from a collapsed section was answered
+ * by a click that landed on a visible row below it.
+ *
+ * A collapsed section's rows leave the DOM once its transition settles, so
+ * they are taken from state and positioned at the section header — which is
+ * both where the arrow was computed from and where activating the pill lands.
+ */
+export function collectOffscreenBlockers(options: {
+    bounds: { top: number; bottom: number }
+    mounted: Array<{ id: string; top: number; bottom: number; height: number; collapsed: boolean }>
+    collapsedSections: Array<{ ids: string[]; headerRect: { top: number; bottom: number } | null }>
+}): { above: string[]; below: string[] } {
+    // Collected into ONE position-ordered list before splitting into
+    // above/below (#1717 cold-review round 30) — appending every collapsed
+    // section's ids after all mounted ones (the previous two-pass shape)
+    // put them last in `above` regardless of where their header actually
+    // sits. A collapsed Pinned section above an expanded Blocked section
+    // (both off-screen) made `chooseBlockedJumpTarget`'s "up" branch —
+    // `above[above.length - 1]`, nearest the viewport — pick Pinned's id
+    // over Blocked's, even though Blocked's mounted rows sit CLOSER to the
+    // viewport than Pinned's collapsed header.
+    const seen = new Set<string>()
+    const positioned: Array<{ id: string; top: number; bottom: number }> = []
+    for (const row of options.mounted) {
+        if (row.collapsed) continue
+        if (row.height <= 0) continue
+        seen.add(row.id)
+        positioned.push({ id: row.id, top: row.top, bottom: row.bottom })
+    }
+    for (const section of options.collapsedSections) {
+        const rect = section.headerRect
+        if (!rect) continue
+        for (const id of section.ids) {
+            if (seen.has(id)) continue
+            seen.add(id)
+            positioned.push({ id, top: rect.top, bottom: rect.bottom })
+        }
+    }
+    positioned.sort((a, b) => a.top - b.top)
+    const above: string[] = []
+    const below: string[] = []
+    for (const item of positioned) {
+        if (item.bottom <= options.bounds.top) above.push(item.id)
+        else if (item.top >= options.bounds.bottom) below.push(item.id)
+    }
+    return { above, below }
+}
+
 export function filterSessionsForListStatus(
     sessions: SessionSummary[],
     status: SessionListView['status'],
@@ -1337,6 +1708,13 @@ export function SessionListSearch(props: {
                 // check, focusing its "Got it" button reads as focus leaving
                 // and collapses the search bar out from under it.
                 if (related?.closest('[data-fue-callout]')) return
+                // The blocked controls sit beside this container, not inside
+                // it, so moving focus onto them read as focus leaving: the bar
+                // collapsed and unmounted the button BEFORE the click
+                // dispatched, swallowing it, and tabbing across from the field
+                // lost the focused control the same way. They share the search
+                // field's focus boundary instead (#1717).
+                if (related?.closest('[data-search-focus-boundary]')) return
                 if (!event.currentTarget.contains(related as Node | null)) {
                     props.onExpandedChange(false)
                 }
@@ -1387,6 +1765,38 @@ export function SessionListSearch(props: {
 
 // A row with an open menu or dialog holds its collapsed panel mounted.
 const CollapsiblePanelHoldContext = createContext<((held: boolean) => void) | null>(null)
+/**
+ * Lets a row declare that its dismissal dialog is open.
+ *
+ * `CollapsiblePanelHoldContext` does NOT cover this: it gates whether a panel's
+ * children render while the panel collapses, but a row removed from
+ * `blockedSectionSessions` by a filter is not among those children at all, so
+ * there is nothing for the hold to keep alive. The jump exemption has to be
+ * withheld explicitly instead.
+ */
+const BlockedDialogHoldContext = createContext<((sessionId: string | null) => void) | null>(null)
+
+/**
+ * Opening the Mark-unblocked dialog hands its target UP to `SessionList`
+ * rather than rendering it on the row (#1717).
+ *
+ * The row is not a stable place for it: a reply from another client clears the
+ * blocker, the row moves out of the Blocked section on the next session
+ * update, React unmounts it — and the dialog goes with it, discarding a reason
+ * the operator was part-way through typing. `SessionList` outlives any row
+ * movement, so the dialog and the draft inside it survive.
+ */
+export type UnblockDialogTarget = {
+    sessionId: string
+    title: string
+    at: number
+    key: string
+    label: string | null
+    note: string | null
+}
+const UnblockDialogRequestContext = createContext<((target: UnblockDialogTarget) => void) | null>(null)
+/** Which row, if any, currently has the dismissal dialog open against it. */
+const BlockedDialogOpenContext = createContext<string | null>(null)
 const CollapsiblePanelOpenContext = createContext(true)
 
 type QuickUnpinFocusTarget = { sessionId: string; pending: boolean }
@@ -1442,6 +1852,9 @@ type SessionItemProps = {
     targetMessageId?: string
     targetMessageQuery?: string
     lastSeenVersion: number
+    /** Brief ring after jump-to-next-blocked, so the row the list travelled to
+     *  is obvious once the scroll settles. */
+    flashHighlight?: boolean
     /** Stopped rows show the stop time they are ordered by (Active first). */
     showStoppedTime?: boolean
 }
@@ -1475,6 +1888,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         targetMessageId,
         targetMessageQuery,
         lastSeenVersion,
+        flashHighlight = false,
         showStoppedTime = false
     } = props
     const { haptic } = usePlatform()
@@ -1497,6 +1911,11 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const rowButtonRef = useRef<HTMLButtonElement>(null)
     const quickUnpinFocusRef = useContext(QuickUnpinFocusContext)
     const panelOpen = useContext(CollapsiblePanelOpenContext)
+    const requestUnblockDialog = useContext(UnblockDialogRequestContext)
+    // The dialog itself lives in `SessionList` so it outlives this row moving
+    // between sections; the row only reports whether one is open against it,
+    // which `overlayOpen` below needs.
+    const unblockOpen = useContext(BlockedDialogOpenContext) === s.id
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,
@@ -1522,14 +1941,17 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         ? t('session.action.reopenCursorUnverified')
         : undefined
 
-    const { archiveSession, reopenSession, renameSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, setPinMode, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, setPinMode, acknowledgeBlocked, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
     )
     const [reopenError, setReopenError] = useState<string | null>(null)
     const holdPanel = useContext(CollapsiblePanelHoldContext)
-    const overlayOpen = menuOpen || renameOpen || linkPrOpen || exportOpen || archiveOpen || forkFlowOpen || reopenError !== null
+    // `unblockOpen` belongs here with the other dialogs: without it, a row
+    // revealed by the jump exemption unmounted two seconds later and took the
+    // open Mark-unblocked dialog with it, mid-entry.
+    const overlayOpen = menuOpen || renameOpen || linkPrOpen || exportOpen || archiveOpen || forkFlowOpen || unblockOpen || reopenError !== null
     useEffect(() => {
         if (!overlayOpen || !holdPanel) return
         holdPanel(true)
@@ -1729,6 +2151,32 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
             : null,
         [s, selected, showDetailedStatus, lastSeenVersion]
     )
+    // The rail lives on the button rather than inside SessionRowSummary so it
+    // escapes the `opacity-50` disconnected-row treatment — a blocked agent
+    // whose CLI dropped is precisely the one worth spotting.
+    // Re-evaluated on a timer, not only when props change (#1717). Age is
+    // computed at render, and a memoized row on an open list has no update
+    // scheduled when its blocker crosses the 24h staleness deadline — so an
+    // abandoned row kept its loud warning styling until something unrelated
+    // happened to re-render it. The rail and the chip both read this one
+    // value, so they cannot disagree about it.
+    const [staleTick, setStaleTick] = useState(0)
+    const blocked = useMemo(
+        () => getSessionBlockedState(s, { now: Date.now() }),
+        [s, staleTick]  // eslint-disable-line react-hooks/exhaustive-deps
+    )
+    const blockedAt = blocked?.at ?? null
+    const blockedStale = blocked?.stale ?? false
+    useEffect(() => {
+        if (blockedAt === null || blockedStale) return
+        const due = blockedAt + BLOCKED_NOTIFY_STALE_MS - Date.now()
+        if (due <= 0) {
+            setStaleTick((tick) => tick + 1)
+            return
+        }
+        const timer = setTimeout(() => setStaleTick((tick) => tick + 1), due + 1)
+        return () => clearTimeout(timer)
+    }, [blockedAt, blockedStale])
     const hasScheduleTooltip = showDetailedStatus && s.futureScheduledMessageCount > 0
     const { attentionId, scheduleId, describedBy } = useSessionRowTooltipIds(
         Boolean(attention),
@@ -1753,7 +2201,25 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                             && event.target.closest('[data-session-pending-request-id]') !== null
                     }}
                     data-session-scroll-anchor
-                    className={`session-list-item group/session-row flex min-w-0 flex-1 flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
+                    data-session-id={s.id}
+                    data-session-blocked={blocked ? (blocked.stale ? 'stale' : 'active') : undefined}
+                    className={cn(
+                        // Upstream layout classes kept verbatim; pl-2.5 becomes pl-2
+                        // because the blocked rail below adds the missing 2px.
+                        'session-list-item group/session-row flex min-w-0 flex-1 flex-col gap-1 py-2 pl-2 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg',
+                        // Reserve the rail width on every row so blocked rows do
+                        // not shift their neighbours when the flag appears.
+                        'border-l-2',
+                        blocked && blocked.stale
+                            ? 'border-[var(--app-hint)]'
+                            : blocked && sessionBlockedIsError(blocked)
+                                ? 'border-[var(--app-badge-error-text)]'
+                                : blocked
+                                    ? 'border-[var(--app-badge-warning-text)]'
+                                    : 'border-transparent',
+                        flashHighlight ? 'ring-2 ring-[var(--app-badge-warning-text)]' : '',
+                        selected ? 'bg-[var(--app-secondary-bg)]' : ''
+                    )}
                     style={{ WebkitTouchCallout: 'none' }}
                     aria-current={selected ? 'page' : undefined}
                     aria-describedby={describedBy}
@@ -1849,6 +2315,22 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     ? () => forkFlow.openFork()
                     : undefined}
                 forkDisabledReason={forkDisabledReason}
+                onMarkUnblocked={blocked
+                    ? () => {
+                        // Freeze identity AND copy together. Freezing only the
+                        // timestamp let the dialog keep rendering a newer
+                        // footer while confirming against the older one, so
+                        // the operator read one blocker and dismissed another.
+                        requestUnblockDialog?.({
+                            sessionId: s.id,
+                            title: sessionName,
+                            at: blocked.at,
+                            key: blocked.key,
+                            label: t(getSessionBlockedLabelKey(blocked)),
+                            note: blocked.note ?? null
+                        })
+                    }
+                    : undefined}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={cursorReopenDisabledReason ? undefined : () => void handleReopen()}
                 reopenDisabledReason={cursorReopenDisabledReason}
@@ -2056,6 +2538,16 @@ export function SessionList(props: {
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { view: listView, setView: setListView } = useSessionListView()
     const listComparator = useMemo(() => createSessionComparator(listView), [listView])
+    // Pinned and Blocked pull sessions out of the regular active/stopped flow
+    // for an operator-attention reason — a session disconnecting there must
+    // not reorder it ahead of one the operator engaged with more recently,
+    // which `listComparator`'s stopped-recency grouping (upstream main #2518)
+    // would otherwise do purely because disconnecting bumps `updatedAt`.
+    const attentionSectionComparator = useMemo(
+        () => createSessionComparator(listView, { groupStoppedByRecency: false }),
+        [listView]
+    )
+    const { showActiveSessionsOnly, setShowActiveSessionsOnly } = useShowActiveSessionsOnly()
     const lastSeenVersion = useSessionLastSeenVersion()
 
     // Date, scratchlist, active, and working are transient; unread uses the
@@ -2082,9 +2574,76 @@ export function SessionList(props: {
     const { keepUnreadSessionsVisible } = useKeepUnreadSessionsVisible()
     // Unread rows may bypass the preview cap, never their parent folder.
     const previewIsUnread = keepUnreadSessionsVisible ? isSessionUnread : undefined
+    // Blocked lens + travel state (#1717). Transient for the same reason.
+    const [showBlockedOnly, setShowBlockedOnly] = useState(false)
+    const [blockedSectionCollapsed, setBlockedSectionCollapsed] = useState(false)
+    const [pendingBlockedScrollId, setPendingBlockedScrollId] = useState<string | null>(null)
+    /** One row exempted from the saved status / machine / date filters so the
+     *  jump can reach it without rewriting the operator's preferences. */
+    const [revealBlockedSessionId, setRevealBlockedSessionId] = useState<string | null>(null)
+    /** Set while a row's dismissal dialog is open, so the exemption above is
+     *  not withdrawn mid-entry and take the dialog and its draft with it. */
+    const [blockedDialogSessionId, setBlockedDialogSessionId] = useState<string | null>(null)
+    // The dismissal dialog's target lives here, not on the row: a reply from
+    // another client can move the row to a different section mid-typing, and
+    // React would unmount the row — and the half-written reason with it.
+    const [unblockTarget, setUnblockTarget] = useState<UnblockDialogTarget | null>(null)
+    const requestUnblockDialog = useCallback((target: UnblockDialogTarget) => {
+        setUnblockTarget(target)
+        setBlockedDialogSessionId(target.sessionId)
+    }, [])
+    // Compared by identity so a LATE success from a dialog the operator has
+    // already dismissed cannot close the one they opened next (#1717). The
+    // first request's handler still holds this callback after its host
+    // unmounted, and without the token it cleared the new target and
+    // discarded a second half-written reason.
+    const unblockTargetRef = useRef<UnblockDialogTarget | null>(null)
+    unblockTargetRef.current = unblockTarget
+    const closeUnblockDialog = useCallback((token?: UnblockDialogTarget) => {
+        if (token !== undefined && unblockTargetRef.current !== token) return
+        setUnblockTarget(null)
+        setBlockedDialogSessionId(null)
+    }, [])
+
+    const holdBlockedDialog = useCallback(
+        (sessionId: string | null) => setBlockedDialogSessionId(sessionId),
+        []
+    )
+    const [flashBlockedSessionId, setFlashBlockedSessionId] = useState<string | null>(null)
+    // Non-null for the window between the flash ending and focus actually
+    // leaving the revealed row (#1717 cold-review round 27) — driven by its
+    // OWN effect below, independent of `flashBlockedSessionId`'s lifecycle,
+    // so tearing down THAT effect (triggered by the very transition that
+    // starts this hold) does not also tear down the listener that is
+    // supposed to outlive it.
+    const [focusHoldSessionId, setFocusHoldSessionId] = useState<string | null>(null)
+    // Read synchronously by the effect that releases the exemption on OTHER
+    // triggers (dialog close, etc.) — state alone cannot do this because
+    // `setFocusHoldSessionId` and `setFlashBlockedSessionId` land on the
+    // SAME render, and that effect must see the hold already in place.
+    const focusHeldAfterFlashRef = useRef(false)
+    const [blockedOffscreen, setBlockedOffscreen] = useState<{ above: number; below: number }>(
+        { above: 0, below: 0 }
+    )
+    const blockedJumpCursorRef = useRef(0)
+    // Targets already visited in the current jump cycle (#1717 cold-review
+    // round 21): a one-way arrow otherwise re-picks the same off-screen row
+    // forever, so a blocker hidden behind a filter — never in `above`/`below`
+    // — is never reached.
+    const blockedJumpVisitedRef = useRef<Set<string>>(new Set())
+    // Whether the jump currently in flight was activated by keyboard
+    // (#1717 cold-review round 26) — read once the target row mounts, so
+    // the scroll effect below knows whether to also move focus there. A
+    // mouse click already leaves focus exactly where the operator put it
+    // (the pill); only a keyboard activation needs the destination row to
+    // become the new focus, or Tab continues from the pill through
+    // intervening toolbar and list controls instead of landing on the
+    // blocker just jumped to.
+    const blockedJumpViaKeyboardRef = useRef(false)
     const { pinInProgressMode } = usePinInProgressSessions()
     // List sort/filter lives in SessionListView (#2263); jobs mode is #1404.
     const effectivePinInProgressMode: PinInProgressMode = pinInProgressMode
+    const { blockedAlertMode } = useBlockedAlertMode()
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
@@ -2106,7 +2665,8 @@ export function SessionList(props: {
     const actionsObserverRef = useRef<ResizeObserver | null>(null)
     const [headerRowWidth, setHeaderRowWidth] = useState(0)
     const [toolbarSlotWidths, setToolbarSlotWidths] = useState<Record<string, number>>({})
-    const [toolbarChrome, setToolbarChrome] = useState({ morePx: TOOLBAR_MORE_PX, gapPx: TOOLBAR_GAP_PX })
+    const [toolbarChrome, setToolbarChrome] = useState({ morePx: TOOLBAR_MORE_PX, gapPx: TOOLBAR_GAP_PX, blockedPx: 0 })
+    const blockedControlsRef = useRef<HTMLDivElement>(null)
     const [searchChromePx, setSearchChromePx] = useState(0)
     const [searchMaxPx, setSearchMaxPx] = useState(0)
     // jsdom reports clientWidth 0; the row observer publishes the stubbed width.
@@ -2266,6 +2826,10 @@ export function SessionList(props: {
         return t('machine.unknown')
     }
 
+    // Split so the blocked count can be taken BEFORE status/unread narrowing:
+    // a blocked agent whose CLI disconnected is exactly the one worth
+    // surfacing, and it is not "active" — `sidebarSessions` stays the
+    // pre-narrowed base those fleet-wide counts read from.
     const sidebarSessions = useMemo(
         () => prepareSidebarSessions(props.sessions, selectedSessionId),
         [props.sessions, selectedSessionId]
@@ -2277,9 +2841,35 @@ export function SessionList(props: {
     // Keep status filtering separate from the unread lens. Machine choices are
     // derived from this set, so selecting a machine with no unread matches must
     // stay an empty intersection instead of falling back to another machine.
+    // The jump target is exempted exactly where the selected session already
+    // is, so revealing one row needs no change to saved preferences.
+    const filterExemptId = revealBlockedSessionId ?? selectedSessionId
+    // Release a held exemption once nothing is using it — in practice, after an
+    // unblock dialog opened on the revealed row is closed.
+    //
+    // `flashBlockedSessionId === null` cannot carry that decision on its own:
+    // it reads the same before the flash starts as after it ends. This effect
+    // ran on the render right after the pill set the exemption and revoked it
+    // immediately, so the jump target was filtered back out before the scroll
+    // effect below could ever find it — the jump did nothing at all.
+    // `pendingBlockedScrollId` is what distinguishes the two: it is non-null
+    // for exactly the in-flight window between the two.
+    useEffect(() => {
+        if (blockedDialogSessionId !== null) return
+        if (revealBlockedSessionId === null) return
+        if (pendingBlockedScrollId !== null) return
+        if (flashBlockedSessionId !== null) return
+        // A keyboard-focused control can still be inside the row the flash
+        // just stopped highlighting (#1717 cold-review round 27) — the
+        // focus-hold effect below owns releasing the exemption once focus
+        // actually leaves it; releasing here too would unmount the row
+        // regardless of where focus still is.
+        if (focusHeldAfterFlashRef.current) return
+        setRevealBlockedSessionId(null)
+    }, [blockedDialogSessionId, revealBlockedSessionId, flashBlockedSessionId, pendingBlockedScrollId])
     const allSessions = useMemo(
-        () => filterSessionsForListStatus(sidebarSessions, listView.status, selectedSessionId),
-        [sidebarSessions, selectedSessionId, listView.status]
+        () => filterSessionsForListStatus(sidebarSessions, listView.status, filterExemptId),
+        [sidebarSessions, filterExemptId, listView.status]
     )
     const unreadSessionCount = useMemo(
         () => getUnreadSessionCount(readableSessions),
@@ -2293,8 +2883,8 @@ export function SessionList(props: {
     const timeScopedSessions = useMemo(
         () => timeRange === null
             ? allSessions
-            : allSessions.filter(session => sessionMatchesTimeRange(session, timeRange, selectedSessionId)),
-        [allSessions, selectedSessionId, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
+            : allSessions.filter(session => sessionMatchesTimeRange(session, timeRange, filterExemptId)),
+        [allSessions, filterExemptId, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const searchScoreIndex = useMemo(
         () => searchMatchMode === 'default' && hasTextQuery
@@ -2306,12 +2896,12 @@ export function SessionList(props: {
         () => {
             if (contentSearchActive) {
                 const results = contentSearchResponse?.results.map((result) => result.session) ?? []
-                const prepared = prepareSidebarSessions(results, selectedSessionId)
-                const byStatus = filterSessionsForListStatus(prepared, listView.status, selectedSessionId)
+                const prepared = prepareSidebarSessions(results, filterExemptId)
+                const byStatus = filterSessionsForListStatus(prepared, listView.status, filterExemptId)
                 const unreadFiltered = listView.unreadOnly
-                    ? filterUnreadSessionsOnly(byStatus, isSessionUnread, selectedSessionId)
+                    ? filterUnreadSessionsOnly(byStatus, isSessionUnread, filterExemptId)
                     : byStatus
-                return unreadFiltered.filter(session => sessionMatchesTimeRange(session, timeRange, selectedSessionId))
+                return unreadFiltered.filter(session => sessionMatchesTimeRange(session, timeRange, filterExemptId))
             }
             if (!isFiltering) return allSessions
             const matched = searchMatchMode === 'exclude'
@@ -2333,7 +2923,7 @@ export function SessionList(props: {
             }
             return matched
         },
-        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchMatchMode, searchScoreIndex, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread, machineLabelsById, timeScopedSessions, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
+        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchMatchMode, searchScoreIndex, filterExemptId, listView.status, listView.unreadOnly, isSessionUnread, machineLabelsById, timeScopedSessions, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const contentSnippetBySessionId = useMemo(() => {
         const snippets = new Map<string, string>()
@@ -2410,23 +3000,34 @@ export function SessionList(props: {
         : null
 
     const contentSearchCandidateSessions = useMemo(() => {
-        let filtered = allSessions.filter(session => sessionMatchesTimeRange(session, timeRange, selectedSessionId))
+        let filtered = allSessions.filter(session => sessionMatchesTimeRange(session, timeRange, filterExemptId))
         if (listView.unreadOnly) {
             filtered = filterUnreadSessionsOnly(
                 filtered,
                 isSessionUnread,
-                selectedSessionId
+                filterExemptId
             )
         }
         if (showActiveOnly) {
-            filtered = filterActiveSessionsOnly(filtered, selectedSessionId)
+            filtered = filterActiveSessionsOnly(filtered, filterExemptId)
         }
         if (showWorkingOnly) {
-            filtered = filterWorkingSessionsOnly(filtered, selectedSessionId)
+            filtered = filterWorkingSessionsOnly(filtered, filterExemptId)
         }
         if (showScratchlistOnly) {
             if (isScratchlistStatusLoading || scratchlistStatusError) return []
-            filtered = filterScratchlistSessionsOnly(filtered, selectedSessionId, scratchlistSessionIds)
+            filtered = filterScratchlistSessionsOnly(filtered, filterExemptId, scratchlistSessionIds)
+        }
+        // The blocked lens has to narrow the candidate ids too, not just the
+        // rendered rows. `searchMessageContent` keeps only the 100 most
+        // recently updated matching sessions, so submitting unblocked
+        // candidates lets them consume the budget and drop an older blocked
+        // match the lens is specifically asking for.
+        if (showBlockedOnly) {
+            const now = Date.now()
+            filtered = filtered.filter(session =>
+                session.id === filterExemptId || sessionIsBlocked(session, { now })
+            )
         }
         return activeMachineFilter === null
             ? filtered
@@ -2440,10 +3041,11 @@ export function SessionList(props: {
         lastSeenVersion,
         scratchlistSessionIds,
         scratchlistStatusError,
-        selectedSessionId,
+        filterExemptId,
         showScratchlistOnly,
         showActiveOnly,
         showWorkingOnly,
+        showBlockedOnly,
         listView.unreadOnly,
         timeRange?.start,
         timeRange?.end
@@ -2509,17 +3111,17 @@ export function SessionList(props: {
     // machine selection.
     const sessionFilteredSessions = useMemo(() => {
         let filtered = listView.unreadOnly
-            ? filterUnreadSessionsOnly(visibleSessions, isSessionUnread, selectedSessionId)
+            ? filterUnreadSessionsOnly(visibleSessions, isSessionUnread, filterExemptId)
             : visibleSessions
         // Active and Working are AND-composed with the other lenses (#2002).
         // Both are ephemeral, independent of the persisted listView.status
         // ("Active sessions only" in Settings) — a temporary scan should not
         // read or write that saved preference.
         if (showActiveOnly) {
-            filtered = filterActiveSessionsOnly(filtered, selectedSessionId)
+            filtered = filterActiveSessionsOnly(filtered, filterExemptId)
         }
         if (showWorkingOnly) {
-            filtered = filterWorkingSessionsOnly(filtered, selectedSessionId)
+            filtered = filterWorkingSessionsOnly(filtered, filterExemptId)
         }
         if (showScratchlistOnly) {
             if (isScratchlistStatusLoading || scratchlistStatusError) {
@@ -2527,39 +3129,115 @@ export function SessionList(props: {
             }
             filtered = filterScratchlistSessionsOnly(
                 filtered,
-                selectedSessionId,
+                filterExemptId,
                 scratchlistSessionIds
             )
         }
-        return filtered
+        // Blocked lens. Sits alongside the native unread-only view filter
+        // rather than inside it: "you have not looked at this" and "it stopped
+        // and needs you" are different questions, and a blocked session you
+        // already read is still blocked.
+        if (showBlockedOnly) {
+            const now = Date.now()
+            filtered = filtered.filter(session =>
+                session.id === filterExemptId || sessionIsBlocked(session, { now })
+            )
+        }
+        // `filterExemptId` is `revealBlockedSessionId ?? selectedSessionId`
+        // — see `restoreSelectedSessionExemption`'s own doc comment for why
+        // the two are not interchangeable. Restoring from `sidebarSessions`,
+        // not `visibleSessions`: the saved "Active sessions only" status
+        // filter (`listView.status`) already ran against the CURRENT
+        // `filterExemptId` upstream of `visibleSessions`, so a jump that
+        // just replaced the selected session's exemption can have already
+        // erased it from `visibleSessions` too, with nothing left there to
+        // restore (#1717 cold-review round 29).
+        return restoreSelectedSessionExemption(filtered, sidebarSessions, selectedSessionId, filterExemptId)
     }, [
+        showBlockedOnly,
         isScratchlistStatusLoading,
         lastSeenVersion,
         scratchlistSessionIds,
         scratchlistStatusError,
+        filterExemptId,
         selectedSessionId,
         showScratchlistOnly,
         showActiveOnly,
         showWorkingOnly,
         listView.unreadOnly,
-        visibleSessions
+        visibleSessions,
+        sidebarSessions
     ])
     const machineFilteredSessions = useMemo(
         () => activeMachineFilter === null
             ? sessionFilteredSessions
             : sessionFilteredSessions.filter(session =>
-                (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === activeMachineFilter
+                // `revealBlockedSessionId`, NOT `filterExemptId`. The latter
+                // falls back to the selected session, which widened the base
+                // machine filter: with a machine-A session open, switching the
+                // list to machine B left A's row on screen with no jump
+                // involved. Only an in-flight jump may cross machines, and
+                // only for as long as it holds its exemption.
+                session.id === revealBlockedSessionId
+                || (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === activeMachineFilter
             ),
-        [sessionFilteredSessions, activeMachineFilter]
-
+        [sessionFilteredSessions, activeMachineFilter, revealBlockedSessionId]
     )
     const globalPinnedSessions = useMemo(() => {
         const pinned = machineFilteredSessions.filter((session) => Boolean(session.globalPinned))
         if (searchScoreIndex && hasTextQuery) {
             return sortSessionsBySearchRelevance(pinned, searchScoreIndex)
         }
-        return [...pinned].sort(listComparator)
-    }, [machineFilteredSessions, searchScoreIndex, hasTextQuery, listComparator])
+        return [...pinned].sort(attentionSectionComparator)
+    }, [machineFilteredSessions, searchScoreIndex, hasTextQuery, attentionSectionComparator])
+    // Fleet-wide count, deliberately computed BEFORE search / time / unread /
+    // machine narrowing: the pill exists to tell the operator how much blocked
+    // work exists, and a count that silently shrank behind a filter would be
+    // worse than no count at all. `jumpToNextBlocked` drops those filters when
+    // it has to reach one of these rows.
+    const blockedSessions = useMemo(() => {
+        const now = Date.now()
+        return sidebarSessions
+            .filter(session => sessionIsBlocked(session, { now }))
+            .sort((a, b) => b.updatedAt - a.updatedAt)
+    }, [sidebarSessions])
+    const blockedCount = blockedSessions.length
+    const blockedAlerting = useBlockedArrivalAlert(
+        useMemo(() => blockedSessions.map(session => session.id), [blockedSessions]),
+        blockedAlertMode,
+        props.sessions.length > 0
+    )
+
+    // Rows for the pinned Blocked section. Globally pinned rows keep their own
+    // section (the operator put them there on purpose) and still carry the
+    // rail + chip where they sit.
+    const blockedSectionSessions = useMemo(() => {
+        const now = Date.now()
+        const blocked = machineFilteredSessions
+            .filter(session => !session.globalPinned && sessionIsBlocked(session, { now }))
+        // Same ordering rule as the global-pinned section. A bare `updatedAt`
+        // sort discarded the search ranking the matches had already been
+        // given, so a recently touched path-only match outranked an older
+        // exact title match — and outside search it silently overrode the
+        // operator's configured list order too.
+        if (searchScoreIndex && hasTextQuery) {
+            return sortSessionsBySearchRelevance(blocked, searchScoreIndex)
+        }
+        return [...blocked].sort(attentionSectionComparator)
+    }, [machineFilteredSessions, searchScoreIndex, hasTextQuery, attentionSectionComparator])
+    // Globally pinned blockers stay in Pinned rather than moving to Blocked,
+    // so their collapsed rows are attributed to THAT header (#1717).
+    const pinnedBlockedIds = useMemo(() => {
+        const now = Date.now()
+        return globalPinnedSessions
+            .filter((session) => sessionIsBlocked(session, { now }))
+            .map((session) => session.id)
+    }, [globalPinnedSessions])
+    const blockedSectionIds = useMemo(
+        () => new Set(blockedSectionSessions.map(session => session.id)),
+        [blockedSectionSessions]
+    )
+
     const runningSessions = useMemo(() => {
         const byRelevanceOrRecent = (a: SessionSummary, b: SessionSummary) => {
             if (searchScoreIndex && hasTextQuery) {
@@ -2567,8 +3245,12 @@ export function SessionList(props: {
             }
             return listComparator(a, b)
         }
-        return bucketRunningSessions(machineFilteredSessions, effectivePinInProgressMode, byRelevanceOrRecent, api?.hubClock?.now())
-    }, [api, listClockTick, machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
+        // Floated into the Blocked section instead. Without this a blocked
+        // but still-connected agent renders twice — and worse, the quiet
+        // grey "Active" bucket is exactly where it used to hide.
+        const candidates = machineFilteredSessions.filter(session => !blockedSectionIds.has(session.id))
+        return bucketRunningSessions(candidates, effectivePinInProgressMode, byRelevanceOrRecent, api?.hubClock?.now())
+    }, [api, listClockTick, machineFilteredSessions, blockedSectionIds, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
     // Stopped rows show their stop time only where the list orders them by it:
     // Active first, and no text query (which orders rows by relevance or, for
     // project rows in either search mode, by the legacy comparator).
@@ -2580,7 +3262,20 @@ export function SessionList(props: {
         () => {
             const inProgressIds = new Set(Object.values(runningSessions).flat().map(session => session.id))
             const grouped = groupSessionsByDirectory(
-                machineFilteredSessions.filter(session => !session.globalPinned && !inProgressIds.has(session.id)),
+                // `inProgressIds` already reflects every exclusion
+                // `bucketRunningSessions` itself applies (pinned,
+                // globalPinned, `effectivePinInProgressMode`) — re-deriving
+                // those here would duplicate that logic and risk drifting
+                // from it. Blocked sessions are excluded separately: they
+                // never enter `runningSessions` at all (floated to the
+                // Blocked section instead), so they are never in
+                // `inProgressIds` either, and would otherwise fall through
+                // into this catch-all group and render twice.
+                machineFilteredSessions.filter(session => (
+                    !session.globalPinned
+                    && !inProgressIds.has(session.id)
+                    && !blockedSectionIds.has(session.id)
+                )),
                 // Search keeps its own contract: relevance first, then the stable
                 // last-message order for ties, whatever the list view says.
                 hasTextQuery ? undefined : listView
@@ -2590,7 +3285,7 @@ export function SessionList(props: {
             }
             return grouped
         },
-        [runningSessions, machineFilteredSessions, searchScoreIndex, hasTextQuery, listView]
+        [runningSessions, machineFilteredSessions, blockedSectionIds, searchScoreIndex, hasTextQuery, listView]
     )
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
@@ -2612,12 +3307,21 @@ export function SessionList(props: {
         [props.sessions]
     )
     const actionOnlyGroups = useMemo(() => {
-        if (effectivePinInProgressMode === 'off') {
+        // Under the blocked lens the operator asked for blocked rows and
+        // nothing else; every directory would otherwise contribute a bare
+        // action-only header, which is exactly the noise the lens removes.
+        if (showBlockedOnly) {
+            return []
+        }
+        // Otherwise also needed when the Blocked section (not the in-progress
+        // pin) is what emptied a directory, or the project's copy-path /
+        // new-session actions would vanish with its last row.
+        if (effectivePinInProgressMode === 'off' && blockedSectionIds.size === 0) {
             return []
         }
         const visibleKeys = new Set(groups.map((group) => group.key))
         return allDirectoryGroups.filter((group) => !visibleKeys.has(group.key))
-    }, [groups, allDirectoryGroups, effectivePinInProgressMode])
+    }, [groups, allDirectoryGroups, effectivePinInProgressMode, blockedSectionIds, showBlockedOnly])
     // Save explicit folds only, never temporary search expansion or inferred liveness.
     const identity = api?.getReadStateScope?.()
     const foldKey = identity ? `hapi.closed-projects.v1:${identity}` : null
@@ -3075,6 +3779,20 @@ export function SessionList(props: {
             return
         }
 
+        // A globally-pinned blocker keyboard-unpinned here moves into Blocked
+        // (#1717 cold-review round 25) — a destination this effect did not
+        // know about, so it fell through to the generic fallback below,
+        // which treats the move as a removal: focus landed on some other
+        // control and the row stayed hidden behind a collapsed panel.
+        if (blockedSectionSessions.some((session) => session.id === target.sessionId)) {
+            if (blockedSectionCollapsed && !isFiltering) {
+                setBlockedSectionCollapsed(false)
+                return
+            }
+            if (!target.pending) quickUnpinFocusRef.current = null
+            return
+        }
+
         const targetGroup = groups.find((group) =>
             group.sessions.some((session) => session.id === target.sessionId)
         )
@@ -3122,6 +3840,7 @@ export function SessionList(props: {
         quickUnpinFocusRef.current = null
     }, [
         globalPinnedSessions, runningSessions, groups, runningSectionCollapsed,
+        blockedSectionSessions, blockedSectionCollapsed,
         collapseOverrides, filterCollapseOverrides, sessionVisibleCounts,
         isFiltering, ephemeralFilter, selectedSessionId, sessionPreviewLimit, previewIsUnread,
     ])
@@ -3225,10 +3944,13 @@ export function SessionList(props: {
         const parsedGap = Number.parseFloat(getComputedStyle(root).columnGap)
         const morePx = moreNode && moreNode.offsetWidth > 0 ? moreNode.offsetWidth : TOOLBAR_MORE_PX
         const gapPx = Number.isFinite(parsedGap) && parsedGap > 0 ? parsedGap : TOOLBAR_GAP_PX
+        const blockedPx = blockedControlsRef.current?.offsetWidth ?? 0
         setToolbarChrome((previous) => (
-            previous.morePx === morePx && previous.gapPx === gapPx
+            previous.morePx === morePx
+            && previous.gapPx === gapPx
+            && previous.blockedPx === blockedPx
                 ? previous
-                : { morePx, gapPx }
+                : { morePx, gapPx, blockedPx }
         ))
         // Reserve padding + gap + More so search cannot eat the trailing controls (#2040).
         const row = headerRowRef.current
@@ -3434,6 +4156,276 @@ export function SessionList(props: {
         }
     }, [])
 
+    // #1717 off-viewport travel. Because the Blocked section keeps every
+    // blocked row mounted at the top of the list, "make the row reachable"
+    // only ever means expanding that section and dropping narrowing filters —
+    // no directory-group expansion or preview-cap raising required.
+    const jumpToNextBlocked = (viaKeyboard: boolean) => {
+        if (blockedSessions.length === 0) return
+        blockedJumpViaKeyboardRef.current = viaKeyboard
+        const renderedIds = new Set(machineFilteredSessions.map((session) => session.id))
+        // Pick the target BEFORE deciding to clear anything. Testing "is any
+        // blocker hidden" threw away the operator's saved status/unread
+        // preferences even when the row we are about to travel to is already
+        // on screen — a filter they set is not ours to discard speculatively.
+        const cursor = blockedJumpCursorRef.current % blockedSessions.length
+        blockedJumpCursorRef.current = cursor + 1
+        const blockedIds = blockedSessions.map((session) => session.id)
+        const blockedIdSet = new Set(blockedIds)
+        const visited = blockedJumpVisitedRef.current
+        // Drop visited ids that stopped being blocked, so a cleared blocker
+        // does not permanently shrink the pool later jumps can still reach.
+        for (const id of visited) {
+            if (!blockedIdSet.has(id)) visited.delete(id)
+        }
+        // A full lap: every counted blocker has already been visited this
+        // cycle. Start a fresh one instead of starving the directional and
+        // fallback picks of anything unvisited to choose.
+        if (visited.size >= blockedIds.length) {
+            visited.clear()
+        }
+        // The same snapshot the arrow is drawn from, so the click cannot
+        // disagree with it — including blockers whose section has collapsed
+        // and whose rows have left the DOM entirely.
+        const { above, below } = measureOffscreenBlockers()
+        // Cursor order, rotated to start where the last fallback left off, so
+        // a direction-exhausted or filter-hidden blocker is still reached by
+        // repeated clicks rather than being skipped forever.
+        const fallbackOrder = [...blockedIds.slice(cursor), ...blockedIds.slice(0, cursor)]
+        const targetId = chooseBlockedJumpTarget({
+            direction: blockedDirection,
+            above,
+            below,
+            visited,
+            fallbackOrder
+        })
+        const target = blockedSessions.find((session) => session.id === targetId)
+            ?? blockedSessions[cursor]!
+        visited.add(target.id)
+        if (!renderedIds.has(target.id)) {
+            // Reveal the target through transient state only. Writing
+            // `listView` / `machineFilter` persists to local storage, so a
+            // navigation action silently destroyed preferences the operator
+            // had set — the pill's job is to take them to the row, not to
+            // reset their list. Only the ephemeral lenses and the live search
+            // box are dropped, and `revealBlockedSessionId` exempts this one
+            // row from the rest.
+            setSearchQuery('')
+            setShowActiveOnly(false)
+            setShowWorkingOnly(false)
+            setShowScratchlistOnly(false)
+            setRevealBlockedSessionId(target.id)
+        }
+        // A globally pinned blocked row lives in the Pinned section, not the
+        // Blocked one — expand both or the jump lands on a zero-height row
+        // inside a collapsed panel and appears to do nothing.
+        setBlockedSectionCollapsed(false)
+        setPinnedSectionCollapsed(false)
+        setPendingBlockedScrollId(target.id)
+    }
+
+    useEffect(() => {
+        if (!pendingBlockedScrollId) return
+        const container = scrollContainerRef.current
+        const row = container?.querySelector<HTMLElement>(
+            `[data-session-id="${CSS.escape(pendingBlockedScrollId)}"]`
+        )
+        if (!row) {
+            // Usually "not mounted yet": clearing a filter or expanding the
+            // section re-renders and this effect runs again with the row in
+            // place. If the session stopped being blocked meanwhile, drop the
+            // request so it cannot wedge later jumps.
+            if (!blockedSessions.some((session) => session.id === pendingBlockedScrollId)) {
+                setPendingBlockedScrollId(null)
+            }
+            return
+        }
+        row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        if (blockedJumpViaKeyboardRef.current) {
+            row.focus({ preventScroll: true })
+            blockedJumpViaKeyboardRef.current = false
+        }
+        setFlashBlockedSessionId(pendingBlockedScrollId)
+        setPendingBlockedScrollId(null)
+        // The exemption is NOT dropped here. Releasing it the moment the
+        // smooth scroll starts unmounts the row mid-travel, so the operator
+        // arrives at nothing. It is released when the flash ends, which is
+        // long enough to see and act on the row.
+    }, [pendingBlockedScrollId, blockedSessions, blockedSectionSessions, blockedSectionCollapsed, machineFilteredSessions])
+
+    useEffect(() => {
+        if (!flashBlockedSessionId) return
+        const timer = setTimeout(() => {
+            // Releasing the exemption while a keyboard-focused control is
+            // still inside the revealed row unmounts it out from under the
+            // operator's next keystroke (#1717 cold-review round 27) — hand
+            // off to the dedicated focus-hold effect below instead of
+            // releasing directly. That effect runs on its OWN dependency
+            // (`focusHoldSessionId`), not on `flashBlockedSessionId` — doing
+            // the handoff here, in THIS effect, and tearing the listener
+            // down again the moment `flashBlockedSessionId` clears (which
+            // this very callback is about to do) would undo the handoff on
+            // the same render it happened.
+            const container = scrollContainerRef.current
+            const row = container?.querySelector<HTMLElement>(
+                `[data-session-id="${CSS.escape(flashBlockedSessionId)}"]`
+            )
+            if (row?.contains(document.activeElement)) {
+                focusHeldAfterFlashRef.current = true
+                setFocusHoldSessionId(flashBlockedSessionId)
+                setFlashBlockedSessionId(null)
+                return
+            }
+            setFlashBlockedSessionId(null)
+            // Only drop the exemption if no dialog is open against that row.
+            // Expiring it underneath an open Mark-unblocked dialog unmounted
+            // the row mid-entry and took the dialog with it. The effect above
+            // releases it once that dialog closes.
+            if (blockedDialogSessionId === null) {
+                setRevealBlockedSessionId(null)
+            }
+        }, 2000)
+        return () => clearTimeout(timer)
+    }, [flashBlockedSessionId, blockedDialogSessionId])
+
+    useEffect(() => {
+        if (!focusHoldSessionId) return
+        const container = scrollContainerRef.current
+        const row = container?.querySelector<HTMLElement>(
+            `[data-session-id="${CSS.escape(focusHoldSessionId)}"]`
+        )
+        if (!row) {
+            focusHeldAfterFlashRef.current = false
+            setFocusHoldSessionId(null)
+            return
+        }
+        const release = () => {
+            focusHeldAfterFlashRef.current = false
+            setFocusHoldSessionId(null)
+            if (blockedDialogSessionId === null) {
+                setRevealBlockedSessionId(null)
+            }
+        }
+        const handleFocusOut = (event: FocusEvent) => {
+            if (event.relatedTarget instanceof Node && row.contains(event.relatedTarget)) return
+            release()
+        }
+        row.addEventListener('focusout', handleFocusOut)
+        return () => row.removeEventListener('focusout', handleFocusOut)
+    }, [focusHoldSessionId, blockedDialogSessionId])
+
+    // Direction hint for the pill: which way the operator would have to scroll
+    // to reach blocked rows that are not currently on screen.
+    // Built once, from state plus live rects, so the arrow and the jump target
+    // can never disagree about which blockers are off-screen (#1717).
+    const measureOffscreenBlockers = useCallback(() => {
+        const container = scrollContainerRef.current
+        if (!container) return { above: [] as string[], below: [] as string[] }
+        const bounds = container.getBoundingClientRect()
+        const mounted = Array.from(
+            container.querySelectorAll<HTMLElement>('[data-session-blocked]')
+        ).flatMap((row) => {
+            const id = row.getAttribute('data-session-id')
+            if (!id) return []
+            const rect = row.getBoundingClientRect()
+            const panel = row.closest('.collapsible-panel')
+            return [{
+                id,
+                top: rect.top,
+                bottom: rect.bottom,
+                height: rect.height,
+                // A collapse is a transition: during it the rows are still
+                // mounted at full size, so a height check would read them as
+                // visible. Afterwards they are gone entirely, which is why the
+                // section lists below exist.
+                collapsed: panel !== null && !panel.hasAttribute('data-open')
+            }]
+        })
+        const headerRect = (testid: string) => container
+            .querySelector<HTMLElement>(`[data-testid="${testid}"]`)
+            ?.getBoundingClientRect() ?? null
+        return collectOffscreenBlockers({
+            bounds,
+            mounted,
+            collapsedSections: [
+                {
+                    ids: blockedSectionCollapsed
+                        ? blockedSectionSessions.map((session) => session.id)
+                        : [],
+                    headerRect: headerRect('blocked-section')
+                },
+                {
+                    // `isFiltering` forces Pinned open, matching its own
+                    // `aria-expanded`, so it is only truly collapsed without one.
+                    ids: pinnedSectionCollapsed && !isFiltering ? pinnedBlockedIds : [],
+                    headerRect: headerRect('pinned-section')
+                }
+            ]
+        })
+    }, [blockedSectionCollapsed, blockedSectionSessions, pinnedSectionCollapsed, pinnedBlockedIds, isFiltering])
+    useEffect(() => {
+        const container = scrollContainerRef.current
+        if (!container || blockedCount === 0) {
+            // Functional + bail-out. A fresh `{above:0,below:0}` here would be a
+            // new identity every run, and this effect's deps churn on each
+            // render (the `machineLabelsById = {}` prop default cascades
+            // through the filter memos) — so an unconditional set becomes an
+            // infinite render loop.
+            setBlockedOffscreen((previous) => (
+                previous.above === 0 && previous.below === 0
+                    ? previous
+                    : { above: 0, below: 0 }
+            ))
+            return
+        }
+        let frame = 0
+        const measure = () => {
+            frame = 0
+            const { above, below } = measureOffscreenBlockers()
+            // Bail when nothing moved: this runs every scroll frame, and a
+            // fresh object each time would re-render every row in the list.
+            setBlockedOffscreen((previous) => (
+                previous.above === above.length && previous.below === below.length
+                    ? previous
+                    : { above: above.length, below: below.length }
+            ))
+        }
+        const schedule = () => {
+            if (!frame) frame = requestAnimationFrame(measure)
+        }
+        schedule()
+        container.addEventListener('scroll', schedule, { passive: true })
+        window.addEventListener('resize', schedule)
+        // Collapsing a section with the viewport stationary fires neither
+        // event, and the measurement taken on the click still sees the rows
+        // mounted — `CollapsiblePanel` removes them only after its 250ms
+        // transition. The arrow could therefore keep pointing at rows that no
+        // longer exist until some unrelated update happened to remeasure.
+        // Observing the content box catches the transition settling, whatever
+        // its duration, and covers Pinned and Blocked alike.
+        const observer = typeof ResizeObserver === 'undefined'
+            ? null
+            : new ResizeObserver(schedule)
+        if (observer) {
+            observer.observe(container)
+            for (const child of Array.from(container.children)) observer.observe(child)
+        }
+        return () => {
+            if (frame) cancelAnimationFrame(frame)
+            observer?.disconnect()
+            container.removeEventListener('scroll', schedule)
+            window.removeEventListener('resize', schedule)
+        }
+    }, [measureOffscreenBlockers, machineFilteredSessions])
+
+    const blockedDirection: BlockedJumpDirection = blockedOffscreen.above > 0 && blockedOffscreen.below > 0
+        ? 'both'
+        : blockedOffscreen.above > 0
+            ? 'up'
+            : blockedOffscreen.below > 0
+                ? 'down'
+                : 'none'
+
     return (
         <div ref={sessionListRef} className="flex min-h-0 w-full flex-1 flex-col">
             {deleteTarget && <SidebarDeleteDialog key={deleteTarget.id} session={deleteTarget} api={api} onClose={() => setDeleteTarget(null)} />}
@@ -3446,7 +4438,28 @@ export function SessionList(props: {
                 <div
                     ref={headerRowRef}
                     data-testid="session-list-header-row"
-                    className="@container flex min-w-0 w-full flex-nowrap items-center gap-1 px-2 py-1"
+                    // Focusable only programmatically: the last resort when a
+                    // dialog closes and neither its row nor the jump pill is
+                    // still mounted, so focus never falls to the document body.
+                    tabIndex={-1}
+                    className="@container flex min-w-0 w-full flex-nowrap items-center gap-1 px-2 py-1 outline-none"
+                    // Collapse on departure from the ROW, not from the search
+                    // container (#1717). The blocked controls are siblings of
+                    // that container, so once it stops collapsing on focus
+                    // moving INTO them, nothing was left to notice focus
+                    // leaving them again: tabbing search -> controls -> list
+                    // left the bar expanded and the normal toolbar hidden with
+                    // focus already gone from both. This is their common
+                    // ancestor, and with the search expanded it holds exactly
+                    // those two. `SessionListSearch` keeps its own handler for
+                    // the standalone usage that has no row around it.
+                    onBlur={(event) => {
+                        if (!searchExpanded) return
+                        const related = event.relatedTarget as Element | null
+                        if (related?.closest('[data-fue-callout]')) return
+                        if (event.currentTarget.contains(related as Node | null)) return
+                        setSearchExpanded(false)
+                    }}
                 >
                     {showSearch ? (
                         <SessionListSearch
@@ -3471,6 +4484,38 @@ export function SessionList(props: {
                             maxWidthPx={searchQuery.length > 0 ? searchMaxPx : 0}
                         />
                     ) : null}
+                    {/* The actions row unmounts while the search field is
+                        expanded, and it carries the blocked controls — so an
+                        operator typing a query that hides the blocked rows lost
+                        both the off-screen cue and the jump control until they
+                        left the field, and an arrival pulse could expire unseen.
+                        A compact cluster keeps both reachable. No
+                        `blockedControlsRef` here: that measurement feeds the
+                        shed budget of the row that is not currently rendered. */}
+                    {showSearch && searchExpanded && (blockedCount > 0 || showBlockedOnly) ? (
+                        <div
+                            data-testid="blocked-search-controls"
+                            // Claims the search field's focus boundary, so its
+                            // blur handler does not collapse the bar (and
+                            // unmount these buttons) when focus lands here.
+                            data-search-focus-boundary=""
+                            className="flex shrink-0 items-center gap-1"
+                        >
+                            {blockedCount > 0 ? (
+                                <BlockedJumpPill
+                                    count={blockedCount}
+                                    direction={blockedDirection}
+                                    alerting={blockedAlerting}
+                                    onJump={jumpToNextBlocked}
+                                />
+                            ) : null}
+                            <BlockedLensToggle
+                                active={showBlockedOnly}
+                                count={blockedCount}
+                                onToggle={() => setShowBlockedOnly(!showBlockedOnly)}
+                            />
+                        </div>
+                    ) : null}
                     {!(showSearch && searchExpanded) ? (
                         <div
                             ref={setHeaderActionsNode}
@@ -3485,6 +4530,12 @@ export function SessionList(props: {
                                 // Shed one control at a time, highest keep first.
                                 // Do not ml-auto a lone ⋯ across empty space, and do
                                 // not fold the whole row at a single width gate (#2039).
+                                // The blocked pill + lens sit in this row but are not
+                                // shed-able slots, so their width has to come off the
+                                // budget too or the shedder over-fills the row.
+                                const blockedAndGap = toolbarChrome.blockedPx > 0
+                                    ? toolbarChrome.blockedPx + toolbarChrome.gapPx
+                                    : 0
                                 // Prefer the flex allocation. It tracks the row, not the
                                 // icons already on it. If they all fit, More is empty.
                                 const allocated = headerActionsRef.current?.clientWidth ?? 0
@@ -3494,7 +4545,7 @@ export function SessionList(props: {
                                         ? headerRowWidth
                                         : 0
                                 const budget = gutter > 0
-                                    ? gutter
+                                    ? Math.max(0, gutter - blockedAndGap)
                                     : toolbarActionBudget(0, searchQuery.length > 0)
                                 const slotWidth = (id: string, fallback: number) => {
                                     const measured = toolbarSlotWidths[id] ?? 0
@@ -3615,6 +4666,36 @@ export function SessionList(props: {
                                             ))}
                                             <span data-measure-id="__more" className="inline-flex h-9 w-9 shrink-0" />
                                         </div>
+                                        {/* One measured box so `blockedPx` can be subtracted from
+                                            the shed budget below. These controls live in the
+                                            actions row but outside `definedSlots`, so without
+                                            reserving their width the shedder keeps icons inline
+                                            that no longer fit and the row overflows (#2039). */}
+                                        {blockedCount > 0 || showBlockedOnly ? (
+                                            <div
+                                                ref={blockedControlsRef}
+                                                data-testid="blocked-toolbar-controls"
+                                                className="flex shrink-0 items-center gap-1"
+                                            >
+                                                {blockedCount > 0 ? (
+                                                    <BlockedJumpPill
+                                                        count={blockedCount}
+                                                        direction={blockedDirection}
+                                                        alerting={blockedAlerting}
+                                                        onJump={jumpToNextBlocked}
+                                                    />
+                                                ) : null}
+                                                {/* Survives `blockedCount` reaching zero while the
+                                                    lens is on. Dropping it there would leave the
+                                                    list filtered to blocked-only with every row
+                                                    hidden and no control left to turn it off. */}
+                                                <BlockedLensToggle
+                                                    active={showBlockedOnly}
+                                                    count={blockedCount}
+                                                    onToggle={() => setShowBlockedOnly((value) => !value)}
+                                                />
+                                            </div>
+                                        ) : null}
                                         {visible.map((slot) => (
                                             <span key={slot.id} data-testid={`session-toolbar-slot-${slot.id}`} className="contents">
                                                 {slot.node}
@@ -3672,6 +4753,9 @@ export function SessionList(props: {
             ) : null}
             <div ref={scrollContainerRef} className="app-scroll-y session-list-scrollbar-left scrollbar-auto-hide min-h-0 flex-1">
             <QuickUnpinFocusContext.Provider value={quickUnpinFocusRef}>
+            <BlockedDialogHoldContext.Provider value={holdBlockedDialog}>
+            <UnblockDialogRequestContext.Provider value={requestUnblockDialog}>
+            <BlockedDialogOpenContext.Provider value={blockedDialogSessionId}>
             <SessionListScrollAnchor sessions={props.sessions} className="mx-auto flex w-full max-w-content flex-col gap-1 pl-1.5 pr-2 pb-2">
                 {props.sessions.length === 0 && !props.isLoading ? (
                     <SessionsEmptyState
@@ -3726,7 +4810,7 @@ export function SessionList(props: {
                     </div>
                 ) : null}
 
-                {props.sessions.length > 0 && !contentSearchLoading && !contentSearchError && !contentSearchHasIncompleteResults && !isScratchlistStatusLoading && !scratchlistStatusError && (isFiltering || activeMachineFilter !== null || listView.status !== 'all' || listView.unreadOnly) && groups.length === 0 && runningSessionTotal === 0 && globalPinnedSessions.length === 0 ? (
+                {props.sessions.length > 0 && !contentSearchLoading && !contentSearchError && !contentSearchHasIncompleteResults && !isScratchlistStatusLoading && !scratchlistStatusError && (isFiltering || activeMachineFilter !== null || listView.status !== 'all' || listView.unreadOnly || showBlockedOnly) && groups.length === 0 && runningSessionTotal === 0 && globalPinnedSessions.length === 0 && blockedSectionSessions.length === 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
                         {contentSearchActive
                             ? contentSearchReady
@@ -3739,7 +4823,7 @@ export function SessionList(props: {
                 ) : null}
 
                 {globalPinnedSessions.length > 0 ? (
-                    <div key="pinned-section">
+                    <div key="pinned-section" data-testid="pinned-section">
                         <div
                             className="group/pinned flex min-w-0 w-full select-none cursor-pointer items-center gap-2 rounded-lg py-1.5 pl-2 pr-2 transition-colors hover:bg-[var(--app-secondary-bg)]"
                             role="button"
@@ -3791,6 +4875,77 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            flashHighlight={s.id === flashBlockedSessionId}
+                                            showStoppedTime={stoppedTimeShown}
+                                        />
+                                    ))}
+                                </div>
+                        </CollapsiblePanel>
+                    </div>
+                ) : null}
+
+                {blockedSectionSessions.length > 0 ? (
+                    <div key="blocked-section" data-testid="blocked-section">
+                        <div
+                            className="group/blocked flex min-w-0 w-full select-none cursor-pointer items-center gap-2 rounded-lg py-1.5 pl-2 pr-2 transition-colors hover:bg-[var(--app-secondary-bg)]"
+                            role="button"
+                            tabIndex={0}
+                            aria-expanded={!blockedSectionCollapsed || isFiltering}
+                            onClick={() => setBlockedSectionCollapsed((value) => !value)}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault()
+                                    setBlockedSectionCollapsed((value) => !value)
+                                }
+                            }}
+                            title={t('sessions.blockedSection')}
+                        >
+                            <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={blockedSectionCollapsed && !isFiltering} />
+                            <span className="inline-flex min-w-0 items-center gap-1 text-[var(--app-badge-warning-text)]">
+                                <BlockedFlagIcon className="h-3.5 w-3.5 shrink-0" />
+                                <span className="min-w-0 truncate text-sm font-medium">
+                                    {t('sessions.blockedSection')}
+                                </span>
+                            </span>
+                            <span className="min-w-0 flex-1" aria-hidden="true" />
+                            <span className="shrink-0 text-[11px] tabular-nums text-[var(--app-hint)]">
+                                ({blockedSectionSessions.length})
+                            </span>
+                        </div>
+                        {/* CollapsiblePanel unmounts its children once the close
+                            transition settles. The raw panel markup kept the row
+                            buttons mounted and focusable, so a keyboard user tabbing
+                            out of a collapsed header landed on invisible rows — one
+                            dead tab stop per blocker. */}
+                        <CollapsiblePanel open={!blockedSectionCollapsed || isFiltering}>
+                                <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
+                                    {blockedSectionSessions.map((s) => (
+                                        <SessionItem
+                                            key={s.id}
+                                            session={s}
+                                            onSelect={props.onSelect}
+                                            showPath={false}
+                                            api={api}
+                                            features={features}
+                                            prNowMs={prNowMs}
+                                            titleSuggestionAvailable={titleSuggestionAvailable}
+                                            selected={s.id === selectedSessionId}
+                                            showDetailedStatus={showDetailedStatus}
+                                            inRunningSection
+                                            projectLabel={getSessionProjectLabel(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
+                                            machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
+                                            lastSeenVersion={lastSeenVersion}
+                                            flashHighlight={s.id === flashBlockedSessionId}
+                                            // Blocked rows float out of their directory group during
+                                            // a content search too, so they need the same search
+                                            // payload as every other path — without it the match
+                                            // preview disappears and the click opens the
+                                            // conversation instead of the matching message.
+                                            contentSnippet={contentSnippetBySessionId.get(s.id)}
+                                            contentSearchTruncated={contentSearchTruncatedBySessionId.has(s.id)}
+                                            targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
+                                            targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
+                                            onRequestDelete={setDeleteTarget}
                                             showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}
@@ -3811,6 +4966,17 @@ export function SessionList(props: {
                 {groups.map(renderDirectoryGroup)}
                 {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
             </SessionListScrollAnchor>
+            {unblockTarget ? (
+                <UnblockDialogHost
+                    target={unblockTarget}
+                    api={props.api}
+                    scrollContainer={scrollContainerRef}
+                    onClose={closeUnblockDialog}
+                />
+            ) : null}
+            </BlockedDialogOpenContext.Provider>
+            </UnblockDialogRequestContext.Provider>
+            </BlockedDialogHoldContext.Provider>
             </QuickUnpinFocusContext.Provider>
             </div>
             {openSessionTickRatio != null ? (

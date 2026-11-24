@@ -5,6 +5,8 @@ import { dirname } from 'node:path'
 import { MachineStore } from './machineStore'
 import { MessageStore } from './messageStore'
 import { addMessage } from './messages'
+import { decodeMessageContent } from './contentCodec'
+import { isUserInputMessage } from './sessionUserActivity'
 import { clearCachedStatements } from './statementCache'
 import { backfillLastUserMessageAt } from './sessionUserActivity'
 import type { StoredMessage } from './types'
@@ -60,7 +62,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 36
+const SCHEMA_VERSION: number = 39
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -171,10 +173,26 @@ export class Store {
         sessionId: string,
         localIds: string[],
         invokedAt: number,
-        namespace: string
-    ): number {
+        namespace: string,
+        options?: { agentDelivered?: boolean }
+    ): { updatedAt: number; consumed: number } {
         return this.db.transaction(() => {
-            const changes = this.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
+            // Which of these rows are actually the operator's prompts? Agent
+            // OUTPUT also carries local ids and emits `messages-consumed`
+            // (OpenCode compaction summaries via `sendAgentMessage`), and
+            // counting those as a delivered reply cleared a live blocker.
+            const placeholders = localIds.map(() => '?').join(', ')
+            const pending = localIds.length === 0
+                ? []
+                : this.db.prepare(
+                    `SELECT content FROM messages
+                     WHERE session_id = ? AND local_id IN (${placeholders})
+                       AND invoked_at IS NULL`
+                ).all(sessionId, ...localIds) as Array<{ content: string | Uint8Array }>
+            const operatorPrompts = pending.filter(
+                (row) => isUserInputMessage(decodeMessageContent(row.content))
+            ).length
+            const changes = this.messages.markMessagesInvoked(sessionId, localIds, invokedAt, options)
             if (changes > 0) {
                 this.sessions.touchSessionUpdatedAt(sessionId, invokedAt, namespace)
             }
@@ -187,7 +205,15 @@ export class Store {
                 throw new Error('session activity was not persisted after messages-consumed transition')
             }
 
-            return session.updatedAt
+            // `consumed` is 0 for a replayed acknowledgement or unknown local
+            // ids: nothing reached the agent, so callers must not treat it as
+            // a delivery (#1717).
+            // `consumed` counts only operator prompts: a replayed ack, unknown
+            // local ids, and agent output all deliver nothing (#1717).
+            return {
+                updatedAt: session.updatedAt,
+                consumed: operatorPrompts
+            }
         })()
     }
 
@@ -410,6 +436,9 @@ export class Store {
             33: () => this.migrateFromV33ToV34(),
             34: () => this.migrateFromV34ToV35(),
             35: () => this.migrateFromV35ToV36(),
+            36: () => this.migrateFromV36ToV37(),
+            37: () => this.migrateFromV37ToV38(),
+            38: () => this.migrateFromV38ToV39(),
         })
 
         if (currentVersion === 0) {
@@ -446,14 +475,20 @@ export class Store {
         // Keep the individual steps below for databases that resume from an
         // intermediate schema version after an interrupted upgrade.
         if (currentVersion === 26) {
+            // Collapse the three derived-index refinements into one rebuild...
             this.migrateFromV26ToV30()
-            this.migrateFromV29ToV30()
-            this.migrateFromV30ToV31()
-            this.migrateFromV31ToV32()
-            this.migrateFromV32ToV33()
-            this.migrateFromV33ToV34()
-            this.migrateFromV34ToV35()
-            this.migrateFromV35ToV36()
+            // ...then run the REMAINING ladder by index rather than by hand.
+            // This branch used to list each later step explicitly, so a
+            // migration added to `buildStepMigrations` but not copied here was
+            // silently skipped while the database was still stamped at
+            // SCHEMA_VERSION — the row then claimed a version whose columns it
+            // did not have, and the hub failed to start. Driving the ladder
+            // from the same source removes that whole class.
+            for (let v = 29; v < SCHEMA_VERSION; v++) {
+                const step = stepMigrations[v]
+                if (!step) throw this.buildSchemaMismatchError(currentVersion)
+                step()
+            }
             this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
@@ -505,6 +540,16 @@ export class Store {
                 team_state_updated_at INTEGER,
                 pinned INTEGER NOT NULL DEFAULT 0,
                 global_pinned INTEGER NOT NULL DEFAULT 0,
+                last_notify_status TEXT,
+                last_notify_at INTEGER,
+                last_notify_note TEXT,
+                last_notify_cleared_at INTEGER,
+                last_notify_received_at INTEGER,
+                last_notify_cleared_author_at INTEGER,
+                last_notify_updated_at INTEGER,
+                blocked_ack_at INTEGER,
+                blocked_ack_reason TEXT,
+                blocked_ack_key TEXT,
                 active INTEGER DEFAULT 0,
                 active_at INTEGER,
                 seq INTEGER DEFAULT 0
@@ -536,6 +581,9 @@ export class Store {
                 seq INTEGER NOT NULL,
                 local_id TEXT,
                 invoked_at INTEGER,
+                received_at INTEGER,
+                agent_delivered INTEGER,
+                swept_at INTEGER,
                 scheduled_at INTEGER,
                 delivery_state TEXT NOT NULL DEFAULT 'queued',
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -1292,6 +1340,94 @@ export class Store {
     private migrateFromV30ToV31(): void {
         createMessageContentSearchTable(this.db)
         if (this.getMessageColumnNames().size > 0) rebuildMessageContentSearch(this.db)
+    }
+
+    /** Blocked-agent session-list chrome (#1717): persist the last
+     *  AGENT_NOTIFY_SUMMARY footer so the list can flag stuck agents without
+     *  re-reading messages. */
+    private migrateFromV36ToV37(): void {
+        const columns = this.getSessionColumnNames()
+        if (columns.size === 0) return
+        if (!columns.has('last_notify_status')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_status TEXT')
+        }
+        if (!columns.has('last_notify_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_at INTEGER')
+        }
+        if (!columns.has('last_notify_note')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_note TEXT')
+        }
+    }
+
+    /** Operator manual-unblock watermark + rationale (#1717). */
+    private migrateFromV37ToV38(): void {
+        const columns = this.getSessionColumnNames()
+        if (columns.size === 0) return
+        if (!columns.has('blocked_ack_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN blocked_ack_at INTEGER')
+        }
+        if (!columns.has('blocked_ack_reason')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN blocked_ack_reason TEXT')
+        }
+    }
+
+    /** Persisted clear boundary (#1717): an incoming footer older than the
+     *  turn that cleared the last one has already been answered. Survives the
+     *  turn ending and a restart, which `activeTurnStartedAt` does not. */
+    private migrateFromV38ToV39(): void {
+        const columns = this.getSessionColumnNames()
+        if (columns.size === 0) return
+        if (!columns.has('last_notify_cleared_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_cleared_at INTEGER')
+        }
+        if (!columns.has('last_notify_updated_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_updated_at INTEGER')
+        }
+        // The author time of the footer a delivery superseded, in the RUNNER's
+        // clock. Delivery nulls `last_notify_at`, so without this a footer from
+        // the already-answered turn arriving late for the first time has
+        // nothing to be measured against and walks back in. Two footers from
+        // one runner are a sound comparison; this is that, kept across the
+        // clear.
+        // The footer's HUB arrival, kept beside its runner-clock author time.
+        // Each guard then compares inside one clock domain.
+        if (!columns.has('last_notify_received_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_received_at INTEGER')
+        }
+        if (!columns.has('last_notify_cleared_author_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_cleared_author_at INTEGER')
+        }
+        if (!columns.has('blocked_ack_key')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN blocked_ack_key TEXT')
+        }
+        // The session-end sweep stamps `invoked_at` on immediate queued rows
+        // the runtime never received, so `invoked_at` alone cannot answer "did
+        // the agent see this reply?". A dedicated marker keeps that distinction
+        // out of `delivery_state`, whose values drive dispatch and replay.
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0 && !messageColumns.has('swept_at')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN swept_at INTEGER')
+        }
+        // When the HUB received this message, as opposed to `created_at`, which
+        // is the agent runner's own clock preserved through transcript replay.
+        // This is what makes "did the operator's reply reach the agent after
+        // this footer arrived?" answerable: `invoked_at` is a hub stamp, so it
+        // belongs beside another hub stamp. Insertion `seq` cannot serve —
+        // allocation is MAX(seq)+1, so cancelling a queued row frees its number
+        // for reuse — and merge renumbering makes cross-session positions
+        // synthetic rather than real. A timestamp is durable under both.
+        if (messageColumns.size > 0 && !messageColumns.has('received_at')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN received_at INTEGER')
+        }
+        // Whether the delivery actually reached the agent. A locally handled
+        // slash command, a rejected or aborted prompt and a failed steer all
+        // get `invoked_at` stamped while the agent never saw them, so
+        // `invoked_at` alone wrongly reads as "the operator answered this".
+        // NULL means "written before this column existed" and keeps the old
+        // permissive reading, so an upgrade does not un-answer historical work.
+        if (messageColumns.size > 0 && !messageColumns.has('agent_delivered')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN agent_delivered INTEGER')
+        }
     }
 
     private getSessionColumnNames(): Set<string> {

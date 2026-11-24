@@ -6,6 +6,8 @@ import {
     computePendingRequestKinds,
     computePendingRequests,
     computePendingRequestsCount,
+    computePendingRequestRefs,
+    computePendingRequestsNewestAt,
     computeTodoProgress,
     isObject,
     toSessionSummary,
@@ -134,6 +136,21 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         && current.readState?.version === next.readState?.version
         && current.active === next.active
         && current.thinking === next.thinking
+        // `thinking` can stay `true` across the whole queue-to-delivery grace
+        // window while only this field moves (#1717 cold-review round 22) —
+        // skipping the render here would leave the blocked chip stale.
+        && current.thinkingConfirmed === next.thinkingConfirmed
+        // Treating a revision-only move as irrelevant would skip writing the
+        // patched summary into the cache (#1717 cold-review round 28) — a
+        // later, out-of-order patch with a revision in between the two would
+        // then compare against the STALE cached revision and win a fight it
+        // should have lost, able to drag `thinking` back to a stale value.
+        && (current.thinkingRevision ?? 0) === (next.thinkingRevision ?? 0)
+        // Same reasoning as the revision check just above (#1717 cold-review
+        // round 30): skipping a generation-only move would leave the cache
+        // holding a STALE `hubGeneration`, able to mask a later patch's own
+        // thinking-revision gate from recognizing a restart it should.
+        && current.hubGeneration === next.hubGeneration
         && current.updatedAt === next.updatedAt
         && current.lastUserMessageAt === next.lastUserMessageAt
         && current.backgroundTaskCount === next.backgroundTaskCount
@@ -490,8 +507,114 @@ export function useSSE(options: {
 
                 const existingIndex = previous.sessions.findIndex((item) => item.id === session.id)
                 const existing = existingIndex >= 0 ? previous.sessions[existingIndex] : undefined
+                // Notify/ack ride full-session snapshots on BOTH the global and
+                // session-scoped streams with no delivery ordering between
+                // them, so an older snapshot arriving after a newer clear would
+                // revive the blocker. Keep whichever side has the higher
+                // watermark, exactly as attachedJob does below.
+                const incomingNotifyAt = session.notifyUpdatedAt ?? 0
+                const existingNotifyAt = existing?.notifyUpdatedAt ?? 0
+                const keepExistingNotify = existing !== undefined
+                    && existingNotifyAt > incomingNotifyAt
+                // See useSessions: pending requests follow agentStateVersion.
+                const keepExistingPending = existing !== undefined
+                    && (existing.agentStateVersion ?? 0) > (session.agentStateVersion ?? 0)
+                // `pendingRequestRefs` ALSO depends on the dismissal set, not
+                // only on `agentStateVersion` (#1717 cold-review round 26 —
+                // same gap as `reconcileDelayedListSession`, round 25's
+                // Minor, in this OTHER path that populates the list: a
+                // full-session snapshot can arrive on either SSE stream with
+                // no ordering between them). A snapshot captured before a
+                // dismissal can omit an overflow request the other stream's
+                // dismissal already surfaced, even though the requests
+                // themselves (and so `agentStateVersion`) never changed.
+                // `pendingRequestRefs`' CONTENT describes the same request
+                // set `pendingRequestsCount`/`pendingRequestKinds` do, which
+                // move on `agentStateVersion` — gating refs on EITHER
+                // staleness signal alone (#1717 bot review) kept EXISTING's
+                // refs even when incoming's `agentStateVersion` was
+                // strictly newer, describing a request the fresher
+                // agentState had already replaced while the rest of the
+                // bundle above correctly took the new one. `agentStateVersion`
+                // not having gone backwards is the precondition; staleness
+                // in either signal is only a reason to prefer existing's
+                // refs once that precondition holds.
+                const existingAgentStateNotOlder = (existing?.agentStateVersion ?? 0) >= (session.agentStateVersion ?? 0)
+                const keepExistingRefs = existing !== undefined
+                    && existingAgentStateNotOlder
+                    && (keepExistingPending || keepExistingNotify)
+                // Same gap as `reconcileDelayedListSession`'s Major (#1717
+                // cold-review round 26): a full-session snapshot captured
+                // while the agent was still thinking can arrive on one
+                // stream after an idle patch already landed on the other,
+                // restoring a stale `thinking: true` that hides a genuinely
+                // unanswered footer from the attention classifier. Ordered
+                // by `thinkingRevision` (monotonic, hub-issued), not
+                // `thinkingAt` (#1717 cold-review round 27) — `thinkingAt`
+                // is the CLI's own clamped alive-report time, and two
+                // transitions landing in the same clamped-to-"now"
+                // millisecond can carry an identical value.
+                //
+                // `thinkingRevision` lives only in the hub's in-memory
+                // cache (#1717 bot review) — a restart resets it to 0, but
+                // this tab keeps whatever higher value it cached from the
+                // previous process. A reported 0 can never actually be
+                // stale, so it must win outright rather than lose here.
+                //
+                // That exception only covers the instant nothing has
+                // ticked yet after a restart (#1717 cold-review round 30)
+                // — `hubGeneration` catches the rest: a snapshot from a
+                // DIFFERENT process than the one `existing` describes makes
+                // its cached revision stale regardless of the number.
+                const existingThinkingRevision = existing?.thinkingRevision ?? 0
+                const incomingThinkingRevision = session.thinkingRevision ?? 0
+                const differentHubGeneration = session.hubGeneration !== undefined
+                    && existing?.hubGeneration !== undefined
+                    && session.hubGeneration !== existing.hubGeneration
+                // Within a CONFIRMED same generation, a reported 0 is just
+                // a number — trusting it unconditionally would let a
+                // genuinely stale, delayed snapshot from EARLIER in this
+                // same process roll back a LATER revision already applied
+                // (#1717 cold-review round 32). Known-same-generation is
+                // strictly more informative than "unknown" and should
+                // always defer to the ordinary comparison instead of the
+                // restart heuristic.
+                const sameHubGeneration = session.hubGeneration !== undefined
+                    && existing?.hubGeneration !== undefined
+                    && session.hubGeneration === existing.hubGeneration
+                const keepExistingThinking = existing !== undefined
+                    && !differentHubGeneration
+                    && !(incomingThinkingRevision === 0 && !sameHubGeneration)
+                    && existingThinkingRevision > incomingThinkingRevision
                 const summary = {
                     ...toSessionSummary(session),
+                    ...(keepExistingThinking && existing !== undefined
+                        ? {
+                            thinking: existing.thinking,
+                            thinkingConfirmed: existing.thinkingConfirmed,
+                            thinkingAt: existing.thinkingAt,
+                            thinkingRevision: existingThinkingRevision
+                        }
+                        : {}),
+                    ...(keepExistingNotify && existing !== undefined
+                        ? {
+                            lastNotify: existing.lastNotify ?? null,
+                            blockedAck: existing.blockedAck ?? null,
+                            notifyUpdatedAt: existingNotifyAt
+                        }
+                        : {}),
+                    ...(keepExistingPending && existing !== undefined
+                        ? {
+                            pendingRequestsCount: existing.pendingRequestsCount,
+                            pendingRequestKinds: existing.pendingRequestKinds,
+                            pendingRequests: existing.pendingRequests,
+                            pendingRequestsNewestAt: existing.pendingRequestsNewestAt,
+                            agentStateVersion: existing.agentStateVersion
+                        }
+                        : {}),
+                    ...(keepExistingRefs && existing !== undefined
+                        ? { pendingRequestRefs: existing.pendingRequestRefs }
+                        : {}),
                     attachedJob: existing?.attachedJob ?? null,
                     attachedJobUpdatedAt: existing?.attachedJobUpdatedAt ?? 0,
                     contentRevision: Math.max(existing?.contentRevision ?? 0, session.contentRevision ?? 0),
@@ -531,12 +654,62 @@ export function useSSE(options: {
                     return previous
                 }
 
+                // An incremental patch rides the same two unordered SSE
+                // streams a full snapshot does (#1717 cold-review round 27),
+                // so a stale `thinking` patch can arrive after a fresher one
+                // already landed via the other stream. Ordered by
+                // `thinkingRevision` (monotonic, hub-issued), not
+                // `thinkingAt` (CLI-reported, clamped — two transitions can
+                // land in the same clamped-to-"now" millisecond and carry
+                // an identical value). Unlike the other versioned fields
+                // below, an absent `thinkingRevision` (older hub) takes the
+                // patch unconditionally — today's behaviour, preserved for
+                // backward compatibility.
+                //
+                // `thinkingRevision` lives only in the hub's in-memory
+                // cache (#1717 bot review) — a restart resets it to 0, but
+                // this tab keeps whatever higher value it cached from the
+                // previous process. A reported 0 can never actually be
+                // stale, so it is excluded from the "older" check below
+                // exactly like the absent case already is.
+                //
+                // That exception only covers the instant nothing has
+                // ticked yet after a restart (#1717 cold-review round 30)
+                // — `hubGeneration` catches the rest: a patch from a
+                // DIFFERENT process than the one `current` describes makes
+                // its cached revision stale regardless of the number.
+                const differentHubGeneration = patch.hubGeneration !== undefined
+                    && current.hubGeneration !== undefined
+                    && patch.hubGeneration !== current.hubGeneration
+                // Within a CONFIRMED same generation, a reported 0 is just
+                // a number — trusting it unconditionally would let a
+                // genuinely stale, delayed patch from EARLIER in this same
+                // process roll back a LATER revision already applied
+                // (#1717 cold-review round 32). Known-same-generation is
+                // strictly more informative than "unknown" and should
+                // always defer to the ordinary comparison instead of the
+                // restart heuristic.
+                const sameHubGeneration = patch.hubGeneration !== undefined
+                    && current.hubGeneration !== undefined
+                    && patch.hubGeneration === current.hubGeneration
+                const keepCurrentThinking = !differentHubGeneration
+                    && patch.thinkingRevision !== undefined
+                    && !(patch.thinkingRevision === 0 && !sameHubGeneration)
+                    && patch.thinkingRevision < (current.thinkingRevision ?? 0)
                 const nextSummary: SessionSummary = {
                     ...current,
                     contentRevision: Math.max(current.contentRevision ?? 0, patch.contentRevision ?? 0),
                     readState: mergeReadState(current.readState, patch.readState),
                     active: patch.active ?? current.active,
-                    thinking: patch.thinking ?? current.thinking,
+                    thinking: keepCurrentThinking ? current.thinking : (patch.thinking ?? current.thinking),
+                    thinkingConfirmed: keepCurrentThinking
+                        ? current.thinkingConfirmed
+                        : (patch.thinkingConfirmed ?? current.thinkingConfirmed),
+                    thinkingAt: keepCurrentThinking ? current.thinkingAt : (patch.thinkingAt ?? current.thinkingAt),
+                    thinkingRevision: keepCurrentThinking
+                        ? current.thinkingRevision
+                        : (patch.thinkingRevision ?? current.thinkingRevision),
+                    hubGeneration: patch.hubGeneration ?? current.hubGeneration,
                     activeAt: patch.activeAt ?? current.activeAt,
                     // Monotonic: stale versioned-patch replays can carry an
                     // older updatedAt; never move the list clock backward.
@@ -573,6 +746,29 @@ export function useSSE(options: {
                     nextSummary.pendingRequestsCount = computePendingRequestsCount(patch.agentState.value)
                     nextSummary.pendingRequestKinds = computePendingRequestKinds(patch.agentState.value)
                     nextSummary.pendingRequests = computePendingRequests(patch.agentState.value, nextSummary.updatedAt)
+                    // Recomputed with the rest: `pendingRequests` is capped, so a
+                    // stale watermark would keep a prompt that arrived after an
+                    // acknowledgement suppressed until the next full refresh.
+                    nextSummary.pendingRequestsNewestAt = computePendingRequestsNewestAt(
+                        patch.agentState.value,
+                        nextSummary.updatedAt
+                    )
+                    // Recomputed with the rest. Leaving the id list at its
+                    // previous value meant a sixth prompt arriving by patch had
+                    // no identity, so the classifier saw nothing unacknowledged
+                    // beyond the already-dismissed five.
+                    // Pass the cached dismissal keys so an overflow request
+                    // beyond the 200-ref cap stays visible after it is
+                    // dismissed while still pending, matching the REST
+                    // projection (#1717 cold-review round 24) — otherwise
+                    // this patch path alone reverts to plain oldest-first
+                    // truncation and can drop a genuinely unanswered request
+                    // off the capped list until the next full refresh.
+                    nextSummary.pendingRequestRefs = computePendingRequestRefs(
+                        patch.agentState.value,
+                        nextSummary.updatedAt,
+                        nextSummary.blockedAck?.keys ? new Set(nextSummary.blockedAck.keys) : undefined
+                    )
                     nextSummary.agentStateVersion = patch.agentState.version
                 }
                 if (patch.metadata !== undefined && patch.metadata.version >= current.metadataVersion) {

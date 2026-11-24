@@ -131,10 +131,14 @@ export type SessionHandlersDeps = {
     /** Drops the queued-thinking grace so synchronous CLI handlers (e.g. slash
      *  commands) don't leave the spinner stuck for the full grace window. */
     onMessagesConsumed?: (sessionId: string) => void
+    /** Fired on CONFIRMED prompt consumption (#1717). */
+    onPromptDelivered?: (sessionId: string, deliveredAt: number) => void
+    /** #1717: the next turn is maintenance, so it must not clear the footer. */
+    onMaintenanceTurn?: (sessionId: string) => void
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
-    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed, onPromptDelivered, onMaintenanceTurn } = deps
 
     socket.on('native-queue-message', data => {
         const parsed = z.object({ sid: z.string(), localId: z.string().min(1), text: z.string().nullable() }).safeParse(data)
@@ -317,6 +321,10 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 localId: msg.localId,
                 content: msg.content,
                 createdAt: msg.createdAt,
+                // Hub arrival must survive the hop into ingestion: without it
+                // the footer falls back to the runner's clock and a slow-clock
+                // agent's genuine blocker is rejected (#1717).
+                receivedAt: msg.receivedAt,
                 invokedAt: msg.invokedAt,
                 ...(msg.contentRevision ? { contentRevision: msg.contentRevision } : {})
             }
@@ -478,7 +486,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         onSessionReady?.(data)
     })
 
-    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean }) => {
+    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean; maintenance?: boolean }) => {
         if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {
             return
         }
@@ -493,13 +501,26 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
         const invokedAt = Date.now()
         let sessionUpdatedAt: number
+        // Only rows that were still uninvoked count as newly delivered. A
+        // replayed acknowledgement after the turn already finished blocked,
+        // and one naming unknown local ids, consume nothing — clearing on
+        // those erased a blocker the agent genuinely reported (#1717).
+        let newlyDelivered = false
         try {
-            sessionUpdatedAt = store.recordMessagesConsumed(
+            const consumedResult = store.recordMessagesConsumed(
                 data.sid,
                 localIds,
                 invokedAt,
-                sessionAccess.value.namespace
+                sessionAccess.value.namespace,
+                // Persist the disposition, not just the live decision below:
+                // the backfill, rewind and merge paths re-derive "was this
+                // answered?" from the transcript long afterwards, and
+                // `invoked_at` alone reads a locally handled command as an
+                // answer the agent never received (#1717).
+                { agentDelivered: data.clearQueuedThinkingGrace !== true && data.maintenance !== true }
             )
+            sessionUpdatedAt = consumedResult.updatedAt
+            newlyDelivered = consumedResult.consumed > 0
         } catch (err) {
             console.error('recordMessagesConsumed failed', err)
             return
@@ -509,6 +530,48 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             onSessionActivity?.(data.sid, sessionUpdatedAt)
         } catch (err) {
             console.error('onSessionActivity failed', err)
+        }
+
+        // #1717: the blocker clears when the agent actually RECEIVES the
+        // prompt, not when the hub optimistically queues it. Clearing at
+        // queue time erased a footer on an idempotent retry of an
+        // already-consumed message (no new turn started), and on a prompt
+        // cancelled before it was ever delivered.
+        //
+        // `clearQueuedThinkingGrace` is the CLI saying it consumed the row
+        // synchronously and no agent turn will follow: a slash command it
+        // handled itself (Copilot `/model`, Pi `/stats`), a message it rejected
+        // or aborted, or a steer that failed. The operator typed something, so
+        // the row counts as consumed — but the agent never saw it, so whatever
+        // it was waiting on is still unanswered. A successful steer reaches the
+        // agent and reports `steered` instead, so it still clears.
+        //
+        // `maintenance` is the same statement on a separate axis: OpenCode
+        // acknowledges /compact when it DEQUEUES the command, before
+        // compaction starts, so that consumed a command rather than delivering
+        // a prompt. It cannot reuse `clearQueuedThinkingGrace`, because
+        // /compact must KEEP that grace for the prompts queued behind it — so
+        // without its own flag the hub cleared an unanswered blocker, and a
+        // cancellation during setup consumed no rows, leaving it gone.
+        if (data.maintenance === true) {
+            // The thinking start that follows must not delete the footer:
+            // OpenCode sends thinking=true before compaction begins, and that
+            // keepalive was erasing a blocker nothing had answered (#1717).
+            try {
+                onMaintenanceTurn?.(data.sid)
+            } catch (err) {
+                console.error('onMaintenanceTurn failed', err)
+            }
+        }
+
+        if (newlyDelivered
+            && data.clearQueuedThinkingGrace !== true
+            && data.maintenance !== true) {
+            try {
+                onPromptDelivered?.(data.sid, invokedAt)
+            } catch (err) {
+                console.error('onPromptDelivered failed', err)
+            }
         }
 
         // Only drop the queued-thinking grace when the CLI explicitly opts in

@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { BLOCKED_NOTIFY_STALE_MS, notifyBlockerKey, type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -93,7 +93,7 @@ import { ArchiveCleanupError } from './archiveCleanupError'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
-import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
+import { buildOperatorUnblockEvent, deliveredOperatorReplyAt, extractSessionNotifySignal, messageReceivedAt, notifySignalIdentity, operatorReplyDeliveredAt, ingestNotifySummaryFromMessage, isDeliveredOperatorReply, isOperatorReplyMessage } from './workGraphNotifyIngest'
 import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
 import { extractTodoWriteTodosFromMessageContent } from './todos'
@@ -103,6 +103,18 @@ import {
 } from '../config/autoBridgeTransientModelErrors'
 import { getConfiguration } from '../configuration'
 import { getSettingsFile, readSettingsOrThrowCached } from '../config/settings'
+
+/** Startup notify backfill bounds (#1717) — see `backfillRecentNotifySignals`. */
+const NOTIFY_BACKFILL_MAX_SESSIONS = 200
+const NOTIFY_BACKFILL_MESSAGE_SCAN = 6
+/** Ceiling for `findNotifySignalInTranscript`'s paging retry (#1717
+ *  cold-review round 30) — matches `getMessages`'s own hard cap, so paging
+ *  past it would just re-read the identical last-200 rows forever. */
+const NOTIFY_BACKFILL_MESSAGE_SCAN_MAX = 200
+/** Rewind reconciliation scans deeper than the startup backfill: the retained
+ *  footer can sit behind a run of sidechain or tool rows, and missing it there
+ *  does not merely delay the signal — the replacement write clears it. */
+const NOTIFY_REWIND_MESSAGE_SCAN = 60
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
 type PtyResumeAttempt = NonNullable<NonNullable<Session['metadata']>['ptyResumeAttempt']>
@@ -182,6 +194,21 @@ function asRecord(value: unknown): Record<string, unknown> | null {
         : null
 }
 
+/** [hub-arrival time, seq] position tuple used by the notify derivation's
+ *  "at or before a boundary" comparisons. Module-level so a cross-session
+ *  caller (`computeNotifyStateAcrossDuplicateSessions`'s override check) can
+ *  compare a candidate message against another session's OWN boundary
+ *  using the exact same seq tiebreak the single-session derivation uses
+ *  internally — an untimestamped Codex import stamps every row in its
+ *  batch with the same hub-arrival time, so dropping the tiebreak lets an
+ *  initiating prompt tie its own still-open footer's timestamp and read as
+ *  "at or before" it, same bug the tiebreak exists to prevent in the
+ *  first place. */
+type NotifyPosition = [number, number]
+function positionAtOrBefore(a: NotifyPosition, b: NotifyPosition): boolean {
+    return a[0] < b[0] || (a[0] === b[0] && a[1] <= b[1])
+}
+
 function normalizeUserMessageText(value: string): string | undefined {
     const text = value.trim().replace(/\s+/g, ' ')
     return text.length > 0 ? text : undefined
@@ -223,6 +250,56 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
     if (message?.role !== 'user') return undefined
 
     return extractUserMessageText(message.content)
+}
+
+/**
+ * The stable field set an OpenCode rewind reservation hashes its transcript
+ * against (#1717 cold-review round 21).
+ *
+ * `hashOpenCodeRewindTranscript` used to hash `JSON.stringify` of the whole
+ * `StoredMessage` array. `StoredMessage` keeps growing — this PR alone added
+ * `sweptAt` / `receivedAt` / `agentDelivered` — and every one of those fields
+ * is emitted as `null` even for an untouched row migrated from an older
+ * schema version. A reservation hashed before a hub upgrade can never match
+ * the same, unchanged transcript hashed after it: the hash input gained keys
+ * the old hub never wrote. The hub then rejected an already-applied native
+ * rewind as "source transcript changed" and kept retrying against a
+ * reservation it could never satisfy, blocking new prompts.
+ *
+ * Projecting to this fixed, named field set — the contract as it stood before
+ * this PR — means a FUTURE field addition to `StoredMessage` cannot silently
+ * repeat the same regression; it would have to touch this function on
+ * purpose.
+ */
+function hashableOpenCodeRewindFields(message: StoredMessage): Record<string, unknown> {
+    // Reproduces `toStoredMessage`'s pre-#1717 shape BYTE FOR BYTE: same key
+    // order, and the three conditional fields OMITTED when absent rather than
+    // defaulted to `null` (cold-review round 22). `JSON.stringify` preserves
+    // insertion order and distinguishes a missing key from a `null` one, so
+    // either difference alone still changes the hash string for an unchanged
+    // transcript — defeating the point of this function. `sweptAt` /
+    // `receivedAt` / `agentDelivered` are genuinely new and stay excluded
+    // entirely, not nulled: a pre-upgrade hub's serialized row never had
+    // those keys at all.
+    return {
+        id: message.id,
+        sessionId: message.sessionId,
+        ...(message.contentRevision !== undefined ? { contentRevision: message.contentRevision } : {}),
+        content: message.content,
+        createdAt: message.createdAt,
+        seq: message.seq,
+        localId: message.localId,
+        invokedAt: message.invokedAt,
+        scheduledAt: message.scheduledAt,
+        ...(message.deliveryState !== undefined ? { deliveryState: message.deliveryState } : {}),
+        ...(message.deliveryPending !== undefined ? { deliveryPending: message.deliveryPending } : {})
+    }
+}
+
+export function hashOpenCodeRewindTranscript(messages: StoredMessage[]): string {
+    return createHash('sha256')
+        .update(JSON.stringify(messages.map(hashableOpenCodeRewindFields)))
+        .digest('hex')
 }
 
 export class SyncEngine {
@@ -427,6 +504,557 @@ export class SyncEngine {
 
     getSessions(): Session[] {
         return this.sessionCache.getSessions()
+    }
+
+    /** See `SessionCache.hubGeneration` (#1717 cold-review round 29). */
+    get hubGeneration(): string {
+        return this.sessionCache.hubGeneration
+    }
+
+    /**
+     * Operator manually marks a session unblocked (#1717).
+     *
+     * Two effects, deliberately: it dismisses the chrome, AND it writes a
+     * work-graph event. Replying to an agent leaves the rationale in the
+     * transcript for anyone to read later; dismissing
+     * silently would leave a state change with no "why", which is exactly the
+     * gap the reason prompt exists to close.
+     */
+    /** Confirmed prompt delivery cleared the agent's last self-report (#1717). */
+    clearSessionLastNotifyOnDelivery(sessionId: string, deliveredAt?: number): void {
+        // A hub stamp, and compared only against other hub stamps: a footer's
+        // hub ARRIVAL on the way in, and the author time of the footer this
+        // delivery superseded on the way past. The footer's own timestamp is
+        // the runner's clock and is never measured against this.
+        this.sessionCache.clearSessionLastNotify(sessionId, deliveredAt)
+    }
+
+    acknowledgeSessionBlocked(
+        sessionId: string,
+        reason: string,
+        observedAt?: number,
+        observedKey?: string
+    ): { at: number; reason: string } | null {
+        const session = this.getSession(sessionId)
+        if (!session) return null
+
+        // The ledger has to describe the blocker the operator READ, not
+        // whatever the session reports at confirmation time. If a newer footer
+        // landed while they were typing, recording that one attaches their
+        // reason to something they never saw.
+        const observedNotify = session.lastNotify
+            && (!observedKey || observedKey === `notify:${session.lastNotify.at}`)
+            ? session.lastNotify
+            : null
+        const priorNotify = observedNotify
+        // Watermark the blocker the operator actually reviewed, not the hub's
+        // receive time. A permission request or footer that landed between the
+        // dialog opening and this call is a blocker they never saw, and
+        // stamping `now` would silence it under a reason written for another.
+        // Clamped so a skewed or forged client clock cannot dismiss the future.
+        const ackAt = typeof observedAt === 'number'
+            ? Math.min(observedAt, Date.now())
+            : Date.now()
+        const ack = this.sessionCache.setSessionBlockedAck(sessionId, reason, ackAt, observedKey)
+        if (!ack) return null
+
+        // The ledger records WHEN THE OPERATOR DECIDED, which is now — not the
+        // blocker's own timestamp, and not `ack.at`, which is kept monotonic
+        // and so may belong to a newer prompt than the one just dismissed.
+        // The log sorts by event time, so either of those filed today's
+        // rationale among days-old activity, or outside a recent-events window
+        // entirely. What was dismissed is carried as detail instead.
+        const decidedAt = Date.now()
+        try {
+            this.store.workGraph.insertEvent(session.namespace, buildOperatorUnblockEvent({
+                sessionId,
+                ownerUserId: this.hubOwnerUserId,
+                reason,
+                acknowledgedAt: decidedAt,
+                observedAt: ackAt,
+                // Carry the identity even when the footer it named has already
+                // been replaced: an event that records the reason with null
+                // prior fields cannot be matched back to what was dismissed.
+                observedKey: observedKey ?? null,
+                priorNotify: priorNotify
+            }), { ts: decidedAt })
+        } catch (error) {
+            // Best-effort ledger capture — never fail the operator's dismissal
+            // because the event log rejected the row.
+            console.error('[work-graph] operator_unblock capture failed', error)
+        }
+
+        return ack
+    }
+
+    /**
+     * One-shot startup backfill for the blocked session-list chrome (#1717).
+     *
+     * `lastNotify` is normally stamped as messages arrive, so a hub upgraded
+     * mid-flight would show nothing until every agent speaks again. Rather than
+     * rescan every session's history (600+ sessions x 200 messages), only look
+     * at sessions that moved inside the staleness window the UI actually
+     * renders loudly — anything older would be drawn muted anyway.
+     *
+     * Sessions with no footer in their last few messages are rescanned on each
+     * restart. That is accepted: the candidate set is already bounded by both
+     * the 24h window and `NOTIFY_BACKFILL_MAX_SESSIONS`, and a "we looked and
+     * found nothing" marker would be more state than the scan costs.
+     *
+     * `maxSessions` bounds each BATCH's transcript-scanning work, not the
+     * total candidate set (#1717 cold-review round 27): a `.slice` cutting
+     * the newest-first-sorted list off at the cap permanently excluded the
+     * 201st-and-later recently-active session, even one whose last message
+     * is a genuinely unanswered footer — every restart kept rescanning the
+     * same 200 newer sessions and never reached it until something else
+     * made it speak again. Looping in batches instead covers every
+     * candidate inside the 24h window while still scanning transcripts
+     * `maxSessions` at a time per batch.
+     */
+    backfillRecentNotifySignals(options: { now?: number; maxSessions?: number } = {}): number {
+        const now = options.now ?? Date.now()
+        const maxSessions = options.maxSessions ?? NOTIFY_BACKFILL_MAX_SESSIONS
+        const candidates = this.sessionCache.getSessions()
+            .filter((session) => !session.lastNotify
+                && now - session.updatedAt <= BLOCKED_NOTIFY_STALE_MS)
+            .sort((a, b) => b.updatedAt - a.updatedAt)
+
+        let stamped = 0
+        for (let offset = 0; offset < candidates.length; offset += maxSessions) {
+            const batch = candidates.slice(offset, offset + maxSessions)
+            for (const session of batch) {
+                if (this.restoreNotifySignalFromTranscript(session.id)) stamped += 1
+            }
+        }
+        return stamped
+    }
+
+    /**
+     * Re-derive `lastNotify` from the stored transcript, newest footer wins.
+     *
+     * Returns true when a footer was found and stamped.
+     */
+    private restoreNotifySignalFromTranscript(sessionId: string): boolean {
+        const signal = this.findNotifySignalInTranscript(sessionId)
+        if (!signal) return false
+        this.sessionCache.setSessionLastNotify(sessionId, signal)
+        return true
+    }
+
+    /**
+     * Newest eligible footer in the retained transcript, or null.
+     *
+     * Pages the scan window outward, but a FOUND SIGNAL only short-circuits
+     * once we've seen ENOUGH of the transcript to rule out an earlier
+     * occurrence of its identity, not just once ANY boundary happens to be
+     * in view (#1717 cold-review round 32 — the round 31 fix still stopped
+     * one case too early). A reply that exists in the current window but
+     * is unrelated to the found footer can set `boundaryAt` non-null
+     * without the window reaching far enough back to contain the ORIGINAL
+     * footer+reply pair a later exact-text replay needs to be recognized
+     * against — `deriveNotifyStateFromTranscript` can then read that
+     * replay as live, having nothing in view to supersede it with.
+     *
+     * The asymmetry that makes this safe to bound: a CONCLUSIVELY IDLE
+     * result (`signal === null` with a boundary established) is stable
+     * under MORE history — every message paging-further reveals is OLDER
+     * than everything already seen, hence at-or-before the same boundary,
+     * hence superseded by POSITION alone regardless of content. A result
+     * reporting something LIVE has no equivalent guarantee — an identical,
+     * already-answered occurrence could still be waiting further back —
+     * so only the idle case may return early; a found signal keeps paging
+     * to the cap, where whatever was last found becomes the best
+     * available answer.
+     */
+    private findNotifySignalInTranscript(
+        sessionId: string,
+        scanDepth: number | null = NOTIFY_BACKFILL_MESSAGE_SCAN
+    ): { status: string; at: number; note: string | null; seq?: number | null } | null {
+        if (scanDepth === null) return this.deriveNotifyStateFromTranscript(sessionId, null).signal
+        let depth = scanDepth
+        for (;;) {
+            const result = this.deriveNotifyStateFromTranscript(sessionId, depth)
+            if (result.signal === null && result.boundaryAt !== null) return null
+            if (depth >= NOTIFY_BACKFILL_MESSAGE_SCAN_MAX) return result.signal
+            depth = Math.min(depth * 4, NOTIFY_BACKFILL_MESSAGE_SCAN_MAX)
+        }
+    }
+
+    /**
+     * Derive both the surviving footer and its clear boundary from the
+     * transcript, each in the only domain that can order it (#1717).
+     *
+     * Two separate comparisons, deliberately not one sort:
+     *
+     *  - footer vs footer: both were stamped by the same agent runner inside
+     *    one transcript, so authorship time is authoritative between them.
+     *    Insertion `seq` is not — Claude replays an older footer after a newer
+     *    one and it lands at a HIGHER seq while being older in fact.
+     *  - footer vs reply: the footer's own timestamp is the runner's clock and
+     *    the reply's is the hub's, so no comparison between those is sound in
+     *    either direction. The footer's hub ARRIVAL is, because the boundary is
+     *    a hub stamp too. A position cannot serve: cancelling a queued row
+     *    frees its `seq` for reuse, and a merge renumbers one side's positions
+     *    into something synthetic rather than real.
+     *
+     * A single ordering key cannot satisfy both, which is why mixing hub
+     * invocation times with runner footer times could drop a blocker still
+     * visible in the transcript whenever the two clocks disagreed.
+     */
+    private deriveNotifyStateFromTranscript(
+        sessionId: string,
+        scanDepth: number | null = NOTIFY_BACKFILL_MESSAGE_SCAN
+    ): {
+        signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null
+        boundaryAt: number | null
+        /** Full tiebreak-aware position of the boundary, for a caller that
+         *  needs to compare a FOREIGN message against THIS session's own
+         *  boundary precisely — see `computeNotifyStateAcrossDuplicateSessions`.
+         *  `boundaryAt` alone drops the seq tiebreak. */
+        boundaryPosition: NotifyPosition | null
+        authorCutoff: number | null
+    } {
+        const scanned = scanDepth === null
+            ? this.store.messages.getAllMessages(sessionId)
+            : this.store.messages.getMessages(sessionId, scanDepth)
+
+        // Position in the hub's arrival order, with `seq` breaking ties.
+        //
+        // The tie-break is not cosmetic: a Codex Desktop transcript carries no
+        // per-message timestamps, so the importer stamps every row with the
+        // same import time. Comparing arrival alone then made a transcript's
+        // FINAL message — an unanswered blocked footer — compare equal to the
+        // prompt that started it and read as already answered, so the
+        // conversation went missing from Blocked entirely. `seq` is the native
+        // transcript order for imported rows, which is exactly the information
+        // the timestamps lack.
+        const position = (message: StoredMessage): NotifyPosition =>
+            [messageReceivedAt(message), message.seq]
+        const atOrBefore = positionAtOrBefore
+
+        // Where the operator's most recent genuine reply sits. Only a reply the
+        // agent was actually given counts: a locally handled slash command has
+        // `invoked_at` stamped but answered nothing.
+        let boundary: NotifyPosition | null = null
+        let boundaryAt: number | null = null
+        for (const message of scanned) {
+            if (!isDeliveredOperatorReply(message)) continue
+            const here: NotifyPosition = [operatorReplyDeliveredAt(message), message.seq]
+            if (boundary === null || !atOrBefore(here, boundary)) {
+                boundary = here
+                boundaryAt = here[0]
+            }
+        }
+
+        // Reconstruct the author cutoff that live ingestion holds in
+        // `last_notify_cleared_author_at`.
+        //
+        // That cutoff is SESSION state, so a derivation that reads only the
+        // transcript cannot see it — and a rewind retaining both the reply and
+        // an older footer replay would hand back the replay that live
+        // ingestion had already rejected, reopening an answered turn. The
+        // transcript does carry the equivalent: any footer that arrived at or
+        // before the boundary belongs to a turn the reply superseded, so
+        // nothing authored at or before the newest of those can be current.
+        let authorCutoff: number | null = null
+        // Identities of the footers the boundary superseded. A Claude replay
+        // is the SAME footer stored a second time — same status, same note,
+        // same author timestamp — and it arrives after the reply, so neither
+        // arrival nor a strict author comparison can reject it. Identity can.
+        // This is what keeps the strict comparison below safe: equal author
+        // times are accepted for a genuinely new footer (an untimestamped
+        // import synthesizes one timestamp for every row) but refused for an
+        // exact duplicate of something already answered.
+        const supersededIdentities = new Set<string>()
+        const identity = notifySignalIdentity
+        const footers: Array<{
+            signal: { status: string; at: number; note: string | null }
+            position: NotifyPosition
+            identity: string
+        }> = []
+        for (const message of scanned) {
+            const signal = extractSessionNotifySignal(message.content, message.createdAt)
+            if (!signal) continue
+            const here = position(message)
+            footers.push({ signal, position: here, identity: identity(message, signal) })
+            if (boundary !== null && atOrBefore(here, boundary)) {
+                if (authorCutoff === null || signal.at > authorCutoff) authorCutoff = signal.at
+                supersededIdentities.add(identity(message, signal))
+            }
+        }
+
+        // The newest footer the boundary does not already answer. Eligibility
+        // is decided on arrival order (same clock as the boundary) and on the
+        // author cutoff (same clock as the other footers); which of the
+        // eligible ones is newest is decided on AUTHOR time.
+        let best: {
+            signal: { status: string; at: number; note: string | null }
+            position: NotifyPosition
+            identity: string
+        } | null = null
+        for (const footer of footers) {
+            if (boundary !== null && atOrBefore(footer.position, boundary)) continue
+            // STRICTLY older, not "at or older". An untimestamped Codex
+            // Desktop import synthesizes one timestamp for every row, so an
+            // earlier turn's footer sets a cutoff EQUAL to the final footer's
+            // author time — and `<=` then discarded a blocker that is still
+            // unanswered and is the last thing in the transcript. Where the
+            // author clock cannot discriminate, position already has: this
+            // footer is after the boundary. A genuine replay is strictly
+            // older than the footer it duplicates, so `<` still rejects it.
+            if (authorCutoff !== null && footer.signal.at < authorCutoff) continue
+            // An exact duplicate of a footer the reply already answered.
+            if (supersededIdentities.has(footer.identity)) continue
+            if (best === null
+                || footer.signal.at > best.signal.at
+                || (footer.signal.at === best.signal.at && !atOrBefore(footer.position, best.position))) {
+                best = footer
+            }
+        }
+        return {
+            signal: best === null ? null : { ...best.signal, receivedAt: best.position[0] },
+            boundaryAt,
+            boundaryPosition: boundary,
+            authorCutoff
+        }
+    }
+
+    /**
+     * Reconcile the persisted notify signal after history truncation (#1717).
+     *
+     * A rewind can delete the very message whose footer is driving the blocked
+     * chrome. Nothing else repairs that: a Codex rollback does not start a new
+     * turn, so the clear-on-new-turn transition never fires, and the next
+     * refresh simply re-reads the stale columns.
+     */
+    private reconcileNotifySignalAfterTruncate(sessionId: string): void {
+        // Derive FIRST, then write the signal and its boundary together.
+        //
+        // Clearing and restoring as two steps made the restore fail its own
+        // check: the clear stamps the boundary at `now`, and the retained
+        // footer predates that, so a session whose retained history still ends
+        // blocked dropped out of the Blocked section entirely. After a
+        // truncation the transcript is the truth, not arrival order.
+        const session = this.sessionCache.getSession(sessionId)
+        if (!session) return
+        // Scan ALL retained history. Any fixed window is wrong here: a miss
+        // does not delay the signal, it writes null and drops the session out
+        // of Blocked while its transcript still ends unanswered. Rewind is
+        // rare, so the full read is affordable.
+        // Scope the boundaries to the surviving transcript too. They were left
+        // describing deleted history, and the clear's MAX meant no later
+        // delivery could lower them again — so after a rewind the session
+        // could reject every genuine footer it went on to emit.
+        const retained = this.deriveNotifyStateFromTranscript(sessionId, null)
+        this.sessionCache.replaceNotifyAfterTruncate(
+            sessionId,
+            retained.signal,
+            retained.boundaryAt ?? 0,
+            retained.authorCutoff
+        )
+    }
+
+    /**
+     * Re-derive the blocked signal after importing a transcript (#1717).
+     *
+     * An import replays historical rows through live ingestion, which saves
+     * each footer as it passes but never clears one: an imported reply does
+     * not go through the CLI delivery callback, so nothing marks the footer it
+     * answered as answered. The conversation entered Blocked on a footer its
+     * own transcript closes.
+     *
+     * The ordinary derivation is correct here, because an imported row carries
+     * the transcript's own time in BOTH `received_at` and `invoked_at` — so
+     * its footers and its replies are directly comparable, exactly as live
+     * rows are in the hub's clock. Only the one-shot re-derivation is needed.
+     */
+    reconcileNotifySignalAfterImport(sessionId: string): void {
+        if (!this.sessionCache.getSession(sessionId)) return
+        const derived = this.deriveNotifyStateFromTranscript(sessionId, null)
+        this.sessionCache.replaceNotifyAfterTruncate(
+            sessionId,
+            derived.signal,
+            derived.boundaryAt ?? 0,
+            derived.authorCutoff
+        )
+    }
+
+    /**
+     * Compute the blocked/notify projection across a Codex Desktop
+     * duplicate-session merge group, from every session's OWN untouched
+     * pre-merge messages (#1717). Does NOT commit the result — see
+     * `applyReconciledNotifyState`, which a caller must invoke AFTER the
+     * merge finishes touching the transcript, not before.
+     *
+     * Each session's own signal is derived independently, via the ordinary
+     * SINGLE-session derivation — never combined across sessions on a raw
+     * timestamp. A Codex Desktop import carries NO per-row timestamp at all;
+     * every row of one import batch is stamped with that import's OWN wall
+     * clock moment, which can land arbitrarily far after (or before) a
+     * live session's real activity on the SAME thread. Comparing "latest by
+     * hub arrival" across sessions therefore compares two numbers that do
+     * not mean the same thing, and an import whose own transcript genuinely
+     * ends blocked can beat a live session that already answered the exact
+     * same footer, purely because the import happened to run later in
+     * wall-clock terms than the live reply did.
+     *
+     * What IS sound across sessions is CONTENT: if session A's own
+     * self-consistent timeline shows a reply answering a footer with a given
+     * status+note, that fact holds regardless of what any OTHER session's
+     * copy of the same footer is stamped with. So a session's own blocked
+     * signal is overridden (treated as already answered) when ANY session
+     * in the group — using only ITS OWN clock, full tiebreak included — shows
+     * that same status+note at or before ITS OWN boundary. Dropping the seq
+     * tiebreak here (comparing bare `messageReceivedAt` numbers) reopens
+     * exactly the bug the tiebreak exists to prevent: an untimestamped
+     * import stamps its initiating prompt and its own still-open footer with
+     * the SAME arrival time, so a bare `<=` reads the footer as "at or
+     * before" the prompt's own position and misreads it as answered by it.
+     *
+     * Among whatever's left unresolved, the representative is picked by the
+     * SAME deterministic order the merge already sorts its sessions into
+     * (most messages, then newest `updatedAt`, then session id) — preferring
+     * canonical's own signal, falling back to the first surviving duplicate
+     * in that order. This is the exact order the row-dedup loop in the merge
+     * processes sources in, so the chosen signal and whichever row the
+     * content-dedup happens to keep are never pointing at different events.
+     *
+     * `sessionIds` MUST already be in that order — this function trusts the
+     * caller's sort (`survivors[0]`) rather than re-deriving it, so passing
+     * an arbitrary order silently changes which signal represents the
+     * group, with nothing here to catch it.
+     *
+     * Dismissal transfer also happens here, not in `applyReconciledNotifyState`
+     * — it reads each SOURCE session's own (pre-deletion) ack keys, which
+     * only exist before the merge removes those sessions.
+     */
+    computeNotifyStateAcrossDuplicateSessions(
+        // Caller's deterministic merge order (most messages, newest
+        // `updatedAt`, then session id) — canonical first. See the doc
+        // comment above; this function does not re-sort.
+        sessionIds: string[],
+        canonicalSessionId: string,
+        namespace: string
+    ): {
+        signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null
+        boundaryAt: number | null
+        authorCutoff: number | null
+    } {
+        const perSession = sessionIds.map((sessionId) => ({
+            sessionId,
+            ackKeys: this.store.sessions.getSessionByNamespace(sessionId, namespace)?.blockedAckKeys ?? [],
+            derived: this.deriveNotifyStateFromTranscript(sessionId, null)
+        }))
+
+        // No cross-session "already resolved" check (#1717 cold-review
+        // round 31) — there used to be one here, matching a candidate's
+        // signal against a SIBLING's transcript by status+note CONTENT.
+        // Content equality is not evidence the two occurrences are the
+        // SAME real event: the self-exclusion fix (round 29) already
+        // proved recurring identical text is a real pattern, not
+        // hypothetical, and nothing stops the SAME pattern splitting
+        // across two duplicate sessions' independently-synced histories
+        // instead of within one. Matching would need a stable cross-copy
+        // identity to be sound, and #1717 (filed as hapi#2577) traced that
+        // none exists today for any flavor's live-vs-imported pairing —
+        // the dominant real scenario this code has to handle.
+        //
+        // Given that, the only safe default is to decline: a session's own
+        // self-consistent derivation (which DOES use real identity for its
+        // own within-session ordering) is trusted as-is, full stop. The
+        // cost is a dismissal legitimately recorded on a sibling session
+        // occasionally not carrying across the merge — an answered blocker
+        // stays visible until something touches it directly. That is the
+        // safe direction to be wrong in; the alternative (matching by
+        // content) can hide a genuinely unanswered blocker instead, which
+        // is the failure this entire subsystem exists to prevent.
+        const survivors = perSession.filter((source) => source.derived.signal !== null)
+        // When survivors report DIFFERENT content, the representative is
+        // whichever one's signal is newest by author time, not whichever
+        // sorts first in the merge's canonical-selection order (most
+        // messages, newest updatedAt) — that order answers "which
+        // session's OTHER metadata to keep," a different question from
+        // "which blocker is most current" (#1717 cold-review round 32). A
+        // session can have fewer messages and still be reporting the
+        // genuinely later real episode; picking the first survivor in
+        // merge order silently preferred an older blocker from a longer
+        // duplicate over a newer one from a shorter sibling.
+        //
+        // But when every survivor reports the IDENTICAL status+note, author
+        // time stops being a safe tie-break: an untimestamped Codex import
+        // stamps every row with the import's OWN wall-clock moment, not a
+        // real conversation timestamp (#1717 cold-review round 25's test
+        // scenario — two projections of the SAME event, each a duplicate's
+        // own import batch artifact). Comparing those as if "later" meant
+        // "more current" would just be cross-session content+timestamp
+        // matching again, wearing a tie-break's clothes. Identical content
+        // keeps the deterministic merge order instead — the question is
+        // genuinely undecidable from the data, same reasoning as declining
+        // to resolve by content above, so pick the SAME default that
+        // reasoning already settled on.
+        const distinctContents = new Set(
+            survivors.map((source) => `${source.derived.signal!.status} ${source.derived.signal!.note ?? ''}`)
+        )
+        const winner = distinctContents.size <= 1
+            ? (survivors[0] ?? null)
+            : survivors.reduce<typeof survivors[number] | null>(
+                (latest, candidate) => (
+                    latest === null || candidate.derived.signal!.at > latest.derived.signal!.at
+                ) ? candidate : latest,
+                null
+            )
+
+        if (winner && winner.derived.signal !== null && winner.sessionId !== canonicalSessionId && winner.ackKeys.length > 0) {
+            // Only the WINNER's own acknowledgement ever transfers — never
+            // a sibling's, even one whose content happens to match (#1717
+            // cold-review round 31, same reasoning as declining the
+            // cross-session resolve above). The winner's own ack is the
+            // one case identity is actually certain: it is the session's
+            // own acknowledgement of its own signal, by construction, not
+            // a content match across two distinct objects.
+            const winningKey = notifyBlockerKey(winner.derived.signal.at)
+            this.transferBlockedAck(winner.sessionId, canonicalSessionId, namespace, new Map([[winningKey, winningKey]]))
+        }
+
+        return {
+            signal: winner?.derived.signal ?? null,
+            boundaryAt: winner?.derived.boundaryAt ?? Date.now(),
+            authorCutoff: winner?.derived.authorCutoff ?? null
+        }
+    }
+
+    /**
+     * Commit a projection already computed by
+     * `computeNotifyStateAcrossDuplicateSessions` (#1717).
+     *
+     * MUST run AFTER the merge finishes copying and emitting appended
+     * transcript rows, never before: `emitImportedMessageEvents` replays
+     * each copied row through live ingestion
+     * (`SyncEngine.handleRealtimeEvent`'s `message-received` branch), which
+     * unconditionally overwrites the session's notify signal from whatever
+     * footer content that ONE row happens to carry — with no knowledge that
+     * a correct, already-computed reconciliation already accounted for it.
+     * Replaying a copied REPLY never undoes that (an imported row never goes
+     * through the delivery-confirmation callback a real reply does), so an
+     * answered blocker could resurface as blocked purely from replaying its
+     * own already-resolved footer back through the live path. Committing
+     * the precomputed projection last makes it the final word regardless of
+     * what the replay touched.
+     */
+    applyReconciledNotifyState(
+        sessionId: string,
+        computed: {
+            signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null
+            boundaryAt: number | null
+            authorCutoff: number | null
+        }
+    ): void {
+        this.sessionCache.replaceNotifyAfterTruncate(
+            sessionId,
+            computed.signal,
+            computed.boundaryAt ?? Date.now(),
+            computed.authorCutoff
+        )
     }
 
     private resolveOnlineMachineForSession(
@@ -825,6 +1453,23 @@ export class SyncEngine {
             // Capture is independent of chat display settings (#1462/#1464).
             const session = this.getSession(event.sessionId)
             if (session) {
+                // #1717: stamp the footer onto the session first, so the
+                // blocked session-list chrome is not hostage to work-graph
+                // validation bounds failing on the same message.
+                const notifySignal = extractSessionNotifySignal(
+                    event.message.content,
+                    event.message.createdAt
+                )
+                if (notifySignal) {
+                    // Hub arrival is what the delivery boundary is compared
+                    // against — the footer's own timestamp is the runner's
+                    // clock, and a position is reusable and merge-renumbered.
+                    this.sessionCache.setSessionLastNotify(session.id, {
+                        ...notifySignal,
+                        receivedAt: messageReceivedAt(event.message)
+                    })
+                }
+
                 try {
                     ingestNotifySummaryFromMessage({
                         store: this.store,
@@ -1345,6 +1990,21 @@ export class SyncEngine {
     /** Move outliving jobs + redirects onto another session (pre-delete). */
     transferAttachedJobs(fromSessionId: string, toSessionId: string, namespace: string): void {
         this.sessionCache.transferAttachedJobs(fromSessionId, toSessionId, namespace)
+    }
+
+    /** The next turn is maintenance, so it must not clear the footer (#1717). */
+    markMaintenanceTurn(sessionId: string): void {
+        this.sessionCache.markMaintenanceTurn(sessionId)
+    }
+
+    /** Carry a dismissal across a merge that copies messages itself (#1717). */
+    transferBlockedAck(
+        fromSessionId: string,
+        toSessionId: string,
+        namespace: string,
+        notifyKeyRemap?: ReadonlyMap<string, string>
+    ): void {
+        this.sessionCache.transferBlockedAck(fromSessionId, toSessionId, namespace, notifyKeyRemap)
     }
 
     /** Shared REST/SSE watermark allocator for attachedJob patches. */
@@ -2067,7 +2727,17 @@ export class SyncEngine {
                 { touchUpdatedAt: false })
             this.sessionCache.refreshSession(actualSessionId)
         }
-        this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
+        // A future-scheduled message is deliberately withheld from the CLI by
+        // `MessageService.sendMessage`, so the agent has not been given the
+        // reply yet. Marking it queued would start a thinking turn that nothing
+        // ends, and (#1717) clear the blocked footer for a blocker the operator
+        // has not actually answered — cancelling the schedule would leave it
+        // erased. The matured-scheduled path marks it queued when it really is.
+        const futureScheduled = typeof payload.scheduledAt === 'number'
+            && payload.scheduledAt > Date.now()
+        if (!futureScheduled) {
+            this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
+        }
         this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
     }
 
@@ -2967,7 +3637,7 @@ export class SyncEngine {
             // reject when a turn completes in between, so the token never pins
             // a tail the sampled cut does not cover (same guard as the
             // OpenCode rewind reservation).
-            const fingerprintBefore = createHash('sha256').update(JSON.stringify(rows)).digest('hex')
+            const fingerprintBefore = hashOpenCodeRewindTranscript(rows)
             try {
                 nativeCut = await this.rpcGateway.previewForkBoundary(sessionId,
                     mode === 'message' ? { mode, messageLocalId } : { mode })
@@ -2975,7 +3645,7 @@ export class SyncEngine {
                 return { type: 'error', message: error instanceof Error ? error.message : String(error) }
             }
             rows = this.store.messages.getAllMessages(sessionId)
-            if (createHash('sha256').update(JSON.stringify(rows)).digest('hex') !== fingerprintBefore) {
+            if (hashOpenCodeRewindTranscript(rows) !== fingerprintBefore) {
                 return { type: 'error', message: 'The source conversation changed while the preview was prepared; try again' }
             }
         }
@@ -3440,6 +4110,7 @@ export class SyncEngine {
         this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId, [], discardedThroughSeq)
         this.scrubHistoryLocators(sessionId, namespace)
         this.sessionCache.rebuildTodosFromTranscript(sessionId)
+        this.reconcileNotifySignalAfterTruncate(sessionId)
         this.markClaudeRewindCutApplied(sessionId, namespace, truncateFromLocalId)
         this.eventPublisher.emit({
             type: 'messages-invalidated',
@@ -3679,7 +4350,7 @@ export class SyncEngine {
             workerId: metadata.opencodeWorkerId, workerPid: metadata.opencodeWorkerProcess.pid, workerStartMarker: metadata.opencodeWorkerProcess.startMarker,
             requestedLocalId: localId, nativeMessageId, cutoffSeq: boundary.seq,
             sourceEpoch: this.store.messages.getMessageEpoch(session.id), sourceMaxSeq: Math.max(0, ...messages.map(m => m.seq)),
-            sourceTranscriptHash: createHash('sha256').update(JSON.stringify(messages)).digest('hex'),
+            sourceTranscriptHash: hashOpenCodeRewindTranscript(messages),
             reservationVersion: current.metadataVersion + 1, phase: 'reserved' }
         // Durable reservation before the first native/RPC await. No generic
         // metadata retry can reserve against a different source version.
@@ -3727,7 +4398,7 @@ export class SyncEngine {
                 const rows = this.store.messages.getAllMessages(sessionId)
                 const hubBoundary = rows.find(m => m.localId === op.requestedLocalId && m.seq === op.cutoffSeq && m.invokedAt != null)
                 if (this.store.messages.getMessageEpoch(sessionId) !== op.sourceEpoch
-                    || createHash('sha256').update(JSON.stringify(rows)).digest('hex') !== op.sourceTranscriptHash
+                    || hashOpenCodeRewindTranscript(rows) !== op.sourceTranscriptHash
                     || Math.max(0, ...rows.map(m => m.seq)) !== op.sourceMaxSeq
                     || !hubBoundary
                     || this.store.messages.getUninvokedLocalMessages(sessionId).length) throw new Error('OpenCode source transcript changed')
@@ -3765,6 +4436,11 @@ export class SyncEngine {
             if (invalidated) {
                 const todos = this.store.messages.getAllMessages(sessionId).map(m => extractTodoWriteTodosFromMessageContent(m.content)).filter(Boolean).at(-1) ?? null
                 this.store.sessions.replaceSessionTodos(sessionId, todos, namespace)
+                // OpenCode rewinds here rather than through
+                // `truncateHubTranscriptFrom`, so it needs the same notify
+                // reconcile: a rollback starts no new turn, and the refresh
+                // below would otherwise restore the deleted footer's signal.
+                this.reconcileNotifySignalAfterTruncate(sessionId)
             }
             return next
         })

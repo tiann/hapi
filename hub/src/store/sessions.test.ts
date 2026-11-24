@@ -1726,3 +1726,297 @@ describe('updateSessionAgentState: updated_at (#1855)', () => {
         expect(update({}, 3).result).toBe('version-mismatch')
     })
 })
+
+describe('setSessionLastNotify / clearSessionLastNotify (#1717)', () => {
+    function seed(store: Store) {
+        return store.sessions.getOrCreateSession(
+            `notify-${randomUUID()}`,
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+    }
+
+    it('persists the footer and reads it back', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        expect(store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 2000, note: 'needs creds' },
+            'default'
+        )).toBe(true)
+
+        const row = store.sessions.getSession(session.id)
+        expect(row?.lastNotifyStatus).toBe('blocked')
+        expect(row?.lastNotifyAt).toBe(2000)
+        expect(row?.lastNotifyNote).toBe('needs creds')
+    })
+
+    it('does not let a replayed older message resurrect a superseded status', () => {
+        const store = makeStore()
+        const session = seed(store)
+        store.sessions.setSessionLastNotify(session.id, { status: 'done', at: 3000, note: null }, 'default')
+
+        expect(store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 1000, note: 'stale' },
+            'default'
+        )).toBe(false)
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBe('done')
+    })
+
+    it('leaves updated_at alone so stamping never re-sorts the session list', () => {
+        const store = makeStore()
+        const session = seed(store)
+        const before = store.sessions.getSession(session.id)?.updatedAt
+
+        store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: Date.now() + 60_000, note: null },
+            'default'
+        )
+
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(before!)
+    })
+
+    it('clears on a new turn, and still advances the boundary with nothing stored', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        // Previously a no-op. It must not be: a turn can start BEFORE the
+        // previous footer reaches the hub, and if that start writes nothing
+        // the delayed footer slips past the boundary later and revives an
+        // answered blocker. The write moves the watermark even with no footer.
+        expect(store.sessions.clearSessionLastNotify(session.id, 'default', 1000)).toBe(true)
+        expect(store.sessions.getSession(session.id)?.lastNotifyClearedAt).toBe(1000)
+
+        // Genuinely idempotent once the boundary is already at or past it.
+        expect(store.sessions.clearSessionLastNotify(session.id, 'default', 500)).toBe(false)
+
+        store.sessions.setSessionLastNotify(session.id, { status: 'blocked', at: 2000, note: 'x' }, 'default')
+        expect(store.sessions.clearSessionLastNotify(session.id, 'default', 3000)).toBe(true)
+
+        const row = store.sessions.getSession(session.id)
+        expect(row?.lastNotifyStatus).toBeNull()
+        expect(row?.lastNotifyAt).toBeNull()
+        expect(row?.lastNotifyNote).toBeNull()
+        expect(row?.lastNotifyClearedAt).toBe(3000)
+    })
+
+    it('rejects a footer stamped before the clear boundary', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        store.sessions.clearSessionLastNotify(session.id, 'default', 5000)
+        // Delayed Claude replay carrying its original pre-reply timestamp.
+        store.sessions.setSessionLastNotify(session.id, { status: 'blocked', at: 4000, note: 'stale' }, 'default')
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBeNull()
+
+        store.sessions.setSessionLastNotify(session.id, { status: 'blocked', at: 6000, note: 'fresh' }, 'default')
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBe('blocked')
+    })
+
+    it('measures the delivery boundary against hub ARRIVAL, not the runner clock', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        // A footer's own timestamp comes off the agent runner (the transcript
+        // preserves it verbatim); the boundary is stamped when the hub delivers
+        // the reply. Comparing those two is never sound in either direction.
+        // The footer's hub ARRIVAL is, because it is the same clock.
+        const HUB_NOW = 1_700_000_000_000
+        store.sessions.clearSessionLastNotify(session.id, 'default', HUB_NOW)
+
+        // Runner clock an hour FAST, so a superseded footer from before the
+        // reply looks like the future. Its arrival is what decides, and it
+        // arrived before the delivery.
+        store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: HUB_NOW + 3_600_000, note: 'superseded', receivedAt: HUB_NOW - 5_000 },
+            'default'
+        )
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBeNull()
+
+        // Runner clock an hour SLOW, so a genuinely new blocker reported after
+        // the reply looks older than the boundary. It arrived after the
+        // delivery, so the operator still learns the agent is stuck.
+        store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: HUB_NOW - 3_600_000, note: 'live', receivedAt: HUB_NOW + 5_000 },
+            'default'
+        )
+        const row = store.sessions.getSession(session.id)
+        expect(row?.lastNotifyStatus).toBe('blocked')
+        expect(row?.lastNotifyNote).toBe('live')
+        expect(row?.lastNotifyReceivedAt).toBe(HUB_NOW + 5_000)
+    })
+
+    it('rejects delayed output from the turn the delivery already answered', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        // The agent reported blocked, and the operator answered.
+        store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 5_000, note: 'needs a key', receivedAt: 100_000 },
+            'default'
+        )
+        store.sessions.clearSessionLastNotify(session.id, 'default', 110_000)
+        // The clear captures what it superseded, so a late arrival from that
+        // same turn is still measurable once `last_notify_at` is null.
+        expect(store.sessions.getSession(session.id)?.lastNotifyClearedAuthorAt).toBe(5_000)
+
+        // A second footer from BEFORE the reply, reaching the hub for the first
+        // time afterwards. Its arrival is genuinely later than the delivery, so
+        // only its author time can reveal that the reply already answered it.
+        expect(store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 4_000, note: 'stale sibling', receivedAt: 120_000 },
+            'default'
+        )).toBe(false)
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBeNull()
+
+        // A genuinely new report from after the answered turn still lands.
+        expect(store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 6_000, note: 'stuck again', receivedAt: 130_000 },
+            'default'
+        )).toBe(true)
+        expect(store.sessions.getSession(session.id)?.lastNotifyNote).toBe('stuck again')
+    })
+
+    it('a rewind scopes both boundaries to the surviving transcript', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 5_000, note: 'old', receivedAt: 100_000 },
+            'default'
+        )
+        store.sessions.clearSessionLastNotify(session.id, 'default', 110_000)
+        expect(store.sessions.getSession(session.id)?.lastNotifyClearedAuthorAt).toBe(5_000)
+
+        // The rewind deletes the history both boundaries describe.
+        expect(store.sessions.replaceNotifyAfterTruncate(
+            session.id,
+            'default',
+            null,
+            0
+        )).toBe(true)
+        const cleared = store.sessions.getSession(session.id)
+        expect(cleared?.lastNotifyClearedAuthorAt).toBeNull()
+        expect(cleared?.lastNotifyClearedAt).toBe(0)
+
+        // Carried forward, the author boundary of 5000 would have suppressed
+        // every footer the retained transcript is entitled to report — and the
+        // clear's MAX meant nothing could ever lower it again.
+        expect(store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 4_500, note: 'stuck again', receivedAt: 200_000 },
+            'default'
+        )).toBe(true)
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBe('blocked')
+    })
+
+    it('is namespace scoped', () => {
+        const store = makeStore()
+        const session = seed(store)
+        expect(store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 2000, note: null },
+            'other'
+        )).toBe(false)
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBeNull()
+    })
+})
+
+describe('setSessionBlockedAck (#1717 manual unblock)', () => {
+    function seed(store: Store) {
+        return store.sessions.getOrCreateSession(
+            `ack-${randomUUID()}`,
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+    }
+
+    it('persists the watermark and the rationale', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        expect(store.sessions.setSessionBlockedAck(
+            session.id,
+            { at: 5000, reason: 'handled outside HAPI' },
+            'default'
+        )).toBe(true)
+
+        const row = store.sessions.getSession(session.id)
+        expect(row?.blockedAckAt).toBe(5000)
+        expect(row?.blockedAckReason).toBe('handled outside HAPI')
+    })
+
+    it('does not let a replayed older ack un-dismiss a newer one', () => {
+        const store = makeStore()
+        const session = seed(store)
+        store.sessions.setSessionBlockedAck(
+            session.id, { at: 9000, reason: 'newer', keys: ['notify:9000'] }, 'default'
+        )
+
+        // The write is now accepted — with identities, an older acknowledgement
+        // is legitimate (dismissing an older prompt after a newer one), and
+        // rejecting it turned that into a 500. What must NOT move backwards is
+        // the watermark and the reason that describes the newest dismissal.
+        store.sessions.setSessionBlockedAck(
+            session.id, { at: 1000, reason: 'older replay', keys: ['notify:9000'] }, 'default'
+        )
+        const row = store.sessions.getSession(session.id)
+        expect(row?.blockedAckAt).toBe(9000)
+        expect(row?.blockedAckReason).toBe('newer')
+    })
+
+    it('retains dismissals for several prompts, in any order', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        store.sessions.setSessionBlockedAck(
+            session.id, { at: 9000, reason: 'newer question', keys: ['request:q1'] }, 'default'
+        )
+        // Dismissing the OLDER permission afterwards used to be rejected by the
+        // monotonic guard, which the route surfaced as a 500.
+        store.sessions.setSessionBlockedAck(
+            session.id,
+            { at: 5000, reason: 'older permission', keys: ['request:q1', 'request:p1'] },
+            'default'
+        )
+
+        expect(store.sessions.getSession(session.id)?.blockedAckKeys)
+            .toEqual(['request:q1', 'request:p1'])
+    })
+
+    it('leaves updated_at alone — dismissing chrome is not conversation', () => {
+        const store = makeStore()
+        const session = seed(store)
+        const before = store.sessions.getSession(session.id)?.updatedAt
+
+        store.sessions.setSessionBlockedAck(
+            session.id,
+            { at: Date.now() + 60_000, reason: 'x' },
+            'default'
+        )
+
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(before!)
+    })
+
+    it('is namespace scoped', () => {
+        const store = makeStore()
+        const session = seed(store)
+        expect(store.sessions.setSessionBlockedAck(
+            session.id,
+            { at: 5000, reason: 'x' },
+            'other'
+        )).toBe(false)
+        expect(store.sessions.getSession(session.id)?.blockedAckAt).toBeNull()
+    })
+})

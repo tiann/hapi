@@ -276,6 +276,15 @@ export async function withSettingsLock<T>(
     settingsFile: string,
     work: () => Promise<T>
 ): Promise<T> {
+    // The cross-process lock is itself a `mkdir` next to the settings file, so
+    // the parent has to exist before we try to take it. `writeSettingsUnlocked`
+    // creates the directory, but it runs INSIDE the lock — on a fresh data dir
+    // the lock's own mkdir therefore failed with ENOENT and retried until the
+    // attempt budget ran out (50 x 100ms, the ~5s failure seen in CI).
+    const dir = dirname(settingsFile)
+    if (!existsSync(dir)) {
+        await mkdir(dir, { recursive: true, mode: 0o700 })
+    }
     return withInProcessSettingsLock(settingsFile, () => withSettingsFileLock(settingsFile, work))
 }
 

@@ -27,6 +27,9 @@ type DbMessageRow = {
     seq: number
     local_id: string | null
     invoked_at: number | null
+    swept_at?: number | null
+    received_at?: number | null
+    agent_delivered?: number | null
     scheduled_at: number | null
     delivery_state: string | null
 }
@@ -80,15 +83,25 @@ export function addImportedMessage(
         const canonicalContent = truncateOversizedMessageContent(content)
         prepareCached(db, `
             INSERT INTO messages (
-                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at
+                id, session_id, content, created_at, received_at, seq, local_id, invoked_at, scheduled_at
             ) VALUES (
-                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, NULL
+                @id, @session_id, @content, @created_at, @received_at, @seq, @local_id, @invoked_at, NULL
             )
         `).run({
             id,
             session_id: sessionId,
             content: encodeMessageContent(canonicalContent),
             created_at: stampedAt,
+            // An IMPORTED row is stamped with the TRANSCRIPT's own time, not
+            // import time (#1717). Its `invoked_at` just below is historical
+            // too, so stamping arrival at `now` put the two halves of one row
+            // in different regimes: an imported footer then looked newer than
+            // the imported reply that answered it, and a rewind retaining that
+            // prefix reopened a blocker the transcript had already closed.
+            // Within one transcript everything shares a clock; against live
+            // rows both are real-world times and the historical gap dwarfs any
+            // skew between them.
+            received_at: stampedAt,
             seq: msgSeqRow.nextSeq,
             local_id: localId,
             invoked_at: stampedAt
@@ -119,6 +132,9 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         seq: row.seq,
         localId: row.local_id,
         invokedAt: row.invoked_at ?? null,
+        sweptAt: row.swept_at ?? null,
+        receivedAt: row.received_at ?? null,
+        agentDelivered: row.agent_delivered ?? null,
         scheduledAt: row.scheduled_at ?? null,
         ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {}),
         ...(row.delivery_state === 'dispatching' ? { deliveryPending: true as const } : {})
@@ -128,7 +144,7 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
 export type CopyStoredMessageInput = Pick<
     StoredMessage,
     'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'
->
+> & Partial<Pick<StoredMessage, 'receivedAt' | 'agentDelivered'>>
 
 export function addMessage(
     db: Database,
@@ -136,7 +152,8 @@ export function addMessage(
     content: unknown,
     localId?: string,
     scheduledAt?: number | null,
-    createdAt?: number
+    createdAt?: number,
+    receivedAt?: number
 ): StoredMessage {
     const now = Date.now()
     // Client-provided origin timestamp (e.g. a Claude transcript entry's own
@@ -185,15 +202,20 @@ export function addMessage(
         const previousHead = getNewestMessagePosition(db, sessionId)
         prepareCached(db, `
             INSERT INTO messages (
-                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at
+                id, session_id, content, created_at, received_at, seq, local_id, invoked_at, scheduled_at
             ) VALUES (
-                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at
+                @id, @session_id, @content, @created_at, @received_at, @seq, @local_id, @invoked_at, @scheduled_at
             )
         `).run({
             id,
             session_id: sessionId,
             content: encoded,
             created_at: stampedAt,
+            // Hub arrival, not the runner's clock: the key the delivery
+            // boundary is measured against (#1717). Defaults to now because
+            // this runs when the hub receives the message — including for a
+            // replayed transcript, whose `created_at` is deliberately older.
+            received_at: receivedAt ?? Date.now(),
             seq: msgSeq,
             local_id: localId ?? null,
             invoked_at: invokedAt,
@@ -738,9 +760,11 @@ export function copyMessageToSession(
         const id = randomUUID()
         prepareCached(db, `
             INSERT INTO messages (
-                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at, delivery_state
+                id, session_id, content, created_at, received_at, agent_delivered,
+                seq, local_id, invoked_at, scheduled_at, delivery_state
             ) VALUES (
-                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
+                @id, @session_id, @content, @created_at, @received_at, @agent_delivered,
+                @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
             )
         `).run({
             id,
@@ -749,6 +773,14 @@ export function copyMessageToSession(
             // sessions, so no truncation here even for pre-codec oversized rows.
             content: encodeMessageContent(message.content),
             created_at: createdAt,
+            // Carried, not re-stamped (#1717). A copy moves existing history
+            // between sessions, so its hub arrival and its delivery
+            // disposition belong to the original event — re-stamping arrival
+            // at copy time made every copied row look like it reached the hub
+            // now, which put a copied footer after the copied reply that
+            // answered it. Falls back to `created_at` for pre-column history.
+            received_at: message.receivedAt ?? createdAt,
+            agent_delivered: message.agentDelivered ?? null,
             seq: nextSeq,
             local_id: localId ?? null,
             invoked_at: invokedAt ?? null,
@@ -777,6 +809,7 @@ export function copyMessageToSession(
         return toStoredMessage(row)
     })
 }
+
 /**
  * Batch-hydrate a fork child: one transaction, contiguous seq allocation,
  * single epoch bump. Avoids O(n) max-seq lookups and epoch writes.
@@ -863,6 +896,28 @@ export function getAllMessages(
 ): StoredMessage[] {
     const rows = prepareCached(db,
         'SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC'
+    ).all(sessionId) as DbMessageRow[]
+
+    return rows.map(toStoredMessage)
+}
+
+/**
+ * Every message the agent was actually handed, oldest first (#1717).
+ *
+ * For "has anything answered this blocker?". A recency-bounded scan cannot
+ * answer that across a merge: `mergeSessionMessages` shifts the destination's
+ * seqs above every source row, so the newest-by-seq window can hold nothing but
+ * destination messages while the reply that answered the blocker sits below it.
+ * `invoked_at IS NOT NULL` is a necessary condition for a delivered reply, and
+ * delivered operator prompts are a small fraction of a transcript, so this is
+ * selective enough to take unbounded and exact rather than bounded and wrong.
+ */
+export function getInvokedMessages(
+    db: Database,
+    sessionId: string
+): StoredMessage[] {
+    const rows = prepareCached(db,
+        'SELECT * FROM messages WHERE session_id = ? AND invoked_at IS NOT NULL ORDER BY seq ASC'
     ).all(sessionId) as DbMessageRow[]
 
     return rows.map(toStoredMessage)
@@ -1594,22 +1649,45 @@ export function deleteQueuedMessageById(
  *  First-write-wins: rows with a non-NULL invoked_at are not updated.  A duplicate
  *  ack (e.g. a CLI re-emit) would otherwise re-stamp the timestamp and shuffle
  *  the message's position in the byPosition-ordered thread. */
+/** Mark rows invoked by the session-end sweep, not by a runtime ACK (#1717). */
+export function markMessagesSwept(
+    db: Database,
+    sessionId: string,
+    localIds: string[],
+    sweptAt: number
+): number {
+    if (localIds.length === 0) return 0
+    const placeholders = localIds.map(() => '?').join(', ')
+    return prepareCached(db,
+        `UPDATE messages SET swept_at = ?
+         WHERE session_id = ? AND local_id IN (${placeholders})`
+    ).run(sweptAt, sessionId, ...localIds).changes
+}
+
 export function markMessagesInvoked(
     db: Database,
     sessionId: string,
     localIds: string[],
-    invokedAt: number
+    invokedAt: number,
+    options?: { agentDelivered?: boolean }
 ): number {
     if (localIds.length === 0) return 0
     return runInTransaction(db, () => {
         const placeholders = localIds.map(() => '?').join(', ')
         const changes = prepareCached(db,
             `UPDATE messages
-             SET invoked_at = ?, delivery_state = 'queued'
+             SET invoked_at = ?,
+                 agent_delivered = ?,
+                 delivery_state = 'queued'
              WHERE session_id = ?
                AND local_id IN (${placeholders})
                AND invoked_at IS NULL`
-        ).run(invokedAt, sessionId, ...localIds).changes
+        ).run(
+            invokedAt,
+            options?.agentDelivered === false ? 0 : 1,
+            sessionId,
+            ...localIds
+        ).changes
         if (changes > 0) {
             const rows = prepareCached(db, `
                 SELECT id, session_id, content, created_at, seq, invoked_at
@@ -1824,6 +1902,9 @@ export function mergeSessionMessages(
         db.exec('BEGIN')
 
         if (newMaxSeq > 0 && oldMaxSeq > 0) {
+            // Only `seq` moves. Nothing the notify ordering depends on is a
+            // position any more, precisely because this renumbering makes
+            // cross-session positions synthetic rather than real (#1717).
             prepareCached(db,
                 'UPDATE messages SET seq = seq + ? WHERE session_id = ?'
             ).run(oldMaxSeq, toSessionId)

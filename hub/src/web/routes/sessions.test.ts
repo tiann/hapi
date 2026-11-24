@@ -2372,6 +2372,30 @@ describe('sessions routes', () => {
         expect(unlimitedBody.sessions).toHaveLength(3)
     })
 
+    it('carries the engine\'s hubGeneration on GET /sessions (#1717 cold-review round 29)', async () => {
+        const engine = {
+            getSessionsByNamespace: () => [],
+            getFutureScheduledMessageCounts: () => new Map(),
+            getNextScheduledAtBySessionIds: () => new Map<string, number>(),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
+            resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const }),
+            hubGeneration: 'generation-under-test'
+        } as unknown as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions')
+        expect(response.status).toBe(200)
+        const body = await response.json() as { hubGeneration?: string }
+        expect(body.hubGeneration).toBe('generation-under-test')
+    })
+
     it('searches message content only through the explicit content endpoint', async () => {
         const session = createSession({ id: 'content-session' })
         const engine = {

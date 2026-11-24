@@ -4,6 +4,7 @@ import { COPILOT_AGENT_MODES, type CopilotAgentMode } from './copilotModes'
 import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
 import { AgentConfigDescriptorSchema } from './agentConfig'
 import { githubPrIdentityKey, isValidGitHubHost } from './projectRegistry'
+import { SUPPORTED_LIVE_DISMISSAL_CAP } from './sessionSummary'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
@@ -545,6 +546,26 @@ export const TeamStateSchema = z.object({
 
 export type TeamState = z.infer<typeof TeamStateSchema>
 
+/** Last `AGENT_NOTIFY_SUMMARY` footer the agent emitted (see `notifyAttention`). */
+export const SessionNotifySignalSchema = z.object({
+    status: z.string(),
+    at: z.number(),
+    note: z.string().nullable().default(null)
+})
+
+/** Operator's manual unblock acknowledgement (#1717). */
+export const SessionBlockedAckSchema = z.object({
+    at: z.number(),
+    reason: z.string(),
+    // Bounded by SUPPORTED_LIVE_DISMISSAL_CAP (#1717 cold-review rounds
+    // 22-24): a key must stay dismissed-but-live for as long as its request
+    // (or the current footer) is tracked at all, and `AgentState.requests`
+    // has no enforced limit, so this is a generous practical ceiling, not a
+    // derived one — a cap tied to an unrelated preview limit rejected a
+    // full-session snapshot at 202 genuinely live dismissals.
+    keys: z.array(z.string().max(256)).max(SUPPORTED_LIVE_DISMISSAL_CAP).nullish()
+})
+
 export const ThreadGoalStatusSchema = z.enum([
     'active',
     'paused',
@@ -586,6 +607,10 @@ export const DecryptedMessageSchema = z.object({
     localId: z.string().nullable(),
     content: z.unknown(),
     createdAt: z.number(),
+    /** When the HUB received this message, vs `createdAt`'s runner clock
+     *  (#1717). The blocked clear boundary is a hub stamp, so only this can be
+     *  ordered against it. Optional: older hubs and senders omit it. */
+    receivedAt: z.number().nullable().optional(),
     invokedAt: z.number().nullable().optional(),
     scheduledAt: z.number().nullable().optional(),
     // The agent was sent the steer but its final outcome could not be proven.
@@ -629,6 +654,32 @@ export const SessionSchema = z.object({
     agentStateVersion: z.number(),
     thinking: z.boolean(),
     thinkingAt: z.number(),
+    // Monotonic hub-issued counter, bumped on every `thinking`/
+    // `thinkingConfirmed` transition (#1717 cold-review round 27). `thinkingAt`
+    // is the CLI's clamped alive-report time, not a hub-issued revision — two
+    // transitions processed within the same clamped-to-"now" millisecond (a
+    // CLI reconnect replaying buffered ticks, or plain bad luck) can carry
+    // the SAME `thinkingAt`, which a strict `>` ordering check cannot then
+    // tell apart. This counter can't collide: it increments once per
+    // transition regardless of wall-clock resolution. Optional so an older
+    // hub's objects (reconstructed before this field existed) still parse;
+    // defaults to 0 wherever read.
+    thinkingRevision: z.number().optional(),
+    // One value per hub process (#1717 cold-review round 30); see
+    // `SessionCache.hubGeneration`. `thinkingRevision` resets to 0 on a
+    // restart, but a restarted hub's counter can tick past 0 again before a
+    // reconnecting client's first update lands — the zero-exception alone
+    // only covers the instant nothing has ticked yet. This lets a client
+    // detect "this came from a different process" directly, regardless of
+    // what the revision number itself reads.
+    hubGeneration: z.string().optional(),
+    // False only during the hub's optimistic queue-to-delivery grace window
+    // (#1717 cold-review round 22): `markMessageQueued` sets `thinking: true`
+    // before the CLI has confirmed it ever saw the prompt, so a reply
+    // cancelled in that window never genuinely started a turn. Absent on
+    // older hubs and once the CLI confirms, so a client that ignores it keeps
+    // today's behaviour.
+    thinkingConfirmed: z.boolean().optional(),
     activeTurnStartedAt: z.number().nullable().optional(),
     backgroundTaskCount: z.number().optional(),
     backgroundTasks: z.array(BackgroundTaskSchema).optional(),
@@ -645,6 +696,16 @@ export const SessionSchema = z.object({
     // full-session payloads and hand-built Session literals stay valid.
     todosUpdatedAt: z.number().optional(),
     teamStateUpdatedAt: z.number().optional(),
+    /** Last agent notify footer. Drives the session list's blocked chrome;
+     *  nullish on hubs that have not seen a footer for this session yet. */
+    lastNotify: SessionNotifySignalSchema.nullish(),
+    /** Operator dismissed blocked chrome up to this point; newer blockers still
+     *  count. See `SessionBlockedAck`. */
+    blockedAck: SessionBlockedAckSchema.nullish(),
+    /** Monotonic watermark for `lastNotify` / `blockedAck` (#1717). Both ride
+     *  full-session snapshots on two SSE streams, so a client needs an ordering
+     *  key to reject a stale snapshot that would revive a cleared blocker. */
+    notifyUpdatedAt: z.number().int().nonnegative().safe().optional(),
     model: z.string().nullable().optional().default(null),
     modelReasoningEffort: z.string().nullable().optional().default(null),
     effort: z.string().nullable().optional().default(null),
@@ -769,6 +830,15 @@ export const SessionPatchSchema = z.object({
     lastUserMessageAt: z.number().optional(),
     active: z.boolean().optional(),
     thinking: z.boolean().optional(),
+    thinkingConfirmed: z.boolean().optional(),
+    thinkingAt: z.number().optional(),
+    // Monotonic ordering value for `thinking`/`thinkingConfirmed` (#1717
+    // cold-review round 27); see `Session.thinkingRevision`. A wall-clock
+    // `thinkingAt` cannot order two transitions that land in the same
+    // clamped-to-"now" millisecond — this hub-issued counter always can.
+    thinkingRevision: z.number().optional(),
+    // See `Session.hubGeneration` (#1717 cold-review round 30).
+    hubGeneration: z.string().optional(),
     activeTurnStartedAt: z.number().nullable().optional(),
     activeAt: z.number().optional(),
     updatedAt: z.number().optional(),

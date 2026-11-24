@@ -1,3 +1,9 @@
+import {
+    BLOCKED_NOTIFY_STALE_MS,
+    notifyBlockerKey,
+    requestBlockerKey,
+    getNotifyBlockReason
+} from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
 import { hasUnseenContent } from '@/lib/sessionLastSeen'
 
@@ -66,4 +72,274 @@ export function getSessionAttentionLabelKey(attention: SessionAttention): string
         case 'unread':
             return 'session.item.newActivity'
     }
+}
+
+/**
+ * Blocked chrome for a session row — "this agent cannot proceed without me".
+ *
+ * Two sources feed it:
+ *  - a self-reported `AGENT_NOTIFY_SUMMARY` footer of `blocked` / `stalled`
+ *    (the turn ended and the agent said it is stuck), and
+ *  - a live pending permission / input request (the agent is parked on a
+ *    prompt only the operator can answer).
+ *
+ * Both mean the same thing to an operator scanning 600 sessions, so they share
+ * one count, one section, and one row treatment — differing only in the chip's
+ * reason label.
+ *
+ * This is still a *different channel* from `SessionAttention`: that returns the
+ * per-row dot (and stays as it is), while this drives the row rail, the chip,
+ * and the header counter. A row can carry both without either having to win.
+ */
+export type SessionBlockedReason =
+    | 'blocked'
+    | 'stalled'
+    | 'needs_decision'
+    | 'needs_review'
+    | 'failed'
+    | 'permission'
+    | 'question'
+
+export type SessionBlockedState = {
+    /** Identity of this blocker, for an acknowledgement that covers exactly it. */
+    key: string
+    reason: SessionBlockedReason
+    /** Epoch ms it became blocked — footer time, or the oldest pending request. */
+    at: number
+    /** Short operator-facing hint: the notify note, or the awaited tool. */
+    note: string | null
+    /** Past the loud window — render muted so abandoned rows stop alarming. */
+    stale: boolean
+}
+
+/**
+ * Blocked state from a live prompt the operator can clear in one click.
+ *
+ * Returns null when nothing is pending, or when every outstanding prompt
+ * predates the operator's acknowledgement.
+ */
+/**
+ * Is this specific blocker the one the operator dismissed?
+ *
+ * The acknowledgement used to be a bare timestamp, which suppressed every
+ * blocker older than itself — including ones belonging to the other session in
+ * a merge, and ones that arrived while the dialog was open. With an identity
+ * it covers exactly what was reviewed. Rows written before `key` existed fall
+ * back to the old watermark so an upgrade does not resurrect dismissed work.
+ */
+function isAcknowledgedBlocker(
+    ack: { at: number; keys?: string[] | null } | null,
+    blockerKey: string,
+    blockerAt: number
+): boolean {
+    if (!ack) return false
+    // A set, so several prompts can be dismissed independently and in any
+    // order. Only rows predating identities fall back to the watermark.
+    if (ack.keys && ack.keys.length > 0) return ack.keys.includes(blockerKey)
+    return blockerAt <= ack.at
+}
+
+function getPendingBlockedState(
+    summary: SessionSummary,
+    ack: { at: number; keys?: string[] | null } | null,
+    now: number
+): SessionBlockedState | null {
+    // Requests left on an archived session can no longer be answered, and
+    // `handleSessionEnd` clears activity without clearing `agentState.requests`
+    // — so without this the row would sit in the Blocked section forever with
+    // nothing the operator could do about it. Mirrors `classifySessionAttention`.
+    // The caller falls through to the notify footer, which stands on its own.
+    if (!summary.active) {
+        return null
+    }
+
+    const kinds = Array.isArray(summary.pendingRequestKinds) ? summary.pendingRequestKinds : []
+    // `pendingRequestsCount` is the authoritative total; a count without kinds
+    // still parks the agent on a prompt, so do not drop it from the list.
+    const total = summary.pendingRequestsCount ?? 0
+    const all = summary.pendingRequests ?? []
+    if (kinds.length === 0 && total === 0) {
+        return null
+    }
+
+    // Acknowledged prompts drop out BEFORE the kind contest below. Picking the
+    // kind first and filtering second discards a newly arrived permission
+    // whenever an older, already-dismissed question still outranks it — the
+    // session would vanish from the count with a live prompt unanswered.
+    const ackAt = ack?.at ?? null
+
+    // `pendingRequestRefs` describes EVERY pending prompt — id, kind and age
+    // together — so one contest covers previewed and overflow prompts alike
+    // and whichever wins describes itself. The capped `pendingRequests` slice
+    // keeps only the oldest few, and the aggregate `pendingRequestKinds` /
+    // `pendingRequestsNewestAt` fields describe all prompts at once: deciding
+    // an overflow prompt's label or age from those gave it another, already
+    // dismissed prompt's kind and another prompt's timestamp.
+    const refs = summary.pendingRequestRefs ?? []
+    if (refs.length > 0) {
+        // Codex's asynchronous `request_user_input` questions share the SAME
+        // tool name as a genuinely blocking one — `arguments.isBlocking:
+        // false` is the only thing that tells them apart, carried as
+        // `nonBlocking` on each ref. The agent keeps working through one of
+        // these without pausing, so it must not move the session into
+        // Blocked or fire an arrival alert; it still shows on the ordinary
+        // per-row attention dot via `pendingRequestKinds`, untouched here.
+        const blockingRefs = refs.filter(ref => !ref.nonBlocking)
+        const unackedRefs = ack === null
+            ? blockingRefs
+            : blockingRefs.filter(ref => !isAcknowledgedBlocker(ack, requestBlockerKey(ref.id), ref.since))
+        if (unackedRefs.length === 0) {
+            return null
+        }
+        // A question outranks a permission: "answer me" is a heavier ask than
+        // "approve this tool", and it is the one the operator asked to be loud.
+        // Contest only what still needs answering.
+        const reason: SessionBlockedReason = unackedRefs.some(ref => ref.kind === 'input')
+            ? 'question'
+            : 'permission'
+        const wantedKind = reason === 'question' ? 'input' : 'permission'
+        // Oldest-first, so the first match is the oldest of its kind.
+        const chosen = unackedRefs.find(ref => ref.kind === wantedKind) ?? unackedRefs[0]!
+        // `tool` only rides on the capped slice; absent for an overflow prompt.
+        const note = all.find(request => request.id === chosen.id)?.tool ?? null
+        return {
+            key: requestBlockerKey(chosen.id),
+            reason,
+            at: chosen.since,
+            note,
+            stale: now - chosen.since > BLOCKED_NOTIFY_STALE_MS
+        }
+    }
+
+    // Older hub: no uncapped descriptors, so fall back to the capped slice and
+    // the aggregate fields. Nothing here can distinguish an overflow prompt
+    // from a previewed one, which is exactly why the descriptors exist.
+    //
+    // Same `nonBlocking` exclusion as the refs branch above — filtered
+    // BEFORE the dismissal/overflow bookkeeping, which still reasons about
+    // the full `all`/`total`, since those describe "is there more data
+    // than this capped view shows", not "is any of it blocking".
+    const blockingAll = all.filter(request => !request.nonBlocking)
+    // Modern hub sent requests, but every one of them is an explicitly
+    // non-blocking async question — nothing is actually blocking here,
+    // independent of dismissal state.
+    if (all.length > 0 && blockingAll.length === 0) {
+        return null
+    }
+    const unacked = ack === null
+        ? blockingAll
+        : blockingAll.filter(request => !isAcknowledgedBlocker(ack, requestBlockerKey(request.id), request.since))
+    const newestAt = summary.pendingRequestsNewestAt
+        ?? (all.length > 0 ? all[all.length - 1]!.since : 0)
+    const newerBeyondCap = total > all.length && newestAt > (ackAt ?? 0)
+    if (ack !== null && unacked.length === 0 && !newerBeyondCap) {
+        return null
+    }
+
+    const unackedKinds = unacked.map(request => request.kind)
+    const contest = unackedKinds.length > 0
+        ? unackedKinds
+        : (blockingAll.length === 0 ? kinds : [])
+    const reason: SessionBlockedReason = contest.includes('input') ? 'question' : 'permission'
+
+    const wantedKind = reason === 'question' ? 'input' : 'permission'
+    const oldest = unacked.find(request => request.kind === wantedKind) ?? unacked[0] ?? null
+    const at = oldest?.since ?? (newestAt > 0 ? newestAt : summary.updatedAt)
+    return {
+        key: oldest ? requestBlockerKey(oldest.id) : notifyBlockerKey(at),
+        reason,
+        at,
+        note: oldest?.tool ?? null,
+        stale: now - at > BLOCKED_NOTIFY_STALE_MS
+    }
+}
+
+export function getSessionBlockedState(
+    summary: SessionSummary,
+    options: { now: number }
+): SessionBlockedState | null {
+    // Operator dismissed this by hand. A watermark, not a flag: a blocker
+    // reported AFTER the acknowledgement is a genuinely new problem and must
+    // come back, or "mark unblocked" would silently mute the session forever.
+    // Null rather than 0: a 0 sentinel would dismiss any blocker whose
+    // timestamp is non-positive, which is only ever a test or clock artefact
+    // but is exactly the kind of silent suppression this feature must not do.
+    const ack = summary.blockedAck ?? null
+
+    // Live prompts are read BEFORE the `thinking` guard below, deliberately. A
+    // remote Claude agent keeps `thinking` true while it waits on a permission
+    // or a question — the SDK only clears it on the turn's result, and the
+    // permission handler never touches it — so guarding first would hide the
+    // single most common blocker this feature exists to surface, for the whole
+    // duration of the wait. `classifySessionAttention` likewise reports a
+    // pending request regardless of `thinking`.
+    const pending = getPendingBlockedState(summary, ack, options.now)
+    if (pending !== null) {
+        return pending
+    }
+
+    // A working agent is not self-reporting blocked: the stored footer is a
+    // point-in-time claim from a turn that has since been superseded, and
+    // nothing is waiting on the operator. Also covers the window before the
+    // hub's clear-on-new-turn patch lands.
+    //
+    // `thinkingConfirmed === false` excludes the hub's optimistic
+    // queue-to-delivery grace window (#1717 cold-review round 22): queueing a
+    // reply sets `thinking` before the CLI has confirmed the agent ever saw
+    // it, so a reply cancelled in that window never superseded anything. Not
+    // suppressing here keeps the stored footer visible through the whole
+    // queue-then-cancel cycle, so the arrival tracker never sees it disappear
+    // and reappear and double-alert for the same blocker. Absent (older hubs,
+    // or once the CLI confirms) behaves exactly as before.
+    //
+    // Gated on `summary.active` too: a runner that sends a blocked footer and
+    // disconnects before its own idle tick leaves `thinking` stuck true on
+    // whatever patch the browser last saw, even once the hub independently
+    // marks the session inactive. An inactive session is never "working" by
+    // definition, so this guard must not be the thing still hiding a real,
+    // stored footer behind a stale flag the hub has already moved past.
+    if (summary.active && summary.thinking && summary.thinkingConfirmed !== false) {
+        return null
+    }
+
+    const notify = summary.lastNotify
+    const notifyReason = notify ? getNotifyBlockReason(notify.status) : null
+    if (!notify || notifyReason === null
+        || isAcknowledgedBlocker(ack, notifyBlockerKey(notify.at), notify.at)) {
+        return null
+    }
+
+    return {
+        key: notifyBlockerKey(notify.at),
+        reason: notifyReason,
+        at: notify.at,
+        note: notify.note ?? null,
+        stale: options.now - notify.at > BLOCKED_NOTIFY_STALE_MS
+    }
+}
+
+export function sessionIsBlocked(summary: SessionSummary, options: { now: number }): boolean {
+    return getSessionBlockedState(summary, options) !== null
+}
+
+const BLOCKED_LABEL_KEY: Record<SessionBlockedReason, string> = {
+    blocked: 'sessions.blockedChip.blocked',
+    stalled: 'sessions.blockedChip.stalled',
+    needs_decision: 'sessions.blockedChip.decision',
+    needs_review: 'sessions.blockedChip.review',
+    failed: 'sessions.blockedChip.failed',
+    permission: 'sessions.blockedChip.permission',
+    question: 'sessions.blockedChip.question'
+}
+
+export function getSessionBlockedLabelKey(state: SessionBlockedState): string {
+    return BLOCKED_LABEL_KEY[state.reason]
+}
+
+/**
+ * Errors read as errors. Everything else that needs a human is amber — one
+ * colour for "you are the blocker", red reserved for "it broke".
+ */
+export function sessionBlockedIsError(state: SessionBlockedState): boolean {
+    return state.reason === 'failed'
 }

@@ -34,14 +34,26 @@ export function getSessionSortKey(session: OrderFields, sort: SessionListSort): 
 
 export type SessionComparator = (a: SessionSummary, b: SessionSummary) => number
 
-export function createSessionComparator(view: Pick<SessionListView, 'sort' | 'activeFirst'>): SessionComparator {
+export function createSessionComparator(
+    view: Pick<SessionListView, 'sort' | 'activeFirst'>,
+    options: { groupStoppedByRecency?: boolean } = {}
+): SessionComparator {
+    // Default true: the main list's own ordering, where the grouping exists
+    // to keep a mass-disconnect (hub restart) from scattering through older
+    // stopped rows. Pinned and Blocked sections pull sessions OUT of that
+    // flow for an operator-attention reason unrelated to connection timing —
+    // disconnecting (which bumps `updatedAt`, feeding `getStoppedSessionTime`)
+    // must not reorder them ahead of a row the operator engaged with more
+    // recently, which is exactly what the chosen sort exists to prevent
+    // (#1717 cold-review follow-up, upstream main #2518).
+    const groupStoppedByRecency = options.groupStoppedByRecency ?? true
     return (a, b) => {
         if (view.activeFirst) {
             if (a.active !== b.active) return a.active ? -1 : 1
             // Stopped and archived sessions: the one stopped most recently comes
             // first. Stopping is not a user message, so the chosen sort alone
             // would leave it mid-block.
-            if (!a.active) {
+            if (!a.active && groupStoppedByRecency) {
                 const stopped = stoppedAtBucket(b) - stoppedAtBucket(a)
                 if (stopped !== 0) return stopped
             }

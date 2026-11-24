@@ -88,6 +88,7 @@ function machine(): Machine {
 function harness() {
     const store = new Store(':memory:')
     const engine = {
+        reconcileNotifySignalAfterImport: () => {},
         recordSessionActivity: () => {},
         handleRealtimeEvent: () => {},
         applySessionConfig: async () => {},

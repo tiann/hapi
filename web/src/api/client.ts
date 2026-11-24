@@ -1578,6 +1578,20 @@ export class ApiClient {
         })
     }
 
+    /** #1717: manually mark a blocked session as not blocked, with a rationale. */
+    async acknowledgeSessionBlocked(
+        sessionId: string,
+        reason: string,
+        observed?: { at: number; key: string }
+    ): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/blocked-ack`, {
+            method: 'PUT',
+            body: JSON.stringify(observed === undefined
+                ? { reason }
+                : { reason, observedAt: observed.at, observedKey: observed.key })
+        })
+    }
+
     async clearStaleSessionJob(sessionId: string, job: AttachedJob): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/jobs/${encodeURIComponent(job.key)}/clear-stale`, {
             method: 'POST', body: JSON.stringify({ runId: job.runId, startedAt: job.startedAt, heartbeatAt: job.heartbeatAt })

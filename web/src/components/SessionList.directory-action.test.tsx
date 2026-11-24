@@ -1329,10 +1329,14 @@ describe('SessionList collapse behavior', () => {
         ]
         render(renderSessionList(sessions, null))
 
-        expect(screen.getByTitle('In progress')).toBeInTheDocument()
-        expect(screen.getByText(/^pending \(1\)$/i)).toBeInTheDocument()
+        // #1717 keeps this precedence but changes the destination: a pending
+        // operator prompt is a blocker, so the row floats to the Blocked
+        // section rather than the In-progress Jobs bucket. The thing this test
+        // guards — a waiting prompt outranking the Jobs meter — still holds.
+        expect(screen.getByTestId('blocked-section')).toBeInTheDocument()
         expect(screen.queryByText(/^Jobs \(/i)).toBeNull()
         expect(screen.getByRole('button', { name: /Needs approval/ })).toBeInTheDocument()
+        expect(document.querySelectorAll('[data-session-id="session-job-and-pending"]')).toHaveLength(1)
     })
 
     it('does not label quiet connected sessions as Idle', () => {
@@ -1379,7 +1383,10 @@ describe('SessionList collapse behavior', () => {
 
         expect(screen.getByTitle('In progress')).toBeInTheDocument()
         expect(screen.getByText(/Running \(1\)/)).toBeInTheDocument()
-        expect(screen.getByText(/pending \(1\)/)).toBeInTheDocument()
+        // #1717: a session awaiting an operator prompt is a blocker, so it sits
+        // in the Blocked section rather than the In-progress pending bucket.
+        expect(screen.getByTestId('blocked-section')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Pending task/ })).toBeInTheDocument()
         expect(screen.queryByText(/Idle \(/)).toBeNull()
         // Quiet active stays under its project directory, not an Idle pin bucket.
         expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
@@ -1815,8 +1822,12 @@ describe('SessionList collapse behavior', () => {
         const sessions = Array.from({ length: 4 }, (_, index) => makeSession({
             id: `session-${index + 1}`,
             updatedAt: 100 - index,
+            // Required via unread rather than a pending request. #1717 floats
+            // every prompt-parked row into the Blocked section, so a pending
+            // row can no longer be both group-resident and required — unread
+            // is the other `requiredIds` trigger and stays in its group.
             active: index > 0,
-            pendingRequestsCount: index > 0 ? 1 : 0,
+            readState: index > 0 ? { readRevision: 0, manualUnread: true, version: 0 } : undefined,
             metadata: {
                 path: '/work/hapi',
                 name: `Task ${index + 1}`,
@@ -1846,8 +1857,9 @@ describe('SessionList collapse behavior', () => {
         const sessions = Array.from({ length: 8 }, (_, index) => makeSession({
             id: `session-${index + 1}`,
             updatedAt: 100 - index,
+            // See above: unread keeps a required row in its group.
             active: index < 5,
-            pendingRequestsCount: index < 5 ? 1 : 0,
+            readState: index < 5 ? { readRevision: 0, manualUnread: true, version: 0 } : undefined,
             metadata: {
                 path: '/work/hapi',
                 name: `Task ${index + 1}`,

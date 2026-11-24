@@ -54,6 +54,8 @@ export type CliHandlersDeps = {
     onAgentProgress?: (sessionId: string, at: number) => void
     onSweepImmediateQueued?: (sessionId: string, now: number) => void
     onMessagesConsumed?: (sessionId: string) => void
+    onPromptDelivered?: (sessionId: string, deliveredAt: number) => void
+    onMaintenanceTurn?: (sessionId: string) => void
 }
 
 // resolveSessionAccess runs on EVERY cli socket event (message stream deltas,
@@ -85,7 +87,7 @@ const SESSION_ACCESS_CACHE_TTL_MS = 1_000
 const SESSION_ACCESS_CACHE_MAX_SESSIONS = 64
 
 export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlersDeps): void {
-    const { io, store, rpcRegistry, terminalRegistry, onSessionAlive, onSessionReady, onSessionEnd, onMachineAlive, onSessionChildExited, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { io, store, rpcRegistry, terminalRegistry, onSessionAlive, onSessionReady, onSessionEnd, onMachineAlive, onSessionChildExited, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed, onPromptDelivered, onMaintenanceTurn } = deps
     const terminalNamespace = io.of('/terminal')
     const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
 
@@ -183,7 +185,9 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
         onSessionActivity,
         onAgentProgress,
         onSweepImmediateQueued,
-        onMessagesConsumed
+        onMessagesConsumed,
+        onPromptDelivered,
+        onMaintenanceTurn
     })
     registerMachineHandlers(socket, {
         store,

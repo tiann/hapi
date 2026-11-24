@@ -119,6 +119,35 @@ describe('SessionCache turn recording', () => {
         }
     })
 
+    it('preserves a stored footer when the agent resumes a turn a hub restart cut short (#1717 cold-review round 32)', () => {
+        // The old process set a footer before it died mid-turn. On restart,
+        // the fresh in-memory cache's `thinking` defaults to false, so the
+        // runner's first keepalive (still `thinking: true`, genuinely
+        // continuing the SAME interrupted turn) looks like an ordinary
+        // false-to-true rising edge — which `markSessionActive`'s own
+        // "a new turn invalidates the agent's last self-report" rule would
+        // otherwise clear. `recordTurn` already distinguishes a genuine
+        // resume from a new turn for its OWN bookkeeping; the clear must
+        // respect that same distinction instead of re-deriving it (and
+        // getting it wrong) from the bare `thinking` transition alone.
+        const { store, session } = setup()
+        try {
+            store.sessions.setSessionLastNotify(session.id, {
+                status: 'blocked', at: Date.now() - 60_000, note: 'needs creds'
+            }, 'default')
+            store.turns.open(session.id, 'default', Date.now() - 60_000, 'agent')
+
+            const restarted = restart(store)
+            restarted.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: true })
+
+            expect(turns(store)).toHaveLength(1)
+            expect(turns(store)[0]).toMatchObject({ endedAt: null })
+            expect(restarted.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+        } finally {
+            store.close()
+        }
+    })
+
     it('starts a new turn once the agent was seen idle after a restart', () => {
         const { store, session } = setup()
         try {
