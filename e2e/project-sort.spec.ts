@@ -134,6 +134,18 @@ test('moves a stale detached job below the Combined divider', async ({ page }) =
 })
 
 
+test('keeps a fork preview open when its Combined source disconnects', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=combined-count&forkPreview=1`)
+    await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })
+    await page.getByRole('menuitem', { name: /Fork session/ }).click()
+    await expect(page.getByRole('dialog')).toBeVisible()
+    await page.evaluate(() => window.updateProjectSession('mine-session', { active: false }))
+    await expect(page.getByRole('dialog')).toBeVisible()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-fork-preview-after-disconnect.png`, fullPage: true })
+})
+
+
 test('keeps a Combined rename draft when its session disconnects', async ({ page }) => {
     await page.goto(`${fixtureUrl}?mode=combined-count`)
     await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })

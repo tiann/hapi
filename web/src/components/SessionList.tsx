@@ -1439,10 +1439,12 @@ type SessionItemProps = {
     onRequestExport: (sessionId: string) => void
     onRequestLinkPr: (sessionId: string) => void
     onRequestArchive: (sessionId: string) => void
+    onRequestFork: (sessionId: string) => void
     renameOpen: boolean
     exportOpen: boolean
     linkPrOpen: boolean
     archiveOpen: boolean
+    forkFlowOpen: boolean
     session: SessionSummary
     onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     showPath?: boolean
@@ -1482,10 +1484,12 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         onRequestExport,
         onRequestLinkPr,
         onRequestArchive,
+        onRequestFork,
         renameOpen,
         exportOpen,
         linkPrOpen,
         archiveOpen,
+        forkFlowOpen,
         showPath = true,
         api,
         features,
@@ -1508,12 +1512,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
     const prChipDisplay = features?.prChipDisplay
-    const forkFlow = useForkFlow({
-        session: s,
-        api: api!,
-        onForked: (childSessionId) => onSelect(childSessionId)
-    })
-    const forkFlowOpen = forkFlow.flowOpen
     const pendingRequestPressedRef = useRef(false)
     const rowRef = useRef<HTMLDivElement>(null)
     const rowButtonRef = useRef<HTMLButtonElement>(null)
@@ -1868,7 +1866,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 onExport={() => onRequestExport(s.id)}
                 readTarget={s}
                 onForkSession={api && ((supportsCurrentFork && (!s.thinking || supportsCompletedFork)) || supportsArchivedFork)
-                    ? () => forkFlow.openFork()
+                    ? () => onRequestFork(s.id)
                     : undefined}
                 forkDisabledReason={forkDisabledReason}
                 onArchive={() => onRequestArchive(s.id)}
@@ -1878,52 +1876,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 onDelete={() => props.onRequestDelete(s)}
                 anchorPoint={menuAnchorPoint}
             />
-
-            {forkFlow.preview ? (
-                <ForkPreviewDialog
-                    isOpen
-                    view={forkFlow.preview.view}
-                    prefixMayHaveMore={forkFlow.preview.view.prefixTruncated}
-                    stale={forkFlow.stale}
-                    loading={forkFlow.loading}
-                    onCancel={forkFlow.closePreview}
-                    onConfirm={forkFlow.confirmPreview}
-                />
-            ) : null}
-
-            {forkFlow.legacyFallback ? (
-                <ConfirmDialog
-                    isOpen={true}
-                    onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
-                    title={t('dialog.sessionFork.title')}
-                    description={t(s.thinking && supportsCompletedFork ? 'dialog.sessionFork.completedDescription' : 'dialog.sessionFork.description')}
-                    confirmLabel={t('dialog.sessionFork.confirm')}
-                    confirmingLabel={t('dialog.sessionFork.confirming')}
-                    isPending={forkFlow.confirming}
-                    destructive
-                    centerTitle
-                    onConfirm={forkFlow.confirmLegacy}
-                />
-            ) : null}
-
-            {forkFlow.errorMessage && !forkFlow.preview ? (
-                <ConfirmDialog
-                    isOpen={true}
-                    onClose={forkFlow.closePreview}
-                    title={t('dialog.sessionFork.title')}
-                    description={forkFlow.errorMessage}
-                    confirmLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
-                    confirmingLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
-                    isPending={forkFlow.loading}
-                    hideCancel
-                    keepOpenAfterConfirm={forkFlow.errorWasConnectFailure}
-                    centerTitle
-                    onConfirm={async () => {
-                        if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
-                        else forkFlow.closePreview()
-                    }}
-                />
-            ) : null}
 
             {reopenError ? (
                 <ConfirmDialog
@@ -1988,6 +1940,68 @@ function PullRefreshIcon(props: { rotation: number }) {
         >
             <path d="M12 5v14M6 13l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
+    )
+}
+
+type SessionListPropsOnSelect = (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
+
+function StableForkFlow(props: { session: SessionSummary; api: ApiClient | null; onSelect: SessionListPropsOnSelect }) {
+    const { session, api, onSelect } = props
+    const { t } = useTranslation()
+    const forkFlow = useForkFlow({ session, api: api!, onForked: onSelect })
+    const supportsCompletedFork = session.metadata?.conversationHistory?.forkLatestCompleted === true
+    const openedRef = useRef(false)
+    useEffect(() => {
+        if (openedRef.current) return
+        openedRef.current = true
+        forkFlow.openFork()
+    }, [forkFlow.openFork])
+    return (
+        <>
+            {forkFlow.preview ? (
+                <ForkPreviewDialog
+                    isOpen
+                    view={forkFlow.preview.view}
+                    prefixMayHaveMore={forkFlow.preview.view.prefixTruncated}
+                    stale={forkFlow.stale}
+                    loading={forkFlow.loading}
+                    onCancel={forkFlow.closePreview}
+                    onConfirm={forkFlow.confirmPreview}
+                />
+            ) : null}
+            {forkFlow.legacyFallback ? (
+                <ConfirmDialog
+                    isOpen={true}
+                    onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
+                    title={t('dialog.sessionFork.title')}
+                    description={t(session.thinking && supportsCompletedFork ? 'dialog.sessionFork.completedDescription' : 'dialog.sessionFork.description')}
+                    confirmLabel={t('dialog.sessionFork.confirm')}
+                    confirmingLabel={t('dialog.sessionFork.confirming')}
+                    isPending={forkFlow.confirming}
+                    destructive
+                    centerTitle
+                    onConfirm={forkFlow.confirmLegacy}
+                />
+            ) : null}
+            {forkFlow.errorMessage && !forkFlow.preview ? (
+                <ConfirmDialog
+                    isOpen={true}
+                    onClose={forkFlow.closePreview}
+                    title={t('dialog.sessionFork.title')}
+                    description={forkFlow.errorMessage}
+                    confirmLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                    confirmingLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                    isPending={forkFlow.loading}
+                    hideCancel
+                    keepOpenAfterConfirm={forkFlow.errorWasConnectFailure}
+                    centerTitle
+                    onConfirm={async () => {
+                        if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
+                        else forkFlow.closePreview()
+                    }}
+                />
+            ) : null}
+        </>
     )
 }
 
@@ -2083,6 +2097,8 @@ export function SessionList(props: {
     const [exportTargetId, setExportTargetId] = useState<string | null>(null)
     const [linkPrTargetId, setLinkPrTargetId] = useState<string | null>(null)
     const [archiveTargetId, setArchiveTargetId] = useState<string | null>(null)
+    const [forkTargetId, setForkTargetId] = useState<string | null>(null)
+    const forkTarget = props.sessions.find(session => session.id === forkTargetId) ?? null
     const archiveTarget = props.sessions.find(session => session.id === archiveTargetId) ?? null
     const linkPrTarget = props.sessions.find(session => session.id === linkPrTargetId) ?? null
     const renameTarget = props.sessions.find(session => session.id === renameTargetId) ?? null
@@ -2673,39 +2689,26 @@ export function SessionList(props: {
         },
         [runningSessions, machineFilteredSessions, projectOrder, projectSessionCounts, searchScoreIndex, hasTextQuery, shouldSortProjectsByCount, listView]
     )
-    const combinedActiveGroups = useMemo(
-        () => {
-            if (!isCombinedPinLayout) return []
-            const grouped = groupSessionsByDirectory(
-                machineFilteredSessions.filter((session) => !session.globalPinned && (session.active || hasInProgressJobSession(session, api?.hubClock?.now()))),
-                hasTextQuery ? undefined : listView
-            )
-            if (searchScoreIndex && hasTextQuery) {
-                return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
-            }
+    const { combinedActiveGroups, combinedArchivedGroups } = useMemo(() => {
+        if (!isCombinedPinLayout) return { combinedActiveGroups: [], combinedArchivedGroups: [] }
+        const now = api?.hubClock?.now()
+        const activeSessions: SessionSummary[] = []
+        const archivedSessions: SessionSummary[] = []
+        for (const session of machineFilteredSessions) {
+            if (session.globalPinned) continue
+            if (session.active || hasInProgressJobSession(session, now)) activeSessions.push(session)
+            else archivedSessions.push(session)
+        }
+        const rank = (sessions: SessionSummary[]) => {
+            const grouped = groupSessionsByDirectory(sessions, hasTextQuery ? undefined : listView)
+            if (searchScoreIndex && hasTextQuery) return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
             return shouldSortProjectsByCount
                 ? sortSessionGroupsBySessionCount(grouped, projectOrder, projectSessionCounts)
                 : grouped
-        },
-        [api, listClockTick, machineFilteredSessions, isCombinedPinLayout, projectOrder, projectSessionCounts, searchScoreIndex, hasTextQuery, shouldSortProjectsByCount, listView]
-    )
-    const combinedArchivedGroups = useMemo(
-        () => {
-            if (!isCombinedPinLayout) return []
-            const grouped = groupSessionsByDirectory(
-                machineFilteredSessions.filter((session) => !session.globalPinned && !session.active && !hasInProgressJobSession(session, api?.hubClock?.now())),
-                hasTextQuery ? undefined : listView
-            )
-            if (searchScoreIndex && hasTextQuery) {
-                return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
-            }
-            return shouldSortProjectsByCount
-                ? sortSessionGroupsBySessionCount(grouped, projectOrder, projectSessionCounts)
-                : grouped
-        },
-        [api, listClockTick, machineFilteredSessions, isCombinedPinLayout, projectOrder, projectSessionCounts, searchScoreIndex, hasTextQuery, shouldSortProjectsByCount, listView]
+        }
+        return { combinedActiveGroups: rank(activeSessions), combinedArchivedGroups: rank(archivedSessions) }
+    }, [api, listClockTick, machineFilteredSessions, isCombinedPinLayout, projectOrder, projectSessionCounts, searchScoreIndex, hasTextQuery, shouldSortProjectsByCount, listView])
 
-    )
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
     // stay available (no rows to group, but the project itself is live).
@@ -2940,10 +2943,12 @@ export function SessionList(props: {
                                             onRequestExport={setExportTargetId}
                                             onRequestLinkPr={setLinkPrTargetId}
                                             onRequestArchive={setArchiveTargetId}
+                                            onRequestFork={setForkTargetId}
                                             renameOpen={renameTargetId === s.id}
                                             exportOpen={exportTargetId === s.id}
                                             linkPrOpen={linkPrTargetId === s.id}
                                             archiveOpen={archiveTargetId === s.id}
+                                            forkFlowOpen={forkTargetId === s.id}
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}
@@ -3033,10 +3038,12 @@ export function SessionList(props: {
             onRequestExport={setExportTargetId}
             onRequestLinkPr={setLinkPrTargetId}
             onRequestArchive={setArchiveTargetId}
+            onRequestFork={setForkTargetId}
             renameOpen={renameTargetId === s.id}
             exportOpen={exportTargetId === s.id}
             linkPrOpen={linkPrTargetId === s.id}
             archiveOpen={archiveTargetId === s.id}
+            forkFlowOpen={forkTargetId === s.id}
             session={s}
             onSelect={props.onSelect}
             showPath={false}
@@ -3954,10 +3961,12 @@ export function SessionList(props: {
                                             onRequestExport={setExportTargetId}
                                             onRequestLinkPr={setLinkPrTargetId}
                                             onRequestArchive={setArchiveTargetId}
+                                            onRequestFork={setForkTargetId}
                                             renameOpen={renameTargetId === s.id}
                                             exportOpen={exportTargetId === s.id}
                                             linkPrOpen={linkPrTargetId === s.id}
                                             archiveOpen={archiveTargetId === s.id}
+                                            forkFlowOpen={forkTargetId === s.id}
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}
@@ -4039,17 +4048,20 @@ export function SessionList(props: {
                 />
             ) : null}
             </div>
+            {forkTarget ? (
+                <StableForkFlow key={forkTarget.id} session={forkTarget} api={api} onSelect={props.onSelect} />
+            ) : null}
             {archiveTarget ? (
-                <StableArchiveSessionDialog key={archiveTarget.id} session={archiveTarget} api={api} onClose={() => setArchiveTargetId(null)} />
+                <StableArchiveSessionDialog key={archiveTarget.id} session={archiveTarget} api={api} onClose={() => setArchiveTargetId(current => current === archiveTarget.id ? null : current)} />
             ) : null}
             {linkPrTarget ? (
-                <StableLinkPrDialog key={linkPrTarget.id} session={linkPrTarget} api={api} onClose={() => setLinkPrTargetId(null)} />
+                <StableLinkPrDialog key={linkPrTarget.id} session={linkPrTarget} api={api} onClose={() => setLinkPrTargetId(current => current === linkPrTarget.id ? null : current)} />
             ) : null}
             {exportTargetId ? (
                 <SessionExportDialog
                     key={exportTargetId}
                     isOpen={true}
-                    onClose={() => setExportTargetId(null)}
+                    onClose={() => setExportTargetId(current => current === exportTargetId ? null : current)}
                     sessionId={exportTargetId}
                     api={api}
                 />
@@ -4060,7 +4072,7 @@ export function SessionList(props: {
                     session={renameTarget}
                     api={api}
                     titleSuggestionAvailable={titleSuggestionAvailable}
-                    onClose={() => setRenameTargetId(null)}
+                    onClose={() => setRenameTargetId(current => current === renameTarget.id ? null : current)}
                 />
             ) : null}
             <ConfirmDialog

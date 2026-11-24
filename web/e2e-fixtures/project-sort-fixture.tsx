@@ -69,7 +69,7 @@ const sessions: SessionSummary[] = [
         updatedAt: now - 30 * 60_000,
         createdAt: now - 4 * 60 * 60_000,
         lastUserMessageAt: now - 30 * 60_000,
-        metadata: { path: '/projects/mine', name: 'Mine task', flavor: 'codex' },
+        metadata: { path: '/projects/mine', name: 'Mine task', flavor: 'codex', conversationHistory: { forkCurrent: true, forkAtMessage: true } },
     }),
     makeSession({
         id: 'mine-session-2',
@@ -107,6 +107,14 @@ const queryClient = new QueryClient({
         mutations: { retry: false },
     },
 })
+
+const forkApi = {
+    forkPreview: async () => ({
+        mode: 'current', boundary: { v: 1, mode: 'current', epoch: 1, tailSeq: 1 },
+        keptTail: [], excluded: [], counts: { kept: 0, excluded: 0 }
+    }),
+    forkConversation: async () => ({ sessionId: 'forked-fixture-child' })
+} as unknown as ApiClient
 
 const archiveApi = {
     archiveSession: () => new Promise<void>(resolve => { window.finishProjectArchive = resolve })
@@ -156,7 +164,7 @@ function ProjectSortFixture() {
                 onRefresh={async () => {}}
                 isLoading={false}
                 renderHeader={actionSearch}
-                api={params.has('archivePending') ? archiveApi : params.has('linkPr') ? linkPrApi : params.has('exportPending') ? exportApi : null}
+                api={params.has('forkPreview') ? forkApi : params.has('archivePending') ? archiveApi : params.has('linkPr') ? linkPrApi : params.has('exportPending') ? exportApi : null}
             />
         </div>
     )

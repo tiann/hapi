@@ -1599,6 +1599,67 @@ describe('SessionList collapse behavior', () => {
         await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     })
 
+    it('does not close the current Archive dialog when an earlier archive settles', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const first = Promise.withResolvers<void>()
+        const second = Promise.withResolvers<void>()
+        const archiveSession = vi.fn((id: string) => id === 'archive-a' ? first.promise : second.promise)
+        const api = { archiveSession } as unknown as ApiClient
+        const sessions = [
+            makeSession({ id: 'archive-a', active: true, metadata: { path: '/work/a', name: 'Archive A' } }),
+            makeSession({ id: 'archive-b', active: true, metadata: { path: '/work/b', name: 'Archive B' } }),
+        ]
+        const { rerender } = render(renderSessionList(sessions, null, {}, api))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Archive A/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }))
+        fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Archive' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Archive B/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }))
+
+        first.resolve()
+        await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+        second.resolve()
+    })
+
+    it('keeps a fork preview mounted when its Combined source disconnects', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const forkPreview = vi.fn(async () => ({
+            mode: 'current' as const,
+            boundary: { v: 1 as const, mode: 'current' as const, epoch: 1, tailSeq: 1 },
+            keptTail: [], excluded: [], counts: { kept: 0, excluded: 0 }
+        }))
+        const api = { forkPreview, forkConversation: vi.fn() } as unknown as ApiClient
+        const connected = makeSession({ id: 'fork-preview', active: true, metadata: {
+            path: '/work/fork', name: 'Fork preview', flavor: 'codex',
+            conversationHistory: { forkCurrent: true, forkAtMessage: true }
+        } })
+        const { rerender } = render(renderSessionList([connected], null, {}, api))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Fork preview/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
+        await screen.findByRole('dialog')
+
+        rerender(renderSessionList([{ ...connected, active: false }], null, {}, api))
+
+        expect(screen.getByRole('dialog')).toBeInTheDocument()
+    })
+
+    it('partitions Combined sessions with one clock read', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const now = vi.fn().mockReturnValueOnce(1_000_000).mockReturnValue(2_000_000)
+        const api = { hubClock: { now } } as unknown as ApiClient
+        const active = makeSession({ id: 'clock-active', active: true, metadata: { path: '/work/active', name: 'Active session' } })
+        const job = makeSession({ id: 'clock-job', active: false, metadata: { path: '/work/job', name: 'Boundary job' },
+            attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: 1_000_000 } })
+        render(renderSessionList([active, job], null, {}, api))
+
+        expect(screen.getAllByRole('button', { name: /Boundary job/ })).toHaveLength(1)
+        expect(now).toHaveBeenCalled()
+    })
+
     it('moves a detached job below the Combined divider when its heartbeat is stale', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
