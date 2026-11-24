@@ -296,8 +296,27 @@ describe('externally attached root', () => {
         expect(JSON.stringify(f.metadata().contextDetails)).not.toContain('Fixture project prompt');
     });
 
+    it('clears an attached saved server after a confirmed empty scoped response', async () => {
+        sharedHarness.runtimeInventory = Promise.resolve({ data: [] });
+        const f = await fixture({ attached: true, contextDetails: { version: 1, updatedAt: 10, provider: 'codex',
+            codex: { mcpServers: [{ name: 'removed', toolNames: ['stale'] }] } } });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([]));
+    });
+
+    it('keeps an attached saved server when its scoped read fails', async () => {
+        const f = await fixture({ attached: true, contextDetails: { version: 1, updatedAt: 10, provider: 'codex',
+            codex: { mcpServers: [{ name: 'saved', toolNames: ['last_known'] }] } } });
+        vi.spyOn(f.root.client, 'readThreadMcpServerStatus').mockRejectedValue(new Error('temporary failure'));
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([
+            { name: 'saved', toolNames: ['last_known'] }
+        ]));
+    });
+
     it('queries only known servers for the bound thread without reading the wrapper config', async () => {
         sharedHarness.configuredInventory = [{ name: 'foreign-config' }];
+        sharedHarness.runtimeInventory = Promise.resolve({ data: [{ name: 'runtime-only' }] });
         const f = await fixture({ attached: true });
         await f.root.activate();
         f.native.notify('mcpServer/startupStatus/updated', { threadId: 'some-other-thread', name: 'foreign-thread' });

@@ -124,6 +124,8 @@ describe('CodexAppServerClient process cwd', () => {
 
     it.each([
         ['hapi/0.167.0 (Linux 6; x64)', true],
+        ['Codex Desktop/0.167.0 (Windows; x64)', true],
+        ['Codex Desktop/0.167.0+desktop.1 (Windows; x64)', true],
         ['codex_vscode/0.166.3 (Windows; x64) (hapi; 1)', false],
         ['hapi/0.167.0-alpha.1 (Linux 6; x64)', false],
         ['unknown (hapi/0.168.0)', false],

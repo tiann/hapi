@@ -122,7 +122,7 @@ export function supportsThreadScopedMcpStatus(userAgent: unknown): boolean {
     if (typeof userAgent !== 'string') return false;
     // The first UA token contains the app-server build version, not the CLI
     // executable on this machine or the attaching client's version suffix.
-    const match = /^[^/\s]+\/(\d+)\.(\d+)\.(\d+)(?:\+[^\s]+)?(?:\s|$)/u.exec(userAgent);
+    const match = /^[^/\s()]+(?: [^/\s()]+)*\/(\d+)\.(\d+)\.(\d+)(?:\+[^\s]+)?(?:\s|$)/u.exec(userAgent);
     if (!match) return false;
     const major = Number(match[1]);
     const minor = Number(match[2]);

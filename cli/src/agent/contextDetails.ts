@@ -167,7 +167,7 @@ export function buildClaudeContextDetails(args: {
     const systemToolNames = asStringList(system?.tools)
     const systemMcpToolNames = systemToolNames?.filter(name => name.startsWith('mcp__'))
     const mcpTools = buildClaudeMcpTools(contextUsage?.mcp_tools ?? contextUsage?.mcpTools)
-        ?? (systemMcpToolNames?.length ? buildClaudeMcpTools(systemMcpToolNames) : undefined)
+        ?? (systemToolNames ? buildClaudeMcpTools(systemMcpToolNames) : undefined)
     const systemTools = systemToolNames?.filter(name => !name.startsWith('mcp__'))
     const skillNames = new Set((skills ?? []).map((skill) => skill.name))
     const slashCommands = asStringList(system?.slash_commands)
@@ -355,8 +355,10 @@ export function mergeContextDetails(
     const modelChanged = compactPrevious.model !== undefined
         && compactNext.model !== undefined
         && compactPrevious.model !== compactNext.model
-    const previousForMerge = modelChanged && compactNext.contextWindow === undefined
-        ? (({ contextWindow: _contextWindow, ...rest }) => rest)(compactPrevious)
+    // Model, window, and usage belong to one sample. Never pair a newly
+    // reported model/window with the previous model's saved token count.
+    const previousForMerge: ContextDetails = modelChanged
+        ? (({ contextWindow: _contextWindow, usage: _usage, ...rest }) => rest)(compactPrevious)
         : compactPrevious
     const merged: ContextDetails = {
         ...previousForMerge,
@@ -418,14 +420,15 @@ export function publishContextDetails(
     client.updateMetadata((metadata) => {
         const current = metadata.contextDetails
         let incoming = candidate
-        if (candidate && options.preserveUsageSnapshot && current?.provider === 'claude' && current.usage) {
+        if (candidate && options.preserveUsageSnapshot && current?.provider === 'claude') {
+            const sameModel = current.model === candidate.model
             incoming = {
                 ...candidate,
-                usage: {
+                usage: sameModel && current.usage ? {
                     ...candidate.usage,
                     ...(current.usage.contextTokens !== undefined ? { contextTokens: current.usage.contextTokens } : {}),
                     ...(current.usage.cacheReadTokens !== undefined ? { cacheReadTokens: current.usage.cacheReadTokens } : {})
-                }
+                } : sameModel ? candidate.usage : undefined
             }
         }
         const merged = incoming ? mergeContextDetails(current, incoming) : current

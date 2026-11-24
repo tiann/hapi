@@ -449,11 +449,20 @@ describe('mergeContextDetails', () => {
         })
     })
 
+    it('clears stale MCP tools when an explicit SDK catalog contains only built-ins', () => {
+        const first = buildClaudeContextDetails({
+            updatedAt: 100,
+            contextUsage: { mcp_tools: [{ name: 'mcp__old__tool', server_name: 'old' }] }
+        })!
+        const next = buildClaudeContextDetails({ updatedAt: 200, system: { tools: ['Bash'] } })!
+        expect(mergeContextDetails(first, next).claude).toMatchObject({ systemTools: ['Bash'], mcpTools: [] })
+    })
+
     it('clears a retained context window when the published model changes', () => {
         const first = buildClaudeContextDetails({
             updatedAt: 100,
             model: 'claude-opus',
-            contextUsage: { raw_max_tokens: 200_000 }
+            contextUsage: { raw_max_tokens: 200_000, total_tokens: 90_000 }
         })!
         const next = buildClaudeContextDetails({
             updatedAt: 200,
@@ -465,6 +474,7 @@ describe('mergeContextDetails', () => {
 
         expect(merged.model).toBe('claude-fable-5')
         expect(merged.contextWindow).toBeUndefined()
+        expect(merged.usage).toBeUndefined()
         expect(merged.claude?.systemTools).toEqual(['Read'])
     })
 
@@ -498,6 +508,24 @@ describe('mergeContextDetails', () => {
             cacheReadTokens: 15_000
         })
     })
+    it('does not preserve aggregate result usage across a model change', () => {
+        let metadata: Metadata = { path: '/tmp/test', host: 'test', contextDetails: buildClaudeContextDetails({
+            updatedAt: 100, model: 'claude-opus',
+            contextUsage: { raw_max_tokens: 200_000, total_tokens: 90_000 }
+        })! }
+        const client = { updateMetadata: (handler: (current: Metadata) => Metadata) => { metadata = handler(metadata) } }
+        publishContextDetails(client, buildClaudeContextDetails({
+            updatedAt: 200, model: 'claude-fable-5',
+            result: {
+                model: 'claude-fable-5', usage: { input_tokens: 500_000 },
+                modelUsage: { 'claude-fable-5': { contextWindow: 990_000 } }
+            }
+        })!, { preserveUsageSnapshot: true })
+
+        expect(metadata.contextDetails).toMatchObject({ model: 'claude-fable-5', contextWindow: 990_000 })
+        expect(metadata.contextDetails?.usage).toBeUndefined()
+    })
+
     it('merges from the metadata value when queued publishers are applied later', () => {
         const updates: Array<(metadata: Metadata) => Metadata> = []
         const client = {

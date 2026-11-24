@@ -60,7 +60,7 @@ describe('Claude static context catalog', () => {
         publishContextDetails(client, probe, { claudeStartupCatalog: { tools: ['StartupTool'], slashCommands: ['/compact'] } })
         expect(pending).toHaveLength(2)
         const metadata = pending.reduce((current, update) => update(current), {} as Metadata)
-        expect(metadata.contextDetails?.claude).toEqual({ skills: [], systemTools: [], slashCommands: ['/compact'] })
+        expect(metadata.contextDetails?.claude).toEqual({ skills: [], systemTools: [], mcpTools: [], slashCommands: ['/compact'] })
         expect(metadata.tools).toEqual(['StartupTool'])
         expect(metadata.slashCommands).toEqual(['/compact'])
     })
