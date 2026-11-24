@@ -255,7 +255,7 @@ describe('session model', () => {
         expect(survivors).toHaveLength(1)
     })
 
-    it('deduplicates kimi sessions that share a kimiSessionId (reopen correlation)', async () => {
+    it('does not merge kimi sessions that share a kimiSessionId without a machine id', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
         const cache = new SessionCache(store, createPublisher(events))
@@ -275,10 +275,11 @@ describe('session model', () => {
 
         await cache.deduplicateByAgentSessionId(newSession.id)
 
-        // Two rows sharing the Kimi native id collapse to one. Both rows
-        // survive when extraction does not read kimiSessionId.
+        // Without a recorded machine id the hub cannot tell whether the two
+        // rows really share the same native session, so neither may be merged.
         const survivors = [oldSession.id, newSession.id].filter((id) => cache.getSession(id) != null)
-        expect(survivors).toHaveLength(1)
+        expect(survivors).toHaveLength(2)
+        store.close()
     })
 
     it('merges the same kimi session id when both rows recorded the same machine', async () => {
@@ -330,7 +331,7 @@ describe('session model', () => {
         store.close()
     })
 
-    it('deduplicates dsh sessions that share a dshSessionId (reopen correlation)', async () => {
+    it('does not merge dsh sessions that share a dshSessionId without a machine id', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
         const cache = new SessionCache(store, createPublisher(events))
@@ -350,10 +351,11 @@ describe('session model', () => {
 
         await cache.deduplicateByAgentSessionId(newSession.id)
 
-        // Two rows sharing the DSH native id collapse to one. Both rows
-        // survive when extraction does not read dshSessionId.
+        // Without a recorded machine id the hub cannot tell whether the two
+        // rows really share the same native session, so neither may be merged.
         const survivors = [oldSession.id, newSession.id].filter((id) => cache.getSession(id) != null)
-        expect(survivors).toHaveLength(1)
+        expect(survivors).toHaveLength(2)
+        store.close()
     })
 
     it('merges the same dsh session id when both rows recorded the same machine', async () => {

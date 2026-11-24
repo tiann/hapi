@@ -2934,6 +2934,8 @@ export class SessionCache {
         const scoped = (field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId' | 'kimiSessionId' | 'dshSessionId', value: string) => {
             const machineScoped = field === 'piSessionId' || field === 'opencodeSessionId'
                 || field === 'kimiSessionId' || field === 'dshSessionId'
+            // Kimi and DSH ids dedup only when a machine id is recorded.
+            if ((field === 'kimiSessionId' || field === 'dshSessionId') && !metadata.machineId) return null
             return {
                 field,
                 value,
@@ -2950,8 +2952,14 @@ export class SessionCache {
         if (metadata.piSessionId) return scoped('piSessionId', metadata.piSessionId)
         if (metadata.agySessionId) return scoped('agySessionId', metadata.agySessionId)
         if (metadata.copilotSessionId) return scoped('copilotSessionId', metadata.copilotSessionId)
-        if (metadata.kimiSessionId) return scoped('kimiSessionId', metadata.kimiSessionId)
-        if (metadata.dshSessionId) return scoped('dshSessionId', metadata.dshSessionId)
+        if (metadata.kimiSessionId) {
+            const extracted = scoped('kimiSessionId', metadata.kimiSessionId)
+            if (extracted) return extracted
+        }
+        if (metadata.dshSessionId) {
+            const extracted = scoped('dshSessionId', metadata.dshSessionId)
+            if (extracted) return extracted
+        }
         return null
     }
 
