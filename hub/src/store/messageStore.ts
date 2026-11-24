@@ -291,8 +291,8 @@ export class MessageStore {
         return claimIndeterminateMessage(this.db, sessionId, messageId)
     }
 
-    markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): number {
-        return markMessagesInvoked(this.db, sessionId, localIds, invokedAt)
+    markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number, steered = false): number {
+        return markMessagesInvoked(this.db, sessionId, localIds, invokedAt, steered)
     }
 
     markDispatchingMessagesIndeterminate(sessionId: string): string[] {

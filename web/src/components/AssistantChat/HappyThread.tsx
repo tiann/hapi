@@ -483,6 +483,7 @@ export function getHistoryCoverageRetryDelay(deadline: number, now: number): num
 type PromptAnchorState = {
     current: boolean
     nextAnchorId: string | null
+    oldestAnchorId?: string | null
     sourceMessageIds?: readonly string[]
     blockedBySystemTurn?: boolean
 }
@@ -509,6 +510,16 @@ function findPromptBefore(messages: HTMLElement[], end: number, state?: PromptAn
         if (message.dataset.hapiTurnInput === 'true') return message
     }
     return null
+}
+
+function findPromptBeforeWithOverlap(messages: HTMLElement[], end: number, state: PromptAnchorState): HTMLElement | null {
+    const target = findPromptBefore(messages, end, state)
+    if (!target && !state.blockedBySystemTurn && end > 0) {
+        // Older pages retain an overlap. Carry the oldest verified boundary
+        // into it even when the selected reply and its source IDs are evicted.
+        state.oldestAnchorId = messages[0]?.id ?? state.oldestAnchorId
+    }
+    return target
 }
 
 export function findPreviousUserMessage(
@@ -552,12 +563,19 @@ export function findPromptTarget(
                 : null
     }
 
-    if (assistantAnchor) return findPromptBefore(messages, messages.indexOf(assistantAnchor), assistantAnchorState)
-    if (!assistantAnchorState.current || !assistantAnchorState.nextAnchorId) return null
-    const boundaryIndex = messages.findIndex((message) => message.id === assistantAnchorState.nextAnchorId)
+    if (assistantAnchor) return findPromptBeforeWithOverlap(messages, messages.indexOf(assistantAnchor), assistantAnchorState)
+    if (!assistantAnchorState.current) return null
+    if (assistantAnchorState.nextAnchorId) {
+        const boundaryIndex = messages.findIndex((message) => message.id === assistantAnchorState.nextAnchorId)
+        if (boundaryIndex >= 0) return findPromptBeforeWithOverlap(messages, boundaryIndex, assistantAnchorState)
+    }
+    if (assistantAnchorState.oldestAnchorId) {
+        const boundaryIndex = messages.findIndex((message) => message.id === assistantAnchorState.oldestAnchorId)
+        if (boundaryIndex >= 0) return findPromptBeforeWithOverlap(messages, boundaryIndex, assistantAnchorState)
+    }
     // The transcript may grow at the tail while we load older pages. Never
-    // search past the selected reply when its boundary can no longer be found.
-    return boundaryIndex < 0 ? null : findPromptBefore(messages, boundaryIndex, assistantAnchorState)
+    // search past the selected reply when every verified boundary is gone.
+    return null
 }
 
 export function capturePromptAnchorState(

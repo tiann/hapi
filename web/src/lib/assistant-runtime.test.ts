@@ -361,6 +361,15 @@ describe('buildAssistantReplyTargets', () => {
         ])
     })
 
+    it('uses the initiating prompt for a mid-turn steer loaded from durable history', () => {
+        const blocks = assignThreadMessageIds([
+            userText('original', { invokedAt: 1_000 }),
+            userText('correction', { invokedAt: 2_000, steered: true }),
+            agentText('answer', { invokedAt: 3_000 })
+        ])
+        expect(buildAssistantReplyTargets(blocks).get('agent-text:answer')).toBe('user-text:original')
+    })
+
     it('keeps queued, failed, and steered user rows from becoming response targets', () => {
         const blocks = assignThreadMessageIds([
             userText('prompt', { invokedAt: 1_000 }),

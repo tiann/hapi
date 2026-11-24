@@ -250,6 +250,27 @@ describe('assistant prompt lookup', () => {
         viewport.remove()
     })
 
+    it('carries the search boundary after the selected last reply is evicted', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-agent-text:older"></div>
+                <div id="hapi-message-agent-text:tail"></div>
+            </div>
+        `
+        document.body.append(viewport)
+        const state = { current: false, nextAnchorId: null as string | null }
+        expect(findPromptTarget(viewport, 'agent-text:tail', state)).toBeNull()
+
+        viewport.firstElementChild!.innerHTML = `
+            <div id="hapi-message-user-text:prompt" data-hapi-turn-input="true"></div>
+            <div id="hapi-message-agent-text:middle"></div>
+            <div id="hapi-message-agent-text:older"></div>
+        `
+        expect(findPromptTarget(viewport, 'agent-text:tail', state)?.id).toBe('hapi-message-user-text:prompt')
+        viewport.remove()
+    })
+
     it('recovers a re-keyed last reply by its source identity after a prepend', () => {
         const viewport = document.createElement('div')
         viewport.innerHTML = `

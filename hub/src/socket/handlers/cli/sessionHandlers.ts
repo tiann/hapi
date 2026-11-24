@@ -497,7 +497,8 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 data.sid,
                 localIds,
                 invokedAt,
-                sessionAccess.value.namespace
+                sessionAccess.value.namespace,
+                data.steered === true
             )
         } catch (err) {
             console.error('recordMessagesConsumed failed', err)
@@ -520,8 +521,8 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
         // Emit only after the DB transaction succeeds. This is an ACK-level
         // batch contract, so preserve its original timestamp even when IDs are
-        // heterogeneous, replayed, or unknown. `steered` is a live-only signal
-        // (never persisted) that marks mid-turn delivery for the web badge.
+        // heterogeneous, replayed, or unknown. `steered` is also persisted by
+        // the store so fresh history readers retain the same turn boundary.
         onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt, ...(data.steered === true ? { steered: true } : {}) })
     })
 

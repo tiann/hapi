@@ -590,7 +590,7 @@ export const DecryptedMessageSchema = z.object({
     deliveryState: z.literal('indeterminate').optional(),
     // A live dispatch is still unconfirmed, but is not an invitation to resend.
     deliveryPending: z.literal(true).optional(),
-    // Live signal via messages-consumed (steered:true); not persisted by the hub.
+    // Live via messages-consumed and persisted for fresh history readers.
     steered: z.boolean().optional()
 })
 

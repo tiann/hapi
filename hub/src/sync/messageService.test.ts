@@ -103,6 +103,22 @@ function makePublisher() {
 // Tests
 // ---------------------------------------------------------------------------
 
+describe('MessageService durable turn inputs', () => {
+    it('returns a persisted mid-turn steer in a fresh history read', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'fresh-steered-history')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'original prompt' } }, 'original')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'mid-turn correction' } }, 'steer')
+        store.recordMessagesConsumed(session.id, ['original'], 1_000, 'default')
+        store.recordMessagesConsumed(session.id, ['steer'], 2_000, 'default', true)
+        const service = new MessageService(store, makeIo(() => {}), makePublisher() as unknown as EventPublisher)
+
+        const history = service.getMessages(session.id)
+        expect(history.find(message => message.localId === 'original')?.steered).toBeUndefined()
+        expect(history.find(message => message.localId === 'steer')?.steered).toBe(true)
+    })
+})
+
 describe('MessageService goal status filtering', () => {
     it('does not discard or replay an uncertain shared input on a not-found cancellation ACK', async () => {
         const store = makeStore()

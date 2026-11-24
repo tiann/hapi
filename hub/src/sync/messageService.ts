@@ -99,7 +99,8 @@ function toDecryptedMessage(message: StoredMessageForDelivery): DecryptedMessage
         invokedAt: message.invokedAt,
         scheduledAt: message.scheduledAt,
         ...(message.deliveryState ? { deliveryState: message.deliveryState } : {}),
-        ...(message.deliveryPending ? { deliveryPending: true as const } : {})
+        ...(message.deliveryPending ? { deliveryPending: true as const } : {}),
+        ...(message.steered ? { steered: true as const } : {})
     }
 }
 
@@ -585,7 +586,8 @@ export class MessageService {
             invokedAt: message.invokedAt,
             scheduledAt: message.scheduledAt,
             ...(message.deliveryState ? { deliveryState: message.deliveryState } : {}),
-            ...(message.deliveryPending ? { deliveryPending: true as const } : {})
+            ...(message.deliveryPending ? { deliveryPending: true as const } : {}),
+        ...(message.steered ? { steered: true as const } : {})
         }))
     }
 
@@ -1058,7 +1060,8 @@ export class MessageService {
                 invokedAt: msg.invokedAt,
                 scheduledAt: msg.scheduledAt,
                 ...(msg.deliveryState ? { deliveryState: msg.deliveryState } : {}),
-                ...(msg.deliveryPending ? { deliveryPending: true as const } : {})
+                ...(msg.deliveryPending ? { deliveryPending: true as const } : {}),
+                ...(msg.steered ? { steered: true as const } : {})
             }
         })
         return { actualSessionId, createdAt: msg.createdAt }
