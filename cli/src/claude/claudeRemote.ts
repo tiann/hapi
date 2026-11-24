@@ -122,8 +122,9 @@ export async function claudeRemote(opts: {
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
     /**
-     * Called with a result that counts for usage but is not forwarded: a late
-     * result of a timed-out command, or a command result held until its echo.
+     * Called with a result that counts for usage on arrival without being
+     * forwarded then: a late result of a timed-out command, or a command
+     * result held until its echo and forwarded then for the terminal only.
      */
     onDroppedResult?: (message: SDKResultMessage) => void,
     /** Called once per spawn with whether the process starts fresh, before SDK messages arrive. */
@@ -859,7 +860,10 @@ export async function claudeRemote(opts: {
                         resolveSteer(true);
                     }
                     if (clearFollowUp?.uuid !== uuid || !clearFollowUp.earlyResult) continue;
-                    message = clearFollowUp.earlyResult;
+                    // With an accounting callback, usage already counted it on arrival.
+                    message = opts.onDroppedResult
+                        ? { ...clearFollowUp.earlyResult, hapi_held_result: true }
+                        : clearFollowUp.earlyResult;
                 }
             }
 
@@ -870,7 +874,7 @@ export async function claudeRemote(opts: {
                 && clearFollowUp.sessionId !== null && message.session_id === clearFollowUp.sessionId
                 && pushedUuids.has(clearFollowUp.uuid)) {
                 if (!clearFollowUp.earlyResult) {
-                    // Usage counts the result in arrival order; its echo only ends the turn.
+                    // Usage counts the result in arrival order; its echo ends the turn.
                     clearFollowUp.earlyResult = message;
                     opts.onDroppedResult?.(message as SDKResultMessage);
                 }
@@ -915,10 +919,7 @@ export async function claudeRemote(opts: {
             const compact = compactState.active;
             const isCompactTurnResult = compact !== null
                 && isCommandResult(message, compact.uuid, 'compact', compact.initial && compact.sawCompactSignal);
-            // A held command result is not shown: its summary would land on a reply
-            // that arrived while it was held.
-            const isHeldResult = message === clearFollowUp?.earlyResult;
-            if (!isClearResult && !isHeldResult && !isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
+            if (!isClearResult && !isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
                 opts.onMessage(isCompactTurnResult || staleUsageSession ? {
                     ...message,
                     ...(isCompactTurnResult ? { hapi_compact_turn: true } : {}),

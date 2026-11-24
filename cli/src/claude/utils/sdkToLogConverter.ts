@@ -559,6 +559,8 @@ export class SDKToLogConverter {
                         }
                     }
                 }
+                // A held command result was counted on arrival and has no round of its own.
+                if (resultMsg.hapi_held_result === true) break
                 // Cost and API time are cumulative across resumes; emit only a
                 // trustworthy per-round delta, never a lifetime total. Token
                 // counts come from `usage`, which is already per round.
