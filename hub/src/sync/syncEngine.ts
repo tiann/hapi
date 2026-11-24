@@ -4388,7 +4388,12 @@ export class SyncEngine {
         // argv before the first webhook (#1911 Major: unreapable window).
         namespace?: string,
         /** Claude: resume the spawned child truncated to this entry uuid. */
-        resumeSessionAt?: string
+        resumeSessionAt?: string,
+        /**
+         * Parent hub session UUID when this is an orchestrated peer spawn
+         * (telemetry only — archive must not consult this).
+         */
+        spawnedBySessionId?: string
     ): ReturnType<RpcGateway['spawnSession']> {
         // Fresh machine spawns historically omitted existingSessionId, so
         // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
@@ -4410,6 +4415,7 @@ export class SyncEngine {
                     machineId,
                     startedBy: 'runner',
                     startedFromRunner: true,
+                    ...(spawnedBySessionId ? { spawnedBySessionId } : {}),
                 },
                 null,
                 namespace,

@@ -335,7 +335,9 @@ export function createMachinesRoutes(
             parsed.data.collaborationMode,
             parsed.data.copilotAgentMode,
             startingMode,
-            namespace
+            namespace,
+            undefined, // resumeSessionAt
+            parsed.data.spawnedBySessionId,
         )
         return c.json(result)
     })

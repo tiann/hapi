@@ -608,6 +608,12 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
         sessionType,
         agent: resolved.agent
     }
+    // Telemetry only (#2020): parent UUID for the spawn tree. Archive must not
+    // consult this — same lifecycle rules as a human-spawned session.
+    const parentSessionId = (parent?.sessionId ?? '').trim()
+    if (parentSessionId) {
+        spawnBody.spawnedBySessionId = parentSessionId
+    }
     // Pi/DSH have empty launch-permission catalogs — omit permissionMode so the
     // machine route does not 400 invalid_permission_mode on inherited default.
     if (getPermissionModesForFlavor(resolved.agent).length > 0) {

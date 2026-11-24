@@ -297,7 +297,13 @@ export const MetadataSchema = z.object({
     // reused by another process.
     hostStartMarker: z.string().optional(),
     hapiMcpUrl: z.string().url().optional(),
+    // Session origin (how the row was launched) — NOT the activity/turn
+    // `startedBy` in apiTypes (`hub_prompt` | `agent` | `patch`).
     startedBy: z.enum(['runner', 'terminal']).optional(),
+    // Peer-spawn parent telemetry (#2020): hub session UUID of the orchestrator
+    // that created this session via spawn-peer. Recorded for tree walking only —
+    // archive and lifecycle must NOT branch on this field.
+    spawnedBySessionId: z.string().uuid().optional(),
     // 'running' | 'idle' | 'archived' (see shared/src/sessionLifecycle.ts).
     // 'idle' is written by the hub's keepalive-idle reconciler (tiann/hapi#1820)
     // and reverts to 'running' on the next agent progress.

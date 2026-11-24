@@ -981,7 +981,11 @@ export const SpawnSessionRequestSchema = z.object({
     serviceTier: z.enum(['fast', 'standard']).optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
     copilotAgentMode: CopilotAgentModeSchema.optional(),
-    startingMode: z.enum(['remote', 'pty']).optional()
+    startingMode: z.enum(['remote', 'pty']).optional(),
+    // Parent hub session UUID when this spawn is an orchestrated peer
+    // (telemetry only — not archive authz). Distinct from metadata.startedBy
+    // (runner|terminal) and from activity turn startedBy (hub_prompt|agent|patch).
+    spawnedBySessionId: z.string().uuid().optional(),
 })
 
 export type SpawnSessionRequest = z.infer<typeof SpawnSessionRequestSchema>

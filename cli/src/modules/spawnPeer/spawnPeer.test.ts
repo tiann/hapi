@@ -646,6 +646,76 @@ it('resolves relative directory against cwd (MCP session working directory)', as
         expect(http.patch).toHaveBeenCalledTimes(1)
     })
 
+    it('stamps spawnedBySessionId on the machine spawn body when parent is known', async () => {
+        const parentId = 'bbbbbbbb-2222-4222-8222-222222222222'
+        let spawnedBody: Record<string, unknown> | undefined
+        let deliveredText = ''
+        let nowMs = 0
+        const http = createHttpMock({
+            post: (url, body) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 200, data: { token: 'jwt' } }
+                }
+                if (url.endsWith(`/api/machines/${MACHINE_ID}/spawn`)) {
+                    spawnedBody = body as Record<string, unknown>
+                    return { status: 200, data: { type: 'success', sessionId: SESSION_ID } }
+                }
+                if (url.endsWith(`/api/sessions/${SESSION_ID}/messages`)) {
+                    deliveredText = typeof (body as { text?: string })?.text === 'string'
+                        ? (body as { text: string }).text
+                        : ''
+                    return { status: 200, data: { ok: true } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => {
+                if (url.includes(`/api/sessions/${SESSION_ID}/messages`)) {
+                    return {
+                        status: 200,
+                        data: {
+                            messages: [{
+                                id: 'm1',
+                                localId: 'ping-peer-1',
+                                createdAt: 1,
+                                content: { type: 'text', text: deliveredText || 'hi' },
+                                role: 'user',
+                            }],
+                        },
+                    }
+                }
+                if (url.includes('/api/sessions')) {
+                    return {
+                        status: 200,
+                        data: {
+                            sessions: [{ id: SESSION_ID, active: true, metadata: { flavor: 'claude' } }],
+                            session: { id: SESSION_ID, active: true, metadata: { flavor: 'claude' } },
+                        },
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            },
+        })
+
+        await spawnPeer({
+            directory: '/tmp/project',
+            message: 'hi',
+            agent: 'claude',
+            machineId: MACHINE_ID,
+            accessToken: 'tok',
+            apiUrl: 'http://hub.test',
+            http: http as never,
+            parent: { sessionId: parentId, name: 'Orchestrator' },
+            hubPeerSpawnDefaults: null,
+            waitActiveSecs: 2,
+            now: () => nowMs,
+            sleep: async () => { nowMs += 500 },
+        }).catch(() => {
+            // Remit verify is orthogonal — we only assert the spawn body stamp.
+        })
+
+        expect(spawnedBody).toMatchObject({ spawnedBySessionId: parentId })
+    })
+
     it('waits for a freshly spawned inactive session without posting /resume', async () => {
         let resumeCalls = 0
         let sessionGets = 0

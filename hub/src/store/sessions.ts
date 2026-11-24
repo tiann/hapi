@@ -96,6 +96,8 @@ const HUB_OWNED_METADATA_FIELDS = [
     'forkedFrom',
     'conversationBranch',
     'softStandDownPending',
+    // Peer-spawn parent UUID — stamped at spawn; CLI must not forge/erase.
+    'spawnedBySessionId',
 ] as const
 
 const CONTRIBUTION_FIELDS = ['externalRefs'] as const
