@@ -1374,11 +1374,40 @@ export class AcpSdkBackend implements AgentBackend {
         this.sessionInfoRefreshTimers.clear();
         this.clearRunningThinkingTimer();
         await this.sessionUpdateQueue;
-        for (const entry of this.childHandlers.values()) {
-            this.clearChildQuietTimer(entry);
-            entry.handler.drainBuffers();
+        // Remote→local (and other disconnect paths) keep the same HAPI wrapper
+        // PID, so hub worker-exit retirement never fires. Publish interrupted
+        // for every open child before dropping handlers so Archive cannot stay
+        // blocked on a running child that the backend will never update (#2021).
+        if (this.childEmitSink && this.childHandlers.size > 0) {
+            const sink = this.childEmitSink;
+            for (const childSessionId of [...this.childHandlers.keys()]) {
+                const scope = childToolCallScope(childSessionId);
+                this.toolCallLifetimes.cancel(scope);
+                const settledCallIds = this.toolCallLifetimes.settleCancelled(scope);
+                this.toolCallLifetimes.beginGeneration(scope);
+                try {
+                    sink({
+                        type: 'turn_complete',
+                        stopReason: 'cancelled',
+                        childSessionId,
+                        childStatus: 'interrupted',
+                        ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
+                    });
+                } catch (error) {
+                    logger.debug(
+                        '[AcpSdkBackend] child interrupt-on-disconnect publish failed:',
+                        error instanceof Error ? error.message : String(error)
+                    );
+                }
+                this.finishChildHandler(childSessionId);
+            }
+        } else {
+            for (const entry of this.childHandlers.values()) {
+                this.clearChildQuietTimer(entry);
+                entry.handler.drainBuffers();
+            }
+            this.childHandlers.clear();
         }
-        this.childHandlers.clear();
         const recordSessionId = this.activeSessionId;
         this.childEmitSink = null;
         this.messageHandler?.drainBuffers();

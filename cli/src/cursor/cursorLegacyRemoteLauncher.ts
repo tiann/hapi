@@ -539,14 +539,16 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 this.stopDrainArmed = true;
                 this.armActiveChildDrain?.();
             } else if (leavingRemote) {
-                // Switch/Exit cannot hang forever on an open pipe — always arm
-                // the drain bound and surface the unconfirmed kill (#2021).
-                this.stopDrainArmed = true;
-                this.armActiveChildDrain?.();
+                // Do not fake Switch/Exit success via the drain timer while the
+                // process tree is still unconfirmed — that would settle tools
+                // and hand off to local Cursor while the remote child still
+                // runs (#2021 tip Major).
+                this.stopDrainArmed = false;
                 this.messageBuffer.addMessage(
-                    'Exit: agent process still open after force kill — waiting for drain bound',
+                    'Exit: agent process still open after force kill — handoff blocked',
                     'status'
                 );
+                throw new Error('Cannot switch/exit: agent process still open after force kill');
             } else {
                 this.stopDrainArmed = false;
                 this.messageBuffer.addMessage(
@@ -563,9 +565,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
 
         // Keep thinking=true while the subprocess is still open so the web
         // composer leaves Stop enabled for a retry (#2021). Clear only after
-        // confirmed termination (or when there was no child). Terminal leave
-        // always clears — the launcher is exiting regardless.
-        if (stopped || leavingRemote) {
+        // confirmed termination (or when there was no child).
+        if (stopped) {
             this.session.onThinkingChange(false);
         }
 

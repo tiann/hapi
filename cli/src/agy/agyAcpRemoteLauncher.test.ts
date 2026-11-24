@@ -726,7 +726,33 @@ describe('AgyAcpRemoteLauncher', () => {
         expect(settlements[0]?.settledCallIds).toEqual(expect.arrayContaining(['question:0#wake']));
     });
 
-    it('waits for wakeup cancel hard-stop before clearing thinking (#2021)', async () => {
+    it('resolves wakeup cancel immediately when nothing remains open (#2021)', async () => {
+        const { session } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.getAgentVersion = () => '1.5.13';
+        (backend as { hasMessageHandler?: () => boolean }).hasMessageHandler = () => true;
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            cancelHardStopMs: 2_000,
+        });
+        (launcher as unknown as { backend: unknown }).backend = backend;
+        (launcher as unknown as { acpSessionId: string }).acpSessionId = 'agy-conv-wake';
+
+        const retire = vi.spyOn(
+            launcher as unknown as { retireBackend: (b: unknown) => Promise<void> },
+            'retireBackend'
+        ).mockResolvedValue(undefined);
+
+        const started = Date.now();
+        await (launcher as unknown as {
+            waitForWakeupCancel: (b: unknown) => Promise<void>
+        }).waitForWakeupCancel(backend);
+        expect(Date.now() - started).toBeLessThan(500);
+        expect(retire).not.toHaveBeenCalled();
+        retire.mockRestore();
+    });
+
+    it('hard-stops a wakeup cancel that still has open commands (#2021)', async () => {
         const { session } = makeSession();
         const backend = new FakeAgyBackend();
         backend.getAgentVersion = () => '1.5.13';
@@ -737,23 +763,24 @@ describe('AgyAcpRemoteLauncher', () => {
         });
         (launcher as unknown as { backend: unknown }).backend = backend;
         (launcher as unknown as { acpSessionId: string }).acpSessionId = 'agy-conv-wake';
+        (launcher as unknown as { handlerOwnerTurn: unknown }).handlerOwnerTurn = {
+            openCommands: new Set(['still-open']),
+            commandCallIds: ['still-open'],
+            deferredLiveCommandCalls: new Map(),
+            backendSettledCallIds: [] as string[],
+            bgTaskDescriptions: new Map(),
+        };
 
-        const thinking = vi.spyOn(session, 'onThinkingChange');
         const retire = vi.spyOn(
             launcher as unknown as { retireBackend: (b: unknown) => Promise<void> },
             'retireBackend'
         ).mockResolvedValue(undefined);
 
-        const wait = (launcher as unknown as {
+        await (launcher as unknown as {
             waitForWakeupCancel: (b: unknown) => Promise<void>
         }).waitForWakeupCancel(backend);
-        await wait;
         expect(retire).toHaveBeenCalled();
-        // thinking is cleared by the wakeup loop after wait resolves — unit
-        // path only asserts hard-stop retires a still-alive backend.
-        expect(thinking).not.toHaveBeenCalledWith(false);
         retire.mockRestore();
-        thinking.mockRestore();
     });
 });
 

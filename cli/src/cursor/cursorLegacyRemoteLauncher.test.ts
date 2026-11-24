@@ -567,41 +567,36 @@ describe('cursorLegacyRemoteLauncher', () => {
         killMock.mockResolvedValue(true);
     });
 
-    it('completes Switch when tree kill is unconfirmed by arming the drain bound (#2021)', async () => {
-        const prevDrain = process.env.HAPI_CURSOR_STOP_DRAIN_MS;
-        process.env.HAPI_CURSOR_STOP_DRAIN_MS = '80';
-        vi.resetModules();
-        try {
-            const killMock = vi.mocked(killProcessByChildProcess);
-            killMock.mockReset();
-            killMock.mockResolvedValue(false);
+    it('blocks Switch when tree kill stays unconfirmed (#2021)', async () => {
+        const killMock = vi.mocked(killProcessByChildProcess);
+        killMock.mockReset();
+        killMock.mockResolvedValue(false);
 
-            const child1 = makeChild({ hold: true, pid: 8888 });
-            spawnMock.mockReturnValueOnce(child1);
-            const queue = new MessageQueue2<EnhancedMode>(() => 'm');
-            queue.push('first', { permissionMode: 'default' }, 'first');
+        const child1 = makeChild({ hold: true, pid: 8888 });
+        spawnMock.mockReturnValueOnce(child1);
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        queue.push('first', { permissionMode: 'default' }, 'first');
 
-            const client = makeClient();
-            const session = makeSession(queue, client);
+        const client = makeClient();
+        const session = makeSession(queue, client);
 
-            const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
-            const launchPromise = cursorLegacyRemoteLauncher(session);
-            await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
-            await new Promise((resolve) => setTimeout(resolve, 30));
+        const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+        const launchPromise = cursorLegacyRemoteLauncher(session);
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+        await new Promise((resolve) => setTimeout(resolve, 30));
 
-            // Unconfirmed kill + open pipe must still finish Switch via drain bound
-            // (no closeChild) — previously drain stayed disarmed and hung.
-            const switchPromise = (client.rpcHandlerManager.handlers.get('switch')! as () => Promise<void>)();
-            await expect(launchPromise).resolves.toBe('switch');
-            await switchPromise;
-            expect(killMock.mock.calls.length).toBeGreaterThanOrEqual(1);
-            expect(killMock.mock.calls.some((call) => call[1] === true)).toBe(true);
-            killMock.mockResolvedValue(true);
-        } finally {
-            if (prevDrain === undefined) delete process.env.HAPI_CURSOR_STOP_DRAIN_MS;
-            else process.env.HAPI_CURSOR_STOP_DRAIN_MS = prevDrain;
-            vi.resetModules();
-        }
+        // Unconfirmed kill must not hand off to local Cursor.
+        await expect(
+            (client.rpcHandlerManager.handlers.get('switch')! as () => Promise<void>)()
+        ).rejects.toThrow(/still open after force kill/);
+        expect(killMock.mock.calls.some((call) => call[1] === true)).toBe(true);
+
+        // Recover: confirm kill + close so the launcher can exit cleanly.
+        killMock.mockResolvedValue(true);
+        child1.closeChild?.(null);
+        queue.close();
+        await launchPromise;
+        killMock.mockResolvedValue(true);
     });
 
     it.each(['switch', 'exit'] as const)('resets the queue exactly once on terminal %s', async (reason) => {

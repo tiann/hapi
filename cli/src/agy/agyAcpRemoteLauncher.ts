@@ -2164,26 +2164,49 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         await this.permissionHandler?.cancelAll('User aborted');
     }
 
+    /** Open command bookkeeping still owned by the stopped wakeup. */
+    private wakeupStillHasLiveWork(): boolean {
+        const owner = this.handlerOwnerTurn;
+        if (!owner) return false;
+        return owner.openCommands.size > 0
+            || owner.commandCallIds.length > 0
+            || owner.deferredLiveCommandCalls.size > 0;
+    }
+
     /**
-     * Wakeup Stop: wait until the backend dies or cancelHardStopMs elapses
-     * (then retire it). Resolves before discardStoppedWakeup clears thinking.
+     * Wakeup Stop: resolve once the wakeup has no live work left, the backend
+     * dies, or cancelHardStopMs elapses (then retire it). A clean cancel that
+     * leaves the ACP transport open must not wait for the hard-stop timer
+     * (#2021 tip Major).
      */
     private waitForWakeupCancel(backend: AcpSdkBackend): Promise<void> {
         return new Promise((resolve) => {
             let settled = false;
+            let poll: ReturnType<typeof setInterval> | undefined;
+            let timer: ReturnType<typeof setTimeout> | undefined;
             const finish = () => {
                 if (settled) return;
                 settled = true;
-                clearInterval(poll);
-                clearTimeout(timer);
+                if (poll !== undefined) clearInterval(poll);
+                if (timer !== undefined) clearTimeout(timer);
                 resolve();
             };
-            const poll = setInterval(() => {
+            // cancelPrompt already returned. If nothing remains open, settle now.
+            if (!backend.isTransportAlive() || !this.wakeupStillHasLiveWork()) {
+                finish();
+                return;
+            }
+            poll = setInterval(() => {
                 if (this.backend !== backend || !backend.isTransportAlive()) finish();
+                else if (!this.wakeupStillHasLiveWork()) finish();
             }, 50);
             poll.unref?.();
-            const timer = setTimeout(() => {
-                if (this.backend === backend && backend.isTransportAlive()) {
+            timer = setTimeout(() => {
+                if (
+                    this.backend === backend
+                    && backend.isTransportAlive()
+                    && this.wakeupStillHasLiveWork()
+                ) {
                     logger.warn('[agy-acp] agy did not stop the wakeup after cancel; restarting it');
                     this.session.sendSessionEvent({
                         type: 'message',
