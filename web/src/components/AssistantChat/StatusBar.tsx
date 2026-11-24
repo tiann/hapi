@@ -363,7 +363,7 @@ export function StatusBar(props: {
     const effectiveContextSize = props.contextSize ?? persistedContextSize
     // When the loaded transcript has no usage, the saved count and model
     // describe the same turn, which may have used a rerouted Codex model.
-    const persistedUsageModel = props.agentFlavor === 'codex' && props.contextSize === undefined && persistedContextSize !== undefined
+    const persistedUsageModel = props.contextSize === undefined && persistedContextSize !== undefined
         ? props.contextDetails?.model
         : undefined
     const contextHeuristicModel = persistedUsageModel ?? props.contextModel ?? props.model ?? props.contextDetails?.model

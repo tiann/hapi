@@ -4966,7 +4966,7 @@ export class SyncEngine {
         const session = access.session
         const metadata = session.metadata
         if (metadata?.codexRuntime?.kind === 'attached') {
-            return { type: 'error', message: 'Externally attached Codex session: run hapi attach on its machine; owned cold resume is disabled', code: 'resume_unavailable' }
+            return { type: 'error', message: 'Open this Codex session on the owning desktop to sync it, or use hapi attach for a manual bridge. HAPI cannot cold-resume it.', code: 'resume_unavailable' }
         }
         if (!metadata || typeof metadata.path !== 'string' || metadata.path.length === 0) {
             return { type: 'error', message: 'Session metadata missing path', code: 'resume_unavailable' }

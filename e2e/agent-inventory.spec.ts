@@ -50,6 +50,16 @@ test('the status bar uses the saved Codex usage window, not the configured model
 })
 
 
+test('the status bar uses the saved Claude window behind a configured model alias', async ({ page }) => {
+    await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=claude&savedClaudeAlias=1')
+    const status = page.getByTestId('saved-claude-alias-usage')
+    await expect(status.getByRole('button', { name: 'Context details', exact: true })).toContainText('10%')
+    await expect(status.getByRole('button', { name: 'Context details', exact: true })).toContainText('100k / 1.0M')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await status.screenshot({ path: `${screenshots}/agent-inventory-saved-claude-window.png` })
+})
+
+
 test('known MCP server names remain visible when scoped discovery is unavailable', async ({ page }) => {
     await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=codex&knownNamesOnly=1')
     await page.getByRole('button', { name: 'Open agent details' }).click()

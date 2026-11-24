@@ -105,15 +105,22 @@ function buildClaudeSkills(value: unknown): ClaudeContextDetails['skills'] {
 export function sameClaudeModelID(left: string, right: string): boolean {
     return left.replace(/\[1m\]$/, '') === right.replace(/\[1m\]$/, '')
 }
+function mcpServerNameFromTool(name: string): string | undefined {
+    if (!name.startsWith('mcp__')) return undefined
+    const remainder = name.slice('mcp__'.length)
+    const separator = remainder.indexOf('__')
+    return separator > 0 ? remainder.slice(0, separator) : undefined
+}
+
 function buildClaudeMcpTools(value: unknown): ClaudeContextDetails['mcpTools'] {
     if (!Array.isArray(value)) return undefined
     const tools = value.flatMap((item) => {
         const record = asRecord(item)
-        const name = asString(record?.name ?? record?.tool_name ?? record?.toolName)
+        const name = typeof item === 'string' ? asString(item) : asString(record?.name ?? record?.tool_name ?? record?.toolName)
         if (!name) return []
         return [{
             name,
-            serverName: asString(record?.server_name ?? record?.serverName ?? record?.server)
+            serverName: asString(record?.server_name ?? record?.serverName ?? record?.server) ?? mcpServerNameFromTool(name)
         }]
     })
     return tools
@@ -132,6 +139,7 @@ export function buildClaudeContextDetails(args: {
     const system = asRecord(args.system)
     const result = asRecord(args.result)
     const model = asString(contextUsage?.model) ?? asString(args.model) ?? asString(system?.model) ?? asString(result?.model)
+    const rawMessageUsage = asRecord(args.messageUsage)
     const contextWindow = asTokenCount(
         args.effectiveContextWindow
         ?? getClaudeModelUsageContextWindow(result, model)
@@ -139,6 +147,8 @@ export function buildClaudeContextDetails(args: {
         ?? contextUsage?.rawMaxTokens
         ?? contextUsage?.context_window
         ?? contextUsage?.contextWindow
+        ?? rawMessageUsage?.context_window
+        ?? rawMessageUsage?.contextWindow
     )
     const messageUsage = normalizeUsageSnapshot(args.messageUsage ?? result?.usage)
     const contextTokens = asTokenCount(
@@ -154,8 +164,11 @@ export function buildClaudeContextDetails(args: {
     const hasUsage = Object.values(usage).some((value) => value !== undefined)
 
     const skills = buildClaudeSkills(contextUsage?.skills) ?? buildClaudeSkills(system?.skills)
+    const systemToolNames = asStringList(system?.tools)
+    const systemMcpToolNames = systemToolNames?.filter(name => name.startsWith('mcp__'))
     const mcpTools = buildClaudeMcpTools(contextUsage?.mcp_tools ?? contextUsage?.mcpTools)
-    const systemTools = asStringList(system?.tools)
+        ?? (systemMcpToolNames?.length ? buildClaudeMcpTools(systemMcpToolNames) : undefined)
+    const systemTools = systemToolNames?.filter(name => !name.startsWith('mcp__'))
     const skillNames = new Set((skills ?? []).map((skill) => skill.name))
     const slashCommands = asStringList(system?.slash_commands)
         ?.filter((command) => !skillNames.has(command))

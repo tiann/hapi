@@ -298,6 +298,28 @@ describe('StatusBar context details dialog', () => {
         expect(screen.queryByText('50% · 100k / 200k')).not.toBeInTheDocument()
     })
 
+    it('uses the saved Claude model and window when displaying saved usage behind a model alias', () => {
+        localStorage.setItem('hapi-lang', 'en')
+        render(
+            <I18nProvider>
+                <StatusBar
+                    active
+                    thinking={false}
+                    agentState={null}
+                    agentFlavor="claude"
+                    model="sonnet"
+                    contextDetails={{
+                        version: 1, updatedAt: 100, provider: 'claude',
+                        model: 'claude-sonnet-4-5', contextWindow: 1_000_000,
+                        usage: { contextTokens: 100_000 }
+                    }}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByText('10% · 100k / 1.0M')).toBeInTheDocument()
+    })
+
     it('renders Claude system tools, slash commands, and skills from the agent status entry', async () => {
         localStorage.setItem('hapi-lang', 'en')
         render(

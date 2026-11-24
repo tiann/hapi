@@ -269,6 +269,27 @@ describe('claudeLocalLauncher message filtering', () => {
         expect(sentMessages[0]).not.toHaveProperty('context_usage')
     })
 
+    it.each([
+        { explicitWindow: undefined, expectedWindow: 1_000_000 },
+        { explicitWindow: 456_789, expectedWindow: 456_789 }
+    ])('publishes the local assistant window before sending its message (%s)', async ({ explicitWindow, expectedWindow }) => {
+        const { session, getMetadata } = createSessionStub()
+        session.getModel = () => 'sonnet[1m]'
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({
+            type: 'assistant', uuid: 'assistant-local-window',
+            message: {
+                role: 'assistant', model: 'claude-sonnet-4-5', content: [{ type: 'text', text: 'hello' }],
+                usage: { input_tokens: 100, output_tokens: 1, ...(explicitWindow ? { context_window: explicitWindow } : {}) }
+            }
+        })
+
+        expect(getMetadata().contextDetails).toMatchObject({
+            model: 'claude-sonnet-4-5', contextWindow: expectedWindow, usage: { contextTokens: 100 }
+        })
+    })
+
     it('does not replace context details with a synthetic API error', async () => {
         const { session, getMetadata } = createSessionStub()
         await claudeLocalLauncher(session as never)

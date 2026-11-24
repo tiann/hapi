@@ -40,6 +40,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
         workingDirectory: session.path,
         onMessage: ({ context_usage: contextUsage, ...message }) => {
             const rawMessage = message as unknown as Record<string, unknown>;
+            stampContextWindow(message, session.localContextModel)
             const isSidechain = rawMessage.isSidechain === true;
             if (!isSidechain) {
                 if (rawMessage.type === 'system' && typeof rawMessage.model === 'string') {
@@ -91,7 +92,6 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             if (!isImportableClaudeEntry(message)) {
                 return
             }
-            stampContextWindow(message, session.localContextModel)
             const processed = toolResultImages.process(message)
             session.client.sendClaudeSessionMessage(processed.message)
             for (const image of processed.images) session.client.sendAgentMessage(image)

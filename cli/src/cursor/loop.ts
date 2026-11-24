@@ -6,9 +6,9 @@ import { cursorLocalLauncher } from './cursorLocalLauncher';
 import { cursorRemoteLauncher } from './cursorRemoteLauncher';
 import type { Metadata } from '@hapi/protocol/schemas';
 import { ApiClient, ApiSessionClient } from '@/lib';
-import type { CursorPermissionMode } from '@hapi/protocol/types';
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
 
-export type PermissionMode = CursorPermissionMode;
+export type PermissionMode = PermissionModeOf<typeof Flavors.cursor>;
 
 export interface EnhancedMode {
     permissionMode: PermissionMode;

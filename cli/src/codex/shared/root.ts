@@ -39,6 +39,7 @@ export type RootHost = {
     directory: string; generation: string; endpoint: string; token?: string;
     codexInventoryArgs?: readonly string[];
     codexCommand?: CodexCommand;
+    codexHome?: string;
     attached?: boolean;
     beforeSubscribe?(threadId: string): Promise<void>;
     validateHistory?(threadId: string, thread: unknown): Promise<void>;
@@ -369,12 +370,25 @@ export class SharedCodexRoot {
         const runtime = [...this.statusMcpServerInventory.values()];
         const recovered = new Set(runtime.filter(entry => entry.toolNames !== undefined && entry.status !== 'unavailable')
             .map(entry => entry.name));
-        const savedFallback = supported ? savedMcpServers.map(entry =>
+        const normalizedSaved = supported ? savedMcpServers.map(entry =>
             recovered.has(entry.name) && (entry.status === 'unavailable' || entry.status === 'disabled')
                 ? { ...entry, status: undefined } : entry) : savedMcpServers.map(entry => ({ name: entry.name }));
+        const currentRuntimeNames = new Set([
+            ...this.pendingMcpStatuses,
+            ...this.notifiedMcpServers,
+            ...this.statusMcpServerInventory.keys()
+        ]);
+        const savedRuntime = normalizedSaved.filter(entry => currentRuntimeNames.has(entry.name));
+        // A successful config listing replaces the configured portion, including
+        // an empty list. Saved entries remain only for current-thread runtime
+        // discoveries; a failed/attached discovery retains the saved fallback.
+        const savedFallback = this.configuredMcpServerInventory === undefined ? normalizedSaved : [];
         const inventory = mergeCodexMcpInventories(bridgeInventory, savedFallback,
-            this.configuredMcpServerInventory ?? [], [...this.notifiedMcpServers].map(name => ({ name })), runtime);
-        return inventory.length ? { mcpServerInventory: inventory } : {};
+            this.configuredMcpServerInventory ?? [], savedRuntime,
+            [...this.notifiedMcpServers].map(name => ({ name })), runtime);
+        return inventory.length > 0 || this.configuredMcpServerInventory !== undefined
+            ? { mcpServerInventory: inventory }
+            : {};
     }
 
     private publishRootContextDetails(info?: unknown, model?: string): void {
@@ -401,7 +415,6 @@ export class SharedCodexRoot {
             while (!this.closed && !this.stopping && this.client.canReadThreadMcpServerStatus()) {
                 const name = this.pendingMcpStatuses.values().next().value;
                 if (name === undefined) break;
-                this.pendingMcpStatuses.delete(name);
                 try {
                     const result = await this.client.readThreadMcpServerStatus(this.threadId, name);
                     if (this.closed || this.stopping || !this.client.canReadThreadMcpServerStatus()) break;
@@ -414,6 +427,9 @@ export class SharedCodexRoot {
                 } catch (error) {
                     logger.debug('[Codex shared] thread-scoped MCP inventory unavailable', error);
                     // Never fall back to the unscoped list: it can open a second connection.
+                } finally {
+                    this.pendingMcpStatuses.delete(name);
+                    if (!this.closed && !this.stopping) this.publishRootContextDetails();
                 }
             }
         } finally {
@@ -443,7 +459,7 @@ export class SharedCodexRoot {
         ]);
         // An attached server's configuration may differ from this CLI's.
         if (!this.host.attached && this.host.codexCommand) {
-            void listConfiguredCodexMcpServers(this.host.codexCommand, cwd, this.host.codexInventoryArgs)
+            void listConfiguredCodexMcpServers(this.host.codexCommand, cwd, this.host.codexInventoryArgs, this.host.codexHome)
                 .then(inventory => {
                     if (this.closed || this.stopping || inventory === undefined) return;
                     this.configuredMcpServerInventory = inventory;

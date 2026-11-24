@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
-import type { CodexPermissionMode } from '@hapi/protocol/types';
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
 import type { CodexPermissionHandler } from './permissionHandler';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 
@@ -384,7 +384,7 @@ export function registerAppServerPermissionHandlers(args: {
     client: Pick<CodexAppServerClient, 'registerRequestHandler'>;
     permissionHandler: Pick<CodexPermissionHandler, 'handleToolCall'>;
     shared?: boolean;
-    getPermissionMode?: () => CodexPermissionMode | undefined;
+    getPermissionMode?: () => PermissionModeOf<typeof Flavors.codex> | undefined;
     onUserInputRequest?: (request: { id: string; input: unknown }) => Promise<
         | { decision: 'accept'; answers: UserInputAnswer }
         | { decision: 'decline' | 'cancel' }

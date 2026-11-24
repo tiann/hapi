@@ -33,6 +33,27 @@ describe('Claude context details', () => {
         })
     })
 
+    it('separates SDK MCP tools from system tools and honors an explicit empty MCP list', () => {
+        const system = {
+            model: 'claude-sonnet',
+            tools: ['Read', 'mcp__hapi__list_peers']
+        };
+        expect(buildClaudeContextDetails({ system })?.claude).toMatchObject({
+            systemTools: ['Read'],
+            mcpTools: [{ name: 'mcp__hapi__list_peers', serverName: 'hapi' }]
+        });
+        expect(buildClaudeContextDetails({ system, contextUsage: { mcp_tools: [] } })?.claude).toMatchObject({
+            systemTools: ['Read'],
+            mcpTools: []
+        });
+    })
+
+    it('reads an explicit context window from assistant usage', () => {
+        expect(buildClaudeContextDetails({
+            messageUsage: { input_tokens: 100, context_window: 1_000_000 }
+        })).toMatchObject({ contextWindow: 1_000_000, usage: { contextTokens: 100 } })
+    })
+
     it('does not duplicate Claude skills in the Agent command inventory', () => {
         const details = buildClaudeContextDetails({
             updatedAt: 100,

@@ -45,20 +45,13 @@ export type {
 } from './contextDetails'
 export { AGENT_MESSAGE_PAYLOAD_TYPE } from './modes'
 
+export type { Flavors } from './flavors'
 export type {
     AgentFlavor,
-    AgyPermissionMode,
-    ClaudePermissionMode,
     CodexCollaborationMode,
     CodexCollaborationModeOption,
-    CodexPermissionMode,
-    CursorPermissionMode,
-    GeminiPermissionMode,
-    GrokPermissionMode,
-    KimiPermissionMode,
-    CopilotPermissionMode,
-    OpencodePermissionMode,
     PermissionMode,
+    PermissionModeOf,
     PermissionModeOption,
     PermissionModeTone
 } from './modes'

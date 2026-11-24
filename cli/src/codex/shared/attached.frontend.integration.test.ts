@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:http';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { CodexAppServerClient } from '../codexAppServerClient';
@@ -11,7 +11,7 @@ import { record } from './gateway';
 // Real CLI worker -> native externally owned server + real isolated Hub.
 // No desktop UI automation, account tokens, or real model requests.
 describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1' || process.platform !== 'darwin')('external attachment full stack', () => {
-    it('exchanges mobile/native input, detaches without engine shutdown and reattaches the same Hub row', async () => {
+    it.each(['manual', 'automatic'] as const)('%s: exchanges mobile/native input, detaches without engine shutdown and reuses the Hub row', async mode => {
         const home = await mkdtemp('/tmp/hapi-attached-e2e-'); await chmod(home, 0o700);
         const cwd = join(home, 'work'); const ch = join(home, 'codex'); const hh = join(home, 'hapi');
         await Promise.all([cwd, ch, hh].map(path => mkdir(path)));
@@ -82,24 +82,48 @@ trust_level = "trusted"
             return { status: response.status, ...record(await response.json()) };
         };
         try {
+            if (mode === 'automatic') {
+                const control = join(ch, 'app-server-control');
+                await mkdir(control, { mode: 0o700 });
+                await symlink(join(home, 'engine.sock'), join(control, 'app-server-control.sock'));
+                await writeFile(join(hh, 'settings.json'), JSON.stringify({ apiUrl: base, cliApiToken: env.CLI_API_TOKEN }), { mode: 0o600 });
+            }
             await eventually(() => readFile(join(ch, 'config.toml'), 'utf8').then(async () => readdir(home)), names => names.includes('engine.sock'));
             await initializeSharedClient(client);
-            const started = record(await client.request('thread/start', { cwd, developerInstructions: 'EXTERNAL_OWNER_SENTINEL' }));
-            const threadId = String(record(started.thread).id);
-            await client.request('thread/metadata/update', { threadId, gitInfo: { sha: null } });
-            const worker = cli(['attach', threadId, '--socket', endpoint]);
-            const runtime = await eventually(async () => {
+            const newThread = async () => {
+                const started = record(await client.request('thread/start', { cwd, developerInstructions: 'EXTERNAL_OWNER_SENTINEL' }));
+                const threadId = String(record(started.thread).id);
+                await client.request('thread/metadata/update', { threadId, gitInfo: { sha: null } });
+                return threadId;
+            };
+            const threadId = await newThread();
+            const launch = () => cli(mode === 'automatic' ? ['codex-desktop', '_sync'] : ['attach', threadId, '--socket', endpoint]);
+            const worker = launch();
+            const readRuntime = (thread: string) => eventually(async () => {
                 for (const name of await readdir(join(hh, 'codex-runtimes')).catch(() => [] as string[])) {
                     if (!name.endsWith('.json')) continue;
                     const value = record(JSON.parse(await readFile(join(hh, 'codex-runtimes', name), 'utf8')));
-                    if (Object.values(record(value.sessions)).some(binding => record(binding).active)) return value;
+                    if (Object.values(record(value.sessions)).some(binding => record(binding).active && record(binding).threadId === thread)) return value;
                 }
                 return {};
             }, value => Boolean(value.id));
+            const runtime = await readRuntime(threadId);
             expect(runtime.kind).toBe('attached'); expect(runtime.serverPid).toBeUndefined();
             const sessionId = Object.keys(record(runtime.sessions))[0]; const detail = () => api(`/sessions/${sessionId}`);
             await eventually(detail, value => record(value.session).active === true);
             expect(record(record((await detail()).session).metadata).codexRuntime).toMatchObject({ kind: 'attached' });
+            let sibling: typeof detail | undefined;
+            if (mode === 'automatic') {
+                const siblingRuntime = await readRuntime(await newThread());
+                const siblingId = Object.keys(record(siblingRuntime.sessions))[0];
+                expect(siblingId).not.toBe(sessionId);
+                sibling = () => api(`/sessions/${siblingId}`);
+                await eventually(sibling, value => record(value.session).active === true);
+                await eventually(() => api('/sessions?active=true'), value => {
+                    const ids = Array.isArray(value.sessions) ? value.sessions.map(item => record(item).id) : [];
+                    return ids.includes(sessionId) && ids.includes(siblingId);
+                });
+            }
             await api(`/sessions/${sessionId}/messages`, { text: 'FROM_MOBILE', localId: randomUUID() });
             await eventually(() => api(`/sessions/${sessionId}/messages`), value => JSON.stringify(value).includes('MOCK_RESPONSE_1'));
             expect(JSON.stringify(requests[0])).toContain('FROM_MOBILE');
@@ -109,15 +133,22 @@ trust_level = "trusted"
             await eventually(() => api(`/sessions/${sessionId}/messages`), value => JSON.stringify(value).includes('MOCK_RESPONSE_2'));
             const detach = cli(['detach', sessionId]);
             await eventually(async () => detach.exitCode, code => code !== null); expect(detach.exitCode).toBe(0);
-            await eventually(async () => worker.exitCode, code => code !== null); expect(worker.exitCode).toBe(0);
             await eventually(detail, value => record(value.session).active === false);
+            if (sibling) {
+                expect(worker.exitCode).toBeNull();
+                expect(record((await sibling()).session).active).toBe(true);
+                worker.kill('SIGTERM');
+                await eventually(sibling, value => record(value.session).active === false);
+            }
+            await eventually(async () => worker.exitCode, code => code !== null); expect(worker.exitCode).toBe(0);
             expect(engine.exitCode).toBeNull();
             expect(record(await client.request('thread/loaded/list', {})).data).toContain(threadId);
             const refused = await api(`/sessions/${sessionId}/resume`, {});
             expect(refused.status).toBeGreaterThanOrEqual(400);
-            const second = cli(['attach', threadId, '--socket', endpoint]);
+            const second = launch();
             await eventually(detail, value => record(value.session).active === true);
-            await eventually(async () => logs, value => value.split('Attached HAPI session:').length === 3);
+            if (sibling) await eventually(sibling, value => record(value.session).active === true);
+            else await eventually(async () => logs, value => value.split('Attached HAPI session:').length === 3);
             second.kill('SIGTERM');
             await eventually(async () => second.exitCode, code => code !== null); expect(second.exitCode).toBe(0);
             expect(engine.exitCode).toBeNull();

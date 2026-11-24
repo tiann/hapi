@@ -21,7 +21,10 @@ const details: ContextDetails = isClaude
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
     <I18nProvider>
-        {params.has('savedUsage') ? <div data-testid="saved-codex-usage" className="m-4">
+        {params.has('savedClaudeAlias') ? <div data-testid="saved-claude-alias-usage" className="m-4">
+            <StatusBar active thinking={false} agentState={null} agentFlavor="claude" model="sonnet"
+                contextDetails={{ ...details, model: 'claude-sonnet-4-5', contextWindow: 1_000_000, usage: { contextTokens: 100_000 } }} />
+        </div> : params.has('savedUsage') ? <div data-testid="saved-codex-usage" className="m-4">
             <StatusBar active thinking={false} agentState={null} agentFlavor="codex" model="configured-model" contextModel="configured-model"
                 contextDetails={{ ...details, model: 'actual-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 } }} />
         </div> : <ContextDetailsDialog details={details} triggerClassName="m-4 p-2" triggerContent="Agent details" triggerAriaLabel="Open agent details" />}

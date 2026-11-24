@@ -1,5 +1,6 @@
 import { win32 } from 'node:path';
 import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { windowsSystemTool } from '@/utils/windowsSystemTools';
 
 const { execFileSyncMock, existsSyncMock, homedirMock } = vi.hoisted(() => ({
     execFileSyncMock: vi.fn(),
@@ -105,13 +106,13 @@ describe('resolveCodexCommand', () => {
         const shim = 'C:\\Elsewhere\\npm\\codex.cmd';
         const script = win32.join(win32.dirname(shim), 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
         execFileSyncMock.mockImplementation((command: string, args: string[]) => {
-            if (command === 'where.exe' && args[0] === 'codex.cmd') return `${shim}\r\n`;
+            if (command === windowsSystemTool('where') && args[0] === 'codex.cmd') return `${shim}\r\n`;
             throw new Error('not found');
         });
         existsSyncMock.mockImplementation((candidate: string) => candidate === shim || candidate === script);
         const { resolveSelectedCodexCommand } = await import('./codexExecutable');
         expect(resolveSelectedCodexCommand('codex.cmd', 'win32')).toEqual({ command: 'node', args: [script] });
-        expect(execFileSyncMock).toHaveBeenCalledWith('where.exe', ['codex.cmd'], expect.anything());
+        expect(execFileSyncMock).toHaveBeenCalledWith(windowsSystemTool('where'), ['codex.cmd'], expect.anything());
     });
 
     it('rejects unsupported Windows batch launchers instead of shell-interpreting JSON', async () => {
@@ -133,7 +134,7 @@ describe('resolveCodexCommand', () => {
         const executable = nativeCodexPath();
         const script = codexScriptPath();
         execFileSyncMock.mockImplementation((command: string, args: string[]) => {
-            if (command === 'where.exe' && args[0] === 'codex') {
+            if (command === windowsSystemTool('where') && args[0] === 'codex') {
                 return `${shim}\r\n${laterExe}\r\n`;
             }
             throw new Error('not found');
@@ -154,7 +155,7 @@ describe('resolveCodexCommand', () => {
         const shim = codexShimPath();
         const executable = userCodexExePath();
         execFileSyncMock.mockImplementation((command: string, args: string[]) => {
-            if (command === 'where.exe' && args[0] === 'codex') {
+            if (command === windowsSystemTool('where') && args[0] === 'codex') {
                 return `${shim}\r\n${executable}\r\n`;
             }
             throw new Error('not found');
@@ -172,7 +173,7 @@ describe('resolveCodexCommand', () => {
         setPlatform('win32');
         const executable = userCodexExePath();
         execFileSyncMock.mockImplementation((command: string, args: string[]) => {
-            if (command === 'where.exe' && args[0] === 'codex') {
+            if (command === windowsSystemTool('where') && args[0] === 'codex') {
                 return `${executable}\r\n`;
             }
             throw new Error('not found');
@@ -191,7 +192,7 @@ describe('resolveCodexCommand', () => {
         const shim = codexShimPath();
         const script = codexScriptPath();
         execFileSyncMock.mockImplementation((command: string, args: string[]) => {
-            if (command === 'where.exe' && args[0] === 'codex') {
+            if (command === windowsSystemTool('where') && args[0] === 'codex') {
                 return `${shim}\r\n`;
             }
             throw new Error('not found');

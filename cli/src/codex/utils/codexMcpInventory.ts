@@ -135,7 +135,8 @@ export function mergeCodexMcpInventories(
 export function listConfiguredCodexMcpServers(
     resolved: CodexCommand,
     cwd?: string,
-    args?: readonly string[]
+    args?: readonly string[],
+    codexHome?: string
 ): Promise<CodexMcpServerInventory[] | undefined> {
     return new Promise((resolveInventory) => {
         let stdout = ''
@@ -147,7 +148,7 @@ export function listConfiguredCodexMcpServers(
             'list',
             '--json'
         ], {
-            env: withBunRuntimeEnv(),
+            env: withBunRuntimeEnv(codexHome ? { ...process.env, CODEX_HOME: codexHome } : process.env),
             ...(cwd ? { cwd } : {}),
             windowsHide: process.platform === 'win32'
         })

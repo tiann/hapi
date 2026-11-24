@@ -18,6 +18,7 @@ type NativeRequest = { id: string | number; method: string; params: unknown };
 const sharedHarness = vi.hoisted(() => ({
     skills: [{ name: 'find-docs', description: 'Find docs', path: '/tmp/SKILL.md', scope: 'user', enabled: true }],
     mcpInventoryArgs: undefined as readonly string[] | undefined,
+    mcpInventoryHome: undefined as string | undefined,
     mcpStatusRequests: [] as Array<[threadId: string, serverName: string]>,
     scopedMcpStatus: true,
     configuredInventory: [] as unknown[],
@@ -89,9 +90,10 @@ vi.mock('@/modules/common/slashCommands', () => ({
 }));
 vi.mock('../utils/codexMcpInventory', async (importOriginal) => ({
     ...await importOriginal<typeof import('../utils/codexMcpInventory')>(),
-    listConfiguredCodexMcpServers: async (resolved: unknown, _cwd: string, args?: readonly string[]) => {
+    listConfiguredCodexMcpServers: async (resolved: unknown, _cwd: string, args?: readonly string[], codexHome?: string) => {
         sharedHarness.inventoryExecutable = resolved;
         sharedHarness.mcpInventoryArgs = args;
+        sharedHarness.mcpInventoryHome = codexHome;
         return sharedHarness.configuredInventory;
     },
 }));
@@ -107,6 +109,7 @@ afterEach(async () => {
         sharedHarness.slashCommands = ['/compact'];
         sharedHarness.customAgentPrompt = undefined;
         sharedHarness.inventoryExecutable = undefined;
+        sharedHarness.mcpInventoryHome = undefined;
         vi.useRealTimers();
     }
 });
@@ -150,6 +153,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     const root = new SharedCodexRoot({ session, sessionInfo: { agentState: state }, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
         codexInventoryArgs: ['-c', 'mcp_servers.qmd.enabled=false'],
+        codexHome: '/resolved/codex-home',
         codexCommand: opts?.attached ? undefined : { command: 'resolved-codex', args: ['launcher.js'] },
         create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
         attached: opts?.attached, beforeSubscribe: opts?.beforeSubscribe, validateHistory: opts?.validateHistory,
@@ -188,6 +192,7 @@ describe('thread MCP inventory', () => {
         await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers)
             .toContainEqual({ name: 'hapi', toolNames: tools }));
         expect(sharedHarness.inventoryExecutable).toEqual({ command: 'resolved-codex', args: ['launcher.js'] });
+        expect(sharedHarness.mcpInventoryHome).toBe('/resolved/codex-home');
     });
 
     it.each(['unavailable', 'disabled'])('clears saved %s status after a runtime catalog recovers', async status => {
@@ -207,6 +212,19 @@ describe('thread MCP inventory', () => {
         f.native.notify('mcpServer/startupStatus/updated', { threadId: 'thread', name: 'docs' });
         await vi.waitFor(() => expect(read).toHaveBeenCalledExactlyOnceWith('thread', 'docs'));
         expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([{ name: 'docs' }]);
+    });
+
+    it('drops a removed configured server after an authoritative empty listing on an older app-server', async () => {
+        sharedHarness.scopedMcpStatus = false;
+        sharedHarness.configuredInventory = [];
+        const f = await fixture({ contextDetails: { version: 1, provider: 'codex', updatedAt: 10,
+            codex: { mcpServers: [{ name: 'removed', toolNames: ['stale'] }] },
+        } });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([
+            { name: 'hapi', toolNames: ['change_title'] }
+        ]));
+        expect(sharedHarness.mcpStatusRequests).toEqual([]);
     });
 
     it('keeps the saved runtime catalog while configuration arrives and after discovery fails', async () => {

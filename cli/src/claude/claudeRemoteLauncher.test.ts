@@ -953,7 +953,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
         }
     })
 
-    it('stamps the resolved context window on the post-compaction usage refresh', async () => {
+    it.each([13_681, 0])('persists the post-compaction usage snapshot, including zero (%i)', async compactTokens => {
         // The status bar replaces latestUsage wholesale, so a context-only
         // sample without a window would erase a known 1M denominator and
         // fall back to the default heuristic until the next real usage.
@@ -961,7 +961,11 @@ describe('claudeRemoteLauncher resume anchor', () => {
         const { session, queue } = createSession(client, undefined)
         const { SDKToLogConverter } = await import('./utils/sdkToLogConverter')
         ;(SDKToLogConverter as unknown as { resolvedWindow?: number }).resolvedWindow = 1_000_000
-        harness.compactContextTokens = 13_681
+        harness.compactContextTokens = compactTokens
+        harness.metadata = { contextDetails: {
+            version: 1, updatedAt: 10, provider: 'claude', model: 'claude-opus', contextWindow: 1_000_000,
+            usage: { contextTokens: 90_000, cacheReadTokens: 5_000 }
+        } }
 
         try {
             queue.push('hi', { permissionMode: 'default' }, 'local-1')
@@ -975,10 +979,14 @@ describe('claudeRemoteLauncher resume anchor', () => {
             expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
                 type: 'token_count',
                 info: expect.objectContaining({
-                    contextTokens: 13_681,
+                    contextTokens: compactTokens,
                     modelContextWindow: 1_000_000
                 })
             }))
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                contextWindow: 1_000_000,
+                usage: { contextTokens: compactTokens, cacheReadTokens: 0 }
+            })
         } finally {
             session.stopKeepAlive()
             ;(SDKToLogConverter as unknown as { resolvedWindow?: number }).resolvedWindow = undefined

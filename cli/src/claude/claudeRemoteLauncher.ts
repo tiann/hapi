@@ -11,7 +11,7 @@ import { SDKToLogConverter } from "./utils/sdkToLogConverter";
 import { PLAN_FAKE_REJECT } from "./sdk/prompts";
 import { claudeProcessModeKey, claudeBatchModeHash, EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
-import type { ClaudePermissionMode } from "@hapi/protocol/types";
+import type { PermissionModeOf, Flavors } from "@hapi/protocol/types";
 import { RPC_METHODS } from "@hapi/protocol/rpcMethods";
 import { getClaudeNativeSlashCommand, parseSpecialCommand } from "@/parsers/specialCommands";
 import { deriveSpawnArgs, isSessionMaterialized } from './conversationHistory';
@@ -27,7 +27,7 @@ import { buildClaudeContextDetails, publishContextDetails, sameClaudeModelID } f
 interface PermissionsField {
     date: number;
     result: 'approved' | 'denied';
-    mode?: ClaudePermissionMode;
+    mode?: PermissionModeOf<typeof Flavors.claude>;
     allowedTools?: string[];
 }
 
@@ -868,6 +868,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             });
                             if (details) publishContextDetails(session.client, details);
                         },
+                        onDroppedResult: (message) => sdkToLogConverter.consumeResultForAccounting(message),
+                        onSpawn: (fresh) => {
+                            if (fresh) sdkToLogConverter.startFreshProcessBaseline();
+                        },
                         onAccountIdentity: (identity) => sdkToLogConverter.updateAccountIdentity?.(identity),
                         onFirstResult: (initialMessage) => {
                             // SDK streams omit Claude Code's native ai-title; it is only in the transcript.
@@ -924,6 +928,14 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 });
                             }
                             if (compactContextTokens !== undefined) {
+                                const contextWindow = sdkToLogConverter.currentContextWindow()
+                                const details = buildClaudeContextDetails({
+                                    contextUsage: { contextTokens: compactContextTokens },
+                                    messageUsage: { cache_read_input_tokens: 0 },
+                                    model: lastSystemModel,
+                                    effectiveContextWindow: contextWindow
+                                })
+                                if (details) publishContextDetails(session.client, details)
                                 // The status bar keeps the last pre-compaction
                                 // usage until the next model response; refresh
                                 // it with the boundary's post-tokens the same
@@ -938,7 +950,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                         inputTokens: 0,
                                         outputTokens: 0,
                                         contextTokens: compactContextTokens,
-                                        contextWindow: sdkToLogConverter.currentContextWindow()
+                                        contextWindow
                                     },
                                     session.getModel()
                                 );
