@@ -1,5 +1,5 @@
 import React from 'react';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { logger } from '@/ui/logger';
 import { killProcessByChildProcess } from '@/utils/process';
@@ -44,6 +44,9 @@ const STDERR_DISPLAY_LIMIT = 400;
 // In-memory stderr cap. Display only uses STDERR_DISPLAY_LIMIT chars; this is a
 // safety bound so a chatty `agent` failure cannot balloon CLI process memory.
 const STDERR_CAPTURE_LIMIT = 8_192;
+/** After a confirmed tree kill, bound how long we wait for stdio close before
+ *  publishing settlement so a stuck descendant pipe cannot block Archive. */
+const STOP_DRAIN_MS = 10_000;
 
 function getTransientBackoffMs(): number {
     const raw = process.env.CURSOR_LEGACY_TRANSIENT_BACKOFF_MS;
@@ -124,6 +127,16 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
     private abortController = new AbortController();
     private displayPermissionMode: string | null = null;
     private consecutiveTransientFailures = 0;
+    /** Live agent subprocess — kept across abortController swaps so a second
+     *  Stop can retry tree termination when the first kill did not confirm. */
+    private activeChild: ChildProcess | null = null;
+    /** Escalate to force kill on Stop retry after an unconfirmed soft kill. */
+    private stopKillEscalated = false;
+    /** Arm the post-Stop stdout drain bound only after tree kill confirms. */
+    private stopDrainArmed = false;
+    /** Invoked after a confirmed kill so a Stop retry can still bound drain
+     *  after the original abortController was replaced. */
+    private armActiveChildDrain: (() => void) | null = null;
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -253,7 +266,11 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                                     messageBuffer.addMessage('Tool result', 'result');
                                     break;
                                 case 'turn_complete':
-                                    processOpenToolCallIds.clear();
+                                    // Keep unmatched ids until subprocess close.
+                                    // A final `result` converts to turn_complete
+                                    // with no settlement IDs — clearing here would
+                                    // leave the close handler with nothing to
+                                    // publish (#2021).
                                     break;
                                 default:
                                     break;
@@ -313,27 +330,56 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 shell: process.platform === 'win32',
                 windowsHide: process.platform === 'win32'
             });
+            this.activeChild = child;
+            this.stopKillEscalated = false;
+            this.stopDrainArmed = false;
 
             let stderrCapture = '';
+            let settled = false;
+            let drainTimer: ReturnType<typeof setTimeout> | undefined;
 
-            // Abort kills the child but must NOT resolve early — wait for
-            // `close` so buffered stdout (including late tool_call starts)
+            // Abort marks the turn cancelled but must NOT resolve early — wait
+            // for `close` (or the post-kill drain bound) so buffered stdout
             // drains before settlement (#2021). Capture abort on a local flag:
             // handleAbort replaces this.abortController after signalling, so
             // reading the new controller's signal from `close` would miss it.
+            // Tree kill itself lives in handleAbort so a second Stop can retry
+            // against the same activeChild when the first kill is unconfirmed.
             let aborted = false;
             const runSignal = this.abortController.signal;
+            const armDrainBound = () => {
+                if (settled || drainTimer !== undefined || !this.stopDrainArmed) return;
+                drainTimer = setTimeout(() => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    try { child.stdout?.destroy(); } catch { /* ignore */ }
+                    try { child.stderr?.destroy(); } catch { /* ignore */ }
+                    resolve({ exitCode: null, stderr: stderrCapture });
+                }, STOP_DRAIN_MS);
+                drainTimer.unref?.();
+            };
+            this.armActiveChildDrain = armDrainBound;
             const abortHandler = () => {
                 aborted = true;
-                killProcessByChildProcess(child, false).catch(() => {});
+                armDrainBound();
             };
             runSignal.addEventListener('abort', abortHandler);
 
             const cleanup = () => {
                 runSignal.removeEventListener('abort', abortHandler);
+                if (drainTimer !== undefined) clearTimeout(drainTimer);
+                if (this.activeChild === child) {
+                    this.activeChild = null;
+                    this.stopKillEscalated = false;
+                    this.stopDrainArmed = false;
+                    this.armActiveChildDrain = null;
+                }
             };
 
             child.on('error', (err) => {
+                if (settled) return;
+                settled = true;
                 cleanup();
                 reject(err);
             });
@@ -345,13 +391,15 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             // dropped message. Stop also relies on this so settlement runs
             // after the last buffered tool_call line is forwarded.
             child.on('close', (code, _signal) => {
+                if (settled) return;
+                settled = true;
                 cleanup();
                 // Abort kills the child; treat that exit as a cancelled turn
                 // (exitCode null) rather than the kernel signal code.
                 resolve({ exitCode: aborted ? null : code, stderr: stderrCapture });
             });
 
-            const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+            const rl = createInterface({ input: child.stdout!, crlfDelay: Infinity });
             rl.on('line', (line) => {
                 const event = parseCursorEvent(line);
                 if (event) {
@@ -468,11 +516,42 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             this.session.queue.reset();
         }
         this.session.onThinkingChange(false);
+
+        // Kill the live agent against activeChild — not only via the abort
+        // signal — so a second Stop can retry when the first tree kill did
+        // not confirm (descendant holding stdio, soft kill refused) (#2021).
+        const child = this.activeChild;
+        if (child?.pid) {
+            const force = this.stopKillEscalated;
+            let stopped = false;
+            try {
+                stopped = await killProcessByChildProcess(child, force);
+            } catch (error) {
+                logger.debug('[cursor-remote] Stop kill failed', error);
+            }
+            if (stopped) {
+                this.stopDrainArmed = true;
+                this.armActiveChildDrain?.();
+            } else {
+                this.stopKillEscalated = true;
+                this.stopDrainArmed = false;
+                this.messageBuffer.addMessage(
+                    force
+                        ? 'Stop: agent process still open after force kill — press Stop again to retry'
+                        : 'Stop: agent process still open — press Stop again to retry with force',
+                    'status'
+                );
+            }
+        } else {
+            // No live child — still abort waiters; nothing to drain-bound.
+            this.stopDrainArmed = true;
+        }
+
         this.abortController.abort();
         this.abortController = new AbortController();
         this.messageBuffer.addMessage('Turn aborted', 'status');
-        // Settlement waits for subprocess `close` (stdout drain) inside
-        // runAgentProcess's caller so late buffered tool_call starts are
+        // Settlement waits for subprocess `close` (or the post-kill drain
+        // bound) inside runAgentProcess so late buffered tool_call starts are
         // included (#2021).
     }
 

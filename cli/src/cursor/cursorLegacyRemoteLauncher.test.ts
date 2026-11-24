@@ -44,9 +44,10 @@ vi.mock('@/ui/ink/OpencodeDisplay', () => ({
 }));
 
 vi.mock('@/utils/process', () => ({
-    killProcessByChildProcess: vi.fn(async () => {})
+    killProcessByChildProcess: vi.fn(async () => true)
 }));
 
+import { killProcessByChildProcess } from '@/utils/process';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { CursorSession } from './session';
 import type { EnhancedMode } from './loop';
@@ -56,12 +57,14 @@ type ChildOptions = {
     stderr?: string;
     /** Hold the close event; the test closes the child via closeChild(). */
     hold?: boolean;
+    pid?: number;
 };
 
 function makeChild(opts: ChildOptions = {}) {
     const stdout = new PassThrough();
     const stderr = new PassThrough();
     const child = {
+        pid: opts.pid ?? 4242,
         stdout,
         stderr,
         on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
@@ -130,6 +133,8 @@ function makeSession(queue: MessageQueue2<EnhancedMode>, client: ReturnType<type
 describe('cursorLegacyRemoteLauncher', () => {
     beforeEach(() => {
         spawnMock.mockReset();
+        vi.mocked(killProcessByChildProcess).mockReset();
+        vi.mocked(killProcessByChildProcess).mockResolvedValue(true);
         process.stdin.isTTY = false;
         process.stdout.isTTY = false;
         process.env.CURSOR_LEGACY_TRANSIENT_BACKOFF_MS = '0';
@@ -473,6 +478,90 @@ describe('cursorLegacyRemoteLauncher', () => {
 
         queue.close();
         await launchPromise;
+    });
+
+    it('settles unmatched legacy tool calls after a final result without tool_result (#2021)', async () => {
+        const child1 = makeChild({ hold: true });
+        spawnMock.mockReturnValueOnce(child1);
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        queue.push('first', { permissionMode: 'default' }, 'first');
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+
+        const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+        const launchPromise = cursorLegacyRemoteLauncher(session);
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        child1.emitStdout(JSON.stringify({
+            type: 'tool_call',
+            subtype: 'started',
+            call_id: 'legacy-unmatched',
+            tool_call: { name: 'Shell', arguments: { command: 'echo hi' } },
+            session_id: 'legacy-id',
+        }));
+        await vi.waitFor(() =>
+            expect(client.sendAgentMessage.mock.calls.some(
+                ([msg]) => (msg as { callId?: string }).callId === 'legacy-unmatched'
+            )).toBe(true)
+        );
+
+        // Final result → turn_complete with no settlement ids. Must NOT clear
+        // the unmatched set — close still publishes it.
+        child1.emitStdout(JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            result: 'done',
+            session_id: 'legacy-id',
+        }));
+        child1.closeChild?.(0);
+
+        await vi.waitFor(() =>
+            expect(client.sendAgentMessage.mock.calls.some(
+                ([message]) => (message as { type?: string }).type === 'turn-complete'
+                    && Array.isArray((message as { settledCallIds?: string[] }).settledCallIds)
+                    && (message as { settledCallIds: string[] }).settledCallIds.includes('legacy-unmatched')
+            )).toBe(true)
+        );
+
+        queue.close();
+        await launchPromise;
+    });
+
+    it('retries Stop against the same subprocess when the first kill is unconfirmed (#2021)', async () => {
+        const killMock = vi.mocked(killProcessByChildProcess);
+        killMock.mockReset();
+        killMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+        const child1 = makeChild({ hold: true, pid: 7777 });
+        spawnMock.mockReturnValueOnce(child1);
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        queue.push('first', { permissionMode: 'default' }, 'first');
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        const addMessage = vi.spyOn(session, 'onThinkingChange');
+
+        const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+        const launchPromise = cursorLegacyRemoteLauncher(session);
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
+        await abort();
+        expect(killMock).toHaveBeenCalledTimes(1);
+        expect(killMock.mock.calls[0]?.[1]).toBe(false);
+
+        await abort();
+        expect(killMock).toHaveBeenCalledTimes(2);
+        expect(killMock.mock.calls[1]?.[1]).toBe(true);
+
+        child1.closeChild?.(null);
+        queue.close();
+        await launchPromise;
+        addMessage.mockRestore();
+        killMock.mockResolvedValue(true);
     });
 
     it.each(['switch', 'exit'] as const)('resets the queue exactly once on terminal %s', async (reason) => {
