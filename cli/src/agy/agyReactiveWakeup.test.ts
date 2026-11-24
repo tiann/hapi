@@ -2933,7 +2933,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                         step_index: 4,
                         source: 'USER_EXPLICIT',
                         type: 'USER_INPUT',
-                        content: 'turn 2'
+                        content: '<USER_REQUEST>\nturn 2\n</USER_REQUEST>'
                     }),
                     JSON.stringify({
                         step_index: 5,
@@ -4977,7 +4977,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 if (n === 3) return;
                 notify(bgCall('call-b', 'sleep 8'));
                 h.append([
-                    { step_index: 5, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'next' },
+                    { step_index: 5, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: '<USER_REQUEST>\nnext\n</USER_REQUEST>' },
                     { step_index: 6, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 8"' } }] },
                     { step_index: 7, source: 'MODEL', type: 'RUN_COMMAND', status: 'RUNNING', content: `Tool is running as a background task with task id: ${acp}/task-8` }
                 ]);

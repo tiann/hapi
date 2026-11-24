@@ -1814,32 +1814,6 @@ describe('AcpSdkBackend', () => {
         warn.mockRestore();
     });
 
-    it.each([
-        ['an explicit rejection', Object.assign(new Error('refused'), { code: -32603 }), 1],
-        ['a lost transport', Object.defineProperty(new Error('agy exited'), ACP_INDETERMINATE_SYMBOL, { value: true }), 0]
-    ])('beginSoftSteerPrompt reports a refusal for %s only when the request was rejected', async (_case, failure, refusals) => {
-        const backend = new AcpSdkBackend({ command: 'agent' });
-        const backendInternal = backend as unknown as {
-            transport: {
-                sendRequestWithDispatch: () => { dispatched: Promise<void>; completed: Promise<unknown> };
-                close: () => Promise<void>;
-            } | null;
-            isProcessingMessage: boolean;
-        };
-        backendInternal.isProcessingMessage = true;
-        backendInternal.transport = {
-            sendRequestWithDispatch: () => ({ dispatched: Promise.resolve(), completed: Promise.reject(failure) }),
-            close: async () => {}
-        };
-        const onRefused = vi.fn();
-
-        const steer = backend.beginSoftSteerPrompt('session-1', [{ type: 'text', text: 'pivot now' }], { onRefused });
-        await steer.answered;
-        await steer.completed.catch(() => {});
-
-        expect(onRefused).toHaveBeenCalledTimes(refusals);
-    });
-
     it('beginSoftSteerPrompt settles answered before it drains late output', async () => {
         const backend = new AcpSdkBackend({ command: 'agent' });
         const events: string[] = [];
