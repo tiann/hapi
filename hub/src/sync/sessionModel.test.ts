@@ -331,6 +331,87 @@ describe('session model', () => {
         store.close()
     })
 
+    it('keeps a legacy DSH row separate after a same-host reopen cannot bind a machine', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'machine-one',
+                { host: 'shared-host', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-two',
+                { host: 'shared-host', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-one', time: Date.now() })
+            engine.handleMachineAlive({ machineId: 'machine-two', time: Date.now() })
+
+            const legacy = engine.getOrCreateSession(
+                'dsh-hostname-legacy',
+                {
+                    path: '/remote/project',
+                    host: 'shared-host',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-native-shared',
+                    lifecycleState: 'archived'
+                },
+                null,
+                'default'
+            )
+            const scoped = engine.getOrCreateSession(
+                'dsh-hostname-scoped',
+                {
+                    path: '/remote/project',
+                    host: 'shared-host',
+                    machineId: 'machine-two',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-native-shared'
+                },
+                null,
+                'default'
+            )
+
+            const bootstrappedMachines: string[] = []
+            ;(engine as any).rpcGateway.spawnSession = async (machineId: string) => {
+                bootstrappedMachines.push(machineId)
+                const current = store.sessions.getSessionByNamespace(legacy.id, 'default')!
+                store.sessions.updateSessionMetadata(
+                    legacy.id,
+                    { ...current.metadata!, machineId },
+                    current.metadataVersion,
+                    'default'
+                )
+                return { type: 'success', sessionId: legacy.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            expect(await engine.reopenSession(legacy.id, 'default')).toEqual({
+                type: 'error',
+                message: 'No machine online',
+                code: 'no_machine_online'
+            })
+            expect(bootstrappedMachines).toEqual([])
+
+            await (engine as any).sessionCache.deduplicateByAgentSessionId(scoped.id)
+
+            expect(engine.getSession(legacy.id)).toBeDefined()
+            expect(engine.getSession(scoped.id)).toBeDefined()
+            expect(engine.getSession(legacy.id)?.metadata?.machineId).toBeUndefined()
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('notifies onSessionMergedAway when dedup collapses a duplicate row', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
