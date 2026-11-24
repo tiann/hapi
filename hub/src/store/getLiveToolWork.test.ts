@@ -440,6 +440,19 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 
+    it('retires open Claude tool_use when the worker generation exits (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-retire-claude')
+
+        store.messages.addMessage(session.id, claudeAssistantContent([
+            { type: 'tool_use', id: 'tu-orphan', name: 'Bash', input: { command: 'sleep 60' } },
+        ]))
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        expect(store.messages.retireOpenChildToolWork(session.id)).toBe(true)
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
     it('persists open-child retirement across hub restart (#2021)', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-live-work-retire-'))
         const dbPath = join(dir, 'hub.db')

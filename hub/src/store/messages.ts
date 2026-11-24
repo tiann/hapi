@@ -338,27 +338,33 @@ function noteToolCallSettlements(db: Database, sessionId: string, content: unkno
 
 /**
  * Retire open tool / running-child work when its worker generation exits or is
- * replaced. Covers child-scoped registry entries and foreground ACP tool-call
- * rows still open in the lookback — a dead worker cannot settle them, and the
- * replacement idle session must stay archivable (#2021).
+ * replaced. Covers:
+ *   - child-scoped ACP registry entries + runningChildren
+ *   - foreground ACP `tool-call` rows in the lookback
+ *   - Claude passthrough `tool_use` ids still open in the lookback
+ * A dead worker cannot settle them; the replacement idle session must stay
+ * archivable (#2021).
  */
 export function retireOpenChildToolWork(db: Database, sessionId: string): boolean {
     const state = ensureChildToolCallStateRebuilt(db, sessionId)
     const settledCallIds = new Set<string>(state.open)
     const retiredChildSessionIds = [...state.runningChildren]
 
-    // Foreground (non-child) ACP calls live only in the lookback scan — collect
-    // any still-open ids so worker-exit settlement clears them too.
     const rows = prepareCached(db, `
-        SELECT content FROM messages
+        SELECT content, invoked_at FROM messages
         WHERE session_id = ?
         ORDER BY seq DESC
         LIMIT ?
-    `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'content'>>
+    `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'content' | 'invoked_at'>>
     const settledInWindow = new Set<string>()
+    const settledClaudeToolUseIds = new Set<string>()
+    let claudeTurnClosed = false
     for (const row of rows) {
         const decoded = decodeMessageContent(row.content)
-        for (const callId of acpTurnCompleteSettledCallIds(decoded)) settledInWindow.add(callId)
+        for (const callId of acpTurnCompleteSettledCallIds(decoded)) {
+            settledInWindow.add(callId)
+            settledClaudeToolUseIds.add(callId)
+        }
         const resultCallId = toolCallResultCallId(decoded)
         if (resultCallId !== null) settledInWindow.add(resultCallId)
         const callId = getToolCallId(decoded)
@@ -369,6 +375,34 @@ export function retireOpenChildToolWork(db: Database, sessionId: string): boolea
             && !isTerminalToolCallRow(decoded)
         ) {
             settledCallIds.add(callId)
+        }
+
+        // Claude passthrough: collect open tool_use ids the ACP path cannot see.
+        if (isUserMessageRow(decoded) && row.invoked_at != null) {
+            claudeTurnClosed = true
+            continue
+        }
+        const claudeData = claudeOutputData(decoded)
+        if (claudeData === null || isHiddenClaudeOutput(claudeData)) continue
+        if (claudeData.type === 'result') {
+            claudeTurnClosed = true
+            continue
+        }
+        if (claudeData.type === 'user') {
+            if (!collectClaudeToolResultIds(claudeData, settledClaudeToolUseIds)) {
+                claudeTurnClosed = true
+            }
+            continue
+        }
+        if (claudeData.type === 'assistant' && !claudeTurnClosed) {
+            const blocks = claudeMessageBlocks(claudeData)
+            if (!blocks) continue
+            for (const block of blocks) {
+                if (!isRecord(block) || block.type !== 'tool_use') continue
+                if (typeof block.id !== 'string' || block.id.trim().length === 0) continue
+                if (settledClaudeToolUseIds.has(block.id) || state.settled.has(block.id)) continue
+                settledCallIds.add(block.id)
+            }
         }
     }
 
@@ -857,9 +891,17 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
                 // here, which keeps the sweep's every-tick scan to one row.
                 return false
             }
-            if (claudeData.type === 'assistant'
-                && claudeAssistantHasOpenToolUse(claudeData, settledClaudeToolUseIds)) {
-                return true
+            if (claudeData.type === 'assistant') {
+                // Worker-exit turn-complete settles Claude tool_use ids via
+                // settledCallIds (same latch as ACP) — honor that here (#2021).
+                const settledForClaude = new Set<string>([
+                    ...settledClaudeToolUseIds,
+                    ...settledAcpCallIds,
+                    ...childState.settled,
+                ])
+                if (claudeAssistantHasOpenToolUse(claudeData, settledForClaude)) {
+                    return true
+                }
             }
             continue
         }
