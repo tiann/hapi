@@ -139,6 +139,14 @@ describe('assignThreadMessageIds', () => {
 })
 
 describe('buildSourceMessageIdsByBlock', () => {
+    it('keeps stable tool identities for boundary recovery', () => {
+        const single = toolCall('tool-single')
+        const grouped = toolGroup('tools', [toolCall('tool-a'), toolCall('tool-b')])
+        const sourceIdsByBlock = buildSourceMessageIdsByBlock([single, grouped])
+        expect(sourceIdsByBlock.get(single)).toEqual(['tool-single', 'tool-a', 'tool-b'])
+        expect(sourceIdsByBlock.get(grouped)).toEqual(['tool-single', 'tool-a', 'tool-b'])
+    })
+
     it('keeps a raw search-hit id on the first card of a joined assistant group', () => {
         const firstTool = toolCall('tool-1')
         const target = agentText('raw-target:0', {
@@ -147,8 +155,8 @@ describe('buildSourceMessageIdsByBlock', () => {
         const user = userText('user-1')
         const sourceIdsByBlock = buildSourceMessageIdsByBlock([firstTool, target, user])
 
-        expect(sourceIdsByBlock.get(firstTool)).toEqual(['raw-target', 'raw-target-stream-update'])
-        expect(sourceIdsByBlock.get(target)).toEqual(['raw-target', 'raw-target-stream-update'])
+        expect(sourceIdsByBlock.get(firstTool)).toEqual(['tool-1', 'raw-target', 'raw-target-stream-update'])
+        expect(sourceIdsByBlock.get(target)).toEqual(['tool-1', 'raw-target', 'raw-target-stream-update'])
         expect(sourceIdsByBlock.get(user)).toEqual(['user-1'])
     })
 })

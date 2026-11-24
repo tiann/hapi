@@ -793,7 +793,8 @@ export function emitImportedMessageEvents(
                 localId: message.localId ?? null,
                 content: message.content,
                 createdAt: message.createdAt,
-                invokedAt: message.invokedAt
+                invokedAt: message.invokedAt,
+                steered: message.steered
             }
         })
     }
@@ -864,7 +865,8 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 createdAt: message.createdAt,
                 localId: message.localId,
                 invokedAt: message.invokedAt,
-                scheduledAt: message.scheduledAt
+                scheduledAt: message.scheduledAt,
+                steered: message.steered
             })
             knownKeys.add(comparableKey)
             appendedMessages.push(copied)

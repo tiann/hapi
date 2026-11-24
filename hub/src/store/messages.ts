@@ -1607,10 +1607,10 @@ export function markMessagesInvoked(
         const placeholders = localIds.map(() => '?').join(', ')
         const changes = prepareCached(db,
             `UPDATE messages
-             SET invoked_at = ?, delivery_state = ?
+             SET invoked_at = COALESCE(invoked_at, ?), delivery_state = ?
              WHERE session_id = ?
                AND local_id IN (${placeholders})
-               AND invoked_at IS NULL`
+               ${steered ? '' : 'AND invoked_at IS NULL'}`
         ).run(invokedAt, steered ? 'steered' : 'queued', sessionId, ...localIds).changes
         if (changes > 0) {
             const rows = prepareCached(db, `

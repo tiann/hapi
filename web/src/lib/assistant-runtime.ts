@@ -459,9 +459,9 @@ function getSourceMessageIdsForBlock(block: VisibleChatBlock): string[] {
         return [block.id]
     }
 
-    // Tool-call ids are native tool ids rather than HAPI message ids. A
-    // neighboring text/reasoning block still contributes its source id to an
-    // assistant-ui joined card, which covers the common search-hit path.
+    if (block.kind === 'tool-call') return [block.id]
+    if (block.kind === 'tool-group') return block.tools.map(tool => tool.id)
+
     return []
 }
 

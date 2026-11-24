@@ -61,7 +61,7 @@ let currentActiveSessionId = SESSION_ID
 
 window.__probe = {
     appendReply: () => ingestIncomingMessages(SESSION_ID, Array.from({ length: 25 }, (_, index) =>
-        createFixtureMessage(3 + index, {
+        createFixtureMessage(4 + index, {
             role: 'agent',
             content: { type: 'codex', data: { type: 'message', message: `New reply line ${index + 1}\n\nFollow-up content.` } },
         }),
