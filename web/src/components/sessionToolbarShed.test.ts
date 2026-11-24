@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { shedToolbarSlots, toolbarActionBudget, toolbarGutterPx, TOOLBAR_ICON_PX } from './sessionToolbarShed'
+import { shedToolbarSlots, toolbarActionBudget, toolbarGutterPx, toolbarSearchMaxWidth, TOOLBAR_ICON_PX } from './sessionToolbarShed'
 
 const icon = (id: string, keep: number) => ({ id, keep, widthPx: TOOLBAR_ICON_PX })
 
@@ -107,5 +107,45 @@ describe('toolbarActionBudget', () => {
         expect(firstPaint.overflowIds).toContain('overseer')
         expect(firstPaint.visibleIds).toContain('new')
         expect(firstPaint.visibleIds).toContain('filter')
+    })
+})
+
+describe('toolbarSearchMaxWidth', () => {
+    const slots = [
+        { id: 'view', keep: 5, widthPx: 47 },
+        { id: 'machine-filter', keep: 5.5, widthPx: 42 },
+        { id: 'new', keep: 4, widthPx: 47 },
+        { id: 'settings', keep: 6, widthPx: 47 },
+        { id: 'mark-all', keep: 7, widthPx: 47 },
+    ]
+    const metrics = { morePx: 47, gapPx: 5.2 }
+    const chrome = 104
+    const query = 47
+
+    it('preserves readable query text across every action threshold', () => {
+        for (let contentWidth = 240; contentWidth <= 650; contentWidth++) {
+            const width = toolbarSearchMaxWidth(slots, contentWidth, chrome, query, metrics)
+            expect(width, `query at ${contentWidth}px`).toBeGreaterThanOrEqual(chrome + query)
+            expect(width, `More at ${contentWidth}px`).toBeLessThanOrEqual(contentWidth - metrics.morePx - metrics.gapPx)
+        }
+    })
+
+    it('keeps New and Sort before the shortcut when query text needs room', () => {
+        const contentWidth = 335
+        const width = toolbarSearchMaxWidth(slots, contentWidth, chrome, query, metrics)
+        const result = shedToolbarSlots(slots, contentWidth - width - metrics.gapPx, metrics)
+        expect(result.visibleIds).toEqual(['view', 'new'])
+        expect(result.overflowIds).toEqual(['machine-filter', 'settings', 'mark-all'])
+    })
+
+    it('gives the query spare width after every action fits', () => {
+        const width = toolbarSearchMaxWidth(slots, 600, chrome, query, metrics)
+        expect(width).toBeGreaterThan(chrome + query)
+        expect(shedToolbarSlots(slots, 600 - width - metrics.gapPx, metrics).overflowIds).toEqual([])
+    })
+
+    it('keeps the search hit targets at extreme font sizes and narrow widths', () => {
+        expect(toolbarSearchMaxWidth(slots, 250, 200, 70, { morePx: 70, gapPx: 8 })).toBe(200)
+        expect(toolbarSearchMaxWidth(slots, 0, chrome, query, metrics)).toBe(0)
     })
 })

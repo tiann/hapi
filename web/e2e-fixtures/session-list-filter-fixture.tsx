@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ApiClient } from '../src/api/client'
 import { SessionList } from '../src/components/SessionList'
+import { initializeFontScale } from '../src/hooks/useFontScale'
 import { I18nProvider } from '../src/lib/i18n-context'
 import { ToastProvider } from '../src/lib/toast-context'
 import type { SessionSummary } from '../src/types/api'
@@ -10,8 +11,8 @@ import '../src/index.css'
 
 const lang = new URLSearchParams(location.search).get('lang')
 const allRead = new URLSearchParams(location.search).has('allRead')
-const fontScale = localStorage.getItem('hapi-font-scale')
-if (fontScale) document.documentElement.style.setProperty('--app-font-scale', fontScale)
+const browse = new URLSearchParams(location.search).has('browse')
+initializeFontScale()
 if (lang) localStorage.setItem('hapi-lang', lang)
 const sessions = [
     ['match', 'HAPI filter integration', 'mint', true, true, 9],
@@ -41,7 +42,18 @@ function Fixture() {
         <SessionList sessions={sessions} selectedSessionId={selected} onSelect={setSelected}
             onNewSession={() => {}} onRefresh={() => {}} isLoading={false} api={api}
             machineLabelsById={{ mint: 'Mint', server: 'Server' }}
-            headerActions={<button type="button" aria-label="Settings" className="flex h-9 w-9 shrink-0 items-center justify-center">⚙</button>} />
+            toolbarExtras={[
+                ...(browse ? [{ id: 'browse', keep: 8, node: (
+                    <button type="button" aria-label="Browse workspaces" className="p-1.5 rounded-full">
+                        <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true"><path d="M3 5h6l2 3h10v12H3z" /></svg>
+                    </button>
+                ) }] : []),
+                { id: 'settings', keep: 6, node: (
+                    <button type="button" aria-label="Settings" className="p-1.5 rounded-full">
+                        <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true"><circle cx="12" cy="12" r="8" /></svg>
+                    </button>
+                ) },
+            ]} />
     </main>
 }
 createRoot(document.getElementById('root')!).render(

@@ -92,7 +92,7 @@ test('optional mobile machine filter does not occupy the desktop toolbar', async
 test('keeps Sort and filter on the toolbar before the shortcut with a long search', async ({ page }) => {
     await page.addInitScript(() => {
         localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
-        document.addEventListener('DOMContentLoaded', () => document.documentElement.style.setProperty('--app-font-scale', '1.1'))
+        localStorage.setItem('hapi-font-scale', '1.1')
     })
     await open(page, 320)
     await page.getByRole('button', { name: /Search sessions/ }).click()
@@ -104,22 +104,19 @@ test('keeps Sort and filter on the toolbar before the shortcut with a long searc
 
 test('keeps Sort and filter accessible with the shortcut at large font size', async ({ page }) => {
     await page.addInitScript(() => {
-        document.addEventListener('DOMContentLoaded', () => document.documentElement.style.setProperty('--app-font-scale', '1.3'))
+        localStorage.setItem('hapi-font-scale', '1.3')
     })
     await page.addInitScript(() => localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1'))
     await page.setViewportSize({ width: 334, height: 844 })
     await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en&allRead')
     await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--app-font-scale').trim())).toBe('1.3')
-    const searchAndCheck = async (expectInlineFilter: boolean) => {
+    const searchAndCollapse = async () => {
         await page.getByRole('button', { name: /Search sessions/ }).click()
         const search = page.getByPlaceholder(/Search title/)
         await search.fill('a very long collapsed session search query')
         await search.blur()
-        if (expectInlineFilter) {
-            await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Sort and filter' })).toBeVisible()
-        }
     }
-    await searchAndCheck(false)
+    await searchAndCollapse()
     expect((await page.getByTestId('session-list-search').boundingBox())!.width).toBeGreaterThan(150)
     await page.getByRole('button', { name: 'More session list actions', exact: true }).click()
     await expect(page.getByRole('button', { name: 'Sort and filter', exact: true })).toBeVisible()
@@ -127,10 +124,17 @@ test('keeps Sort and filter accessible with the shortcut at large font size', as
     await page.keyboard.press('Escape')
     await page.evaluate(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
     await page.reload()
-    await searchAndCheck(true)
-    await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Filter sessions by machine', exact: true })).toBeVisible()
+    await searchAndCollapse()
     await expect(page.getByRole('button', { name: 'Clear search' })).toBeVisible()
+    const queryText = page.getByTestId('session-list-search').locator('[data-search-query-text]')
+    expect(await queryText.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(40)
+    await page.getByRole('button', { name: 'More session list actions', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Sort and filter', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Filter sessions by machine', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await page.setViewportSize({ width: 364, height: 844 })
+    await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Sort and filter' })).toBeVisible()
 })
 
 test('keeps collapsed query text when the mobile toolbar has room', async ({ page }) => {
@@ -144,6 +148,75 @@ test('keeps collapsed query text when the mobile toolbar has room', async ({ pag
     await expect(queryText).toHaveText('a very long collapsed session search query')
     expect(await queryText.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(20)
 })
+
+for (const scale of [1, 1.3]) {
+    for (const allRead of [false, true]) {
+        for (const browse of [false, true]) {
+            test(`keeps query and controls usable across widths (scale ${scale}, allRead ${allRead}, browse ${browse})`, async ({ page }) => {
+                test.setTimeout(60_000)
+                await page.addInitScript(({ scale }) => {
+                    localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+                    localStorage.setItem('hapi-font-scale', String(scale))
+                    localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1')
+                }, { scale })
+                await page.setViewportSize({ width: 440, height: 844 })
+                await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=en' + (allRead ? '&allRead' : '') + (browse ? '&browse' : ''))
+                await page.getByRole('button', { name: /Search sessions/ }).click()
+                await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
+                await page.getByPlaceholder(/Search title/).blur()
+
+                // Sweep both directions so stale ResizeObserver measurements
+                // cannot pass by testing only fresh mounts at selected widths.
+                const widths = Array.from({ length: 61 }, (_, index) => 320 + index * 2)
+                for (const width of [...widths, ...widths.reverse()]) {
+                    await page.setViewportSize({ width, height: 844 })
+                    // Let the row, search and actions ResizeObservers settle.
+                    await page.evaluate(async () => {
+                        for (let frame = 0; frame < 4; frame++) {
+                            await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+                        }
+                    })
+                    const layout = await page.evaluate(() => {
+                        const row = document.querySelector<HTMLElement>('[data-testid="session-list-header-row"]')!
+                        const search = row.querySelector<HTMLElement>('[data-testid="session-list-search"]')!
+                        const query = search.querySelector<HTMLElement>('[data-search-query-text]')!
+                        const controls = [
+                            ...search.querySelectorAll<HTMLElement>('button'),
+                            ...row.querySelectorAll<HTMLElement>('[data-testid="session-list-header-actions"] button:not([inert] *)'),
+                        ].filter(element => element.getBoundingClientRect().width > 0)
+                        const boxes = controls.map(element => {
+                            const box = element.getBoundingClientRect()
+                            return { left: box.left, right: box.right, top: box.top, bottom: box.bottom }
+                        })
+                        return {
+                            queryWidth: query.getBoundingClientRect().width,
+                            queryFontSize: Number.parseFloat(getComputedStyle(query).fontSize),
+                            right: Math.min(row.getBoundingClientRect().right, innerWidth),
+                            boxes,
+                        }
+                    })
+                    expect(layout.queryWidth, `query at ${width}px`).toBeGreaterThanOrEqual(layout.queryFontSize * 3 - 1)
+                    for (let index = 0; index < layout.boxes.length; index++) {
+                        const box = layout.boxes[index]!
+                        expect(box.right, `control at ${width}px`).toBeLessThanOrEqual(layout.right + 1)
+                        const next = layout.boxes[index + 1]
+                        if (next) expect(box.right, `overlap at ${width}px`).toBeLessThanOrEqual(next.left + 0.5)
+                    }
+                }
+                // A short query uses its natural width; it must not be clipped
+                // to make room for an extra action either.
+                await page.getByRole('button', { name: /Search sessions/ }).click()
+                await page.getByPlaceholder(/Search title/).fill('hi')
+                await page.getByPlaceholder(/Search title/).blur()
+                const shortQuery = page.getByTestId('session-list-search').locator('[data-search-query-text]')
+                expect(await shortQuery.evaluate(element => element.getBoundingClientRect().width + 1 >= element.scrollWidth)).toBe(true)
+                await page.getByRole('button', { name: 'Clear search' }).click()
+                await expect(shortQuery).toHaveCount(0)
+                await expect(page.getByTestId('session-list-header-actions').getByRole('button', { name: 'Sort and filter', exact: true })).toBeVisible()
+            })
+        }
+    }
+}
 
 test('uses the same mobile breakpoint as the machine chips with a larger browser font', async ({ baseURL }) => {
     const browser = await chromium.launch({ args: ['--no-sandbox', '--blink-settings=defaultFontSize=20'] })
@@ -172,6 +245,7 @@ test('keeps More usable at 320px with large browser and HAPI fonts', async ({ ba
         await page.getByRole('button', { name: /Search sessions/ }).click()
         await page.getByPlaceholder(/Search title/).fill('a very long collapsed session search query')
         await page.getByPlaceholder(/Search title/).blur()
+        expect(await page.getByTestId('session-list-search').locator('[data-search-query-text]').evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(10)
         const more = page.getByRole('button', { name: 'More session list actions', exact: true })
         await expect(more).toBeVisible()
         expect((await more.boundingBox())!.x + (await more.boundingBox())!.width).toBeLessThanOrEqual(320)

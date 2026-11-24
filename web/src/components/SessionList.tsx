@@ -164,6 +164,7 @@ import {
     TOOLBAR_GAP_PX,
     TOOLBAR_ICON_PX,
     TOOLBAR_MORE_PX,
+    toolbarSearchMaxWidth,
     type ToolbarShedSlot
 } from '@/components/sessionToolbarShed'
 
@@ -1313,7 +1314,7 @@ export function SessionListSearch(props: {
                                 : <SearchIcon className="h-5 w-5 shrink-0" />}
                         </span>
                         {hasTextQuery ? (
-                            <span className="min-w-0 truncate text-xs font-medium">{props.value}</span>
+                            <span data-search-query-text="" className="min-w-0 truncate text-xs font-medium">{props.value}</span>
                         ) : null}
                     </button>
                     {hasTextQuery ? (
@@ -3225,11 +3226,15 @@ export function SessionList(props: {
         const root = toolbarMeasureRef.current
         if (!root) return
         const next: Record<string, number> = {}
+        const measuredSlots: ToolbarShedSlot[] = []
         for (const node of root.querySelectorAll<HTMLElement>('[data-measure-id]')) {
             const id = node.dataset.measureId
             if (!id || id === '__more') continue
             const width = node.offsetWidth
-            if (width > 0) next[id] = width
+            if (width > 0) {
+                next[id] = width
+                measuredSlots.push({ id, widthPx: width, keep: Number(node.dataset.keep) })
+            }
         }
         setToolbarSlotWidths((previous) => {
             const previousKeys = Object.keys(previous)
@@ -3248,7 +3253,8 @@ export function SessionList(props: {
                 ? previous
                 : { morePx, gapPx }
         ))
-        // Shrink the query before shedding the main filters or New for the optional shortcut.
+        // With the optional shortcut, allocate search and actions together so
+        // admitting a control never reduces the query to just its hit targets.
         const row = headerRowRef.current
         const rowBox = row && row.clientWidth > 0 ? row.clientWidth : toolbarRowBoxPx
         const rowStyle = row ? getComputedStyle(row) : null
@@ -3256,30 +3262,16 @@ export function SessionList(props: {
             ? (Number.parseFloat(rowStyle.paddingLeft) || 0) + (Number.parseFloat(rowStyle.paddingRight) || 0)
             : 0
         const shortcutEnabled = showMobileMachineFilter && showMachineFilterBar && isMobileMachineFilterViewport
-        const minimumSearchWidth = searchChromePx
-        const viewWidth = next.view ?? TOOLBAR_ICON_PX
-        const newWidth = renderHeader ? (next.new ?? TOOLBAR_ICON_PX) : 0
-        const shortcutSpace = shortcutEnabled
-            ? (next['machine-filter'] ?? TOOLBAR_ICON_PX) + gapPx
+        const queryText = search?.querySelector<HTMLElement>('[data-search-query-text]')
+        // Up to three text ems (or the whole query, if shorter) keep a useful
+        // snippet beside the scope icon and Clear at every action threshold.
+        const queryTextMinPx = queryText
+            ? Math.min(queryText.scrollWidth, (Number.parseFloat(getComputedStyle(queryText).fontSize) || 0) * 3)
             : 0
-        const measuredActions = Object.values(next)
-        const measuredActionsWidth = measuredActions.reduce((total, width) => total + width, 0)
-            + gapPx * Math.max(0, measuredActions.length - 1)
-        const allActionsFit = shortcutEnabled && rowBox > 0
-            && measuredActionsWidth + minimumSearchWidth <= rowBox - rowPad
-        const fallbackBaseTrailing = gapPx + morePx + viewWidth + gapPx
-            + (renderHeader ? newWidth + gapPx : 0)
-        const fallbackTrailing = fallbackBaseTrailing + (shortcutEnabled
-            && rowBox - rowPad - fallbackBaseTrailing >= minimumSearchWidth + shortcutSpace
-            ? shortcutSpace
-            : 0)
-        const trailing = allActionsFit
-            ? measuredActionsWidth + gapPx
-            : shortcutEnabled
-                ? fallbackTrailing
-                : gapPx + morePx
         const nextSearchMax = rowBox > 0
-            ? Math.max(minimumSearchWidth, rowBox - rowPad - trailing)
+            ? shortcutEnabled
+                ? toolbarSearchMaxWidth(measuredSlots, rowBox - rowPad, searchChromePx, queryTextMinPx, { morePx, gapPx })
+                : Math.max(searchChromePx, rowBox - rowPad - gapPx - morePx)
             : 0
         setSearchMaxPx((previous) => previous === nextSearchMax ? previous : nextSearchMax)
     })
@@ -3666,7 +3658,7 @@ export function SessionList(props: {
                                             className="pointer-events-none absolute left-0 top-0 -z-10 flex h-0 w-max gap-1 overflow-hidden opacity-0"
                                         >
                                             {definedSlots.map((slot) => (
-                                                <span key={slot.id} data-measure-id={slot.id} className="inline-flex shrink-0">
+                                                <span key={slot.id} data-measure-id={slot.id} data-keep={slot.keep} className="inline-flex shrink-0">
                                                     {slot.node}
                                                 </span>
                                             ))}
