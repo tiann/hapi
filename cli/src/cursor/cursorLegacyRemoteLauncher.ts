@@ -515,19 +515,19 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         if (leavingRemote) {
             this.session.queue.reset();
         }
-        this.session.onThinkingChange(false);
 
         // Kill the live agent against activeChild — not only via the abort
         // signal — so a second Stop can retry when the first tree kill did
         // not confirm (descendant holding stdio, soft kill refused) (#2021).
         const child = this.activeChild;
+        let stopped = !child?.pid;
         if (child?.pid) {
             const force = this.stopKillEscalated;
-            let stopped = false;
             try {
                 stopped = await killProcessByChildProcess(child, force);
             } catch (error) {
                 logger.debug('[cursor-remote] Stop kill failed', error);
+                stopped = false;
             }
             if (stopped) {
                 this.stopDrainArmed = true;
@@ -545,6 +545,13 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         } else {
             // No live child — still abort waiters; nothing to drain-bound.
             this.stopDrainArmed = true;
+        }
+
+        // Keep thinking=true while the subprocess is still open so the web
+        // composer leaves Stop enabled for a retry (#2021). Clear only after
+        // confirmed termination (or when there was no child).
+        if (stopped) {
+            this.session.onThinkingChange(false);
         }
 
         this.abortController.abort();

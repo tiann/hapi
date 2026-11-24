@@ -311,6 +311,9 @@ export const MetadataSchema = z.object({
     childToolWork: z.object({
         running: z.array(z.string().min(1)).default([]),
         settled: z.array(z.string().min(1)).default([]),
+        // Verified ACP call ids (tool results / scoped turn-complete). Survives
+        // rewind that drops the result while retaining the start (#2021).
+        settledCallIds: z.array(z.string().min(1)).default([]),
     }).optional(),
     // 'running' | 'idle' | 'archived' (see shared/src/sessionLifecycle.ts).
     // 'idle' is written by the hub's keepalive-idle reconciler (tiann/hapi#1820)

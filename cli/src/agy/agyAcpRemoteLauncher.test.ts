@@ -698,6 +698,33 @@ describe('AgyAcpRemoteLauncher', () => {
         ]);
         expect(ownerTurn.openCommands.size).toBe(0);
     });
+
+    it('settles backend-cancelled non-command tools on live wakeup Stop (#2021)', async () => {
+        const { session, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.getAgentVersion = () => '1.5.13';
+        (backend as { hasMessageHandler?: () => boolean }).hasMessageHandler = () => true;
+        (backend as { takeCancelledSettlements?: () => string[] }).takeCancelledSettlements = () => ['question:0#wake'];
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+        });
+        const ownerTurn = {
+            openCommands: new Set<string>(),
+            commandCallIds: [] as string[],
+            deferredLiveCommandCalls: new Map(),
+            backendSettledCallIds: [] as string[],
+            bgTaskDescriptions: new Map(),
+        };
+        (launcher as unknown as { backend: unknown }).backend = backend;
+        (launcher as unknown as { handlerOwnerTurn: unknown }).handlerOwnerTurn = ownerTurn;
+
+        await (launcher as unknown as { discardStoppedWakeup: () => Promise<void> }).discardStoppedWakeup();
+
+        const settlements = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { settledCallIds?: string[] })
+            .filter((message) => Array.isArray(message?.settledCallIds));
+        expect(settlements[0]?.settledCallIds).toEqual(expect.arrayContaining(['question:0#wake']));
+    });
 });
 
 describe('AgyAcpRemoteLauncher Stop', () => {

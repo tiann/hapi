@@ -1415,6 +1415,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // Without a live handler (never live, or the process was restarted) there is nothing more to retire.
         if (!this.usesLiveWakeupRendering()) return;
         const settledCallIds = new Set<string>();
+        // cancelPrompt already marked lifetimes cancelled; collect them here so
+        // non-run_command tools (ask_question, etc.) opened during a live
+        // wakeup still settle even though the prompt finalizer already ran (#2021).
+        const backend = this.backend as { takeCancelledSettlements?: () => string[] } | null;
+        for (const id of backend?.takeCancelledSettlements?.() ?? []) {
+            settledCallIds.add(id);
+        }
         for (const turn of new Set([owner, abortedTurn])) {
             if (!turn) continue;
             for (const id of [

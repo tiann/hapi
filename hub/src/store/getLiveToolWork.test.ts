@@ -662,6 +662,119 @@ describe('truncateOpenCodeRewind child settlement (#2021)', () => {
         store.close()
     })
 
+    it('keeps Archive clear when rewind drops a tool result but durable settlement remembers the call', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-rewind-tool-settle')
+
+        store.messages.upsertToolCallMessage(
+            session.id,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-tool-1',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child',
+                    },
+                },
+            },
+            'child-tool-1',
+        )
+        const boundary = store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'rewind here' },
+        })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'tool-call-result', callId: 'child-tool-1', output: 'done' },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+
+        store.messages.truncateOpenCodeRewind(session.id, boundary.seq, boundary.id)
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('does not clobber durable settled children when a new status arrives before rebuild', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'live-work-durable-seed',
+            { path: '/tmp/durable-seed', flavor: 'opencode' },
+            null,
+            'default',
+        )
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_a',
+                    childStatus: 'running',
+                },
+            },
+        })
+        const boundary = store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'rewind here' },
+        })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'completed',
+                    childSessionId: 'ses_a',
+                    childStatus: 'completed',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.messages.truncateOpenCodeRewind(session.id, boundary.seq, boundary.id)
+
+        // Before the next live-work read, a new child status arrives. Writing
+        // must seed durable settled(ses_a) first or it would clobber A.
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_b',
+                    childStatus: 'running',
+                },
+            },
+        })
+        // ses_b is live; ses_a must stay settled (not resurrected).
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'completed',
+                    childSessionId: 'ses_b',
+                    childStatus: 'completed',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
     it('still blocks Archive when rewind retains a running child that never completed', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-rewind-still-running')

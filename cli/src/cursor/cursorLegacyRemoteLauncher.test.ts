@@ -541,7 +541,7 @@ describe('cursorLegacyRemoteLauncher', () => {
 
         const client = makeClient();
         const session = makeSession(queue, client);
-        const addMessage = vi.spyOn(session, 'onThinkingChange');
+        const thinking = vi.spyOn(session, 'onThinkingChange');
 
         const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
         const launchPromise = cursorLegacyRemoteLauncher(session);
@@ -552,15 +552,18 @@ describe('cursorLegacyRemoteLauncher', () => {
         await abort();
         expect(killMock).toHaveBeenCalledTimes(1);
         expect(killMock.mock.calls[0]?.[1]).toBe(false);
+        // Unconfirmed kill must leave thinking true so web Stop stays enabled.
+        expect(thinking).not.toHaveBeenCalledWith(false);
 
         await abort();
         expect(killMock).toHaveBeenCalledTimes(2);
         expect(killMock.mock.calls[1]?.[1]).toBe(true);
+        expect(thinking).toHaveBeenCalledWith(false);
 
         child1.closeChild?.(null);
         queue.close();
         await launchPromise;
-        addMessage.mockRestore();
+        thinking.mockRestore();
         killMock.mockResolvedValue(true);
     });
 

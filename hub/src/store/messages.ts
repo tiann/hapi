@@ -259,6 +259,7 @@ type ChildToolCallState = {
 type DurableChildToolWork = {
     running: string[]
     settled: string[]
+    settledCallIds: string[]
 }
 
 const childToolCallsByDb = new WeakMap<Database, Map<string, ChildToolCallState>>()
@@ -305,14 +306,31 @@ function readDurableChildToolWork(db: Database, sessionId: string): DurableChild
     const settled = Array.isArray(work.settled)
         ? work.settled.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
         : []
-    return { running, settled }
+    const settledCallIds = Array.isArray(work.settledCallIds)
+        ? work.settledCallIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+        : []
+    return { running, settled, settledCallIds }
 }
 
-/** Dual-write running/settled child session ids into hub-owned session metadata. */
+/**
+ * Seed in-memory state from durable metadata when the WeakMap is cold
+ * (post-rewind / post-restart) so an incremental status write cannot clobber
+ * verified settlements that exist only in metadata (#2021).
+ */
+function seedDurableChildToolWorkIfNeeded(db: Database, sessionId: string, state: ChildToolCallState): void {
+    if (state.rebuilt) return
+    applyDurableChildToolWork(state, readDurableChildToolWork(db, sessionId))
+}
+
+/** Dual-write running/settled child session ids + settled ACP call ids. */
 function writeDurableChildToolWork(db: Database, sessionId: string, state: ChildToolCallState): void {
+    // Always merge durable first when cold — never replace the ledger from a
+    // partial in-memory cache that only saw the newest child (#2021).
+    seedDurableChildToolWorkIfNeeded(db, sessionId, state)
     const next: DurableChildToolWork = {
         running: [...state.runningChildren].sort(),
         settled: [...state.settledChildren].sort(),
+        settledCallIds: [...state.settled].sort(),
     }
     const row = prepareCached(db, 'SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as
         | { metadata: string | null }
@@ -323,11 +341,14 @@ function writeDurableChildToolWork(db: Database, sessionId: string, state: Child
     const existing = isRecord(metadata.childToolWork) ? metadata.childToolWork : null
     const priorRunning = Array.isArray(existing?.running) ? existing.running : []
     const priorSettled = Array.isArray(existing?.settled) ? existing.settled : []
+    const priorSettledCalls = Array.isArray(existing?.settledCallIds) ? existing.settledCallIds : []
     if (
         priorRunning.length === next.running.length
         && priorSettled.length === next.settled.length
+        && priorSettledCalls.length === next.settledCallIds.length
         && priorRunning.every((id, i) => id === next.running[i])
         && priorSettled.every((id, i) => id === next.settled[i])
+        && priorSettledCalls.every((id, i) => id === next.settledCallIds[i])
     ) {
         return
     }
@@ -341,6 +362,10 @@ function writeDurableChildToolWork(db: Database, sessionId: string, state: Child
 
 function applyDurableChildToolWork(state: ChildToolCallState, durable: DurableChildToolWork | null): void {
     if (!durable) return
+    for (const id of durable.settledCallIds) {
+        state.settled.add(id)
+        state.open.delete(id)
+    }
     for (const id of durable.settled) {
         state.settledChildren.add(id)
         state.runningChildren.delete(id)
@@ -438,10 +463,14 @@ function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): Child
 /** Incremental update only — never full-scan the transcript on ingest. */
 function noteChildToolCallOpenState(db: Database, sessionId: string, content: unknown): void {
     const state = childToolCallState(db, sessionId)
+    seedDurableChildToolWorkIfNeeded(db, sessionId, state)
     applyChildToolCallContent(state, content)
     if (
         acpTurnCompleteChildStatus(content)
         || acpTurnCompleteRetiredChildSessionIds(content).length > 0
+        || toolCallResultCallId(content) !== null
+        || isChildScopedAcpToolCall(content)
+        || acpTurnCompleteSettledCallIds(content).length > 0
     ) {
         writeDurableChildToolWork(db, sessionId, state)
     }
@@ -450,10 +479,14 @@ function noteChildToolCallOpenState(db: Database, sessionId: string, content: un
 /** Incremental update only — never full-scan the transcript on ingest. */
 function noteToolCallSettlements(db: Database, sessionId: string, content: unknown): void {
     const state = childToolCallState(db, sessionId)
+    seedDurableChildToolWorkIfNeeded(db, sessionId, state)
     applyChildToolCallContent(state, content)
     if (
         acpTurnCompleteChildStatus(content)
         || acpTurnCompleteRetiredChildSessionIds(content).length > 0
+        || toolCallResultCallId(content) !== null
+        || isChildScopedAcpToolCall(content)
+        || acpTurnCompleteSettledCallIds(content).length > 0
     ) {
         writeDurableChildToolWork(db, sessionId, state)
     }

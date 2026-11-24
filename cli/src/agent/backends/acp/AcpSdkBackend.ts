@@ -1031,6 +1031,16 @@ export class AcpSdkBackend implements AgentBackend {
     }
 
     /**
+     * Collect and close lifetimes cancelled by {@link cancelPrompt} (or a
+     * child-scope cancel). Used by launchers that Stop outside an in-flight
+     * `prompt()` finally — e.g. Antigravity live wakeup — so the hub receives
+     * scoped settlement for non-command tools too (#2021).
+     */
+    takeCancelledSettlements(scope?: import('./toolCallLifetimes').ToolCallScope): string[] {
+        return this.toolCallLifetimes.settleCancelled(scope);
+    }
+
+    /**
      * Soft-inject a follow-up `session/prompt` while another prompt is in flight.
      *
      * Used for Cursor mid-turn steer (GUI "Send" / next-opportune soft send).
