@@ -2930,12 +2930,12 @@ export class SessionCache {
 
     private extractAgentSessionId(
         metadata: NonNullable<Session['metadata']>
-    ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId' | 'kimiSessionId' | 'dshSessionId'; value: string; dedupeKey: string; machineId?: string } | null {
-        const scoped = (field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId' | 'kimiSessionId' | 'dshSessionId', value: string) => {
+    ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId' | 'dshSessionId'; value: string; dedupeKey: string; machineId?: string } | null {
+        const scoped = (field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId' | 'dshSessionId', value: string) => {
             const machineScoped = field === 'piSessionId' || field === 'opencodeSessionId'
-                || field === 'kimiSessionId' || field === 'dshSessionId'
-            // Kimi and DSH ids dedup only when a machine id is recorded.
-            if ((field === 'kimiSessionId' || field === 'dshSessionId') && !metadata.machineId) return null
+                || field === 'dshSessionId'
+            // DSH ids dedup only when a machine id is recorded.
+            if (field === 'dshSessionId' && !metadata.machineId) return null
             return {
                 field,
                 value,
@@ -2952,10 +2952,6 @@ export class SessionCache {
         if (metadata.piSessionId) return scoped('piSessionId', metadata.piSessionId)
         if (metadata.agySessionId) return scoped('agySessionId', metadata.agySessionId)
         if (metadata.copilotSessionId) return scoped('copilotSessionId', metadata.copilotSessionId)
-        if (metadata.kimiSessionId) {
-            const extracted = scoped('kimiSessionId', metadata.kimiSessionId)
-            if (extracted) return extracted
-        }
         if (metadata.dshSessionId) {
             const extracted = scoped('dshSessionId', metadata.dshSessionId)
             if (extracted) return extracted
@@ -3012,7 +3008,7 @@ export class SessionCache {
                 const passMetadata = currentSession?.metadata ?? session.metadata
                 const candidates: { id: string; session: Session }[] = []
                 const machineScoped = agentId.field === 'piSessionId' || agentId.field === 'opencodeSessionId'
-                    || agentId.field === 'kimiSessionId' || agentId.field === 'dshSessionId'
+                    || agentId.field === 'dshSessionId'
                 if (currentSession?.metadata && currentSession.metadata[agentId.field] === agentId.value) {
                     if (!machineScoped || currentSession.metadata.machineId === agentId.machineId) {
                         candidates.push({ id: passSessionId, session: currentSession })
