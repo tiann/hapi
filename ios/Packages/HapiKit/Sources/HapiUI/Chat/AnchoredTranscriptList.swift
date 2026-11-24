@@ -455,11 +455,20 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
                 || $0.environment.locale != next.environment.locale
                 || $0.environment.layoutDirection != next.environment.layoutDirection
         } ?? true
+        let appearanceChanged = configuration.map {
+            $0.environment.colorScheme != next.environment.colorScheme
+                || $0.environment.hapiTheme != next.environment.hapiTheme
+        } ?? true
         let spacing = next.items.enumerated().map { index, item in
             max(0, next.spacingBefore(index > 0 ? next.items[index - 1] : nil, item))
         }
         let spacingChanged = configuredSpacing != spacing
-        let changed = next.items.filter { contentWidthChanged || metricsChanged || values[$0.id] != $0 }.map(\.id)
+        // Hosted rows have independent SwiftUI roots. Updating their captured
+        // environment does not invalidate already configured collection cells,
+        // so an appearance change must explicitly reconfigure existing rows.
+        let changed = next.items.filter {
+            contentWidthChanged || metricsChanged || appearanceChanged || values[$0.id] != $0
+        }.map(\.id)
         let structureChanged = items.map(\.id) != next.items.map(\.id)
         let jump = next.jumpToken != lastJumpToken
         lastJumpToken = next.jumpToken
