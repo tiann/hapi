@@ -257,7 +257,7 @@ export class SDKToLogConverter {
 
     /**
      * Advance the cumulative baseline for a result that produces no transcript
-     * entry, so the next round does not absorb its cost, tokens and API time.
+     * entry, so the next round does not absorb its cost and API time.
      */
     consumeResultForAccounting(resultMsg: SDKResultMessage): void {
         this.consumeCumulativeDeltas(resultMsg)
