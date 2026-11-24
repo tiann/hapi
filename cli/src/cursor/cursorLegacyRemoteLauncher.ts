@@ -46,7 +46,7 @@ const STDERR_DISPLAY_LIMIT = 400;
 const STDERR_CAPTURE_LIMIT = 8_192;
 /** After a confirmed tree kill, bound how long we wait for stdio close before
  *  publishing settlement so a stuck descendant pipe cannot block Archive. */
-const STOP_DRAIN_MS = 10_000;
+const STOP_DRAIN_MS = Number(process.env.HAPI_CURSOR_STOP_DRAIN_MS) || 10_000;
 
 function getTransientBackoffMs(): number {
     const raw = process.env.CURSOR_LEGACY_TRANSIENT_BACKOFF_MS;
@@ -522,21 +522,35 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         const child = this.activeChild;
         let stopped = !child?.pid;
         if (child?.pid) {
-            const force = this.stopKillEscalated;
-            try {
-                stopped = await killProcessByChildProcess(child, force);
-            } catch (error) {
-                logger.debug('[cursor-remote] Stop kill failed', error);
-                stopped = false;
+            let force = this.stopKillEscalated || leavingRemote;
+            const attempts = leavingRemote ? 2 : 1;
+            for (let i = 0; i < attempts; i += 1) {
+                try {
+                    stopped = await killProcessByChildProcess(child, force);
+                } catch (error) {
+                    logger.debug('[cursor-remote] Stop kill failed', error);
+                    stopped = false;
+                }
+                if (stopped) break;
+                force = true;
+                this.stopKillEscalated = true;
             }
             if (stopped) {
                 this.stopDrainArmed = true;
                 this.armActiveChildDrain?.();
+            } else if (leavingRemote) {
+                // Switch/Exit cannot hang forever on an open pipe — always arm
+                // the drain bound and surface the unconfirmed kill (#2021).
+                this.stopDrainArmed = true;
+                this.armActiveChildDrain?.();
+                this.messageBuffer.addMessage(
+                    'Exit: agent process still open after force kill — waiting for drain bound',
+                    'status'
+                );
             } else {
-                this.stopKillEscalated = true;
                 this.stopDrainArmed = false;
                 this.messageBuffer.addMessage(
-                    force
+                    this.stopKillEscalated
                         ? 'Stop: agent process still open after force kill — press Stop again to retry'
                         : 'Stop: agent process still open — press Stop again to retry with force',
                     'status'
@@ -549,8 +563,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
 
         // Keep thinking=true while the subprocess is still open so the web
         // composer leaves Stop enabled for a retry (#2021). Clear only after
-        // confirmed termination (or when there was no child).
-        if (stopped) {
+        // confirmed termination (or when there was no child). Terminal leave
+        // always clears — the launcher is exiting regardless.
+        if (stopped || leavingRemote) {
             this.session.onThinkingChange(false);
         }
 

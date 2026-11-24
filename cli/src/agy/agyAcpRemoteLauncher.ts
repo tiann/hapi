@@ -292,6 +292,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         streamedTextCounts: Map<string, number>;
     } | null = null;
     private reactiveWakeupAbort: AbortController | null = null;
+    /** Resolves after wakeup cancel is acknowledged or the hard-stop retires the backend. */
+    private wakeupCancelResolved: Promise<void> | null = null;
     private lastTurnMode: AgyMode | null = null;
     private lastSessionModeSnapshot: {
         permissionMode: PermissionMode | undefined;
@@ -710,6 +712,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     return;
                 }
                 if (abortController.signal.aborted) {
+                    // Wait for cancel ack or hard-stop restart before settling —
+                    // otherwise Archive can clear while AGY still runs the call (#2021).
+                    if (this.wakeupCancelResolved) {
+                        await this.wakeupCancelResolved;
+                        this.wakeupCancelResolved = null;
+                    }
                     // Stop: nothing the wakeup left open may become a background task.
                     await this.discardStoppedWakeup();
                     this.syncTranscriptCursor();
@@ -2124,10 +2132,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private async cancelActiveTurn(): Promise<void> {
         const turn = this.turn;
         const wakeupAbort = this.reactiveWakeupAbort;
-        if (wakeupAbort) {
-            this.reactiveWakeupAbort = null;
-            wakeupAbort.abort();
-        }
         if (turn) {
             turn.aborted = true;
             this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
@@ -2146,10 +2150,52 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (turn.steers.length > 0) this.dropUnansweredSteers(backend, turn);
                 this.restartIfCancelIgnored(backend, turn);
             } else if (wakeupAbort) {
+                // Cancel first, then arm hard-stop, then signal the wakeup loop.
+                // Clearing thinking before cancel resolves let Archive proceed
+                // while AGY still ran the published call (#2021).
                 await backend.cancelPrompt(acpSessionId);
+                this.wakeupCancelResolved = this.waitForWakeupCancel(backend);
             }
         }
+        if (wakeupAbort) {
+            this.reactiveWakeupAbort = null;
+            wakeupAbort.abort();
+        }
         await this.permissionHandler?.cancelAll('User aborted');
+    }
+
+    /**
+     * Wakeup Stop: wait until the backend dies or cancelHardStopMs elapses
+     * (then retire it). Resolves before discardStoppedWakeup clears thinking.
+     */
+    private waitForWakeupCancel(backend: AcpSdkBackend): Promise<void> {
+        return new Promise((resolve) => {
+            let settled = false;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                clearInterval(poll);
+                clearTimeout(timer);
+                resolve();
+            };
+            const poll = setInterval(() => {
+                if (this.backend !== backend || !backend.isTransportAlive()) finish();
+            }, 50);
+            poll.unref?.();
+            const timer = setTimeout(() => {
+                if (this.backend === backend && backend.isTransportAlive()) {
+                    logger.warn('[agy-acp] agy did not stop the wakeup after cancel; restarting it');
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Antigravity did not stop the wakeup; restarting it.',
+                    });
+                    this.backendLost = true;
+                    void this.retireBackend(backend);
+                }
+                finish();
+            }, this.cancelHardStopMs);
+            timer.unref?.();
+        });
     }
 
     private cancelOnceSent(backend: AcpSdkBackend, acpSessionId: string, turn: AgyTurn): void {

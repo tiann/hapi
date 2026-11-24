@@ -775,6 +775,66 @@ describe('truncateOpenCodeRewind child settlement (#2021)', () => {
         store.close()
     })
 
+    it('lets a previously settled child report running again before the first live-work read (#2021)', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'live-work-resumed-running',
+            { path: '/tmp/resumed-running', flavor: 'opencode' },
+            null,
+            'default',
+        )
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_resume',
+                    childStatus: 'running',
+                },
+            },
+        })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'completed',
+                    childSessionId: 'ses_resume',
+                    childStatus: 'completed',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+
+        // Clear in-memory registry (rewind) while durable metadata still lists
+        // ses_resume as settled — same cold shape as a hub restart.
+        const keep = store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'keep all' },
+        })
+        store.messages.truncateOpenCodeRewind(session.id, keep.seq, keep.id)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_resume',
+                    childStatus: 'running',
+                },
+            },
+        })
+        // Seed-before-apply, then persist without re-seeding the old settled bit.
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        store.close()
+    })
+
     it('still blocks Archive when rewind retains a running child that never completed', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-rewind-still-running')

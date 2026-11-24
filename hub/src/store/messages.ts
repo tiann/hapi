@@ -254,6 +254,12 @@ type ChildToolCallState = {
     /** Child session ids the hub has observed complete/fail/interrupt. */
     settledChildren: Set<string>
     rebuilt: boolean
+    /**
+     * Durable metadata overlay applied once on a cold WeakMap entry. Must not
+     * re-run after an incremental transition (e.g. settled→running) or the
+     * write path would restore the stale settled entry (#2021).
+     */
+    durableSeeded: boolean
 }
 
 type DurableChildToolWork = {
@@ -278,6 +284,7 @@ function childToolCallState(db: Database, sessionId: string): ChildToolCallState
             runningChildren: new Set(),
             settledChildren: new Set(),
             rebuilt: false,
+            durableSeeded: false,
         }
         bySession.set(sessionId, state)
     }
@@ -316,22 +323,20 @@ function readDurableChildToolWork(db: Database, sessionId: string): DurableChild
  * Seed in-memory state from durable metadata when the WeakMap is cold
  * (post-rewind / post-restart) so an incremental status write cannot clobber
  * verified settlements that exist only in metadata (#2021).
+ * Callers must seed *before* applying an incoming transition; writeDurable
+ * must not re-seed after that transition (#2021 tip Major).
  */
 function seedDurableChildToolWorkIfNeeded(db: Database, sessionId: string, state: ChildToolCallState): void {
-    if (state.rebuilt) return
+    if (state.rebuilt || state.durableSeeded) return
     applyDurableChildToolWork(state, readDurableChildToolWork(db, sessionId))
+    state.durableSeeded = true
 }
 
 /** Dual-write running/settled child session ids + settled ACP call ids. */
 function writeDurableChildToolWork(db: Database, sessionId: string, state: ChildToolCallState): void {
-    // Always merge durable first when cold — never replace the ledger from a
-    // partial in-memory cache that only saw the newest child (#2021).
-    seedDurableChildToolWorkIfNeeded(db, sessionId, state)
-    const next: DurableChildToolWork = {
-        running: [...state.runningChildren].sort(),
-        settled: [...state.settledChildren].sort(),
-        settledCallIds: [...state.settled].sort(),
-    }
+    // Do not seed here — note*/rebuild seed before applying transitions so a
+    // live running status can clear a durable settled entry (#2021).
+    const flavor = readSessionFlavor(db, sessionId)
     const row = prepareCached(db, 'SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as
         | { metadata: string | null }
         | undefined
@@ -341,7 +346,27 @@ function writeDurableChildToolWork(db: Database, sessionId: string, state: Child
     const existing = isRecord(metadata.childToolWork) ? metadata.childToolWork : null
     const priorRunning = Array.isArray(existing?.running) ? existing.running : []
     const priorSettled = Array.isArray(existing?.settled) ? existing.settled : []
-    const priorSettledCalls = Array.isArray(existing?.settledCallIds) ? existing.settledCallIds : []
+    const priorSettledCalls = Array.isArray(existing?.settledCallIds)
+        ? existing.settledCallIds.filter((id): id is string => typeof id === 'string')
+        : []
+    // settledCallIds are an OpenCode rewind latch (null flavor uses the same
+    // full-rebuild path). Named non-OpenCode flavors still settle in memory
+    // but must not grow metadata on every foreground tool result (#2021 Minor).
+    let settledCallIds: string[]
+    if (flavor === null || flavor === 'opencode') {
+        const priorSet = new Set(priorSettledCalls)
+        settledCallIds = [...priorSettledCalls]
+        for (const id of state.settled) {
+            if (!priorSet.has(id)) settledCallIds.push(id)
+        }
+    } else {
+        settledCallIds = priorSettledCalls
+    }
+    const next: DurableChildToolWork = {
+        running: [...state.runningChildren].sort(),
+        settled: [...state.settledChildren].sort(),
+        settledCallIds,
+    }
     if (
         priorRunning.length === next.running.length
         && priorSettled.length === next.settled.length
@@ -436,6 +461,7 @@ function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): Child
     // first live-work check).
     if (flavor !== null && flavor !== 'opencode') {
         applyDurableChildToolWork(state, durable)
+        state.durableSeeded = true
         state.rebuilt = true
         return state
     }
@@ -455,6 +481,7 @@ function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): Child
     // Durable settled wins over a transcript that lost its terminal marker
     // (OpenCode rewind). Running overlays only for ids not yet settled.
     applyDurableChildToolWork(state, durable)
+    state.durableSeeded = true
     state.rebuilt = true
     writeDurableChildToolWork(db, sessionId, state)
     return state
@@ -2382,6 +2409,7 @@ export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSe
         // verified completion rewind deleted is not forgotten (#2021).
         const state = childToolCallState(db, sessionId)
         state.rebuilt = false
+        state.durableSeeded = false
         state.open.clear()
         state.settled.clear()
         state.runningChildren.clear()
