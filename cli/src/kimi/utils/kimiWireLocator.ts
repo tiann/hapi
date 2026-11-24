@@ -3,14 +3,15 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { logger } from '@/ui/logger';
 import { getKimiCodeHome } from './config';
+import type { KimiWireBaseline } from './kimiWireScanner';
 
 export type LocatedKimiWire = {
     sessionId: string;
     wirePath: string;
     statePath: string;
-    // Byte offset of the wire file when this launch began; events after it
-    // belong to this launch even when they confirmed the resume.
-    wireStartOffset?: number;
+    // File identity and byte offset of the wire file when this launch began;
+    // events after it belong to this launch even when they confirmed the resume.
+    wireBaseline?: KimiWireBaseline;
 };
 
 export type KimiWireLocator = {
@@ -101,7 +102,7 @@ class KimiWireLocatorImpl {
     private readonly onLocated: KimiWireLocatorOptions['onLocated'];
     private readonly onAmbiguous?: KimiWireLocatorOptions['onAmbiguous'];
     private readonly initialSessionIds = new Set<string>();
-    private resumeWireBaseline: { size: number; mtimeMs: number } | null = null;
+    private resumeWireBaseline: { size: number; mtimeMs: number; device: number; inode: number } | null = null;
     private interval: ReturnType<typeof setInterval> | null = null;
     private scanPromise: Promise<void> | null = null;
     private stopped = false;
@@ -124,7 +125,7 @@ class KimiWireLocatorImpl {
             const resumeWirePath = getKimiWirePath(join(this.workspaceDir, this.resumeSessionId))
             const stats = await stat(resumeWirePath).catch(() => null)
             this.resumeWireBaseline = stats?.isFile()
-                ? { size: stats.size, mtimeMs: stats.mtimeMs }
+                ? { size: stats.size, mtimeMs: stats.mtimeMs, device: stats.dev, inode: stats.ino }
                 : null
         } else {
             // Snapshot pre-existing sessions: only directories that appear
@@ -262,7 +263,13 @@ class KimiWireLocatorImpl {
                 sessionId: entry.name,
                 wirePath,
                 statePath,
-                ...(this.resumeWireBaseline ? { wireStartOffset: this.resumeWireBaseline.size } : {})
+                ...(this.resumeWireBaseline ? {
+                    wireBaseline: {
+                        device: this.resumeWireBaseline.device,
+                        inode: this.resumeWireBaseline.inode,
+                        offset: this.resumeWireBaseline.size
+                    }
+                } : {})
             });
         }
         return candidates;

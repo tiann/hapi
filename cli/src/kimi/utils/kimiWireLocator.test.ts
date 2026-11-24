@@ -100,12 +100,16 @@ describe('kimiWireLocator', () => {
             // The TUI writes to the journal when it actually opens the session.
             const sessionDir = join(homeDir, 'sessions', encodeKimiWorkDirKey(workDir), 'session_old-resume');
             const wirePath = getKimiWirePath(sessionDir);
-            const baselineSize = (await stat(wirePath)).size;
+            const baselineStats = await stat(wirePath);
             await writeFile(wirePath, JSON.stringify({ type: 'turn.prompt', time: Date.now() }) + '\n', { flag: 'a' });
             await wait(300);
             expect(located).toHaveLength(1);
             expect(located[0]?.sessionId).toBe('session_old-resume');
-            expect(located[0]?.wireStartOffset).toBe(baselineSize);
+            expect(located[0]?.wireBaseline).toEqual({
+                device: baselineStats.dev,
+                inode: baselineStats.ino,
+                offset: baselineStats.size
+            });
         } finally {
             await locator.cleanup();
         }
@@ -114,7 +118,7 @@ describe('kimiWireLocator', () => {
     it('scans once at cleanup so a resume confirmed after the last poll is still located', async () => {
         const sessionDir = await seedSession('session_late-resume');
         const wirePath = getKimiWirePath(sessionDir);
-        const baselineSize = (await stat(wirePath)).size;
+        const baselineStats = await stat(wirePath);
 
         const located: LocatedKimiWire[] = [];
         const locator = createKimiWireLocator({
@@ -135,7 +139,11 @@ describe('kimiWireLocator', () => {
         expect(located).toHaveLength(1);
         expect(located[0]).toMatchObject({
             sessionId: 'session_late-resume',
-            wireStartOffset: baselineSize
+            wireBaseline: {
+                device: baselineStats.dev,
+                inode: baselineStats.ino,
+                offset: baselineStats.size
+            }
         });
     });
 

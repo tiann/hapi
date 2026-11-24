@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { appendFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -168,10 +168,11 @@ describe('kimiWireScanner', () => {
             origin: { kind: 'user' }
         }) + '\n';
         await writeFile(wirePath, oldLine + newLine);
+        const fileStats = await stat(wirePath);
 
         scanner = await createKimiWireScanner({
             wirePath,
-            startOffset: Buffer.byteLength(oldLine),
+            wireBaseline: { device: fileStats.dev, inode: fileStats.ino, offset: Buffer.byteLength(oldLine) },
             onEvent: (event) => events.push(event)
         });
 
@@ -191,16 +192,55 @@ describe('kimiWireScanner', () => {
             input: [{ type: 'text', text: 'first prompt' }],
             origin: { kind: 'user' }
         }) + '\n');
+        const fileStats = await stat(wirePath);
 
         scanner = await createKimiWireScanner({
             wirePath,
-            startOffset: 0,
+            wireBaseline: { device: fileStats.dev, inode: fileStats.ino, offset: 0 },
             onEvent: (event) => events.push(event)
         });
 
         await wait(300);
         expect(events).toHaveLength(1);
         expect(events[0]?.type).toBe('turn.prompt');
+    });
+
+    it('reads a replaced wire file from the start when the baseline inode changed', async () => {
+        const firstLine = JSON.stringify({
+            type: 'turn.prompt',
+            input: [{ type: 'text', text: 'first resumed turn' }],
+            origin: { kind: 'user' }
+        }) + '\n';
+        const secondLine = JSON.stringify({
+            type: 'turn.prompt',
+            input: [{ type: 'text', text: 'second resumed turn' }],
+            origin: { kind: 'user' }
+        }) + '\n';
+        await writeFile(wirePath, firstLine);
+        const baselineStats = await stat(wirePath);
+        const baseline = { device: baselineStats.dev, inode: baselineStats.ino, offset: baselineStats.size };
+
+        // kimi-code replaces the journal before hapi attaches the scanner.
+        const replacementPath = join(testDir, 'wire-replacement.jsonl');
+        await writeFile(replacementPath, firstLine + secondLine);
+        await rename(replacementPath, wirePath);
+
+        const replacedStats = await stat(wirePath);
+        expect(replacedStats.size).toBeGreaterThanOrEqual(baseline.offset);
+        expect(replacedStats.ino).not.toBe(baseline.inode);
+
+        scanner = await createKimiWireScanner({
+            wirePath,
+            wireBaseline: baseline,
+            onEvent: (event) => events.push(event)
+        });
+
+        await wait(300);
+        expect(events).toHaveLength(2);
+        expect(events[0]).toMatchObject({
+            type: 'turn.prompt',
+            input: [{ type: 'text', text: 'first resumed turn' }]
+        });
     });
 
     it('handles lines split across reads', async () => {

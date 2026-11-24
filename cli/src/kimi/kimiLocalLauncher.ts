@@ -5,7 +5,7 @@ import type { PermissionMode } from './types';
 import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
 import { createNativeSessionTitleMetadataSync } from '@/agent/nativeSessionTitle';
 import { createKimiWireLocator, type KimiWireLocator } from './utils/kimiWireLocator';
-import { convertKimiWireEvent, createKimiWireScanner, type KimiWireScanner } from './utils/kimiWireScanner';
+import { convertKimiWireEvent, createKimiWireScanner, type KimiWireBaseline, type KimiWireScanner } from './utils/kimiWireScanner';
 import { createKimiSessionTitleWatcher, type KimiSessionTitleWatcher } from './utils/kimiSessionTitleWatcher';
 
 function mapApprovalMode(mode: PermissionMode | undefined): { yolo: boolean; plan: boolean } {
@@ -34,11 +34,11 @@ export async function kimiLocalLauncher(
     let pendingTitleWatcherSetup: Promise<void> | null = null;
     const syncTitle = createNativeSessionTitleMetadataSync(session.client);
 
-    const attachWireScanner = (wirePath: string, wireStartOffset?: number): Promise<void> => {
+    const attachWireScanner = (wirePath: string, wireBaseline?: KimiWireBaseline): Promise<void> => {
         const setup = (async () => {
             const created = await createKimiWireScanner({
                 wirePath,
-                startOffset: wireStartOffset,
+                wireBaseline,
                 onEvent: (event) => {
                     const converted = convertKimiWireEvent(event, session.getModel() ?? opts.model);
                     if (!converted) {
@@ -92,12 +92,12 @@ export async function kimiLocalLauncher(
         cwd: session.path,
         startupTimestampMs,
         resumeSessionId: session.sessionId,
-        onLocated: ({ sessionId, wirePath, statePath, wireStartOffset }) => {
+        onLocated: ({ sessionId, wirePath, statePath, wireBaseline }) => {
             if (shuttingDown) {
                 return;
             }
             session.onSessionFound(sessionId);
-            void attachWireScanner(wirePath, wireStartOffset);
+            void attachWireScanner(wirePath, wireBaseline);
             void attachTitleWatcher(statePath);
         },
         onAmbiguous: (sessionIds) => {
