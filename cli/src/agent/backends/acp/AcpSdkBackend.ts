@@ -199,6 +199,11 @@ export class AcpSdkBackend implements AgentBackend {
         handler: AcpMessageHandler;
         timer: ReturnType<typeof setTimeout> | null;
     }>();
+    /**
+     * Child session ids that reported created/running — including those with no
+     * handler yet (between tool calls). Disconnect must interrupt these too (#2021).
+     */
+    private readonly knownChildSessionIds = new Set<string>();
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -1376,11 +1381,12 @@ export class AcpSdkBackend implements AgentBackend {
         await this.sessionUpdateQueue;
         // Remote→local (and other disconnect paths) keep the same HAPI wrapper
         // PID, so hub worker-exit retirement never fires. Publish interrupted
-        // for every open child before dropping handlers so Archive cannot stay
-        // blocked on a running child that the backend will never update (#2021).
-        if (this.childEmitSink && this.childHandlers.size > 0) {
-            const sink = this.childEmitSink;
-            for (const childSessionId of [...this.childHandlers.keys()]) {
+        // for every known child (handler or status-only) before dropping the
+        // sink so Archive cannot stay blocked (#2021).
+        const sink = this.childEmitSink;
+        const childIds = new Set([...this.knownChildSessionIds, ...this.childHandlers.keys()]);
+        if (sink && childIds.size > 0) {
+            for (const childSessionId of childIds) {
                 const scope = childToolCallScope(childSessionId);
                 this.toolCallLifetimes.cancel(scope);
                 const settledCallIds = this.toolCallLifetimes.settleCancelled(scope);
@@ -1399,14 +1405,21 @@ export class AcpSdkBackend implements AgentBackend {
                         error instanceof Error ? error.message : String(error)
                     );
                 }
-                this.finishChildHandler(childSessionId);
+                if (this.childHandlers.has(childSessionId)) {
+                    this.finishChildHandler(childSessionId);
+                }
+                this.knownChildSessionIds.delete(childSessionId);
             }
+            // finishChildHandler queues drainBuffers — flush before clearing sink
+            // so pending child text is not discarded (#2021).
+            await this.sessionUpdateQueue;
         } else {
             for (const entry of this.childHandlers.values()) {
                 this.clearChildQuietTimer(entry);
                 entry.handler.drainBuffers();
             }
             this.childHandlers.clear();
+            this.knownChildSessionIds.clear();
         }
         const recordSessionId = this.activeSessionId;
         this.childEmitSink = null;
@@ -1581,6 +1594,7 @@ export class AcpSdkBackend implements AgentBackend {
             if (status === 'created' || status === 'running') {
                 // Child can be alive with no open tool call (between calls or
                 // before the first). Publish so Archive stays blocked (#2021).
+                this.knownChildSessionIds.add(childSessionId);
                 const sink = this.childEmitSink;
                 if (sink) {
                     this.sessionUpdateQueue = this.sessionUpdateQueue
@@ -1609,6 +1623,7 @@ export class AcpSdkBackend implements AgentBackend {
                 this.toolCallLifetimes.cancel(scope);
                 const settledCallIds = this.toolCallLifetimes.settleCancelled(scope);
                 this.toolCallLifetimes.beginGeneration(scope);
+                this.knownChildSessionIds.delete(childSessionId);
                 this.finishChildHandler(childSessionId);
                 // Publish child terminal + scope settlement so Archive can
                 // clear running-child and sticky tool rows (#2021).

@@ -510,12 +510,6 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(leavingRemote = false): Promise<void> {
-        // Plain Stop preserves the pending queue for the next drain; only
-        // terminal cleanup (exit / switch-to-local) resets it.
-        if (leavingRemote) {
-            this.session.queue.reset();
-        }
-
         // Kill the live agent against activeChild — not only via the abort
         // signal — so a second Stop can retry when the first tree kill did
         // not confirm (descendant holding stdio, soft kill refused) (#2021).
@@ -539,10 +533,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 this.stopDrainArmed = true;
                 this.armActiveChildDrain?.();
             } else if (leavingRemote) {
-                // Do not fake Switch/Exit success via the drain timer while the
-                // process tree is still unconfirmed — that would settle tools
-                // and hand off to local Cursor while the remote child still
-                // runs (#2021 tip Major).
+                // Keep the launcher recoverable: do not reset the queue or mark
+                // the turn aborted until the process tree is confirmed gone (#2021).
                 this.stopDrainArmed = false;
                 this.messageBuffer.addMessage(
                     'Exit: agent process still open after force kill — handoff blocked',
@@ -563,6 +555,12 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             this.stopDrainArmed = true;
         }
 
+        // Terminal cleanup resets the queue only after kill confirms — a rejected
+        // Switch must leave queued work and launcher state recoverable (#2021).
+        if (leavingRemote) {
+            this.session.queue.reset();
+        }
+
         // Keep thinking=true while the subprocess is still open so the web
         // composer leaves Stop enabled for a retry (#2021). Clear only after
         // confirmed termination (or when there was no child).
@@ -576,6 +574,13 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         // Settlement waits for subprocess `close` (or the post-kill drain
         // bound) inside runAgentProcess so late buffered tool_call starts are
         // included (#2021).
+    }
+
+    protected onTerminalTeardownRejected(): void {
+        // requestExit already set shouldExit/exitReason before the handler ran.
+        // Clear them so a rejected Switch leaves the remote launcher runnable.
+        this.shouldExit = false;
+        this.exitReason = null;
     }
 
     private async handleExitFromUi(): Promise<void> {
