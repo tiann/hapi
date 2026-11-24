@@ -61,8 +61,6 @@
   "channels": {
     "0/auth": [
       {
-        "event": "auth",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -70,13 +68,13 @@
             "sessionId": "<uuid:1>",
             "token": "parity-token"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "auth"
       }
     ],
     "0/http": [
       {
-        "event": "POST /cli/machines",
-        "connection": 0,
         "ackRequested": false,
         "args": [
           {
@@ -95,11 +93,11 @@
             },
             "query": {}
           }
-        ]
+        ],
+        "connection": 0,
+        "event": "POST /cli/machines"
       },
       {
-        "event": "POST /cli/sessions",
-        "connection": 0,
         "ackRequested": false,
         "args": [
           {
@@ -133,11 +131,11 @@
             },
             "query": {}
           }
-        ]
+        ],
+        "connection": 0,
+        "event": "POST /cli/sessions"
       },
       {
-        "event": "POST /session-started",
-        "connection": 0,
         "ackRequested": false,
         "args": [
           {
@@ -164,13 +162,13 @@
             },
             "sessionId": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 0,
+        "event": "POST /session-started"
       }
     ],
     "0/update-metadata": [
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -227,11 +225,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       },
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -298,11 +296,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       },
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -371,11 +369,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       },
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -415,9 +413,15 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "slashCommands": [
+                "compact"
+              ],
               "startedBy": "runner",
               "startedFromRunner": true,
               "startingMode": "remote",
+              "tools": [
+                "Bash"
+              ],
               "version": "<version>"
             },
             "result": "success",
@@ -465,20 +469,26 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "slashCommands": [
+                "compact"
+              ],
               "startedBy": "runner",
               "startedFromRunner": true,
               "startingMode": "remote",
+              "tools": [
+                "Bash"
+              ],
               "version": "<version>"
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       }
     ],
     "0/update-state": [
       {
-        "event": "update-state",
-        "connection": 1,
         "ack": [
           {
             "agentState": {
@@ -499,13 +509,13 @@
             "expectedVersion": 2,
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-state"
       }
     ],
     "1/others": [
       {
-        "event": "rpc-ack",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -515,13 +525,13 @@
               "permissionMode": "default"
             }
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "rpc-ack"
       }
     ],
     "1/step": [
       {
-        "event": "step",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -531,13 +541,13 @@
             },
             "rpc": "set-session-config"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "step"
       }
     ],
     "2/chat": [
       {
-        "event": "messages-consumed",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -546,11 +556,11 @@
             ],
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "messages-consumed"
       },
       {
-        "event": "message",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -588,11 +598,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "message"
       },
       {
-        "event": "message",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -626,11 +636,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "message"
       },
       {
-        "event": "message",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -646,13 +656,13 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "message"
       }
     ],
     "2/step": [
       {
-        "event": "step",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -699,13 +709,13 @@
               }
             ]
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "step"
       }
     ],
     "2/update-metadata": [
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -730,6 +740,12 @@
                 "provider": "claude",
                 "updatedAt": "<ts>",
                 "version": 1
+              },
+              "conversationHistoryEntryIds": {
+                "local-1": "<uuid:8>"
+              },
+              "conversationHistoryPoints": {
+                "local-1": true
               },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
@@ -787,6 +803,12 @@
                 "updatedAt": "<ts>",
                 "version": 1
               },
+              "conversationHistoryEntryIds": {
+                "local-1": "<uuid:8>"
+              },
+              "conversationHistoryPoints": {
+                "local-1": true
+              },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
@@ -814,11 +836,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       },
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -830,6 +852,7 @@
                 },
                 "terminal": true
               },
+              "claudeSessionId": "<uuid:4>",
               "contextDetails": {
                 "claude": {
                   "skills": [],
@@ -892,6 +915,7 @@
                 },
                 "terminal": true
               },
+              "claudeSessionId": "<uuid:4>",
               "contextDetails": {
                 "claude": {
                   "skills": [],
@@ -939,11 +963,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       },
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -996,6 +1020,10 @@
               "startedBy": "runner",
               "startedFromRunner": true,
               "startingMode": "remote",
+              "summary": {
+                "text": "hello",
+                "updatedAt": "<ts>"
+              },
               "tools": [
                 "Bash"
               ],
@@ -1059,6 +1087,10 @@
               "startedBy": "runner",
               "startedFromRunner": true,
               "startingMode": "remote",
+              "summary": {
+                "text": "hello",
+                "updatedAt": "<ts>"
+              },
               "tools": [
                 "Bash"
               ],
@@ -1066,11 +1098,222 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
+      }
+    ],
+    "2/update-state": [
+      {
+        "ack": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote",
+              "steeringActive": true
+            },
+            "result": "success",
+            "version": 4
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote",
+              "steeringActive": true
+            },
+            "expectedVersion": 3,
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 1,
+        "event": "update-state"
       },
       {
-        "event": "update-metadata",
+        "ack": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote",
+              "steeringActive": false
+            },
+            "result": "success",
+            "version": 5
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote",
+              "steeringActive": false
+            },
+            "expectedVersion": 4,
+            "sid": "<uuid:1>"
+          }
+        ],
         "connection": 1,
+        "event": "update-state"
+      }
+    ],
+    "3/others": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "applied": {
+              "effort": "low",
+              "model": "sonnet",
+              "permissionMode": "default"
+            }
+          }
+        ],
+        "connection": 1,
+        "event": "rpc-ack"
+      }
+    ],
+    "3/step": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "params": {
+              "effort": "low",
+              "model": "sonnet"
+            },
+            "rpc": "set-session-config"
+          }
+        ],
+        "connection": 1,
+        "event": "step"
+      }
+    ],
+    "4/chat": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "localIds": [
+              "local-2"
+            ],
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 1,
+        "event": "messages-consumed"
+      },
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "createdAt": "<ts>",
+            "message": {
+              "content": {
+                "data": {
+                  "cwd": "<tmp>/project",
+                  "durationMs": 1,
+                  "isSidechain": false,
+                  "parentUuid": "<uuid:5>",
+                  "resultSummary": {
+                    "duration_ms": 1,
+                    "num_turns": 1,
+                    "total_cost_usd": 0
+                  },
+                  "sessionId": "<uuid:4>",
+                  "subtype": "turn_duration",
+                  "timestamp": "<ts>",
+                  "type": "system",
+                  "userType": "external",
+                  "uuid": "<uuid:9>",
+                  "version": "0.0.0"
+                },
+                "type": "output"
+              },
+              "meta": {
+                "sentFrom": "cli"
+              },
+              "role": "agent"
+            },
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 1,
+        "event": "message"
+      },
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "message": {
+              "content": {
+                "data": {
+                  "type": "ready"
+                },
+                "id": "<uuid:10>",
+                "type": "event"
+              },
+              "role": "agent"
+            },
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 1,
+        "event": "message"
+      }
+    ],
+    "4/step": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "sendUpdate": {
+              "message": {
+                "content": {
+                  "content": {
+                    "text": "Continue at low effort",
+                    "type": "text"
+                  },
+                  "role": "user"
+                },
+                "createdAt": 2,
+                "id": "message-2",
+                "localId": "local-2",
+                "seq": 2
+              },
+              "t": "new-message"
+            },
+            "until": [
+              {
+                "contains": "\"type\":\"ready\"",
+                "event": "message"
+              },
+              {
+                "count": 2,
+                "event": "update-state",
+                "result": "success"
+              },
+              {
+                "contains": "\"steeringActive\":false",
+                "event": "update-state",
+                "result": "success"
+              },
+              {
+                "contains": "\"local-2\":",
+                "event": "update-metadata",
+                "result": "success"
+              }
+            ]
+          }
+        ],
+        "connection": 1,
+        "event": "step"
+      }
+    ],
+    "4/update-metadata": [
+      {
         "ack": [
           {
             "metadata": {
@@ -1098,10 +1341,12 @@
                 "version": 1
               },
               "conversationHistoryEntryIds": {
-                "local-1": "<uuid:8>"
+                "local-1": "<uuid:8>",
+                "local-2": "<uuid:11>"
               },
               "conversationHistoryPoints": {
-                "local-1": true
+                "local-1": true,
+                "local-2": true
               },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
@@ -1165,10 +1410,12 @@
                 "version": 1
               },
               "conversationHistoryEntryIds": {
-                "local-1": "<uuid:8>"
+                "local-1": "<uuid:8>",
+                "local-2": "<uuid:11>"
               },
               "conversationHistoryPoints": {
-                "local-1": true
+                "local-1": true,
+                "local-2": true
               },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
@@ -1201,13 +1448,13 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       }
     ],
-    "2/update-state": [
+    "4/update-state": [
       {
-        "event": "update-state",
-        "connection": 1,
         "ack": [
           {
             "agentState": {
@@ -1216,7 +1463,7 @@
               "steeringActive": true
             },
             "result": "success",
-            "version": 4
+            "version": 6
           }
         ],
         "ackRequested": true,
@@ -1227,14 +1474,14 @@
               "startingMode": "remote",
               "steeringActive": true
             },
-            "expectedVersion": 3,
+            "expectedVersion": 5,
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-state"
       },
       {
-        "event": "update-state",
-        "connection": 1,
         "ack": [
           {
             "agentState": {
@@ -1243,7 +1490,7 @@
               "steeringActive": false
             },
             "result": "success",
-            "version": 5
+            "version": 7
           }
         ],
         "ackRequested": true,
@@ -1254,172 +1501,68 @@
               "startingMode": "remote",
               "steeringActive": false
             },
-            "expectedVersion": 4,
+            "expectedVersion": 6,
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-state"
       }
     ],
-    "3/others": [
+    "5/lifecycle": [
       {
-        "event": "rpc-ack",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
-            "applied": {
+            "reason": "terminated",
+            "sid": "<uuid:1>",
+            "time": "<ts>"
+          }
+        ],
+        "connection": 1,
+        "event": "session-end"
+      }
+    ],
+    "5/others": [
+      {
+        "ack": [],
+        "ackRequested": true,
+        "args": [],
+        "connection": 1,
+        "event": "ping",
+        "flush": {
+          "archived": true,
+          "pendingWrites": 0,
+          "sessionEnded": true
+        }
+      }
+    ],
+    "5/step": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "settledAlive": {
               "effort": "low",
+              "mode": "remote",
               "model": "sonnet",
-              "permissionMode": "default"
-            }
+              "permissionMode": "default",
+              "thinking": false
+            },
+            "signal": "SIGTERM"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "step"
       }
     ],
-    "3/step": [
+    "5/update-metadata": [
       {
-        "event": "step",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "params": {
-              "effort": "low",
-              "model": "sonnet"
-            },
-            "rpc": "set-session-config"
-          }
-        ]
-      }
-    ],
-    "4/chat": [
-      {
-        "event": "messages-consumed",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "localIds": [
-              "local-2"
-            ],
-            "sid": "<uuid:1>"
-          }
-        ]
-      },
-      {
-        "event": "message",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "createdAt": "<ts>",
-            "message": {
-              "content": {
-                "data": {
-                  "cwd": "<tmp>/project",
-                  "durationMs": 1,
-                  "isSidechain": false,
-                  "parentUuid": "<uuid:5>",
-                  "resultSummary": {
-                    "duration_ms": 1,
-                    "num_turns": 1,
-                    "total_cost_usd": 0
-                  },
-                  "sessionId": "<uuid:4>",
-                  "subtype": "turn_duration",
-                  "timestamp": "<ts>",
-                  "type": "system",
-                  "userType": "external",
-                  "uuid": "<uuid:9>",
-                  "version": "0.0.0"
-                },
-                "type": "output"
-              },
-              "meta": {
-                "sentFrom": "cli"
-              },
-              "role": "agent"
-            },
-            "sid": "<uuid:1>"
-          }
-        ]
-      },
-      {
-        "event": "message",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "message": {
-              "content": {
-                "data": {
-                  "type": "ready"
-                },
-                "id": "<uuid:10>",
-                "type": "event"
-              },
-              "role": "agent"
-            },
-            "sid": "<uuid:1>"
-          }
-        ]
-      }
-    ],
-    "4/step": [
-      {
-        "event": "step",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "sendUpdate": {
-              "message": {
-                "content": {
-                  "content": {
-                    "text": "Continue at low effort",
-                    "type": "text"
-                  },
-                  "role": "user"
-                },
-                "createdAt": 2,
-                "id": "message-2",
-                "localId": "local-2",
-                "seq": 2
-              },
-              "t": "new-message"
-            },
-            "until": [
-              {
-                "contains": "\"type\":\"ready\"",
-                "event": "message"
-              },
-              {
-                "count": 2,
-                "event": "update-state",
-                "result": "success"
-              },
-              {
-                "contains": "\"steeringActive\":false",
-                "event": "update-state",
-                "result": "success"
-              },
-              {
-                "contains": "\"local-2\":",
-                "event": "update-metadata",
-                "result": "success"
-              }
-            ]
-          }
-        ]
-      }
-    ],
-    "4/update-metadata": [
-      {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
+              "archiveReason": "Hub restart",
+              "archivedBy": "cli",
               "capabilities": {
                 "conversationHistory": {
                   "forkAtMessage": true,
@@ -1460,7 +1603,7 @@
               "host": "parity",
               "hostPid": "<pid>",
               "hostStartMarker": "<marker>",
-              "lifecycleState": "running",
+              "lifecycleState": "archived",
               "lifecycleStateSince": "<ts>",
               "machineId": "parity-machine",
               "os": "linux",
@@ -1489,252 +1632,6 @@
           {
             "expectedVersion": 10,
             "metadata": {
-              "capabilities": {
-                "conversationHistory": {
-                  "forkAtMessage": true,
-                  "forkCurrent": true,
-                  "rewindToMessage": true
-                },
-                "terminal": true
-              },
-              "claudeSessionId": "<uuid:4>",
-              "contextDetails": {
-                "claude": {
-                  "skills": [],
-                  "slashCommands": [
-                    "compact"
-                  ],
-                  "systemTools": [
-                    "Bash"
-                  ]
-                },
-                "provider": "claude",
-                "updatedAt": "<ts>",
-                "version": 1
-              },
-              "conversationHistoryEntryIds": {
-                "local-1": "<uuid:8>",
-                "local-2": "<uuid:11>"
-              },
-              "conversationHistoryPoints": {
-                "local-1": true,
-                "local-2": true
-              },
-              "flavor": "claude",
-              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
-              "happyHomeDir": "<tmp>/hapi",
-              "happyLibDir": "<lib>",
-              "happyToolsDir": "<tools>",
-              "homeDir": "<tmp>",
-              "host": "parity",
-              "hostPid": "<pid>",
-              "hostStartMarker": "<marker>",
-              "lifecycleState": "running",
-              "lifecycleStateSince": "<ts>",
-              "machineId": "parity-machine",
-              "os": "linux",
-              "path": "<tmp>/project",
-              "slashCommands": [
-                "compact"
-              ],
-              "startedBy": "runner",
-              "startedFromRunner": true,
-              "startingMode": "remote",
-              "summary": {
-                "text": "hello",
-                "updatedAt": "<ts>"
-              },
-              "tools": [
-                "Bash"
-              ],
-              "version": "<version>"
-            },
-            "sid": "<uuid:1>"
-          }
-        ]
-      }
-    ],
-    "4/update-state": [
-      {
-        "event": "update-state",
-        "connection": 1,
-        "ack": [
-          {
-            "agentState": {
-              "controlledByUser": false,
-              "startingMode": "remote",
-              "steeringActive": true
-            },
-            "result": "success",
-            "version": 6
-          }
-        ],
-        "ackRequested": true,
-        "args": [
-          {
-            "agentState": {
-              "controlledByUser": false,
-              "startingMode": "remote",
-              "steeringActive": true
-            },
-            "expectedVersion": 5,
-            "sid": "<uuid:1>"
-          }
-        ]
-      },
-      {
-        "event": "update-state",
-        "connection": 1,
-        "ack": [
-          {
-            "agentState": {
-              "controlledByUser": false,
-              "startingMode": "remote",
-              "steeringActive": false
-            },
-            "result": "success",
-            "version": 7
-          }
-        ],
-        "ackRequested": true,
-        "args": [
-          {
-            "agentState": {
-              "controlledByUser": false,
-              "startingMode": "remote",
-              "steeringActive": false
-            },
-            "expectedVersion": 6,
-            "sid": "<uuid:1>"
-          }
-        ]
-      }
-    ],
-    "5/lifecycle": [
-      {
-        "event": "session-end",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "reason": "terminated",
-            "sid": "<uuid:1>",
-            "time": "<ts>"
-          }
-        ]
-      }
-    ],
-    "5/others": [
-      {
-        "event": "ping",
-        "connection": 1,
-        "ack": [],
-        "ackRequested": true,
-        "args": [],
-        "flush": {
-          "archived": true,
-          "pendingWrites": 0,
-          "sessionEnded": true
-        }
-      }
-    ],
-    "5/step": [
-      {
-        "event": "step",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "settledAlive": {
-              "effort": "low",
-              "mode": "remote",
-              "model": "sonnet",
-              "permissionMode": "default",
-              "thinking": false
-            },
-            "signal": "SIGTERM"
-          }
-        ]
-      }
-    ],
-    "5/update-metadata": [
-      {
-        "event": "update-metadata",
-        "connection": 1,
-        "ack": [
-          {
-            "metadata": {
-              "archiveReason": "Hub restart",
-              "archivedBy": "cli",
-              "capabilities": {
-                "conversationHistory": {
-                  "forkAtMessage": true,
-                  "forkCurrent": true,
-                  "rewindToMessage": true
-                },
-                "terminal": true
-              },
-              "claudeSessionId": "<uuid:4>",
-              "contextDetails": {
-                "claude": {
-                  "skills": [],
-                  "slashCommands": [
-                    "compact"
-                  ],
-                  "systemTools": [
-                    "Bash"
-                  ]
-                },
-                "provider": "claude",
-                "updatedAt": "<ts>",
-                "version": 1
-              },
-              "conversationHistoryEntryIds": {
-                "local-1": "<uuid:8>",
-                "local-2": "<uuid:11>"
-              },
-              "conversationHistoryPoints": {
-                "local-1": true,
-                "local-2": true
-              },
-              "flavor": "claude",
-              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
-              "happyHomeDir": "<tmp>/hapi",
-              "happyLibDir": "<lib>",
-              "happyToolsDir": "<tools>",
-              "homeDir": "<tmp>",
-              "host": "parity",
-              "hostPid": "<pid>",
-              "hostStartMarker": "<marker>",
-              "lifecycleState": "archived",
-              "lifecycleStateSince": "<ts>",
-              "machineId": "parity-machine",
-              "os": "linux",
-              "path": "<tmp>/project",
-              "slashCommands": [
-                "compact"
-              ],
-              "startedBy": "runner",
-              "startedFromRunner": true,
-              "startingMode": "remote",
-              "summary": {
-                "text": "hello",
-                "updatedAt": "<ts>"
-              },
-              "tools": [
-                "Bash"
-              ],
-              "version": "<version>"
-            },
-            "result": "success",
-            "version": 12
-          }
-        ],
-        "ackRequested": true,
-        "args": [
-          {
-            "expectedVersion": 11,
-            "metadata": {
               "archiveReason": "Hub restart",
               "archivedBy": "cli",
               "capabilities": {
@@ -1799,7 +1696,9 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       }
     ]
   },

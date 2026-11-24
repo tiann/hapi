@@ -61,8 +61,6 @@
   "channels": {
     "0/auth": [
       {
-        "event": "auth",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -70,13 +68,13 @@
             "sessionId": "<uuid:1>",
             "token": "parity-token"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "auth"
       }
     ],
     "0/http": [
       {
-        "event": "POST /cli/machines",
-        "connection": 0,
         "ackRequested": false,
         "args": [
           {
@@ -95,11 +93,11 @@
             },
             "query": {}
           }
-        ]
+        ],
+        "connection": 0,
+        "event": "POST /cli/machines"
       },
       {
-        "event": "POST /cli/sessions",
-        "connection": 0,
         "ackRequested": false,
         "args": [
           {
@@ -133,11 +131,11 @@
             },
             "query": {}
           }
-        ]
+        ],
+        "connection": 0,
+        "event": "POST /cli/sessions"
       },
       {
-        "event": "POST /session-started",
-        "connection": 0,
         "ackRequested": false,
         "args": [
           {
@@ -164,13 +162,13 @@
             },
             "sessionId": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 0,
+        "event": "POST /session-started"
       }
     ],
     "0/update-metadata": [
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -227,11 +225,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       },
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -298,11 +296,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       },
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -371,11 +369,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       },
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -415,9 +413,15 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "slashCommands": [
+                "compact"
+              ],
               "startedBy": "runner",
               "startedFromRunner": true,
               "startingMode": "remote",
+              "tools": [
+                "Bash"
+              ],
               "version": "<version>"
             },
             "result": "success",
@@ -465,20 +469,26 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "slashCommands": [
+                "compact"
+              ],
               "startedBy": "runner",
               "startedFromRunner": true,
               "startingMode": "remote",
+              "tools": [
+                "Bash"
+              ],
               "version": "<version>"
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       }
     ],
     "0/update-state": [
       {
-        "event": "update-state",
-        "connection": 1,
         "ack": [
           {
             "agentState": {
@@ -499,25 +509,25 @@
             "expectedVersion": 2,
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-state"
       }
     ],
     "1/others": [
       {
-        "event": "rpc-ack",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
             "error": "Session machine does not match shutdown target"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "rpc-ack"
       }
     ],
     "1/step": [
       {
-        "event": "step",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -529,25 +539,25 @@
             },
             "rpc": "killSession"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "step"
       }
     ],
     "2/others": [
       {
-        "event": "rpc-ack",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
             "error": "Session process generation does not match shutdown target"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "rpc-ack"
       }
     ],
     "2/step": [
       {
-        "event": "step",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -559,16 +569,165 @@
             },
             "rpc": "killSession"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "step"
       }
     ],
-    "2/update-metadata": [
+    "3/others": [
       {
-        "event": "update-metadata",
+        "ackRequested": false,
+        "args": [
+          {
+            "error": "Session shutdown preparation lease is invalid or expired"
+          }
+        ],
         "connection": 1,
+        "event": "rpc-ack"
+      }
+    ],
+    "3/step": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "expectAck": {
+              "error": "Session shutdown preparation lease is invalid or expired"
+            },
+            "params": {
+              "expectedPid": "$pid",
+              "expectedProcessStartMarker": "$marker",
+              "preparationLease": {
+                "expiresAt": 1,
+                "id": "parity-lease"
+              },
+              "prepareOnly": true
+            },
+            "rpc": "killSession"
+          }
+        ],
+        "connection": 1,
+        "event": "step"
+      }
+    ],
+    "4/others": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "message": "Session shutdown prepared",
+            "pid": "<pid>",
+            "preparationLease": {
+              "expiresAt": "<lease-expiry>",
+              "id": "parity-lease"
+            },
+            "processStartMarker": "<marker>",
+            "success": true
+          }
+        ],
+        "connection": 1,
+        "event": "rpc-ack"
+      }
+    ],
+    "4/step": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "expectAck": {
+              "message": "Session shutdown prepared",
+              "success": true
+            },
+            "params": {
+              "expectedPid": "$pid",
+              "expectedProcessStartMarker": "$marker",
+              "preparationLease": {
+                "expiresAt": "$leaseExpiry",
+                "id": "parity-lease"
+              },
+              "prepareOnly": true
+            },
+            "rpc": "killSession"
+          }
+        ],
+        "connection": 1,
+        "event": "step"
+      }
+    ],
+    "5/lifecycle": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "reason": "terminated",
+            "sid": "<uuid:1>",
+            "time": "<ts>"
+          }
+        ],
+        "connection": 1,
+        "event": "session-end"
+      }
+    ],
+    "5/others": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "message": "Killing hapi CLI process",
+            "pid": "<pid>",
+            "processStartMarker": "<marker>",
+            "success": true
+          }
+        ],
+        "connection": 1,
+        "event": "rpc-ack"
+      },
+      {
+        "ack": [],
+        "ackRequested": true,
+        "args": [],
+        "connection": 1,
+        "event": "ping",
+        "flush": {
+          "archived": true,
+          "pendingWrites": 0,
+          "sessionEnded": true
+        }
+      }
+    ],
+    "5/step": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "expectAck": {
+              "success": true
+            },
+            "params": {
+              "expectedPid": "$pid",
+              "expectedProcessStartMarker": "$marker"
+            },
+            "rpc": "killSession",
+            "settledAlive": {
+              "effort": null,
+              "mode": "remote",
+              "model": null,
+              "permissionMode": "default",
+              "thinking": false
+            }
+          }
+        ],
+        "connection": 1,
+        "event": "step"
+      }
+    ],
+    "5/update-metadata": [
+      {
         "ack": [
           {
             "metadata": {
+              "archiveReason": "User terminated",
+              "archivedBy": "cli",
               "capabilities": {
                 "conversationHistory": {
                   "forkAtMessage": true,
@@ -600,7 +759,7 @@
               "host": "parity",
               "hostPid": "<pid>",
               "hostStartMarker": "<marker>",
-              "lifecycleState": "running",
+              "lifecycleState": "archived",
               "lifecycleStateSince": "<ts>",
               "machineId": "parity-machine",
               "os": "linux",
@@ -625,212 +784,6 @@
           {
             "expectedVersion": 6,
             "metadata": {
-              "capabilities": {
-                "conversationHistory": {
-                  "forkAtMessage": true,
-                  "forkCurrent": true,
-                  "rewindToMessage": true
-                },
-                "terminal": true
-              },
-              "contextDetails": {
-                "claude": {
-                  "skills": [],
-                  "slashCommands": [
-                    "compact"
-                  ],
-                  "systemTools": [
-                    "Bash"
-                  ]
-                },
-                "provider": "claude",
-                "updatedAt": "<ts>",
-                "version": 1
-              },
-              "flavor": "claude",
-              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
-              "happyHomeDir": "<tmp>/hapi",
-              "happyLibDir": "<lib>",
-              "happyToolsDir": "<tools>",
-              "homeDir": "<tmp>",
-              "host": "parity",
-              "hostPid": "<pid>",
-              "hostStartMarker": "<marker>",
-              "lifecycleState": "running",
-              "lifecycleStateSince": "<ts>",
-              "machineId": "parity-machine",
-              "os": "linux",
-              "path": "<tmp>/project",
-              "slashCommands": [
-                "compact"
-              ],
-              "startedBy": "runner",
-              "startedFromRunner": true,
-              "startingMode": "remote",
-              "tools": [
-                "Bash"
-              ],
-              "version": "<version>"
-            },
-            "sid": "<uuid:1>"
-          }
-        ]
-      }
-    ],
-    "3/others": [
-      {
-        "event": "rpc-ack",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "error": "Session shutdown preparation lease is invalid or expired"
-          }
-        ]
-      }
-    ],
-    "3/step": [
-      {
-        "event": "step",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "expectAck": {
-              "error": "Session shutdown preparation lease is invalid or expired"
-            },
-            "params": {
-              "expectedPid": "$pid",
-              "expectedProcessStartMarker": "$marker",
-              "preparationLease": {
-                "expiresAt": 1,
-                "id": "parity-lease"
-              },
-              "prepareOnly": true
-            },
-            "rpc": "killSession"
-          }
-        ]
-      }
-    ],
-    "4/others": [
-      {
-        "event": "rpc-ack",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "message": "Session shutdown prepared",
-            "pid": "<pid>",
-            "preparationLease": {
-              "expiresAt": "<lease-expiry>",
-              "id": "parity-lease"
-            },
-            "processStartMarker": "<marker>",
-            "success": true
-          }
-        ]
-      }
-    ],
-    "4/step": [
-      {
-        "event": "step",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "expectAck": {
-              "message": "Session shutdown prepared",
-              "success": true
-            },
-            "params": {
-              "expectedPid": "$pid",
-              "expectedProcessStartMarker": "$marker",
-              "preparationLease": {
-                "expiresAt": "$leaseExpiry",
-                "id": "parity-lease"
-              },
-              "prepareOnly": true
-            },
-            "rpc": "killSession"
-          }
-        ]
-      }
-    ],
-    "5/lifecycle": [
-      {
-        "event": "session-end",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "reason": "terminated",
-            "sid": "<uuid:1>",
-            "time": "<ts>"
-          }
-        ]
-      }
-    ],
-    "5/others": [
-      {
-        "event": "rpc-ack",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "message": "Killing hapi CLI process",
-            "pid": "<pid>",
-            "processStartMarker": "<marker>",
-            "success": true
-          }
-        ]
-      },
-      {
-        "event": "ping",
-        "connection": 1,
-        "ack": [],
-        "ackRequested": true,
-        "args": [],
-        "flush": {
-          "archived": true,
-          "pendingWrites": 0,
-          "sessionEnded": true
-        }
-      }
-    ],
-    "5/step": [
-      {
-        "event": "step",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "expectAck": {
-              "success": true
-            },
-            "params": {
-              "expectedPid": "$pid",
-              "expectedProcessStartMarker": "$marker"
-            },
-            "rpc": "killSession",
-            "settledAlive": {
-              "effort": null,
-              "mode": "remote",
-              "model": null,
-              "permissionMode": "default",
-              "thinking": false
-            }
-          }
-        ]
-      }
-    ],
-    "5/update-metadata": [
-      {
-        "event": "update-metadata",
-        "connection": 1,
-        "ack": [
-          {
-            "metadata": {
               "archiveReason": "User terminated",
               "archivedBy": "cli",
               "capabilities": {
@@ -880,67 +833,11 @@
               ],
               "version": "<version>"
             },
-            "result": "success",
-            "version": 8
+            "sid": "<uuid:1>"
           }
         ],
-        "ackRequested": true,
-        "args": [
-          {
-            "expectedVersion": 7,
-            "metadata": {
-              "archiveReason": "User terminated",
-              "archivedBy": "cli",
-              "capabilities": {
-                "conversationHistory": {
-                  "forkAtMessage": true,
-                  "forkCurrent": true,
-                  "rewindToMessage": true
-                },
-                "terminal": true
-              },
-              "contextDetails": {
-                "claude": {
-                  "skills": [],
-                  "slashCommands": [
-                    "compact"
-                  ],
-                  "systemTools": [
-                    "Bash"
-                  ]
-                },
-                "provider": "claude",
-                "updatedAt": "<ts>",
-                "version": 1
-              },
-              "flavor": "claude",
-              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
-              "happyHomeDir": "<tmp>/hapi",
-              "happyLibDir": "<lib>",
-              "happyToolsDir": "<tools>",
-              "homeDir": "<tmp>",
-              "host": "parity",
-              "hostPid": "<pid>",
-              "hostStartMarker": "<marker>",
-              "lifecycleState": "archived",
-              "lifecycleStateSince": "<ts>",
-              "machineId": "parity-machine",
-              "os": "linux",
-              "path": "<tmp>/project",
-              "slashCommands": [
-                "compact"
-              ],
-              "startedBy": "runner",
-              "startedFromRunner": true,
-              "startingMode": "remote",
-              "tools": [
-                "Bash"
-              ],
-              "version": "<version>"
-            },
-            "sid": "<uuid:1>"
-          }
-        ]
+        "connection": 1,
+        "event": "update-metadata"
       }
     ]
   },
