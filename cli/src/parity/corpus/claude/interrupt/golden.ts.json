@@ -387,6 +387,7 @@
               },
               "contextDetails": {
                 "claude": {
+                  "mcpTools": [],
                   "skills": [],
                   "slashCommands": [
                     "compact"
@@ -443,6 +444,7 @@
               },
               "contextDetails": {
                 "claude": {
+                  "mcpTools": [],
                   "skills": [],
                   "slashCommands": [
                     "compact"
@@ -629,6 +631,7 @@
               },
               "contextDetails": {
                 "claude": {
+                  "mcpTools": [],
                   "skills": [],
                   "slashCommands": [
                     "compact"
@@ -691,6 +694,7 @@
               },
               "contextDetails": {
                 "claude": {
+                  "mcpTools": [],
                   "skills": [],
                   "slashCommands": [
                     "compact"
@@ -755,6 +759,7 @@
               "claudeSessionId": "<uuid:4>",
               "contextDetails": {
                 "claude": {
+                  "mcpTools": [],
                   "skills": [],
                   "slashCommands": [
                     "compact"
@@ -818,6 +823,7 @@
               "claudeSessionId": "<uuid:4>",
               "contextDetails": {
                 "claude": {
+                  "mcpTools": [],
                   "skills": [],
                   "slashCommands": [
                     "compact"
@@ -1116,6 +1122,7 @@
               "claudeSessionId": "<uuid:4>",
               "contextDetails": {
                 "claude": {
+                  "mcpTools": [],
                   "skills": [],
                   "slashCommands": [
                     "compact"
@@ -1181,6 +1188,7 @@
               "claudeSessionId": "<uuid:4>",
               "contextDetails": {
                 "claude": {
+                  "mcpTools": [],
                   "skills": [],
                   "slashCommands": [
                     "compact"

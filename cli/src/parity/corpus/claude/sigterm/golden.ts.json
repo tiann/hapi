@@ -387,6 +387,7 @@
               },
               "contextDetails": {
                 "claude": {
+                  "mcpTools": [],
                   "skills": [],
                   "slashCommands": [
                     "compact"
@@ -443,6 +444,7 @@
               },
               "contextDetails": {
                 "claude": {
+                  "mcpTools": [],
                   "skills": [],
                   "slashCommands": [
                     "compact"
@@ -578,6 +580,7 @@
               },
               "contextDetails": {
                 "claude": {
+                  "mcpTools": [],
                   "skills": [],
                   "slashCommands": [
                     "compact"
@@ -636,6 +639,7 @@
               },
               "contextDetails": {
                 "claude": {
+                  "mcpTools": [],
                   "skills": [],
                   "slashCommands": [
                     "compact"
