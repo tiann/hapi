@@ -124,6 +124,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
     private abortController = new AbortController();
     private displayPermissionMode: string | null = null;
     private consecutiveTransientFailures = 0;
+    /** In-progress tool call ids forwarded this turn — settled on Stop (#2021). */
+    private openToolCallIds = new Set<string>();
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -228,12 +230,15 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                                     messageBuffer.addMessage(agentMsg.text, 'assistant');
                                     break;
                                 case 'tool_call':
+                                    this.openToolCallIds.add(agentMsg.id);
                                     messageBuffer.addMessage(`Tool: ${agentMsg.name}`, 'tool');
                                     break;
                                 case 'tool_result':
+                                    this.openToolCallIds.delete(agentMsg.id);
                                     messageBuffer.addMessage('Tool result', 'result');
                                     break;
                                 case 'turn_complete':
+                                    this.openToolCallIds.clear();
                                     break;
                                 default:
                                     break;
@@ -436,6 +441,18 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         this.abortController.abort();
         this.abortController = new AbortController();
         this.messageBuffer.addMessage('Turn aborted', 'status');
+        // Subprocess exit may never emit a tool_result for the in-flight call.
+        // Publish scoped settlement so Archive is not stuck (#2021).
+        const settledCallIds = [...this.openToolCallIds];
+        this.openToolCallIds.clear();
+        if (settledCallIds.length > 0) {
+            const settlement = convertAgentMessage({
+                type: 'turn_complete',
+                stopReason: 'cancelled',
+                settledCallIds,
+            });
+            if (settlement) this.session.sendAgentMessage(settlement);
+        }
     }
 
     private async handleExitFromUi(): Promise<void> {

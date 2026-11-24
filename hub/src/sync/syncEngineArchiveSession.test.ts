@@ -541,6 +541,103 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(killCalls).toBe(0)
     })
 
+    it('refuses archive when an OpenCode child call is older than the lookback window (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-opencode-child-lookback', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = false
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-ancient',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child',
+                    },
+                },
+            },
+            'child-ancient',
+        )
+        for (let i = 0; i < 210; i += 1) {
+            store.messages.addMessage(sessionId, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: { type: 'message', message: `filler-${i}` },
+                },
+            })
+        }
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+    })
+
+    it('archives after turn-complete clears a lookback-evicted OpenCode child call (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-opencode-child-cleared', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = true
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-done',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child',
+                    },
+                },
+            },
+            'child-done',
+        )
+        for (let i = 0; i < 210; i += 1) {
+            store.messages.addMessage(sessionId, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: { type: 'message', message: `filler-${i}` },
+                },
+            })
+        }
+        store.messages.addMessage(sessionId, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'cancelled',
+                    settledCallIds: ['child-done'],
+                },
+            },
+        })
+        setKillSessionOk()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'already_gone'
+
+        await engine.archiveSession(sessionId)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+    })
+
     it('refuses archive for an active session awaiting permission input (#2020)', async () => {
         const sessionId = insertActiveSession('sess-pending-req-active', 'machine-x')
         const live = cache().getSession(sessionId)!

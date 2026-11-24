@@ -1536,8 +1536,30 @@ export class AcpSdkBackend implements AgentBackend {
             if (status === 'completed' || status === 'failed' || status === 'interrupted') {
                 const scope = childToolCallScope(childSessionId);
                 if (status === 'interrupted') this.toolCallLifetimes.cancel(scope);
+                // Capture ids before beginGeneration's settle (empty second pass).
+                const settledCallIds = this.toolCallLifetimes.settleCancelled(scope);
                 this.toolCallLifetimes.beginGeneration(scope);
                 this.finishChildHandler(childSessionId);
+                // Interrupted children never emit per-call terminal updates —
+                // publish scoped settlement after the drain so Archive is not
+                // stuck on a tagged in_progress row (#2021).
+                if (status === 'interrupted' && settledCallIds.length > 0 && this.childEmitSink) {
+                    const sink = this.childEmitSink;
+                    this.sessionUpdateQueue = this.sessionUpdateQueue
+                        .then(() => {
+                            sink({
+                                type: 'turn_complete',
+                                stopReason: 'cancelled',
+                                settledCallIds,
+                            });
+                        })
+                        .catch((error) => {
+                            logger.debug(
+                                '[AcpSdkBackend] child interrupt settlement failed:',
+                                error instanceof Error ? error.message : String(error)
+                            );
+                        });
+                }
             }
             // created/running have no handler to manage yet.
             return;

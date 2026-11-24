@@ -198,6 +198,45 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 
+    it('keeps OpenCode child tool work visible past the transcript lookback (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-child-past-lookback')
+
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'child-ancient',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_child',
+                },
+            },
+        }, 'child-ancient')
+        // Push the open child row outside the 200-row scan window.
+        for (let i = 0; i < 210; i += 1) {
+            store.messages.addMessage(session.id, agentMessageContent(`filler-${i}`))
+        }
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'cancelled',
+                    settledCallIds: ['child-ancient'],
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
     it('reports open claude tool_use pairs until the matching tool_result lands', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-claude-open')

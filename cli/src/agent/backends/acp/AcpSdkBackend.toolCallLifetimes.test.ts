@@ -105,6 +105,20 @@ function childUpdate(childSessionId: string, update: Record<string, unknown>): {
     };
 }
 
+function childStatus(childSessionId: string, status: string): { method: string; params: unknown } {
+    return {
+        method: 'opencode/session/child_update',
+        params: {
+            rootSessionId: SESSION,
+            childSessionId,
+            parentSessionId: SESSION,
+            depth: 1,
+            type: 'status',
+            status,
+        },
+    };
+}
+
 const QUESTION_SCHEMA = {
     type: 'object',
     properties: {
@@ -422,6 +436,38 @@ describe('AcpSdkBackend tool call lifetimes', () => {
         const ids = new Set([...toolIds(messages, 'tool_call'), ...toolIds(messages, 'tool_result')]);
         expect(ids.size).toBe(1);
         expect([...ids][0]).toMatch(/^ses_child:shell:0#/);
+    });
+
+    it('publishes turn_complete settlement when a child is interrupted (#2021)', async () => {
+        const { backend, notify, scriptPrompts } = makeBackend({ childSessionUpdates: true });
+        const messages: AgentMessage[] = [];
+        scriptPrompts(async () => {
+            notify(childUpdate('ses_child', {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'ses_child:shell:0',
+                title: 'shell',
+                kind: 'execute',
+                status: 'in_progress',
+                rawInput: { command: 'sleep 5' },
+            }));
+            await sleep(10);
+            notify(childStatus('ses_child', 'interrupted'));
+            await sleep(40);
+            return 'end_turn';
+        });
+
+        await prompt(backend, messages);
+        await sleep(50);
+
+        const settlement = messages.find(
+            (m): m is Extract<AgentMessage, { type: 'turn_complete' }> =>
+                m.type === 'turn_complete' && Array.isArray(m.settledCallIds) && m.settledCallIds.length > 0
+        );
+        expect(settlement).toMatchObject({
+            type: 'turn_complete',
+            stopReason: 'cancelled',
+            settledCallIds: [expect.stringMatching(/^ses_child:shell:0#/)],
+        });
     });
 
     it('asks permission under the lifetime id and answers the agent request it belongs to', async () => {

@@ -218,6 +218,8 @@ export function addMessage(
         const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to create message')
         updateLiveTailAfterAppend(db, sessionId, row.id, row.seq, canonicalContent)
+        noteChildToolCallOpenState(db, sessionId, canonicalContent)
+        noteToolCallSettlements(db, sessionId, canonicalContent)
         return toStoredMessage(row)
     })()
 }
@@ -232,6 +234,49 @@ export function addMessage(
  * errs toward inserting a fresh row (the pre-upsert behavior).
  */
 const TOOL_CALL_UPSERT_LOOKBACK = 200
+
+/**
+ * OpenCode child tool calls can outlive the parent transcript lookback.
+ * A bounded scan cannot answer "is any child still working?" — track open
+ * child call ids explicitly and clear them only on settlement (#2021 Major 1).
+ */
+const openChildToolCallsByDb = new WeakMap<Database, Map<string, Set<string>>>()
+
+function openChildToolCallIds(db: Database, sessionId: string): Set<string> {
+    let bySession = openChildToolCallsByDb.get(db)
+    if (!bySession) {
+        bySession = new Map()
+        openChildToolCallsByDb.set(db, bySession)
+    }
+    let open = bySession.get(sessionId)
+    if (!open) {
+        open = new Set()
+        bySession.set(sessionId, open)
+    }
+    return open
+}
+
+function hasOpenChildToolWork(db: Database, sessionId: string): boolean {
+    return (openChildToolCallsByDb.get(db)?.get(sessionId)?.size ?? 0) > 0
+}
+
+function noteChildToolCallOpenState(db: Database, sessionId: string, content: unknown): void {
+    const callId = getToolCallId(content)
+    if (!callId || !isChildScopedAcpToolCall(content)) return
+    const open = openChildToolCallIds(db, sessionId)
+    if (isTerminalToolCallRow(content)) open.delete(callId)
+    else open.add(callId)
+}
+
+function noteToolCallSettlements(db: Database, sessionId: string, content: unknown): void {
+    const resultCallId = toolCallResultCallId(content)
+    if (resultCallId !== null) {
+        openChildToolCallIds(db, sessionId).delete(resultCallId)
+    }
+    for (const callId of acpTurnCompleteSettledCallIds(content)) {
+        openChildToolCallIds(db, sessionId).delete(callId)
+    }
+}
 
 /** `tool-call` payload fields merged newest-wins-when-non-null. */
 const TOOL_CALL_MERGE_FIELDS = ['name', 'input', 'nativeTitle', 'nativeKind', 'nativeName', 'nativeArgs'] as const
@@ -602,11 +647,11 @@ function isChildScopedAcpToolCall(value: unknown): boolean {
  *  call is closed by a later result row, and every live call of the session
  *  is closed by a later human turn. Walking newest-first:
  *
- *  - ACP flavors: an unsettled, non-terminal `tool-call` row means open work.
- *    A later `turn-complete.settledCallIds` entry settles those ids only
- *    (scoped — parent cancel must not close OpenCode child calls). A newer
- *    human turn settles parent-scope ACP calls but leaves `childSessionId`
- *    calls open across parent prompts.
+ *  - ACP flavors: an unsettled, non-terminal `tool-call` row means open work
+ *    inside the lookback window. OpenCode `childSessionId` calls are also
+ *    tracked in an unbounded open-child registry (lookback cannot answer
+ *    "is a long-running child still working?"). `turn-complete.settledCallIds`
+ *    clears both the scan and that registry.
  *  - Claude passthrough: an assistant `tool_use` block with no later user
  *    `tool_result` for its id means open work. Tool-result carriers do NOT
  *    close the turn (the agent loop continues through them); a user row with
@@ -615,6 +660,10 @@ function isChildScopedAcpToolCall(value: unknown): boolean {
  *  Anything older than the window reads as no work — the same err-closed
  *  bias the upsert scan uses for ancient rows. */
 export function getLiveToolWork(db: Database, sessionId: string): boolean {
+    // Child work is tracked out-of-band: a lookback scan cannot see a child
+    // call older than TOOL_CALL_UPSERT_LOOKBACK, and must not fail open.
+    if (hasOpenChildToolWork(db, sessionId)) return true
+
     const rows = prepareCached(db, `
         SELECT id, content FROM messages
         WHERE session_id = ?
@@ -624,20 +673,14 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
 
     const settledAcpCallIds = new Set<string>()
     const settledClaudeToolUseIds = new Set<string>()
-    // A newer parent human turn settles parent-scope ACP calls, but OpenCode
-    // child calls keep scanning — they outlive the parent prompt.
-    let parentHumanTurnSeen = false
     for (const row of rows) {
         const decoded = decodeMessageContent(row.content)
-        if (isUserMessageRow(decoded)) {
-            parentHumanTurnSeen = true
-            // Claude / plain parent work is closed by a human turn. Keep
-            // walking for child-scoped ACP calls that may sit below.
-            continue
-        }
+        // A human turn closes parent-scope work in the lookback window. Child
+        // work is handled by the open-child registry above, not this scan.
+        if (isUserMessageRow(decoded)) return false
 
         // ACP scoped settlement (cancelled prompts): mark those call ids
-        // settled and keep scanning — a still-open child call must remain live.
+        // settled and keep scanning.
         const turnCompleteSettled = acpTurnCompleteSettledCallIds(decoded)
         if (turnCompleteSettled.length > 0) {
             for (const callId of turnCompleteSettled) settledAcpCallIds.add(callId)
@@ -646,15 +689,9 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
 
         const claudeData = claudeOutputData(decoded)
         if (claudeData !== null) {
-            // Claude work never outlives a newer human turn on this session.
-            if (parentHumanTurnSeen) continue
             if (isHiddenClaudeOutput(claudeData)) continue
             if (claudeData.type === 'user') {
-                if (!collectClaudeToolResultIds(claudeData, settledClaudeToolUseIds)) {
-                    // Prompt-shaped Claude user row — same as a human turn.
-                    parentHumanTurnSeen = true
-                    continue
-                }
+                if (!collectClaudeToolResultIds(claudeData, settledClaudeToolUseIds)) return false
                 continue
             }
             if (claudeData.type === 'result') {
@@ -677,7 +714,8 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
         }
         const callId = getToolCallId(decoded)
         if (callId !== null && !settledAcpCallIds.has(callId) && !isTerminalToolCallRow(decoded)) {
-            if (parentHumanTurnSeen && !isChildScopedAcpToolCall(decoded)) continue
+            // Child-scoped rows are already covered by the registry; still
+            // report them from the scan while they remain in-window.
             return true
         }
     }
@@ -722,6 +760,7 @@ export function upsertToolCallMessage(
     return db.transaction(() => {
         const existing = findLiveToolCallRow(db, sessionId, callId)
         if (!existing) {
+            // addMessage notes open-child state for the new row.
             return { message: addMessage(db, sessionId, content, localId, undefined, createdAt), updated: false }
         }
         const storedContent = decodeMessageContent(existing.content)
@@ -729,6 +768,7 @@ export function upsertToolCallMessage(
         // A re-emitted tick that changes nothing must not rewrite the row:
         // only observable content changes touch the database.
         if (isDeepStrictEqual(mergedContent, storedContent)) {
+            noteChildToolCallOpenState(db, sessionId, mergedContent)
             return { message: toStoredMessage(existing), updated: true }
         }
         const encoded = encodeMessageContent(mergedContent)
@@ -737,6 +777,7 @@ export function upsertToolCallMessage(
         prepareCached(db, 'UPDATE messages SET content = ? WHERE id = ?').run(encoded, existing.id)
         const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(existing.id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to update tool-call message')
+        noteChildToolCallOpenState(db, sessionId, mergedContent)
         return { message: toStoredMessage(row), updated: true }
     })()
 }

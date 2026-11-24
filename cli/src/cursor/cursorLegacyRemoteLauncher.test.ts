@@ -12,9 +12,28 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 vi.mock('@/agent/messageConverter', () => ({
-    convertAgentMessage: (message: { type: string; message?: string }) => {
+    convertAgentMessage: (message: {
+        type: string
+        message?: string
+        id?: string
+        stopReason?: string
+        settledCallIds?: string[]
+    }) => {
         if (message.type === 'error' && typeof message.message === 'string') {
             return { type: 'error', message: message.message };
+        }
+        if (message.type === 'tool_call') {
+            return { type: 'tool-call', callId: message.id, name: 'tool', status: 'in_progress' };
+        }
+        if (message.type === 'tool_result') {
+            return { type: 'tool-call-result', callId: message.id, output: {} };
+        }
+        if (message.type === 'turn_complete') {
+            return {
+                type: 'turn-complete',
+                stopReason: message.stopReason ?? 'cancelled',
+                ...(message.settledCallIds ? { settledCallIds: message.settledCallIds } : {}),
+            };
         }
         return null;
     }
@@ -376,6 +395,53 @@ describe('cursorLegacyRemoteLauncher', () => {
         queue.close();
         await launchPromise;
         expect(queue.pendingLocalIds()).toEqual([]);
+    });
+
+    it('publishes turn-complete settlement for open tools when Stop aborts mid-call (#2021)', async () => {
+        const child1 = makeChild({ hold: true });
+        spawnMock.mockReturnValueOnce(child1);
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        queue.push('first', { permissionMode: 'default' }, 'first');
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+
+        const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+        const launchPromise = cursorLegacyRemoteLauncher(session);
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+        // Let runAgentProcess attach readline before writing NDJSON.
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        child1.emitStdout(JSON.stringify({
+            type: 'tool_call',
+            subtype: 'started',
+            call_id: 'legacy-tool-1',
+            tool_call: { name: 'Shell', arguments: { command: 'sleep 60' } },
+            session_id: 'legacy-id',
+        }));
+        await vi.waitFor(() =>
+            expect(client.sendAgentMessage.mock.calls.some(
+                ([msg]) => (msg as { type?: string; callId?: string }).type === 'tool-call'
+                    && (msg as { callId?: string }).callId === 'legacy-tool-1'
+            )).toBe(true)
+        );
+
+        const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
+        await abort();
+
+        const settlements = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { type?: string; settledCallIds?: string[]; stopReason?: string })
+            .filter((message) => message?.type === 'turn-complete');
+        expect(settlements).toEqual([
+            expect.objectContaining({
+                type: 'turn-complete',
+                stopReason: 'cancelled',
+                settledCallIds: ['legacy-tool-1'],
+            }),
+        ]);
+
+        queue.close();
+        await launchPromise;
     });
 
     it.each(['switch', 'exit'] as const)('resets the queue exactly once on terminal %s', async (reason) => {
