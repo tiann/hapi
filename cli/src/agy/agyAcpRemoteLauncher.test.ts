@@ -2765,6 +2765,55 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(consumedFor(client, 'steer-2').filter(([, options]) => (options as { steered?: boolean } | undefined)?.steered)).toHaveLength(0);
     });
 
+    it('anchors a steer to a command card that was deferred and then forwarded', async () => {
+        const backend = new FakeAgyBackend();
+        const { session, queue, client } = makeSession();
+        const args = { CommandLine: 'sleep 30' };
+        let releaseTurn!: () => void;
+        let launcherRef!: AgyAcpRemoteLauncher;
+        backend.promptScripts.push(async (onUpdate) => {
+            // A background command from an earlier wakeup is still open.
+            (launcherRef as unknown as { backgroundCommands: unknown[] }).backgroundCommands.push({
+                callId: 'agy-wakeup-1', synthetic: true, commandLine: 'sleep 30', nativeArgs: args, stepIndex: 0
+            });
+            writeTranscript([
+                userRow(0, 'run it'),
+                { ...plannerRow(1, []), tool_calls: [{ name: 'run_command', args }] },
+                genericRow(2)
+            ]);
+            // A completed call that may belong to an earlier background command is held back.
+            onUpdate({
+                type: 'tool_call', id: 'c1', name: 'sleep 30', input: args, status: 'completed',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: args
+            });
+            // Its result settles the doubt: the card is shown under its own id.
+            onUpdate({
+                type: 'tool_result', id: 'c1', status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\ndone', exit_code: 0 }
+            });
+            await new Promise<void>((resolve) => { releaseTurn = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('run it', REVIEW, 'first');
+        const { run, launcher } = launch(session, [backend], { brainDir, reactivePollMs: 10 });
+        launcherRef = launcher;
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        await vi.waitFor(() => expect(client.sendAgentMessage.mock.calls.some(([message]) =>
+            (message as { type?: string; callId?: string }).type === 'tool-call-result'
+            && (message as { callId?: string }).callId === 'c1')).toBe(true));
+        const handlers = client.rpcHandlerManager.handlers as Handlers;
+        queue.push('also lint', REVIEW, 'steer-1');
+        await handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer-1' });
+
+        writeTranscript([...stepRows, userRow(3, 'also lint')]);
+        await vi.waitFor(() => expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-1'], { steered: true, anchor: { toolCallId: 'c1' } }));
+        releaseTurn();
+        for (const completion of backend.steerCompletions) completion.resolve('end_turn');
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+    });
+
     it('reads the steer text out of the row wrapper without touching it', () => {
         const wrap = (text: string) => `<USER_REQUEST>\n${text}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nlocal time\n</ADDITIONAL_METADATA>`;
         expect(agySteerRowText(wrap('한국어 테스트 🎉'))).toBe('한국어 테스트 🎉');

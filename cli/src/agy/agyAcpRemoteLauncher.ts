@@ -2185,7 +2185,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (message.type === 'tool_call' && canonical.type === 'tool_call' && this.turn
             && !this.turn.priorBackgroundCallIds.has(canonical.id)) {
             const calls = this.turn.plannerCalls;
-            if (!calls.some((call) => call.id === canonical.id)) {
+            const existing = calls.find((call) => call.id === canonical.id);
+            // A deferred call had a slot without a card; its card is out now.
+            if (existing) existing.shown = true;
+            else {
                 const args = message.nativeArgs && typeof message.nativeArgs === 'object' && !Array.isArray(message.nativeArgs)
                     ? message.nativeArgs as Record<string, unknown>
                     : undefined;
