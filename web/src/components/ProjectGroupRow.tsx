@@ -11,11 +11,14 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { useLongPress } from '@/hooks/useLongPress'
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu'
 import { sessionArchiveMutationKey } from '@/hooks/mutations/useSessionActions'
+import { sessionHasLiveWork } from '@/lib/sessionHasLiveWork'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveIcon, CopyIcon, PlusIcon } from '@/components/icons'
 
-// Same liveness the hub archive route accepts.
+// Same liveness the hub archive route accepts, minus active+live-work rows
+// (those 409 archive-session-working — stop the turn first, tiann/hapi#2020).
 function isArchivable(session: SessionSummary): boolean {
+    if (session.active && sessionHasLiveWork(session)) return false
     return session.active || isLiveLifecycleState(session.metadata?.lifecycleState)
 }
 

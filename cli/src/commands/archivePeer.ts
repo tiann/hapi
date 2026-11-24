@@ -22,8 +22,9 @@ ${chalk.bold('Usage:')}
 ${chalk.bold('Notes:')}
   Archive only — never hard-deletes. Prefer this (or MCP archive_peer) over JWT+curl.
   Resolves by id prefix (8 chars OK; full UUID best). Same hub token/namespace.
-  Peer Done / idle workers should archive even when the hub previously 409'd
-  on still_alive ghosts (tiann/hapi#2020). WORKING (thinking) peers still refuse.
+  Active peers with hub-visible live work (thinking / background tasks /
+  pending requests) return 409 — stop the turn first (tiann/hapi#2020).
+  Idle / Peer Done sessions take the ordinary Runner-verified archive path.
   When a user cites [title](/sessions/<id>) or Copy-reference
   See session "…" (/sessions/<id>) for context, pass that <id> here.
   /sessions/<id> is a hub path - not a local filesystem path.
@@ -96,8 +97,9 @@ export const archivePeerCommand: CommandDefinition = {
                 chalk.red('hapi archive-peer:'),
                 error instanceof Error ? error.message : 'Unknown error'
             )
-            if (process.env.DEBUG) {
-                console.error(error)
+            // Never dump the raw Error/Axios object: config.headers can carry the hub bearer.
+            if (process.env.DEBUG && error instanceof Error && error.stack) {
+                console.error(error.stack)
             }
             process.exit(1)
         }

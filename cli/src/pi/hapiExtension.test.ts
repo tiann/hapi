@@ -128,6 +128,7 @@ describe('pi peer MCP integration', () => {
         expect(harness.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'mcp__hapi__ping_peer' }));
         expect(harness.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'mcp__hapi__list_peers' }));
         expect(harness.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'mcp__hapi__spawn_peer' }));
+        expect(harness.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'mcp__hapi__archive_peer' }));
         expect(harness.prompt()).toContain('read it with mcp__hapi__inspect_peer');
         expect(harness.prompt()).toContain(PEER_CONTACT_SUMMARY);
         expect(harness.prompt().length).toBeLessThanOrEqual(800);
@@ -165,6 +166,7 @@ describe('pi peer MCP integration', () => {
         'mcp__hapi__inspect_peer',
         'mcp__hapi__ping_peer',
         'mcp__hapi__spawn_peer',
+        'mcp__hapi__archive_peer',
     ])('requires confirmation for %s', async (toolName) => {
         vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
         const harness = loadExtension();

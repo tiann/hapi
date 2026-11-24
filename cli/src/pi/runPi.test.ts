@@ -73,7 +73,7 @@ vi.mock('@/claude/utils/startHappyServer', () => ({
         harness.happyServerOptions = options;
         return {
             url: 'http://127.0.0.1:45678/',
-            toolNames: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'],
+            toolNames: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'archive_peer'],
             stop: () => {
                 harness.happyServerStopCount += 1;
             },
@@ -253,7 +253,7 @@ describe('runPi startup', () => {
 
         expect(startHappyServer).toHaveBeenCalledWith(harness.session, {
             enableChangeTitle: false,
-            enabledTools: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'],
+            enabledTools: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'archive_peer'],
         });
         expect(harness.transportOptions?.env).toMatchObject({
             HAPI_PI_MCP_URL: 'http://127.0.0.1:45678/',

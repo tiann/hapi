@@ -185,7 +185,8 @@ async function postArchive(
         {},
         {
             headers: authHeaders(jwt),
-            timeout: 60_000,
+            // Hub Runner cleanup budget is 90s; leave headroom for the HTTP round-trip.
+            timeout: 100_000,
             validateStatus: () => true
         }
     )

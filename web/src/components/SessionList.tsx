@@ -1578,11 +1578,11 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     // an archived session moves between sections (e.g. out of Active), and the
     // spinner must survive that until the request settles.
     const quickArchivePending = useIsMutating({ mutationKey: sessionArchiveMutationKey(s.id), exact: true }) > 0
-    // #2020: hub refuses archive while live work is visible — hide the
-    // affordance rather than surprise the operator with a 409. Stop-turn
-    // (`/abort`) is the path to archiveability.
-    // Only connected live work blocks archive — disconnected rows may keep
-    // stale pending requests after heartbeat expiry (#2020 Approach).
+    // #2020: hub refuses archive while *active* live work is visible — hide
+    // the affordance rather than surprise the operator with a 409. Stop the
+    // turn first (e.g. Abort) when the session is still connected.
+    // Disconnected rows may keep stale pending requests after heartbeat
+    // expiry and still take Runner-verified cleanup (#2020 Approach).
     const blockedByLiveWork = s.active && sessionHasLiveWork(s)
     // The row can turn inactive before the archive request settles (the hub
     // still confirms cleanup); keep the spinner until it does.

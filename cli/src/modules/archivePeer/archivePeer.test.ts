@@ -11,15 +11,15 @@ type MockResponse = {
 }
 
 function createHttpMock(handlers: {
-    post?: (url: string, body?: unknown) => MockResponse | Promise<MockResponse>
+    post?: (url: string, body?: unknown, config?: { timeout?: number }) => MockResponse | Promise<MockResponse>
     get?: (url: string, config?: { params?: Record<string, unknown> }) => MockResponse | Promise<MockResponse>
 }) {
     return {
-        post: vi.fn(async (url: string, body?: unknown) => {
+        post: vi.fn(async (url: string, body?: unknown, config?: { timeout?: number }) => {
             if (!handlers.post) {
                 throw new Error(`unexpected POST ${url}`)
             }
-            return handlers.post(url, body)
+            return handlers.post(url, body, config)
         }),
         get: vi.fn(async (url: string, config?: { params?: Record<string, unknown> }) => {
             if (!handlers.get) {
@@ -39,8 +39,9 @@ describe('archivePeer', () => {
         const sessionId = '05d9f0f2-9273-4137-933c-07459a1146a2'
         const posts: string[] = []
         const archiveBodies: unknown[] = []
+        const archiveTimeouts: number[] = []
         const http = createHttpMock({
-            post: (url, body) => {
+            post: (url, body, config) => {
                 posts.push(url)
                 if (url.endsWith('/api/auth')) {
                     expect(body).toEqual({ accessToken: 'tok' })
@@ -48,6 +49,7 @@ describe('archivePeer', () => {
                 }
                 if (url.endsWith(`/api/sessions/${sessionId}/archive`)) {
                     archiveBodies.push(body)
+                    if (typeof config?.timeout === 'number') archiveTimeouts.push(config.timeout)
                     return { status: 200, data: { ok: true } }
                 }
                 throw new Error(`unexpected POST ${url}`)
@@ -84,6 +86,8 @@ describe('archivePeer', () => {
         })
         expect(posts.some((url) => url.endsWith(`/api/sessions/${sessionId}/archive`))).toBe(true)
         expect(archiveBodies).toEqual([{}])
+        // Must exceed the hub's 90s Runner cleanup budget (#2021 Major).
+        expect(archiveTimeouts[0]).toBeGreaterThanOrEqual(100_000)
     })
 
     it('treats alreadyArchived as success (idempotent)', async () => {
