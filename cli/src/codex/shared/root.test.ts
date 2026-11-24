@@ -18,7 +18,8 @@ type NativeRequest = { id: string | number; method: string; params: unknown };
 const sharedHarness = vi.hoisted(() => ({
     skills: [{ name: 'find-docs', description: 'Find docs', path: '/tmp/SKILL.md', scope: 'user', enabled: true }],
     mcpInventoryArgs: undefined as readonly string[] | undefined,
-    mcpStatusThreadId: undefined as string | undefined,
+    mcpStatusRequests: [] as Array<[threadId: string, serverName: string]>,
+    scopedMcpStatus: true,
     configuredInventory: [] as unknown[],
     runtimeInventory: null as Promise<unknown> | null,
     inventoryExecutable: undefined as unknown,
@@ -46,8 +47,9 @@ vi.mock('../codexAppServerClient', () => ({
         async listSkills() {
             return { data: [{ cwd: '/tmp', skills: sharedHarness.skills, errors: [] }] };
         }
-        async listMcpServerStatuses(threadId: string) {
-            sharedHarness.mcpStatusThreadId = threadId;
+        canReadThreadMcpServerStatus() { return sharedHarness.scopedMcpStatus && this.initialized; }
+        async readThreadMcpServerStatus(threadId: string, serverName: string) {
+            sharedHarness.mcpStatusRequests.push([threadId, serverName]);
             return sharedHarness.runtimeInventory ?? { data: [] };
         }
         async disconnect() { this.initialized = false; }
@@ -100,6 +102,8 @@ afterEach(async () => {
     finally {
         sharedHarness.configuredInventory = [];
         sharedHarness.runtimeInventory = null;
+        sharedHarness.mcpStatusRequests = [];
+        sharedHarness.scopedMcpStatus = true;
         sharedHarness.slashCommands = ['/compact'];
         sharedHarness.customAgentPrompt = undefined;
         sharedHarness.inventoryExecutable = undefined;
@@ -196,6 +200,15 @@ describe('thread MCP inventory', () => {
             .toContainEqual({ name: 'qmd', toolNames: ['current'] }));
     });
 
+    it('does not retry with an unscoped request if the named server rejects discovery', async () => {
+        const f = await fixture({ attached: true });
+        const read = vi.spyOn(f.root.client, 'readThreadMcpServerStatus').mockRejectedValue(new Error('Not supported'));
+        await f.root.activate();
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: 'thread', name: 'docs' });
+        await vi.waitFor(() => expect(read).toHaveBeenCalledExactlyOnceWith('thread', 'docs'));
+        expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([{ name: 'docs' }]);
+    });
+
     it('keeps the saved runtime catalog while configuration arrives and after discovery fails', async () => {
         const pending = Promise.withResolvers<unknown>();
         sharedHarness.runtimeInventory = pending.promise;
@@ -241,6 +254,7 @@ describe('externally attached root', () => {
             name: 'runtime-only', runtimeStatus: 'disabled', authStatus: 'unsupported', tools: {}
         }] });
         const f = await fixture({ attached: true });
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: 'thread', name: 'runtime-only' });
         await f.root.activate();
         await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([
             { name: 'runtime-only', status: 'disabled', toolNames: [] }
@@ -264,13 +278,28 @@ describe('externally attached root', () => {
         expect(JSON.stringify(f.metadata().contextDetails)).not.toContain('Fixture project prompt');
     });
 
-    it('queries MCP status for the bound thread without reading the wrapper config', async () => {
-        sharedHarness.mcpInventoryArgs = undefined;
-        sharedHarness.mcpStatusThreadId = undefined;
+    it('queries only known servers for the bound thread without reading the wrapper config', async () => {
+        sharedHarness.configuredInventory = [{ name: 'foreign-config' }];
         const f = await fixture({ attached: true });
         await f.root.activate();
-        await vi.waitFor(() => expect(sharedHarness.mcpStatusThreadId).toBe('thread'));
-        expect(sharedHarness.mcpInventoryArgs).toBeUndefined();
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: 'some-other-thread', name: 'foreign-thread' });
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: null, name: 'unscoped' });
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: 'thread', name: 'runtime-only' });
+        await vi.waitFor(() => expect(sharedHarness.mcpStatusRequests).toEqual([['thread', 'runtime-only']]));
+        expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([{ name: 'runtime-only' }]);
+        expect(sharedHarness.inventoryExecutable).toBeUndefined();
+    });
+
+    it('retains server names without any discovery request on an older app-server', async () => {
+        sharedHarness.scopedMcpStatus = false;
+        const f = await fixture({ attached: true, contextDetails: { version: 1, updatedAt: 10, provider: 'codex',
+            codex: { mcpServers: [{ name: 'saved', toolNames: ['stale'] }] } } });
+        await f.root.activate();
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: 'thread', name: 'observed' });
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([
+            { name: 'observed' }, { name: 'saved' }
+        ]));
+        expect(sharedHarness.mcpStatusRequests).toEqual([]);
     });
 
     it('skips MCP, instructions and initial settings injection, and disables lifecycle actions', async () => {

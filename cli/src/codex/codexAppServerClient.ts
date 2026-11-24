@@ -117,6 +117,18 @@ function parseCodexVersion(output: string): number[] | null {
     return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
+/** Stable minimum verified to reuse a thread's MCP connection with serverName. */
+export function supportsThreadScopedMcpStatus(userAgent: unknown): boolean {
+    if (typeof userAgent !== 'string') return false;
+    // The first UA token contains the app-server build version, not the CLI
+    // executable on this machine or the attaching client's version suffix.
+    const match = /^[^/\s]+\/(\d+)\.(\d+)\.(\d+)(?:\+[^\s]+)?(?:\s|$)/u.exec(userAgent);
+    if (!match) return false;
+    const major = Number(match[1]);
+    const minor = Number(match[2]);
+    return major > 0 || minor >= 167;
+}
+
 function getCodexVersion(command: string): number[] | null {
     try {
         const output = execFileSync(command, ['--version'], {
@@ -190,6 +202,7 @@ export class CodexAppServerClient extends JsonLineParser {
     private process: ChildProcessWithoutNullStreams | null = null;
     private connected = false;
     private initialized = false;
+    private threadScopedMcpStatus = false;
 
     /** True while the app-server process is connected. */
     isConnected(): boolean {
@@ -351,6 +364,7 @@ export class CodexAppServerClient extends JsonLineParser {
 
     async initialize(params: InitializeParams): Promise<InitializeResponse> {
         const response = await this.sendRequest('initialize', params, { timeoutMs: 30_000 });
+        this.threadScopedMcpStatus = supportsThreadScopedMcpStatus(asRecord(response)?.userAgent);
         this.sendNotification('initialized');
         this.initialized = true;
         return response as InitializeResponse;
@@ -389,9 +403,16 @@ export class CodexAppServerClient extends JsonLineParser {
         return response as SkillsListResponse;
     }
 
-    async listMcpServerStatuses(threadId: string): Promise<unknown> {
-        return await this.sendRequest('mcpServerStatus/list', { threadId }, {
-            timeoutMs: 30_000
+    canReadThreadMcpServerStatus(): boolean {
+        return this.initialized && this.threadScopedMcpStatus;
+    }
+
+    async readThreadMcpServerStatus(threadId: string, serverName: string): Promise<unknown> {
+        if (!this.canReadThreadMcpServerStatus() || !threadId.trim() || !serverName.trim()) {
+            throw new Error('Thread-scoped MCP status is unavailable');
+        }
+        return await this.sendRequest('mcpServerStatus/list', { threadId, serverName, detail: 'toolsAndAuthOnly' }, {
+            timeoutMs: 8_000
         });
     }
 

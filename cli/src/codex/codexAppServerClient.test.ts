@@ -28,7 +28,7 @@ vi.mock('@/ui/logger', () => ({
     logger: { debug: vi.fn() }
 }));
 
-import { CodexAppServerClient, isIndeterminateError } from './codexAppServerClient';
+import { CodexAppServerClient, isIndeterminateError, supportsThreadScopedMcpStatus } from './codexAppServerClient';
 import { killProcessByChildProcess } from '@/utils/process';
 
 function fakeStream(): EventEmitter & { setEncoding: ReturnType<typeof vi.fn> } {
@@ -120,6 +120,42 @@ describe('CodexAppServerClient process cwd', () => {
             await client.disconnect();
             vi.unstubAllEnvs();
         }
+    });
+
+    it.each([
+        ['hapi/0.167.0 (Linux 6; x64)', true],
+        ['codex_vscode/0.166.3 (Windows; x64) (hapi; 1)', false],
+        ['hapi/0.167.0-alpha.1 (Linux 6; x64)', false],
+        ['unknown (hapi/0.168.0)', false],
+        [undefined, false]
+    ])('gates connection reuse on the app-server build version %s', (userAgent, supported) => {
+        expect(supportsThreadScopedMcpStatus(userAgent)).toBe(supported);
+    });
+
+    it.each([false, true])('never requests broad MCP discovery (supported=%s)', async supported => {
+        const child = fakeChild();
+        child.stdin.write.mockImplementation((data: string, done?: (error?: Error | null) => void) => {
+            const request = JSON.parse(data);
+            done?.();
+            if (request.id !== undefined) {
+                const result = request.method === 'initialize' ? { userAgent: `hapi/${supported ? '0.167.0' : '0.166.0'} (Linux)` } : { data: [] };
+                queueMicrotask(() => child.stdout.emit('data', Buffer.from(JSON.stringify({ id: request.id, result }) + '\n')));
+            }
+            return true;
+        });
+        spawnMock.mockReturnValue(child);
+        const client = new CodexAppServerClient();
+        await client.connect();
+        try {
+            await client.initialize({ clientInfo: { name: 'hapi', version: '1' }, capabilities: { experimentalApi: true } });
+            await expect(client.readThreadMcpServerStatus('thread', ' ')).rejects.toThrow('unavailable');
+            const result = client.readThreadMcpServerStatus('thread', 'docs');
+            if (supported) await expect(result).resolves.toEqual({ data: [] });
+            else await expect(result).rejects.toThrow('unavailable');
+            const requests = child.stdin.write.mock.calls.map(([text]) => JSON.parse(text)).filter(row => row.method === 'mcpServerStatus/list');
+            expect(requests.map(row => row.params)).toEqual(supported ? [{ threadId: 'thread', serverName: 'docs', detail: 'toolsAndAuthOnly' }] : []);
+            expect(spawnMock).toHaveBeenCalledTimes(1);
+        } finally { await client.disconnect(); }
     });
 
     it('steerTurn resolves dispatch on stdin accept and completes with the turn response', async () => {

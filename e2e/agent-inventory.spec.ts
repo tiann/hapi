@@ -48,3 +48,14 @@ test('the status bar uses the saved Codex usage window, not the configured model
     const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
     if (screenshots) await status.screenshot({ path: `${screenshots}/agent-inventory-saved-window.png` })
 })
+
+
+test('known MCP server names remain visible when scoped discovery is unavailable', async ({ page }) => {
+    await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=codex&knownNamesOnly=1')
+    await page.getByRole('button', { name: 'Open agent details' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Agent details' })
+    await expect(dialog.getByText('docs', { exact: true })).toBeVisible()
+    await expect(dialog.getByText('unavailable', { exact: true })).toHaveCount(0)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await dialog.screenshot({ path: `${screenshots}/agent-inventory-known-mcp-names.png` })
+})

@@ -15,7 +15,8 @@ const details: ContextDetails = isClaude
         slashCommands: ['/compact']
     } }
     : { version: 1, updatedAt: 1, provider: 'codex', codex: {
-        mcpServers: [{ name: 'runtime-only', status: 'disabled', toolNames: [] }], slashCommands: params.has('customAgent') ? ['/compact', '/agent'] : ['/compact']
+        mcpServers: params.has('knownNamesOnly') ? [{ name: 'docs' }] : [{ name: 'runtime-only', status: 'disabled', toolNames: [] }],
+        slashCommands: params.has('customAgent') ? ['/compact', '/agent'] : ['/compact']
     } }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
