@@ -2682,6 +2682,29 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(backend.steerPrompts).toHaveLength(2);
     });
 
+    it('confirms by its row the steer sent before an identical steer whose row never lands', async () => {
+        // The first steer's row is written before the identical second steer is
+        // dispatched, so only the first steer can own that row. Stop settles
+        // before the second steer's row appears.
+        const { backend, client, steer, releaseFirst, queue } = await startTurn(undefined, { reactivePollMs: 60_000 });
+        await steer('again', 'earlier');
+        writeTranscript([...stepRows, userRow(3, 'again')]);
+        await steer('again', 'later');
+        backend.onCancel = () => {
+            releaseFirst();
+            backend.steerCompletions[0]!.resolve('cancelled');
+            backend.steerCompletions[1]!.resolve('cancelled');
+        };
+        await (client.rpcHandlerManager.handlers as Handlers).get(RPC_METHODS.Abort)!();
+
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(consumedFor(client, 'earlier')).toHaveLength(1);
+        expect(consumedFor(client, 'later')).toHaveLength(0);
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['later']);
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['earlier']);
+        queue.close();
+    });
+
     it('does not confirm either steer repeating the prompt text from the prompt row', async () => {
         const { client, steer, finish } = await startTurn(null);
         await steer('run the tests', 'steer-1');
@@ -2819,6 +2842,24 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
 
         await finish();
         expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]);
+    });
+
+    it('does not confirm a steer dispatched on an unreadable transcript by an older row with its text', async () => {
+        // The row was written before the steer went out, and the steer has no
+        // dispatch boundary to rule that out. Another steer supplies the
+        // boundary that lets row matching run at all.
+        const older = [
+            userRow(0, 'run the tests'), plannerRow(1, ['run_command']), genericRow(2), userRow(3, 'also lint')
+        ];
+        const { client, steer, finish } = await startTurn(older, { reactivePollMs: 20 });
+        await steer('a different steer', 'with-boundary');
+        vi.mocked(statSync).mockImplementationOnce(() => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); });
+        expect(await steer('also lint', 'no-boundary')).toEqual({ steered: true });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(consumedFor(client, 'no-boundary')).toHaveLength(0);
+
+        await finish();
+        expect(consumedFor(client, 'no-boundary')).toEqual([[['no-boundary'], { steered: true }]]);
     });
 
     it('does not confirm a steer from its row when the turn started on an unreadable transcript', async () => {

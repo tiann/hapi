@@ -1767,13 +1767,18 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * A row confirms its steer only when one unsettled send has that text and
-     * the row is not the turn's own prompt row. Two sends with the same text
-     * own no row, so neither is confirmed. When the row follows a call whose
-     * card is not out yet, the steer waits for that card on later polls, for
-     * at most the anchor wait. `settle` (Stop, a lost transport, the turn's end)
-     * runs the same scan without that wait, so a unique row still confirms and
-     * only ambiguous or rowless steers are left to the turn's other handling.
+     * A row confirms a send only when it is not the turn's own prompt row and
+     * exactly one unsettled send with the same text is eligible for it: that
+     * send was dispatched before the row was written. A send without a dispatch
+     * boundary stays eligible for every row with its text, so it still makes a
+     * row ambiguous, but it cannot own a row because it cannot show the row
+     * came after it was sent. A row with several eligible sends, or already
+     * owned by a steer, is skipped for this scan. When the row follows a call
+     * whose card is not out yet, the steer waits for that card on later polls,
+     * for at most the anchor wait. `settle` (Stop, a lost transport, the turn's
+     * end) runs the same scan without that wait, so a unique row still confirms
+     * and only ambiguous or rowless steers are left to the turn's other
+     * handling.
      */
     private pollSteerRows(turn: AgyTurn, settle = false): void {
         const pending = turn.rowSteers.filter((entry) => !entry.done);
@@ -1811,21 +1816,30 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // is the turn's own prompt; agy only appends, so a different first row
         // keeps the whole turn out of row matching.
         if (!userRows[0] || agySteerRowText(userRows[0].content) !== turn.promptRowText) return;
-        const unsettled = new Map<string, number>();
-        for (const entry of pending) {
-            if (entry.done) continue;
-            unsettled.set(entry.text, (unsettled.get(entry.text) ?? 0) + 1);
+        // A row already owned by a steer stays with it, including one still
+        // waiting on its call card.
+        const ownedRows = new Set<number>();
+        for (const entry of turn.rowSteers) {
+            if (entry.ownedRow !== undefined) ownedRows.add(entry.ownedRow);
+        }
+        const unsettled = pending.filter((entry) => !entry.done);
+        // A row gives itself to the one send dispatched before it with the
+        // same text; several eligible sends leave it unassigned this scan. A
+        // send without a boundary stays eligible but cannot own the row.
+        for (const row of userRows.slice(1)) {
+            if (ownedRows.has(row.step_index)) continue;
+            const text = agySteerRowText(row.content);
+            if (text === null) continue;
+            const eligible = unsettled.filter((entry) =>
+                entry.text === text && (entry.boundary === null || entry.boundary < row.step_index));
+            if (eligible.length !== 1) continue;
+            const owner = eligible[0]!;
+            if (owner.boundary === null) continue;
+            owner.ownedRow = row.step_index;
+            ownedRows.add(row.step_index);
         }
         for (const entry of owners) {
-            if (entry.done) continue;
-            if (entry.ownedRow === undefined) {
-                const boundary = entry.boundary;
-                if (boundary === null || unsettled.get(entry.text) !== 1) continue;
-                const row = userRows.slice(1).find((candidate) =>
-                    candidate.step_index > boundary && agySteerRowText(candidate.content) === entry.text);
-                if (!row) continue;
-                entry.ownedRow = row.step_index;
-            }
+            if (entry.done || entry.ownedRow === undefined) continue;
             const anchor = this.steerAnchor(turn, steps, entry.ownedRow);
             if (anchor === 'deferred') {
                 entry.anchorWaitFrom ??= Date.now();
