@@ -1579,6 +1579,41 @@ describe('SessionList collapse behavior', () => {
         expect(separator.compareDocumentPosition(archivedRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
 
+    it('keeps the Archive dialog mounted through an inactive update', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const pending = Promise.withResolvers<void>()
+        const archiveSession = vi.fn(() => pending.promise)
+        const api = { archiveSession } as unknown as ApiClient
+        const connected = makeSession({ id: 'archive-pending', active: true, metadata: { path: '/work/archive', name: 'Archive pending' } })
+        const { rerender } = render(renderSessionList([connected], null, {}, api))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Archive pending/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }))
+        fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Archive' }))
+        await waitFor(() => expect(archiveSession).toHaveBeenCalledOnce())
+
+        rerender(renderSessionList([{ ...connected, active: false }], null, {}, api))
+
+        expect(screen.getByRole('dialog')).toHaveTextContent('Confirming archive and background cleanup')
+        pending.resolve()
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    })
+
+    it('moves a detached job below the Combined divider when its heartbeat is stale', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const active = makeSession({ id: 'active-stale-check', active: true, metadata: { path: '/work/active', name: 'Active session' } })
+        const staleJob = makeSession({ id: 'stale-job', active: false,
+            metadata: { path: '/work/stale', name: 'Stale running job' },
+            attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: 1 } })
+        render(renderSessionList([active, staleJob], null))
+
+        const separator = screen.getByRole('separator', { name: 'Archived project sessions' })
+        const staleRow = screen.getByRole('button', { name: /Stale running job/ })
+        expect(separator.compareDocumentPosition(staleRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+        expect(staleRow).toHaveTextContent('running')
+    })
+
     it('restores only the collapsed Combined section after a fresh mount', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')

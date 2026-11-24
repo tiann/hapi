@@ -89,6 +89,12 @@ const actionSearchSessions: SessionSummary[] = [
         metadata: { path: '/projects/home-weak', name: 'Task two', flavor: 'codex' } }),
 ]
 
+const staleJobSession = makeSession({
+    id: 'stale-job', active: false, updatedAt: now,
+    metadata: { path: '/projects/stale-job', name: 'Stale running job', flavor: 'codex' },
+    attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: 1 },
+})
+
 const archivedJobSession = makeSession({
     id: 'archived-job', active: false, updatedAt: now,
     metadata: { path: '/projects/archived-job', name: 'Archived running job', flavor: 'codex', lifecycleState: 'archived' },
@@ -101,6 +107,10 @@ const queryClient = new QueryClient({
         mutations: { retry: false },
     },
 })
+
+const archiveApi = {
+    archiveSession: () => new Promise<void>(resolve => { window.finishProjectArchive = resolve })
+} as unknown as ApiClient
 
 const linkPrApi = {
     getFeatures: async () => ({ githubPrAwareness: { enabled: true, source: 'default' }, prChipDisplay: undefined })
@@ -117,11 +127,12 @@ declare global {
         updateProjectSession: (id: string, patch: Partial<SessionSummary>) => void
         showProjectSortProjects: (names: string[]) => void
         finishProjectExport: () => void
+        finishProjectArchive: () => void
     }
 }
 
 function ProjectSortFixture() {
-    const [currentSessions, setCurrentSessions] = useState<SessionSummary[]>(crossTab ? [] : actionSearch ? actionSearchSessions : params.has('archivedJob') ? [...sessions, archivedJobSession] : sessions)
+    const [currentSessions, setCurrentSessions] = useState<SessionSummary[]>(crossTab ? [] : actionSearch ? actionSearchSessions : params.has('archivedJob') ? [...sessions, archivedJobSession] : params.has('staleJob') ? [...sessions, staleJobSession] : sessions)
     window.showProjectSortProjects = (names) => {
         setCurrentSessions(names.map((name, index) => makeSession({
             id: name,
@@ -145,7 +156,7 @@ function ProjectSortFixture() {
                 onRefresh={async () => {}}
                 isLoading={false}
                 renderHeader={actionSearch}
-                api={params.has('linkPr') ? linkPrApi : params.has('exportPending') ? exportApi : null}
+                api={params.has('archivePending') ? archiveApi : params.has('linkPr') ? linkPrApi : params.has('exportPending') ? exportApi : null}
             />
         </div>
     )

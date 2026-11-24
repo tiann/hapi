@@ -108,6 +108,32 @@ test('keeps an unsaved PR link when a Combined session disconnects', async ({ pa
 })
 
 
+test('keeps archive cleanup visible through an inactive update', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=combined-count&archivePending=1`)
+    await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Archive', exact: true }).click()
+    await page.evaluate(() => window.updateProjectSession('mine-session', { active: false }))
+    await expect(page.getByRole('dialog')).toContainText('Confirming archive and background cleanup')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-archive-cleanup.png`, fullPage: true })
+    await page.evaluate(() => window.finishProjectArchive())
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+})
+
+
+test('moves a stale detached job below the Combined divider', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=combined-count&staleJob=1`)
+    const separator = page.getByRole('separator', { name: 'Archived project sessions' })
+    const staleRow = page.getByRole('button', { name: /Stale running job/ })
+    await expect(separator).toBeVisible()
+    await expect(staleRow).toContainText('running')
+    expect(await separator.evaluate((element, row) => element.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING, await staleRow.elementHandle())).toBeTruthy()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-stale-job.png`, fullPage: true })
+})
+
+
 test('keeps a Combined rename draft when its session disconnects', async ({ page }) => {
     await page.goto(`${fixtureUrl}?mode=combined-count`)
     await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })

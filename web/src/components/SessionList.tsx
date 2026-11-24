@@ -1438,9 +1438,11 @@ type SessionItemProps = {
     onRequestRename: (sessionId: string) => void
     onRequestExport: (sessionId: string) => void
     onRequestLinkPr: (sessionId: string) => void
+    onRequestArchive: (sessionId: string) => void
     renameOpen: boolean
     exportOpen: boolean
     linkPrOpen: boolean
+    archiveOpen: boolean
     session: SessionSummary
     onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     showPath?: boolean
@@ -1479,9 +1481,11 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         onRequestRename,
         onRequestExport,
         onRequestLinkPr,
+        onRequestArchive,
         renameOpen,
         exportOpen,
         linkPrOpen,
+        archiveOpen,
         showPath = true,
         api,
         features,
@@ -1502,7 +1506,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
-    const [archiveOpen, setArchiveOpen] = useState(false)
     const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
     const prChipDisplay = features?.prChipDisplay
     const forkFlow = useForkFlow({
@@ -1658,7 +1661,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const hasQuickAction = quickActionCount > 0
     const handleQuickArchive = async () => {
         if (archiveNeedsConfirmation) {
-            setArchiveOpen(true)
+            onRequestArchive(s.id)
             return
         }
         try {
@@ -1868,7 +1871,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     ? () => forkFlow.openFork()
                     : undefined}
                 forkDisabledReason={forkDisabledReason}
-                onArchive={() => setArchiveOpen(true)}
+                onArchive={() => onRequestArchive(s.id)}
                 onReopen={cursorReopenDisabledReason ? undefined : () => void handleReopen()}
                 reopenDisabledReason={cursorReopenDisabledReason}
                 reopenHint={cursorReopenUnverifiedHint}
@@ -1936,18 +1939,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 />
             ) : null}
 
-            {archiveOpen ? (
-                <ArchiveSessionDialog
-                    isOpen={true}
-                    onClose={() => setArchiveOpen(false)}
-                    sessionId={s.id}
-                    sessionName={sessionName}
-                    active={s.active}
-                    onConfirm={archiveSession}
-                    isPending={isPending}
-                />
-            ) : null}
-
         </>
     )
 }, (previous, next) =>
@@ -1997,6 +1988,22 @@ function PullRefreshIcon(props: { rotation: number }) {
         >
             <path d="M12 5v14M6 13l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
+    )
+}
+
+function StableArchiveSessionDialog(props: { session: SessionSummary; api: ApiClient | null; onClose: () => void }) {
+    const { session, api, onClose } = props
+    const { archiveSession, isPending } = useSessionActions(api, session.id, session.metadata?.flavor ?? null)
+    return (
+        <ArchiveSessionDialog
+            isOpen={true}
+            onClose={onClose}
+            sessionId={session.id}
+            sessionName={getSessionTitle(session)}
+            active={session.active}
+            onConfirm={archiveSession}
+            isPending={isPending}
+        />
     )
 }
 
@@ -2075,6 +2082,8 @@ export function SessionList(props: {
     const [renameTargetId, setRenameTargetId] = useState<string | null>(null)
     const [exportTargetId, setExportTargetId] = useState<string | null>(null)
     const [linkPrTargetId, setLinkPrTargetId] = useState<string | null>(null)
+    const [archiveTargetId, setArchiveTargetId] = useState<string | null>(null)
+    const archiveTarget = props.sessions.find(session => session.id === archiveTargetId) ?? null
     const linkPrTarget = props.sessions.find(session => session.id === linkPrTargetId) ?? null
     const renameTarget = props.sessions.find(session => session.id === renameTargetId) ?? null
     const { features } = useFeatures(api)
@@ -2668,7 +2677,7 @@ export function SessionList(props: {
         () => {
             if (!isCombinedPinLayout) return []
             const grouped = groupSessionsByDirectory(
-                machineFilteredSessions.filter((session) => !session.globalPinned && (session.active || hasUnarchivedJob(session))),
+                machineFilteredSessions.filter((session) => !session.globalPinned && (session.active || hasInProgressJobSession(session, api?.hubClock?.now()))),
                 hasTextQuery ? undefined : listView
             )
             if (searchScoreIndex && hasTextQuery) {
@@ -2678,13 +2687,13 @@ export function SessionList(props: {
                 ? sortSessionGroupsBySessionCount(grouped, projectOrder, projectSessionCounts)
                 : grouped
         },
-        [machineFilteredSessions, isCombinedPinLayout, projectOrder, projectSessionCounts, searchScoreIndex, hasTextQuery, shouldSortProjectsByCount, listView]
+        [api, listClockTick, machineFilteredSessions, isCombinedPinLayout, projectOrder, projectSessionCounts, searchScoreIndex, hasTextQuery, shouldSortProjectsByCount, listView]
     )
     const combinedArchivedGroups = useMemo(
         () => {
             if (!isCombinedPinLayout) return []
             const grouped = groupSessionsByDirectory(
-                machineFilteredSessions.filter((session) => !session.globalPinned && !session.active && !hasUnarchivedJob(session)),
+                machineFilteredSessions.filter((session) => !session.globalPinned && !session.active && !hasInProgressJobSession(session, api?.hubClock?.now())),
                 hasTextQuery ? undefined : listView
             )
             if (searchScoreIndex && hasTextQuery) {
@@ -2694,7 +2703,7 @@ export function SessionList(props: {
                 ? sortSessionGroupsBySessionCount(grouped, projectOrder, projectSessionCounts)
                 : grouped
         },
-        [machineFilteredSessions, isCombinedPinLayout, projectOrder, projectSessionCounts, searchScoreIndex, hasTextQuery, shouldSortProjectsByCount, listView]
+        [api, listClockTick, machineFilteredSessions, isCombinedPinLayout, projectOrder, projectSessionCounts, searchScoreIndex, hasTextQuery, shouldSortProjectsByCount, listView]
 
     )
     // Directory groups whose rows all floated to the pinned sections still
@@ -2930,9 +2939,11 @@ export function SessionList(props: {
                                             onRequestRename={setRenameTargetId}
                                             onRequestExport={setExportTargetId}
                                             onRequestLinkPr={setLinkPrTargetId}
+                                            onRequestArchive={setArchiveTargetId}
                                             renameOpen={renameTargetId === s.id}
                                             exportOpen={exportTargetId === s.id}
                                             linkPrOpen={linkPrTargetId === s.id}
+                                            archiveOpen={archiveTargetId === s.id}
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}
@@ -3021,9 +3032,11 @@ export function SessionList(props: {
             onRequestRename={setRenameTargetId}
             onRequestExport={setExportTargetId}
             onRequestLinkPr={setLinkPrTargetId}
+            onRequestArchive={setArchiveTargetId}
             renameOpen={renameTargetId === s.id}
             exportOpen={exportTargetId === s.id}
             linkPrOpen={linkPrTargetId === s.id}
+            archiveOpen={archiveTargetId === s.id}
             session={s}
             onSelect={props.onSelect}
             showPath={false}
@@ -3940,9 +3953,11 @@ export function SessionList(props: {
                                             onRequestRename={setRenameTargetId}
                                             onRequestExport={setExportTargetId}
                                             onRequestLinkPr={setLinkPrTargetId}
+                                            onRequestArchive={setArchiveTargetId}
                                             renameOpen={renameTargetId === s.id}
                                             exportOpen={exportTargetId === s.id}
                                             linkPrOpen={linkPrTargetId === s.id}
+                                            archiveOpen={archiveTargetId === s.id}
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}
@@ -4024,6 +4039,9 @@ export function SessionList(props: {
                 />
             ) : null}
             </div>
+            {archiveTarget ? (
+                <StableArchiveSessionDialog key={archiveTarget.id} session={archiveTarget} api={api} onClose={() => setArchiveTargetId(null)} />
+            ) : null}
             {linkPrTarget ? (
                 <StableLinkPrDialog key={linkPrTarget.id} session={linkPrTarget} api={api} onClose={() => setLinkPrTargetId(null)} />
             ) : null}
