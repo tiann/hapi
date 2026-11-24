@@ -911,6 +911,42 @@ it.each([
             store.close()
         })
 
+        it('moves session activity to the receipt time of an anchored confirmation', () => {
+            const originalDateNow = Date.now
+            let now = 10_000
+            Date.now = () => now
+            try {
+                const store = new Store(':memory:')
+                const session = store.sessions.getOrCreateSession('anchor-activity', {}, null, 'default')
+                const socket = new FakeSocket()
+                const activity: number[] = []
+                registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                    store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+                    onSessionActivity: (_sessionId, updatedAt) => activity.push(updatedAt)
+                })
+                socket.trigger('message', { sid: session.id, message: toolCallContent('call-1', { status: 'running' }), createdAt: 10_000 })
+                now = 11_000
+                socket.trigger('message', { sid: session.id, localId: 'steer-1', message: { role: 'user', content: { type: 'text', text: 'stop' } } })
+                store.sessions.touchSessionUpdatedAt(session.id, 11_000, 'default')
+
+                now = 12_000
+                activity.length = 0
+                socket.trigger('messages-consumed', { sid: session.id, localIds: ['steer-1'], steered: true, anchor: { toolCallId: 'call-1' } })
+                expect(store.messages.getAllMessages(session.id).find(m => m.localId === 'steer-1')?.invokedAt).toBe(10_001)
+                expect(store.sessions.getSession(session.id)?.updatedAt).toBe(12_000)
+                expect(activity).toEqual([12_000])
+
+                // A replayed acknowledgement keeps the stored activity.
+                now = 13_000
+                socket.trigger('messages-consumed', { sid: session.id, localIds: ['steer-1'], steered: true, anchor: { toolCallId: 'call-1' } })
+                expect(store.sessions.getSession(session.id)?.updatedAt).toBe(12_000)
+                expect(activity).toEqual([12_000, 12_000])
+                store.close()
+            } finally {
+                Date.now = originalDateNow
+            }
+        })
+
         it('stamps now when the anchor is missing or not found', () => {
             for (const anchor of [undefined, { toolCallId: 'gone' }, { toolCallId: 42 }]) {
                 const { store, session, socket, consumed, invokedAtOf } = setup()

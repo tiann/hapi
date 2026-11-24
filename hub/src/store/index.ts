@@ -172,19 +172,22 @@ export class Store {
         localIds: string[],
         invokedAt: number,
         namespace: string,
-        options?: { reorderEpoch?: boolean }
+        options?: { reorderEpoch?: boolean; activityAt?: number }
     ): number {
         return this.db.transaction(() => {
             const changes = this.messages.markMessagesInvoked(sessionId, localIds, invokedAt, options)
+            // An anchored message position can lie far in the past; session
+            // activity is when the hub received the confirmation.
+            const activityAt = options?.activityAt ?? invokedAt
             if (changes > 0) {
-                this.sessions.touchSessionUpdatedAt(sessionId, invokedAt, namespace)
+                this.sessions.touchSessionUpdatedAt(sessionId, activityAt, namespace)
             }
 
             const session = this.sessions.getSessionByNamespace(sessionId, namespace)
             if (!session) {
                 throw new Error('session not found after messages-consumed transition')
             }
-            if (changes > 0 && session.updatedAt < invokedAt) {
+            if (changes > 0 && session.updatedAt < activityAt) {
                 throw new Error('session activity was not persisted after messages-consumed transition')
             }
 

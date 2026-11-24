@@ -514,7 +514,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 localIds,
                 invokedAt,
                 sessionAccess.value.namespace,
-                anchorAt !== null ? { reorderEpoch: true } : undefined
+                { ...(anchorAt !== null ? { reorderEpoch: true } : {}), activityAt: Date.now() }
             )
         } catch (err) {
             console.error('recordMessagesConsumed failed', err)
