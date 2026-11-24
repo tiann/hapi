@@ -153,12 +153,12 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
   or prove the process is still alive; retry to verify the final result.
   **Peer Done soft stand-down (`tiann/hapi#2020`, opt-in):** request body
   `{ softStandDown: true }` (sent by `hapi archive-peer` / MCP `archive_peer`
-  only). When KillSession+StopSession still report `still_alive` / `unknown`
-  but the session is still connected with no hub-visible live work
-  (`canSoftStandDownUnconfirmedStop`), the hub authors archive metadata
-  (`archiveReason` notes soft stand-down) so the CLI shuts down asynchronously.
-  Ordinary web/REST archive omits the flag and keeps verified cleanup.
-  WORKING peers and disconnected stale-idle rows always 409.
+  only). Eligibility (`canSoftStandDownUnconfirmedStop`) is checked before stop
+  RPCs and again if cleanup stays unconfirmed. On success the response includes
+  `softStandDown` + `pendingCleanup`, metadata carries `softStandDownPending`
+  (DELETE stays 409 until Runner confirms exit), and hub-authored archive
+  metadata triggers async CLI shutdown. Ordinary web/REST archive omits the
+  flag and keeps verified cleanup. WORKING / disconnected stale-idle always 409.
 - `PATCH /api/sessions/:id` - Rename session.
 - `DELETE /api/sessions/:id` - Delete inactive session.
 - `GET /api/sessions/:id/slash-commands` - List slash commands.

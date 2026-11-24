@@ -1168,7 +1168,10 @@ export function createSessionsRoutes(
             }
             throw error
         }
-        return c.json({ ok: true, ...(softStandDown ? { softStandDown: true } : {}) })
+        return c.json({
+            ok: true,
+            ...(softStandDown ? { softStandDown: true, pendingCleanup: true } : {}),
+        })
     })
 
     app.post('/sessions/:id/model-error/acknowledge', async (c) => {
@@ -1779,6 +1782,15 @@ export function createSessionsRoutes(
 
         if (sessionResult.session.active) {
             return c.json({ code: 'session_active', error: 'Cannot delete active session. Archive it first.' }, 409)
+        }
+
+        // #2020: soft stand-down archives before Runner confirms process exit.
+        // Keep DELETE gated until softStandDownPending clears (CLI shutdown).
+        if (sessionResult.session.metadata?.softStandDownPending === true) {
+            return c.json({
+                code: 'soft_stand_down_pending',
+                error: 'Peer Done soft stand-down is still shutting down the CLI. Retry delete after cleanup finishes.',
+            }, 409)
         }
 
         // Attached jobs outlive active=false; CASCADE would erase the live meter and

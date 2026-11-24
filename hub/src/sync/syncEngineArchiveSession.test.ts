@@ -338,6 +338,22 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(session?.metadata?.lifecycleState).toBe('archived')
         expect(session?.metadata?.archivedBy).toBe('hub')
         expect(session?.metadata?.archiveReason).toContain('Peer Done soft stand-down')
+        // softStandDownPending is set then cleared once Runner confirms (or the
+        // confirm poll gives up); race with the async poll — reason is durable.
+    })
+
+    it('refuses softStandDown before stop RPCs when the peer is WORKING', async () => {
+        const sessionId = insertActiveSession('sess-soft-before-kill', 'machine-x')
+        cache().getSession(sessionId)!.thinking = true
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'still_alive'
+
+        await expect(engine.archiveSession(sessionId, { softStandDown: true })).rejects.toThrow(/not yet confirmed/)
+        expect(killCalls).toBe(0)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
     it('keeps verified cleanup for ordinary archive of Peer Done still_alive (no softStandDown opt-in)', async () => {

@@ -3855,6 +3855,14 @@ export class SyncEngine {
         let peerDoneSoftStandDown = false
         let killPid: number | undefined
         let killProcessStartMarker: string | undefined
+        // #2020 soft stand-down: refuse WORKING / ineligible peers before any
+        // stop RPC so archive_peer cannot yank a live turn (bot Approach).
+        if (opts?.softStandDown) {
+            const live = this.sessionCache.getSession(sessionId)
+            if (!live || !canSoftStandDownUnconfirmedStop(live)) {
+                throw new ArchiveCleanupError('unconfirmed')
+            }
+        }
         try {
             const killResult = (await this.rpcGateway.killSession(sessionId)) ?? {}
             killPid = killResult.pid
@@ -3930,6 +3938,7 @@ export class SyncEngine {
                 if (!opts?.softStandDown) {
                     throw new ArchiveCleanupError('unconfirmed')
                 }
+                // Recheck eligibility after stop RPCs (turn may have started).
                 const live = this.sessionCache.getSession(sessionId)
                 if (!live || !canSoftStandDownUnconfirmedStop(live)) {
                     throw new ArchiveCleanupError('unconfirmed')
@@ -3959,14 +3968,42 @@ export class SyncEngine {
                     ? 'Archived from hub (Peer Done soft stand-down; CLI shutdown pending)'
                     : cliUnreachable
                         ? 'Archived from hub (CLI unreachable)'
-                        : 'Archived from hub (CLI stopped before archive metadata)'
+                        : 'Archived from hub (CLI stopped before archive metadata)',
+                peerDoneSoftStandDown ? { softStandDownPending: true } : undefined
             )
             this.emitCliSessionMetadataUpdate(sessionId)
         }
         this.releaseSessionEnumerations(sessionId)
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
+        if (peerDoneSoftStandDown && machineId) {
+            void this.confirmSoftStandDownExit(sessionId, machineId)
+        }
         const archivedSession = this.sessionCache.getSession(sessionId)
         if (archivedSession?.metadata?.codexResumePending) this.writeCodexResumePending(sessionId, archivedSession.namespace, undefined)
+    }
+
+    /** Poll Runner until soft-stand-down peer exit is confirmed, then lift DELETE gate. */
+    private async confirmSoftStandDownExit(sessionId: string, machineId: string): Promise<void> {
+        // Immediate first probe, then short backoff. Cap wall time ~90s in prod;
+        // keep tests from sleeping (0ms delay, few attempts).
+        const delayMs = process.env.BUN_TEST === '1' || process.env.NODE_ENV === 'test' ? 0 : 2_000
+        const maxAttempts = delayMs === 0 ? 2 : 45
+        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            if (attempt > 0 && delayMs > 0) {
+                await new Promise((resolve) => setTimeout(resolve, delayMs))
+            }
+            try {
+                const status = await this.rpcGateway.stopRunnerSession(machineId, sessionId)
+                if (status === 'already_gone' || status === 'stopped') {
+                    this.sessionCache.clearSoftStandDownPending(sessionId)
+                    return
+                }
+            } catch {
+                // Keep polling — Runner may be briefly unavailable mid-shutdown.
+            }
+        }
+        // Do not leave DELETE blocked forever if confirmation never arrives.
+        this.sessionCache.clearSoftStandDownPending(sessionId)
     }
 
     /**

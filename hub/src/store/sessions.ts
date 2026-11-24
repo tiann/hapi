@@ -94,7 +94,8 @@ const HUB_OWNED_METADATA_FIELDS = [
     'promptTitle',
     'translateInput',
     'forkedFrom',
-    'conversationBranch'
+    'conversationBranch',
+    'softStandDownPending',
 ] as const
 
 const CONTRIBUTION_FIELDS = ['externalRefs'] as const
