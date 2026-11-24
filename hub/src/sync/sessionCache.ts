@@ -2933,6 +2933,7 @@ export class SessionCache {
     ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId' | 'kimiSessionId' | 'dshSessionId'; value: string; dedupeKey: string; machineId?: string } | null {
         const scoped = (field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId' | 'kimiSessionId' | 'dshSessionId', value: string) => {
             const machineScoped = field === 'piSessionId' || field === 'opencodeSessionId'
+                || field === 'kimiSessionId' || field === 'dshSessionId'
             return {
                 field,
                 value,
@@ -3003,6 +3004,7 @@ export class SessionCache {
                 const passMetadata = currentSession?.metadata ?? session.metadata
                 const candidates: { id: string; session: Session }[] = []
                 const machineScoped = agentId.field === 'piSessionId' || agentId.field === 'opencodeSessionId'
+                    || agentId.field === 'kimiSessionId' || agentId.field === 'dshSessionId'
                 if (currentSession?.metadata && currentSession.metadata[agentId.field] === agentId.value) {
                     if (!machineScoped || currentSession.metadata.machineId === agentId.machineId) {
                         candidates.push({ id: passSessionId, session: currentSession })

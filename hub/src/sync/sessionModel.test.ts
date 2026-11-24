@@ -281,6 +281,55 @@ describe('session model', () => {
         expect(survivors).toHaveLength(1)
     })
 
+    it('merges the same kimi session id when both rows recorded the same machine', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const s1 = cache.getOrCreateSession(
+            'kimi-scoped-1',
+            { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor: 'kimi', kimiSessionId: 'kimi-native-machine' },
+            null,
+            'default'
+        )
+        const s2 = cache.getOrCreateSession(
+            'kimi-scoped-2',
+            { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor: 'kimi', kimiSessionId: 'kimi-native-machine' },
+            null,
+            'default'
+        )
+
+        await cache.deduplicateByAgentSessionId(s2.id)
+
+        expect([s1.id, s2.id].filter((id) => cache.getSession(id) != null)).toHaveLength(1)
+        store.close()
+    })
+
+    it('does not merge the same kimi session id across different machines', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const s1 = cache.getOrCreateSession(
+            'kimi-scoped-1',
+            { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor: 'kimi', kimiSessionId: 'kimi-native-machine' },
+            null,
+            'default'
+        )
+        const s2 = cache.getOrCreateSession(
+            'kimi-scoped-2',
+            { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor: 'kimi', kimiSessionId: 'kimi-native-machine' },
+            null,
+            'default'
+        )
+
+        await cache.deduplicateByAgentSessionId(s2.id)
+
+        expect(cache.getSession(s1.id)).toBeDefined()
+        expect(cache.getSession(s2.id)).toBeDefined()
+        store.close()
+    })
+
     it('deduplicates dsh sessions that share a dshSessionId (reopen correlation)', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
@@ -305,6 +354,55 @@ describe('session model', () => {
         // survive when extraction does not read dshSessionId.
         const survivors = [oldSession.id, newSession.id].filter((id) => cache.getSession(id) != null)
         expect(survivors).toHaveLength(1)
+    })
+
+    it('merges the same dsh session id when both rows recorded the same machine', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const s1 = cache.getOrCreateSession(
+            'dsh-scoped-1',
+            { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor: 'dsh', dshSessionId: 'dsh-native-machine' },
+            null,
+            'default'
+        )
+        const s2 = cache.getOrCreateSession(
+            'dsh-scoped-2',
+            { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor: 'dsh', dshSessionId: 'dsh-native-machine' },
+            null,
+            'default'
+        )
+
+        await cache.deduplicateByAgentSessionId(s2.id)
+
+        expect([s1.id, s2.id].filter((id) => cache.getSession(id) != null)).toHaveLength(1)
+        store.close()
+    })
+
+    it('does not merge the same dsh session id across different machines', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const s1 = cache.getOrCreateSession(
+            'dsh-scoped-1',
+            { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor: 'dsh', dshSessionId: 'dsh-native-machine' },
+            null,
+            'default'
+        )
+        const s2 = cache.getOrCreateSession(
+            'dsh-scoped-2',
+            { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor: 'dsh', dshSessionId: 'dsh-native-machine' },
+            null,
+            'default'
+        )
+
+        await cache.deduplicateByAgentSessionId(s2.id)
+
+        expect(cache.getSession(s1.id)).toBeDefined()
+        expect(cache.getSession(s2.id)).toBeDefined()
+        store.close()
     })
 
     it('notifies onSessionMergedAway when dedup collapses a duplicate row', async () => {
