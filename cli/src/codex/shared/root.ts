@@ -376,7 +376,8 @@ export class SharedCodexRoot {
     private publishRootContextDetails(info?: unknown, model?: string): void {
         publishContextDetails(this.session, buildCodexContextDetails({
             info,
-            model: model ?? this.settings.model,
+            // Inventory-only updates must not replace the model paired with saved usage.
+            model: info == null ? undefined : model ?? this.settings.model,
             threadId: this.threadId,
             slashCommands: this.availableSlashCommands,
             skills: this.availableSkills,

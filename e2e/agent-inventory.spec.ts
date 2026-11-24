@@ -38,3 +38,13 @@ test('Agent details shows no skill or tool section for an empty live Claude inve
     const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
     if (screenshots) await details.screenshot({ path: `${screenshots}/agent-inventory-claude-empty.png` })
 })
+
+
+test('the status bar uses the saved Codex usage window, not the configured model estimate', async ({ page }) => {
+    await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=codex&savedUsage=1')
+    const status = page.getByTestId('saved-codex-usage')
+    await expect(status.getByRole('button', { name: 'Context details', exact: true })).toContainText('40%')
+    await expect(status.getByRole('button', { name: 'Context details', exact: true })).toContainText('80k / 200k')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await status.screenshot({ path: `${screenshots}/agent-inventory-saved-window.png` })
+})

@@ -1021,6 +1021,18 @@ describe('shared steering availability', () => {
         ]));
     });
 
+    it('keeps the rerouted usage model and window while publishing inventory-only updates', async () => {
+        const f = await fixture({ contextDetails: {
+            version: 1, provider: 'codex', updatedAt: 10,
+            model: 'actual-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        } });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.skills).toEqual([{ name: 'find-docs' }]));
+        expect(f.metadata().contextDetails).toMatchObject({
+            model: 'actual-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        });
+    });
+
     it('discards older successful skill discovery after a newer response is applied', async () => {
         const f = await fixture();
         const first = Promise.withResolvers<Awaited<ReturnType<CodexAppServerClient['listSkills']>>>();
