@@ -2216,6 +2216,12 @@ export class SyncEngine {
         if (session.thinking && !allowRunningHistoricalFork) {
             throw new Error('Session is busy')
         }
+        // Same quiesce rule as archive: open child tools / running-without-open-tool
+        // are live work even when parent thinking is false. Rewind must not delete
+        // the only running marker and leave archive free to KillSession (#2021).
+        if (this.store.messages.getLiveToolWork(session.id)) {
+            throw new Error('Session is busy')
+        }
         if (session.metadata?.conversationHistoryDiverged === true) {
             throw new Error('Conversation history is diverged; refuse further fork/rewind')
         }

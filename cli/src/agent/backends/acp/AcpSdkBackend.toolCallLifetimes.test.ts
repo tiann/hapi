@@ -438,6 +438,37 @@ describe('AcpSdkBackend tool call lifetimes', () => {
         expect([...ids][0]).toMatch(/^ses_child:shell:0#/);
     });
 
+    it('publishes settledCallIds when session/prompt rejects without a stopReason (#2021)', async () => {
+        // Isolate from the default file lifetime store (shared session-1 key).
+        const { backend, notify, scriptPrompts } = makeBackend({
+            flavor: 'cursor',
+            toolCallLifetimeStore: memoryStore(),
+        });
+        const messages: AgentMessage[] = [];
+        scriptPrompts(async () => {
+            notify(toolCall('shell:0', { status: 'in_progress' }));
+            await sleep(10);
+            // Cursor Stop: cancelPrompt first, then the in-flight prompt often
+            // rejects instead of returning stopReason=cancelled.
+            await backend.cancelPrompt(SESSION);
+            throw new Error('T: [canceled] Operation aborted');
+        });
+
+        await expect(prompt(backend, messages)).rejects.toThrow(/canceled|aborted/i);
+        await sleep(40);
+
+        const settlement = messages.find(
+            (m): m is Extract<AgentMessage, { type: 'turn_complete' }> =>
+                m.type === 'turn_complete' && Array.isArray(m.settledCallIds) && m.settledCallIds.length > 0
+        );
+        expect(settlement).toMatchObject({
+            type: 'turn_complete',
+            stopReason: 'cancelled',
+            settledCallIds: [expect.stringMatching(/^shell:0#/)],
+        });
+        expect(settlement?.settledCallIds).toHaveLength(1);
+    });
+
     it('publishes turn_complete settlement when a child is interrupted (#2021)', async () => {
         const { backend, notify, scriptPrompts } = makeBackend({ childSessionUpdates: true });
         const messages: AgentMessage[] = [];

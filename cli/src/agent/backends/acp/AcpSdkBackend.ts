@@ -989,10 +989,16 @@ export class AcpSdkBackend implements AgentBackend {
                         contextWindow: latestUsageUpdate.contextWindow
                     });
                 }
-                if (stopReason) {
+                // Cursor often rejects the in-flight session/prompt on Stop
+                // (`Error: T: [canceled]…`), leaving stopReason null while
+                // settleCancelled() still collected open call ids. Publish
+                // those ids with a cancelled reason so Archive can clear —
+                // the original rejection still propagates after this finally
+                // (#2021).
+                if (stopReason || settledCallIds.length > 0) {
                     onUpdate({
                         type: 'turn_complete',
-                        stopReason,
+                        stopReason: stopReason ?? 'cancelled',
                         ...(numTurns !== undefined ? { numTurns } : {}),
                         ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
                     });
