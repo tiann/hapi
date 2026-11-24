@@ -195,6 +195,32 @@ describe('SessionList machine filter', () => {
         expect(screen.getByText('work/docs · Teemo')).toBeTruthy()
     })
 
+    it('shows the optional mobile machine filter button while keeping machine choices in Sort and filter', () => {
+        window.localStorage.setItem('hapi-show-mobile-machine-filter', 'true')
+        vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
+        try {
+            renderSessionList(multiMachineSessions)
+
+            const machineButton = screen.getAllByRole('button', { name: 'Filter sessions by machine' })
+                .find((button) => !button.closest('[inert]'))
+            expect(machineButton).toBeTruthy()
+            fireEvent.click(machineButton!)
+            expect(screen.getByRole('menu', { name: 'Filter sessions by machine' })).toBeTruthy()
+            fireEvent.click(screen.getByRole('menuitemradio', { name: /^Teemo \(1\)$/ }))
+            expect(screen.queryByTitle('/work/hapi')).toBeNull()
+            expect(screen.getByTitle('/work/docs')).toBeTruthy()
+
+            const viewButton = screen.getAllByRole('button', { name: 'Sort and filter' })
+                .find((button) => !button.closest('[inert]'))!
+            fireEvent.click(viewButton)
+            const sortMenu = screen.getByRole('menu', { name: 'Sort and filter' })
+            expect(within(sortMenu).getByRole('group', { name: 'Filter sessions by machine' })).toBeTruthy()
+            expect(within(sortMenu).getByRole('menuitemradio', { name: /^Teemo \(1\)$/ })).toHaveAttribute('aria-checked', 'true')
+        } finally {
+            vi.unstubAllGlobals()
+        }
+    })
+
     it('filters directory groups when a machine chip is selected', () => {
         renderSessionList(multiMachineSessions)
 

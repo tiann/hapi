@@ -137,8 +137,9 @@ import { getSessionProjectLabel, getSessionProjectPath } from '@/lib/sessionProj
 import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
-import { MachineFilterBar, MachineSummaryRow } from '@/components/MachineFilterBar'
+import { MachineFilterBar, MachineFilterMenu, MachineSummaryRow } from '@/components/MachineFilterBar'
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
+import { useShowMobileMachineFilter } from '@/hooks/useShowMobileMachineFilter'
 import { useForkFlow } from '@/hooks/useForkFlow'
 import { ForkPreviewDialog } from '@/components/AssistantChat/ForkPreviewDialog'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
@@ -165,6 +166,21 @@ import {
     TOOLBAR_MORE_PX,
     type ToolbarShedSlot
 } from '@/components/sessionToolbarShed'
+
+function useMobileMachineFilterViewport(): boolean {
+    const query = '(max-width: 767px)'
+    const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined'
+        && typeof window.matchMedia === 'function' && window.matchMedia(query).matches)
+    useEffect(() => {
+        if (typeof window.matchMedia !== 'function') return
+        const media = window.matchMedia(query)
+        const update = () => setIsMobile(media.matches)
+        update()
+        media.addEventListener('change', update)
+        return () => media.removeEventListener('change', update)
+    }, [])
+    return isMobile
+}
 
 /** Hit targets that must stay visible: icon, clear, calendar. Not the query text. */
 function measureSearchChrome(
@@ -2086,6 +2102,8 @@ export function SessionList(props: {
     // List sort/filter lives in SessionListView (#2263); jobs mode is #1404.
     const effectivePinInProgressMode: PinInProgressMode = pinInProgressMode
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
+    const { showMobileMachineFilter } = useShowMobileMachineFilter()
+    const isMobileMachineFilterViewport = useMobileMachineFilterViewport()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
     const [searchMode, setSearchMode] = useState<'metadata' | 'content'>('metadata')
@@ -3539,6 +3557,22 @@ export function SessionList(props: {
                                         />
                                     )
                                 })
+
+                                if (showMobileMachineFilter && showMachineFilterBar && isMobileMachineFilterViewport) {
+                                    definedSlots.push({
+                                        id: 'machine-filter',
+                                        keep: 5,
+                                        widthPx: slotWidth('machine-filter', TOOLBAR_ICON_PX),
+                                        node: (
+                                            <MachineFilterMenu
+                                                machines={machineFilterItems}
+                                                totalCount={allSessions.length}
+                                                value={activeMachineFilter}
+                                                onChange={setMachineFilter}
+                                            />
+                                        )
+                                    })
+                                }
 
                                 if (renderHeader) {
                                     definedSlots.push({

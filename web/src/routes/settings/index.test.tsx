@@ -12,7 +12,7 @@ import SettingsVoiceVoicesPage from './voice-voices'
 import SettingsVoiceAdvancedPage from './voice-advanced'
 import SettingsUsagePage from './usage'
 
-const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setCodexExplorationCollapsed, setVoice, setAppBadgeEnabled } = vi.hoisted(() => ({
+const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setCodexExplorationCollapsed, setVoice, setAppBadgeEnabled, setShowMobileMachineFilter } = vi.hoisted(() => ({
     context: { token: '' },
     navigate: vi.fn(),
     setAppearance: vi.fn(),
@@ -23,6 +23,7 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setCodexExplorationCollapsed: vi.fn(),
     setVoice: vi.fn(),
     setAppBadgeEnabled: vi.fn(),
+    setShowMobileMachineFilter: vi.fn(),
 }))
 
 const hubSettingsFixture = {
@@ -174,6 +175,10 @@ vi.mock('@/hooks/useKeepUnreadSessionsVisible', () => ({
 
 vi.mock('@/hooks/useAppBadgePreference', () => ({
     useAppBadgePreference: () => ({ appBadgeEnabled: false, setAppBadgeEnabled }),
+}))
+
+vi.mock('@/hooks/useShowMobileMachineFilter', () => ({
+    useShowMobileMachineFilter: () => ({ showMobileMachineFilter: false, setShowMobileMachineFilter }),
 }))
 
 vi.mock('@/hooks/useSessionHeaderMetadata', () => ({
@@ -408,6 +413,8 @@ describe('responsive settings pages', () => {
         expect(appBadgeToggle).not.toBeChecked()
         fireEvent.click(appBadgeToggle)
         expect(setAppBadgeEnabled).toHaveBeenCalledWith(true)
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Show mobile machine filter button' }))
+        expect(setShowMobileMachineFilter).toHaveBeenCalledWith(true)
         expect(screen.getByRole('checkbox', { name: 'Show field labels' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Project' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Effort' })).toBeChecked()

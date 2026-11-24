@@ -12,10 +12,11 @@
  * Upstream controls:
  *   4 New
  *   5 Sort and filter
+ *   5 Optional mobile machine filter
  *   6 Settings
  *   7 Mark all read (#1773 bulk hygiene — reachable, not a neighbor of New)
  *   8 Browse
- * Machine chips / the mobile machine menu stay outside this ladder.
+ * Desktop machine chips stay outside this ladder.
  * Fork-only Kitchen, Overseer, and agent-import use the same `keep` scale
  * when a soup layer passes them as extras (3 / 9 / 10).
  */

@@ -51,6 +51,43 @@ for (const width of [1280, 393, 320]) {
         await expect(page.getByRole('button', { name: /Older draft/ })).toBeVisible()
     })
 }
+
+for (const width of [393, 320]) {
+    test(`optional machine filter works without overlapping toolbar controls at ${width}px`, async ({ page }) => {
+        await page.addInitScript(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
+        await open(page, width)
+        const machineButton = page.getByRole('button', { name: 'Filter sessions by machine', exact: true })
+        await expect(machineButton).toBeVisible()
+        const actions = page.getByTestId('session-list-header-actions')
+        const buttons = actions.locator('button:visible:not([inert] *)')
+        const boxes = (await buttons.evaluateAll(elements => elements.map(element => {
+            const rect = element.getBoundingClientRect()
+            return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
+        })))
+        for (let i = 0; i < boxes.length; i++) {
+            for (let j = i + 1; j < boxes.length; j++) {
+                const a = boxes[i]!
+                const b = boxes[j]!
+                expect(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top).toBe(true)
+            }
+        }
+        await machineButton.click()
+        const machineMenu = page.getByRole('menu', { name: 'Filter sessions by machine' })
+        await expect(machineMenu).toBeInViewport({ ratio: 1 })
+        await machineMenu.getByRole('menuitemradio', { name: /^Server \(1\)$/ }).click()
+        await expect(page.getByRole('button', { name: /Server draft/ })).toBeVisible()
+        await expect(page.getByRole('button', { name: /Reviewed draft/ })).toHaveCount(0)
+        await page.getByRole('button', { name: 'Sort and filter', exact: true }).click()
+        await expect(page.getByRole('menu', { name: 'Sort and filter' }).getByRole('menuitemradio', { name: /^Server \(1\)$/ })).toHaveAttribute('aria-checked', 'true')
+    })
+}
+
+test('optional mobile machine filter does not occupy the desktop toolbar', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('hapi-show-mobile-machine-filter', 'true'))
+    await open(page, 1280)
+    await expect(page.getByRole('button', { name: 'Filter sessions by machine', exact: true })).toHaveCount(0)
+    await expect(page.getByTestId('session-toolbar-slot-machine-filter')).toHaveCount(0)
+})
 test.beforeEach(async ({ page }) => {
     await page.clock.setFixedTime(new Date(2026, 10, 9, 15))
 })
