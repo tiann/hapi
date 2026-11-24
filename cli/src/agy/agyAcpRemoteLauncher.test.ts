@@ -2518,9 +2518,9 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         writeTranscript(rows);
     }
 
-    it('maps a steer past a deferred call without taking a later call as the anchor', () => {
+    it('maps a steer past a held call only once that call is settled', () => {
         // agy recorded call A then B before the steer row; A's ACP update was
-        // deferred (no card), while C was shown afterwards.
+        // held back (no card), while C was shown afterwards.
         const { session } = makeSession();
         const launcher = new AgyAcpRemoteLauncher(session, { brainDir });
         const turn = {
@@ -2538,11 +2538,17 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
             status: 'DONE',
             tool_calls: [{ name: 'run_command', args: { CommandLine: JSON.stringify(commandLine) } }]
         });
-        const steps = [planner(1, 'A'), planner(2, 'B'), planner(4, 'C')];
-        const anchor = (launcher as unknown as {
-            steerAnchor: (turn: unknown, steps: unknown[], rowStepIndex: number) => string | undefined;
-        }).steerAnchor(turn, steps, 3);
-        expect(anchor).toBe('b');
+        const steerAnchor = (launcher as unknown as {
+            steerAnchor: (turn: unknown, steps: unknown[], rowStepIndex: number) => string | undefined | 'deferred';
+        }).steerAnchor.bind(launcher);
+        // A may still turn out to be an earlier turn's call, which would move B's slot.
+        expect(steerAnchor(turn, [planner(1, 'A'), planner(2, 'B'), planner(4, 'C')], 3)).toBe('deferred');
+        // Its card is out: planner order maps the row to B, not to the later C.
+        turn.plannerCalls[0]!.shown = true;
+        expect(steerAnchor(turn, [planner(1, 'A'), planner(2, 'B'), planner(4, 'C')], 3)).toBe('b');
+        // It was an earlier turn's call: its slot is dropped and B and C are this turn's first calls.
+        turn.plannerCalls.shift();
+        expect(steerAnchor(turn, [planner(1, 'B'), planner(2, 'C')], 3)).toBe('c');
     });
 
     it('waits on a matching call without a card and sends no anchor when it disagrees on name or args', () => {
@@ -2626,13 +2632,50 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         expect(consumedFor(client, 'steer-1')).toHaveLength(1);
     });
 
-    it('leaves steers with identical texts to the turn end instead of their rows', async () => {
-        const { client, steer, finish } = await startTurn();
+    it('gives steers with identical texts their own rows in send order when both rows land in one read', async () => {
+        const { client, launcher, steer, finish } = await startTurn();
         await steer('again', 'steer-1');
         await steer('again', 'steer-2');
 
         writeTranscript([...stepRows, userRow(3, 'again'), userRow(4, 'again')]);
-        await new Promise((resolve) => setTimeout(resolve, 60));
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-2')).toEqual([[['steer-2'], { steered: true, anchor: { toolCallId: 't1' } }]]));
+        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: 't1' } }]]);
+        const rowSteers = (launcher as unknown as { turn: { rowSteers: Array<{ ownedRow?: number }> } }).turn.rowSteers;
+        expect(rowSteers.map((entry) => entry.ownedRow)).toEqual([3, 4]);
+        await finish();
+        expect(consumedFor(client, 'steer-1')).toHaveLength(1);
+        expect(consumedFor(client, 'steer-2')).toHaveLength(1);
+    });
+
+    it('confirms two identical steers by their own rows when Stop answers them', async () => {
+        // Polls far apart: only the polls when Stop answers the steers can see the rows.
+        const { backend, client, steer, releaseFirst, queue } = await startTurn(undefined, { reactivePollMs: 60_000 });
+        await steer('again', 'steer-1');
+        await steer('again', 'steer-2');
+        writeTranscript([...stepRows, userRow(3, 'again'), userRow(4, 'again')]);
+        backend.onCancel = () => {
+            releaseFirst();
+            backend.steerCompletions[0]!.resolve('cancelled');
+            backend.steerCompletions[1]!.resolve('cancelled');
+        };
+        await (client.rpcHandlerManager.handlers as Handlers).get(RPC_METHODS.Abort)!();
+
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: 't1' } }]]);
+        expect(consumedFor(client, 'steer-2')).toEqual([[['steer-2'], { steered: true, anchor: { toolCallId: 't1' } }]]);
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-1']);
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-2']);
+        queue.close();
+    });
+
+    it('keeps an identical steer waiting behind an earlier one whose transcript could not be read when it was sent', async () => {
+        const { client, steer, finish } = await startTurn(undefined, { reactivePollMs: 20 });
+        breakTranscript();
+        await steer('again', 'steer-1');
+        repairTranscript(stepRows);
+        await steer('again', 'steer-2');
+        writeTranscript([...stepRows, userRow(3, 'again'), userRow(4, 'again')]);
+        await new Promise((resolve) => setTimeout(resolve, 100));
         expect(consumedFor(client, 'steer-1')).toHaveLength(0);
         expect(consumedFor(client, 'steer-2')).toHaveLength(0);
 
@@ -2661,15 +2704,17 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         queue.close();
     });
 
-    it('leaves a steer with the prompt\'s text to the turn end even when its row is there', async () => {
-        const { client, steer, finish } = await startTurn();
+    it('confirms a steer with the prompt\'s text by its own row, never by the prompt\'s row', async () => {
+        // The steer is sent before agy writes any row of the turn.
+        const { client, steer, finish } = await startTurn(null);
         await steer('run the tests', 'steer-1');
-        writeTranscript([...stepRows, userRow(3, 'run the tests')]);
+        writeTranscript([userRow(0, 'run the tests'), plannerRow(1, ['run_command']), genericRow(2)]);
         await new Promise((resolve) => setTimeout(resolve, 60));
         expect(consumedFor(client, 'steer-1')).toHaveLength(0);
+
+        writeTranscript([...stepRows, userRow(3, 'run the tests')]);
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: 't1' } }]]));
         await finish();
-        // Only the turn's end confirmed it, with no position.
-        expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true }]]);
     });
 
     it('stops matching when agy moves to another conversation and leaves the steer to the turn end', async () => {
@@ -3086,6 +3131,72 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toHaveLength(1));
         expect(consumedFor(client, 'steer-1')[0]).toEqual([['steer-1'], { steered: true, anchor: { toolCallId: 'c2' } }]);
         releaseTurn();
+        for (const completion of backend.steerCompletions) completion.resolve('end_turn');
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+    });
+
+    it('waits for a held earlier call to settle before anchoring a steer that follows two identical new calls', async () => {
+        const backend = new FakeAgyBackend();
+        const { session, queue, client } = makeSession();
+        const oldArgs = { CommandLine: 'sleep 30' };
+        const newArgs = { CommandLine: 'echo new' };
+        const taskRow = (stepIndex: number, task: string, output: string) => ({
+            step_index: stepIndex, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE',
+            content: `<SYSTEM_MESSAGE>\nTask id "${SESSION}/${task}" finished with result:\n${output}\n</SYSTEM_MESSAGE>`
+        });
+        let settleOld: (() => void) | undefined;
+        let releaseTurn: (() => void) | undefined;
+        let launcherRef!: AgyAcpRemoteLauncher;
+        backend.promptScripts.push(async (onUpdate) => {
+            (launcherRef as unknown as { backgroundCommands: unknown[] }).backgroundCommands.push(
+                { callId: 'agy-wakeup-1', synthetic: true, commandLine: 'sleep 30', nativeArgs: oldArgs, stepIndex: 0, taskId: `${SESSION}/task-1` },
+                { callId: 'agy-wakeup-2', synthetic: true, commandLine: 'sleep 30', nativeArgs: oldArgs, stepIndex: 0, taskId: `${SESSION}/task-2` }
+            );
+            writeTranscript([
+                userRow(0, 'run it'),
+                taskRow(1, 'task-1', 'slept'),
+                { ...plannerRow(2, []), tool_calls: [{ name: 'run_command', args: newArgs }] },
+                { ...plannerRow(3, []), tool_calls: [{ name: 'run_command', args: newArgs }] },
+                genericRow(4)
+            ]);
+            // An earlier command's completion is held: its call keeps a provisional slot.
+            onUpdate({
+                type: 'tool_call', id: 'old', name: 'sleep 30', input: oldArgs, status: 'completed',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: oldArgs
+            });
+            onUpdate({ type: 'tool_result', id: 'old', status: 'completed', output: 'slept' });
+            for (const id of ['c2', 'c3']) {
+                onUpdate({
+                    type: 'tool_call', id, name: 'echo new', input: newArgs, status: 'in_progress',
+                    kind: 'execute', nativeName: 'run_command', nativeArgs: newArgs
+                });
+            }
+            await new Promise<void>((resolve) => { settleOld = resolve; });
+            // The second command finishes with other output, which settles the held result.
+            writeTranscript([...stepRows, taskRow(6, 'task-2', 'other')]);
+            onUpdate({ type: 'tool_result', id: 'c2', status: 'completed', output: 'new' });
+            await new Promise<void>((resolve) => { releaseTurn = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('run it', REVIEW, 'first');
+        const { run, launcher } = launch(session, [backend], { brainDir, reactivePollMs: 10 });
+        launcherRef = launcher;
+        await vi.waitFor(() => expect(settleOld).toBeDefined());
+        const handlers = client.rpcHandlerManager.handlers as Handlers;
+        queue.push('also lint', REVIEW, 'steer-1');
+        await handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer-1' });
+
+        // The row follows the second new call while the held slot could still move it.
+        writeTranscript([...stepRows, userRow(5, 'also lint')]);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(consumedFor(client, 'steer-1')).toHaveLength(0);
+
+        settleOld!();
+        await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toEqual([[['steer-1'], { steered: true, anchor: { toolCallId: 'c3' } }]]));
+        await vi.waitFor(() => expect(releaseTurn).toBeDefined());
+        releaseTurn!();
         for (const completion of backend.steerCompletions) completion.resolve('end_turn');
         await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
         queue.close();
