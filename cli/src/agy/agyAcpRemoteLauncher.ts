@@ -1757,8 +1757,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
      */
     private steerAnchor(turn: AgyTurn, steps: AgyTranscriptStep[], rowStepIndex: number): string | undefined {
         const transcriptCalls: NonNullable<AgyTranscriptStep['tool_calls']> = [];
+        // An earlier turn's planner row may be flushed after this turn's snapshot
+        // but before its prompt row; only calls after the prompt row are this turn's.
+        const own = steps.findIndex((step) =>
+            step.step_index > turn.turnStartStepIndex
+            && step.source === 'USER_EXPLICIT' && step.type === 'USER_INPUT');
+        const countFrom = own >= 0 ? steps[own]!.step_index : turn.turnStartStepIndex;
         for (const step of steps) {
-            if (step.step_index <= turn.turnStartStepIndex || step.step_index >= rowStepIndex) continue;
+            if (step.step_index <= countFrom || step.step_index >= rowStepIndex) continue;
             if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') continue;
             transcriptCalls.push(...(step.tool_calls ?? []));
         }

@@ -2980,7 +2980,7 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         await run;
     });
 
-    it('anchors a turn-two steer to its own call after a turn-one held call is released with no match', async () => {
+    it('anchors a turn-two steer to its own call after a turn-one held call is released with no match and a late planner row', async () => {
         const backend = new FakeAgyBackend();
         const { session, queue, client } = makeSession();
         const oldArgs = { CommandLine: 'sleep 30' };
@@ -3032,11 +3032,13 @@ describe('AgyAcpRemoteLauncher steer rows in the agy transcript', () => {
         queue.push('also lint', REVIEW, 'steer-1');
         await handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer-1' });
 
-        const start = Math.max((launcher as unknown as { turn: { turnStartStepIndex: number } }).turn.turnStartStepIndex, 2);
+        const start = Math.max((launcher as unknown as { turn: { turnStartStepIndex: number } }).turn.turnStartStepIndex, 2) + 1;
         writeTranscript([
-            userRow(start, 'next'),
-            { ...plannerRow(start + 1, ['run_command']), tool_calls: [{ name: 'run_command', args: { CommandLine: '"echo new"' } }] },
-            userRow(start + 2, 'also lint')
+            // Turn one's planner row is flushed after this turn's snapshot, before its prompt row.
+            plannerRow(start, ['run_command']),
+            userRow(start + 1, 'next'),
+            { ...plannerRow(start + 2, ['run_command']), tool_calls: [{ name: 'run_command', args: { CommandLine: '"echo new"' } }] },
+            userRow(start + 3, 'also lint')
         ]);
         await vi.waitFor(() => expect(consumedFor(client, 'steer-1')).toHaveLength(1));
         expect(consumedFor(client, 'steer-1')[0]).toEqual([['steer-1'], { steered: true, anchor: { toolCallId: 'c2' } }]);
