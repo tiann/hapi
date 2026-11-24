@@ -144,6 +144,9 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
     public var piSelectedModel: PiModelReference?
     /// User-message `localId`s with a native fork/rewind point.
     public var conversationHistoryPoints: [String: Bool]?
+    /// Hub-owned toggle: translate the user's prompts to English before
+    /// delivery (`PATCH /api/sessions/:id {translateInput}`). Absent = off.
+    public var translateInput: Bool?
 
     public init(
         path: String,
@@ -175,7 +178,8 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
         piSessionId: String? = nil,
         dshSessionId: String? = nil,
         piSelectedModel: PiModelReference? = nil,
-        conversationHistoryPoints: [String: Bool]? = nil
+        conversationHistoryPoints: [String: Bool]? = nil,
+        translateInput: Bool? = nil
     ) {
         self.path = path
         self.host = host
@@ -207,5 +211,6 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
         self.dshSessionId = dshSessionId
         self.piSelectedModel = piSelectedModel
         self.conversationHistoryPoints = conversationHistoryPoints
+        self.translateInput = translateInput
     }
 }

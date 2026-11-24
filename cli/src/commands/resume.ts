@@ -2,29 +2,23 @@ import chalk from 'chalk'
 import { existsSync } from 'node:fs'
 import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
 import type {
-    AgyPermissionMode,
-    ClaudePermissionMode,
-    CodexPermissionMode,
-    CursorPermissionMode,
-    GrokPermissionMode,
-    HermesPermissionMode,
-    KimiPermissionMode,
-    CopilotPermissionMode,
-    OpencodePermissionMode
+    PermissionModeOf,
+    Flavors
 } from '@hapi/protocol/types'
 import { ApiClient } from '@/api/api'
 import type { ReasoningEffort } from '@/codex/appServerTypes'
 import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
+import { getResumeSessionName } from '@/ui/ink/resumeSessionPickerState'
 import type { CommandDefinition } from './types'
 
 function formatSessionLine(session: ResumableSession, index: number): string {
-    const name = session.name ?? session.summary ?? session.sessionId
+    const name = getResumeSessionName(session)
     const state = session.active
         ? session.controlledByUser ? 'local' : 'remote'
         : 'inactive'
-    return `${index + 1}. ${session.flavor.padEnd(8)} ${state.padEnd(8)} ${name}  ${session.directory}`
+    return `${index + 1}. ${session.flavor.padEnd(8)} ${state.padEnd(8)} ${name}  ${session.directory}  ${session.sessionId}`
 }
 
 export async function selectResumableSession(sessions: ResumableSession[]): Promise<string> {
@@ -81,7 +75,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             workingDirectory: base.workingDirectory,
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
-            permissionMode: base.permissionMode as ClaudePermissionMode | undefined,
+            permissionMode: base.permissionMode as PermissionModeOf<typeof Flavors.claude> | undefined,
             startingMode: 'local',
             model: target.model ?? undefined,
             effort: target.effort ?? undefined
@@ -96,7 +90,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             workingDirectory: base.workingDirectory,
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
-            permissionMode: base.permissionMode as CodexPermissionMode | undefined,
+            permissionMode: base.permissionMode as PermissionModeOf<typeof Flavors.codex> | undefined,
             model: target.model ?? undefined,
             modelReasoningEffort: (target.modelReasoningEffort ?? undefined) as ReasoningEffort | undefined,
             collaborationMode: target.collaborationMode
@@ -130,7 +124,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             workingDirectory: base.workingDirectory,
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
-            permissionMode: base.permissionMode as OpencodePermissionMode | undefined,
+            permissionMode: base.permissionMode as PermissionModeOf<typeof Flavors.opencode> | undefined,
             startingMode: 'local',
             model: target.model ?? undefined
         })
@@ -144,7 +138,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             workingDirectory: base.workingDirectory,
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
-            permissionMode: base.permissionMode as GrokPermissionMode | undefined,
+            permissionMode: base.permissionMode as PermissionModeOf<typeof Flavors.grok> | undefined,
             startingMode: 'local',
             model: target.model ?? undefined,
             effort: target.effort ?? undefined
@@ -159,7 +153,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             workingDirectory: base.workingDirectory,
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
-            permissionMode: base.permissionMode as KimiPermissionMode | undefined,
+            permissionMode: base.permissionMode as PermissionModeOf<typeof Flavors.kimi> | undefined,
             startingMode: 'local',
             model: target.model ?? undefined,
             effort: target.effort ?? undefined
@@ -174,7 +168,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             workingDirectory: base.workingDirectory,
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
-            permissionMode: base.permissionMode as HermesPermissionMode | undefined,
+            permissionMode: base.permissionMode as PermissionModeOf<typeof Flavors.hermes> | undefined,
             startingMode: 'remote',
             model: target.model ?? undefined
         })
@@ -188,7 +182,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             workingDirectory: base.workingDirectory,
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
-            permissionMode: base.permissionMode as AgyPermissionMode | undefined,
+            permissionMode: base.permissionMode as PermissionModeOf<typeof Flavors.agy> | undefined,
             startingMode: 'remote',
             model: target.model ?? undefined,
             effort: target.effort ?? undefined,
@@ -203,7 +197,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             workingDirectory: base.workingDirectory,
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
-            permissionMode: base.permissionMode as CopilotPermissionMode | undefined,
+            permissionMode: base.permissionMode as PermissionModeOf<typeof Flavors.copilot> | undefined,
             startingMode: 'local',
             model: target.model ?? undefined,
             effort: target.effort ?? undefined,
@@ -235,7 +229,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
         workingDirectory: base.workingDirectory,
         resumeSessionId: base.resumeSessionId,
         startedBy: base.startedBy,
-        permissionMode: base.permissionMode as CursorPermissionMode | undefined,
+        permissionMode: base.permissionMode as PermissionModeOf<typeof Flavors.cursor> | undefined,
         model: target.model ?? undefined
     })
 }

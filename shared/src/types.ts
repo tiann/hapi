@@ -39,21 +39,14 @@ export type { SessionSummary, SessionSummaryMetadata, PendingRequest, PendingReq
 export { PENDING_REQUEST_SUMMARY_CAP } from './sessionSummary'
 export { AGENT_MESSAGE_PAYLOAD_TYPE } from './modes'
 
+export type { Flavors } from './flavors'
 export type {
     AgentFlavor,
-    AgyPermissionMode,
-    ClaudePermissionMode,
     CodexCollaborationMode,
     CodexCollaborationModeOption,
-    CodexPermissionMode,
-    CursorPermissionMode,
-    GeminiPermissionMode,
-    GrokPermissionMode,
     HermesPermissionMode,
-    KimiPermissionMode,
-    CopilotPermissionMode,
-    OpencodePermissionMode,
     PermissionMode,
+    PermissionModeOf,
     PermissionModeOption,
     PermissionModeTone
 } from './modes'

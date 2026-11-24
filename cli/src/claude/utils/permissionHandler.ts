@@ -274,7 +274,7 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
                 }
                 // Check prefix matches
                 for (const prefix of this.allowedBashPrefixes) {
-                    if (inputObj.command.startsWith(prefix)) {
+                    if (prefix.length > 0 && inputObj.command.startsWith(prefix)) {
                         return { behavior: 'allow', updatedInput: input as Record<string, unknown> };
                     }
                 }
@@ -387,6 +387,9 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
         // Check if it's a prefix pattern (ends with :*)
         if (command.endsWith(':*')) {
             const prefix = command.slice(0, -2); // Remove :*
+            if (prefix.length === 0) {
+                return;
+            }
             this.allowedBashPrefixes.add(prefix);
         } else {
             // Literal match

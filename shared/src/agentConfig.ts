@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AGENT_FLAVORS, type AgentFlavor, type PermissionMode } from './modes'
+import { AGENT_FLAVORS, type AgentFlavor } from './modes'
 
 export const AgentConfigFieldIdSchema = z.enum([
     'model',
@@ -99,25 +99,4 @@ export function getAgentConfigDescriptor(flavor: AgentFlavor): AgentConfigDescri
 
 export function getBuiltinAgentConfigDescriptors(): AgentConfigDescriptor[] {
     return AGENT_FLAVORS.map(getAgentConfigDescriptor)
-}
-
-export function resolveHapiYoloPermissionMode(flavor: AgentFlavor): PermissionMode | null {
-    switch (flavor) {
-        case 'claude':
-        case 'grok':
-            return 'bypassPermissions'
-        case 'agy':
-            return 'always-proceed'
-        case 'codex':
-        case 'copilot':
-        case 'cursor':
-        case 'gemini':
-        case 'hermes':
-        case 'kimi':
-        case 'opencode':
-            return 'yolo'
-        case 'dsh':
-        case 'pi':
-            return null
-    }
 }

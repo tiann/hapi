@@ -1,6 +1,6 @@
-import { COPILOT_PERMISSION_MODES } from '@hapi/protocol/modes';
+import { Flavors } from '@hapi/protocol/modes';
 import type { CopilotAgentMode } from '@hapi/protocol';
-import type { CopilotPermissionMode } from '@hapi/protocol/types';
+import type { PermissionModeOf } from '@hapi/protocol/types';
 import type { SlashCommand } from '@/modules/common/slashCommands';
 
 export type CopilotSlashResolution =
@@ -9,7 +9,7 @@ export type CopilotSlashResolution =
         kind: 'handled';
         message: string;
         updates?: {
-            permissionMode?: CopilotPermissionMode;
+            permissionMode?: PermissionModeOf<typeof Flavors.copilot>;
             model?: string | null;
             agentMode?: CopilotAgentMode;
         };
@@ -19,18 +19,18 @@ export type CopilotSlashResolution =
         text: string;
         message?: string;
         updates?: {
-            permissionMode?: CopilotPermissionMode;
+            permissionMode?: PermissionModeOf<typeof Flavors.copilot>;
             model?: string | null;
             agentMode?: CopilotAgentMode;
         };
     };
 
-function resolveCopilotPermissionMode(rest: string): CopilotPermissionMode | null {
+function resolveCopilotPermissionMode(rest: string): PermissionModeOf<typeof Flavors.copilot> | null {
     const normalized = rest.trim().toLowerCase();
     if (!normalized) return null;
     if (normalized === 'default' || normalized === 'off') return 'default';
-    if ((COPILOT_PERMISSION_MODES as readonly string[]).includes(normalized)) {
-        return normalized as CopilotPermissionMode;
+    if (Flavors.copilot.allowsPermissionMode(normalized)) {
+        return normalized;
     }
     return null;
 }
@@ -49,7 +49,7 @@ export function resolveCopilotSlashCommand(
     text: string,
     state: {
         commands?: readonly SlashCommand[];
-        permissionMode: CopilotPermissionMode;
+        permissionMode: PermissionModeOf<typeof Flavors.copilot>;
         model?: string | null;
         agentMode: CopilotAgentMode;
     }
@@ -121,7 +121,7 @@ export function resolveCopilotSlashCommand(
         if (!permissionMode) {
             return {
                 kind: 'handled',
-                message: `Unknown permission mode \`${rest}\`. Use one of: ${COPILOT_PERMISSION_MODES.join(', ')}`
+                message: `Unknown permission mode \`${rest}\`. Use one of: ${Flavors.copilot.permissionModes.join(', ')}`
             };
         }
         return {
