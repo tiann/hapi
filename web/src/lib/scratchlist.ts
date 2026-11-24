@@ -21,6 +21,7 @@ export const SCRATCHLIST_MAX_ENTRIES = 200
 export const SCRATCHLIST_MAX_TEXT_LENGTH = 10_000
 
 import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
+import { randomId } from '@/lib/randomId'
 
 export type ScratchlistEntry = {
     id: string
@@ -111,13 +112,6 @@ function writeScratchlist(sessionId: string, entries: ScratchlistEntry[]): void 
     }
 }
 
-function makeEntryId(): string {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-        return crypto.randomUUID()
-    }
-    return `scratch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-}
-
 /**
  * Append a new entry to the scratchlist. Returns the new entry list (or
  * the previous list unchanged when text is empty / would exceed the cap).
@@ -140,7 +134,7 @@ export function addScratchlistEntry(
         ? text.slice(0, SCRATCHLIST_MAX_TEXT_LENGTH)
         : text
     const entry: ScratchlistEntry = {
-        id: makeEntryId(),
+        id: randomId(),
         text: truncated,
         createdAt: now,
     }

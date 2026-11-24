@@ -132,6 +132,20 @@ extension APIClient {
         )
     }
 
+    /// `PATCH /api/sessions/:id {translateInput}` — the hub-owned
+    /// per-session input-translation toggle (400 when enabling on a hub
+    /// without a translation provider).
+    public func setSessionTranslateInput(id: String, enabled: Bool) async throws {
+        struct TranslateInputRequest: Encodable {
+            let translateInput: Bool
+        }
+        try await requestVoid(
+            .patch,
+            "/api/sessions/\(encodePathComponent(id))",
+            body: TranslateInputRequest(translateInput: enabled)
+        )
+    }
+
     /// `PATCH /api/sessions/:id/summary` (1–255 chars).
     public func updateSessionSummary(id: String, text: String) async throws {
         struct UpdateSummaryRequest: Encodable {

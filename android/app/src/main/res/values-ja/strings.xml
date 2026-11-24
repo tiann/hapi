@@ -680,6 +680,11 @@
     <string name="tool_custom_answer">カスタム回答</string>
     <string name="tool_answer_note">メモ</string>
     <string name="chat_view_full_message">メッセージ全文を表示</string>
+    <string name="chat_translate_input_on">メッセージを英語に翻訳</string>
+    <string name="chat_translate_input_off">メッセージの翻訳を停止</string>
+    <string name="chat_translated_label">翻訳済み</string>
+    <string name="chat_translated_show_sent">エージェントに送った英語を表示</string>
+    <string name="chat_translated_show_original">原文を表示</string>
     <string name="chat_full_message">メッセージ全文</string>
     <string name="chat_previous_part">前のパート</string>
     <string name="chat_next_part">次のパート</string>
@@ -818,4 +823,8 @@
     <string name="passkey_enter_hub">Hub のアドレスを手動で入力</string>
     <string name="passkey_hub_address_required">このパスキーには Hub のアドレスが含まれていません。アドレスを入力してから、パスキーで続行してください。</string>
     <string name="passkey_error_wrong_hub">このパスキーは別の Hub のものです。この Hub 用のパスキーを選ぶか、アドレスを確認してください。</string>
+    <string name="sessions_grouped">プロジェクトフォルダでグループ化</string>
+    <string name="sessions_other_project">その他</string>
+    <string name="sessions_folder_expanded">展開中</string>
+    <string name="sessions_folder_collapsed">折りたたみ中</string>
 </resources>

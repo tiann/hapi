@@ -390,6 +390,19 @@ function requiredParkMsForToolCalls(
 }
 
 /**
+ * `agy acp` streams reactive wakeup updates live from 1.5.10 on
+ * (google-antigravity/antigravity-cli#1461); an unknown or unparseable version
+ * keeps the transcript-rendered behavior.
+ */
+export function supportsAgyLiveIdleWakeups(version: string | null | undefined): boolean {
+    const match = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.exec(version ?? '');
+    if (!match) return false;
+    const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3])];
+    // 1.5.10-beta sorts below 1.5.10.
+    return major !== 1 ? major > 1 : minor !== 5 ? minor > 5 : patch > 10 || (patch === 10 && !match[4]);
+}
+
+/**
  * Classifies new transcript steps written after a user turn finished.
  * Only autonomous `SYSTEM_MESSAGE` entries start a reactive wakeup.
  */
@@ -1034,68 +1047,8 @@ export function inspectSyntheticBackgroundCommandMatch(
     const unpersistedCompatible = compatible.filter(
         (entry) => entry.taskId === undefined || !completedTasks.has(entry.taskId)
     );
-
-    const candidateStepIndexes = new Set(
-        candidates
-            .map((entry) => entry.stepIndex)
-            .filter((idx): idx is number => idx !== undefined)
-    );
-    const freshActions: Array<AgyTranscriptStep | undefined> = [];
-    for (const [plannerIndex, step] of recentSteps.entries()) {
-        if (step.step_index <= turnStartStepIndex) continue;
-        if (candidateStepIndexes.has(step.step_index)) continue;
-        if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') continue;
-        const calls = step.tool_calls ?? [];
-        const { actionSteps } = collectPlannerActionSteps(recentSteps, plannerIndex, calls.length);
-        calls.forEach((call, index) => {
-            if (call.name !== 'run_command') return;
-            const args = decodeAgyTranscriptArgs(call.args);
-            const plannedCmd = typeof args.CommandLine === 'string' ? args.CommandLine : undefined;
-            if (liveCommandLine !== undefined && plannedCmd !== liveCommandLine) return;
-            if (liveArgs) {
-                for (const [key, val] of Object.entries(liveArgs)) {
-                    if (typeof val !== 'string' && typeof val !== 'number' && typeof val !== 'boolean') {
-                        continue;
-                    }
-                    if (args[key] !== undefined && args[key] !== val) return;
-                }
-            }
-            freshActions.push(actionSteps[index]);
-        });
-    }
-
-    // A different persisted output distinguishes an older replay even when
-    // both commands have identical arguments. Until the result arrives, defer.
-    if (completedCandidates.length && freshActions.some(action => !action || action.type !== 'RUN_COMMAND'
-        || action.status !== 'DONE' || !action.content || isAgyStepContentTruncated(action))) {
-        return { kind: 'ambiguous' };
-    }
-    if (freshActions.length && (completedCandidates.length === 0 || freshActions.some(action => {
-        if (!action?.content) return false;
-        const fresh = normalizeAgyCommandBody(stripAgyStepTimestamps(action.content));
-        return (liveResult?.stdout !== undefined && fresh.stdout === liveResult.stdout
-            && (liveResult.exitCode === undefined || fresh.exitCode === liveResult.exitCode));
-    }))) {
-        return { kind: 'none' };
-    }
-
-    // Argument compatibility alone never establishes a synthetic alias:
-    // without `tool_result` evidence, hold compatible calls provisionally
-    // unless the current turn has already persisted a matching planned command.
-    if (!hasResultSignal) {
-        if (
-            completedCandidates.length > 0
-            || unpersistedCompatible.length > 0
-            || lookup.callStatus === 'completed'
-            || lookup.callStatus === 'failed'
-        ) {
-            return { kind: 'ambiguous' };
-        }
-        return { kind: 'none' };
-    }
-
-    if (completedCandidates.length > 0) {
-        const filteredByResult = completedCandidates.filter((entry) => {
+    const filteredByResult = hasResultSignal
+        ? completedCandidates.filter((entry) => {
             const taskResult = completedTasks.get(entry.taskId!)!;
             if (
                 liveResult?.exitCode !== undefined
@@ -1118,8 +1071,91 @@ export function inspectSyntheticBackgroundCommandMatch(
                 return false;
             }
             return true;
-        });
+        })
+        : completedCandidates;
 
+    const candidateStepIndexes = new Set(
+        candidates
+            .map((entry) => entry.stepIndex)
+            .filter((idx): idx is number => idx !== undefined)
+    );
+    const freshActions: Array<AgyTranscriptStep | undefined> = [];
+    // A result-only update names no command, so any planned call would "match" it.
+    if (liveCommandLine !== undefined || liveArgs !== undefined) {
+        for (const [plannerIndex, step] of recentSteps.entries()) {
+            if (step.step_index <= turnStartStepIndex) continue;
+            if (candidateStepIndexes.has(step.step_index)) continue;
+            if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') continue;
+            const calls = step.tool_calls ?? [];
+            const { actionSteps } = collectPlannerActionSteps(recentSteps, plannerIndex, calls.length);
+            calls.forEach((call, index) => {
+                if (call.name !== 'run_command') return;
+                const args = decodeAgyTranscriptArgs(call.args);
+                const plannedCmd = typeof args.CommandLine === 'string' ? args.CommandLine : undefined;
+                if (liveCommandLine !== undefined && plannedCmd !== liveCommandLine) return;
+                if (liveArgs) {
+                    for (const [key, val] of Object.entries(liveArgs)) {
+                        if (typeof val !== 'string' && typeof val !== 'number' && typeof val !== 'boolean') {
+                            continue;
+                        }
+                        if (args[key] !== undefined && args[key] !== val) return;
+                    }
+                }
+                freshActions.push(actionSteps[index]);
+            });
+        }
+    }
+
+    const isReadableTerminalAction = (
+        action: AgyTranscriptStep | undefined
+    ): action is AgyTranscriptStep & { content: string } =>
+        Boolean(
+            action
+            && action.type === 'RUN_COMMAND'
+            && (action.status === 'DONE' || action.status === 'ERROR')
+            && action.content
+            && !isAgyStepContentTruncated(action)
+        );
+
+    // A different persisted output distinguishes an older replay even when
+    // both commands have identical arguments. Until the result arrives, defer.
+    if (filteredByResult.length > 0 && freshActions.some((action) => !isReadableTerminalAction(action))) {
+        return { kind: 'ambiguous' };
+    }
+    if (freshActions.length && (filteredByResult.length === 0 || freshActions.some((action) => {
+        if (!isReadableTerminalAction(action)) return false;
+        const fresh = normalizeAgyCommandBody(stripAgyStepTimestamps(action.content));
+        const statusCompatible = lookup.resultStatus === 'failed'
+            ? action.status === 'ERROR' || (fresh.exitCode !== undefined && fresh.exitCode !== 0)
+            : lookup.resultStatus === 'completed'
+                ? action.status === 'DONE' && (fresh.exitCode === undefined || fresh.exitCode === 0)
+                : true;
+        if (!statusCompatible) return false;
+        if (liveResult?.stdout !== undefined) {
+            return fresh.stdout === liveResult.stdout
+                && (liveResult.exitCode === undefined || fresh.exitCode === undefined || fresh.exitCode === liveResult.exitCode);
+        }
+        return lookup.resultStatus === 'failed' && action.status === 'ERROR';
+    }))) {
+        return { kind: 'none' };
+    }
+
+    // Argument compatibility alone never establishes a synthetic alias:
+    // without `tool_result` evidence, hold compatible calls provisionally
+    // unless the current turn has already persisted a matching planned command.
+    if (!hasResultSignal) {
+        if (
+            completedCandidates.length > 0
+            || unpersistedCompatible.length > 0
+            || lookup.callStatus === 'completed'
+            || lookup.callStatus === 'failed'
+        ) {
+            return { kind: 'ambiguous' };
+        }
+        return { kind: 'none' };
+    }
+
+    if (completedCandidates.length > 0) {
         if (filteredByResult.length === 1) {
             const established = completedTasks.get(filteredByResult[0]!.taskId!)!;
             if (
