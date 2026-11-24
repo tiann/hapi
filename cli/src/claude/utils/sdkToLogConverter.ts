@@ -362,7 +362,14 @@ export class SDKToLogConverter {
                 if (untrusted) tokenDeltaIncomplete = true
                 staleModels.delete(model)
                 const counters: ModelUsageCounters = untrusted ? {} : { ...(modelBaseline ?? {}) }
-                const missing = new Set(untrusted ? [] : previous?.missingTokenCounters?.[model] ?? [])
+                const missing = new Set(previous?.missingTokenCounters?.[model] ?? [])
+                // Rebasing drops the old values but not which token counters the
+                // model reported: one still absent keeps the fallback active.
+                if (untrusted) {
+                    for (const key of TOKEN_COUNTER_KEYS) {
+                        if (modelBaseline?.[key] !== undefined) missing.add(key)
+                    }
+                }
                 let hasComparableDelta = false
                 let hasNonZeroDelta = false
                 for (const key of CUMULATIVE_MODEL_USAGE_KEYS) {

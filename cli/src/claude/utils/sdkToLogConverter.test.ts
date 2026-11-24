@@ -635,6 +635,47 @@ describe('SDKToLogConverter', () => {
                 expect(summaryOf(next)?.modelUsage).toMatchObject({ 'claude-opus-5': { inputTokens: 5, outputTokens: 30 } })
             })
 
+            it('keeps the token fallback for counters still missing after an omitted snapshot', () => {
+                converter.startFreshProcessBaseline()
+                converter.convert(result({
+                    total_cost_usd: 1,
+                    duration_api_ms: 1000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { inputTokens: 10, outputTokens: 100 } }
+                }))
+                converter.convert(result({
+                    total_cost_usd: 2,
+                    duration_api_ms: 2000,
+                    usage: { input_tokens: 5, output_tokens: 20 }
+                }))
+                for (const [cost, input] of [[3, 30], [4, 40]]) {
+                    const partial = converter.convert(result({
+                        total_cost_usd: cost,
+                        duration_api_ms: cost * 1000,
+                        usage: { input_tokens: 5, output_tokens: 20 },
+                        modelUsage: { 'claude-opus-5': { inputTokens: input, contextWindow: 200_000 } }
+                    }))
+                    expect(summaryOf(partial)?.modelUsage).toEqual({ 'claude-opus-5': { contextWindow: 200_000 } })
+                }
+
+                // The returning counter has no baseline yet, so this round still falls back.
+                const returned = converter.convert(result({
+                    total_cost_usd: 5,
+                    duration_api_ms: 5000,
+                    usage: { input_tokens: 5, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { inputTokens: 50, outputTokens: 500 } }
+                }))
+                expect(summaryOf(returned)?.modelUsage).toEqual({ 'claude-opus-5': {} })
+
+                const next = converter.convert(result({
+                    total_cost_usd: 6,
+                    duration_api_ms: 6000,
+                    usage: { input_tokens: 5, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { inputTokens: 55, outputTokens: 520 } }
+                }))
+                expect(summaryOf(next)?.modelUsage).toMatchObject({ 'claude-opus-5': { inputTokens: 5, outputTokens: 20 } })
+            })
+
             it('keeps a stale-session result out of usage accounting', () => {
                 converter.startFreshProcessBaseline()
                 converter.updateSessionId('native-1')
