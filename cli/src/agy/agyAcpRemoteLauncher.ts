@@ -301,6 +301,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     /** Last observed transcript progress during the active reactive wakeup —
      *  Stop completion polls use the real quiet period (#2021 Major). */
     private reactiveWakeupLastProgressAtMs = 0;
+    /** Last step index observed by the Stop completion poll (#2021 Minor). */
+    private reactiveWakeupStopPollStepIndex = -1;
     private wakeupHardStopTimer: ReturnType<typeof setTimeout> | null = null;
     /** Bumped to invalidate an in-flight wakeup hard-stop timer (generation fence). */
     private wakeupHardStopGeneration = 0;
@@ -734,6 +736,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         let watchedStepIndex = this.pausedWakeupStepIndex ?? this.lastTranscriptStepIndex;
         let lastProgressAtMs = Date.now();
         this.reactiveWakeupLastProgressAtMs = lastProgressAtMs;
+        this.reactiveWakeupStopPollStepIndex = watchedStepIndex;
         const pollIntervalMs = Math.max(10, Math.min(this.reactivePollMs, 50));
 
         try {
@@ -2407,19 +2410,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         );
         if (steps.length === 0) return false;
         const nowMs = Date.now();
-        // Reset quiet-period clock when new steps arrive during Stop wait.
         const latest = steps[steps.length - 1]?.step_index;
-        if (
-            typeof latest === 'number'
-            && latest > this.lastTranscriptStepIndex
-            && this.reactiveWakeupLastProgressAtMs > 0
-        ) {
-            // Progress since abort — keep waiting for settleMs from now.
-            // Do not stamp every poll; only when the tip advances.
-        }
-        const watched = this.pausedWakeupStepIndex ?? this.lastTranscriptStepIndex;
-        const tip = typeof latest === 'number' ? latest : watched;
-        if (tip > watched) {
+        const tip = typeof latest === 'number' ? latest : this.reactiveWakeupStopPollStepIndex;
+        // Advance the observed index and quiet-period clock only when the tip
+        // moves — a stable completion row must not reset settleMs forever
+        // (#2021 Minor).
+        if (tip > this.reactiveWakeupStopPollStepIndex) {
+            this.reactiveWakeupStopPollStepIndex = tip;
             this.reactiveWakeupLastProgressAtMs = nowMs;
         }
         const lastProgressAtMs = this.reactiveWakeupLastProgressAtMs || nowMs;

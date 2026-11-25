@@ -251,6 +251,8 @@ type ChildToolCallState = {
     open: Set<string>
     /** Parent-scope ACP call ids — cleared on an invoked human turn (#2021). */
     openForeground: Set<string>
+    /** Seq of the message that opened each foreground call (#2021). */
+    openForegroundSeq: Map<string, number>
     settled: Set<string>
     /** OpenCode children that reported running/created with no open tool yet. */
     runningChildren: Set<string>
@@ -284,6 +286,7 @@ function childToolCallState(db: Database, sessionId: string): ChildToolCallState
         state = {
             open: new Set(),
             openForeground: new Set(),
+            openForegroundSeq: new Map(),
             settled: new Set(),
             runningChildren: new Set(),
             settledChildren: new Set(),
@@ -393,7 +396,7 @@ function applyDurableChildToolWork(state: ChildToolCallState, durable: DurableCh
     for (const id of durable.settledCallIds) {
         state.settled.add(id)
         state.open.delete(id)
-        state.openForeground.delete(id)
+        clearForegroundCall(state, id)
     }
     for (const id of durable.settled) {
         state.settledChildren.add(id)
@@ -405,21 +408,41 @@ function applyDurableChildToolWork(state: ChildToolCallState, durable: DurableCh
     }
 }
 
-function applyChildToolCallContent(state: ChildToolCallState, content: unknown): void {
-    // Invoked human turns close parent-scope ACP work; child registry survives (#2021).
+function clearForegroundCall(state: ChildToolCallState, callId: string): void {
+    state.openForeground.delete(callId)
+    state.openForegroundSeq.delete(callId)
+}
+
+/** Clear foreground opens at or before `boundarySeq` (invoked human turn). */
+function clearForegroundAtOrBefore(state: ChildToolCallState, boundarySeq: number): void {
+    for (const [callId, seq] of state.openForegroundSeq) {
+        if (seq <= boundarySeq) {
+            state.openForeground.delete(callId)
+            state.openForegroundSeq.delete(callId)
+        }
+    }
+}
+
+function applyChildToolCallContent(state: ChildToolCallState, content: unknown, seq?: number): void {
+    // Invoked human turns close parent-scope ACP work at/before this seq;
+    // child registry and newer foreground starts survive (#2021).
     if (isUserMessageRow(content)) {
-        state.openForeground.clear()
+        if (typeof seq === 'number') clearForegroundAtOrBefore(state, seq)
+        else {
+            state.openForeground.clear()
+            state.openForegroundSeq.clear()
+        }
         return
     }
     const resultCallId = toolCallResultCallId(content)
     if (resultCallId !== null) {
         state.open.delete(resultCallId)
-        state.openForeground.delete(resultCallId)
+        clearForegroundCall(state, resultCallId)
         state.settled.add(resultCallId)
     }
     for (const callId of acpTurnCompleteSettledCallIds(content)) {
         state.open.delete(callId)
-        state.openForeground.delete(callId)
+        clearForegroundCall(state, callId)
         state.settled.add(callId)
     }
     for (const childSessionId of acpTurnCompleteRetiredChildSessionIds(content)) {
@@ -443,7 +466,7 @@ function applyChildToolCallContent(state: ChildToolCallState, content: unknown):
     if (!callId || !isAcpToolCallStartOrResult(content)) return
     if (isTerminalToolCallRow(content) || state.settled.has(callId)) {
         state.open.delete(callId)
-        state.openForeground.delete(callId)
+        clearForegroundCall(state, callId)
         state.settled.add(callId)
         return
     }
@@ -451,6 +474,7 @@ function applyChildToolCallContent(state: ChildToolCallState, content: unknown):
         state.open.add(callId)
     } else if (isParentScopedAcpToolCallStart(content)) {
         state.openForeground.add(callId)
+        if (typeof seq === 'number') state.openForegroundSeq.set(callId, seq)
     }
 }
 
@@ -474,17 +498,11 @@ function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): Child
     const durable = readDurableChildToolWork(db, sessionId)
     const flavor = readSessionFlavor(db, sessionId)
 
-    // Claude/Pi (and other lookback-only flavors) keep the bounded scan —
-    // full-history decode on every cold Hub sweep stalls REST (#2021 Minor).
-    // ACP agent flavors need unbounded parent+child opens across lookback.
-    const needsFullAcpReplay = flavor === null
-        || flavor === 'opencode'
-        || flavor === 'codex'
-        || flavor === 'cursor'
-        || flavor === 'agy'
-        || flavor === 'gemini'
-        || flavor === 'antigravity'
-    if (!needsFullAcpReplay) {
+    // Claude uses passthrough tool_use in the bounded lookback — skip the
+    // full decode on cold Hub sweeps (#2021 Minor). Every other flavor that
+    // can emit ACP tool-call payloads needs unbounded opens across restart
+    // (#2021 Major: grok/kimi/copilot/dsh/pi/…).
+    if (flavor === 'claude') {
         applyDurableChildToolWork(state, durable)
         state.durableSeeded = true
         state.rebuilt = true
@@ -493,19 +511,20 @@ function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): Child
 
     state.open.clear()
     state.openForeground.clear()
+    state.openForegroundSeq.clear()
     state.settled.clear()
     state.runningChildren.clear()
     state.settledChildren.clear()
     const rows = prepareCached(db, `
-        SELECT content, invoked_at FROM messages
+        SELECT content, invoked_at, seq FROM messages
         WHERE session_id = ?
         ORDER BY seq ASC
-    `).all(sessionId) as Array<Pick<DbMessageRow, 'content' | 'invoked_at'>>
+    `).all(sessionId) as Array<Pick<DbMessageRow, 'content' | 'invoked_at' | 'seq'>>
     for (const row of rows) {
         const decoded = decodeMessageContent(row.content)
         // Only invoked user turns clear foreground opens (match lookback).
         if (isUserMessageRow(decoded) && row.invoked_at == null) continue
-        applyChildToolCallContent(state, decoded)
+        applyChildToolCallContent(state, decoded, row.seq)
     }
     // Durable settled wins over a transcript that lost its terminal marker
     // (OpenCode rewind). Running overlays only for ids not yet settled.
@@ -528,7 +547,7 @@ function latchOpenCodeSettledCallIds(db: Database, sessionId: string, callIds: s
     for (const id of callIds) {
         state.settled.add(id)
         state.open.delete(id)
-        state.openForeground.delete(id)
+        clearForegroundCall(state, id)
     }
     const row = prepareCached(db, 'SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as
         | { metadata: string | null }
@@ -580,7 +599,10 @@ function noteChildToolCallState(db: Database, sessionId: string, content: unknow
         `).get(sessionId) as { invoked_at: number | null } | undefined
         if (row?.invoked_at == null) return
     }
-    applyChildToolCallContent(state, content)
+    const latest = prepareCached(db, `
+        SELECT seq FROM messages WHERE session_id = ? ORDER BY seq DESC LIMIT 1
+    `).get(sessionId) as { seq: number } | undefined
+    applyChildToolCallContent(state, content, latest?.seq)
     const turnSettled = acpTurnCompleteSettledCallIds(content)
     if (turnSettled.length > 0) {
         latchOpenCodeSettledCallIds(db, sessionId, turnSettled)
@@ -671,6 +693,7 @@ export function retireOpenChildToolWork(db: Database, sessionId: string): boolea
     if (settledCallIds.size === 0 && retiredChildSessionIds.length === 0) return false
     state.open.clear()
     state.openForeground.clear()
+    state.openForegroundSeq.clear()
     for (const childSessionId of retiredChildSessionIds) {
         state.settledChildren.add(childSessionId)
     }
@@ -795,6 +818,7 @@ export function invalidateChildToolWorkState(db: Database, sessionId: string): v
     state.durableSeeded = false
     state.open.clear()
     state.openForeground.clear()
+    state.openForegroundSeq.clear()
     state.settled.clear()
     state.runningChildren.clear()
     state.settledChildren.clear()
@@ -2268,12 +2292,12 @@ export function markMessagesInvoked(
                     createdAt: row.created_at,
                     invokedAt: row.invoked_at
                 })
-                // Durable ack path must apply the same foreground boundary as
-                // insert-time invoked prompts (#2021 Major).
+                // Durable ack path: clear only foreground opens at/before this
+                // prompt's seq so newer starts survive (#2021 Major).
                 if (isUserMessageRow(decoded)) {
                     const state = childToolCallState(db, sessionId)
                     seedDurableChildToolWorkIfNeeded(db, sessionId, state)
-                    state.openForeground.clear()
+                    clearForegroundAtOrBefore(state, row.seq)
                     writeDurableChildToolWork(db, sessionId, state)
                 }
             }
@@ -2613,6 +2637,7 @@ export function truncateOpenCodeRewind(
         state.durableSeeded = false
         state.open.clear()
         state.openForeground.clear()
+        state.openForegroundSeq.clear()
         state.settled.clear()
         state.runningChildren.clear()
         state.settledChildren.clear()
@@ -2620,7 +2645,7 @@ export function truncateOpenCodeRewind(
         for (const id of harvestedSettledIds) {
             state.settled.add(id)
             state.open.delete(id)
-            state.openForeground.delete(id)
+            clearForegroundCall(state, id)
         }
         for (const id of harvestedSettledChildren) {
             state.settledChildren.add(id)

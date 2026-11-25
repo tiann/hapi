@@ -917,15 +917,17 @@ describe('cursorLegacyRemoteLauncher', () => {
         }]);
     });
 
-    it('keeps Windows Cursor Stop unconfirmed when tree refresh fails (#2021)', async () => {
+    it('keeps Windows Cursor Stop unconfirmed when retained members still live (#2021)', async () => {
         const winMock = vi.mocked(isWindows);
         winMock.mockImplementation(() => true);
         const snapMock = vi.mocked(snapshotProcessTreeIdentities);
         const killMock = vi.mocked(killRetainedProcessTree);
+        const aliveMock = vi.mocked(retainedIdentityStillAlive);
         const classify = vi.mocked((await import('@/utils/process')).classifyRetainedIdentity);
         classify.mockReturnValue('match');
+        aliveMock.mockReturnValue(true);
         // Spawn captures a tree; every later scan fails — incomplete latch must
-        // block settlement even if known PIDs look gone.
+        // block settlement while known members remain alive.
         snapMock.mockImplementation((pid: number) => {
             if (snapMock.mock.calls.length <= 1) {
                 return [{
@@ -968,6 +970,7 @@ describe('cursorLegacyRemoteLauncher', () => {
         } finally {
             thinking.mockRestore();
             winMock.mockImplementation(() => process.platform === 'win32');
+            aliveMock.mockReturnValue(false);
             classify.mockReturnValue('match');
             snapMock.mockImplementation((pid: number) => [{
                 pid,

@@ -3387,6 +3387,7 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
         const processUtils = await import('@/utils/process');
         const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
         Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
+        const markerSpy = vi.spyOn(processUtils, 'getProcessStartMarker').mockReturnValue('gen-win');
         const tree = [{
             pid: 4242,
             startMarker: 'gen-win',
@@ -3396,7 +3397,8 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
         }];
         const snap = vi.spyOn(processUtils, 'snapshotProcessTreeIdentities').mockReturnValue(tree);
         const alive = vi.spyOn(processUtils, 'retainedIdentityStillAlive').mockReturnValue(false);
-        const classify = vi.spyOn(processUtils, 'classifyRetainedIdentity').mockReturnValue('gone');
+        // Root still matches at pre-close so refresh can capture teardown coverage.
+        const classify = vi.spyOn(processUtils, 'classifyRetainedIdentity').mockReturnValue('match');
         const killRetained = vi.spyOn(processUtils, 'killRetainedProcessTree').mockResolvedValue(true);
         const verifyGroup = vi.spyOn(processUtils, 'verifyAgentOwnedProcessGroupExited');
 
@@ -3434,6 +3436,64 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             classify.mockRestore();
             killRetained.mockRestore();
             verifyGroup.mockRestore();
+            markerSpy.mockRestore();
+            Object.defineProperty(process, 'platform', platform);
+        }
+    });
+
+    it('refuses Windows ACP settlement when pre-close root already exited (#2021)', async () => {
+        const processUtils = await import('@/utils/process');
+        const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+        Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
+        const markerSpy = vi.spyOn(processUtils, 'getProcessStartMarker').mockReturnValue('gen-win');
+        const tree = [{
+            pid: 4242,
+            startMarker: 'gen-win',
+            bootId: null,
+            tgid: null,
+            pgid: null,
+        }];
+        const snap = vi.spyOn(processUtils, 'snapshotProcessTreeIdentities').mockReturnValue(tree);
+        // One retained member still looks alive so incomplete verify attempts cleanup.
+        const alive = vi.spyOn(processUtils, 'retainedIdentityStillAlive').mockReturnValue(true);
+        const classify = vi.spyOn(processUtils, 'classifyRetainedIdentity').mockReturnValue('gone');
+        const killRetained = vi.spyOn(processUtils, 'killRetainedProcessTree').mockResolvedValue(true);
+
+        const backend = new AcpSdkBackend({
+            command: 'opencode',
+            args: ['acp'],
+            flavor: 'opencode',
+            textChunkMode: 'delta',
+            toolCallLifetimeStore: null,
+        });
+        const createSpy = vi.spyOn(AcpStdioTransport, 'create').mockImplementation(async () => ({
+            sendRequest: vi.fn(async (method: string) => {
+                if (method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+                return {};
+            }),
+            sendNotification: vi.fn(),
+            onNotification: vi.fn(),
+            onStderrError: () => {},
+            registerRequestHandler: () => {},
+            isAlive: () => false,
+            getProcessPid: () => 4242,
+            close: async () => true,
+        } as unknown as AcpStdioTransport));
+
+        try {
+            await backend.initialize();
+            await backend.disconnect();
+            // Spawn-only evidence after root exit is incomplete — do not settle.
+            expect(backend.wasAgentTreeEnded()).toBe(false);
+            expect(await backend.verifyRetainedAgentExit(true)).toBe(false);
+            expect(killRetained).toHaveBeenCalled();
+        } finally {
+            createSpy.mockRestore();
+            snap.mockRestore();
+            alive.mockRestore();
+            classify.mockRestore();
+            killRetained.mockRestore();
+            markerSpy.mockRestore();
             Object.defineProperty(process, 'platform', platform);
         }
     });

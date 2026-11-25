@@ -142,6 +142,49 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 
+    it('preserves newer foreground calls when acknowledging an older queued prompt (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-invoke-keep-newer')
+
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'first' } },
+            'queued-first',
+        )
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('fg-after', { status: 'in_progress' }), 'fg-after')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        store.messages.markMessagesInvoked(session.id, ['queued-first'], Date.now())
+        // Newer open call (higher seq than the ack) must survive.
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        store.close()
+    })
+
+    it('rebuilds open ACP calls across hub restart for named non-Claude flavors (#2021)', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-live-work-pi-restart-'))
+        const path = join(dir, 'hub.db')
+        try {
+            const store = new Store(path)
+            const session = store.sessions.getOrCreateSession(
+                'pi-restart-fg',
+                { path: '/tmp/pi-restart', flavor: 'pi' },
+                null,
+                'default',
+            )
+            store.messages.upsertToolCallMessage(session.id, toolCallContent('pi-old', { status: 'in_progress' }), 'pi-old')
+            for (let i = 0; i < 210; i += 1) {
+                store.messages.addMessage(session.id, agentMessageContent(`filler-${i}`))
+            }
+            expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+            store.close()
+
+            const restarted = new Store(path)
+            expect(restarted.messages.getLiveToolWork(session.id)).toBe(true)
+            restarted.close()
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+
     it('treats a terminal-status ACP call as settled even without a result row', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-acp-terminal')

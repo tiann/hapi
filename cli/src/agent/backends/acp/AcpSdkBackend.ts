@@ -1650,13 +1650,20 @@ export class AcpSdkBackend implements AgentBackend {
             } else if (isWindows() && !live) {
                 // Windows cannot cover mid-close forks without a fresh tree.
                 this.retainedTreeSnapshotIncomplete = true;
+            } else if (isWindows()) {
+                // Root no longer matches — spawn-only evidence is not teardown
+                // coverage for descendants started after spawn (#2021 Major).
+                this.retainedTreeSnapshotIncomplete = true;
             }
+        } else if (isWindows() && this.retainedAgentTree) {
+            this.retainedTreeSnapshotIncomplete = true;
         }
         // When live snapshot failed but spawn identity exists, retain a
         // single-member tree from spawn so POSIX group verify still has evidence.
         if ((!preCloseTree || preCloseTree.length === 0) && this.spawnedRootIdentity) {
             preCloseTree = [this.spawnedRootIdentity];
             if (!isWindows()) this.retainedTreeSnapshotIncomplete = false;
+            else this.retainedTreeSnapshotIncomplete = true;
         }
         try {
             const closeOk = (await this.transport.close()) === true;

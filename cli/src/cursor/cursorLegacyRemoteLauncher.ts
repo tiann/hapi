@@ -525,18 +525,16 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     if (settled) return;
                     let verified = true;
                     try {
-                        // Windows incomplete (or failed refresh) snapshots can
-                        // miss tool subprocesses with separate stdio — known-PID
-                        // kill alone is not current exit evidence (#2021 Major).
-                        if (this.stopTreeSnapshotIncomplete && isWindows()) {
-                            verified = false;
-                            if (this.retainedStopTree) {
-                                await killRetainedProcessTree(this.retainedStopTree, true);
-                            }
-                        } else if (this.retainedStopTree) {
+                        if (this.retainedStopTree) {
                             verified = await killRetainedProcessTree(this.retainedStopTree, true);
-                            if (verified && this.stopTreeSnapshotIncomplete) {
+                            if (
+                                verified
+                                && this.stopTreeSnapshotIncomplete
+                                && this.retainedStopTree.some((identity) => retainedIdentityStillAlive(identity))
+                            ) {
                                 verified = false;
+                            } else if (verified && this.stopTreeSnapshotIncomplete) {
+                                this.stopTreeSnapshotIncomplete = false;
                             }
                         } else if (
                             this.spawnedRootIdentity
@@ -775,13 +773,17 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 force = true;
                 this.stopKillEscalated = true;
             }
-            // Incomplete retained-list kills may miss mid-session forks —
-            // known-PID exit is not complete evidence. Process-group verify
-            // without a retained list covers the group and may clear the latch
-            // (#2021 Major).
+            // Incomplete snapshots: refuse while any known identity still lives.
+            // Once every retained member is gone, clear the latch so ordinary
+            // Windows exit / Stop can recover (#2021 Major).
             if (stopped && this.stopTreeSnapshotIncomplete) {
-                if (this.retainedStopTree) {
+                const prior = this.retainedStopTree;
+                if (prior && prior.some((identity) => retainedIdentityStillAlive(identity))) {
                     stopped = false;
+                } else if (!prior && this.spawnedRootIdentity) {
+                    // Process-group path with no retained list — group verify
+                    // already covered descendants.
+                    this.stopTreeSnapshotIncomplete = false;
                 } else {
                     this.stopTreeSnapshotIncomplete = false;
                 }
