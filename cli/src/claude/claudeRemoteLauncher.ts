@@ -337,6 +337,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
         function onMessage(message: SDKMessage) {
             let assistantDetails: ReturnType<typeof buildClaudeContextDetails> = null;
+            let assistantProbeWindow: number | undefined;
             const rawPayload = message as unknown as Record<string, unknown>;
             const isSidechain = typeof rawPayload.parent_tool_use_id === 'string';
             if (!isSidechain) {
@@ -363,12 +364,12 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     if (!isSyntheticApiError) {
                         const model = assistantMessage.model ?? (typeof rawAssistantPayload.model === 'string' ? rawAssistantPayload.model : null)
                             ?? (typeof rawMessage.model === 'string' ? rawMessage.model : lastSystemModel);
-                        const windowModel = model ?? lastSystemModel;
+                        assistantProbeWindow = effectiveLimitFor(model ?? lastSystemModel);
                         const details = buildClaudeContextDetails({
                             contextUsage: assistantMessage.context_usage ?? rawAssistantPayload.context_usage,
                             messageUsage: rawMessage.usage,
                             model,
-                            effectiveContextWindow: effectiveLimitFor(windowModel)
+                            effectiveContextWindow: assistantProbeWindow
                         });
                         if (details) {
                             if (details.usage?.contextTokens !== undefined) {
@@ -470,7 +471,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
             if (assistantDetails) {
                 const relayed = logMessage?.type === 'assistant' ? logMessage : undefined;
                 const relayedWindow = relayed?.message?.usage?.context_window;
-                if (assistantDetails.contextWindow === undefined && typeof relayedWindow === 'number'
+                // Prefer matching resolved limits over a raw context_usage bound.
+                if (assistantProbeWindow === undefined && typeof relayedWindow === 'number'
                     && Number.isSafeInteger(relayedWindow) && relayedWindow > 0) {
                     assistantDetails.contextWindow = relayedWindow;
                 }
@@ -991,8 +993,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                     },
                                     details?.model ?? session.getModel()
                                 );
+                                const createdAt = Date.now();
                                 const usageEvent = convertedUsage ? {
-                                    ...convertedUsage, flavor: 'claude', uuid: randomUUID(), timestamp: new Date().toISOString()
+                                    ...convertedUsage, flavor: 'claude', uuid: randomUUID(), timestamp: new Date(createdAt).toISOString()
                                 } : undefined;
                                 if (details) {
                                     usageSampleLaunch = activeContextLaunch;
@@ -1000,7 +1003,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                     assistantSampleModel = details.model ?? null;
                                     publishContextDetails(session.client, withClaudeUsageSource(details, usageEvent));
                                 }
-                                if (usageEvent) session.client.sendAgentMessage(usageEvent);
+                                if (usageEvent) session.client.sendAgentMessage(usageEvent, undefined, { createdAt });
                             }
 
                             logger.debug(

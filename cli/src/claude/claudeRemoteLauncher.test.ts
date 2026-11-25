@@ -1087,7 +1087,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
         } finally { session.stopKeepAlive() }
     })
 
-    it('uses the window stamped on the matching assistant row before the probe reports', async () => {
+    it.each([undefined, 400_000])('prefers the probe or matching assistant window over the raw limit (%s)', async (probeWindow) => {
         const client = createClientStub()
         const { session, queue } = createSession(client, undefined)
         const { SDKToLogConverter } = await import('./utils/sdkToLogConverter')
@@ -1095,17 +1095,19 @@ describe('claudeRemoteLauncher resume anchor', () => {
         const convert = vi.spyOn(SDKToLogConverter.prototype, 'convert').mockImplementation(message =>
             message.type === 'assistant' ? { type: 'assistant', uuid: 'stamped', timestamp: stamp, message: {
                 content: [{ type: 'text', text: 'Answer' }],
-                usage: { input_tokens: 100, output_tokens: 1, context_window: 1_000_000 }
+                usage: { input_tokens: 100, output_tokens: 1, context_window: 200_000 }
             } } : null)
-        harness.messages = [{ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-4-6',
-            content: [{ type: 'text', text: 'Answer' }], usage: { input_tokens: 100, output_tokens: 1 } } }]
+        const model = 'claude-sonnet-4-6'
+        if (probeWindow) harness.contextForLaunch = callbacks => callbacks.onContextUsage({ model, maxTokens: probeWindow })
+        harness.messages = [{ type: 'assistant', context_usage: { raw_max_tokens: 1_000_000 },
+            message: { role: 'assistant', model, content: [{ type: 'text', text: 'Answer' }], usage: { input_tokens: 100, output_tokens: 1 } } }]
         try {
             queue.push('hello', { permissionMode: 'default', model: 'sonnet[1m]' }, 'local-1')
             harness.switchAfterCall = 1
             harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
             await claudeRemoteLauncher(session as any)
             expect(client.getMetadata().contextDetails).toMatchObject({
-                model: 'claude-sonnet-4-6', contextWindow: 1_000_000,
+                model, contextWindow: probeWindow ?? 200_000,
                 usage: { contextTokens: 100, sourceMessageUuid: 'stamped', sampledAt: Date.parse(stamp) }
             })
         } finally {
@@ -1143,9 +1145,10 @@ describe('claudeRemoteLauncher resume anchor', () => {
                     contextTokens: compactTokens,
                     modelContextWindow: 1_000_000
                 })
-            }))
+            }), undefined, expect.objectContaining({ createdAt: expect.any(Number) }))
             const sample = client.sendAgentMessage.mock.calls[0]?.[0] as { uuid?: string; timestamp?: string } | undefined
             expect(sample?.uuid).toEqual(expect.any(String))
+            expect(client.sendAgentMessage.mock.calls[0]?.[2]).toEqual({ createdAt: Date.parse(sample?.timestamp ?? '') })
             expect(client.getMetadata().contextDetails).toMatchObject({
                 contextWindow: 1_000_000,
                 usage: { contextTokens: compactTokens, cacheReadTokens: 0, sourceMessageUuid: sample?.uuid,
