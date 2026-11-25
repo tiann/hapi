@@ -1,6 +1,16 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { afterEach } from 'vitest'
+import { loadLocaleDictionary } from '@/lib/i18n-context'
+
+// Locale dictionaries load lazily in the app (route-level code splitting),
+// but tests assert localized strings synchronously. Warm every dictionary
+// before the first test so `t()` resolves without an await in each suite.
+await Promise.all([
+    loadLocaleDictionary('zh-CN'),
+    loadLocaleDictionary('ru'),
+    loadLocaleDictionary('ja'),
+])
 
 afterEach(() => {
     cleanup()
