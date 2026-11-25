@@ -519,8 +519,19 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     if (settled) return;
                     let verified = true;
                     try {
-                        if (this.retainedStopTree) {
+                        // Windows incomplete (or failed refresh) snapshots can
+                        // miss tool subprocesses with separate stdio — known-PID
+                        // kill alone is not current exit evidence (#2021 Major).
+                        if (this.stopTreeSnapshotIncomplete && isWindows()) {
+                            verified = false;
+                            if (this.retainedStopTree) {
+                                await killRetainedProcessTree(this.retainedStopTree, true);
+                            }
+                        } else if (this.retainedStopTree) {
                             verified = await killRetainedProcessTree(this.retainedStopTree, true);
+                            if (verified && this.stopTreeSnapshotIncomplete) {
+                                verified = false;
+                            }
                         } else if (
                             this.spawnedRootIdentity
                             && isAgentOwnedProcessGroup(this.spawnedRootIdentity)

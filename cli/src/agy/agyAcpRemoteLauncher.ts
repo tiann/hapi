@@ -2371,8 +2371,46 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             this.clearWakeupCancelHardStop();
             return true;
         }
-        await pending;
+        // Poll transcript while the hard-stop grace runs — if Antigravity
+        // honors cancel and records completion, disarm retirement instead of
+        // waiting the full timer and restarting (#2021 Minor).
+        const pollMs = Math.max(50, Math.min(this.reactivePollMs, 200));
+        for (;;) {
+            if (this.transcriptShowsWakeupCompleted()) {
+                this.reactiveWakeupCompleted = true;
+                this.clearWakeupCancelHardStop();
+                return true;
+            }
+            const winner = await Promise.race([
+                pending.then(() => 'done' as const),
+                new Promise<'tick'>((resolve) => setTimeout(() => resolve('tick'), pollMs)),
+            ]);
+            if (winner === 'done') break;
+        }
         return this.wakeupHardStopVerifiedExit;
+    }
+
+    /** Terminal transcript evidence that the current wakeup finished cleanly. */
+    private transcriptShowsWakeupCompleted(): boolean {
+        if (this.reactiveWakeupCompleted) return true;
+        const acpSessionId = this.acpSessionId;
+        if (!acpSessionId) return false;
+        const steps = readAgyTranscriptStepsAfter(
+            this.brainDir,
+            acpSessionId,
+            this.lastTranscriptStepIndex,
+        );
+        if (steps.length === 0) return false;
+        const settleMs = this.reactiveTimings.settleMs;
+        const nowMs = Date.now();
+        const inspection = inspectAgyReactiveSteps(
+            steps,
+            this.session.path,
+            nowMs,
+            nowMs - settleMs - 1,
+            this.reactiveTimings,
+        );
+        return inspection.state === 'completed';
     }
 
     /**

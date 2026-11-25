@@ -200,6 +200,21 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 
+    it('keeps unmatched foreground ACP tool work visible past the transcript lookback (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-foreground-lookback')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('fg-old', { status: 'in_progress' }), 'fg-old')
+        for (let i = 0; i < 210; i += 1) {
+            store.messages.addMessage(session.id, agentMessageContent(`filler-${i}`))
+        }
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, toolCallResultContent('fg-old', 'done'))
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
     it('keeps OpenCode child tool work visible past the transcript lookback (#2021)', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-child-past-lookback')

@@ -247,7 +247,10 @@ const TOOL_CALL_UPSERT_LOOKBACK = 200
  * reopen work after a result or scoped turn-complete.
  */
 type ChildToolCallState = {
+    /** OpenCode child-scoped ACP call ids (survive parent human turns). */
     open: Set<string>
+    /** Parent-scope ACP call ids — cleared on an invoked human turn (#2021). */
+    openForeground: Set<string>
     settled: Set<string>
     /** OpenCode children that reported running/created with no open tool yet. */
     runningChildren: Set<string>
@@ -280,6 +283,7 @@ function childToolCallState(db: Database, sessionId: string): ChildToolCallState
     if (!state) {
         state = {
             open: new Set(),
+            openForeground: new Set(),
             settled: new Set(),
             runningChildren: new Set(),
             settledChildren: new Set(),
@@ -389,6 +393,7 @@ function applyDurableChildToolWork(state: ChildToolCallState, durable: DurableCh
     for (const id of durable.settledCallIds) {
         state.settled.add(id)
         state.open.delete(id)
+        state.openForeground.delete(id)
     }
     for (const id of durable.settled) {
         state.settledChildren.add(id)
@@ -401,13 +406,20 @@ function applyDurableChildToolWork(state: ChildToolCallState, durable: DurableCh
 }
 
 function applyChildToolCallContent(state: ChildToolCallState, content: unknown): void {
+    // Invoked human turns close parent-scope ACP work; child registry survives (#2021).
+    if (isUserMessageRow(content)) {
+        state.openForeground.clear()
+        return
+    }
     const resultCallId = toolCallResultCallId(content)
     if (resultCallId !== null) {
         state.open.delete(resultCallId)
+        state.openForeground.delete(resultCallId)
         state.settled.add(resultCallId)
     }
     for (const callId of acpTurnCompleteSettledCallIds(content)) {
         state.open.delete(callId)
+        state.openForeground.delete(callId)
         state.settled.add(callId)
     }
     for (const childSessionId of acpTurnCompleteRetiredChildSessionIds(content)) {
@@ -425,13 +437,21 @@ function applyChildToolCallContent(state: ChildToolCallState, content: unknown):
         }
     }
     const callId = getToolCallId(content)
-    if (!callId || !isChildScopedAcpToolCall(content)) return
+    // Track child-scoped AND parent-scope ACP starts. Lookback alone cannot
+    // keep an autonomous foreground call alive once 200 newer rows push it
+    // out of the scan (#2021 Major).
+    if (!callId || !isAcpToolCallStartOrResult(content)) return
     if (isTerminalToolCallRow(content) || state.settled.has(callId)) {
         state.open.delete(callId)
+        state.openForeground.delete(callId)
         state.settled.add(callId)
         return
     }
-    state.open.add(callId)
+    if (isChildScopedAcpToolCall(content)) {
+        state.open.add(callId)
+    } else if (isParentScopedAcpToolCallStart(content)) {
+        state.openForeground.add(callId)
+    }
 }
 
 /**
@@ -453,36 +473,35 @@ function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): Child
 
     const durable = readDurableChildToolWork(db, sessionId)
     const flavor = readSessionFlavor(db, sessionId)
-    // Child registry is an OpenCode concern. Other flavors still get durable
-    // overlay (no-op when absent) without decoding the full transcript —
-    // and without wiping incremental notes already applied this process
-    // (upsert/addMessage may have opened child-scoped calls before the
-    // first live-work check).
-    if (flavor !== null && flavor !== 'opencode') {
-        applyDurableChildToolWork(state, durable)
-        state.durableSeeded = true
-        state.rebuilt = true
-        return state
-    }
 
     state.open.clear()
+    state.openForeground.clear()
     state.settled.clear()
     state.runningChildren.clear()
     state.settledChildren.clear()
+    // Full transcript rebuild for every flavor — foreground ACP opens must
+    // survive lookback eviction and hub restart (#2021 Major). Non-OpenCode
+    // sessions previously skipped this; durable overlay alone cannot see
+    // unmatched parent-scope starts.
     const rows = prepareCached(db, `
-        SELECT content FROM messages
+        SELECT content, invoked_at FROM messages
         WHERE session_id = ?
         ORDER BY seq ASC
-    `).all(sessionId) as Array<Pick<DbMessageRow, 'content'>>
+    `).all(sessionId) as Array<Pick<DbMessageRow, 'content' | 'invoked_at'>>
     for (const row of rows) {
-        applyChildToolCallContent(state, decodeMessageContent(row.content))
+        const decoded = decodeMessageContent(row.content)
+        // Only invoked user turns clear foreground opens (match lookback).
+        if (isUserMessageRow(decoded) && row.invoked_at == null) continue
+        applyChildToolCallContent(state, decoded)
     }
     // Durable settled wins over a transcript that lost its terminal marker
     // (OpenCode rewind). Running overlays only for ids not yet settled.
     applyDurableChildToolWork(state, durable)
     state.durableSeeded = true
     state.rebuilt = true
-    writeDurableChildToolWork(db, sessionId, state)
+    if (flavor === null || flavor === 'opencode') {
+        writeDurableChildToolWork(db, sessionId, state)
+    }
     return state
 }
 
@@ -496,6 +515,7 @@ function latchOpenCodeSettledCallIds(db: Database, sessionId: string, callIds: s
     for (const id of callIds) {
         state.settled.add(id)
         state.open.delete(id)
+        state.openForeground.delete(id)
     }
     const row = prepareCached(db, 'SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as
         | { metadata: string | null }
@@ -537,6 +557,16 @@ function latchOpenCodeSettledCallIds(db: Database, sessionId: string, callIds: s
 function noteChildToolCallState(db: Database, sessionId: string, content: unknown): void {
     const state = childToolCallState(db, sessionId)
     seedDurableChildToolWorkIfNeeded(db, sessionId, state)
+    // Undispatched scheduled/queued prompts are not turn boundaries.
+    if (isUserMessageRow(content)) {
+        const row = prepareCached(db, `
+            SELECT invoked_at FROM messages
+            WHERE session_id = ?
+            ORDER BY seq DESC
+            LIMIT 1
+        `).get(sessionId) as { invoked_at: number | null } | undefined
+        if (row?.invoked_at == null) return
+    }
     applyChildToolCallContent(state, content)
     const turnSettled = acpTurnCompleteSettledCallIds(content)
     if (turnSettled.length > 0) {
@@ -548,6 +578,8 @@ function noteChildToolCallState(db: Database, sessionId: string, content: unknow
         || acpTurnCompleteRetiredChildSessionIds(content).length > 0
         || toolCallResultCallId(content) !== null
         || isChildScopedAcpToolCall(content)
+        || isParentScopedAcpToolCallStart(content)
+        || isUserMessageRow(content)
     ) {
         writeDurableChildToolWork(db, sessionId, state)
     }
@@ -564,7 +596,7 @@ function noteChildToolCallState(db: Database, sessionId: string, content: unknow
  */
 export function retireOpenChildToolWork(db: Database, sessionId: string): boolean {
     const state = ensureChildToolCallStateRebuilt(db, sessionId)
-    const settledCallIds = new Set<string>(state.open)
+    const settledCallIds = new Set<string>([...state.open, ...state.openForeground])
     const retiredChildSessionIds = [...state.runningChildren]
 
     const rows = prepareCached(db, `
@@ -625,6 +657,7 @@ export function retireOpenChildToolWork(db: Database, sessionId: string): boolea
 
     if (settledCallIds.size === 0 && retiredChildSessionIds.length === 0) return false
     state.open.clear()
+    state.openForeground.clear()
     for (const childSessionId of retiredChildSessionIds) {
         state.settledChildren.add(childSessionId)
     }
@@ -748,6 +781,7 @@ export function invalidateChildToolWorkState(db: Database, sessionId: string): v
     state.rebuilt = false
     state.durableSeeded = false
     state.open.clear()
+    state.openForeground.clear()
     state.settled.clear()
     state.runningChildren.clear()
     state.settledChildren.clear()
@@ -1067,6 +1101,25 @@ function isChildScopedAcpToolCall(value: unknown): boolean {
     return typeof data.childSessionId === 'string' && data.childSessionId.trim().length > 0
 }
 
+/** Parent-scope ACP tool-call / result payloads (no childSessionId). */
+function isAcpToolCallStartOrResult(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return false
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    const data = isRecord(record.content.data) ? record.content.data : null
+    return !!data && (data.type === 'tool-call' || data.type === 'tool-call-result')
+}
+
+/** Unmatched parent-scope ACP starts outlive the lookback window (#2021). */
+function isParentScopedAcpToolCallStart(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return false
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'tool-call') return false
+    return typeof data.childSessionId !== 'string' || data.childSessionId.trim().length === 0
+}
+
 /** Whether the session tail still holds tool work that started but never
  *  settled — the transcript-derived "the agent is demonstrably working"
  *  signal for the hub's work-scoped liveness sweep.
@@ -1102,7 +1155,13 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
     // to hub-owned metadata so rewind that drops a terminal cannot orphan a
     // running marker (#2021).
     const childState = ensureChildToolCallStateRebuilt(db, sessionId)
-    if (childState.open.size > 0 || childState.runningChildren.size > 0) return true
+    if (
+        childState.open.size > 0
+        || childState.openForeground.size > 0
+        || childState.runningChildren.size > 0
+    ) {
+        return true
+    }
 
     const rows = prepareCached(db, `
         SELECT id, content, scheduled_at, invoked_at FROM messages
@@ -2531,6 +2590,7 @@ export function truncateOpenCodeRewind(
         state.rebuilt = false
         state.durableSeeded = false
         state.open.clear()
+        state.openForeground.clear()
         state.settled.clear()
         state.runningChildren.clear()
         state.settledChildren.clear()
@@ -2538,6 +2598,7 @@ export function truncateOpenCodeRewind(
         for (const id of harvestedSettledIds) {
             state.settled.add(id)
             state.open.delete(id)
+            state.openForeground.delete(id)
         }
         for (const id of harvestedSettledChildren) {
             state.settledChildren.add(id)

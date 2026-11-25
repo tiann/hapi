@@ -1412,15 +1412,22 @@ export class AcpSdkBackend implements AgentBackend {
             this.publishPendingDisconnectSettle();
             return true;
         }
-        if (this.retainedTreeSnapshotIncomplete) {
-            // No generation-bound tree — cannot confirm exit independently.
-            return false;
-        }
         if (this.transport) {
             await this.disconnect();
             return this.agentTreeEnded;
         }
         const tree = this.retainedAgentTree;
+        // Incomplete Windows evidence still allows cleanup attempts against
+        // known identities — only settlement/success stays gated (#2021 Major).
+        if (this.retainedTreeSnapshotIncomplete) {
+            if (tree && tree.length > 0) {
+                const anyAlive = tree.some((identity) => retainedIdentityStillAlive(identity));
+                if (anyAlive) {
+                    await killRetainedProcessTree(tree, force);
+                }
+            }
+            return false;
+        }
         if (!tree || tree.length === 0) return this.agentTreeEnded;
         if (tree.every((identity) => !retainedIdentityStillAlive(identity))) {
             if (!await this.verifyTreeExitBeyondPidSnapshot(tree)) {
