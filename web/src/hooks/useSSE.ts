@@ -22,6 +22,7 @@ import type {
     SessionSummary,
     SyncEvent
 } from '@/types/api'
+import { observeSessionDetail } from '@/lib/sessionDetailRead'
 import { queryKeys } from '@/lib/query-keys'
 import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
 import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesDispatching, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
@@ -238,6 +239,7 @@ export function useSSE(options: {
     baseUrl: string
     subscription?: SSESubscription
     scope?: SSEScope
+    hubClock?: import('@/lib/hubClock').HubClock
     onEvent: (event: SyncEvent) => void
     /**
      * Fires on the server's connection-changed handshake. `resumed` is true
@@ -262,7 +264,8 @@ export function useSSE(options: {
         machines: boolean
         sessionIds: Set<string>
         scratchlistSessionIds: Set<string>
-    }>({ sessions: false, machines: false, sessionIds: new Set(), scratchlistSessionIds: new Set() })
+        scratchlistStatus: boolean
+    }>({ sessions: false, machines: false, sessionIds: new Set(), scratchlistSessionIds: new Set(), scratchlistStatus: false })
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const reconnectAttemptRef = useRef(0)
     // Set when a reconnect was due while the tab was hidden. Hidden tabs do
@@ -317,6 +320,7 @@ export function useSSE(options: {
             pendingInvalidationsRef.current.machines = false
             pendingInvalidationsRef.current.sessionIds.clear()
             pendingInvalidationsRef.current.scratchlistSessionIds.clear()
+            pendingInvalidationsRef.current.scratchlistStatus = false
             if (reconnectTimerRef.current) {
                 clearTimeout(reconnectTimerRef.current)
                 reconnectTimerRef.current = null
@@ -403,17 +407,20 @@ export function useSSE(options: {
                 && !pending.machines
                 && pending.sessionIds.size === 0
                 && pending.scratchlistSessionIds.size === 0
+                && !pending.scratchlistStatus
             ) {
                 return
             }
 
             const shouldInvalidateSessions = pending.sessions
             const shouldInvalidateMachines = pending.machines
+            const shouldInvalidateScratchlistStatus = pending.scratchlistStatus
             const sessionIds = Array.from(pending.sessionIds)
             const scratchlistSessionIds = Array.from(pending.scratchlistSessionIds)
 
             pending.sessions = false
             pending.machines = false
+            pending.scratchlistStatus = false
             pending.sessionIds.clear()
             pending.scratchlistSessionIds.clear()
 
@@ -426,6 +433,9 @@ export function useSSE(options: {
             }
             for (const sessionId of scratchlistSessionIds) {
                 tasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.scratchlist(sessionId) }))
+            }
+            if (shouldInvalidateScratchlistStatus) {
+                tasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.scratchlistSessionIds }))
             }
             if (shouldInvalidateMachines) {
                 tasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.machines }))
@@ -459,6 +469,11 @@ export function useSSE(options: {
 
         const queueScratchlistInvalidation = (sessionId: string) => {
             pendingInvalidationsRef.current.scratchlistSessionIds.add(sessionId)
+            scheduleInvalidationFlush()
+        }
+
+        const queueScratchlistStatusInvalidation = () => {
+            pendingInvalidationsRef.current.scratchlistStatus = true
             scheduleInvalidationFlush()
         }
 
@@ -664,6 +679,7 @@ export function useSSE(options: {
             lastActivityAtRef.current = Date.now()
 
             if (event.type === 'heartbeat') {
+                if (event.data) options.hubClock?.observe(event.data.timestamp)
                 return
             }
 
@@ -757,17 +773,23 @@ export function useSSE(options: {
                     removeSessionSummary(event.sessionId)
                     void queryClient.removeQueries({ queryKey: queryKeys.session(event.sessionId) })
                     clearMessageWindow(event.sessionId)
+                    queueScratchlistStatusInvalidation()
                 } else if (isSessionRecord(event.data) && event.data.id === event.sessionId) {
                     const incoming = event.data
+                    observeSessionDetail(queryClient, event.sessionId, incoming)
                     queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), previous => ({ session: {
                         ...incoming,
                         contentRevision: Math.max(previous?.session.contentRevision ?? 0, incoming.contentRevision ?? 0),
                         readState: mergeReadState(previous?.session.readState, incoming.readState)
                     } }))
                     upsertSessionSummary(event.data)
+                    if (event.type === 'session-added') {
+                        queueScratchlistStatusInvalidation()
+                    }
                 } else {
                     const patch = getSessionPatch(event.data)
                     if (patch) {
+                        observeSessionDetail(queryClient, event.sessionId, patch)
                         const detailPatched = patchSessionDetail(event.sessionId, patch)
                         const summaryPatched = patchSessionSummary(event.sessionId, patch)
 
@@ -783,6 +805,7 @@ export function useSSE(options: {
                         // which triggers the dedicated query refetch.
                         if (Object.prototype.hasOwnProperty.call(patch, 'scratchlistUpdatedAt')) {
                             queueScratchlistInvalidation(event.sessionId)
+                            queueScratchlistStatusInvalidation()
                         }
                     } else {
                         queueSessionDetailInvalidation(event.sessionId)
@@ -938,6 +961,8 @@ export function useSSE(options: {
             pendingInvalidationsRef.current.sessions = false
             pendingInvalidationsRef.current.machines = false
             pendingInvalidationsRef.current.sessionIds.clear()
+            pendingInvalidationsRef.current.scratchlistSessionIds.clear()
+            pendingInvalidationsRef.current.scratchlistStatus = false
             if (reconnectTimerRef.current) {
                 clearTimeout(reconnectTimerRef.current)
                 reconnectTimerRef.current = null
@@ -948,7 +973,7 @@ export function useSSE(options: {
             }
             setSubscriptionId(null)
         }
-    }, [options.baseUrl, options.enabled, options.scope, options.token, scope, subscriptionKey, queryClient, reconnectNonce])
+    }, [options.baseUrl, options.enabled, options.scope, options.token, options.hubClock, scope, subscriptionKey, queryClient, reconnectNonce])
 
     return { subscriptionId }
 }

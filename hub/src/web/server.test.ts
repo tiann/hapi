@@ -81,9 +81,10 @@ afterAll(() => {
     } else {
         process.env.HAPI_HOME = previousHapiHome
     }
-    if (homeDir) {
-        rmSync(homeDir, { recursive: true, force: true })
-    }
+    // homeDir is deliberately left in place. createConfiguration() is a
+    // process-wide singleton and bun runs every test file in one process, so
+    // test files that run after this one still write settings under homeDir;
+    // removing it made routes/cli.test.ts fail with ENOENT whenever it ran later.
     if (distDir) {
         rmSync(distDir, { recursive: true, force: true })
     }

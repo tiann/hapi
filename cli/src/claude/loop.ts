@@ -4,13 +4,12 @@ import { logger } from "@/ui/logger"
 import { hashObject } from "@/utils/deterministicJson"
 import { runLocalRemoteSession } from "@/agent/loopBase"
 import { Session } from "./session"
-import { claudeLocalLauncher } from "./claudeLocalLauncher"
 import { claudeRemoteLauncher } from "./claudeRemoteLauncher"
 import { ApiClient } from "@/lib"
 import type { SessionEffort, SessionModel } from "@/api/types"
-import type { ClaudePermissionMode } from "@hapi/protocol/types"
+import type { PermissionModeOf, Flavors } from "@hapi/protocol/types"
 
-export type PermissionMode = ClaudePermissionMode;
+export type PermissionMode = PermissionModeOf<typeof Flavors.claude>;
 
 export interface EnhancedMode {
     permissionMode: PermissionMode;
@@ -108,7 +107,10 @@ export async function loop(opts: LoopOptions) {
         session,
         startingMode: opts.startingMode,
         logTag: 'loop',
-        runLocal: claudeLocalLauncher,
+        runLocal: async (instance) => {
+            const { claudeLocalLauncher } = await import('./claudeLocalLauncher');
+            return claudeLocalLauncher(instance);
+        },
         runRemote: claudeRemoteLauncher,
         onSessionReady: opts.onSessionReady
     });

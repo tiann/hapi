@@ -2,6 +2,8 @@ import { compareSessionSummaries } from '@hapi/protocol'
 import {
     AcknowledgeModelErrorRequestSchema,
     AttachedJobPatchSchema,
+    AttachedJobSchema,
+    isAttachedJobStale,
     AttachedJobUpsertSchema,
     BridgeModelErrorRequestSchema,
     SessionReadStateRequestSchema,
@@ -269,7 +271,18 @@ export function createSessionsRoutes(
             }
         })
 
-        return c.json({ sessions })
+        return c.json({ sessions, serverTime: Date.now() })
+    })
+
+    app.get('/sessions/scratchlist-status', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        return c.json({
+            sessionIds: engine.getScratchlistSessionIdsByNamespace(c.get('namespace'))
+        })
     })
 
     const respondToSessionContentSearch = (
@@ -1656,11 +1669,19 @@ export function createSessionsRoutes(
         const body = await c.req.json().catch(() => null)
         const parsed = RenameSessionRequestSchema.safeParse(body)
         if (!parsed.success) {
-            return c.json({ error: 'Invalid body: name or titleLocked is required' }, 400)
+            return c.json({ error: 'Invalid body: name, titleLocked, or translateInput is required' }, 400)
         }
 
         try {
-            await engine.renameSession(sessionResult.sessionId, parsed.data.name, parsed.data.titleLocked)
+            if (parsed.data.translateInput !== undefined) {
+                if (parsed.data.translateInput && !engine.isInputTranslationAvailable()) {
+                    return c.json({ error: 'Input translation is not configured on this hub' }, 400)
+                }
+                await engine.setSessionTranslateInput(sessionResult.sessionId, parsed.data.translateInput)
+            }
+            if (parsed.data.name !== undefined || parsed.data.titleLocked !== undefined) {
+                await engine.renameSession(sessionResult.sessionId, parsed.data.name, parsed.data.titleLocked)
+            }
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to rename session'
@@ -1752,13 +1773,15 @@ export function createSessionsRoutes(
         }
 
         if (sessionResult.session.active) {
-            return c.json({ error: 'Cannot delete active session. Archive it first.' }, 409)
+            return c.json({ code: 'session_active', error: 'Cannot delete active session. Archive it first.' }, 409)
         }
 
         // Attached jobs outlive active=false; CASCADE would erase the live meter and
         // leave supervisors PATCHing a deleted session (404 forever).
-        if (engine.getPrimaryAttachedJob(sessionResult.sessionId)) {
+        const job = engine.getPrimaryAttachedJob(sessionResult.sessionId)
+        if (job) {
             return c.json({
+                code: 'attached_job_running', job, canClearStale: isAttachedJobStale(job),
                 error: 'Cannot delete a session while an attached job is running. Complete or clear it first.'
             }, 409)
         }
@@ -2260,6 +2283,28 @@ export function createSessionsRoutes(
             }, 409)
         }
         return c.json({ job: result.job })
+    })
+
+    // Separate endpoint: an older hub must never interpret this as an unconditional clear.
+    const jobObservation = AttachedJobSchema.pick({ startedAt: true, heartbeatAt: true, runId: true }).strict()
+    app.post('/sessions/:id/jobs/:jobKey/clear-stale', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const observed = jobObservation.safeParse(await c.req.json().catch(() => null))
+        if (!observed.success || !JOB_KEY_RE.test(c.req.param('jobKey'))) return c.json({ error: 'Invalid job observation' }, 400)
+        const owner = resolveJobOwnerSession(c, engine)
+        if (owner instanceof Response) return owner
+        const key = resolveJobKey(c, engine, owner, c.req.param('jobKey'))
+        // No await between the authoritative read and removal. The generation and
+        // heartbeat must still match the exact record the operator confirmed.
+        const job = engine.listSessionJobs(owner.sessionId).find(j => j.key === key)
+        if (!job || job.status !== 'running' || !isAttachedJobStale(job)
+            || job.runId !== observed.data.runId || job.startedAt !== observed.data.startedAt
+            || job.heartbeatAt !== observed.data.heartbeatAt) {
+            return c.json({ error: 'Job changed; check its current status.', code: 'job_changed' }, 409)
+        }
+        const result = engine.deleteSessionJob(owner.sessionId, key, job.runId)
+        return result.outcome === 'deleted' ? c.json({ ok: true }) : c.json({ error: 'Job changed', code: 'job_changed' }, 409)
     })
 
     app.delete('/sessions/:id/jobs/:jobKey', (c) => {

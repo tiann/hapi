@@ -51,6 +51,10 @@ class FakeAgyBackend {
     isTransportAlive(): boolean {
         return this.alive;
     }
+    getAgentVersion(): string | null {
+        return null;
+    }
+    async flushPendingMessageBuffers(): Promise<void> {}
     supportsSessionResume(): boolean {
         return true;
     }
@@ -358,6 +362,31 @@ describe('AgyAcpRemoteLauncher', () => {
         }
     );
 
+    it('acknowledges a prompt as soon as session/prompt is sent even without a user_message_chunk echo', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let finishPrompt!: () => void;
+        backend.promptScripts.push(async (onUpdate) => {
+            // Simulate agy 1.5.11 slow TTFB: no user_message_chunk echo and no output yet.
+            await new Promise<void>((resolve) => { finishPrompt = resolve; });
+            onUpdate({ type: 'text', text: 'answer' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('hello', REVIEW, 'local-1');
+        const { run } = launch(session, [backend]);
+
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        expect(client.emitMessagesConsumed).toHaveBeenCalledTimes(1);
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['local-1']);
+
+        finishPrompt();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+
+        expect(client.emitMessagesConsumed).toHaveBeenCalledTimes(1);
+    });
+
     it('tells the user why agy could not start', async () => {
         const { session, queue, client } = makeSession();
         const backend = new FakeAgyBackend();
@@ -625,6 +654,58 @@ describe('AgyAcpRemoteLauncher Stop', () => {
         await run;
 
         expect(sessionEvents(client)).toContainEqual({ type: 'abort-restore', text: 'build it' });
+    });
+
+    it('still restores a prompt cancelled before output when acknowledged on send without an echo', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let cancelled!: () => void;
+        backend.onCancel = () => cancelled?.();
+        backend.promptScripts.push(async (onUpdate) => {
+            // agy 1.5.11 does not echo user_message_chunk; cancel arrives before any output.
+            await new Promise<void>((resolve) => { cancelled = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+        });
+        queue.push('build it', REVIEW, 'a');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['a']);
+
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+
+        expect(sessionEvents(client)).toContainEqual({ type: 'abort-restore', text: 'build it' });
+        expect(client.emitMessagesConsumed).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips onSent acknowledgement when Stop already aborted the turn before dispatch', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.preSendDelayMs = 150;
+        let consumedAtOnSent: number | null = null;
+        let cancelled!: () => void;
+        backend.onCancel = () => { if (backend.promptInFlight) cancelled?.(); };
+        backend.promptScripts.push(async (onUpdate) => {
+            consumedAtOnSent = client.emitMessagesConsumed.mock.calls.length;
+            await new Promise<void>((resolve) => { cancelled = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+        });
+        queue.push('build it', REVIEW, 'a');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.setModeCalls).toEqual(['default']));
+        expect(backend.prompts).toHaveLength(0);
+
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+
+        expect(consumedAtOnSent).toBe(0);
+        expect(sessionEvents(client)).toContainEqual({ type: 'abort-restore', text: 'build it' });
+        expect(client.emitMessagesConsumed).toHaveBeenCalledTimes(1);
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['a']);
     });
 
     it('keeps a cancelled turn that already produced output', async () => {

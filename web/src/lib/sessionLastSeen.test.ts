@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     configureSessionReadState, flushSessionReadState, followSessionTail, getSessionLastSeenAt,
     getSessionManualUnreadAt, getUnreadSessionCount, markAllSessionsSeen,
-    markSessionSeen, markSessionUnread, observeSessionReadStates,
+    markListedSessionSeen, markRenderedSessionSeen, markSessionSeen, markSessionUnread, observeSessionReadStates,
 } from './sessionLastSeen'
 import type { SessionReadState, SessionReadStateRequest } from '@hapi/protocol'
 
@@ -19,6 +19,30 @@ beforeEach(() => {
 afterEach(async () => { cleanup(); await vi.advanceTimersByTimeAsync(0); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('durable session read state', () => {
+    it.each(['read', 'unread', 'all'] as const)('persists and syncs %s over HTTP without crypto.randomUUID', async (action) => {
+        vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
+        const session = { id: 's', contentRevision: 3, readState: server() }
+        observeSessionReadStates([session])
+
+        if (action === 'read') markSessionSeen('s', 3)
+        else if (action === 'unread') markSessionUnread('s', session.readState)
+        else expect(markAllSessionsSeen([session])).toBe(1)
+
+        const request: SessionReadStateRequest = action === 'unread'
+            ? { type: 'unread', expectedVersion: 0 }
+            : { type: 'read', readRevision: 3, expectedVersion: 0 }
+        const persisted = () => JSON.parse(localStorage.getItem('hapi.sessionReadState.v1:hub-a:alice')!).s
+        expect(persisted().pending).toEqual({ id: expect.any(String), request })
+        expect(getUnreadSessionCount([session])).toBe(action === 'unread' ? 1 : 0)
+
+        const send = vi.fn(async () => ({ readState: server(action === 'unread' ? 0 : 3, 1, action === 'unread') }))
+        cleanup = configureSessionReadState('hub-a:alice', send)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(send).toHaveBeenCalledExactlyOnceWith('s', request)
+        expect(persisted().pending).toBeUndefined()
+        expect(getUnreadSessionCount([session])).toBe(action === 'unread' ? 1 : 0)
+    })
+
     it('reads persisted state once per synchronous pass instead of once per row', async () => {
         markSessionSeen('s', 2)
         await Promise.resolve()
@@ -119,6 +143,84 @@ describe('durable session read state', () => {
         expect(sent.map(r => r.type === 'read' ? r.readRevision : null)).toEqual([3, 4])
         expect(getSessionLastSeenAt('s')).toBe(4)
         expect(JSON.parse(localStorage.getItem('hapi.sessionReadState.v1:hub-a:alice')!).s.pending).toBeUndefined()
+    })
+
+    it.each([[2, 6], [2, 7], [4, 7]])('keeps an explicit read only across a single watermark advance (v%s, revision %s)', async (returnedVersion, watermark) => {
+        markSessionSeen('s', 6, 0)
+        let resolve!: (value: { readState: SessionReadState }) => void
+        const requests: SessionReadStateRequest[] = []
+        cleanup = configureSessionReadState('hub-a:alice', async (_id, request) => {
+            requests.push({ ...request })
+            if (requests.length === 1) return new Promise(r => { resolve = r })
+            return { readState: server(watermark, returnedVersion + 1, request.expectedVersion !== returnedVersion) }
+        })
+        markListedSessionSeen({ id: 's', contentRevision: 6, readState: server(2, 1, true) })
+        resolve({ readState: server(watermark, returnedVersion, true) })
+        await vi.advanceTimersByTimeAsync(0)
+        await flushSessionReadState()
+        expect(requests[1]).toEqual({ type: 'read', readRevision: 6, expectedVersion: returnedVersion === 2 ? 2 : 1 })
+        expect(getSessionManualUnreadAt('s')).toBe(returnedVersion === 2 ? null : 0)
+    })
+
+    it.each([2, 4])('settles an explicit read whose own response still carries the marker at v%s', async version => {
+        const seen = { id: 's', contentRevision: 7, readState: server(2, 1, true) }
+        markListedSessionSeen(seen)
+        const sent: SessionReadStateRequest[] = []
+        cleanup = configureSessionReadState('hub-a:alice', async (_id, request) => {
+            sent.push({ ...request })
+            return { readState: sent.length === 1 ? server(7, version, true) : server(7, version + 1) }
+        })
+        await vi.advanceTimersByTimeAsync(0)
+        await flushSessionReadState()
+        expect(sent.map(r => r.expectedVersion)).toEqual(version === 2 ? [1, 2] : [1])
+        expect(getSessionManualUnreadAt('s')).toBe(version === 2 ? null : 0)
+    })
+
+    it.each([5, 6])('a stale rendered receipt preserves the queued explicit clear, without consuming a later marker (v%s)', async version => {
+        markListedSessionSeen({ id: 's', contentRevision: 41, readState: server(40, 5, true) })
+        markRenderedSessionSeen('s', 42, 4, undefined)
+        const send = vi.fn(async (_id: string, request: SessionReadStateRequest) => ({
+            readState: server(42, version + 1, request.expectedVersion !== version),
+        }))
+        cleanup = configureSessionReadState('hub-a:alice', send)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(send).toHaveBeenCalledExactlyOnceWith('s', { type: 'read', readRevision: 42, expectedVersion: 5 })
+        expect(getSessionManualUnreadAt('s')).toBe(version === 5 ? null : 0)
+    })
+
+    it('syncs other receipts while one session keeps returning 500', async () => {
+        markSessionSeen('broken', 5)
+        markSessionSeen('healthy', 3)
+        const send = vi.fn(async (id: string) => {
+            if (id === 'broken') throw { status: 500 }
+            return { readState: server(3, 1) }
+        })
+        cleanup = configureSessionReadState('hub-a:alice', send)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(send.mock.calls.map(([id]) => id)).toEqual(['broken', 'healthy'])
+        const store = JSON.parse(localStorage.getItem('hapi.sessionReadState.v1:hub-a:alice')!)
+        expect(store.broken.pending).toBeDefined()
+        expect(store.healthy.pending).toBeUndefined()
+    })
+
+    it('sends the latest intent for the next session after an in-flight 500', async () => {
+        markSessionSeen('a', 1)
+        observeSessionReadStates([{ id: 'b', readState: server(0, 2) }])
+        markSessionSeen('b', 7)
+        let fail!: (error: unknown) => void
+        const send = vi.fn(async (id: string, _request: SessionReadStateRequest) => {
+            if (id === 'a') return new Promise<{ readState: SessionReadState }>((_, reject) => { fail = reject })
+            return { readState: server(1, 4, true) }
+        })
+        cleanup = configureSessionReadState('hub-a:alice', send)
+        markSessionUnread('b', server(1, 3))
+        fail({ status: 500 })
+        await vi.advanceTimersByTimeAsync(0)
+        expect(send.mock.calls).toEqual([
+            ['a', { type: 'read', readRevision: 1, expectedVersion: 0 }],
+            ['b', { type: 'unread', expectedVersion: 3 }],
+        ])
+        expect(getSessionManualUnreadAt('b')).toBe(0)
     })
 
     it('rolls back a rejected operation to authoritative state', async () => {

@@ -69,6 +69,7 @@ export type {
     SessionContentMatch,
     SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
+    ScratchlistSessionIdsResponse,
     SessionsResponse,
     SessionContentSearchResponse,
     SpawnResponse,
@@ -350,6 +351,45 @@ export type ClaudeImportResult = {
 export type ClaudeImportSessionsResponse = {
     success: boolean
     results: ClaudeImportResult[]
+    machineId?: string
+    error?: string
+}
+
+export type CursorLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    messageCount?: number
+    hapiSessionId?: string
+    sourceFormat?: string | null
+    sizeBytes?: number | null
+}
+
+export type CursorLocalSessionsResponse = {
+    success: true
+    sessions: CursorLocalSessionSummary[]
+    machineId: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+export type CursorImportResult = {
+    cursorSessionId: string
+    hapiSessionId?: string
+    action?: 'created' | 'updated' | 'unchanged'
+    appended?: number
+    error?: { code: string; message: string }
+}
+
+export type CursorImportSessionsResponse = {
+    success: boolean
+    results: CursorImportResult[]
     machineId?: string
     error?: string
 }
