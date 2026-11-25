@@ -898,7 +898,7 @@ describe('QueuedMessagesBar steer action', () => {
         expect(mocks.addToast).not.toHaveBeenCalled()
     })
 
-    it('reconciles a stale queued row when the steer returns invoked (missed consumption SSE)', async () => {
+    it.each([undefined, true])('reconciles a stale invoked row and preserves its optional steer marker (%s)', async steered => {
         renderSteerable(true)
 
         fireEvent.click(screen.getByRole('button', { name: 'Steer queued message' }))
@@ -906,7 +906,7 @@ describe('QueuedMessagesBar steer action', () => {
         await act(async () => {
             mocks.resolveSteer?.({
                 status: 'invoked',
-                message: { localId: 'local-server-message-id', invokedAt: 5_000 },
+                message: { localId: 'local-server-message-id', invokedAt: 5_000, ...(steered ? { steered } : {}) },
             })
             await Promise.resolve()
         })
@@ -915,6 +915,7 @@ describe('QueuedMessagesBar steer action', () => {
             'session-1',
             ['local-server-message-id'],
             5_000,
+            steered,
         )
         expect(mocks.addToast).not.toHaveBeenCalled()
     })
@@ -935,6 +936,17 @@ describe('unconfirmed delivery actions', () => {
         expect(screen.getByText('queuedMessages.steerOutcomeUnknown')).toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'queuedMessages.retryOutcome' })).toBeEnabled()
         expect(screen.getByRole('button', { name: 'Cancel queued message' })).toBeEnabled()
+    })
+
+    it('keeps the steer marker if Retry learns that the missing SSE already consumed the input', async () => {
+        const api = { retryIndeterminateMessage: vi.fn().mockResolvedValue({
+            status: 'invoked', message: { localId: 'local-server-message-id', invokedAt: 6_000, steered: true }
+        }) } as unknown as ApiClient
+        renderQueuedMessage(null, null, 0, true, api, { deliveryState: 'indeterminate' })
+        fireEvent.click(screen.getByRole('button', { name: 'queuedMessages.retryOutcome' }))
+        await waitFor(() => expect(mocks.markMessagesConsumed).toHaveBeenCalledWith(
+            'session-1', ['local-server-message-id'], 6_000, true
+        ))
     })
 
     it('offers explicit resolution when the pending owner is no longer steerable', () => {

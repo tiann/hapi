@@ -2892,41 +2892,61 @@ describe('gap recovery', () => {
         return state.messages.find(message => message.id === 'call-row')?.content
     }
 
+    it.each([false, true])('refreshes a retained tool during a same-epoch jump (outside latest page=%s)', async outsidePage => {
+        const id = sessionId('gap-held-tool-refresh')
+        const oldest = makeAgentMessage({ id: 'oldest', seq: 1, at: 100 })
+        const running = toolCallRow('tool', 2, 200, 'in_progress')
+        const completed = toolCallRow('tool', 2, 200, 'completed')
+        const newTail = makeAgentMessage({ id: 'tail', seq: 3, at: 300 })
+        let initial = true
+        const api = createApi(async () => initial ? latestResponse([oldest, running], { epoch: 1 })
+            : latestResponse(outsidePage ? [newTail] : [completed, newTail], { epoch: 1 }),
+        async () => contextResponse([completed], {
+            epoch: 1, targetMessageId: completed.id, nextBeforeAt: 200, nextBeforeSeq: 2,
+            snapshotHeadAt: 300, snapshotHeadSeq: 3
+        }))
+        await syncTailMessages(api, id)
+        setMessageViewMode(id, 'history')
+        const navigation = holdConversationStartWindow(id)!
+        initial = false
+        await recoverWindowAfterGapResume(api, id)
+        expect(await navigation.verifyStart()).toBe(true)
+        expect(getMessageWindowState(id).messages).toEqual([oldest, completed])
+        expect(getMessageWindowState(id).requiresLatestReset).toBe(false)
+    })
+
     it.each([false, true])('waits for a pending epoch probe before confirming history start (reset=%s)', async reset => {
         const id = sessionId('gap-during-start-settlement')
         const old = makeAgentMessage({ id: 'oldest', seq: 1, at: 1_000 })
         const latest = makeAgentMessage({ id: 'latest', seq: 2, at: 2_000 })
         const probe = deferred<MessagesResponse>()
-        let needsReplacement = false
-        const getMessages = vi.fn(async (_id: string, query: { limit?: number }) => {
-            if (query.limit === 1) return probe.promise
-            return needsReplacement ? latestResponse([latest], { epoch: 2 }) : latestResponse([old], { epoch: 1 })
+        let probeNext = false
+        const getMessages = vi.fn(async () => {
+            if (probeNext) {
+                probeNext = false
+                return probe.promise
+            }
+            return latestResponse(reset ? [latest] : [old], { epoch: reset ? 2 : 1 })
         })
         const api = createApi(getMessages)
+        getMessages.mockResolvedValueOnce(latestResponse([old], { epoch: 1 }))
         await syncTailMessages(api, id)
         setMessageViewMode(id, 'history')
         const navigation = holdConversationStartWindow(id)!
         expect(navigation.isCurrent()).toBe(true)
+        probeNext = true
         const gap = recoverWindowAfterGapResume(api, id)
         const completed = vi.fn()
         const verification = navigation.verifyStart().then(completed)
         await Promise.resolve()
         expect(completed).not.toHaveBeenCalled()
 
-        needsReplacement = reset
         probe.resolve(latestResponse([latest], { epoch: reset ? 2 : 1 }))
         await Promise.all([gap, verification])
         expect(completed).toHaveBeenCalledWith(!reset)
         expect(getMessageWindowState(id).messages.map(row => row.id)).toEqual([reset ? 'latest' : 'oldest'])
-        if (!reset) {
-            navigation.finish(true)
-            expect(navigation.isCurrent()).toBe(true)
-            setMessageViewMode(id, 'tail')
-            expect(navigation.isCurrent()).toBe(false)
-            needsReplacement = true
-            await syncTailMessages(api, id)
-            expect(getMessageWindowState(id).messages.map(row => row.id)).toEqual(['latest'])
-        }
+        navigation.finish(true)
+        expect(navigation.isCurrent()).toBe(false)
     })
 
     it('replaces a merged row with its current content after a gap resume', async () => {

@@ -140,7 +140,8 @@ const sessionAccessOrder = new Map<string, true>()
 const listeners = new Map<string, Set<() => void>>()
 const tailSyncControllers = new Map<string, TailSyncController>()
 const messageWindowTargetLocks = new Set<string>()
-const conversationStartWindows = new Map<string, { epoch: number; probe?: Promise<void> }>()
+type HeldConversationStart = { epoch: number; probe?: Promise<void>; catchUpApi?: ApiClient }
+const conversationStartWindows = new Map<string, HeldConversationStart>()
 
 export type ConversationStartWindow = {
     isCurrent: () => boolean
@@ -1463,7 +1464,7 @@ export function holdConversationStartWindow(sessionId: string): ConversationStar
     const epoch = getState(sessionId).epoch
     if (epoch === null) return null
     const previous = conversationStartWindows.get(sessionId)
-    const window = previous?.epoch === epoch ? previous : { epoch }
+    const window: HeldConversationStart = previous?.epoch === epoch ? previous : { epoch }
     conversationStartWindows.set(sessionId, window)
     cancelTailSync(sessionId)
     const isCurrent = () => conversationStartWindows.get(sessionId) === window && getState(sessionId).epoch === epoch
@@ -1479,6 +1480,7 @@ export function holdConversationStartWindow(sessionId: string): ConversationStar
             if (conversationStartWindows.get(sessionId) !== window) return
             if (keepHistory && getState(sessionId).requiresLatestReset) return
             conversationStartWindows.delete(sessionId)
+            if (keepHistory && window.catchUpApi) void recoverWindowAfterGapResume(window.catchUpApi, sessionId)
         }
     }
 }
@@ -1487,21 +1489,53 @@ function reconcileHeldConversationStart(api: ApiClient, sessionId: string): Prom
     const held = conversationStartWindows.get(sessionId)
     if (!held) return null
     if (held.probe) return held.probe
-    // A same-epoch tail page cannot be joined to this bounded history without
-    // a gap. Defer rebuilding the tail until the user returns there, but check
-    // the epoch now so a rewind whose notification was missed still takes effect.
-    const probe = api.getMessages(sessionId, { limit: 1 }).then(async response => {
-        if (conversationStartWindows.get(sessionId) !== held) return
-        if (response.page.epoch !== held.epoch) {
-            markMessageWindowForLatestReset(sessionId, getState(sessionId).messages)
-            await syncTailMessages(api, sessionId)
-        } else {
-            updateState(sessionId, previous => buildState(previous, { requiresLatestReset: true }))
+    const initial = getState(sessionId)
+    const requestBaseline = new Map(initial.messages.map(message => [message.id, message]))
+    const isCurrent = () => conversationStartWindows.get(sessionId) === held
+    const reset = async () => {
+        markMessageWindowForLatestReset(sessionId, getState(sessionId).messages)
+        await syncTailMessages(api, sessionId)
+    }
+    const reconcileRows = (updates: DecryptedMessage[], baseline: Map<string, DecryptedMessage>) => {
+        const byId = new Map(updates.map(message => [message.id, message]))
+        updateState(sessionId, previous => {
+            const retainedUpdates = previous.messages.flatMap(message => {
+                const refreshed = byId.get(message.id)
+                return refreshed && baseline.get(message.id) === message ? [refreshed] : []
+            })
+            return retainedUpdates.length
+                ? buildState(previous, { messages: mergeMessages(previous.messages, retainedUpdates) })
+                : previous
+        })
+    }
+    const probe = api.getMessages(sessionId, { limit: PAGE_SIZE }).then(async response => {
+        if (!isCurrent()) return
+        if (response.page.epoch !== held.epoch) return reset()
+
+        // Refresh retained rows, never splice a disconnected latest page into
+        // the historical window. Leave the pagination cursors untouched.
+        reconcileRows(response.messages, requestBaseline)
+        const head = pagePosition(response.page.snapshotHeadAt, response.page.snapshotHeadSeq)
+        const cursor = getNewestCursor(getState(sessionId))
+        if (head && cursor && comparePosition(head, cursor) > 0) held.catchUpApi = api
+
+        const inLatest = new Set(response.messages.map(message => message.id))
+        const candidates = getState(sessionId).messages.filter(message => !inLatest.has(message.id) && isNonTerminalToolCallRow(message))
+            .slice(-GAP_ROW_REFRESH_LIMIT).reverse()
+        if (candidates.length === 0) return
+        const results = await Promise.allSettled(candidates.map(message => api.getMessageContext(sessionId, message.id)))
+        if (!isCurrent()) return
+        const updates: DecryptedMessage[] = []
+        for (const [index, result] of results.entries()) {
+            if (result.status !== 'fulfilled' || !result.value) continue
+            if (result.value.page.epoch !== held.epoch) return reset()
+            const updated = result.value.messages.find(message => message.id === candidates[index].id)
+            if (updated) updates.push(updated)
         }
+        reconcileRows(updates, new Map(candidates.map(message => [message.id, message])))
     }).catch(() => {
-        if (conversationStartWindows.get(sessionId) === held) {
-            updateState(sessionId, previous => buildState(previous, { requiresLatestReset: true }))
-        }
+        // Keep the visible history if the reconnect request itself fails.
+        if (isCurrent()) held.catchUpApi = api
     }).finally(() => { held.probe = undefined })
     held.probe = probe
     return probe

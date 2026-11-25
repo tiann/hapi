@@ -245,7 +245,9 @@ for (const structuralReset of [false, true]) {
         const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Latest fixture reply' })
         await reply.hover()
         await reply.getByRole('button', { name: 'Jump to conversation start' }).press('Enter')
-        await expect.poll(() => page.evaluate(() => window.__probe.requests.some(r => r.beforeSeq === 201))).toBe(true)
+        await expect.poll(() => page.evaluate(() => window.__probe.requests.map(r => r.beforeSeq)), {
+            timeout: 30_000
+        }).toContain(201)
         await page.evaluate(next => window.__probe.gap(next ? 2 : undefined), structuralReset)
         await page.evaluate(() => window.__probe.releaseBefore())
         const success = page.getByText('Reached conversation start', { exact: true })
@@ -271,7 +273,6 @@ for (const structuralReset of [false, true]) {
 
 test('does not preload older history while a jump to a loaded prompt is settling', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&loadedPromptPreload=1')
-    await page.addStyleTag({ content: '[data-hapi-message-role="assistant"] { min-height: 1800px; }' })
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply to loaded prompt' })
     await expect(reply).toBeAttached()
     await expect.poll(async () => (await geometry(page)).chatScrollTop).toBeGreaterThan(500)

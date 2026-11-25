@@ -76,6 +76,7 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
                                 content: input.snapshot.content,
                                 createdAt: input.snapshot.createdAt,
                                 invokedAt: invoked.invokedAt,
+                                ...(invoked.steered ? { steered: true } : {}),
                             },
                         }
                     }
@@ -134,6 +135,7 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
                     content: result.message.content,
                     createdAt: result.message.createdAt,
                     invokedAt: result.message.invokedAt,
+                    ...(result.message.steered ? { steered: true } : {}),
                     status: 'sent',
                 })
             }

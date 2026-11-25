@@ -22,7 +22,7 @@ export function useRetryIndeterminateMessage(api: ApiClient | null) {
                 markMessagesRequeued(input.sessionId, result.localId ? [result.localId] : [])
             }
             if (result.status === 'invoked' && result.message.localId && typeof result.message.invokedAt === 'number') {
-                markMessagesConsumed(input.sessionId, [result.message.localId], result.message.invokedAt)
+                markMessagesConsumed(input.sessionId, [result.message.localId], result.message.invokedAt, result.message.steered)
             }
             if (result.status === 'retry-unavailable' || result.status === 'not-found') {
                 if (result.status === 'not-found') {
