@@ -2192,6 +2192,50 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `typing a hash in a skill name keeps the same picker open`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        vm.start()
+
+        for ((index, name) in listOf("c#", "c#.lint", "c#:lint").withIndex()) {
+            val skill = SkillSummary(name)
+            harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(skill))
+            for (length in 1..name.length) {
+                val draft = "Run \$${name.take(length)}"
+                vm.setComposerText(draft)
+                testScheduler.runCurrent()
+                assertEquals(listOf(skill), vm.skillSuggestions.value.map { it.skill }, draft)
+                assertEquals(index + 1, harness.api.skillsCalls.size)
+            }
+            vm.setComposerText("")
+            testScheduler.runCurrent()
+        }
+    }
+
+    @Test
+    fun `selecting a skill before its existing hash replaces the complete name`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val skills = listOf("c#", "c#.lint", "c#:lint").map { SkillSummary(it) }
+        harness.api.skillsResult = SkillsResponse(success = true, skills = skills)
+        vm.start()
+
+        val caret = "Run \$c".length
+        for (skill in skills) {
+            val draft = "Run \$${skill.name}"
+            vm.onComposerChange(draft, caret, caret)
+            testScheduler.runCurrent()
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single { it.skill == skill })
+            testScheduler.runCurrent()
+
+            assertEquals("$draft ", vm.composer.value.text)
+            assertEquals(draft.length + 1, vm.composer.value.caretPosition)
+            assertTrue(vm.skillSuggestions.value.isEmpty())
+        }
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+    }
+
+    @Test
     fun `typing a qualifier after plus signs keeps the same picker open`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel
@@ -2521,7 +2565,7 @@ class ChatViewModelInteractionTest {
         harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("Review")))
         vm.start()
 
-        for (suffix in listOf(", then run", ". Then run", ".then continue")) {
+        for (suffix in listOf(", then run", ". Then run", ".then continue", "#notes")) {
             // Exact match exercises the caret-only path: the text should not change.
             val draft = "Run \$Review$suffix"
             val caret = "Run \$Review".length

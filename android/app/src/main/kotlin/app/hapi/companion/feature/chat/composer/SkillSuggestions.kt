@@ -20,7 +20,7 @@ internal object SkillSuggestions {
     )
     data class Edit(val text: String, val caret: Int)
 
-    private val provisionalPunctuation = charArrayOf('.', ':', '+')
+    private val provisionalPunctuation = charArrayOf('.', ':', '+', '#')
 
     private fun isNameChar(text: String, index: Int): Boolean {
         val char = text.getOrNull(index) ?: return false
@@ -45,10 +45,13 @@ internal object SkillSuggestions {
     private fun isCandidateAt(text: String, index: Int, caret: Int): Boolean {
         val char = text.getOrNull(index) ?: return false
         return when (char) {
-            // Scan punctuation after a provisional plus run; the catalogue resolves the boundary.
-            '.', ':' -> (isNameChar(text, index - 1) || text.getOrNull(index - 1) == '+') &&
-                (index == caret - 1 || isNameChar(text, index + 1) || (char == ':' && index == text.lastIndex))
-            '+' -> true
+            // The catalogue decides whether these marks belong to the name.
+            '.', ':' -> {
+                val previous = text.getOrNull(index - 1)
+                (previous == '+' || previous == '#' || isNameChar(text, index - 1)) &&
+                    (index == caret - 1 || isNameChar(text, index + 1) || (char == ':' && index == text.lastIndex))
+            }
+            '+', '#' -> true
             else -> isNameChar(text, index)
         }
     }
