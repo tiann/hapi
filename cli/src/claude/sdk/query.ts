@@ -26,7 +26,18 @@ import {
 } from './types'
 import { getDefaultClaudeCodePath, logDebug, streamToStdin } from './utils'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
-import { killProcessByChildProcess } from '@/utils/process'
+import {
+    getProcessGroupId,
+    getProcessStartMarker,
+    getProcessThreadGroupId,
+    getSystemBootId,
+    isWindows,
+    killProcessByChildProcess,
+} from '@/utils/process'
+import {
+    clearAgentRootForCurrentHost,
+    publishAgentRootFromIdentity,
+} from '@/runner/agentRootRegistry'
 import { stripNewlinesForWindowsShellArg } from '@/utils/shellEscape'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
@@ -479,6 +490,22 @@ export function query(config: {
         windowsHide: process.platform === 'win32'
     }) as ChildProcessWithoutNullStreams
 
+    // Publish Claude SDK child generation so Runner probe cannot treat wrapper
+    // exit alone as worker exit (#2021 Approach).
+    if (typeof child.pid === 'number' && child.pid > 0) {
+        publishAgentRootFromIdentity({
+            pid: child.pid,
+            startMarker: getProcessStartMarker(child.pid),
+            bootId: getSystemBootId(),
+            tgid: getProcessThreadGroupId(child.pid),
+            pgid: getProcessGroupId(child.pid),
+        }, {
+            // No Job Object on this spawn path — fail closed on Windows until
+            // clearAgentRoot after verified child exit.
+            containmentEstablished: !isWindows(),
+        })
+    }
+
     // Handle process exit
     let resolveExit: () => void
     let rejectExit: (error: Error) => void
@@ -513,6 +540,7 @@ export function query(config: {
             child.stdin.destroy()
             child.stdout.destroy()
             child.stderr.destroy()
+            clearAgentRootForCurrentHost()
         })()
         return cleanupPromise
     }
@@ -583,6 +611,7 @@ export function query(config: {
     // Cleanup on exit (catch rejection to avoid unhandled promise warning)
     processExitPromise.catch(() => {}).finally(() => {
         void cleanup()
+        clearAgentRootForCurrentHost()
         process.removeListener('exit', handleProcessExit)
         config.options?.abort?.removeEventListener('abort', handleAbort)
         if (process.env.CLAUDE_SDK_MCP_SERVERS) {

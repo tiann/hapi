@@ -42,6 +42,7 @@ describe('agentRootRegistry', () => {
             return {
                 ...actual,
                 isWindows: () => false,
+                isAgentOwnedProcessGroup: () => true,
                 classifyAgentOwnedProcessGroup: () => 'unknown' as const,
                 retainedIdentityStillAlive: () => false,
             }
@@ -67,6 +68,7 @@ describe('agentRootRegistry', () => {
             return {
                 ...actual,
                 isWindows: () => false,
+                isAgentOwnedProcessGroup: () => true,
                 classifyAgentOwnedProcessGroup: () => 'empty' as const,
                 retainedIdentityStillAlive: () => false,
             }

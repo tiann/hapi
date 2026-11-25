@@ -1398,6 +1398,21 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           logger.debug(`[RUNNER RUN] Orphan sweep blocked by live agent containment for ${sessionId}`);
           return 'still_alive';
         }
+        try {
+          const { readRuntimes, runtimeAuthHash } = await import('@/codex/shared/registry');
+          const records = (await readRuntimes({ strict: true })).filter((runtime) =>
+            runtime.hub === configuration.apiUrl
+            && runtime.authHash === runtimeAuthHash()
+            && Boolean(runtime.sessions[sessionId]?.active),
+          );
+          if (records.length > 0) {
+            logger.debug(`[RUNNER RUN] Orphan sweep blocked by live Codex runtime for ${sessionId}`);
+            return 'still_alive';
+          }
+        } catch {
+          // Registry unreadable — do not invent verified cleanup (#2021).
+          return 'still_alive';
+        }
         if (orphanStatus === 'stopped') {
           rememberVerifiedExit(sessionId);
           return 'stopped';
@@ -1763,11 +1778,27 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
       }
 
-      if (hasVerifiedExit(sessionId)) {
-        if (agentContainmentBlocksAlreadyGone(sessionId)) {
-          logger.debug(`[RUNNER RUN] Session ${sessionId} tombstone blocked by live agent containment`);
+      if (agentContainmentBlocksAlreadyGone(sessionId)) {
+        logger.debug(`[RUNNER RUN] Session ${sessionId} stop blocked by live agent containment`);
+        return 'still_alive';
+      }
+      try {
+        const { readRuntimes, runtimeAuthHash } = await import('@/codex/shared/registry');
+        const records = (await readRuntimes({ strict: true })).filter((runtime) =>
+          runtime.hub === configuration.apiUrl
+          && runtime.authHash === runtimeAuthHash()
+          && Boolean(runtime.sessions[sessionId]?.active),
+        );
+        if (records.length > 0) {
+          logger.debug(`[RUNNER RUN] Session ${sessionId} stop blocked by live Codex runtime`);
           return 'still_alive';
         }
+      } catch {
+        logger.debug(`[RUNNER RUN] Session ${sessionId} Codex registry unreadable during stop`);
+        return 'still_alive';
+      }
+
+      if (hasVerifiedExit(sessionId)) {
         logger.debug(`[RUNNER RUN] Session ${sessionId} was previously observed exited`);
         return 'already_gone';
       }
@@ -1778,10 +1809,6 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // No PID matched and no verified-exit tombstone — distinct from
       // still_alive so callers reconciling stale rows are not blocked forever,
       // while callers that just spawned this id can treat unknown defensively.
-      if (agentContainmentBlocksAlreadyGone(sessionId)) {
-        logger.debug(`[RUNNER RUN] Session ${sessionId} unknown wrapper but agent containment live`);
-        return 'still_alive';
-      }
       logger.debug(`[RUNNER RUN] Session ${sessionId} not found without verified exit`);
       return 'unknown';
     };
@@ -1829,15 +1856,30 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       return findLiveAgentRootForSession(sessionId, hostPidsForSession(sessionId)) !== null;
     };
 
+    /**
+     * Codex app-server PIDs live outside the HAPI wrapper tree. Never accept
+     * wrapper-exit already_gone while a shared runtime still lists this session.
+     */
+    const codexRuntimeBlocksAlreadyGone = async (
+      sessionId: string,
+    ): Promise<'block' | 'clear' | 'unknown'> => {
+      try {
+        const { readRuntimes, runtimeAuthHash } = await import('@/codex/shared/registry');
+        const records = (await readRuntimes({ strict: true })).filter((runtime) =>
+          runtime.hub === configuration.apiUrl
+          && runtime.authHash === runtimeAuthHash()
+          && Boolean(runtime.sessions[sessionId]?.active),
+        );
+        return records.length > 0 ? 'block' : 'clear';
+      } catch {
+        return 'unknown';
+      }
+    };
+
     const probeSessionExit = async (
       sessionId: string,
       opts?: { processStartMarker?: string },
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
-      if (hasVerifiedExit(sessionId)) {
-        if (agentContainmentBlocksAlreadyGone(sessionId)) return 'still_alive';
-        return 'already_gone';
-      }
-
       if (sessionId.startsWith('PID-')) {
         const pid = parseInt(sessionId.slice(4), 10);
         if (!Number.isFinite(pid) || pid <= 0) return 'unknown';
@@ -1882,26 +1924,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         if (isProcessAlive(pid)) return 'still_alive';
       }
 
-      try {
-        const { readRuntimes, runtimeAuthHash } = await import('@/codex/shared/registry');
-        const records = (await readRuntimes({ strict: true })).filter((runtime) =>
-          runtime.hub === configuration.apiUrl
-          && runtime.authHash === runtimeAuthHash()
-          && Boolean(runtime.sessions[sessionId]?.active),
-        );
-        if (records.length > 0) return 'still_alive';
-      } catch {
-        // Registry unreadable — do not invent already_gone.
-        return 'unknown';
-      }
-
-      if (hasVerifiedExit(sessionId)) {
-        if (agentContainmentBlocksAlreadyGone(sessionId)) return 'still_alive';
-        return 'already_gone';
-      }
-      // No wrapper tombstone — still block already_gone when a published agent
-      // root survives (wrapper may have died before tombstone persistence).
       if (agentContainmentBlocksAlreadyGone(sessionId)) return 'still_alive';
+
+      // Codex before wrapper tombstone — app-server outlives the HAPI child (#2021).
+      const codex = await codexRuntimeBlocksAlreadyGone(sessionId);
+      if (codex === 'block') return 'still_alive';
+      if (codex === 'unknown') return 'unknown';
+
+      if (hasVerifiedExit(sessionId)) return 'already_gone';
       return 'unknown';
     };
 

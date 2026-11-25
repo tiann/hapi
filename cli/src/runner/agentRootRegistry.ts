@@ -15,6 +15,7 @@ import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
 import {
     classifyAgentOwnedProcessGroup,
     getProcessStartMarker,
+    isAgentOwnedProcessGroup,
     isWindows,
     retainedIdentityStillAlive,
     type RetainedProcessIdentity,
@@ -167,7 +168,8 @@ export function agentRootContainmentActive(record: AgentRootRecord): boolean {
         tgid: record.tgid ?? null,
         pgid: record.pgid ?? null,
     }
-    if (!isWindows() && typeof record.pgid === 'number' && record.pgid > 0) {
+    if (!isWindows() && typeof record.pgid === 'number' && record.pgid > 0
+        && isAgentOwnedProcessGroup(identity)) {
         const state = classifyAgentOwnedProcessGroup(identity)
         // empty/foreign ⇒ containment ended; ours/unknown ⇒ still blocking
         return state === 'ours' || state === 'unknown'
