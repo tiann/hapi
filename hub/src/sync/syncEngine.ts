@@ -3336,10 +3336,11 @@ export class SyncEngine {
         const expected = metadata.summary
         if (expected && (expected.text !== metadata.forkTitleSeed?.text
             || expected.updatedAt !== metadata.forkTitleSeed?.updatedAt)) return
-        if (!this.sessionCache.claimForkTitleGeneration(sessionId, expected)) return
+        const claimedAt = this.sessionCache.claimForkTitleGeneration(sessionId, expected)
+        if (claimedAt === null) return
         try {
             const title = await this.titleSuggestionService.suggestTitle(sessionId)
-            if (!this.stopped) await this.sessionCache.updateForkTitle(sessionId, title, expected)
+            if (!this.stopped) await this.sessionCache.updateForkTitle(sessionId, title, expected, claimedAt)
         } catch {
             // Keep the seed on failure; manual Generate remains available.
         }

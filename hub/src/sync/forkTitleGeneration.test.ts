@@ -125,6 +125,24 @@ describe('fork title generation', () => {
             } finally { f.close() }
         })
 
+    it('does not save an untitled fork result after an intervening lock and unlock revoke its claim', async () => {
+        const f = fixture()
+        try {
+            f.setMetadata(f.source.id, metadata => ({ ...metadata, name: undefined, summary: undefined, promptTitle: undefined }))
+            let finish!: (title: string) => void
+            f.internal.titleSuggestionService.suggestTitle = () => new Promise<string>(resolve => { finish = resolve })
+            expect(await f.engine.forkConversation(f.source.id, 'default')).toMatchObject({ type: 'success' })
+            const id = f.child!.id
+            expect(f.engine.getSession(id)?.metadata?.summary).toBeUndefined()
+            expect(f.engine.getSession(id)?.metadata?.forkTitleGenerationAttemptedAt).toBeNumber()
+            await f.engine.renameSession(id, undefined, true)
+            await f.engine.renameSession(id, undefined, false)
+            finish('Revoked provider result')
+            await flush()
+            expect(f.engine.getSession(id)?.metadata?.summary).toBeUndefined()
+        } finally { f.close() }
+    })
+
     it.each(['unconfigured', 'failure', 'empty'])(
         'keeps the seed when the provider is %s and permits a later manual retry', async mode => {
             const f = fixture()

@@ -388,6 +388,9 @@ describe('archived Codex fork coordination', () => {
     it('does not complete an active child retry until native readiness is confirmed again', async () => {
         const f = fixture()
         try {
+            const suggestion = vi.spyOn((f.engine as unknown as {
+                titleSuggestionService: { suggestTitle(id: string): Promise<string> }
+            }).titleSuggestionService, 'suggestTitle').mockResolvedValue('Resumed archived fork title')
             f.rpc.spawnSession = async (...args) => {
                 f.engine.handleSessionAlive({ sid: args[12]!, time: Date.now(), mode: 'remote' })
                 return { type: 'error', message: 'startup interrupted', childStarted: false }
@@ -398,9 +401,12 @@ describe('archived Codex fork coordination', () => {
             const retry = f.engine.forkConversation(f.source.id, 'ns').then(result => { completed = true; return result })
             await new Promise(resolve => setTimeout(resolve, 10))
             expect(completed).toBe(false)
+            expect(suggestion).not.toHaveBeenCalled()
             expect(f.engine.getSession(f.source.id)?.metadata?.codexArchivedFork).toBeDefined()
             f.engine.handleSessionReady({ sid: child, time: Date.now() })
             expect(await retry).toEqual({ type: 'success', sessionId: child })
+            expect(suggestion).toHaveBeenCalledTimes(1)
+            expect(suggestion).toHaveBeenCalledWith(child)
             expect(f.engine.getSession(f.source.id)?.metadata?.codexArchivedFork).toBeUndefined()
         } finally { f.engine.stop() }
     })

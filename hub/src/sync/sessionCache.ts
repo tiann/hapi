@@ -21,6 +21,7 @@ const TURN_RECOVERY_WINDOW_MS = 10 * 60_000
 // snapshot. Cap retries so genuine concurrent contention still surfaces to the
 // HTTP caller as 409 instead of spinning forever.
 const METADATA_RETRY_ATTEMPTS = 5
+let lastForkTitleClaimAt = 0
 type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
 
 /**
@@ -1452,29 +1453,35 @@ export class SessionCache {
     }
 
     /** Persistent CAS claim deduplicates native readiness and REST completion. */
-    claimForkTitleGeneration(sessionId: string, expected: { text: string; updatedAt: number } | undefined): boolean {
+    claimForkTitleGeneration(sessionId: string, expected: { text: string; updatedAt: number } | undefined): number | null {
         for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
             const session = this.refreshSession(sessionId)
             const metadata = session?.metadata
             if (!session || !metadata?.forkedFrom || metadata.forkTitleGenerationAttemptedAt !== undefined
                 || metadata.name?.trim() || metadata.titleLocked === true
                 || metadata.summary?.text !== expected?.text || metadata.summary?.updatedAt !== expected?.updatedAt
-                || metadata.forkTitleSeed?.text !== expected?.text || metadata.forkTitleSeed?.updatedAt !== expected?.updatedAt) return false
+                || metadata.forkTitleSeed?.text !== expected?.text || metadata.forkTitleSeed?.updatedAt !== expected?.updatedAt) return null
+            // Keep claim identities distinct even when a lock edit revokes
+            // one claim and a second starts in the same clock tick.
+            const claimedAt = lastForkTitleClaimAt = Math.max(Date.now(), lastForkTitleClaimAt + 1)
             const result = this.store.sessions.updateSessionMetadata(sessionId,
-                { ...metadata, forkTitleGenerationAttemptedAt: Date.now() }, session.metadataVersion, session.namespace,
+                { ...metadata, forkTitleGenerationAttemptedAt: claimedAt }, session.metadataVersion, session.namespace,
                 { touchUpdatedAt: false })
-            if (result.result === 'error') return false
-            if (result.result === 'success') { this.refreshSession(sessionId); return true }
+            if (result.result === 'error') return null
+            if (result.result === 'success') { this.refreshSession(sessionId); return claimedAt }
         }
-        return false
+        return null
     }
 
-    /** Only replace the exact fork seed captured before the provider request. */
-    async updateForkTitle(sessionId: string, text: string, expected: { text: string; updatedAt: number } | undefined): Promise<boolean> {
+    /** Only the same persisted claim can replace the seed after provider latency. */
+    async updateForkTitle(
+        sessionId: string, text: string, expected: { text: string; updatedAt: number } | undefined, claimedAt: number
+    ): Promise<boolean> {
         for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
             const session = this.refreshSession(sessionId)
             const metadata = session?.metadata
             if (!session || !metadata?.forkedFrom || metadata.name?.trim() || metadata.titleLocked === true
+                || metadata.forkTitleGenerationAttemptedAt !== claimedAt
                 || metadata.summary?.text !== expected?.text || metadata.summary?.updatedAt !== expected?.updatedAt
                 || metadata.forkTitleSeed?.text !== expected?.text || metadata.forkTitleSeed?.updatedAt !== expected?.updatedAt) return false
             const { forkTitleSeed: _seed, forkTitleGenerationAttemptedAt: _attempt, ...rest } = metadata
