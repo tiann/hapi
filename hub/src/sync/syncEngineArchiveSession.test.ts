@@ -795,6 +795,43 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
+    it('refuses archive when background-only work survives heartbeat expiry (#2021 Major)', async () => {
+        // Antigravity settles the tool row when backgrounding, then only
+        // re-emits background_tasks_changed on membership change. Expiry must
+        // not wipe that snapshot or Archive can stop a live command.
+        const sessionId = insertActiveSession('sess-expired-background-only', 'machine-x', undefined, {
+            flavor: 'agy',
+        })
+        cache().setBackgroundTasks(sessionId, [
+            { id: 'bg-1', type: 'local_bash', description: 'sleep 3600' },
+        ])
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.derivedToolWork = false
+        live.activeAt = Date.now() - 60_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+        expect(live.active).toBe(false)
+        expect(live.backgroundTaskCount).toBe(1)
+
+        // Reconnect keepalive without a fresh background snapshot.
+        cache().handleSessionAlive({ sid: sessionId, time: Date.now(), thinking: false })
+        expect(cache().getSession(sessionId)?.backgroundTaskCount).toBe(1)
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => {
+                stopCalled = true
+                return 'already_gone'
+            }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
     it('refuses still_alive when lifecycle is idle but transport already expired (#2021 Major)', async () => {
         const sessionId = insertActiveSession('sess-idle-lifecycle-stale', 'machine-x')
         const live = cache().getSession(sessionId)!

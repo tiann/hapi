@@ -273,6 +273,47 @@ describe('retained process identity classification (#2021)', () => {
         expect(signals.some((pid) => pid < 0)).toBe(false)
     })
 
+    it('signals the process group while the leader is still identifiable (#2021 Major)', async () => {
+        const signals: number[] = []
+        let groupSignalled = false
+        read.mockReturnValue(`${bootId}\n`)
+        vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (signal === 0) {
+                // Whole group disappears once -pgid lands (#2021 Major).
+                if (groupSignalled) {
+                    throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
+                }
+                return true
+            }
+            signals.push(pid)
+            if (pid < 0) groupSignalled = true
+            return true
+        }) as typeof process.kill)
+        spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {
+            if (cmd === 'pgrep' && Array.isArray(args) && args[0] === '-g') {
+                if (groupSignalled) {
+                    return { status: 1, stdout: '', stderr: '', error: null }
+                }
+                // Leader + mid-snapshot child still in the owned group.
+                return { status: 0, stdout: '4242\n9999\n', stderr: '', error: null }
+            }
+            if (cmd === 'ps') {
+                return { status: 0, stdout: 'Wed Nov 25 00:00:00 2026', stderr: '', error: null }
+            }
+            return { status: 1, stdout: '', stderr: '', error: null }
+        })
+        expect(classifyAgentOwnedProcessGroup(identity())).toBe('ours')
+        expect(await killRetainedProcessTree([identity()], true)).toBe(true)
+        const groupIdx = signals.indexOf(-4242)
+        expect(groupIdx).toBeGreaterThanOrEqual(0)
+        // Group signal must happen while the leader still bound the generation —
+        // not after a leader-first per-PID kill left the group leaderless.
+        const leaderIdx = signals.indexOf(4242)
+        if (leaderIdx >= 0) {
+            expect(groupIdx).toBeLessThan(leaderIdx)
+        }
+    })
+
     it('reads process group id on macOS via ps (#2021)', () => {
         platform('darwin')
         spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {

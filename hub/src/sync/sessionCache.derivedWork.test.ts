@@ -109,7 +109,7 @@ describe('derived tool work flag', () => {
         }
     })
 
-    it('expireInactive resets stale background task counts like handleSessionEnd', () => {
+    it('expireInactive preserves background tasks across heartbeat expiry (#2021 Major)', () => {
         const originalDateNow = Date.now
         Date.now = () => baseTime
         try {
@@ -124,8 +124,8 @@ describe('derived tool work flag', () => {
             )
 
             cache.handleSessionAlive({ sid: session.id, time: baseTime, thinking: false })
-            // The runner died mid-background-work: counts were declared, the
-            // keepalive went silent, and no session-end ever arrived.
+            // Background snapshot must survive keepalive expiry — Antigravity
+            // only re-emits on membership change (#2021 Major).
             cache.setBackgroundTasks(session.id, [
                 { id: 'b1', type: 'local_bash', description: 'long job' }
             ])
@@ -137,8 +137,10 @@ describe('derived tool work flag', () => {
 
             const after = cache.getSession(session.id)!
             expect(after.active).toBe(false)
-            expect(after.backgroundTaskCount).toBe(0)
-            expect(after.backgroundTasks).toEqual([])
+            expect(after.backgroundTaskCount).toBe(1)
+            expect(after.backgroundTasks).toEqual([
+                { id: 'b1', type: 'local_bash', description: 'long job' },
+            ])
             expect(after.derivedToolWork).toBe(false)
 
             const patches = events
@@ -146,8 +148,8 @@ describe('derived tool work flag', () => {
                     event.type === 'session-updated' && event.sessionId === session.id)
                 .map((event) => event.data as SessionPatch)
             expect(patches).toHaveLength(1)
-            expect(patches[0]!.backgroundTaskCount).toBe(0)
-            expect(patches[0]!.backgroundTasks).toEqual([])
+            expect(patches[0]!.backgroundTaskCount).toBeUndefined()
+            expect(patches[0]!.backgroundTasks).toBeUndefined()
             expect(patches[0]!.derivedToolWork).toBe(false)
             store.close()
         } finally {

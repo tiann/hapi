@@ -10,6 +10,7 @@ import {
     getSystemBootId,
     isAgentOwnedProcessGroup,
     isWindows,
+    killAndExpandWindowsRetainedTree,
     killRetainedProcessTree,
     retainedIdentityStillAlive,
     snapshotProcessTreeIdentities,
@@ -526,15 +527,29 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     let verified = true;
                     try {
                         if (this.retainedStopTree) {
-                            verified = await killRetainedProcessTree(this.retainedStopTree, true);
-                            if (
-                                verified
-                                && this.stopTreeSnapshotIncomplete
-                                && this.retainedStopTree.some((identity) => retainedIdentityStillAlive(identity))
-                            ) {
-                                verified = false;
-                            } else if (verified && this.stopTreeSnapshotIncomplete) {
-                                this.stopTreeSnapshotIncomplete = false;
+                            if (isWindows()) {
+                                // Generation-bound expand+kill stays valid after
+                                // the root exits; never clear incomplete from a
+                                // PID-only pass that misses later tool children
+                                // (#2021 Major).
+                                const result = await killAndExpandWindowsRetainedTree(
+                                    this.retainedStopTree,
+                                    true,
+                                );
+                                this.retainedStopTree = result.tree;
+                                verified = result.verified;
+                                if (verified) this.stopTreeSnapshotIncomplete = false;
+                            } else {
+                                verified = await killRetainedProcessTree(this.retainedStopTree, true);
+                                if (
+                                    verified
+                                    && this.stopTreeSnapshotIncomplete
+                                    && this.retainedStopTree.some((identity) => retainedIdentityStillAlive(identity))
+                                ) {
+                                    verified = false;
+                                } else if (verified && this.stopTreeSnapshotIncomplete) {
+                                    this.stopTreeSnapshotIncomplete = false;
+                                }
                             }
                         } else if (
                             this.spawnedRootIdentity
@@ -736,7 +751,20 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             for (let i = 0; i < attempts; i += 1) {
                 try {
                     if (this.retainedStopTree) {
-                        stopped = await killRetainedProcessTree(this.retainedStopTree, force);
+                        if (isWindows()) {
+                            // Expand from generation-bound members so late tool
+                            // children remain visible after the root exits
+                            // (#2021 Major).
+                            const result = await killAndExpandWindowsRetainedTree(
+                                this.retainedStopTree,
+                                force,
+                            );
+                            this.retainedStopTree = result.tree;
+                            stopped = result.verified;
+                            if (stopped) this.stopTreeSnapshotIncomplete = false;
+                        } else {
+                            stopped = await killRetainedProcessTree(this.retainedStopTree, force);
+                        }
                     } else if (
                         this.spawnedRootIdentity
                         && isAgentOwnedProcessGroup(this.spawnedRootIdentity)
@@ -773,9 +801,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 force = true;
                 this.stopKillEscalated = true;
             }
-            // Incomplete snapshots: refuse while any known identity still lives.
-            // Once every retained member is gone, clear the latch so ordinary
-            // Windows exit / Stop can recover (#2021 Major).
+            // Incomplete snapshots (POSIX / no-tree paths): refuse while any
+            // known identity still lives. Windows expand+kill clears the latch
+            // only on verified empty trees above (#2021 Major).
             if (stopped && this.stopTreeSnapshotIncomplete) {
                 const prior = this.retainedStopTree;
                 if (prior && prior.some((identity) => retainedIdentityStillAlive(identity))) {
@@ -784,8 +812,11 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     // Process-group path with no retained list — group verify
                     // already covered descendants.
                     this.stopTreeSnapshotIncomplete = false;
-                } else {
+                } else if (!isWindows()) {
                     this.stopTreeSnapshotIncomplete = false;
+                } else {
+                    // Windows incomplete without expand verification — keep pending.
+                    stopped = false;
                 }
             }
             this.stopTreeVerified = stopped;

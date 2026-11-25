@@ -1249,13 +1249,13 @@ export class SessionCache {
             this.store.sessions.setSessionActive(session.id, false, session.activeAt, session.namespace)
             session.thinking = false
             session.activeTurnStartedAt = null
-            // The keepalive died, not the tasks: reset the transient work
-            // state like handleSessionEnd does, or a session that expired
-            // mid-background-work keeps its stale backgroundTaskCount (and
-            // derived flag) forever — the row would render "waiting" for
-            // hours after the process was gone.
-            session.backgroundTaskCount = 0
-            session.backgroundTasks = []
+            // Heartbeat expiry is not process-death proof. Antigravity (and
+            // Claude) only re-emit background_tasks_changed on membership
+            // change — clearing the snapshot here lets Archive send stop RPCs
+            // into a still-running background command after reconnect (#2021).
+            // Keep the last background snapshot until the worker clears it or
+            // handleSessionEnd confirms exit. derivedToolWork can be refreshed
+            // from the transcript on Archive; drop the ephemeral latch only.
             session.derivedToolWork = false
             // The last keepalive is the last time the agent was known to be working.
             this.recordTurn(session, wasThinking, session.activeAt, 'agent', 'expired')
@@ -1271,8 +1271,7 @@ export class SessionCache {
                     // The last keepalive: when the session stopped, for clients
                     // that only saw an older activeAt.
                     activeAt: session.activeAt,
-                    backgroundTaskCount: 0,
-                    backgroundTasks: [],
+                    // Preserve backgroundTaskCount / backgroundTasks (#2021 Major).
                     derivedToolWork: false
                 } satisfies SessionPatch
             })

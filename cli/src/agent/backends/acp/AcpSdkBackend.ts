@@ -21,6 +21,7 @@ import {
     getProcessThreadGroupId,
     getSystemBootId,
     isWindows,
+    killAndExpandWindowsRetainedTree,
     killRetainedProcessTree,
     retainedIdentityStillAlive,
     snapshotProcessTreeIdentities,
@@ -1417,16 +1418,34 @@ export class AcpSdkBackend implements AgentBackend {
             return this.agentTreeEnded;
         }
         const tree = this.retainedAgentTree;
-        // Incomplete Windows evidence still allows cleanup attempts against
-        // known identities — only settlement/success stays gated (#2021 Major).
+        // Incomplete Windows evidence: expand from generation-bound members so
+        // verification can recover after the root exits once every owned
+        // descendant is gone (#2021 Major). Keep pending while coverage fails.
         if (this.retainedTreeSnapshotIncomplete) {
-            if (tree && tree.length > 0) {
-                const anyAlive = tree.some((identity) => retainedIdentityStillAlive(identity));
-                if (anyAlive) {
-                    await killRetainedProcessTree(tree, force);
-                }
+            if (!tree || tree.length === 0) return false;
+            if (isWindows()) {
+                const result = await killAndExpandWindowsRetainedTree(tree, force);
+                this.retainedAgentTree = result.tree;
+                if (!result.verified) return false;
+                this.retainedTreeSnapshotIncomplete = false;
+                this.agentTreeEnded = true;
+                this.retainedAgentTree = null;
+                this.publishPendingDisconnectSettle();
+                return true;
             }
-            return false;
+            const anyAlive = tree.some((identity) => retainedIdentityStillAlive(identity));
+            if (anyAlive) {
+                await killRetainedProcessTree(tree, force);
+                return false;
+            }
+            if (!await this.verifyTreeExitBeyondPidSnapshot(tree)) {
+                return false;
+            }
+            this.retainedTreeSnapshotIncomplete = false;
+            this.agentTreeEnded = true;
+            this.retainedAgentTree = null;
+            this.publishPendingDisconnectSettle();
+            return true;
         }
         if (!tree || tree.length === 0) return this.agentTreeEnded;
         if (tree.every((identity) => !retainedIdentityStillAlive(identity))) {
@@ -1437,6 +1456,16 @@ export class AcpSdkBackend implements AgentBackend {
             this.retainedAgentTree = null;
             this.publishPendingDisconnectSettle();
             return true;
+        }
+        if (isWindows()) {
+            const result = await killAndExpandWindowsRetainedTree(tree, force);
+            this.retainedAgentTree = result.tree;
+            if (result.verified) {
+                this.agentTreeEnded = true;
+                this.retainedAgentTree = null;
+                this.publishPendingDisconnectSettle();
+            }
+            return result.verified;
         }
         const killed = await killRetainedProcessTree(tree, force);
         if (killed) {
@@ -1457,9 +1486,6 @@ export class AcpSdkBackend implements AgentBackend {
         tree: RetainedProcessIdentity[],
     ): Promise<boolean> {
         if (isWindows()) {
-            // Incomplete pre-close refresh: spawn-only PIDs cannot prove a
-            // later descendant exited (#2021 Major).
-            if (this.retainedTreeSnapshotIncomplete) return false;
             const root = this.spawnedRootIdentity ?? tree[tree.length - 1]!;
             // Refresh while the original root still matches so mid-close
             // descendants enter the verified set (#2021 Major).
@@ -1467,12 +1493,17 @@ export class AcpSdkBackend implements AgentBackend {
                 const fresh = snapshotProcessTreeIdentities(root.pid);
                 if (fresh && fresh.length > 0) {
                     this.retainedAgentTree = fresh;
-                    return await killRetainedProcessTree(fresh, true);
+                    const result = await killAndExpandWindowsRetainedTree(fresh, true);
+                    this.retainedAgentTree = result.tree;
+                    return result.verified;
                 }
-                return false;
+                // Root matches but scan failed — expand from what we have.
             }
-            // Root gone: re-kill the last refreshed retained tree only.
-            return await killRetainedProcessTree(tree, true);
+            // Root gone or refresh failed: expand from generation-bound
+            // retained members that remain queryable after root exit (#2021).
+            const result = await killAndExpandWindowsRetainedTree(tree, true);
+            this.retainedAgentTree = result.tree;
+            return result.verified;
         }
         const root = this.spawnedRootIdentity ?? tree[tree.length - 1]!;
         return await verifyAgentOwnedProcessGroupExited(root, true);

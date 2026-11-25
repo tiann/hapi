@@ -529,18 +529,149 @@ async function killMatchingRetainedIdentity(
 }
 
 /**
+ * Merge live process-group members into `identities` while the verified leader
+ * still binds the generation. Returns null when the group scan fails (#2021).
+ */
+function expandRetainedTreeWithProcessGroup(
+  identities: RetainedProcessIdentity[],
+  root: RetainedProcessIdentity,
+): RetainedProcessIdentity[] | null {
+  const pgid = root.pgid;
+  if (typeof pgid !== 'number' || pgid <= 0) return identities;
+  const groupPids = listProcessGroupPids(pgid);
+  if (groupPids === 'scan_failed') return null;
+  const bootId = root.bootId ?? getSystemBootId();
+  const working = identities.slice();
+  const seen = new Set(working.map((identity) => identity.pid));
+  for (const pid of groupPids) {
+    if (seen.has(pid)) continue;
+    working.push({
+      pid,
+      startMarker: getProcessStartMarker(pid),
+      bootId,
+      tgid: getProcessThreadGroupId(pid),
+      pgid: getProcessGroupId(pid),
+    });
+    seen.add(pid);
+  }
+  // Keep the original leader last so callers that index [-1] still bind pgid.
+  const withoutRoot = working.filter((identity) => identity.pid !== root.pid);
+  withoutRoot.push(root);
+  return withoutRoot;
+}
+
+/**
+ * Expand Windows retained identities via CIM trees rooted at every still-matching
+ * member. Generation markers stay queryable after the original root exits (#2021).
+ * Returns null when any member scan fails — callers must keep Stop unresolved.
+ */
+export function expandWindowsRetainedIdentities(
+  identities: RetainedProcessIdentity[],
+): RetainedProcessIdentity[] | null {
+  if (identities.length === 0) return identities;
+  const bootId = identities[0]?.bootId ?? getSystemBootId();
+  const working = identities.slice();
+  const seen = new Set(working.map((identity) => `${identity.pid}:${identity.startMarker ?? ''}`));
+  for (const identity of [...working]) {
+    if (classifyRetainedIdentity(identity) !== 'match') continue;
+    const pids = collectWindowsProcessTree(identity.pid);
+    if (pids === 'scan_failed') return null;
+    for (const pid of pids) {
+      const startMarker = getProcessStartMarker(pid);
+      const key = `${pid}:${startMarker ?? ''}`;
+      if (seen.has(key)) continue;
+      working.push({
+        pid,
+        startMarker,
+        bootId,
+        tgid: null,
+        pgid: null,
+      });
+      seen.add(key);
+    }
+  }
+  return working;
+}
+
+/**
+ * Windows teardown that remains valid after the root exits: expand from every
+ * still-matching retained member, kill generation-checked matches, expand once
+ * more for mid-kill forks, then require every known identity gone (#2021 Major).
+ */
+export async function killAndExpandWindowsRetainedTree(
+  identities: RetainedProcessIdentity[],
+  force = false,
+): Promise<{ verified: boolean; tree: RetainedProcessIdentity[] }> {
+  let working = expandWindowsRetainedIdentities(identities);
+  if (working === null) {
+    // Scan failed — still signal known identities; settlement stays pending.
+    await killRetainedProcessTree(identities, force);
+    return { verified: false, tree: identities };
+  }
+  const firstPass = await killRetainedProcessTree(working, force);
+  // Expand again from any survivor (or re-scan matching seeds before exit).
+  const expanded = expandWindowsRetainedIdentities(working);
+  if (expanded === null) return { verified: false, tree: working };
+  working = expanded;
+  if (!firstPass || working.some((identity) => classifyRetainedIdentity(identity) !== 'gone')) {
+    const secondPass = await killRetainedProcessTree(working, force);
+    if (!secondPass) return { verified: false, tree: working };
+  }
+  if (working.some((identity) => classifyRetainedIdentity(identity) === 'unknown')) {
+    return { verified: false, tree: working };
+  }
+  return {
+    verified: working.every((identity) => classifyRetainedIdentity(identity) === 'gone'),
+    tree: working,
+  };
+}
+
+/**
  * Kill retained tree members whose generation still matches, then verify none remain.
  * Signals only confirmed matches; unknown identities keep Stop unresolved (#2021).
+ *
+ * POSIX: capture / signal the agent-owned process group while its leader is still
+ * identifiable — killing the leader first leaves a leaderless group that classify
+ * treats as unknown, stranding mid-snapshot forks (#2021 Major).
  */
 export async function killRetainedProcessTree(
   identities: RetainedProcessIdentity[],
   force = false,
 ): Promise<boolean> {
   if (identities.length === 0) return true;
+
+  let working = identities;
+
+  if (!isWindows()) {
+    const root = working[working.length - 1]!;
+    if (isAgentOwnedProcessGroup(root) && classifyRetainedIdentity(root) === 'match') {
+      const groupState = classifyAgentOwnedProcessGroup(root);
+      if (groupState === 'ours') {
+        // Capture membership, then signal the group, before terminating the
+        // leader via per-PID kills (#2021 Major).
+        const expanded = expandRetainedTreeWithProcessGroup(working, root);
+        if (expanded === null) return false;
+        working = expanded;
+        const groupCleared = await verifyAgentOwnedProcessGroupExited(root, true);
+        if (
+          groupCleared
+          && working.every((identity) => classifyRetainedIdentity(identity) === 'gone')
+        ) {
+          return true;
+        }
+        // Group signal raced or a captured identity remains — finish per-PID
+        // cleanup below, then re-check the group.
+      } else if (groupState === 'unknown') {
+        // Leader matches but group is unprobeable / leaderless — do not claim
+        // verified exit after per-PID kills alone.
+      }
+    }
+  }
+
   // Phase 1: signal every confirmed match immediately — do not wait between
   // members. Waiting on one child while a parent is still alive lets that
   // parent spawn a replacement subprocess that is not in the snapshot (#2021).
-  for (const identity of identities) {
+  for (const identity of working) {
     if (classifyRetainedIdentity(identity) !== 'match') continue;
     try {
       if (isWindows()) {
@@ -553,7 +684,7 @@ export async function killRetainedProcessTree(
     }
   }
   // Phase 2: wait / escalate each captured identity with generation rechecks.
-  for (const identity of identities) {
+  for (const identity of working) {
     if (classifyRetainedIdentity(identity) !== 'match') continue;
     try {
       await killMatchingRetainedIdentity(identity, force);
@@ -563,16 +694,17 @@ export async function killRetainedProcessTree(
   }
   // Any unknown identity blocks verification — never claim the tree is gone
   // when a probe failed or generation cannot be confirmed.
-  if (identities.some((identity) => classifyRetainedIdentity(identity) === 'unknown')) {
+  if (working.some((identity) => classifyRetainedIdentity(identity) === 'unknown')) {
     return false;
   }
-  if (!identities.every((identity) => classifyRetainedIdentity(identity) === 'gone')) {
+  if (!working.every((identity) => classifyRetainedIdentity(identity) === 'gone')) {
     return false;
   }
   // Cover mid-Stop forks via an agent-owned process group only (#2021 Blocker).
   // Never signal HAPI's inherited group. Windows taskkill /T already covered the tree.
+  // When the leader was already signalled above, this verifies emptiness / foreign.
   if (!isWindows()) {
-    return await verifyAgentOwnedProcessGroupExited(identities[identities.length - 1]!, true);
+    return await verifyAgentOwnedProcessGroupExited(working[working.length - 1]!, true);
   }
   return true;
 }

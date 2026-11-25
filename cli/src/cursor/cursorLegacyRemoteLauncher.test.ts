@@ -53,6 +53,10 @@ vi.mock('@/utils/process', () => ({
         pgid: pid,
     }]),
     killRetainedProcessTree: vi.fn(async () => true),
+    killAndExpandWindowsRetainedTree: vi.fn(async (tree: unknown[]) => ({
+        verified: true,
+        tree,
+    })),
     getProcessStartMarker: vi.fn((pid: number) => `marker-${pid}`),
     getSystemBootId: vi.fn(() => 'boot'),
     getProcessThreadGroupId: vi.fn((pid: number) => pid),
@@ -67,6 +71,7 @@ vi.mock('@/utils/process', () => ({
 import {
     isAgentOwnedProcessGroup,
     isWindows,
+    killAndExpandWindowsRetainedTree,
     killProcessByChildProcess,
     killRetainedProcessTree,
     retainedIdentityStillAlive,
@@ -921,7 +926,7 @@ describe('cursorLegacyRemoteLauncher', () => {
         const winMock = vi.mocked(isWindows);
         winMock.mockImplementation(() => true);
         const snapMock = vi.mocked(snapshotProcessTreeIdentities);
-        const killMock = vi.mocked(killRetainedProcessTree);
+        const expandKill = vi.mocked(killAndExpandWindowsRetainedTree);
         const aliveMock = vi.mocked(retainedIdentityStillAlive);
         const classify = vi.mocked((await import('@/utils/process')).classifyRetainedIdentity);
         classify.mockReturnValue('match');
@@ -940,8 +945,8 @@ describe('cursorLegacyRemoteLauncher', () => {
             }
             return null;
         });
-        killMock.mockResolvedValue(true);
-        killMock.mockClear();
+        expandKill.mockResolvedValue({ verified: false, tree: [] });
+        expandKill.mockClear();
 
         const child1 = makeChild({ hold: true, pid: 4242 });
         spawnMock.mockReturnValueOnce(child1);
@@ -961,7 +966,7 @@ describe('cursorLegacyRemoteLauncher', () => {
             const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
             await abort();
             expect(winMock).toHaveBeenCalled();
-            expect(killMock).toHaveBeenCalled();
+            expect(expandKill).toHaveBeenCalled();
             expect(thinking).not.toHaveBeenCalledWith(false);
 
             child1.failChild?.(new Error('test teardown after incomplete Windows Stop'));
@@ -972,6 +977,7 @@ describe('cursorLegacyRemoteLauncher', () => {
             winMock.mockImplementation(() => process.platform === 'win32');
             aliveMock.mockReturnValue(false);
             classify.mockReturnValue('match');
+            expandKill.mockResolvedValue({ verified: true, tree: [] });
             snapMock.mockImplementation((pid: number) => [{
                 pid,
                 startMarker: `marker-${pid}`,

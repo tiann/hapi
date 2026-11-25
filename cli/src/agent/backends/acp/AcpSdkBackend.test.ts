@@ -3399,7 +3399,10 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
         const alive = vi.spyOn(processUtils, 'retainedIdentityStillAlive').mockReturnValue(false);
         // Root still matches at pre-close so refresh can capture teardown coverage.
         const classify = vi.spyOn(processUtils, 'classifyRetainedIdentity').mockReturnValue('match');
-        const killRetained = vi.spyOn(processUtils, 'killRetainedProcessTree').mockResolvedValue(true);
+        const expandKill = vi.spyOn(processUtils, 'killAndExpandWindowsRetainedTree').mockResolvedValue({
+            verified: true,
+            tree,
+        });
         const verifyGroup = vi.spyOn(processUtils, 'verifyAgentOwnedProcessGroupExited');
 
         const backend = new AcpSdkBackend({
@@ -3427,14 +3430,14 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             await backend.initialize();
             await backend.disconnect();
             expect(backend.wasAgentTreeEnded()).toBe(true);
-            expect(killRetained).toHaveBeenCalled();
+            expect(expandKill).toHaveBeenCalled();
             expect(verifyGroup).not.toHaveBeenCalled();
         } finally {
             createSpy.mockRestore();
             snap.mockRestore();
             alive.mockRestore();
             classify.mockRestore();
-            killRetained.mockRestore();
+            expandKill.mockRestore();
             verifyGroup.mockRestore();
             markerSpy.mockRestore();
             Object.defineProperty(process, 'platform', platform);
@@ -3457,7 +3460,10 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
         // One retained member still looks alive so incomplete verify attempts cleanup.
         const alive = vi.spyOn(processUtils, 'retainedIdentityStillAlive').mockReturnValue(true);
         const classify = vi.spyOn(processUtils, 'classifyRetainedIdentity').mockReturnValue('gone');
-        const killRetained = vi.spyOn(processUtils, 'killRetainedProcessTree').mockResolvedValue(true);
+        const expandKill = vi.spyOn(processUtils, 'killAndExpandWindowsRetainedTree').mockResolvedValue({
+            verified: false,
+            tree,
+        });
 
         const backend = new AcpSdkBackend({
             command: 'opencode',
@@ -3486,13 +3492,13 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             // Spawn-only evidence after root exit is incomplete — do not settle.
             expect(backend.wasAgentTreeEnded()).toBe(false);
             expect(await backend.verifyRetainedAgentExit(true)).toBe(false);
-            expect(killRetained).toHaveBeenCalled();
+            expect(expandKill).toHaveBeenCalled();
         } finally {
             createSpy.mockRestore();
             snap.mockRestore();
             alive.mockRestore();
             classify.mockRestore();
-            killRetained.mockRestore();
+            expandKill.mockRestore();
             markerSpy.mockRestore();
             Object.defineProperty(process, 'platform', platform);
         }
@@ -3609,7 +3615,7 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
         }
     });
 
-    it('preserves Windows incomplete ACP evidence after spawn PIDs look gone (#2021)', async () => {
+    it('recovers Windows incomplete ACP teardown once expand verifies the tree exited (#2021)', async () => {
         const processUtils = await import('@/utils/process');
         const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
         Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
@@ -3620,13 +3626,15 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             tgid: null,
             pgid: null,
         }];
-        // Spawn captures a tree; pre-close refresh fails (Windows incomplete);
-        // post-close the spawn PID looks gone — must still refuse settlement.
+        // Spawn captures a tree; pre-close refresh fails (Windows incomplete).
+        // Later expand+kill confirms every generation-bound member exited.
         const snap = vi.spyOn(processUtils, 'snapshotProcessTreeIdentities')
             .mockReturnValueOnce(spawnTree)
             .mockReturnValue(null);
         const alive = vi.spyOn(processUtils, 'retainedIdentityStillAlive').mockReturnValue(false);
         const classify = vi.spyOn(processUtils, 'classifyRetainedIdentity').mockReturnValue('match');
+        const expandKill = vi.spyOn(processUtils, 'killAndExpandWindowsRetainedTree')
+            .mockResolvedValue({ verified: true, tree: spawnTree });
 
         const backend = new AcpSdkBackend({
             command: 'opencode',
@@ -3654,12 +3662,15 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             classify.mockReturnValue('match');
             await backend.disconnect();
             expect(backend.wasAgentTreeEnded()).toBe(false);
-            expect(await backend.verifyRetainedAgentExit(true)).toBe(false);
+            expect(await backend.verifyRetainedAgentExit(true)).toBe(true);
+            expect(backend.wasAgentTreeEnded()).toBe(true);
+            expect(expandKill).toHaveBeenCalled();
         } finally {
             createSpy.mockRestore();
             snap.mockRestore();
             alive.mockRestore();
             classify.mockRestore();
+            expandKill.mockRestore();
             Object.defineProperty(process, 'platform', platform);
         }
     });
