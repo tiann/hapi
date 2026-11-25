@@ -459,6 +459,22 @@ function applyChildToolCallContent(state: ChildToolCallState, content: unknown, 
             state.settledChildren.add(childStatus.childSessionId)
         }
     }
+    // Codex child threads publish lifecycle as agent-run-update and wrap tool
+    // traffic in agent-run-trace (#2021 Major).
+    const codexChild = codexAgentRunChildStatus(content)
+    if (codexChild) {
+        if (codexChild.status === 'running') {
+            state.runningChildren.add(codexChild.childSessionId)
+            state.settledChildren.delete(codexChild.childSessionId)
+        } else {
+            state.runningChildren.delete(codexChild.childSessionId)
+            state.settledChildren.add(codexChild.childSessionId)
+        }
+    }
+    const traced = unwrapCodexAgentRunTraceTool(content)
+    if (traced) {
+        applyChildToolCallContent(state, traced, seq)
+    }
     const callId = getToolCallId(content)
     // Track child-scoped AND parent-scope ACP starts. Lookback alone cannot
     // keep an autonomous foreground call alive once 200 newer rows push it
@@ -610,6 +626,8 @@ function noteChildToolCallState(db: Database, sessionId: string, content: unknow
     }
     if (
         acpTurnCompleteChildStatus(content)
+        || codexAgentRunChildStatus(content)
+        || unwrapCodexAgentRunTraceTool(content) !== null
         || acpTurnCompleteRetiredChildSessionIds(content).length > 0
         || toolCallResultCallId(content) !== null
         || isChildScopedAcpToolCall(content)
@@ -1101,6 +1119,47 @@ function acpTurnCompleteSettledCallIds(value: unknown): string[] {
     if (!data || data.type !== 'turn-complete') return []
     if (!Array.isArray(data.settledCallIds)) return []
     return data.settledCallIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+}
+
+/** Codex child lifecycle via agent-run-update (#2021 Major). */
+function codexAgentRunChildStatus(value: unknown): { childSessionId: string; status: string } | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return null
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return null
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'agent-run-update') return null
+    const childSessionId = typeof data.agentId === 'string' ? data.agentId.trim() : ''
+    const status = typeof data.status === 'string' ? data.status.trim() : ''
+    if (!childSessionId || !status) return null
+    return { childSessionId, status }
+}
+
+/**
+ * Unwrap Codex agent-run-trace so nested tool-call / result rows feed the child
+ * registry (#2021 Major).
+ */
+function unwrapCodexAgentRunTraceTool(value: unknown): unknown | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return null
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return null
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'agent-run-trace') return null
+    const nested = isRecord(data.message) ? data.message : null
+    if (!nested) return null
+    const agentId = typeof data.agentId === 'string' ? data.agentId.trim() : ''
+    // Present nested tool traffic as a child-scoped ACP-shaped row.
+    const nestedType = nested.type
+    if (nestedType !== 'tool-call' && nestedType !== 'tool-call-result') return null
+    return {
+        role: 'agent',
+        content: {
+            type: AGENT_MESSAGE_PAYLOAD_TYPE,
+            data: {
+                ...nested,
+                ...(agentId ? { childSessionId: agentId } : {}),
+            },
+        },
+    }
 }
 
 /** OpenCode child alive/terminal marker on a turn-complete row (#2021). */
@@ -2615,6 +2674,13 @@ export function truncateOpenCodeRewind(
                     || childStatus.status === 'interrupted')
             ) {
                 harvestedSettledChildren.add(childStatus.childSessionId)
+            }
+            const codexChild = codexAgentRunChildStatus(decoded)
+            if (
+                codexChild
+                && (codexChild.status === 'completed' || codexChild.status === 'failed')
+            ) {
+                harvestedSettledChildren.add(codexChild.childSessionId)
             }
             if (isTerminalToolCallRow(decoded)) {
                 const callId = getToolCallId(decoded)

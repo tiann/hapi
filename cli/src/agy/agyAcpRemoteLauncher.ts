@@ -1619,13 +1619,25 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             for (const id of [...turn.commandCallIds, ...turn.deferredLiveCommandCalls.keys()]) {
                 this.rememberStoppedWakeupCall(parseToolCallLifetimeId(id) ?? id);
-                const tracked = this.backgroundCommands.findIndex((entry) => entry.callId === id);
-                if (tracked >= 0) this.backgroundCommands.splice(tracked, 1);
+                // A completed wakeup can leave run_command in the background.
+                // Keep those records + hub snapshot so Archive stays blocked
+                // until terminal result or verified backend exit (#2021 Major).
+                if (this.backgroundCommands.some((entry) => entry.callId === id)) {
+                    continue;
+                }
                 this.noteBackgroundTaskSettled(id);
             }
             for (const id of turn.openCommands) this.rememberStoppedWakeupCall(parseToolCallLifetimeId(id) ?? id);
             turn.deferredLiveCommandCalls.clear();
             turn.openCommands.clear();
+        }
+        // Re-publish surviving background work before the caller clears thinking
+        // (#2021 Major).
+        this.registerTranscriptBackgroundTasks();
+        if (settledCallIds.size === 0) return;
+        // Do not settle hub cards that are still tracked as background commands.
+        for (const entry of this.backgroundCommands) {
+            settledCallIds.delete(entry.callId);
         }
         if (settledCallIds.size === 0) return;
         const settlement = convertAgentMessage({

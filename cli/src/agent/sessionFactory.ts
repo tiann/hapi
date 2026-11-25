@@ -132,13 +132,10 @@ export function buildSessionMetadata(options: {
         happyToolsDir: resolve(happyLibDir, 'tools', 'unpacked'),
         startedFromRunner: options.startedBy === 'runner',
         hostPid: process.pid,
-        // Proves which process generation owns hostPid: the runner adopts an
-        // untracked runner-started webhook only when this matches the live
-        // PID. It never reads the marker of a terminal session, so skip the
-        // probe there (on Windows it is a synchronous PowerShell spawn).
-        ...(options.startedBy === 'runner'
-            ? { hostStartMarker: getProcessStartMarker(process.pid) ?? undefined }
-            : {}),
+        // Proves which process generation owns hostPid. Runner adopt checks
+        // this; Hub also binds durable backgroundWork to it for terminal and
+        // Runner launches alike (#2021 Major). One probe at session start.
+        hostStartMarker: getProcessStartMarker(process.pid) ?? undefined,
         startedBy: options.startedBy,
         lifecycleState: 'running',
         lifecycleStateSince: now,

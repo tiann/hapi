@@ -723,7 +723,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         }
         merged.push(root);
         this.retainedStopTree = merged;
-        this.stopTreeSnapshotIncomplete = false;
+        // Keep incomplete: a tool child can still fork after this scan and
+        // survive ordinary close. Settlement needs containment evidence that
+        // outlives the root (#2021 Major).
     }
 
     protected async cleanup(): Promise<void> {
