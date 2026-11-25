@@ -255,6 +255,7 @@ export class SyncEngine {
     private readonly piResumeQuarantinedIds = new Set<string>()
     /** Unexpected version-skew temp child -> original row whose retry is blocked until child ends. */
     private readonly piUnexpectedTempOriginalIds = new Map<string, string>()
+    private readonly failedForkCleanupIds = new Set<string>()
     /** Serialize scratchlist uploads per session so disk-byte caps cannot race. */
     private readonly scratchlistUploadTails = new Map<string, Promise<unknown>>()
     /** Coalesce duplicate clear requests so retries cannot spawn two fresh sessions. */
@@ -1073,10 +1074,14 @@ export class SyncEngine {
             this.titleTurnCompletedIds.add(payload.sid)
             void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
         }
+        // The Runner can report an error before its stop RPC settles. A
+        // provisional child being discarded isn't an operator-facing crash.
+        const discardedChild = this.failedForkCleanupIds.has(payload.sid)
+            || this.piUnexpectedTempOriginalIds.has(payload.sid) || isPiAttemptChild
         this.eventPublisher.emit({
             type: 'session-ended',
             sessionId: payload.sid,
-            reason: payload.reason
+            reason: discardedChild && payload.reason === 'error' ? 'terminated' : payload.reason
         })
         // Retry dedup now that this session is inactive — a prior dedup may have
         // skipped it because it was still active at the time. Cursor ACP rows that
@@ -3303,18 +3308,22 @@ export class SyncEngine {
         machineId: string,
         spawnAttempted: boolean
     ): Promise<void> {
-        if (spawnAttempted) {
-            const status = await this.rpcGateway.stopRunnerSession(machineId, childId)
-            if (status === 'still_alive' || status === 'unknown') {
-                throw new Error('Fork child termination was not confirmed')
+        this.failedForkCleanupIds.add(childId)
+        try {
+            if (spawnAttempted) {
+                const status = await this.rpcGateway.stopRunnerSession(machineId, childId)
+                if (status === 'still_alive' || status === 'unknown') {
+                    throw new Error('Fork child termination was not confirmed')
+                }
             }
+            const child = this.sessionCache.refreshSession(childId)
+            if (child?.active) {
+                this.handleSessionEnd({ sid: childId, time: Date.now(), reason: 'terminated' })
+            }
+            await this.deleteSession(childId)
+        } finally {
+            this.failedForkCleanupIds.delete(childId)
         }
-        const child = this.sessionCache.refreshSession(childId)
-        if (child?.active) {
-            // The provisional fork child is deliberately removed, not an operator-facing crash.
-            this.handleSessionEnd({ sid: childId, time: Date.now(), reason: 'terminated' })
-        }
-        await this.deleteSession(childId)
     }
 
     async rewindConversation(

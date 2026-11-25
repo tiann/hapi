@@ -295,6 +295,20 @@ describe('WxPusherChannel', () => {
         }
     })
 
+    it('skips polling pauses but still sends a genuine ready notification', async () => {
+        const fetchMock = mock(async () => new Response(JSON.stringify({ code: 1000 }), { status: 200 }))
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+        try {
+            const channel = new WxPusherChannel('AT_TEST', ['UID_ONE'], [], 'https://hapi.example.com')
+            const session = createSession()
+            await channel.sendReady(session, { readyReason: 'reactive-polling-paused' })
+            expect(fetchMock).not.toHaveBeenCalled()
+            await channel.sendReady(session)
+            expect(fetchMock).toHaveBeenCalledTimes(1)
+        } finally { globalThis.fetch = originalFetch }
+    })
+
     it('sends ready, permission, and session error notifications', async () => {
         const fetchMock = mock(async () => new Response(JSON.stringify({ code: 1000 }), { status: 200 }))
         const originalFetch = globalThis.fetch
