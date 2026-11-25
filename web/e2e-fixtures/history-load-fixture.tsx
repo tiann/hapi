@@ -36,6 +36,7 @@ type Probe = {
     loadMore: () => Promise<unknown>
     refetch: () => Promise<void>
     gap: (nextEpoch?: number) => Promise<void>
+    confirmSteer: () => Promise<void>
     releaseLatest: () => void
     holdBefore: () => void
     releaseBefore: () => void
@@ -72,6 +73,10 @@ window.__probe = {
     refetch: async () => {},
     gap: async (nextEpoch) => {
         if (nextEpoch !== undefined) fixtureEpoch = nextEpoch
+        await recoverWindowAfterGapResume(fakeApi, currentActiveSessionId)
+    },
+    confirmSteer: async () => {
+        fixtureSteerConfirmed = true
         await recoverWindowAfterGapResume(fakeApi, currentActiveSessionId)
     },
     releaseLatest: () => releaseLatestResponse(),
@@ -261,13 +266,19 @@ const sessionMessagesById: Record<string, DecryptedMessage[]> = sessionSwitch
 const jumpStartGap = fixtureParams.has('jumpStartGap')
 const promptJumpGap = jumpStartGap && fixtureParams.has('promptJumpGap')
 const loadedPromptPreload = fixtureParams.has('loadedPromptPreload')
+const lateSteerJump = fixtureParams.has('lateSteerJump')
 let fixtureEpoch = 1
+let fixtureSteerConfirmed = false
 const rekeyReply = fixtureParams.has('rekeyReply')
 if (rekeyReply) window.__probe.holdBefore()
 const allMessages: DecryptedMessage[] = rekeyReply ? [
     createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Prompt from the older page' } }),
     createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Earlier part of the reply' } } }),
     createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Last part of the reply' } } }),
+] : lateSteerJump ? [
+    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Original fixture prompt' } }),
+    createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Unconfirmed correction' } }),
+    createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply with late steer' } } }),
 ] : loadedPromptPreload ? [
     createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'History before loaded prompt' } }),
     createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Already loaded prompt' } }),
@@ -425,7 +436,8 @@ const fakeApi = {
             }
         }
 
-        const pageMessages = sourceMessages.slice(-limit)
+        const pageMessages = sourceMessages.slice(-limit).map(message =>
+            fixtureSteerConfirmed && message.id === 'm-2' ? { ...message, steered: true } : message)
         // After an epoch bump the "rewritten" tail renders taller rows, so
         // the reset changes content height — this is what re-fires the
         // ResizeObserver coverage re-check in the epoch-reset scenario.
@@ -522,7 +534,7 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
 
     return (
         <AssistantRuntimeProvider runtime={runtime}>
-            {loadedPromptPreload && <style>{'[data-hapi-message-role="assistant"] { min-height: 1800px; }'}</style>}
+            {(loadedPromptPreload || lateSteerJump) && <style>{'[data-hapi-message-role="assistant"] { min-height: 1800px; }'}</style>}
             {navigationShell ? (
                 <header data-testid="navigation-header" className="flex h-[76px] shrink-0 items-center p-3">
                     <button type="button" onClick={() => setOutlineOpen(true)}>Open history</button>

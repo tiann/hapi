@@ -288,6 +288,31 @@ test('keeps the initiating prompt through a reconnect during a long reply jump',
 })
 
 
+test('rechecks the destination when a reconnect marks the apparent prompt as a steer', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&lateSteerJump=1')
+    await page.evaluate(() => {
+        const original = HTMLElement.prototype.scrollIntoView
+        HTMLElement.prototype.scrollIntoView = function (options) {
+            if (this.matches('[data-hapi-turn-input="true"]') && this.textContent?.includes('Unconfirmed correction')) {
+                // Start the recovery while the correction is still the target.
+                void window.__probe.confirmSteer()
+            }
+            original.call(this, options)
+        }
+    })
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply with late steer' })
+    await expect.poll(async () => (await geometry(page)).chatScrollTop).toBeGreaterThan(500)
+    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter', { timeout: 10_000 })
+    const prompt = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Original fixture prompt' })
+    await expect(prompt).toBeFocused()
+    await expect(page.getByText('Loading turn input…', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('Original fixture prompt', { exact: true })).toBeInViewport({ ratio: 0.9 })
+    await expect(page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Unconfirmed correction' })).toHaveCount(0)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-retargets-late-steer.png` })
+})
+
+
 test('does not preload older history while a jump to a loaded prompt is settling', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&loadedPromptPreload=1')
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply to loaded prompt' })
@@ -333,6 +358,20 @@ test('keeps following new output after loading an older page that completes a sh
     const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
     if (screenshots) await page.screenshot({ path: `${screenshots}/response-navigation-short-tail.png` })
 })
+
+
+for (const action of ['Jump to conversation start', 'Jump to turn input']) {
+    test(`keeps live follow when ${action} cannot load history at the tail`, async ({ page }) => {
+        await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&rekeyReply=1&failBefore=10')
+        const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Last part of the reply' })
+        await reply.hover()
+        await reply.getByRole('button', { name: action }).press('Enter')
+        await page.evaluate(() => window.__probe.releaseBefore())
+        await expect(page.getByText(/could not load (earlier messages|turn input)/i)).toBeVisible({ timeout: 15_000 })
+        await page.evaluate(() => window.__probe.appendReply())
+        await expect(page.getByText('New reply line 25', { exact: true })).toBeInViewport()
+    })
+}
 
 
 test('keeps following live output after finding the prompt of a short chat', async ({ page }) => {

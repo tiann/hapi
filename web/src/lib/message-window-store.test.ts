@@ -2944,6 +2944,35 @@ describe('gap recovery', () => {
         expect(getMessageWindowState(id).messages).toEqual([oldest, completed, tail])
     })
 
+    it('resumes a contiguous gap when navigation fails before the held probe returns', async () => {
+        const id = sessionId('gap-failed-navigation')
+        const initial = makeAgentMessage({ id: '20', seq: 20, at: 2_000 })
+        const missed = makeAgentMessage({ id: '21', seq: 21, at: 2_100 })
+        const pending = deferred<MessagesResponse>()
+        let calls = 0
+        const cursors: Array<number | null | undefined> = []
+        const api = createApi(async (_id, query) => {
+            if (++calls === 1) return latestResponse([initial], { epoch: 1 })
+            if (calls === 2) return pending.promise
+            if (query.afterAt !== undefined) {
+                cursors.push(query.afterSeq)
+                return afterResponse([missed], { epoch: 1, nextAfterSeq: 21, nextAfterAt: 2_100,
+                    snapshotHeadSeq: 21, snapshotHeadAt: 2_100 })
+            }
+            return latestResponse([initial, missed], { epoch: 1 })
+        })
+        await syncTailMessages(api, id)
+        setMessageViewMode(id, 'history')
+        const held = holdHistoryNavigationWindow(id)!
+        const reconnect = recoverWindowAfterGapResume(api, id)
+        held.finish(false)
+        expect(cursors).toEqual([])
+        pending.resolve(latestResponse([missed], { epoch: 1 }))
+        await reconnect
+        await vi.waitFor(() => expect(getMessageWindowState(id).messages.map(row => row.id)).toEqual(['20', '21']))
+        expect(cursors).toEqual([20])
+    })
+
     it('transfers an in-flight gap cursor to a navigation before cancelling the request', async () => {
         const id = sessionId('gap-hold-inflight-cursor')
         const initial = makeAgentMessage({ id: '20', seq: 20, at: 2_000 })

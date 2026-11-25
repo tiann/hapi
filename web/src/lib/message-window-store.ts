@@ -1511,10 +1511,14 @@ export function holdHistoryNavigationWindow(sessionId: string): HistoryNavigatio
         finish: (keepHistory) => {
             if (heldHistoryWindows.get(sessionId) !== window) return
             if (keepHistory && getState(sessionId).requiresLatestReset) return
+            const stillReconciling = window.probe
             releaseHeldHistory(sessionId, window)
-            if (keepHistory && window.catchUpNeeded && window.recovery) {
+            const resumeRecovery = () => {
+                if (!window.recovery || heldHistoryWindows.has(sessionId) || getState(sessionId).epoch !== epoch) return
                 void recoverWindowAfterGapResume(window.recovery.api, sessionId)
             }
+            if (stillReconciling) void stillReconciling.then(resumeRecovery)
+            else if (window.catchUpNeeded) resumeRecovery()
         }
     }
 }
@@ -1543,7 +1547,7 @@ function reconcileHeldHistoryNavigation(api: ApiClient, sessionId: string): Prom
             return retainedUpdates.length
                 ? buildState(previous, { messages: mergeMessages(previous.messages, retainedUpdates) })
                 : previous
-        })
+        }, true)
     }
     const probe = api.getMessages(sessionId, { limit: PAGE_SIZE }).then(async response => {
         if (!isCurrent()) return

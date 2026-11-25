@@ -29,7 +29,7 @@ import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
-import { holdHistoryNavigationWindow, type HistoryNavigationWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
+import { getMessageWindowState, holdHistoryNavigationWindow, type HistoryNavigationWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
@@ -2995,32 +2995,48 @@ export function HappyThread(props: {
             if (isCancelled()) return false
             if (!viewport) throw new Error('Chat viewport is unavailable')
             let loadedOlderHistory = false
-            let target = await findPreviousUserMessageAfterRender(viewport, messageId, assistantAnchorState, replyToMessageId)
-            if (isCancelled()) return false
-            while (!target && !assistantAnchorState.blockedBySystemTurn && hasMoreMessagesRef.current) {
-                const loaded = await loadOlderForNavigation()
-                if (isCancelled()) return false
-                if (!loaded) throw new Error('Could not load older messages')
-                loadedOlderHistory = true
-                // assistant-ui applies the expanded external message list in
-                // its own render pass. Wait for the new anchors instead of
-                // treating a successfully loaded page as an immediate miss.
-                target = await findPreviousUserMessageAfterRender(viewport, messageId, assistantAnchorState, replyToMessageId)
-                if (isCancelled()) return false
+            const locatePrompt = async () => {
+                let prompt = await findPreviousUserMessageAfterRender(viewport, messageId, assistantAnchorState, replyToMessageId)
+                while (!isCancelled() && !prompt && !assistantAnchorState.blockedBySystemTurn && hasMoreMessagesRef.current) {
+                    const loaded = await loadOlderForNavigation()
+                    if (isCancelled()) return null
+                    if (!loaded) throw new Error('Could not load older messages')
+                    loadedOlderHistory = true
+                    prompt = await findPreviousUserMessageAfterRender(viewport, messageId, assistantAnchorState, replyToMessageId)
+                }
+                return prompt
             }
-            if (isCancelled()) return false
-            if (assistantAnchorState.blockedBySystemTurn) {
-                setPromptNavigationStatus('idle')
-                return false
+            for (let attempt = 0; ; attempt += 1) {
+                const target = await locatePrompt()
+                if (isCancelled()) return false
+                if (assistantAnchorState.blockedBySystemTurn) {
+                    setPromptNavigationStatus('idle')
+                    return false
+                }
+                if (!target) throw new Error('No preceding user message found')
+                if (focusTarget) target.focus({ preventScroll: true })
+                target.scrollIntoView({ block: 'start', behavior: 'smooth' })
+                const settled = await waitForPromptScrollSettlement(viewport, target, isCancelled)
+                if (heldWindow && !await heldWindow.verify()) return false
+                if (isCancelled()) return false
+                // The reconnect may have marked the current node as a steer
+                // without removing it. Let the updated assistant runtime commit
+                // before checking that this is still the reply's input.
+                if (heldWindow) {
+                    const version = getMessageWindowState(sessionIdRef.current).messagesVersion
+                    const deadline = Date.now() + 1500
+                    while (!isCancelled() && appliedMessagesVersionRef.current < version && Date.now() < deadline) {
+                        await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()))
+                    }
+                    if (!isCancelled() && appliedMessagesVersionRef.current < version) {
+                        throw new Error('Prompt history refresh did not render')
+                    }
+                }
+                if (isCancelled()) return false
+                const current = findPromptTarget(viewport, messageId, assistantAnchorState, replyToMessageId)
+                if (settled && current === target && target.isConnected) break
+                if (attempt >= 2 || (current === target && !settled)) throw new Error('Prompt scroll did not settle')
             }
-            if (!target) throw new Error('No preceding user message found')
-            if (focusTarget) target.focus({ preventScroll: true })
-            target.scrollIntoView({ block: 'start', behavior: 'smooth' })
-            const settled = await waitForPromptScrollSettlement(viewport, target, isCancelled)
-            if (!settled) throw new Error('Prompt scroll did not settle')
-            if (heldWindow && !await heldWindow.verify()) return false
-            if (isCancelled()) return false
-            if (!target.isConnected || !viewport.contains(target)) throw new Error('Prompt changed during navigation')
             const completionStatus = getPromptNavigationCompletionStatus(loadedOlderHistory)
             setPromptNavigationStatus(completionStatus)
             if (completionStatus === 'success') {
@@ -3085,8 +3101,10 @@ export function HappyThread(props: {
                 navigationInFlightRef.current = false
                 setIsNavigationInFlight(false)
                 const viewport = viewportRef.current
-                if (reachedPrompt && wasTailFollowing && !hasMoreMessagesRef.current && !hasMoreNewerRef.current
-                    && viewport && viewport.scrollHeight - viewport.clientHeight <= 1) {
+                const hasDisconnectedTail = getMessageWindowState(props.sessionId).requiresLatestReset
+                if (wasTailFollowing && !hasMoreNewerRef.current && !hasDisconnectedTail && viewport && (reachedPrompt
+                    ? !hasMoreMessagesRef.current && viewport.scrollHeight - viewport.clientHeight <= 1
+                    : viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= AUTO_SCROLL_RESUME_THRESHOLD_PX)) {
                     autoScrollEnabledRef.current = true
                     atBottomRef.current = true
                     onViewModeChangeRef.current('tail')
@@ -3192,8 +3210,10 @@ export function HappyThread(props: {
                 if (heldWindow?.isCurrent() === false && !reachedStart) {
                     setConversationStartStatus(status => status === 'loading' ? 'idle' : status)
                 }
-                const restoreTail = wasTailFollowing && !hasMoreMessagesRef.current && currentViewport
-                    && currentViewport.scrollHeight - currentViewport.clientHeight <= 1
+                const hasDisconnectedTail = getMessageWindowState(props.sessionId).requiresLatestReset
+                const restoreTail = wasTailFollowing && !hasMoreNewerRef.current && !hasDisconnectedTail && currentViewport && (reachedStart
+                    ? !hasMoreMessagesRef.current && currentViewport.scrollHeight - currentViewport.clientHeight <= 1
+                    : currentViewport.scrollHeight - currentViewport.scrollTop - currentViewport.clientHeight <= AUTO_SCROLL_RESUME_THRESHOLD_PX)
                 historyNavigationRef.current = false
                 autoScrollEnabledRef.current = Boolean(restoreTail)
                 atBottomRef.current = Boolean(restoreTail)
