@@ -1,6 +1,6 @@
 import type { SessionEndReason } from '@hapi/protocol'
 import type { QqBotOptions } from '../config/qqBotSettings'
-import { getFirstPendingRequest, isInputRequestTool } from '../notifications/inputRequest'
+import { isInputRequestTool } from '../notifications/inputRequest'
 import type { NotificationChannel } from '../notifications/notificationTypes'
 import { getAgentName } from '../notifications/sessionInfo'
 import type { Session } from '../sync/syncEngine'
@@ -23,26 +23,29 @@ export class QqBotChannel implements NotificationChannel {
     }
 
     async sendReady(session: Session): Promise<void> {
-        if (session.active) await this.send(session, 'HAPI Ready for input')
+        if (session.active) await this.send(session, () => 'HAPI Ready for input')
     }
 
     async sendPermissionRequest(session: Session): Promise<void> {
         if (!session.active) return
-        const pending = getFirstPendingRequest(session)
-        if (!pending) return
-        const title = isInputRequestTool(pending.request.tool)
-            ? `HAPI: ${getAgentName(session)} needs your input`
-            : 'HAPI Permission Request'
-        await this.send(session, title, () => {
+        const requestIds = Object.keys(session.agentState?.requests ?? {})
+        if (requestIds.length === 0) return
+        await this.send(session, () => {
             const current = this.getSession(session.id)
             const requests = current?.agentState?.requests
-            return Boolean(current?.active && requests && this.isInScope(current)
-                && Object.hasOwn(requests, pending.requestId))
+            if (!current?.active || !requests) return null
+            // A newly added request can get its own alert; this one covers the dispatch snapshot.
+            const requestId = requestIds.find(id => Object.hasOwn(requests, id))
+            const request = requestId === undefined ? undefined : requests[requestId]
+            if (!request) return null
+            return isInputRequestTool(request.tool)
+                ? `HAPI: ${getAgentName(current)} needs your input`
+                : 'HAPI Permission Request'
         })
     }
 
     async sendSessionCompletion(session: Session, reason: SessionEndReason): Promise<void> {
-        if (reason === 'completed') await this.send(session, 'HAPI Session completed')
+        if (reason === 'completed') await this.send(session, () => 'HAPI Session completed')
     }
 
     private isInScope(session: Session): boolean {
@@ -50,12 +53,15 @@ export class QqBotChannel implements NotificationChannel {
             && (!this.options.backgroundOnly || !this.visibilityTracker.hasVisibleConnection(session.namespace))
     }
 
-    private async send(session: Session, title: string, shouldSend?: () => boolean): Promise<void> {
-        if (!this.isInScope(session)) return
-
+    private async send(session: Session, getTitle: () => string | null): Promise<void> {
         const id = encodeURIComponent(session.id).replace(/[()]/g, char => char === '(' ? '%28' : '%29')
         // Imported names and generated summaries can contain conversation text.
-        const content = `**${title}**\n\nSession: ${session.id.slice(0, 8)}\n\n[Open HAPI session](${this.origin}/sessions/${id})`
-        await this.client.sendMarkdown(content, shouldSend)
+        const label = session.id.slice(0, 8)
+        await this.client.sendMarkdown(() => {
+            if (!this.isInScope(session)) return null
+            const title = getTitle()
+            if (title === null) return null
+            return `**${title}**\n\nSession: ${label}\n\n[Open HAPI session](${this.origin}/sessions/${id})`
+        })
     }
 }

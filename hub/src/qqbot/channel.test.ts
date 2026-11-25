@@ -135,6 +135,38 @@ describe('QQ bot DM notifications', () => {
         expect(fetch.mock.calls.filter(([url]) => url === messageUrl)).toHaveLength(retry ? 1 : 0)
     })
 
+    it('uses a remaining request from the dispatch snapshot if the first clears during authentication', async () => {
+        const releaseAuth = Promise.withResolvers<Response>()
+        const fetch = mockFetch(url => url === tokenUrl ? releaseAuth.promise : Response.json({ id: 'message-id' }))
+        const question = { tool: 'AskUserQuestion', arguments: {}, createdAt: 2 }
+        let current = createSession({ agentState: { requests: { ...pendingPermission.requests, question } } })
+        const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), () => current, fetch)
+        const delivery = channel.sendPermissionRequest(current)
+        expect(fetch.mock.calls.map(([url]) => url)).toEqual([tokenUrl])
+        current = createSession({ agentState: { requests: { newlyAdded: pendingPermission.requests.req, question } } })
+        releaseAuth.resolve(tokenResponse())
+        await delivery
+
+        const sends = fetch.mock.calls.filter(([url]) => url === messageUrl)
+        expect(sends).toHaveLength(1)
+        expect(getBody(sends[0]?.[1]).markdown.content).toContain('needs your input')
+    })
+
+    it.each(['ready', 'completed'] as const)('does not send a background-only %s alert if a client becomes visible', async (kind) => {
+        const releaseAuth = Promise.withResolvers<Response>()
+        const fetch = mockFetch(url => url === tokenUrl ? releaseAuth.promise : Response.json({ id: 'message-id' }))
+        const visibility = new VisibilityTracker()
+        const session = createSession({ active: kind === 'ready' })
+        const channel = new QqBotChannel({ ...config, backgroundOnly: true }, baseUrl, visibility, () => session, fetch)
+        const delivery = kind === 'ready' ? channel.sendReady(session) : channel.sendSessionCompletion(session, 'completed')
+        expect(fetch.mock.calls.map(([url]) => url)).toEqual([tokenUrl])
+        visibility.registerConnection('open', session.namespace, 'visible')
+        releaseAuth.resolve(tokenResponse())
+        await delivery
+
+        expect(fetch.mock.calls.map(([url]) => url)).toEqual([tokenUrl])
+    })
+
     it.each(['imported name', 'generated summary', 'workspace path'])(
         'keeps private session metadata and input request arguments out of QQ (%s)', async (source) => {
             const fetch = mockFetch()
@@ -256,11 +288,11 @@ describe('QQ bot transport', () => {
             ? tokenResponse(`token-${++authorizations}`, 120)
             : Response.json({ id: 'message-id' }))
         const client = new QqBotClient(config, fetch, () => now)
-        await client.sendMarkdown('first')
+        await client.sendMarkdown(() => 'first')
         now = 59_000
-        await client.sendMarkdown('second')
+        await client.sendMarkdown(() => 'second')
         now = 60_000
-        await client.sendMarkdown('third')
+        await client.sendMarkdown(() => 'third')
         expect(authorizations).toBe(2)
         expect(new Headers(fetch.mock.calls.at(-1)?.[1]?.headers).get('authorization')).toBe('QQBot token-2')
     })
@@ -274,14 +306,14 @@ describe('QQ bot transport', () => {
                 : Response.json({ id: 'message-id' })
         })
         const client = new QqBotClient(config, fetch)
-        await Promise.all([client.sendMarkdown('first'), client.sendMarkdown('second')])
+        await Promise.all([client.sendMarkdown(() => 'first'), client.sendMarkdown(() => 'second')])
         expect(authorizations).toBe(2)
         expect(fetch.mock.calls.filter(([url]) => url === messageUrl)).toHaveLength(4)
     })
 
     it('retries only once on HTTP 401', async () => {
         const fetch = mockFetch((url) => url === tokenUrl ? tokenResponse() : new Response(null, { status: 401 }))
-        await expect(new QqBotClient(config, fetch).sendMarkdown('test')).rejects.toThrow('HTTP 401')
+        await expect(new QqBotClient(config, fetch).sendMarkdown(() => 'test')).rejects.toThrow('HTTP 401')
         expect(fetch.mock.calls.filter(([url]) => url === messageUrl)).toHaveLength(2)
     })
 
@@ -289,7 +321,7 @@ describe('QQ bot transport', () => {
         const fetch = mockFetch((url) => url === tokenUrl ? tokenResponse() : Response.json({
             code: 40034105, message: 'private response echo including test-secret'
         }, { status }))
-        const result = new QqBotClient(config, fetch).sendMarkdown('test')
+        const result = new QqBotClient(config, fetch).sendMarkdown(() => 'test')
         await expect(result).rejects.toThrow(`QQ Bot message failed (HTTP ${status}, code 40034105)`)
         expect(fetch).toHaveBeenCalledTimes(2)
     })
@@ -300,7 +332,7 @@ describe('QQ bot transport', () => {
             expect(init?.signal).toBeInstanceOf(AbortSignal)
             throw new Error('includes test-open-id and test-token')
         })
-        await expect(new QqBotClient(config, fetch).sendMarkdown('test')).rejects.toThrow(/^QQ Bot message request failed$/)
+        await expect(new QqBotClient(config, fetch).sendMarkdown(() => 'test')).rejects.toThrow(/^QQ Bot message request failed$/)
         expect(fetch).toHaveBeenCalledTimes(2)
     })
 
@@ -310,15 +342,15 @@ describe('QQ bot transport', () => {
             ? (++tokenRequests === 1 ? tokenResponse('test-token', '') : tokenResponse())
             : Response.json({ id: 'message-id' }))
         const client = new QqBotClient(config, fetch)
-        await expect(client.sendMarkdown('test')).rejects.toThrow('invalid token response')
+        await expect(client.sendMarkdown(() => 'test')).rejects.toThrow('invalid token response')
         expect(fetch).toHaveBeenCalledTimes(1)
-        await client.sendMarkdown('test again')
+        await client.sendMarkdown(() => 'test again')
         expect(fetch).toHaveBeenCalledTimes(3)
     })
 
     it('rejects an unexpected success body without retrying', async () => {
         const fetch = mockFetch((url) => url === tokenUrl ? tokenResponse() : new Response('not JSON'))
-        await expect(new QqBotClient(config, fetch).sendMarkdown('test')).rejects.toThrow('invalid message response')
+        await expect(new QqBotClient(config, fetch).sendMarkdown(() => 'test')).rejects.toThrow('invalid message response')
         expect(fetch).toHaveBeenCalledTimes(2)
     })
 })
