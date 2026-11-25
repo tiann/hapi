@@ -2104,6 +2104,28 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `a caret just after punctuation keeps prose but replaces a partial skill suffix`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val dotted = SkillSummary("review.lint")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("review"), dotted))
+        vm.start()
+
+        val prefix = "Run \$review."
+        for ((suffix, completed) in listOf(
+            "then continue" to "Run \$review.lint.then continue",
+            "li continue" to "Run \$review.lint continue",
+            " continue" to "Run \$review.lint continue",
+        )) {
+            vm.onComposerChange(prefix + suffix, prefix.length, prefix.length)
+            testScheduler.runCurrent()
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single { it.skill == dotted })
+            testScheduler.runCurrent()
+            assertEquals(completed, vm.composer.value.text)
+        }
+    }
+
+    @Test
     fun `typing a dot or qualifier before existing text keeps the same skill picker open`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel

@@ -16,9 +16,9 @@ import app.hapi.companion.feature.chat.composer.RecentSkills
 import app.hapi.companion.feature.chat.composer.ScheduleSend
 import app.hapi.companion.feature.chat.composer.SkillSuggestion
 import app.hapi.companion.feature.chat.composer.SkillSuggestions
-import app.hapi.companion.feature.chat.composer.skillNameKey
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
+import app.hapi.companion.feature.chat.composer.skillNameKey
 import app.hapi.companion.ui.markdown.MarkdownRenderCache
 import app.hapi.protocol.chat.AgentTextBlock
 import app.hapi.protocol.chat.AgentReasoningBlock

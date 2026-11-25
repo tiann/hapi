@@ -55,7 +55,13 @@ internal object SkillSuggestions {
     /** Exact catalogue tokens outrank partial suffixes that only match the selected skill. */
     fun replacementEnd(token: Token, skill: SkillSummary, knownNames: Set<String>, maxNameLength: Int): Int {
         val word = token.word
-        val boundary = word.indexOfAny(charArrayOf('.', ':'), startIndex = token.query.length + 1)
+        val caret = token.query.length + 1 // Include '$'.
+        val beforeCaret = caret - 1
+        // A caret just past punctuation can still sit before prose after an existing skill.
+        val start = if (word[beforeCaret] in ".:" && skillNameKey(word.substring(1, beforeCaret)) in knownNames) {
+            beforeCaret
+        } else caret
+        val boundary = word.indexOfAny(charArrayOf('.', ':'), startIndex = start)
         if (boundary == -1) return token.end
         val name = skillNameKey(skill.name)
         var partialEnd: Int? = null
