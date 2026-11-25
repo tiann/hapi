@@ -20,6 +20,7 @@ import {
     getProcessThreadGroupId,
     normalizeBootId,
     classifyRetainedIdentity,
+    classifyAgentOwnedProcessGroup,
     isAgentOwnedProcessGroup,
     killRetainedProcessTree,
     retainedIdentityStillAlive,
@@ -168,8 +169,9 @@ describe('retained process identity classification (#2021)', () => {
         }) as typeof process.kill)
         mockPsMarker('Wed Nov 25 00:00:00 2026')
         expect(await killRetainedProcessTree([identity()], true)).toBe(true)
-        // Phase-1 broadcast + phase-2 escalate both send SIGKILL when force=true.
-        expect(signals).toEqual(['SIGKILL', 'SIGKILL'])
+        // Phase-1 SIGKILL; process exits before phase-2 so no second PID signal.
+        // Group verify sees an empty PGID and does not emit -pgid.
+        expect(signals).toEqual(['SIGKILL'])
 
         // Generation changes after SIGTERM — must not escalate SIGKILL to the replacement.
         alive = true
@@ -218,6 +220,29 @@ describe('retained process identity classification (#2021)', () => {
         expect(await killRetainedProcessTree([identity({ pid: 4242, pgid: 7 })], true)).toBe(false)
         expect(signals.every((entry) => entry.pid > 0)).toBe(true)
         expect(signals.some((entry) => entry.pid < 0)).toBe(false)
+    })
+
+    it('does not SIGKILL a recycled process group with a replacement leader (#2021 Blocker)', async () => {
+        const signals: number[] = []
+        vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (signal === 0) return true
+            signals.push(pid)
+            return true
+        }) as typeof process.kill)
+        // pgrep finds a live leader at the old pgid, but its start marker differs
+        // from the retained root — foreign generation.
+        spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {
+            if (cmd === 'pgrep' && Array.isArray(args) && args[0] === '-g') {
+                return { status: 0, stdout: '4242\n', stderr: '', error: null }
+            }
+            if (cmd === 'ps') {
+                return { status: 0, stdout: 'Thu Nov 26 00:00:00 2026', stderr: '', error: null }
+            }
+            return { status: 1, stdout: '', stderr: '', error: null }
+        })
+        expect(classifyAgentOwnedProcessGroup(identity())).toBe('foreign')
+        expect(await killRetainedProcessTree([identity()], true)).toBe(true)
+        expect(signals.some((pid) => pid < 0)).toBe(false)
     })
 
     it('reads process group id on macOS via ps (#2021)', () => {

@@ -578,8 +578,43 @@ export async function killRetainedProcessTree(
 }
 
 /**
+ * Classify whether process group `root.pgid` is still the original agent
+ * generation, a recycled foreign group, empty, or unprobeable (#2021 Blocker).
+ *
+ * Linux will not reuse a PGID while members remain, but after the original
+ * group empties the number can become a new leader's PID/PGID. Signaling
+ * `-pgid` without a generation bind would SIGKILL that replacement.
+ */
+export function classifyAgentOwnedProcessGroup(
+  root: RetainedProcessIdentity,
+): 'empty' | 'ours' | 'foreign' | 'unknown' {
+  if (!isAgentOwnedProcessGroup(root)) return 'unknown';
+  const pgid = root.pgid!;
+  const remaining = listProcessGroupPids(pgid);
+  if (remaining === 'scan_failed') return 'unknown';
+  if (remaining.length === 0) return 'empty';
+  // A live leader (pid === pgid) must match the original root generation.
+  if (remaining.includes(pgid)) {
+    if (root.startMarker === null) return 'unknown';
+    const marker = getProcessStartMarker(pgid);
+    if (marker === null) return 'unknown';
+    if (marker !== root.startMarker) return 'foreign';
+    if (root.bootId !== null) {
+      const boot = getSystemBootId();
+      if (boot === null) return 'unknown';
+      if (boot !== root.bootId) return 'foreign';
+    }
+    return 'ours';
+  }
+  // Leader gone, members remain: original group still draining. Kernel will
+  // not reuse this PGID until the group is empty (POSIX / Linux fork rules).
+  return 'ours';
+}
+
+/**
  * After captured PIDs look gone, require an agent-owned process group to be empty
  * before claiming verified exit (covers mid-teardown forks) (#2021).
+ * Never signals a recycled PGID owned by a different generation (#2021 Blocker).
  */
 export async function verifyAgentOwnedProcessGroupExited(
   root: RetainedProcessIdentity,
@@ -590,7 +625,15 @@ export async function verifyAgentOwnedProcessGroupExited(
     return false;
   }
   const pgid = root.pgid!;
+  let state = classifyAgentOwnedProcessGroup(root);
+  // Empty or recycled: our group is gone — do not signal a foreign leader.
+  if (state === 'empty' || state === 'foreign') return true;
+  if (state === 'unknown') return false;
   if (signalGroup) {
+    // Re-check generation immediately before the group-wide signal (#2021).
+    state = classifyAgentOwnedProcessGroup(root);
+    if (state === 'empty' || state === 'foreign') return true;
+    if (state !== 'ours') return false;
     try {
       process.kill(-pgid, 'SIGKILL');
     } catch {
@@ -599,13 +642,13 @@ export async function verifyAgentOwnedProcessGroupExited(
   }
   const deadline = Date.now() + 1000;
   while (Date.now() < deadline) {
-    const remaining = listProcessGroupPids(pgid);
-    if (remaining === 'scan_failed') return false;
-    if (remaining.length === 0) return true;
+    state = classifyAgentOwnedProcessGroup(root);
+    if (state === 'empty' || state === 'foreign') return true;
+    if (state === 'unknown') return false;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  const remaining = listProcessGroupPids(pgid);
-  return remaining !== 'scan_failed' && remaining.length === 0;
+  state = classifyAgentOwnedProcessGroup(root);
+  return state === 'empty' || state === 'foreign';
 }
 
 /** PIDs currently in process group `pgid`, or scan_failed when pgrep is unusable. */

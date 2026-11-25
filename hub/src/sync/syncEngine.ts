@@ -90,7 +90,7 @@ import {
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
 import { ArchiveCleanupError } from './archiveCleanupError'
-import { hasLiveWork } from './sessionIdle'
+import { hasDurableLiveWork, hasLiveWork } from './sessionIdle'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
@@ -3902,24 +3902,30 @@ export class SyncEngine {
                 throw new ArchiveCleanupError(error instanceof RunnerStopRpcError && error.timedOut ? 'timeout' : 'unavailable', error)
             }
         }
-        // tiann/hapi#2020: refuse archive while the session is still connected
-        // with hub-visible work (thinking / derivedToolWork / background /
-        // pending requests). Clear that work first. Disconnected rows may
-        // retain stale agentState.requests after heartbeat expiry — those
-        // must not block Runner-verified cleanup (/abort requires active).
-        //
+        // tiann/hapi#2020: refuse archive while hub-visible work remains.
         // Refresh transcript-derived work synchronously: tool_call rows land
         // on the socket path immediately, but derivedToolWork only updates on
-        // the 5s sweep. Archiving in that window would otherwise stop a peer
-        // the hub already knows is working.
+        // the 5s sweep. Always consult durable/transcript evidence — including
+        // when heartbeat expiry flipped active=false — so a durable OpenCode
+        // running child still blocks stop RPCs (#2021 Major).
+        //
+        // Disconnected rows may retain stale agentState.requests after
+        // heartbeat expiry; those must not block Runner-verified cleanup
+        // (/abort requires active). Durable thinking / derivedToolWork /
+        // background still do.
+        this.sessionCache.noteDerivedWork(
+            sessionId,
+            this.store.messages.getLiveToolWork(sessionId),
+        )
         const liveBeforeStop = this.sessionCache.getSession(sessionId)
-        if (liveBeforeStop?.active === true) {
-            this.sessionCache.noteDerivedWork(
-                sessionId,
-                this.store.messages.getLiveToolWork(sessionId),
-            )
-            const live = this.sessionCache.getSession(sessionId)
-            if (live && hasLiveWork(live)) {
+        if (liveBeforeStop) {
+            if (liveBeforeStop.active === true) {
+                if (hasLiveWork(liveBeforeStop)) {
+                    throw new ArchiveCleanupError('working')
+                }
+            } else if (hasDurableLiveWork(liveBeforeStop)) {
+                // Heartbeat-expired: ignore stale requests, still honor durable
+                // thinking / derivedToolWork / background (#2021 Major).
                 throw new ArchiveCleanupError('working')
             }
         }

@@ -3326,6 +3326,7 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             pgid: 4242,
         }]);
         const alive = vi.spyOn(processUtils, 'retainedIdentityStillAlive').mockReturnValue(true);
+        const verifyGroup = vi.spyOn(processUtils, 'verifyAgentOwnedProcessGroupExited').mockResolvedValue(true);
 
         const childEmits: AgentMessage[] = [];
         const backend = new AcpSdkBackend({
@@ -3367,6 +3368,7 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             // Later verification publishes the deferred child interruption.
             alive.mockReturnValue(false);
             expect(await backend.verifyRetainedAgentExit(true)).toBe(true);
+            expect(verifyGroup).toHaveBeenCalled();
             expect(backend.wasAgentTreeEnded()).toBe(true);
             expect(childEmits.some((m) =>
                 m.type === 'turn_complete'
@@ -3377,6 +3379,56 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             createSpy.mockRestore();
             snap.mockRestore();
             alive.mockRestore();
+            verifyGroup.mockRestore();
+        }
+    });
+
+    it('trusts Windows ACP close when retained PIDs are gone (#2021)', async () => {
+        const processUtils = await import('@/utils/process');
+        const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+        Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
+        const snap = vi.spyOn(processUtils, 'snapshotProcessTreeIdentities').mockReturnValue([{
+            pid: 4242,
+            startMarker: 'gen-win',
+            bootId: null,
+            tgid: null,
+            pgid: null,
+        }]);
+        const alive = vi.spyOn(processUtils, 'retainedIdentityStillAlive').mockReturnValue(false);
+        const verifyGroup = vi.spyOn(processUtils, 'verifyAgentOwnedProcessGroupExited');
+
+        const backend = new AcpSdkBackend({
+            command: 'opencode',
+            args: ['acp'],
+            flavor: 'opencode',
+            textChunkMode: 'delta',
+            toolCallLifetimeStore: null,
+        });
+        const createSpy = vi.spyOn(AcpStdioTransport, 'create').mockImplementation(async () => ({
+            sendRequest: vi.fn(async (method: string) => {
+                if (method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+                return {};
+            }),
+            sendNotification: vi.fn(),
+            onNotification: vi.fn(),
+            onStderrError: () => {},
+            registerRequestHandler: () => {},
+            isAlive: () => false,
+            getProcessPid: () => 4242,
+            close: async () => true,
+        } as unknown as AcpStdioTransport));
+
+        try {
+            await backend.initialize();
+            await backend.disconnect();
+            expect(backend.wasAgentTreeEnded()).toBe(true);
+            expect(verifyGroup).not.toHaveBeenCalled();
+        } finally {
+            createSpy.mockRestore();
+            snap.mockRestore();
+            alive.mockRestore();
+            verifyGroup.mockRestore();
+            Object.defineProperty(process, 'platform', platform);
         }
     });
 

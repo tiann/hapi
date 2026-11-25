@@ -38,13 +38,19 @@ export function resolveSessionIdleTimeoutMs(
     return parsed
 }
 
-/** Work the hub can see that must never be reconciled away as a zombie. */
-export function hasLiveWork(session: Session): boolean {
+/** Durable / progress work that survives heartbeat expiry (excludes stale requests). */
+export function hasDurableLiveWork(session: Session): boolean {
     if (session.thinking) return true
     // Hub-derived open tool work in the transcript tail (autonomous rounds
     // that miss the CLI's turn-scoped thinking flag).
     if (session.derivedToolWork === true) return true
     if ((session.backgroundTaskCount ?? 0) > 0) return true
+    return false
+}
+
+/** Work the hub can see that must never be reconciled away as a zombie. */
+export function hasLiveWork(session: Session): boolean {
+    if (hasDurableLiveWork(session)) return true
     // A permission / input request waiting on the operator is real state the
     // agent is blocked on, not an abandoned socket.
     const requests = session.agentState?.requests

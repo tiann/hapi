@@ -15,6 +15,11 @@ import {
 import { defaultToolCallLifetimeStore, type ToolCallLifetimeStore } from './toolCallLifetimeStore';
 import { randomUUID } from 'node:crypto';
 import {
+    getProcessGroupId,
+    getProcessStartMarker,
+    getProcessThreadGroupId,
+    getSystemBootId,
+    isWindows,
     killRetainedProcessTree,
     retainedIdentityStillAlive,
     snapshotProcessTreeIdentities,
@@ -219,6 +224,11 @@ export class AcpSdkBackend implements AgentBackend {
      */
     private retainedAgentTree: RetainedProcessIdentity[] | null = null;
     /**
+     * Root identity captured at transport spawn — survives a pre-disconnect
+     * root exit so retries still have group/generation evidence (#2021).
+     */
+    private spawnedRootIdentity: RetainedProcessIdentity | null = null;
+    /**
      * Child + foreground settlement deferred until process-tree exit is verified.
      * Cleared only after publish (#2021).
      */
@@ -349,6 +359,27 @@ export class AcpSdkBackend implements AgentBackend {
         }
 
         this.transport = transport;
+        // Capture generation + group while the root is still alive — a later
+        // disconnect after root exit cannot recover PGID from a reaped PID (#2021).
+        const spawnPid = typeof this.transport.getProcessPid === 'function'
+            ? this.transport.getProcessPid()
+            : null;
+        if (typeof spawnPid === 'number' && spawnPid > 0) {
+            this.spawnedRootIdentity = {
+                pid: spawnPid,
+                startMarker: getProcessStartMarker(spawnPid),
+                bootId: getSystemBootId(),
+                tgid: getProcessThreadGroupId(spawnPid),
+                pgid: getProcessGroupId(spawnPid),
+            };
+            const spawnTree = snapshotProcessTreeIdentities(spawnPid);
+            if (spawnTree && spawnTree.length > 0) {
+                this.retainedAgentTree = spawnTree;
+                this.retainedTreeSnapshotIncomplete = false;
+            }
+        } else {
+            this.spawnedRootIdentity = null;
+        }
 
         this.transport.onNotification((method, params) => {
             this.handleNotification(method, params);
@@ -1391,10 +1422,7 @@ export class AcpSdkBackend implements AgentBackend {
         const tree = this.retainedAgentTree;
         if (!tree || tree.length === 0) return this.agentTreeEnded;
         if (tree.every((identity) => !retainedIdentityStillAlive(identity))) {
-            // Captured PIDs gone is not enough — require agent-owned process-group
-            // emptiness so mid-teardown forks cannot slip through (#2021).
-            const root = tree[tree.length - 1]!;
-            if (!await verifyAgentOwnedProcessGroupExited(root, true)) {
+            if (!await this.verifyTreeExitBeyondPidSnapshot(tree)) {
                 return false;
             }
             this.agentTreeEnded = true;
@@ -1409,6 +1437,24 @@ export class AcpSdkBackend implements AgentBackend {
             this.publishPendingDisconnectSettle();
         }
         return killed;
+    }
+
+    /**
+     * After retained members look gone: Windows trusts the tree scan (taskkill /T
+     * already covered descendants); POSIX requires agent-owned group emptiness.
+     * Prefers spawn-time root identity when the disconnect snapshot lost PGID (#2021).
+     */
+    private async verifyTreeExitBeyondPidSnapshot(
+        tree: RetainedProcessIdentity[],
+    ): Promise<boolean> {
+        if (isWindows()) {
+            // Windows snapshots carry null pgid; killRetainedProcessTree already
+            // verified members via taskkill /T semantics when it returned true.
+            // All-gone + closeOk is sufficient here (#2021 Major).
+            return true;
+        }
+        const root = this.spawnedRootIdentity ?? tree[tree.length - 1]!;
+        return await verifyAgentOwnedProcessGroupExited(root, true);
     }
 
     /** Publish deferred child + foreground settlements once the tree is gone (#2021). */
@@ -1544,10 +1590,31 @@ export class AcpSdkBackend implements AgentBackend {
             ? this.transport.getProcessPid()
             : null;
         const knownPid = typeof closePid === 'number' && closePid > 0;
-        // Snapshot before close so reparented descendants stay verifiable (#2021).
-        const preCloseTree = knownPid
-            ? snapshotProcessTreeIdentities(closePid)
-            : null;
+        // Prefer spawn-time tree. Live resnapshot only when spawn capture missed
+        // and the root still matches — a reaped root yields a null-pgid tree (#2021).
+        let preCloseTree = this.retainedAgentTree;
+        if ((!preCloseTree || preCloseTree.length === 0) && knownPid && !this.retainedTreeSnapshotIncomplete) {
+            const live = snapshotProcessTreeIdentities(closePid);
+            if (live && live.length > 0) {
+                const liveRoot = live[live.length - 1]!;
+                const spawned = this.spawnedRootIdentity;
+                if (
+                    !spawned
+                    || (
+                        liveRoot.pid === spawned.pid
+                        && liveRoot.startMarker === spawned.startMarker
+                    )
+                ) {
+                    preCloseTree = live;
+                }
+            }
+        }
+        // When live snapshot failed but spawn identity exists, retain a
+        // single-member tree from spawn so group verify still has evidence.
+        if ((!preCloseTree || preCloseTree.length === 0) && this.spawnedRootIdentity) {
+            preCloseTree = [this.spawnedRootIdentity];
+            this.retainedTreeSnapshotIncomplete = false;
+        }
         try {
             const closeOk = (await this.transport.close()) === true;
             // Even when transport.close reports success, the root may have
@@ -1561,10 +1628,7 @@ export class AcpSdkBackend implements AgentBackend {
                     this.retainedAgentTree = preCloseTree;
                     agentEnded = false;
                 } else if (closeOk) {
-                    // Same exit check as verifyRetainedAgentExit — process-group
-                    // emptiness, not PID absence alone (#2021).
-                    const root = preCloseTree[preCloseTree.length - 1]!;
-                    if (await verifyAgentOwnedProcessGroupExited(root, true)) {
+                    if (await this.verifyTreeExitBeyondPidSnapshot(preCloseTree)) {
                         agentEnded = true;
                         this.agentTreeEnded = true;
                         this.retainedAgentTree = null;
@@ -1578,9 +1642,10 @@ export class AcpSdkBackend implements AgentBackend {
                     this.retainedAgentTree = preCloseTree;
                     agentEnded = false;
                 }
-            } else if (knownPid && preCloseTree === null) {
-                // Known PID but snapshot failed — never trust closeOk alone;
-                // stdin-EOF can exit the root while a descendant survives (#2021).
+            } else if ((knownPid || this.spawnedRootIdentity) && preCloseTree == null) {
+                // Known PID / spawn identity but no usable tree — never trust
+                // closeOk alone; stdin-EOF can exit the root while a descendant
+                // survives (#2021).
                 this.retainedTreeSnapshotIncomplete = true;
                 this.retainedAgentTree = null;
                 agentEnded = false;

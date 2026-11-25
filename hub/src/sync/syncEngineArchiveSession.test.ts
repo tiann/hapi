@@ -751,6 +751,50 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
+    it('refuses archive when durable tool work survives heartbeat expiry (#2021 Major)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-expired-durable-child', 'machine-x', undefined, {
+            flavor: 'opencode',
+        })
+        // Durable OpenCode child work in the transcript — survives heartbeat expiry.
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-expired',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child_expired',
+                    },
+                },
+            },
+            'child-expired',
+        )
+        const live = cache().getSession(sessionId)!
+        live.activeAt = Date.now() - 360_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+        expect(live.active).toBe(false)
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => {
+                stopCalled = true
+                return 'already_gone'
+            }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
     it('refuses still_alive when lifecycle is idle but transport already expired (#2021 Major)', async () => {
         const sessionId = insertActiveSession('sess-idle-lifecycle-stale', 'machine-x')
         const live = cache().getSession(sessionId)!
