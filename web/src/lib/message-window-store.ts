@@ -1538,9 +1538,10 @@ export function holdHistoryNavigationWindow(sessionId: string, api?: ApiClient):
     }
 }
 
-function reconcileHeldHistoryNavigation(api: ApiClient, sessionId: string): Promise<void> | null {
+function reconcileHeldHistoryNavigation(api: ApiClient, sessionId: string, requireEpochCheck = false): Promise<void> | null {
     const held = heldHistoryWindows.get(sessionId)
     if (!held) return null
+    if (requireEpochCheck) held.epochCheckPending = true
     if (held.probe) return held.probe
     const initial = getState(sessionId)
     // Bind the reconnect to the cursor before any live SSE can advance it.
@@ -1567,12 +1568,6 @@ function reconcileHeldHistoryNavigation(api: ApiClient, sessionId: string): Prom
     const probe = api.getMessages(sessionId, { limit: PAGE_SIZE }).then(async response => {
         if (!isCurrent()) return
         if (response.page.epoch !== held.epoch) return reset()
-        if (held.epochCheckPending) {
-            held.epochCheckPending = false
-            updateState(sessionId, previous => previous.preferLatestOnActivation
-                ? buildState(previous, { preferLatestOnActivation: false }) : previous)
-        }
-
         // Refresh retained rows, never splice a disconnected latest page into
         // the historical window. Leave the pagination cursors untouched.
         reconcileRows(response.messages, requestBaseline)
@@ -1582,21 +1577,27 @@ function reconcileHeldHistoryNavigation(api: ApiClient, sessionId: string): Prom
         const inLatest = new Set(response.messages.map(message => message.id))
         const candidates = getState(sessionId).messages.filter(message => !inLatest.has(message.id) && isNonTerminalToolCallRow(message))
             .slice(-GAP_ROW_REFRESH_LIMIT).reverse()
-        if (candidates.length === 0) return
-        const results = await Promise.allSettled(candidates.map(message => api.getMessageContext(sessionId, message.id)))
-        if (!isCurrent()) return
-        const updates: DecryptedMessage[] = []
-        for (const [index, result] of results.entries()) {
-            if (result.status !== 'fulfilled' || !result.value) {
-                held.catchUpNeeded = true
-                continue
+        if (candidates.length > 0) {
+            const results = await Promise.allSettled(candidates.map(message => api.getMessageContext(sessionId, message.id)))
+            if (!isCurrent()) return
+            const updates: DecryptedMessage[] = []
+            for (const [index, result] of results.entries()) {
+                if (result.status !== 'fulfilled' || !result.value) {
+                    held.catchUpNeeded = true
+                    continue
+                }
+                if (result.value.page.epoch !== held.epoch) return reset()
+                const updated = result.value.messages.find(message => message.id === candidates[index].id)
+                if (updated) updates.push(updated)
+                else held.catchUpNeeded = true
             }
-            if (result.value.page.epoch !== held.epoch) return reset()
-            const updated = result.value.messages.find(message => message.id === candidates[index].id)
-            if (updated) updates.push(updated)
-            else held.catchUpNeeded = true
+            reconcileRows(updates, new Map(candidates.map(message => [message.id, message])))
         }
-        reconcileRows(updates, new Map(candidates.map(message => [message.id, message])))
+        if (held.epochCheckPending) {
+            held.epochCheckPending = false
+            updateState(sessionId, previous => previous.preferLatestOnActivation
+                ? buildState(previous, { preferLatestOnActivation: false }) : previous)
+        }
     }).catch(() => {
         // Keep the visible history if the reconnect request itself fails.
         if (isCurrent()) held.catchUpNeeded = true
@@ -1684,7 +1685,8 @@ export function syncTailMessages(
  * reconnect.
  */
 export function recoverWindowAfterGapResume(api: ApiClient, sessionId: string): Promise<void> {
-    const heldReconciliation = reconcileHeldHistoryNavigation(api, sessionId)
+    // A missed interval can hide a rewind even if the gap arrives after the jump starts.
+    const heldReconciliation = reconcileHeldHistoryNavigation(api, sessionId, true)
     if (heldReconciliation) return heldReconciliation
     if (messageWindowTargetLocks.has(sessionId)) {
         return Promise.resolve()

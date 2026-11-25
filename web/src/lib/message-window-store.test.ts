@@ -3026,6 +3026,25 @@ describe('gap recovery', () => {
         expect(cursors).toEqual([20])
     })
 
+    it('does not confirm a jump when a reconnect probe started during settlement fails', async () => {
+        const id = sessionId('jump-settles-during-failed-gap-probe')
+        const cached = makeAgentMessage({ id: 'before-rewind', seq: 1, at: 100 })
+        const pending = deferred<MessagesResponse>()
+        const getMessages = vi.fn(async () => pending.promise)
+        getMessages.mockResolvedValueOnce(latestResponse([cached], { epoch: 1 }))
+        const api = createApi(getMessages)
+        await syncTailMessages(api, id)
+        const held = holdHistoryNavigationWindow(id)!
+        const gap = recoverWindowAfterGapResume(api, id)
+        const verifying = held.verifyStart()
+        pending.reject(new Error('offline'))
+        await gap
+        expect(await verifying).toBe(false)
+        expect(await held.verify()).toBe(false)
+        expect(getMessageWindowState(id).messages).toEqual([cached])
+        held.finish(false)
+    })
+
     it('does not confirm stale history when a jump interrupts gap recovery', async () => {
         const id = sessionId('jump-interrupts-gap-after-rewind')
         const cached = makeAgentMessage({ id: 'before-rewind', seq: 1, at: 100 })

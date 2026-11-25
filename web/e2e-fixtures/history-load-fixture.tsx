@@ -37,6 +37,7 @@ type Probe = {
     loadMore: () => Promise<unknown>
     refetch: () => Promise<void>
     gap: (nextEpoch?: number) => Promise<void>
+    failNextLatest: () => void
     setEpoch: (epoch: number) => void
     confirmSteer: () => Promise<void>
     releaseLatest: () => void
@@ -62,6 +63,7 @@ let beforeResponseGate: Promise<void> | null = null
 let releaseBeforeResponse = () => {}
 
 let currentActiveSessionId = SESSION_ID
+let failNextLatest = false
 
 window.__probe = {
     appendReply: () => ingestIncomingMessages(SESSION_ID, Array.from({ length: 25 }, (_, index) =>
@@ -77,6 +79,7 @@ window.__probe = {
         if (nextEpoch !== undefined) fixtureEpoch = nextEpoch
         await recoverWindowAfterGapResume(fakeApi, currentActiveSessionId)
     },
+    failNextLatest: () => { failNextLatest = true },
     setEpoch: epoch => { fixtureEpoch = epoch },
     confirmSteer: async () => {
         fixtureSteerConfirmed = true
@@ -445,6 +448,10 @@ const fakeApi = {
 
         if (direction === 'latest' && latestResponseGate) {
             await latestResponseGate
+        }
+        if (direction === 'latest' && failNextLatest) {
+            failNextLatest = false
+            throw new Error('fixture: forced latest-page failure')
         }
 
         if (direction === 'before') {

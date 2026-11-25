@@ -241,6 +241,29 @@ test('conversation start waits for epoch verification of complete cached history
     if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-verified-rewind.png` })
 })
 
+test('reports a failed reconnect probe instead of confirming conversation start', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&cachedComplete=1')
+    await expect.poll(async () => (await geometry(page)).chatScrollTop).toBeGreaterThan(300)
+    await page.evaluate(() => {
+        const viewport = document.querySelector<HTMLElement>('.chat-scroll-y')!
+        const original = viewport.scrollTo.bind(viewport)
+        viewport.scrollTo = (options?: ScrollToOptions | number, y?: number) => {
+            if (typeof options === 'object' && options.top === 0 && options.behavior === 'smooth') {
+                window.__probe.failNextLatest()
+                void window.__probe.gap()
+            }
+            if (typeof options === 'number') original(options, y ?? 0)
+            else original(options)
+        }
+    })
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Cached reply before rewind' })
+    await reply.getByRole('button', { name: 'Jump to conversation start' }).press('Enter')
+    await expect(page.getByText('Could not load earlier messages. Try again.', { exact: true })).toBeVisible()
+    await expect(page.getByText('Reached conversation start', { exact: true })).toHaveCount(0)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-reconnect-verification-fails.png` })
+})
+
 test('finds the turn input in concise mode across pages with no rendered overlap', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&conciseLongTurn=1')
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Concise reply after a long turn' })
