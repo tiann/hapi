@@ -429,10 +429,13 @@ export class TitleSuggestionService {
     }
 }
 
-export function createTitleSuggestionService(store: Store): TitleSuggestionService {
-    const config = readTitleProviderConfig()
-    const limits = readTitleSuggestionLimits()
-    const requestLimits = readTitleProviderRequestLimits()
+export function createTitleSuggestionService(
+    store: Store,
+    env: TitleProviderEnvironment = process.env
+): TitleSuggestionService {
+    const config = readTitleProviderConfig(env)
+    const limits = readTitleSuggestionLimits(env)
+    const requestLimits = readTitleProviderRequestLimits(env)
     return new TitleSuggestionService(
         store,
         {
