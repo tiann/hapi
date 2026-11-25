@@ -36,7 +36,17 @@ data class HubCredentials(
     val jwt: String? = null,
     /** Epoch ms when [jwt] was obtained, or null. */
     val jwtObtainedAtMs: Long? = null,
+    /** Identity from a successful auth response, retained when the cached JWT is cleared. */
+    val namespace: String? = null,
 ) {
+    /** Legacy records may still have the identity only in the cached JWT. */
+    val pairedNamespace: String? get() = namespace ?: jwt?.let { JwtPeek.peek(it)?.ns }
+
+    fun withJwt(token: String?, obtainedAtMs: Long?): HubCredentials = copy(
+        jwt = token,
+        jwtObtainedAtMs = obtainedAtMs,
+        namespace = token?.let { JwtPeek.peek(it)?.ns } ?: pairedNamespace,
+    )
 
     /**
      * The durable secret this entry authenticates with: the access token when
@@ -74,6 +84,8 @@ data class HubCredentials(
 interface CredentialStore {
     fun get(hubUrl: String): HubCredentials?
     fun set(credentials: HubCredentials)
+    /** Update the same record atomically; an in-flight JWT refresh must not undo a later pairing/sign-out. */
+    fun replace(expected: HubCredentials, updated: HubCredentials): Boolean
     fun delete(hubUrl: String)
 }
 
@@ -89,6 +101,9 @@ class InMemoryCredentialStore : CredentialStore {
     override fun set(credentials: HubCredentials) {
         entries[credentialKey(credentials.hubUrl)] = credentials
     }
+
+    override fun replace(expected: HubCredentials, updated: HubCredentials): Boolean =
+        entries.replace(credentialKey(expected.hubUrl), expected, updated)
 
     override fun delete(hubUrl: String) {
         entries.remove(credentialKey(hubUrl))

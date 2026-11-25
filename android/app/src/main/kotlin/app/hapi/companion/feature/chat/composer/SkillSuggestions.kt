@@ -7,6 +7,7 @@ class SkillSuggestion internal constructor(
     val skill: SkillSummary,
     internal val token: SkillSuggestions.Token,
     internal val opening: Long,
+    internal val replacementEnd: Int = token.end,
 )
 
 internal object SkillSuggestions {
@@ -33,14 +34,41 @@ internal object SkillSuggestions {
         isNameChar(text, index)
     }
 
+    private fun isCandidateAt(text: String, index: Int): Boolean = if (text.getOrNull(index) == ':') {
+        isNameChar(text, index - 1) && (index == text.lastIndex || isNameChar(text, index + 1))
+    } else {
+        isNameAt(text, index)
+    }
+
     fun token(text: String, start: Int, end: Int): Token? {
         if (start != end || start !in 1..text.length) return null
         var wordStart = start - 1
-        while (isNameAt(text, wordStart)) wordStart--
+        while (isCandidateAt(text, wordStart)) wordStart--
         if (text.getOrNull(wordStart) != '$' || isNameAt(text, wordStart - 1)) return null
         var wordEnd = start
-        while (isNameAt(text, wordEnd)) wordEnd++
+        while (isCandidateAt(text, wordEnd)) wordEnd++
         return Token(wordStart, wordEnd, text.substring(wordStart, wordEnd), text.substring(wordStart + 1, start))
+    }
+
+    /** Use the catalogue to distinguish a Claude plugin qualifier from a prose colon. */
+    fun resolveToken(token: Token, skills: List<SkillSummary>): Token? {
+        val colon = token.word.indexOf(':')
+        if (colon < 0) return token
+        val secondColon = token.word.indexOf(':', colon + 1)
+        val qualifiedEnd = if (secondColon < 0) token.word.length else secondColon
+        val plugin = token.word.substring(1, colon)
+        val name = token.word.substring(colon + 1, qualifiedEnd)
+        val caretIsAfterColon = token.query.length >= colon
+        val qualified = skills.any { skill ->
+            val separator = skill.name.indexOf(':')
+            if (separator < 0) return@any false
+            val pluginMatches = skill.name.substring(0, separator).startsWith(plugin, ignoreCase = true)
+            val namePrefix = if (caretIsAfterColon) token.query.substring(colon) else name
+            pluginMatches && skill.name.substring(separator + 1).startsWith(namePrefix, ignoreCase = true)
+        }
+        val length = if (qualified) qualifiedEnd else colon
+        if (token.query.length + 1 > length) return null
+        return token.copy(end = token.start + length, word = token.word.take(length))
     }
 
     fun filter(skills: List<SkillSummary>, query: String, recent: List<String>): List<SkillSummary> {
@@ -63,15 +91,21 @@ internal object SkillSuggestions {
         )).map { it.second }
     }
 
-    fun insert(text: String, token: Token, name: String): Edit {
-        // Keep existing punctuation and whitespace verbatim; only a bare word at EOF needs a space.
-        val suffix = if (token.end == text.length) " " else ""
-        val replaced = text.replaceRange(token.start, token.end, "\$$name$suffix")
+    fun insert(text: String, suggestion: SkillSuggestion): Edit {
+        val start = suggestion.token.start
+        val end = suggestion.replacementEnd
+        val name = suggestion.skill.name
+        // Claude and Codex consume one whitespace-delimited leading token. Inline
+        // references keep their existing punctuation and spacing verbatim.
+        val next = text.getOrNull(end)
+        val leading = text.take(start).all { it.isWhitespace() || it == '\uFEFF' }
+        val addSpace = next == null || (leading && !next.isWhitespace() && next != '\uFEFF')
+        val replaced = text.replaceRange(start, end, "\$$name" + if (addSpace) " " else "")
         val separatorLength = when {
-            token.end == text.length -> 1 // The appended space.
-            text.startsWith("\r\n", token.end) -> 2
-            else -> Character.charCount(text.codePointAt(token.end))
+            addSpace -> 1
+            text.startsWith("\r\n", end) -> 2
+            else -> Character.charCount(text.codePointAt(end))
         }
-        return Edit(replaced, token.start + 1 + name.length + separatorLength)
+        return Edit(replaced, start + 1 + name.length + separatorLength)
     }
 }

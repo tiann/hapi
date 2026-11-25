@@ -31,6 +31,7 @@ import coil.ImageLoader
 import java.io.Closeable
 import java.io.File
 import java.security.MessageDigest
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,7 +40,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.withContext
 
 /**
  * Everything scoped to the **active** hub. [AppGraph] creates one per
@@ -61,6 +61,9 @@ class HubGraph(
     context: Context,
 ) : Closeable {
 
+    /** ViewModels must not retain a closed graph after a same-origin replacement. */
+    internal val instanceId = UUID.randomUUID().toString()
+
     /** Child of nothing on purpose: cancelled explicitly in [close]. */
     val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -77,13 +80,13 @@ class HubGraph(
     val sseEngine: SseEngine = SseEngine(
         baseUrl = session.hubUrl,
         transport = OkHttpSseTransport(),
-        tokenProvider = SessionTokenProvider(session, credentialStore),
+        tokenProvider = SessionTokenProvider(session),
         scope = scope,
     )
 
     private val networkMonitor = AndroidNetworkMonitor(context, sseEngine::networkChanged)
 
-    internal val pairedNamespace = session.authenticator.currentJwt()?.let { JwtPeek.peek(it)?.ns }
+    internal val pairedNamespace = credentialStore.get(session.hubUrl)?.pairedNamespace
 
     // Legacy URL-only snapshots have no reliable owner. Never read them, and
     // do not open disk snapshots until this graph has an identified namespace.
@@ -236,28 +239,8 @@ class HubGraph(
     }
 }
 
-/**
- * Adapts [HubSession.ensureFreshToken] to the engine's [SseTokenProvider].
- *
- * `forceRefresh` (the hub just 401'd the previous token) drops both JWT
- * caches — the persisted copy and the authenticator's in-memory one — so
- * `ensureFreshToken` has to do a genuine `POST /api/auth` exchange instead of
- * returning a token the hub already rejected (rotated jwt-secret, clock skew).
- */
-class SessionTokenProvider(
-    private val session: HubSession,
-    private val credentialStore: CredentialStore,
-) : SseTokenProvider {
-
-    override suspend fun freshToken(forceRefresh: Boolean): String? {
-        if (forceRefresh) {
-            withContext(Dispatchers.IO) {
-                credentialStore.get(session.hubUrl)?.let { credentials ->
-                    credentialStore.set(credentials.copy(jwt = null, jwtObtainedAtMs = null))
-                }
-            }
-            session.authenticator.clearCachedJwt()
-        }
-        return session.ensureFreshToken()
-    }
+/** SSE 401s invalidate the cached JWT, not the durable pairing identity. */
+private class SessionTokenProvider(private val session: HubSession) : SseTokenProvider {
+    override suspend fun freshToken(forceRefresh: Boolean): String? =
+        session.authenticator.ensureFreshToken(forceRefresh)
 }

@@ -6,7 +6,6 @@ import app.hapi.companion.feature.passkey.PasskeyIssue
 import app.hapi.companion.feature.passkey.PasskeyPlatform
 import app.hapi.companion.feature.passkey.passkeyIssueOf
 import app.hapi.data.api.ApiError
-import app.hapi.data.auth.CredentialStore
 import app.hapi.data.auth.HubCredentials
 import app.hapi.data.auth.HubRegistry
 import app.hapi.data.auth.HubUrls
@@ -16,13 +15,10 @@ import app.hapi.protocol.wire.PasskeyHubAddressRequiredException
 import app.hapi.protocol.wire.SUPPORTED_PROTOCOL_VERSION
 import java.io.IOException
 import kotlin.coroutines.cancellation.CancellationException
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /** Pairing progress; one attempt at a time. */
 sealed interface PairingUiState {
@@ -82,11 +78,9 @@ data class BindPrefill(
  */
 class PairingViewModel(
     private val clientFactory: PairingClientFactory,
-    private val credentialStore: CredentialStore,
     private val registry: HubRegistry,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val commitPairing: suspend (HubCredentials) -> Unit,
     private val nowMs: () -> Long = System::currentTimeMillis,
-    private val onPaired: suspend (String) -> Unit = {},
 ) : ViewModel() {
 
     private val mutableState = MutableStateFlow<PairingUiState>(PairingUiState.Idle)
@@ -215,9 +209,7 @@ class PairingViewModel(
             HubCredentials(
                 hubUrl = hubUrl,
                 passkeySession = login.passkeySession,
-                jwt = login.token,
-                jwtObtainedAtMs = nowMs(),
-            ),
+            ).withJwt(login.token, nowMs()),
         )
     }
 
@@ -276,20 +268,14 @@ class PairingViewModel(
             HubCredentials(
                 hubUrl = hubUrl,
                 accessToken = accessToken,
-                jwt = auth.token,
-                jwtObtainedAtMs = nowMs(),
-            ),
+            ).withJwt(auth.token, nowMs()),
         )
     }
 
     private suspend fun completePairing(credentials: HubCredentials): PairingUiState.Success {
-        val hubUrl = credentials.hubUrl
-        // The active graph needs the new credentials before the roster changes.
-        withContext(ioDispatcher) { credentialStore.set(credentials) }
-        registry.addHub(hubUrl, makeActive = true)
-        onPaired(hubUrl)
+        commitPairing(credentials)
         mutablePrefill.value = null
-        return PairingUiState.Success(hubUrl)
+        return PairingUiState.Success(credentials.hubUrl)
     }
 
 }

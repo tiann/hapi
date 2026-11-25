@@ -96,6 +96,7 @@ import kotlinx.serialization.json.JsonObject
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -456,7 +457,7 @@ fun HapiNavigation() {
                 }
             }
             val holder = viewModel<ChatViewModelHolder>(
-                key = "chat:${hubGraph.hubUrl}:$sessionId",
+                key = "chat:${hubGraph.instanceId}:$sessionId",
                 factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
             )
             DisposableEffect(holder) {
@@ -626,7 +627,7 @@ fun HapiNavigation() {
             val chatHolder = chatEntry?.let { owner ->
                 viewModel<ChatViewModelHolder>(
                     viewModelStoreOwner = owner,
-                    key = "chat:${hubGraph.hubUrl}:$sessionId",
+                    key = "chat:${hubGraph.instanceId}:$sessionId",
                     factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
                 )
             }
@@ -882,7 +883,7 @@ private class ChatViewModelHolder(
     sessionId: String,
     appContext: Context,
 ) : ViewModel() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob(hubGraph.scope.coroutineContext[Job]) + Dispatchers.Default)
 
     val viewModel = ChatViewModel(
         sessionId = sessionId,

@@ -4,6 +4,8 @@ import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.HapiJson
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -63,6 +65,9 @@ class TokenAuthenticator(
         .addPathSegment("api").addPathSegment("auth").build()
 
     private val mutex = Mutex()
+    private val mutableRefreshedNamespace = MutableStateFlow<String?>(null)
+    /** Identity learned by this authenticator after a successful exchange. */
+    val refreshedNamespace = mutableRefreshedNamespace.asStateFlow()
 
     @Volatile
     private var cachedJwt: String? = null
@@ -77,11 +82,6 @@ class TokenAuthenticator(
         val stored = credentialStore.get(hubUrl)?.jwt
         if (stored != null) cachedJwt = stored
         return stored
-    }
-
-    /** Drops the in-memory JWT (sign-out / credential deletion). */
-    fun clearCachedJwt() {
-        cachedJwt = null
     }
 
     override fun authenticate(route: Route?, response: Response): Request? {
@@ -100,14 +100,23 @@ class TokenAuthenticator(
 
     /**
      * Proactively refreshes when the JWT is missing, undecodable, or expires
-     * within [FRESH_WINDOW_MS] (10 min). Returns the JWT to use, or null when
-     * refresh is impossible right now.
+     * within [FRESH_WINDOW_MS] (10 min). If SSE rejected the current JWT,
+     * clear both JWT caches but retain the durable pairing identity.
      */
-    suspend fun ensureFreshToken(): String? {
-        currentJwt()?.takeIf { !isStale(it) }?.let { return it }
+    suspend fun ensureFreshToken(forceRefresh: Boolean = false): String? {
+        if (!forceRefresh) currentJwt()?.takeIf { !isStale(it) }?.let { return it }
         return withContext(Dispatchers.IO) {
             mutex.withLock {
-                currentJwt()?.takeIf { !isStale(it) } ?: exchangeLocked()
+                if (forceRefresh) {
+                    val credentials = credentialStore.get(hubUrl)
+                    if (credentials?.jwt != null && !credentialStore.replace(credentials, credentials.withJwt(null, null))) {
+                        return@withLock null
+                    }
+                    cachedJwt = null
+                    exchangeLocked()
+                } else {
+                    currentJwt()?.takeIf { !isStale(it) } ?: exchangeLocked()
+                }
             }
         }
     }
@@ -145,6 +154,7 @@ class TokenAuthenticator(
         response.use {
             val text = it.body?.string().orEmpty()
             if (it.code == 401) {
+                if (credentialStore.get(hubUrl)?.secret != credentials.secret) return null
                 rejectedSecret = credentials.secret
                 authEvents?.onAuthTerminal(hubUrl, terminalReason(credentials))
                 return null
@@ -155,9 +165,11 @@ class TokenAuthenticator(
             } catch (_: Exception) {
                 return null
             }
+            val updated = credentials.withJwt(auth.token, nowMs())
+            if (!credentialStore.replace(credentials, updated)) return null
             rejectedSecret = null
-            credentialStore.set(credentials.copy(jwt = auth.token, jwtObtainedAtMs = nowMs()))
             cachedJwt = auth.token
+            mutableRefreshedNamespace.value = updated.pairedNamespace
             return auth.token
         }
     }

@@ -55,12 +55,22 @@ class EncryptedPrefsCredentialStore(
         }
     }
 
+    @Synchronized
     override fun set(credentials: HubCredentials) {
         prefs.edit()
             .putString(credentialKey(credentials.hubUrl), HapiJson.encodeToString(credentials))
             .commit()
     }
 
+    @Synchronized
+    override fun replace(expected: HubCredentials, updated: HubCredentials): Boolean {
+        if (get(expected.hubUrl) != expected) return false
+        return prefs.edit()
+            .putString(credentialKey(expected.hubUrl), HapiJson.encodeToString(updated))
+            .commit()
+    }
+
+    @Synchronized
     override fun delete(hubUrl: String) {
         prefs.edit().remove(credentialKey(hubUrl)).commit()
     }

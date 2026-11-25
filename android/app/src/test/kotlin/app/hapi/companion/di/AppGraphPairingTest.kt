@@ -5,11 +5,13 @@ package app.hapi.companion.di
 import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import androidx.lifecycle.viewModelScope
 import app.hapi.companion.feature.pairing.PairingClient
 import app.hapi.companion.feature.pairing.PairingUiState
 import app.hapi.companion.feature.passkey.FakePasskeyPlatform
 import app.hapi.companion.feature.passkey.passkeyAssertion
 import app.hapi.companion.feature.passkey.passkeyUserHandle
+import app.hapi.data.auth.CredentialStore
 import app.hapi.data.auth.HubCredentials
 import app.hapi.data.auth.InMemoryCredentialStore
 import app.hapi.data.sse.SseSubscriptionKey
@@ -25,9 +27,12 @@ import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SyncEvent
 import java.io.File
 import java.util.Base64
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertNotSame
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.filterNotNull
@@ -105,8 +110,66 @@ class AppGraphPairingTest {
                 assertEquals("owner-message", restoredMessages.single().localId)
                 assertEquals(legacyData, legacy.readText(), "Keep legacy data untouched")
                 assertEquals(listOf(hubUrl), app.hubRegistry.state.value.hubs)
+
+                val paired = requireNotNull(creds.get(hubUrl))
+                val withoutJwt = InMemoryCredentialStore().apply { set(paired.copy(jwt = null, jwtObtainedAtMs = null)) }
+                HubGraph(hubUrl, withoutJwt, { _, _ -> }, context).use { restarted ->
+                    assertEquals("owner", restarted.pairedNamespace)
+                    assertEquals(listOf("owner-session"), restarted.sessionStore.sessions.value.map { it.id })
+                    assertEquals(listOf("owner-only"), requireNotNull(restarted.recentSkills).names.first())
+                }
             }
         } finally {
+            app.scope.cancel()
+            app.activeHubGraph.value?.close()
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test fun `dismissing pairing after storing credentials still publishes the new graph`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val hubUrl = "https://cancel-pairing.example.test"
+        val ownerJwt = jwt("owner")
+        val guestJwt = jwt("guest")
+        val stored = CompletableDeferred<Unit>()
+        val releaseWrite = CountDownLatch(1)
+        val backing = InMemoryCredentialStore().apply { set(HubCredentials(hubUrl, accessToken = "owner", jwt = ownerJwt)) }
+        val creds = object : CredentialStore by backing {
+            override fun set(credentials: HubCredentials) {
+                backing.set(credentials)
+                if (credentials.jwt == guestJwt) {
+                    stored.complete(Unit)
+                    check(releaseWrite.await(5, TimeUnit.SECONDS))
+                }
+            }
+        }
+        val app = AppGraph(context, creds)
+        Dispatchers.setMain(UnconfinedTestDispatcher())
+        try {
+            withTimeout(5_000) {
+                app.setForeground(false)
+                app.hubRegistry.addHub(hubUrl)
+                app.start()
+                val owner = app.activeHubGraph.filterNotNull().first()
+                val pairing = app.newPairingViewModel {
+                    object : PairingClient {
+                        override suspend fun health() = HubHealthResponse(status = "ok", protocolVersion = SUPPORTED_PROTOCOL_VERSION)
+                        override suspend fun authenticate(accessToken: String) = AuthResponse(token = guestJwt, user = AuthUser(id = 1))
+                        override suspend fun passkeyLoginVerify(response: JsonObject): PasskeyLoginResponse = error("Not used")
+                    }
+                }
+                pairing.pair(hubUrl, "guest")
+                stored.await()
+                pairing.viewModelScope.cancel()
+                releaseWrite.countDown()
+
+                val guest = app.activeHubGraph.filterNotNull().first { it !== owner }
+                assertEquals(guestJwt, creds.get(hubUrl)?.jwt)
+                assertEquals(guestJwt, guest.session.authenticator.currentJwt())
+                assertEquals("guest", guest.pairedNamespace)
+            }
+        } finally {
+            releaseWrite.countDown()
             app.scope.cancel()
             app.activeHubGraph.value?.close()
             Dispatchers.resetMain()

@@ -2003,6 +2003,61 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `qualified Claude skills match past the colon and replace the existing qualified word`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val qualified = SkillSummary("url-plugin:url-skill")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(qualified, SkillSummary("review")))
+        vm.start()
+
+        vm.setComposerText("\$url-plugin:")
+        testScheduler.runCurrent()
+        assertEquals(listOf(qualified), vm.skillSuggestions.value.map { it.skill })
+        vm.setComposerText("\$url-plugin:url-sk")
+        testScheduler.runCurrent()
+        assertEquals(listOf(qualified), vm.skillSuggestions.value.map { it.skill })
+        assertEquals(1, harness.api.skillsCalls.size)
+
+        val draft = "Run \$url-plugin:url-sk then continue"
+        val beforeColon = "Run \$url-plugin".length
+        vm.onComposerChange(draft, beforeColon, beforeColon)
+        testScheduler.runCurrent()
+        vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+        testScheduler.runCurrent()
+        assertEquals("Run \$url-plugin:url-skill then continue", vm.composer.value.text)
+
+        val prose = "Run \$rev:继续"
+        val beforeProseColon = "Run \$rev".length
+        vm.onComposerChange(prose, beforeProseColon, beforeProseColon)
+        testScheduler.runCurrent()
+        vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+        testScheduler.runCurrent()
+        assertEquals("Run \$review:继续", vm.composer.value.text)
+    }
+
+    @Test
+    fun `leading skill before punctuation is delimited for the wrappers without dropping prose`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("review")))
+        vm.start()
+
+        for ((prefix, punctuation) in listOf("" to ", then check the diff", "  " to "，然后检查", "" to ": then check")) {
+            val caret = "$prefix\$rev".length
+            vm.onComposerChange("$prefix\$rev$punctuation", caret, caret)
+            testScheduler.runCurrent()
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+            testScheduler.runCurrent()
+            val completed = vm.composer.value
+            assertEquals("$prefix\$review $punctuation", completed.text)
+            val wrapperToken = Regex("""^\s*\$([^\s]+)(?=\s|$)""").find(completed.text)?.groupValues?.get(1)
+            assertEquals("review", wrapperToken)
+            assertEquals("$prefix\$review ".length, completed.caretPosition)
+            assertTrue(vm.skillSuggestions.value.isEmpty())
+        }
+    }
+
+    @Test
     fun `dotted skill name is one word at mid name and at word end`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel

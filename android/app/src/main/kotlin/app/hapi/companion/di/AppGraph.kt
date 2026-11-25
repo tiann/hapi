@@ -25,9 +25,9 @@ import app.hapi.data.auth.AuthEvents
 import app.hapi.data.auth.AuthTerminalReason
 import app.hapi.data.auth.CredentialStore
 import app.hapi.data.auth.EncryptedPrefsCredentialStore
+import app.hapi.data.auth.HubCredentials
 import app.hapi.data.auth.HubRegistry
 import app.hapi.data.auth.HubRegistryStorage
-import app.hapi.data.auth.JwtPeek
 import app.hapi.data.push.ApiPushDeviceGateway
 import app.hapi.data.push.DeviceRegistrar
 import app.hapi.data.push.PushActionRunner
@@ -41,6 +41,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -48,7 +49,9 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -207,9 +210,8 @@ class AppGraph internal constructor(context: Context, val credentialStore: Crede
 
     internal fun newPairingViewModel(clientFactory: PairingClientFactory = pairingClientFactory) = PairingViewModel(
         clientFactory = clientFactory,
-        credentialStore = credentialStore,
         registry = hubRegistry,
-        onPaired = { hubUrl -> withContext(Dispatchers.IO) { syncActiveHub(pairedHubUrl = hubUrl) } },
+        commitPairing = ::commitPairing,
     )
 
     // ------------------------------------------------------------ push (B-M4a) --
@@ -256,7 +258,7 @@ class AppGraph internal constructor(context: Context, val credentialStore: Crede
     private val mutableActiveHubGraph = MutableStateFlow<HubGraph?>(null)
     private val activeHubSwapMutex = Mutex()
 
-    /** Per-active-hub graph; rebuilt on hub switch or pairing into a new namespace. */
+    /** Per-active-hub graph; rebuilt on hub switch, re-pairing, or first learning an old pairing's namespace. */
     val activeHubGraph: StateFlow<HubGraph?> = mutableActiveHubGraph.asStateFlow()
 
     private val mutableReady = MutableStateFlow(false)
@@ -266,6 +268,18 @@ class AppGraph internal constructor(context: Context, val credentialStore: Crede
 
     /** Idempotent-enough for the single Application.onCreate call site. */
     fun start() {
+        scope.launch {
+            activeHubGraph.collectLatest { graph ->
+                if (graph == null || graph.pairedNamespace != null) return@collectLatest
+                // Older records can have lost their JWT before namespace was persisted.
+                graph.session.authenticator.refreshedNamespace.filterNotNull().first()
+                activeHubSwapMutex.withLock {
+                    if (mutableActiveHubGraph.value === graph && hubRegistry.activeHubUrl == graph.hubUrl) {
+                        swapActiveHub(graph.hubUrl)
+                    }
+                }
+            }
+        }
         scope.launch {
             try {
                 shareInbox.load()
@@ -297,22 +311,37 @@ class AppGraph internal constructor(context: Context, val credentialStore: Crede
         hubRegistry.removeHub(hubUrl)
     }
 
-    private suspend fun syncActiveHub(pairedHubUrl: String? = null) = activeHubSwapMutex.withLock {
+    private suspend fun syncActiveHub() = activeHubSwapMutex.withLock {
         val active = hubRegistry.activeHubUrl
-        val current = mutableActiveHubGraph.value
-        if (pairedHubUrl != null && pairedHubUrl != active) return@withLock
-        // Re-pairing at the same origin does not emit a roster/URL change. Drop the
-        // old session and namespace-bound history before pairing returns to Home.
-        val namespaceChanged = pairedHubUrl != null && current?.hubUrl == pairedHubUrl &&
-            current.pairedNamespace != credentialStore.get(pairedHubUrl)?.jwt?.let { JwtPeek.peek(it)?.ns }
-        if (active != current?.hubUrl || namespaceChanged) swapActiveHub(active)
+        if (active != mutableActiveHubGraph.value?.hubUrl) swapActiveHub(active)
+    }
+
+    /** The screen can cancel waiting for success, not a pairing commit already handed to the app. */
+    private suspend fun commitPairing(credentials: HubCredentials) {
+        scope.async(Dispatchers.IO) {
+            activeHubSwapMutex.withLock {
+                // Stop the old same-origin client before it can pick up the new pairing.
+                if (mutableActiveHubGraph.value?.hubUrl == credentials.hubUrl) {
+                    val previous = mutableActiveHubGraph.value
+                    mutableActiveHubGraph.value = null
+                    closeHubGraph(previous)
+                }
+                credentialStore.set(credentials)
+                hubRegistry.addHub(credentials.hubUrl, makeActive = true)
+                swapActiveHub(hubRegistry.activeHubUrl)
+            }
+        }.await()
+    }
+
+    /** Called with [activeHubSwapMutex] held. */
+    private suspend fun closeHubGraph(graph: HubGraph?) {
+        graph?.close()
+        graph?.lastSeenStore?.flushPersistence()
     }
 
     /** Called with [activeHubSwapMutex] held. */
     private suspend fun swapActiveHub(activeHubUrl: String?) {
-        val previous = mutableActiveHubGraph.value
-        previous?.close()
-        previous?.lastSeenStore?.flushPersistence()
+        closeHubGraph(mutableActiveHubGraph.value)
         mutableActiveHubGraph.value = activeHubUrl?.let { hubUrl ->
             HubGraph(
                 hubUrl = hubUrl,

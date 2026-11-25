@@ -371,6 +371,60 @@ class TokenAuthenticatorTest {
     }
 
     @Test
+    fun `legacy pairing learns its namespace after refreshing a missing JWT`() {
+        store.set(HubCredentials(hubUrl, accessToken))
+        val refreshed = fakeJwt(expSeconds = 4_100_000_000, ns = "research")
+        server.enqueue(authOk(refreshed))
+
+        val authenticator = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
+        assertEquals(refreshed, runBlocking { authenticator.ensureFreshToken() })
+        assertEquals("research", store.get(hubUrl)?.namespace)
+        assertEquals("research", authenticator.refreshedNamespace.value)
+    }
+
+    @Test
+    fun `failed forced refresh clears the JWT but retains the namespace across restart`() {
+        store.set(HubCredentials(hubUrl, accessToken, jwt = jwt1))
+        server.enqueue(MockResponse().setResponseCode(503))
+        val authenticator = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
+
+        assertNull(runBlocking { authenticator.ensureFreshToken(forceRefresh = true) })
+        assertNull(store.get(hubUrl)?.jwt)
+        assertEquals("default", store.get(hubUrl)?.namespace)
+
+        server.enqueue(authOk(jwt2))
+        val restarted = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
+        assertEquals(jwt2, runBlocking { restarted.ensureFreshToken() })
+        assertEquals("default", store.get(hubUrl)?.namespace)
+    }
+
+    @Test
+    fun `late refresh cannot overwrite credentials from a later pairing`() = runBlocking {
+        store.set(HubCredentials(hubUrl, accessToken))
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                started.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+                return authOk(jwt2)
+            }
+        }
+        val authenticator = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
+        val refresh = async(Dispatchers.IO) { authenticator.ensureFreshToken() }
+        try {
+            assertTrue(started.await(5, TimeUnit.SECONDS))
+            val guest = HubCredentials(hubUrl, accessToken = "guest-secret", jwt = fakeJwt(ns = "guest"))
+            store.set(guest)
+            release.countDown()
+            assertNull(refresh.await())
+            assertEquals(guest, store.get(hubUrl))
+        } finally {
+            release.countDown()
+        }
+    }
+
+    @Test
     fun `missing credentials emit MISSING_CREDENTIALS`() {
         val authenticator = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
 
