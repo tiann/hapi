@@ -2413,6 +2413,22 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     });
 
+    it.each(['missing', 'different'])('refuses to start a blank conversation for a hibernation wake (%s)', async failure => {
+        harness.clientMetadata = { path: '/tmp', host: 'fixture', hibernation: { state: 'hibernated', reason: 'idle', since: 1,
+            wake: { id: 'attempt', machineId: 'machine', flavor: 'opencode', nativeId: 'expected' } } };
+        harness.loadSessionImpl = async () => {
+            if (failure === 'missing') throw new Error('native conversation missing');
+            return 'different';
+        };
+        const fresh = vi.fn(async () => 'blank');
+        harness.newSessionImpl = fresh;
+        const { session } = createSessionStub([]);
+        session.sessionId = 'expected';
+        await expect(opencodeRemoteLauncher(session as never)).rejects.toThrow();
+        expect(fresh).not.toHaveBeenCalled();
+        expect(harness.promptCount).toBe(0);
+    });
+
     it.each(['history-get', 'v2-discovery', 'metadata-flush', 'existing-fork-child'])('keeps ordinary ACP resume usable when optional verification fails (%s)', async (failure) => {
         harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture',
             opencodeHistoryCheckpoint: { sessionId: 'acp-session-1', messageIds: ['msg_original'], userMessageIds: ['msg_original'], localMessageIds: [] } };

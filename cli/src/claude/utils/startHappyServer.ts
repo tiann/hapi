@@ -244,7 +244,8 @@ function createHapiMcpServer(
         if (!waitForReply) return '';
         if (!task.localId) return '; the delivered message could not be identified, so check the reply with inspect_peer';
         if (!supportsPeerReply(task.flavor)) return `; ${task.flavor} peers do not report turn ends, so check the reply with inspect_peer`;
-        forwardPeerReply({ peerSessionId: task.sessionId, taskLocalId: task.localId, callerSessionId: client.sessionId })
+        const taskLocalId = task.localId
+        client.trackPeerReplyWatch(() => forwardPeerReply({ peerSessionId: task.sessionId, taskLocalId, callerSessionId: client.sessionId }))
             .catch((error) => logger.debug('[hapiMCP] peer reply forwarding failed:', error));
         return '; its reply will be posted here';
     };

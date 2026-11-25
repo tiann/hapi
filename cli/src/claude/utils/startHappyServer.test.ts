@@ -61,6 +61,7 @@ describe('startHappyServer skill_lookup', () => {
         sendAgentMessage = vi.fn()
         const sessionClient = {
             sessionId: 'parent-id',
+            trackPeerReplyWatch: (watch: () => Promise<void>) => watch(),
             getMetadata: () => ({ name: 'Parent', path: workingDirectory, flavor: 'codex' }),
             updateMetadata: vi.fn(),
             sendAgentMessage,

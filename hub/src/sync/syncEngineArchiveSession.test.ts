@@ -5,6 +5,10 @@ import { SyncEngine } from './syncEngine'
 import { RpcTargetMissingError, RunnerStopRpcError } from './rpcGateway'
 import { ArchiveCleanupError } from './archiveCleanupError'
 import type { SessionCache } from './sessionCache'
+import { Hono } from 'hono'
+import type { Session } from '@hapi/protocol/types'
+import type { WebAppEnv } from '../web/middleware/auth'
+import { createSessionsRoutes } from '../web/routes/sessions'
 
 /**
  * #1910 / #1705: `killSession` is a session-socket RPC. A missing target does
@@ -627,5 +631,56 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
 
         await expect(engine.archiveSession(sessionId)).rejects.toThrow()
         expect(cache().getSession(sessionId)?.active).toBe(true)
+    })
+})
+
+describe('archive of hibernated sessions', () => {
+    const NAMESPACE = 'default'
+
+    it('archives a hibernated row and drops the hibernation marker', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const cache = (engine as unknown as { sessionCache: SessionCache }).sessionCache
+            const id = cache.getOrCreateSession('hibernated-archive', {
+                path: '/tmp/proj', host: 'localhost', flavor: 'claude', startedBy: 'runner', startedFromRunner: true,
+                machineId: 'machine-x', claudeSessionId: 'native-h', lifecycleState: 'hibernated',
+                hibernation: { state: 'hibernated', since: Date.now(), reason: 'idle' },
+            }, null, NAMESPACE).id
+            const gateway = (engine as unknown as { rpcGateway: Record<string, unknown> }).rpcGateway
+            gateway.killSession = async () => { throw new RpcTargetMissingError('KillSession', 'handler-not-registered') }
+            gateway.stopRunnerSession = async () => 'already_gone'
+
+            await engine.archiveSession(id)
+
+            const metadata = cache.getSession(id)?.metadata
+            expect(metadata?.lifecycleState).toBe('archived')
+            expect(metadata?.hibernation).toBeUndefined()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('the archive route accepts an inactive hibernated session', async () => {
+        const archived: string[] = []
+        const session = {
+            id: 'session-1', namespace: NAMESPACE, active: false,
+            metadata: { path: '/tmp', host: 'h', lifecycleState: 'hibernated', startedBy: 'runner' },
+        } as unknown as Session
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true, sessionId: session.id, session }),
+            archiveSession: async (sessionId: string) => { archived.push(sessionId) },
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', NAMESPACE)
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine))
+
+        const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(archived).toEqual(['session-1'])
     })
 })

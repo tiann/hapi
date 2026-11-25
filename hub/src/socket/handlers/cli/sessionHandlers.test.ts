@@ -153,6 +153,21 @@ describe('cli session handlers', () => {
         expect(store.messages.getAllMessages(session.id)[0]).toMatchObject({ localId: 'pending', invokedAt: null })
         store.close()
     })
+    it.each(['stopping', 'hibernated'])('leaves unconsumed prompts queued at hibernation shutdown (%s)', state => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sleep-end', { hibernation: { state, since: 1, reason: 'idle' } }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'pending' } }, 'pending')
+        const socket = new FakeSocket()
+        const sweep = mock()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {}, onSweepImmediateQueued: sweep
+        })
+        socket.trigger('session-end', { sid: session.id, time: Date.now(), reason: 'terminated' })
+        expect(sweep).not.toHaveBeenCalled()
+        expect(store.messages.getImmediateQueuedLocalMessages(session.id)).toMatchObject([{ localId: 'pending', invokedAt: null }])
+        store.close()
+    })
+
     it('mirrors native queued edits/removal without overwriting or deleting a consumed row', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('shared-queue', { capabilities: { concurrentClients: true } }, null, 'default')
@@ -660,6 +675,33 @@ it.each([
             }, () => {})
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata)
                 .toHaveProperty('codexImportedAt', codexImportedAt)
+        } finally {
+            store.close()
+        }
+    })
+
+    it.each([['stopping', 'idle'], ['hibernated', 'hibernated']])('preserves %s state and ordering across CLI archive retries', async (state, lifecycleState) => {
+        const store = new Store(':memory:')
+        try {
+            const metadata = { flavor: 'claude', lifecycleState: 'running' }
+            const row = store.sessions.getOrCreateSession('idle-wrapper', metadata, null, 'default')
+            const marked = { ...metadata, hostPid: 42, hostStartMarker: 'generation', machineId: 'runner', lifecycleState, lifecycleStateSince: 42,
+                hibernation: { state, reason: 'idle', since: 42 } }
+            store.sessions.updateSessionMetadata(row.id, marked, row.metadataVersion, 'default', { touchUpdatedAt: false })
+            const socket = new FakeSocket()
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store, resolveSessionAccess: () => ({ ok: true, value: store.sessions.getSession(row.id)! }), emitAccessError() {}
+            })
+            await Bun.sleep(2)
+            const retry = (version: number, ack: (response: unknown) => void) => socket.trigger('update-metadata', {
+                sid: row.id, expectedVersion: version,
+                metadata: { ...metadata, lifecycleState: 'archived', lifecycleStateSince: 99, archiveReason: 'shutdown' }
+            }, ack)
+            retry(row.metadataVersion, ack => expect(ack).toMatchObject({ result: 'version-mismatch' }))
+            retry(row.metadataVersion + 1, ack => expect(ack).toMatchObject({ result: 'success' }))
+            const stored = store.sessions.getSession(row.id)!
+            expect(stored.metadata).toEqual(marked)
+            expect(stored.updatedAt).toBe(row.updatedAt)
         } finally {
             store.close()
         }

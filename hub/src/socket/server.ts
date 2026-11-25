@@ -38,6 +38,7 @@ export type SocketServerDeps = {
     jwtSecret: Uint8Array
     corsOrigins?: string[]
     getSession?: (sessionId: string) => { active: boolean; namespace: string } | null
+    hibernationInFlight?: (sessionId: string) => boolean
     onWebappEvent?: (event: SyncEvent) => void
     onSessionAlive?: (payload: { sid: string; time: number; thinking?: boolean; mode?: 'local' | 'remote' }) => void
     onSessionReady?: (payload: { sid: string; time: number }) => void
@@ -55,6 +56,7 @@ export function createSocketServer(deps: SocketServerDeps): {
     io: SocketServer
     engine: Engine
     rpcRegistry: RpcRegistry
+    countTerminalsForSession: (sessionId: string) => number
 } {
     const configuration = getConfiguration()
     const corsOrigins = deps.corsOrigins ?? configuration.corsOrigins
@@ -167,10 +169,16 @@ export function createSocketServer(deps: SocketServerDeps): {
         getSession: (sessionId) => {
             return deps.getSession?.(sessionId) ?? deps.store.sessions.getSession(sessionId)
         },
+        hibernationInFlight: deps.hibernationInFlight,
         terminalRegistry,
         maxTerminalsPerSocket,
         maxTerminalsPerSession
     }))
 
-    return { io, engine, rpcRegistry }
+    return {
+        io,
+        engine,
+        rpcRegistry,
+        countTerminalsForSession: (sessionId) => terminalRegistry.countForSession(sessionId)
+    }
 }

@@ -196,6 +196,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
             }
             return store.sessions.getSession(sessionId)
         },
+        hibernationInFlight: id => syncEngine?.blocksSessionInput(id) ?? false,
         onWebappEvent: (event: SyncEvent) => syncEngine?.handleRealtimeEvent(event),
         onSessionAlive: (payload) => syncEngine?.handleSessionAlive(payload),
         onSessionReady: (payload) => syncEngine?.handleSessionReady(payload),
@@ -210,6 +211,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     })
 
     syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
+    syncEngine.setTerminalSessionCounter(socketServer.countTerminalsForSession)
     // Accountable principal for A2A work-graph notify ingest (P3).
     syncEngine.setHubOwnerUserId(await getOrCreateOwnerId())
 

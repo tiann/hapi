@@ -385,6 +385,15 @@ describe('parseSessionPathHref', () => {
 })
 
 describe('formatSessionMentionTooltip', () => {
+    it('labels an inactive hibernated session as Hibernated', () => {
+        const tip = formatSessionMentionTooltip(
+            { id: 'abcdef12-3456', title: 'Sleeper', active: false, lifecycleState: 'hibernated' },
+            'fallback',
+            'abcdef12-3456'
+        )
+        expect(tip.lines[0]).toBe('Session · abcdef12 · Hibernated')
+    })
+
     it('uses full title, active status, ago, short id, and worktree path over metadata path', () => {
         const tip = formatSessionMentionTooltip(
             {

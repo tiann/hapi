@@ -52,7 +52,7 @@ When `auto` cannot confirm a steer after the hub accepted the message, it keeps 
 
 ### Inactive peers
 
-`ping_peer` refuses an inactive target and sends nothing, unless you pass `wake: true` (shell: `--wake`). Waking resumes the session, waits for it to come online (default 60 s; `--wait SECONDS` or `HAPI_WAIT_ACTIVE_SECS`), then queues the message. The shell command exits with code 5 when it refuses an inactive target.
+With `queue` or `auto`, sending to a hibernated peer wakes it even when `wake` is false or omitted. Other inactive targets require `wake: true` (shell: `--wake`) for those modes. Explicit `steer` never wakes an inactive peer. Waking resumes the session, waits for it to come online (default 60 s; `--wait SECONDS` or `HAPI_WAIT_ACTIVE_SECS`), then queues the message. The shell command exits with code 5 when it refuses an inactive target.
 
 Agents are told to wake a peer only when you asked for it or the handed-off work requires that peer to act — never for status or "done" notes — and to message only peers tied to their task: a session you cited, their parent, or sessions they spawned. `list_peers` is a directory, not a broadcast list.
 

@@ -41,8 +41,8 @@ ${chalk.bold('Notes:')}
   Do not reinvent JWT + curl for peer handoffs. Prefer this command or MCP ping_peer / list_peers.
   Resolves by id prefix (8 chars OK). Same hub token/namespace as this CLI.
   Message only peers tied to your task; never broadcast to the --list output.
-  Inactive targets are refused (exit 5) unless --wake, which resumes them via
-  POST /api/sessions/:id/resume first. Wake only when the peer must act, not for FYI.
+  Queue and auto wake a hibernated peer even without --wake. Other inactive peers
+  require --wake for queue or auto (otherwise exit 5). Avoid waking peers for FYI.
   Delivery defaults to auto: steer an active turn when its target supports steering
   and is ready; otherwise queue. If steering cannot be confirmed after acceptance,
   auto keeps the same accepted message without resending; acceptance is not consumption.

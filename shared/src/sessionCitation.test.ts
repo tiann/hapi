@@ -3,6 +3,7 @@ import {
     SESSION_REFERENCE_STEER_SUFFIX,
     SPAWN_PEER_TOOL_DESCRIPTION,
     PEER_DELIVERY_MODE_DESCRIPTION,
+    PEER_WAKE_PARAM_DESCRIPTION,
     PING_PEER_TOOL_DESCRIPTION,
     buildSessionCitationSteerInstruction,
     extractSessionCitationIds,
@@ -101,6 +102,15 @@ describe('normalizeSessionIdPrefix', () => {
 })
 
 describe('buildSessionCitationSteerInstruction', () => {
+    it('describes implicit wake for hibernated peers across MCP parameters, tool help, and citation prompts', () => {
+        const instruction = buildSessionCitationSteerInstruction({ inspectTool: 'inspect_peer', pingTool: 'ping_peer' })
+        for (const text of [instruction, PING_PEER_TOOL_DESCRIPTION, PEER_DELIVERY_MODE_DESCRIPTION, PEER_WAKE_PARAM_DESCRIPTION]) {
+            expect(text).toContain('Queue and auto wake hibernated peers even with wake=false')
+            expect(text).toContain('Other inactive peers require wake=true')
+            expect(text).toContain('Steer never wakes a peer')
+        }
+    })
+
     it('guides collaboration toward auto and preserves explicit modes and retry safety', () => {
         const text = buildSessionCitationSteerInstruction({ inspectTool: 'inspect_peer', pingTool: 'ping_peer' })
         expect(text).toContain(PEER_DELIVERY_MODE_DESCRIPTION)

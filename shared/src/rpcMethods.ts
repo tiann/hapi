@@ -3,6 +3,9 @@ export const DEFAULT_RPC_TIMEOUT_MS = 30_000
 /** expiresAt uses the Runner/target machine's monotonic milliseconds, not wall time. */
 export type SessionStopPreparationLease = { id: string; expiresAt: number }
 
+export type WorkerInspection = { state: 'matching' | 'gone' | 'replaced' | 'unknown'; confirmedWake: boolean; stopState?: 'clear' | 'new-owner' }
+export type InspectWorkerRequest = { sessionId: string; pid: number; startMarker: string; wakeAttemptId?: string }
+
 export const RPC_METHODS = {
     Permission: 'permission',
     Abort: 'abort',
@@ -12,6 +15,7 @@ export const RPC_METHODS = {
     HandoffLocal: 'handoff-local',
     SpawnHappySession: 'spawn-happy-session',
     StopSession: 'stop-session',
+    InspectWorker: 'inspect-worker',
     StopRunner: 'stop-runner',
     ListMachineDirectory: 'list-directory',
     PathExists: 'path-exists',
@@ -28,6 +32,7 @@ export const RPC_METHODS = {
     StatFiles: 'statFiles',
     GetDirectoryTree: 'getDirectoryTree',
     UploadFile: 'uploadFile',
+    ValidateSessionUploads: 'validate-session-uploads',
     UploadInit: 'uploadInit',
     UploadChunk: 'uploadChunk',
     UploadFinalize: 'uploadFinalize',
@@ -91,6 +96,10 @@ export const RPC_METHODS = {
 export const RPC_TARGET_MISSING_ERROR_CODE = 'rpc_target_missing' as const
 
 /** Select the exact machine/PID; the handler still validates the OS start marker. */
+export function getGenerationKillMethod(machineId: string, pid: number): string {
+    return `${RPC_METHODS.KillSession}/generation/${encodeURIComponent(machineId)}/${pid}`
+}
+
 export function getSessionStopPreparationMethod(machineId: string, pid: number): string {
     return `${RPC_METHODS.KillSession}/process/${encodeURIComponent(machineId)}/${pid}`
 }

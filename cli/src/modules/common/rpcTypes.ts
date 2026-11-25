@@ -7,6 +7,7 @@ export interface SpawnSessionOptions {
     sessionId?: string
     // Live hub row id for reopen/resume. Runner stamps `--existing-session-id`.
     existingSessionId?: string
+    wakeAttemptId?: string
     // Hub-preallocated machine-spawn stub. Runner stamps `--hapi-session-id`
     // (adopt-stub create/getOrCreate) — must NOT take the reopen path.
     reservedSessionId?: string

@@ -572,6 +572,73 @@ describe('pingPeer', () => {
         expect(http.post.mock.calls.map(([url]) => url)).toEqual(['http://hub.test/api/auth'])
     })
 
+    it.each(['stopping', 'hibernated'] as const)('auto-resumes a %s target without wake', async state => {
+        const sessionId = 'hibe0000-1111-1111-1111-111111111111'
+        let active = false
+        const http = createHttpMock({
+            post: (url) => {
+                if (url.endsWith('/api/auth')) return { status: 200, data: { token: 'jwt' } }
+                if (url.endsWith(`/api/sessions/${sessionId}/resume`)) {
+                    active = true
+                    return { status: 200, data: { type: 'success', sessionId } }
+                }
+                if (url.endsWith(`/api/sessions/${sessionId}/messages`)) return { status: 200, data: { ok: true } }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => {
+                const session = {
+                    id: sessionId,
+                    active,
+                    metadata: { name: 'Sleeper', flavor: 'claude', lifecycleState: !active && state === 'hibernated' ? 'hibernated' : 'running',
+                        hibernation: active ? undefined : { state } }
+                }
+                return url.endsWith('/api/sessions')
+                    ? { status: 200, data: { sessions: [session] } }
+                    : { status: 200, data: { session } }
+            }
+        })
+
+        const result = await pingPeer({
+            sessionIdPrefix: 'hibe0000',
+            message: 'continue',
+            deliveryMode: 'queue',
+            accessToken: 'tok',
+            apiUrl: 'http://hub.test',
+            waitActiveSecs: 5,
+            http: http as never,
+            sleep: async () => {}
+        })
+
+        expect(result.resumed).toBe(true)
+        expect(http.post.mock.calls.map(([url]) => url)).toContain(`http://hub.test/api/sessions/${sessionId}/resume`)
+    })
+
+    it.each([
+        ['archived', 'archived'],
+        ['plain inactive', null]
+    ] as const)('still refuses a %s target without wake', async (_label, lifecycleState) => {
+        const sessionId = 'arch0000-1111-1111-1111-111111111111'
+        const session = { id: sessionId, active: false, metadata: { name: 'Old', lifecycleState } }
+        const http = createHttpMock({
+            post: (url) => {
+                if (url.endsWith('/api/auth')) return { status: 200, data: { token: 'jwt' } }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => url.endsWith('/api/sessions')
+                ? { status: 200, data: { sessions: [session] } }
+                : { status: 200, data: { session } }
+        })
+
+        await expect(pingPeer({
+            sessionIdPrefix: 'arch0000',
+            message: 'fyi',
+            accessToken: 'tok',
+            apiUrl: 'http://hub.test',
+            http: http as never
+        })).rejects.toMatchObject({ code: 'inactive' })
+        expect(http.post.mock.calls.map(([url]) => url)).toEqual(['http://hub.test/api/auth'])
+    })
+
     it('maps exit codes', () => {
         expect(exitCodeForPingPeerError(new PingPeerError('bad_args', 'x'))).toBe(2)
         expect(exitCodeForPingPeerError(new PingPeerError('resume_failed', 'x'))).toBe(3)

@@ -131,6 +131,7 @@ export function buildSessionMetadata(options: {
         happyLibDir,
         happyToolsDir: resolve(happyLibDir, 'tools', 'unpacked'),
         startedFromRunner: options.startedBy === 'runner',
+        replayableRunnerLaunch: options.startedBy === 'runner' && process.env.HAPI_RUNNER_REPLAYABLE_LAUNCH === '1',
         hostPid: process.pid,
         // Proves which process generation owns hostPid: the runner adopts an
         // untracked runner-started webhook only when this matches the live

@@ -205,7 +205,7 @@ hapi ping-peer <session> --message-file <path|->  # - reads stdin
 | Flag | Description |
 |------|-------------|
 | `--delivery-mode auto\|queue\|steer` | `auto` (default) steers an active turn when the target supports it, otherwise queues. `steer` requires an active turn; `queue` waits for the current turn. |
-| `--wake` | Resume an inactive target first. Without it, inactive targets are refused (exit code 5). |
+| `--wake` | Allow `queue` or `auto` to resume an inactive target. Both modes wake hibernated peers automatically. Other inactive targets require this flag (otherwise exit 5). Explicit `steer` never wakes a peer. |
 
 ### `hapi inspect-peer <session>`
 

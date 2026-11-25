@@ -31,14 +31,14 @@ function ToastProbe() {
     return null
 }
 
-function renderList(sessions: SessionSummary[], api: Partial<ApiClient>) {
+function renderList(sessions: SessionSummary[], api: Partial<ApiClient>, selectedSessionId: string | null = null) {
     toasts = []
     render(
         <QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}>
             <ToastProvider>
                 <I18nProvider>
                     <ToastProbe />
-                    <SessionList sessions={sessions} selectedSessionId={null} onSelect={vi.fn()}
+                    <SessionList sessions={sessions} selectedSessionId={selectedSessionId} onSelect={vi.fn()}
                         onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
                         api={api as ApiClient} />
                 </I18nProvider>
@@ -180,6 +180,18 @@ describe('session row hover archive', () => {
     it('offers no hover archive for sessions that are already disconnected', () => {
         renderList([makeSession({ id: 'closed', active: false })], {})
         expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull()
+    })
+
+    it('offers hover archive for hibernated sessions', async () => {
+        const archiveSession = vi.fn(async () => {})
+        renderList([makeSession({
+            id: 'sleeper',
+            active: false,
+            metadata: { path: '/work/app', name: 'Title sleeper', lifecycleState: 'hibernated' }
+        })], { archiveSession } as Partial<ApiClient>)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
+        await waitFor(() => expect(archiveSession).toHaveBeenCalledWith('sleeper'))
     })
 })
 

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { getHapiBlobsDir } from '@/constants/uploadPaths';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { readBoundedAttachmentFile } from '../attachmentFile';
-import { cleanupUploadDir, isAuthorizedUploadFile, isPathWithinUploadDir, registerUploadHandlers } from './uploads';
+import { cleanupUploadDir, hasActiveChunkedUpload, isAuthorizedUploadFile, isPathWithinUploadDir, registerUploadHandlers } from './uploads';
 
 describe('isPathWithinUploadDir', () => {
     it('accepts only paths under the matching session upload directory', () => {
@@ -59,6 +59,31 @@ describe('isPathWithinUploadDir', () => {
             await cleanupUploadDir(sessionId);
         }
     });
+
+    it('validates only intact uploads registered to the receiving session', async () => {
+        const sessionId = 'upload-validation'
+        let receivingSession = sessionId
+        const handlers = new Map<string, (payload: any) => Promise<any>>()
+        registerUploadHandlers({
+            registerHandler: (name: string, handler: (payload: any) => Promise<any>) => handlers.set(name, handler)
+        } as never, { getSessionId: () => receivingSession })
+        try {
+            const { path } = await handlers.get(RPC_METHODS.UploadFile)!({
+                sessionId, filename: 'input.txt', mimeType: 'text/plain', content: Buffer.from('test').toString('base64')
+            })
+            const check = () => handlers.get(RPC_METHODS.ValidateSessionUploads)!({ files: [{ path, size: 4 }] })
+            expect(await check()).toBe(true)
+            receivingSession = 'other'
+            expect(await check()).toBe(false)
+            receivingSession = sessionId
+            await rename(path, path + '.old')
+            expect(await check()).toBe(false)
+            await writeFile(path, 'fake')
+            expect(await check()).toBe(false)
+        } finally {
+            await cleanupUploadDir(sessionId)
+        }
+    })
 
     it('supports concurrent uploads with the same filename using distinct exclusive paths', async () => {
         const handlers = new Map<string, (payload: any) => Promise<any>>();
@@ -174,6 +199,8 @@ describe('chunked upload handlers', () => {
             });
             expect(initRes).toMatchObject({ success: true, uploadId: expect.any(String) });
 
+            expect(hasActiveChunkedUpload(sessionId)).toBe(true);
+            expect(hasActiveChunkedUpload('other-session')).toBe(false);
             for (let index = 0; index < parts.length; index += 1) {
                 const res = await chunk({
                     sessionId,
@@ -186,6 +213,7 @@ describe('chunked upload handlers', () => {
 
             const finalRes = await finalize({ sessionId, uploadId: initRes.uploadId });
             expect(finalRes).toMatchObject({ success: true, path: expect.any(String) });
+            expect(hasActiveChunkedUpload(sessionId)).toBe(false);
             expect(await readFile(finalRes.path)).toEqual(total);
 
             const info = await stat(finalRes.path);
@@ -313,6 +341,7 @@ describe('chunked upload handlers', () => {
             });
             expect(secondInit.success).toBe(true);
             expect(await abort({ sessionId, uploadId: secondInit.uploadId })).toEqual({ success: true });
+            expect(hasActiveChunkedUpload(sessionId)).toBe(false);
             expect(await abort({ sessionId, uploadId: secondInit.uploadId })).toEqual({ success: true });
             expect(await finalize({ sessionId, uploadId: secondInit.uploadId })).toMatchObject({
                 success: false,
@@ -392,7 +421,9 @@ describe('chunked upload handlers', () => {
             });
             expect(initRes.success).toBe(true);
 
+            expect(hasActiveChunkedUpload(sessionId)).toBe(true);
             await new Promise((resolve) => setTimeout(resolve, 60));
+            expect(hasActiveChunkedUpload(sessionId)).toBe(false);
             expect(await finalize({ sessionId, uploadId: initRes.uploadId })).toMatchObject({
                 success: false,
                 code: 'upload_not_found',

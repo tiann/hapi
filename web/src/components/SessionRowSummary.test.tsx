@@ -144,6 +144,25 @@ describe('SessionRowSummary background status', () => {
         expect(faded!.contains(badge)).toBe(false)
     })
 
+    it('gives hibernated rows a labelled hollow badge and a lighter fade', () => {
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary({
+                    active: false,
+                    backgroundTaskCount: 0,
+                    metadata: { path: '/demo/status', name: 'Sleeper', flavor: 'claude', lifecycleState: 'hibernated' }
+                })} />
+            </I18nProvider>
+        )
+        const badge = container.querySelector('[data-testid="session-presence"]')
+        expect(badge).toHaveAttribute('data-presence', 'hibernated')
+        expect(badge).toHaveAttribute('aria-label', 'Hibernated')
+        expect(badge).toHaveAttribute('title', 'Hibernated')
+        expect(badge?.querySelector('svg')).toBeNull()
+        expect(container.querySelector('.opacity-50')).toBeNull()
+        expect(screen.getByTitle('Sleeper')).toHaveClass('opacity-75')
+    })
+
     it('keeps resident rows at full strength', () => {
         const { container } = render(
             <I18nProvider>

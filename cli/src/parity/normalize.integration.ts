@@ -70,6 +70,13 @@ describe('transcript normalization', () => {
         expect(() => clean([row('message', arg)])).toThrow()
     })
 
+    it('normalizes the generation-bound kill method only for the wrapper PID', () => {
+        const method = 'sid:killSession/generation/machine/'
+        const result = clean([row('rpc-register', { method: method + facts.pid })])
+        expect(result.methods['1']).toEqual([method + '<pid>'])
+        expect(() => clean([row('rpc-register', { method: method + '43' })])).toThrow()
+    })
+
     it('maps the compiled runtime and its tools to the source layout', () => {
         const runtimeDir = '/tmp/parity/hapi/runtime/0.36.5'
         const layout = (dir: string, tools = dir) => [row('update-metadata', {

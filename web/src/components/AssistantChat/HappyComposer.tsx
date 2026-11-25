@@ -115,6 +115,9 @@ export function getComposerEscapeAction(input: {
  *  3. shows a red ring + inline message until the user types or sends.
  */
 export type ComposerSendError = {
+    reuploadPaths?: string[]
+    retryRecovery?: boolean
+    onRestored?: () => void
     id: number
     text: string
     message: string
@@ -306,6 +309,8 @@ export function HappyComposer(props: {
     modelReasoningEffort?: string | null
     effort?: string | null
     active?: boolean
+    lifecycleState?: string | null
+    waking?: boolean
     allowSendWhenInactive?: boolean
     thinking?: boolean
     agentState?: AgentState | null
@@ -433,6 +438,8 @@ export function HappyComposer(props: {
         modelReasoningEffort: rawModelReasoningEffort,
         effort: rawEffort,
         active = true,
+        lifecycleState,
+        waking = false,
         allowSendWhenInactive = false,
         thinking = false,
         agentState,
@@ -631,6 +638,7 @@ export function HappyComposer(props: {
     const userAttachmentGenerationRef = useRef(0)
     const observedAttachmentIdsRef = useRef(new Set(attachments.map((attachment) => attachment.id)))
     const sendRestoreGuardRef = useRef<{
+        attachments: AttachmentDraftInput[]
         userEditGeneration: number
         userScheduleGeneration: number
         userAttachmentGeneration: number
@@ -806,7 +814,7 @@ export function HappyComposer(props: {
                 || userAttachmentGenerationRef.current !== 0
         const textOrAttachmentChanged = composerText.length !== 0 || attachments.length !== 0
 
-        if (interactionChanged || textOrAttachmentChanged) {
+        if ((interactionChanged && !sendError.retryRecovery) || textOrAttachmentChanged || (sendError.retryRecovery && pendingSchedule !== null)) {
             // This error id is now conclusively unsafe. Do not retry if the
             // user later deletes their replacement text or attachment. Clear
             // route-level state as well: a remount otherwise loses this local
@@ -828,6 +836,17 @@ export function HappyComposer(props: {
         restoredErrorIdRef.current = sendError.id
         restoredErrorSnapshotRef.current = { id: sendError.id, text: sendError.text, observed: false }
         api.composer().setText(sendError.text)
+        if (sendError.reuploadPaths && guard) {
+            const files = guard.attachments.filter(({ path }) => path && sendError.reuploadPaths!.includes(path))
+            const restaged = files.map(({ file }) => api.composer().addAttachment(
+                new File([file], file.name, { type: file.type, lastModified: file.lastModified })
+            ))
+            if (files.length > 0 && files.length === sendError.reuploadPaths.length) {
+                void Promise.all(restaged).then(sendError.onRestored).catch(() => {})
+            } else {
+                void Promise.allSettled(restaged)
+            }
+        }
         // `scheduledAt` is already absolute (presets resolve at send time), so
         // restore it through the normal controlled schedule path in the same
         // effect as text. For a pre-mutation rejection this updates the still
@@ -1274,6 +1293,7 @@ export function HappyComposer(props: {
         restoredErrorSnapshotRef.current = null
         if (sendError) onSuppressSendErrorRestore?.(sendError.id)
         sendRestoreGuardRef.current = {
+            attachments: attachmentDraftsRef.current,
             userEditGeneration: userEditGenerationRef.current,
             userScheduleGeneration: userScheduleGenerationRef.current,
             userAttachmentGeneration: userAttachmentGenerationRef.current,
@@ -2356,6 +2376,8 @@ export function HappyComposer(props: {
 
                     <StatusBar
                         active={active}
+                        lifecycleState={lifecycleState}
+                        waking={waking}
                         machineId={machineId}
                         thinking={thinking}
                         agentState={agentState}

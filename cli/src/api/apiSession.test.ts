@@ -2084,6 +2084,40 @@ describe('explicit title action metadata refresh', () => {
 })
 
 describe('ApiSessionClient runtime heartbeat', () => {
+    it('replays validated Pi native identity with its process generation on reconnect', () => {
+        const client = new ApiSessionClient('token', createSession({
+            metadata: { path: '/tmp', host: 'test', flavor: 'pi', hostStartMarker: 'generation' }
+        }))
+        const socket = socketHarness.sockets.at(-1)!
+        socket.triggerConnect()
+        const lastAlive = () => socket.emitted.filter(entry => entry.event === 'session-alive').at(-1)?.args[0]
+        expect(lastAlive()).not.toHaveProperty('nativeResumeReady')
+        client.emitSessionReady('native-id')
+        socket.triggerConnect()
+        expect(lastAlive()).toMatchObject({ nativeResumeReady: { nativeId: 'native-id', pid: process.pid, startMarker: 'generation' } })
+        client.close()
+    })
+
+    it('advertises overlapping peer reply watches through reconnect until the last one settles', async () => {
+        const client = new ApiSessionClient('token', createSession())
+        const socket = socketHarness.sockets.at(-1)!
+        socket.triggerConnect()
+        const lastAlive = () => socket.emitted.filter(entry => entry.event === 'session-alive').at(-1)?.args[0]
+        let finish!: () => void
+        let timeout!: (err: Error) => void
+        const first = client.trackPeerReplyWatch(() => new Promise<void>(resolve => { finish = resolve }))
+        const second = client.trackPeerReplyWatch(() => new Promise<void>((_, reject) => { timeout = reject }))
+        expect(lastAlive()).toMatchObject({ hasPeerReplyWatch: true })
+        finish()
+        await first
+        socket.triggerConnect()
+        expect(lastAlive()).toMatchObject({ hasPeerReplyWatch: true })
+        timeout(new Error('watch expired'))
+        await expect(second).rejects.toThrow('watch expired')
+        expect(lastAlive()).toMatchObject({ hasActiveUpload: false, hasPeerReplyWatch: false })
+        client.close()
+    })
+
     it('replays the latest runtime when the socket connects (#2053)', () => {
         const client = new ApiSessionClient('token', createSession())
         const socket = socketHarness.sockets.at(-1)!
@@ -2095,7 +2129,7 @@ describe('ApiSessionClient runtime heartbeat', () => {
 
         socket.triggerConnect()
         expect(socket.emitted.filter((entry) => entry.event === 'session-alive').map((entry) => entry.args[0])).toEqual([
-            { sid: client.sessionId, time: expect.any(Number), thinking: true, mode: 'remote', permissionMode: 'bypassPermissions' }
+            { sid: client.sessionId, time: expect.any(Number), thinking: true, mode: 'remote', permissionMode: 'bypassPermissions', hasActiveUpload: false, hasPeerReplyWatch: false }
         ])
         client.close()
     })

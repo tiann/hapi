@@ -27,7 +27,7 @@ import {
     type PathExistsResponse,
     type PrepareCursorImportRpcResponse
 } from '@hapi/protocol/apiTypes'
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { RPC_METHODS, type InspectWorkerRequest, type WorkerInspection } from '@hapi/protocol/rpcMethods'
 import { RUNNER_CAPABILITIES } from '@hapi/protocol'
 import type { RunnerState, Machine, MachineMetadata } from './types'
 import { RunnerStateSchema, MachineMetadataSchema } from './types'
@@ -101,6 +101,7 @@ import { getAgentQuotasResponse } from '@/agent/agentQuotas'
 export { normalizeWindowsDriveRoot } from './machinePathPolicy'
 
 type MachineRpcHandlers = {
+    inspectWorker?: (request: InspectWorkerRequest) => Promise<WorkerInspection>
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
     stopSession: (
         sessionId: string,
@@ -633,7 +634,13 @@ export class ApiMachineClient {
         return this.pathPolicy.isWithinSpawnRoots(resolvedCwd)
     }
 
-    setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
+    setRPCHandlers({ spawnSession, stopSession, requestShutdown, inspectWorker }: MachineRpcHandlers): void {
+        if (inspectWorker) this.rpcHandlerManager.registerHandler(RPC_METHODS.InspectWorker, async (data: InspectWorkerRequest) => {
+            if (!data?.sessionId || !Number.isSafeInteger(data.pid) || data.pid <= 1 || typeof data.startMarker !== 'string' || !data.startMarker) {
+                return { state: 'unknown', confirmedWake: false }
+            }
+            return inspectWorker(data)
+        })
         this.rpcHandlerManager.registerHandler(RPC_METHODS.ForkArchivedCodex, async (raw: unknown) => {
             const request = ForkArchivedCodexRequestSchema.parse(raw)
             const { forkArchivedCodex } = await import('@/codex/shared/archivedFork')
@@ -661,6 +668,7 @@ export class ApiMachineClient {
                 directory,
                 sessionId,
                 existingSessionId,
+                ...(typeof params.wakeAttemptId === 'string' ? { wakeAttemptId: params.wakeAttemptId } : {}),
                 reservedSessionId,
                 resumeSessionId,
                 machineId,
@@ -694,6 +702,7 @@ export class ApiMachineClient {
                         errorMessage: result.errorMessage,
                         code: result.code,
                         agent: result.agent,
+                        ...(result.childStarted === false ? { childStarted: false } : {}),
                     }
             }
         })

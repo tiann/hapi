@@ -377,7 +377,7 @@ exec /bin/ps "$@"
     }
   });
 
-  it.skipIf(process.platform !== 'linux')('keeps an unverifiable record through stop and releases a later heartbeat mismatch without exit tombstones', async () => {
+  it.skipIf(process.platform !== 'linux')('keeps an unverifiable record and records logical exit on a later positive heartbeat mismatch', async () => {
     const pid = await spawnUnrelatedProcess();
     const sessionId = randomUUID();
     const record: ResumeRecord = {
@@ -406,8 +406,11 @@ exec /bin/ps "$@"
     writeFileSync(fixture.modeFile, 'replace');
     await waitFor(async () => !readResumeRecords().some(item => item.requestedSessionId === sessionId));
     expect(isProcessAlive(pid)).toBe(true);
-    expectNoExitTombstone(sessionId, pid);
-    expect(await stopRunnerSession(sessionId)).toBe('unknown');
+    const exits: string[] = JSON.parse(readFileSync(verifiedExitFile, 'utf8'));
+    expect(exits).toContain(sessionId);
+    expect(exits).not.toContain(`PID-${pid}`);
+    expect(await stopRunnerSession(sessionId)).toBe('already_gone');
+    expect(isProcessAlive(pid)).toBe(true);
   });
 
   it.skipIf(process.platform !== 'linux')('preserves an adopted process and its record when stop cannot verify its generation', async () => {

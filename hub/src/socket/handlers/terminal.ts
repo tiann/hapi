@@ -25,6 +25,7 @@ const terminalCloseSchema = z.object({
 export type TerminalHandlersDeps = {
     io: SocketServer
     getSession: (sessionId: string) => { active: boolean; namespace: string } | null
+    hibernationInFlight?: (sessionId: string) => boolean
     terminalRegistry: TerminalRegistry
     maxTerminalsPerSocket: number
     maxTerminalsPerSession: number
@@ -94,6 +95,11 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         const session = getSession(sessionId)
         if (!namespace || !session || session.namespace !== namespace || !session.active) {
             emitTerminalError(terminalId, 'Session is inactive or unavailable.')
+            return
+        }
+
+        if (deps.hibernationInFlight?.(sessionId)) {
+            emitTerminalError(terminalId, 'Session is hibernating.')
             return
         }
 

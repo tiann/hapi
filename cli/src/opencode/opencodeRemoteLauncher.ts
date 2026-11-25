@@ -502,7 +502,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // falling back to a blank native session would show inherited
         // messages the model cannot actually see (same fence as grok).
         const currentMetadata = initialSnapshot?.metadata ?? session.client.getMetadata();
-        const strictForkResume = !initialSnapshot || currentMetadata?.forkedFrom != null || currentMetadata?.opencodeRewind != null;
+        const wake = currentMetadata?.hibernation?.wake;
+        if (wake && (wake.flavor !== 'opencode' || resumeSessionId !== wake.nativeId)) {
+            throw new Error('OpenCode wake requires the recorded native session');
+        }
+        const strictForkResume = !!wake || !initialSnapshot || currentMetadata?.forkedFrom != null || currentMetadata?.opencodeRewind != null;
         // Fork provenance persists; strict history availability is needed only
         // until the hub commits the child's first validated readiness.
         const strictHistoryVerification = currentMetadata?.opencodeForkPending === true;
@@ -1065,7 +1069,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             void this.conversationHistory.probeCapabilities(this.historyProbeAbortController.signal).catch(() => {});
         }
         if ((resumeSessionId || strictForkResume) && typeof session.client.emitSessionReady === 'function') {
-            session.client.emitSessionReady();
+            session.client.emitSessionReady(acpSessionId === resumeSessionId && !startedFreshAfterResumeFailure ? acpSessionId : undefined);
         }
 
         // Seed currentBackendModel from the ACP session metadata so the first

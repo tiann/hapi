@@ -1,6 +1,6 @@
 import { RpcHandlerManager } from "@/api/rpc/RpcHandlerManager";
 import { logger } from "@/lib";
-import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods';
+import { DEFAULT_RPC_TIMEOUT_MS, getGenerationKillMethod, getSessionStopPreparationMethod, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods';
 import { getProcessStartMarker } from '@/utils/process';
 import { monotonicTimeMs } from '@/utils/time';
 
@@ -104,6 +104,14 @@ export function registerKillSessionHandler(
         };
     };
     rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(RPC_METHODS.KillSession, killSession);
+    if (machineId) {
+        rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(getGenerationKillMethod(machineId, process.pid), async request => {
+            if (request?.expectedMachineId !== machineId || request.expectedPid !== process.pid || !request.expectedProcessStartMarker) {
+                throw new Error('Generation-bound shutdown requires the exact preparation target');
+            }
+            return killSession(request);
+        });
+    }
     if (machineId && lifecycle.beforeKill) {
         rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(
             getSessionStopPreparationMethod(machineId, process.pid), async (request) => {

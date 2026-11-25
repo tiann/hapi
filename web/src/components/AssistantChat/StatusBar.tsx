@@ -3,6 +3,7 @@ import {
     getCopilotAgentModeLabel,
     getPermissionModeLabel,
     getPermissionModeTone,
+    isHibernatedLifecycleState,
     isPermissionModeAllowedForFlavor
 } from '@hapi/protocol'
 import type { PermissionModeTone } from '@hapi/protocol'
@@ -63,7 +64,9 @@ function getConnectionStatus(
     pendingRequests: readonly PendingRequestEntry[],
     voiceStatus: ConversationStatus | undefined,
     backgroundTaskCount: number,
-    t: (key: string) => string
+    t: (key: string) => string,
+    hibernated = false,
+    waking = false
 ): { text: string; color: string; dotColor: string; isPulsing: boolean; hasPendingRequests: boolean } {
     // Voice connecting takes priority
     if (voiceStatus === 'connecting') {
@@ -72,6 +75,26 @@ function getConnectionStatus(
             color: 'text-[#007AFF]',
             dotColor: 'bg-[#007AFF]',
             isPulsing: true,
+            hasPendingRequests: false
+        }
+    }
+
+    if (!active && hibernated && waking) {
+        return {
+            text: t('session.composer.waking'),
+            color: 'text-[#007AFF]',
+            dotColor: 'bg-[#007AFF]',
+            isPulsing: true,
+            hasPendingRequests: false
+        }
+    }
+
+    if (!active && hibernated) {
+        return {
+            text: t('session.item.hibernated'),
+            color: 'text-[#999]',
+            dotColor: 'bg-[#999]',
+            isPulsing: false,
             hasPendingRequests: false
         }
     }
@@ -253,6 +276,10 @@ function InputTranslationChip(props: StatusBarInputTranslation) {
 export function StatusBar(props: {
     inputTranslation?: StatusBarInputTranslation
     active: boolean
+    /** Session `metadata.lifecycleState`; `hibernated` replaces the offline label. */
+    lifecycleState?: string | null
+    /** Pre-send resume of a hibernated session is in flight. */
+    waking?: boolean
     /** Session machine; enables the plan-quota readout next to the context meter. */
     machineId?: string | null
     thinking: boolean
@@ -287,8 +314,17 @@ export function StatusBar(props: {
         [props.agentState?.requests]
     )
     const connectionStatus = useMemo(
-        () => getConnectionStatus(props.active, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount ?? 0, t),
-        [props.active, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount, t]
+        () => getConnectionStatus(
+            props.active,
+            props.thinking,
+            pendingRequests,
+            props.voiceStatus,
+            props.backgroundTaskCount ?? 0,
+            t,
+            isHibernatedLifecycleState(props.lifecycleState),
+            props.waking ?? false
+        ),
+        [props.active, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount, t, props.lifecycleState, props.waking]
     )
 
     const contextHeuristicModel = props.contextModel ?? props.model

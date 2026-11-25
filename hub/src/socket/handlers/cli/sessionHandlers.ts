@@ -27,6 +27,9 @@ function gateExternalRefs(metadata: unknown): unknown {
 }
 
 type SessionAlivePayload = {
+    hasPeerReplyWatch?: boolean
+    hasActiveUpload?: boolean
+    nativeResumeReady?: { nativeId: string; pid: number; startMarker: string }
     sid: string
     time: number
     thinking?: boolean
@@ -94,11 +97,12 @@ const HUB_OWNED_METADATA_KEYS = [
     'jobsTransferredToSessionId',
     'jobKeyRedirects',
     'promptTitle',
-    'translateInput'
+    'translateInput',
+    'hibernation'
 ] as const
 
-function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
-    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return incoming
+function preserveHubOwnedMetadata(incoming: unknown, current: unknown): { metadata: unknown; touchUpdatedAt: boolean } {
+    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return { metadata: incoming, touchUpdatedAt: true }
     const next = { ...(incoming as Record<string, unknown>) }
     const existing = current && typeof current === 'object' && !Array.isArray(current)
         ? current as Record<string, unknown>
@@ -111,7 +115,21 @@ function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown 
     if (rewind && ['reserved', 'prepared', 'unknown'].includes(rewind.phase ?? '')) {
         for (const key of ['opencodeHistoryCheckpoint', 'conversationHistoryIndexes', 'conversationHistoryPoints']) next[key] = existing[key]
     }
-    return next
+    const state = (existing.hibernation as { state?: string } | undefined)?.state
+    const preserveHibernation = next.lifecycleState === 'archived' && (
+        (state === 'hibernated' && existing.lifecycleState === 'hibernated')
+        || (state === 'stopping' && (existing.lifecycleState === 'running' || existing.lifecycleState === 'idle'))
+    )
+    if (preserveHibernation) {
+        for (const key of ['machineId', 'hostPid', 'hostStartMarker']) {
+            if (next[key] === undefined && existing[key] !== undefined) next[key] = existing[key]
+        }
+        next.lifecycleState = existing.lifecycleState
+        next.lifecycleStateSince = existing.lifecycleStateSince
+        delete next.archivedBy
+        delete next.archiveReason
+    }
+    return { metadata: next, touchUpdatedAt: !preserveHibernation }
 }
 
 export type SessionHandlersDeps = {
@@ -347,11 +365,13 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
+        const updateMetadata = preserveHubOwnedMetadata(gatedMetadata, sessionAccess.value.metadata)
         const result = store.sessions.updateSessionMetadata(
             sid,
-            preserveHubOwnedMetadata(gatedMetadata, sessionAccess.value.metadata),
+            updateMetadata.metadata,
             expectedVersion,
-            sessionAccess.value.namespace
+            sessionAccess.value.namespace,
+            { touchUpdatedAt: updateMetadata.touchUpdatedAt }
         )
         if (result.result === 'success') {
             cb({ result: 'success', version: result.version, metadata: result.value })
@@ -615,8 +635,8 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // Shared Codex execution exit is suspension, not consumption. Its native
         // queue ledger proves which messages can be replayed on ordinary resume.
         // Never stamp pending/uncertain input as executed, including on archive.
-        const sharedCodex = (sessionAccess.value.metadata as Metadata | null)?.capabilities?.concurrentClients
-        if (data.reason !== 'cleared' && !sharedCodex) {
+        const metadata = sessionAccess.value.metadata as Metadata | null
+        if (data.reason !== 'cleared' && !metadata?.capabilities?.concurrentClients && !metadata?.hibernation) {
             try {
                 onSweepImmediateQueued?.(data.sid, Date.now())
             } catch (err) {
