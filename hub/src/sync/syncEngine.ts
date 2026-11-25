@@ -16,7 +16,7 @@ import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOu
 import { FORK_PREVIEW_TAIL_ROWS, type ForkBoundary, type ForkBoundaryErrorCode, type ForkPreviewRequest, type ForkPreviewResponse, type ForkPreviewRow } from '@hapi/protocol/forkBoundary'
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
-import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
 import type { CopilotReasoningEffortResponse, ImplementCodexPlanResult, KimiReasoningEffortResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, ExternalRef, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
@@ -106,6 +106,10 @@ import { getSettingsFile, readSettingsOrThrowCached } from '../config/settings'
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
 type PtyResumeAttempt = NonNullable<NonNullable<Session['metadata']>['ptyResumeAttempt']>
+
+// Two 30s keepalive-expiry windows, and four times the 15s activation wait a
+// booting child gets after a spawn request.
+const UNREACHABLE_WRAPPER_QUIET_MS = 60_000
 
 export type { Session, SyncEvent } from '@hapi/protocol/types'
 export type { Machine } from './machineCache'
@@ -232,6 +236,13 @@ export class SyncEngine {
     // can still be honored for the exact killed generation while its archive
     // is in flight.
     private readonly archiveDrainedGenerations = new Map<string, { machineId: string; pid: number; processStartMarker: string }>()
+    // Reopen asked the runner to stop this exact unreachable wrapper process;
+    // only its prepare-stop, before the deadline, may skip the drain that
+    // needs the wrapper's own socket.
+    private readonly unreachableWrapperStops = new Map<string, { pid: number; deadline: number }>()
+    // A wrapper spawned before this hub process started may still be booting;
+    // this hub has no record of when it was requested.
+    private readonly startedAt = Date.now()
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
     private readonly machineCache: MachineCache
@@ -3789,6 +3800,14 @@ export class SyncEngine {
         try {
             result = await requestPreparation()
         } catch (error) {
+            // An unreachable wrapper cannot drain. Reopen proved this process
+            // unreachable and asked for its stop; it must still be unreachable
+            // now, right before the runner signals it.
+            const stop = this.unreachableWrapperStops.get(sessionId)
+            if (error instanceof RpcTargetMissingError && stop?.pid === pid
+                && Date.now() < stop.deadline && !this.rpcGateway.isSessionConnected(sessionId)) {
+                return 'not_required'
+            }
             // KillSession's beforeKill drain may already have completed while
             // the CLI's async cleanup closed the session socket: honor the
             // remembered drained generation for this exact target instead of
@@ -6070,12 +6089,48 @@ export class SyncEngine {
         // Not active and not archived (e.g. brand-new session that has not yet connected,
         // or one that ended without writing archive metadata). Forward to resume so the
         // operator still gets one-click revival.
+        await this.stopUnreachableRunnerWrapper(session)
         const resumeResult = await this.resumeSessionUnlocked(access.sessionId, namespace)
         if (resumeResult.type === 'error') {
             return resumeResult
         }
 
         return { type: 'success', sessionId: resumeResult.sessionId, resumed: true }
+    }
+
+    /**
+     * A runner child that lost its hub socket but never exited keeps the
+     * runner's spawn dedupe for this id, so resume would only rejoin it.
+     * Stop it first once it has been unreachable past the quiet period; a
+     * child from a recent spawn request may still be booting and is kept.
+     */
+    private async stopUnreachableRunnerWrapper(session: Session): Promise<void> {
+        const metadata = session.metadata
+        const machineId = metadata?.machineId
+        if (session.active || !metadata || !machineId) return
+        if (metadata.flavor === 'codex') return
+        if (metadata.startedBy !== 'runner' && metadata.startedFromRunner !== true) return
+        const pid = metadata.hostPid
+        if (!(typeof pid === 'number' && pid > 0)) return
+        const quietSince = Math.max(session.activeAt, this.rpcGateway.lastSpawnRequestAt(session.id) ?? 0, this.startedAt)
+        if (Date.now() - quietSince < UNREACHABLE_WRAPPER_QUIET_MS) return
+        if (this.rpcGateway.isSessionConnected(session.id)) return
+
+        // Same budget as the stop RPC: a prepare-stop arriving later belongs
+        // to a stop this reopen no longer waits for.
+        this.unreachableWrapperStops.set(session.id, { pid, deadline: Date.now() + DEFAULT_RPC_TIMEOUT_MS })
+        const log = { sessionId: session.id, machineId, pid }
+        try {
+            const status = await this.rpcGateway.stopRunnerSession(machineId, session.id, { timeoutMs: DEFAULT_RPC_TIMEOUT_MS })
+            console.warn(`[reopen] Stop of an unreachable runner wrapper before resume: ${status}`, log)
+        } catch (error) {
+            // Resume below reports the machine or spawn failure.
+            console.warn('[reopen] Stop of an unreachable runner wrapper before resume failed', {
+                ...log, error: error instanceof Error ? error.message : String(error)
+            })
+        } finally {
+            this.unreachableWrapperStops.delete(session.id)
+        }
     }
 
     async handoffSessionToLocal(sessionId: string, namespace: string): Promise<LocalHandoffResult> {

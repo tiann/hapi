@@ -173,6 +173,20 @@ export class RpcGateway {
     ) {
     }
 
+    // Last spawn request per HAPI id, so a child that may still be booting is
+    // never taken for an unreachable one.
+    private readonly spawnRequestedAt = new Map<string, number>()
+
+    lastSpawnRequestAt(sessionId: string): number | undefined {
+        return this.spawnRequestedAt.get(sessionId)
+    }
+
+    /** True while any CLI socket for this session is connected or still serves its KillSession RPC. */
+    isSessionConnected(sessionId: string): boolean {
+        if (this.rpcRegistry.getSocketIdForMethod(`${sessionId}:${RPC_METHODS.KillSession}`)) return true
+        return (this.io.of('/cli').adapter.rooms.get(`session:${sessionId}`)?.size ?? 0) > 0
+    }
+
     async approvePermission(
         sessionId: string,
         requestId: string,
@@ -346,6 +360,8 @@ export class RpcGateway {
             childStarted?: boolean
         }
     > {
+        const requestedSessionId = reservedSessionId ?? existingSessionId
+        if (requestedSessionId) this.spawnRequestedAt.set(requestedSessionId, Date.now())
         try {
             const result = await this.machineRpc(
                 machineId,
@@ -379,6 +395,7 @@ export class RpcGateway {
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
                 if (obj.type === 'success' && typeof obj.sessionId === 'string') {
+                    this.spawnRequestedAt.set(obj.sessionId, Date.now())
                     return { type: 'success', sessionId: obj.sessionId }
                 }
                 if (obj.type === 'error' && typeof obj.errorMessage === 'string') {
