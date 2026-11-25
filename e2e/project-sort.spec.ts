@@ -169,6 +169,26 @@ test('reopens a fork preview for the same row after cancel and after confirm', a
 })
 
 
+test('keeps Archive all pending after the active project moves into history', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=combined-count&archivePending=1`)
+    const project = page.getByTitle('/projects/mine', { exact: true })
+    await expect(project).toHaveCount(2)
+    await project.first().click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Archive all', exact: true }).click()
+    const dialog = page.getByRole('dialog')
+    await dialog.getByRole('button', { name: 'Archive', exact: true }).click()
+    await expect(dialog.getByRole('button', { name: /^Archiving/ })).toBeDisabled()
+    await page.evaluate(() => window.updateProjectSession('mine-session', { active: false }))
+    await expect(project).toHaveCount(1)
+    await expect(dialog.getByRole('button', { name: /^Archiving/ })).toBeDisabled()
+    await expect(dialog).toContainText('Archive 1 sessions')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-archive-all-pending-after-disconnect.png`, fullPage: true })
+    await page.evaluate(() => window.finishProjectArchive())
+    await expect(dialog).toHaveCount(0)
+})
+
+
 test('reopened archive dialog follows the pending request for its row', async ({ page }) => {
     await page.goto(`${fixtureUrl}?mode=combined-count&archivePending=1`)
     const row = page.getByRole('button', { name: /Mine task/ })

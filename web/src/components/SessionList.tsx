@@ -23,7 +23,7 @@ import { LinkPrDialog } from '@/components/LinkPrDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
 import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
-import { ProjectGroupRow } from '@/components/ProjectGroupRow'
+import { ProjectArchiveDialog, ProjectGroupRow } from '@/components/ProjectGroupRow'
 import { ArchiveIcon, CheckIcon, CopyIcon, InfoIcon, LoaderIcon, MarkAllReadIcon, PinOffIcon } from '@/components/icons'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
@@ -2105,6 +2105,7 @@ export function SessionList(props: {
     const [exportTargetId, setExportTargetId] = useState<string | null>(null)
     const [linkPrTargetId, setLinkPrTargetId] = useState<string | null>(null)
     const [archiveTargetId, setArchiveTargetId] = useState<string | null>(null)
+    const [projectArchiveTarget, setProjectArchiveTarget] = useState<{ key: string; displayName: string } | null>(null)
     const [forkTargetId, setForkTargetId] = useState<string | null>(null)
     const forkTarget = props.sessions.find(session => session.id === forkTargetId) ?? null
     const archiveTarget = props.sessions.find(session => session.id === archiveTargetId) ?? null
@@ -2740,6 +2741,14 @@ export function SessionList(props: {
         () => new Map(groupSessionsByDirectory(props.sessions).map((group) => [group.key, group.sessions])),
         [props.sessions]
     )
+    const archivableProjectSessions = (key: string, fallback: SessionSummary[] = []) => (
+        (projectSessionsByKey.get(key) ?? fallback).filter(session => session.active || isLiveLifecycleState(session.metadata?.lifecycleState))
+    )
+    const requestProjectArchive = (group: SessionGroup, displayName: string) => (
+        api && archivableProjectSessions(group.key, group.sessions).length > 0
+            ? () => setProjectArchiveTarget({ key: group.key, displayName })
+            : undefined
+    )
     const actionOnlyGroups = useMemo(() => {
         if (effectivePinInProgressMode === 'off') {
             return []
@@ -3025,8 +3034,7 @@ export function SessionList(props: {
                     className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] min-w-0 w-full select-none"
                     directory={group.directory}
                     displayName={groupTitle}
-                    sessions={projectSessionsByKey.get(group.key) ?? group.sessions}
-                    api={api}
+                    onArchiveAll={requestProjectArchive(group, groupTitle)}
                     onNewSession={getNewSessionInGroup(group)}
                 >
                     <span className="font-medium text-sm truncate flex-1">
@@ -3109,8 +3117,7 @@ export function SessionList(props: {
                     className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] cursor-pointer min-w-0 w-full select-none"
                     directory={group.directory}
                     displayName={groupTitle}
-                    sessions={projectSessionsByKey.get(group.key) ?? group.sessions}
-                    api={api}
+                    onArchiveAll={requestProjectArchive(group, groupTitle)}
                     onClick={() => toggleGroup(stateKey, isCollapsed)}
                     expanded={!isCollapsed}
                     onNewSession={getNewSessionInGroup(group)}
@@ -4063,6 +4070,15 @@ export function SessionList(props: {
                     api={api}
                     onSelect={props.onSelect}
                     onClose={() => setForkTargetId(current => current === forkTarget.id ? null : current)}
+                />
+            ) : null}
+            {projectArchiveTarget ? (
+                <ProjectArchiveDialog
+                    key={projectArchiveTarget.key}
+                    api={api}
+                    displayName={projectArchiveTarget.displayName}
+                    sessionIds={archivableProjectSessions(projectArchiveTarget.key).map(session => session.id)}
+                    onClose={() => setProjectArchiveTarget(current => current === projectArchiveTarget ? null : current)}
                 />
             ) : null}
             {archiveTarget ? (

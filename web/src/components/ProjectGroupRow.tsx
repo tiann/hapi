@@ -1,8 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { MutationObserver, useMutation, useQueryClient } from '@tanstack/react-query'
-import { isLiveLifecycleState } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
-import type { SessionSummary } from '@/types/api'
 import { useTranslation } from '@/lib/use-translation'
 import { useAddToast } from '@/lib/toast-context'
 import { safeCopyToClipboard } from '@/lib/clipboard'
@@ -14,35 +12,21 @@ import { sessionArchiveMutationKey } from '@/hooks/mutations/useSessionActions'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveIcon, CopyIcon, PlusIcon } from '@/components/icons'
 
-// Same liveness the hub archive route accepts.
-function isArchivable(session: SessionSummary): boolean {
-    return session.active || isLiveLifecycleState(session.metadata?.lifecycleState)
-}
-
-/**
- * Sidebar project-group header row with a right-click / long-press menu.
- * `sessions` is the whole project group (not just the filtered rows), so
- * "Archive all" also reaches rows floated into the pinned sections.
- */
+/** Sidebar project-group header row with a right-click / long-press menu. */
 export function ProjectGroupRow(props: {
     className: string
     directory: string
     displayName: string
-    sessions: SessionSummary[]
-    api: ApiClient | null
+    onArchiveAll?: () => void
     onClick?: () => void
     expanded?: boolean
     onNewSession?: () => void
     children: ReactNode
 }) {
-    const { directory, displayName, api, onClick, onNewSession } = props
+    const { directory, displayName, onArchiveAll, onClick, onNewSession } = props
     const { t } = useTranslation()
     const { haptic } = usePlatform()
-    const addToast = useAddToast()
-    const queryClient = useQueryClient()
     const [menuPoint, setMenuPoint] = useState<{ x: number; y: number } | null>(null)
-    const [confirmOpen, setConfirmOpen] = useState(false)
-    const liveSessions = props.sessions.filter(isArchivable)
 
     const closeMenu = () => setMenuPoint(null)
     const { menuRef, menuStyle } = useAnchoredMenu({
@@ -56,32 +40,6 @@ export function ProjectGroupRow(props: {
         onLongPress: (point) => {
             haptic.impact('medium')
             setMenuPoint(point)
-        }
-    })
-
-    const archiveAll = useMutation({
-        mutationFn: async () => {
-            if (!api) return
-            // Per-session archive key so row spinners and the delete dialog's
-            // waiting-for-archive guard see each request.
-            const results = await Promise.allSettled(liveSessions.map((s) => {
-                const observer = new MutationObserver(queryClient, {
-                    mutationKey: sessionArchiveMutationKey(s.id),
-                    mutationFn: () => api.archiveSession(s.id)
-                })
-                // Detach once settled so the mutation can be garbage-collected.
-                return observer.mutate().finally(() => observer.reset())
-            }))
-            void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
-            const failed = results.filter((r) => r.status === 'rejected').length
-            if (failed > 0) {
-                addToast({
-                    title: t('dialog.archive.error'),
-                    body: t('dialog.archiveAll.failed', { n: failed, total: results.length }),
-                    sessionId: '',
-                    url: ''
-                })
-            }
         }
     })
 
@@ -155,28 +113,67 @@ export function ProjectGroupRow(props: {
                             {t('sessions.group.new')}
                         </button>
                     ) : null}
-                    {api && liveSessions.length > 0 ? (
-                        <button type="button" role="menuitem" className={itemClassName} onClick={run(() => setConfirmOpen(true))}>
+                    {onArchiveAll ? (
+                        <button type="button" role="menuitem" className={itemClassName} onClick={run(onArchiveAll)}>
                             <ArchiveIcon className={iconClassName} />
                             {t('sessions.group.archiveAll')}
                         </button>
                     ) : null}
                 </div>
             ) : null}
-
-            {confirmOpen ? (
-                <ConfirmDialog
-                    isOpen
-                    onClose={() => setConfirmOpen(false)}
-                    title={t('sessions.group.archiveAll')}
-                    description={t('dialog.archiveAll.description', { n: liveSessions.length, name: displayName })}
-                    confirmLabel={t('dialog.archive.confirm')}
-                    confirmingLabel={t('dialog.archive.confirming')}
-                    onConfirm={archiveAll.mutateAsync}
-                    isPending={archiveAll.isPending}
-                    destructive
-                />
-            ) : null}
         </>
+    )
+}
+
+/** Owned by the list so moving between Combined sections does not unmount the request. */
+export function ProjectArchiveDialog({ api, displayName, sessionIds, onClose }: {
+    api: ApiClient | null
+    displayName: string
+    sessionIds: string[]
+    onClose: () => void
+}) {
+    const { t } = useTranslation()
+    const addToast = useAddToast()
+    const queryClient = useQueryClient()
+    const archiveAll = useMutation({
+        mutationFn: async (sessionIds: string[]) => {
+            if (!api) return
+            // Per-session archive key so row spinners and the delete dialog's
+            // waiting-for-archive guard see each request.
+            const results = await Promise.allSettled(sessionIds.map((sessionId) => {
+                const observer = new MutationObserver(queryClient, {
+                    mutationKey: sessionArchiveMutationKey(sessionId),
+                    mutationFn: () => api.archiveSession(sessionId)
+                })
+                // Detach once settled so the mutation can be garbage-collected.
+                return observer.mutate().finally(() => observer.reset())
+            }))
+            void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+            const failed = results.filter((r) => r.status === 'rejected').length
+            if (failed > 0) {
+                addToast({
+                    title: t('dialog.archive.error'),
+                    body: t('dialog.archiveAll.failed', { n: failed, total: results.length }),
+                    sessionId: '',
+                    url: ''
+                })
+            }
+        }
+    })
+
+    const submittedIds = archiveAll.isPending ? archiveAll.variables : sessionIds
+    return (
+        <ConfirmDialog
+            isOpen
+            onClose={onClose}
+            title={t('sessions.group.archiveAll')}
+            description={t('dialog.archiveAll.description', { n: submittedIds.length, name: displayName })}
+            confirmLabel={t('dialog.archive.confirm')}
+            confirmingLabel={t('dialog.archive.confirming')}
+            onConfirm={() => archiveAll.mutateAsync(sessionIds)}
+            isPending={archiveAll.isPending}
+            isConfirmDisabled={!api || sessionIds.length === 0}
+            destructive
+        />
     )
 }
