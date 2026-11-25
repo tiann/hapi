@@ -267,6 +267,7 @@ const jumpStartGap = fixtureParams.has('jumpStartGap')
 const promptJumpGap = jumpStartGap && fixtureParams.has('promptJumpGap')
 const loadedPromptPreload = fixtureParams.has('loadedPromptPreload')
 const lateSteerJump = fixtureParams.has('lateSteerJump')
+const batchedReply = fixtureParams.has('batchedReply')
 let fixtureEpoch = 1
 let fixtureSteerConfirmed = false
 const rekeyReply = fixtureParams.has('rekeyReply')
@@ -275,6 +276,10 @@ const allMessages: DecryptedMessage[] = rekeyReply ? [
     createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Prompt from the older page' } }),
     createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Earlier part of the reply' } } }),
     createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Last part of the reply' } } }),
+] : batchedReply ? [
+    { ...createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'First accepted batch member' } }), localId: 'batch-first' },
+    { ...createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Last accepted batch member' } }), localId: 'batch-last' },
+    createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply to the accepted batch' } } }),
 ] : lateSteerJump ? [
     createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Original fixture prompt' } }),
     createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Unconfirmed correction' } }),
@@ -324,7 +329,7 @@ const allMessages: DecryptedMessage[] = rekeyReply ? [
 })
 
 if (cachedReentry) {
-    const cachedMessages = allMessages.slice(-200)
+    const cachedMessages = allMessages.slice(fixtureParams.has('cachedJump') ? -1 : -200)
     const cachedOldest = cachedMessages[0]
     const cachedNewest = cachedMessages.at(-1)
     if (!cachedOldest || !cachedNewest) throw new Error('Expected cached fixture messages')
@@ -367,6 +372,12 @@ function pageFrom(messages: DecryptedMessage[], overrides: Partial<MessagesRespo
 const fakeApi = {
     getHubSettings: async () => ({ sessionSummaryInChat: false }),
     getMachines: async () => ({ machines: [] }),
+    searchSessionContentMatches: async () => ({
+        matches: [{ messageId: 'm-3', role: 'assistant', seq: 3, createdAt: BASE_AT + 3,
+            snippet: 'Last part of the reply', truncated: false }],
+        total: 1,
+        hasPotentiallyIncompleteResults: false
+    }),
     getGeneratedImageBlob: async () => new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160"><rect width="240" height="160" fill="lightblue"/></svg>'], { type: 'image/svg+xml' }),
     getMessages: async (requestedSessionId: string, query: {
         limit?: number
@@ -382,7 +393,7 @@ const fakeApi = {
         let direction = 'latest'
         if (query.beforeSeq != null || query.beforeAt != null) direction = 'before'
         else if (query.afterSeq != null || query.afterAt != null) direction = 'after'
-        const limit = direction === 'latest' && loadedPromptPreload ? 2
+        const limit = direction === 'latest' && (loadedPromptPreload || batchedReply) ? 2
             : direction === 'latest' && rekeyReply ? 1
             : direction === 'latest' && !coldInitial && !cachedReentry && !sessionSwitch ? 200 : requestedLimit
         if (jumpStartGap && direction === 'before' && query.beforeSeq === 201 && !beforeResponseGate) window.__probe.holdBefore()
@@ -468,7 +479,11 @@ const fakeSession = {
     active: true,
     thinking: false,
     agentState: null,
-    metadata: { path: '/tmp/fixture', host: 'fixture' }
+    metadata: { path: '/tmp/fixture', host: 'fixture', ...(batchedReply ? {
+        flavor: 'codex', capabilities: { concurrentClients: true },
+        conversationHistoryTurns: { 'batch-first': 'native-turn', 'batch-last': 'native-turn' },
+        conversationHistoryPoints: { 'batch-first': true }
+    } : {}) }
 } as unknown as Session
 
 const noopSend = () => {}
@@ -534,7 +549,7 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
 
     return (
         <AssistantRuntimeProvider runtime={runtime}>
-            {(loadedPromptPreload || lateSteerJump) && <style>{'[data-hapi-message-role="assistant"] { min-height: 1800px; }'}</style>}
+            {(loadedPromptPreload || lateSteerJump || batchedReply) && <style>{'[data-hapi-message-role="assistant"] { min-height: 1800px; }'}</style>}
             {navigationShell ? (
                 <header data-testid="navigation-header" className="flex h-[76px] shrink-0 items-center p-3">
                     <button type="button" onClick={() => setOutlineOpen(true)}>Open history</button>
@@ -568,6 +583,7 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
                 outlineItems={navigationShell ? buildConversationOutline(reconciled.blocks) : []}
                 onOutlineOpenChange={setOutlineOpen}
                 initialTargetMessageId={fixtureParams.get('target') ?? undefined}
+                initialTargetMessageQuery={fixtureParams.get('targetQuery') ?? undefined}
                 searchRequestId={fixtureParams.has('target') ? 1 : 0}
                 targetHighlightKind={fixtureParams.has('target') ? 'search' : undefined}
             />

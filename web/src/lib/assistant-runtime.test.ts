@@ -8,7 +8,8 @@ import {
     findLatestCompletedBoundaryId,
     getBlockPresentationTimestamp,
     getResponseGroupTimestamps,
-    buildAssistantReplyTargets
+    buildAssistantReplyTargets,
+    sharedCodexTurnContinuations
 } from './assistant-runtime'
 import { reconcileChatBlocks } from '@/chat/reconcile'
 import type { AgentEventBlock, AgentTextBlock, CliOutputBlock, ToolCallBlock, UserTextBlock } from '@/chat/types'
@@ -380,6 +381,23 @@ describe('buildAssistantReplyTargets', () => {
             agentText('answer', { invokedAt: 3_000 })
         ])
         expect(buildAssistantReplyTargets(blocks).get('agent-text:answer')).toBe('user-text:original')
+    })
+
+    it('uses the first proven Shared Codex batch input, not a later member with the same invocation time', () => {
+        const continuations = sharedCodexTurnContinuations({ path: '/test', host: 'local', flavor: 'codex',
+            capabilities: { concurrentClients: true },
+            conversationHistoryTurns: { first: 'turn', last: 'turn', separate: 'next' },
+            conversationHistoryPoints: { first: true, separate: true }
+        })
+        const first = userText('msg-first', { invokedAt: 1_000, localId: 'first' })
+        const last = userText('msg-last', { invokedAt: 1_000, localId: 'last' })
+        const answer = agentText('answer')
+        const next = userText('msg-next', { invokedAt: 1_000, localId: 'separate' })
+        expect(buildAssistantReplyTargets(assignThreadMessageIds([first, last, answer]), continuations).get('agent-text:answer'))
+            .toBe('user-text:msg-first')
+        expect(buildAssistantReplyTargets(assignThreadMessageIds([last, answer]), continuations).has('agent-text:answer')).toBe(false)
+        expect(buildAssistantReplyTargets(assignThreadMessageIds([first, last, next, answer]), continuations).get('agent-text:answer'))
+            .toBe('user-text:msg-next')
     })
 
     it('retargets a reply when a late acknowledgement adds only the steered flag', () => {

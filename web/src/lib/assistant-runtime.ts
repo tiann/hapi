@@ -44,6 +44,7 @@ export type HappyChatMessageMetadata = {
     attachments?: AttachmentMetadata[]
     invokedAt?: number | null
     steered?: boolean
+    nativeTurnContinuation?: boolean
     durationMs?: number
     usage?: UsageData
     model?: string | null
@@ -374,11 +375,33 @@ export type BlockWithThreadMessageId = {
  * metadata from its first block, so assigning the target to every block keeps
  * the relationship intact regardless of where a joined response starts.
  */
+const NO_TURN_CONTINUATIONS: ReadonlyMap<string, string> = new Map()
+
+export function sharedCodexTurnContinuations(metadata: Session['metadata']): ReadonlyMap<string, string> {
+    if (metadata?.flavor !== 'codex' || metadata.capabilities?.concurrentClients !== true) return NO_TURN_CONTINUATIONS
+    const continuations = new Map<string, string>()
+    const turns = metadata.conversationHistoryTurns ?? {}
+    const firstByTurn = new Map<string, string | null>()
+    for (const [localId, isBoundary] of Object.entries(metadata.conversationHistoryPoints ?? {})) {
+        const turnId = turns[localId]
+        if (!isBoundary || !turnId) continue
+        // An ambiguous turn boundary is not enough evidence to group rows.
+        firstByTurn.set(turnId, firstByTurn.has(turnId) ? null : localId)
+    }
+    for (const [localId, turnId] of Object.entries(turns)) {
+        const first = firstByTurn.get(turnId)
+        if (first && first !== localId) continuations.set(localId, first)
+    }
+    return continuations.size ? continuations : NO_TURN_CONTINUATIONS
+}
+
 export function buildAssistantReplyTargets(
-    blocks: readonly BlockWithThreadMessageId[]
+    blocks: readonly BlockWithThreadMessageId[],
+    turnContinuations?: ReadonlyMap<string, string>
 ): Map<string, string | null> {
     const targets = new Map<string, string | null>()
     let latestUserMessageId: string | null | undefined
+    const inputsByLocalId = new Map<string, string>()
 
     for (const { block, threadMessageId } of blocks) {
         const role = visibleBlockRole(block)
@@ -386,7 +409,18 @@ export function buildAssistantReplyTargets(
             const isPending = block.invokedAt === null
             const isFailedOrSteered = block.kind === 'user-text' && (block.status === 'failed' || block.steered === true)
             if (!isPending && !isFailedOrSteered) {
-                latestUserMessageId = block.kind === 'user-text' && isSystemNoteMeta(block.meta) ? null : threadMessageId
+                const localId = block.kind === 'user-text' ? block.localId : null
+                const first = localId ? turnContinuations?.get(localId) : undefined
+                if (first) {
+                    // Undefined leaves the footer available to page back to
+                    // the boundary instead of pointing at the later member.
+                    latestUserMessageId = inputsByLocalId.get(first)
+                } else {
+                    latestUserMessageId = block.kind === 'user-text' && isSystemNoteMeta(block.meta) ? null : threadMessageId
+                    if (localId && latestUserMessageId && turnContinuations?.size) {
+                        inputsByLocalId.set(localId, latestUserMessageId)
+                    }
+                }
             }
             continue
         }
@@ -1073,9 +1107,13 @@ export function useHappyRuntime(props: {
         [props.blocks]
     )
 
+    const turnContinuations = useMemo(
+        () => sharedCodexTurnContinuations(props.session.metadata),
+        [props.session.metadata]
+    )
     const replyTargets = useMemo(
-        () => buildAssistantReplyTargets(blocksWithThreadIds),
-        [blocksWithThreadIds]
+        () => buildAssistantReplyTargets(blocksWithThreadIds, turnContinuations),
+        [blocksWithThreadIds, turnContinuations]
     )
 
     const convertBlock = useCallback(
@@ -1089,7 +1127,8 @@ export function useHappyRuntime(props: {
             const replyToMessageId = replyTargets.get(threadMessageId)
             const sourceMessageIds = sourceMessageIdsByBlock.get(block)
             const replySourceMessageIds = replySourceMessageIdsByBlock.get(block)
-            if (!aggregate && replyToMessageId === undefined
+            const nativeTurnContinuation = block.kind === 'user-text' && block.localId != null && turnContinuations.has(block.localId)
+            if (!aggregate && replyToMessageId === undefined && !nativeTurnContinuation
                 && (!sourceMessageIds || sourceMessageIds.length === 0)
                 && (!replySourceMessageIds || replySourceMessageIds.length === 0)) return message
             const existing = message.metadata?.custom as HappyChatMessageMetadata | undefined
@@ -1108,13 +1147,14 @@ export function useHappyRuntime(props: {
                             roundSummary: aggregate.roundSummary
                         } : {}),
                         replyToMessageId,
+                        ...(nativeTurnContinuation ? { nativeTurnContinuation: true } : {}),
                         ...(sourceMessageIds && sourceMessageIds.length > 0 ? { sourceMessageIds } : {}),
                         ...(replySourceMessageIds && replySourceMessageIds.length > 0 ? { replySourceMessageIds } : {})
                     } satisfies HappyChatMessageMetadata
                 }
             }
         },
-        [aggregates, replyTargets, responseGroupTimestamps, sourceMessageIdsByBlock, replySourceMessageIdsByBlock]
+        [aggregates, replyTargets, responseGroupTimestamps, sourceMessageIdsByBlock, replySourceMessageIdsByBlock, turnContinuations]
     )
 
     // Use cached message converter for performance optimization

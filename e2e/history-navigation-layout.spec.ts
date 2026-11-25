@@ -208,6 +208,41 @@ test('selecting an outline item reveals it after the mobile composer returns', a
 })
 
 
+test('a cached re-entry cannot reclaim the viewport after a footer jump', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&rekeyReply=1&cachedReentry=1&cachedJump=1&holdLatest=1')
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Last part of the reply' })
+    await reply.getByRole('button', { name: 'Jump to conversation start' }).press('Enter')
+    await expect(page.getByText('Loading earlier messages…', { exact: true })).toBeVisible()
+    await page.evaluate(() => window.__probe.releaseLatest())
+    await expect.poll(() => page.evaluate(() => window.__probe.requests.some(r => r.direction === 'before'))).toBe(true)
+    await page.evaluate(() => window.__probe.releaseBefore())
+    const oldest = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Prompt from the older page' })
+    await expect(oldest).toBeFocused()
+    await expect(page.getByText('Reached conversation start', { exact: true })).toBeVisible()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-cached-tail-keeps-footer-jump.png` })
+})
+
+
+test('the jump feedback stays below the search toolbar on a narrow viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 780 })
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&rekeyReply=1&target=m-3&targetQuery=Last')
+    const toolbar = page.getByTestId('search-match-navigation')
+    await expect(toolbar).toBeVisible()
+    await expect(toolbar.getByRole('button', { name: 'Next match' })).toBeEnabled()
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Last part of the reply' })
+    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter')
+    const feedback = page.getByTestId('history-navigation-status')
+    await expect(feedback).toContainText('Loading turn input')
+    const toolbarBox = (await toolbar.boundingBox())!
+    const feedbackBox = (await feedback.boundingBox())!
+    expect(feedbackBox.y).toBeGreaterThanOrEqual(toolbarBox.y + toolbarBox.height)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-search-and-feedback.png` })
+    await page.evaluate(() => window.__probe.releaseBefore())
+})
+
+
 test('keeps a footer destination when search recentering is still scheduled', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&rekeyReply=1&target=m-3')
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Last part of the reply' })
@@ -285,6 +320,22 @@ test('keeps the initiating prompt through a reconnect during a long reply jump',
     await expect(prompt).toBeInViewport()
     const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
     if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-reconnect-keeps-prompt.png` })
+})
+
+
+test('a reply jumps to the first accepted Codex batch member, even across a page', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&batchedReply=1')
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply to the accepted batch' })
+    await expect.poll(async () => (await geometry(page)).chatScrollTop).toBeGreaterThan(500)
+    await expect(page.getByText('First accepted batch member', { exact: true })).toHaveCount(0)
+    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter', { timeout: 7_000 })
+    const first = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'First accepted batch member' })
+    await expect(first).toBeFocused()
+    await expect(first).toBeInViewport()
+    await expect(page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Last accepted batch member' })).toHaveCount(0)
+    await expect(page.getByText('Loading turn input…', { exact: true })).toHaveCount(0)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-codex-batch-first.png` })
 })
 
 

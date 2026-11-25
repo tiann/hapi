@@ -67,6 +67,9 @@ export function HappyUserMessage() {
     const steered = useAuiState(({ message }) => (
         message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
     )?.steered === true)
+    const nativeTurnContinuation = useAuiState(({ message }) => (
+        message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+    )?.nativeTurnContinuation === true)
     const cliText = useAuiState((s) => {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         if (custom?.kind !== 'cli-output') return ''
@@ -92,7 +95,7 @@ export function HappyUserMessage() {
         )
     }
 
-    const isTurnInput = !steered && isTurnInputMessage(invokedAt, status)
+    const isTurnInput = !steered && !nativeTurnContinuation && isTurnInputMessage(invokedAt, status)
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
     const showStatus = shouldShowMessageStatus(status)

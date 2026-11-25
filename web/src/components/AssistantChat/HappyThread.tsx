@@ -785,13 +785,14 @@ function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
 export function ConversationStartStatus(props: {
     status: NavigationStatus
     kind?: NavigationFeedbackKind
+    belowSearchToolbar?: boolean
 }) {
     const { t } = useTranslation()
     const prompt = props.kind === 'prompt'
     const loading = props.status === 'loading'
     const success = props.status === 'success'
     const active = loading || success
-    const badgeClass = "pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 text-xs font-medium text-[var(--app-fg)] shadow-lg"
+    const badgeClass = `pointer-events-none absolute left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 text-xs font-medium text-[var(--app-fg)] shadow-lg ${props.belowSearchToolbar ? 'top-12' : 'top-3'}`
 
     return (
         <>
@@ -3064,6 +3065,9 @@ export function HappyThread(props: {
     const jumpToPrompt = useCallback(async (messageId: string, replyToMessageId?: string, focusTarget = false): Promise<boolean> => {
         if (navigationInFlightRef.current) return false
         const wasTailFollowing = autoScrollEnabledRef.current && atBottomRef.current
+        // A cached re-entry's late initial-scroll effect must not reclaim
+        // a viewport the reader already asked to navigate explicitly.
+        userCancelledInitialTailRef.current = true
         const runId = navigationRunRef.current
         const heldWindow = holdHistoryNavigationWindow(props.sessionId)
         historyNavigationWindowRef.current = heldWindow
@@ -3126,7 +3130,7 @@ export function HappyThread(props: {
         const wasTailFollowing = autoScrollEnabledRef.current && atBottomRef.current
         // A short, fully loaded conversation is already at both ends. There
         // is no scroll event to restore tail follow if we enter history mode.
-        if (!hasMoreMessagesRef.current && currentViewport
+        if (!isSyncingTailRef.current && !hasMoreMessagesRef.current && currentViewport
             && currentViewport.scrollTop <= 1
             && currentViewport.scrollHeight - currentViewport.clientHeight <= 1) {
             if (focusTarget) focusFirstConversationMessage(currentViewport)
@@ -3138,6 +3142,9 @@ export function HappyThread(props: {
             conversationStartStatusTimerRef.current = window.setTimeout(() => setConversationStartStatus('idle'), 1400)
             return true
         }
+        // A cached re-entry's late initial-scroll effect must not reclaim
+        // a viewport the reader already asked to navigate explicitly.
+        userCancelledInitialTailRef.current = true
         const runId = navigationRunRef.current
         const heldWindow = holdHistoryNavigationWindow(props.sessionId)
         historyNavigationWindowRef.current = heldWindow
@@ -3621,6 +3628,7 @@ export function HappyThread(props: {
                 <ConversationStartStatus
                     status={navigationFeedback.status}
                     kind={navigationFeedback.kind}
+                    belowSearchToolbar={hasSearchTarget}
                 />
                 <ThreadPrimitive.Viewport
                     asChild
