@@ -241,6 +241,22 @@ test('conversation start waits for epoch verification of complete cached history
     if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-verified-rewind.png` })
 })
 
+test('a gap during cached navigation requests a fresh epoch before confirming a jump', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&cachedReentry=1&cachedComplete=1&holdLatest=1')
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Cached reply before rewind' })
+    const latestCount = () => page.evaluate(() => window.__probe.requests.filter(r => r.direction === 'latest').length)
+    await expect.poll(latestCount).toBe(1)
+    await reply.getByRole('button', { name: 'Jump to conversation start' }).press('Enter')
+    await expect.poll(latestCount).toBe(2)
+    await page.evaluate(() => { void window.__probe.gap(2) })
+    await expect.poll(latestCount).toBe(3)
+    await page.evaluate(() => window.__probe.releaseLatest())
+    await expect(page.getByText('Current history after rewind')).toBeInViewport()
+    await expect(page.getByText('Reached conversation start', { exact: true })).toHaveCount(0)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-post-gap-epoch.png` })
+})
+
 test('reports a failed reconnect probe instead of confirming conversation start', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&cachedComplete=1')
     await expect.poll(async () => (await geometry(page)).chatScrollTop).toBeGreaterThan(300)

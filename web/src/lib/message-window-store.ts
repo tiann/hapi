@@ -140,10 +140,11 @@ const sessionAccessOrder = new Map<string, true>()
 const listeners = new Map<string, Set<() => void>>()
 const tailSyncControllers = new Map<string, TailSyncController>()
 const messageWindowTargetLocks = new Set<string>()
+type HeldHistoryProbe = { wait: Promise<void>; supersede: () => void }
 type HeldHistoryNavigation = {
     epoch: number
     owner: symbol
-    probe?: Promise<void>
+    probe?: HeldHistoryProbe
     epochCheckPending?: boolean
     recovery?: { api: ApiClient; after: MessagePosition | null }
     catchUpNeeded?: boolean
@@ -1483,6 +1484,10 @@ function releaseHeldHistory(sessionId: string, window: HeldHistoryNavigation): v
     }
 }
 
+async function waitForHeldHistoryProbe(window: HeldHistoryNavigation): Promise<void> {
+    while (window.probe) await window.probe.wait
+}
+
 /** Keep explicit history navigation intact across background reconciliation. */
 export function holdHistoryNavigationWindow(sessionId: string, api?: ApiClient): HistoryNavigationWindow | null {
     const initial = getState(sessionId)
@@ -1514,12 +1519,12 @@ export function holdHistoryNavigationWindow(sessionId: string, api?: ApiClient):
     return {
         isCurrent,
         verify: async () => {
-            await window.probe
+            await waitForHeldHistoryProbe(window)
             return isCurrent() && !window.epochCheckPending
         },
         verifyStart: async () => {
             const oldestSeq = getState(sessionId).oldestSeq
-            await window.probe
+            await waitForHeldHistoryProbe(window)
             const state = getState(sessionId)
             return isCurrent() && !window.epochCheckPending && !state.hasMore && state.oldestSeq === oldestSeq
         },
@@ -1532,7 +1537,7 @@ export function holdHistoryNavigationWindow(sessionId: string, api?: ApiClient):
                     void recoverWindowAfterGapResume(window.recovery.api, sessionId)
                 }
             }
-            if (window.probe) void window.probe.then(finishWhenReconciled)
+            if (window.probe) void waitForHeldHistoryProbe(window).then(finishWhenReconciled)
             else finishWhenReconciled()
         }
     }
@@ -1541,14 +1546,20 @@ export function holdHistoryNavigationWindow(sessionId: string, api?: ApiClient):
 function reconcileHeldHistoryNavigation(api: ApiClient, sessionId: string, requireEpochCheck = false): Promise<void> | null {
     const held = heldHistoryWindows.get(sessionId)
     if (!held) return null
-    if (requireEpochCheck) held.epochCheckPending = true
-    if (held.probe) return held.probe
+    const previousProbe = held.probe
+    if (requireEpochCheck) {
+        // An SSE gap can hide a rewind that happened after the existing
+        // request took its snapshot. Only a request started now can verify it.
+        held.epochCheckPending = true
+    } else if (previousProbe) {
+        return previousProbe.wait
+    }
     const initial = getState(sessionId)
     // Bind the reconnect to the cursor before any live SSE can advance it.
     const recovery = held.recovery ??= { api, after: getNewestCursor(initial) }
     recovery.api = api
     const requestBaseline = new Map(initial.messages.map(message => [message.id, message]))
-    const isCurrent = () => heldHistoryWindows.get(sessionId) === held
+    const isCurrent = () => heldHistoryWindows.get(sessionId) === held && held.probe === probe
     const reset = async () => {
         markMessageWindowForLatestReset(sessionId, getState(sessionId).messages)
         await syncTailMessages(api, sessionId)
@@ -1565,7 +1576,9 @@ function reconcileHeldHistoryNavigation(api: ApiClient, sessionId: string, requi
                 : previous
         }, true)
     }
-    const probe = api.getMessages(sessionId, { limit: PAGE_SIZE }).then(async response => {
+    let supersede!: () => void
+    const superseded = new Promise<void>(resolve => { supersede = resolve })
+    const request = api.getMessages(sessionId, { limit: PAGE_SIZE }).then(async response => {
         if (!isCurrent()) return
         if (response.page.epoch !== held.epoch) return reset()
         // Refresh retained rows, never splice a disconnected latest page into
@@ -1601,9 +1614,12 @@ function reconcileHeldHistoryNavigation(api: ApiClient, sessionId: string, requi
     }).catch(() => {
         // Keep the visible history if the reconnect request itself fails.
         if (isCurrent()) held.catchUpNeeded = true
-    }).finally(() => { held.probe = undefined })
+    }).finally(() => { if (held.probe === probe) held.probe = undefined })
+    const probe: HeldHistoryProbe = { wait: Promise.race([request, superseded]), supersede }
     held.probe = probe
-    return probe
+    // Don't let a superseded or stalled request hold up navigation.
+    previousProbe?.supersede()
+    return probe.wait
 }
 
 export function syncTailMessages(
