@@ -2320,6 +2320,25 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `switching away from a known skill replaces its trailing plus before another reference`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val cpp17 = SkillSummary("c++17")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("c++"), cpp17))
+        vm.start()
+
+        val caret = "Run \$c++".length
+        vm.onComposerChange("Run \$c++\$lint", caret, caret)
+        testScheduler.runCurrent()
+        vm.selectSkillSuggestion(vm.skillSuggestions.value.single { it.skill == cpp17 })
+        testScheduler.runCurrent()
+
+        assertEquals("Run \$c++17\$lint", vm.composer.value.text)
+        assertEquals("Run \$c++17".length, vm.composer.value.caretPosition)
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+    }
+
+    @Test
     fun `qualified Claude skills match past the colon and replace the existing qualified word`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel

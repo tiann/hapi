@@ -70,8 +70,13 @@ internal object SkillSuggestions {
     /** Exact catalogue tokens outrank partial suffixes that only match the selected skill. */
     fun replacementEnd(token: Token, skill: SkillSummary, knownNames: Set<String>, maxNameLength: Int): Int {
         val word = if (token.trailingPlusBeforeReference) {
-            // Preserve the separator unless the plus completes the selected name.
-            if (skillNameKey(token.word.substring(1)) == skillNameKey(skill.name)) return token.end
+            val fullName = token.word.substring(1)
+            val fullNameKey = skillNameKey(fullName)
+            // Preserve the separator unless the plus completes the selected name,
+            // or the caret is already after the full name of another known skill.
+            if (fullNameKey == skillNameKey(skill.name) || (token.query == fullName && fullNameKey in knownNames)) {
+                return token.end
+            }
             token.word.dropLast(1)
         } else token.word
         var start = minOf(token.query.length + 1, word.length) // Include '$'.
