@@ -258,7 +258,7 @@ export class RpcGateway {
     async stopRunnerSession(
         machineId: string,
         sessionId: string,
-        opts?: { processStartMarker?: string; timeoutMs?: number }
+        opts?: { processStartMarker?: string; timeoutMs?: number; checkOnly?: boolean }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
         const timeoutMs = opts?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS
         const started = performance.now()
@@ -267,6 +267,7 @@ export class RpcGateway {
             result = await this.machineRpc(machineId, RPC_METHODS.StopSession, {
                 sessionId,
                 ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
+                ...(opts?.checkOnly ? { checkOnly: true } : {}),
             }, timeoutMs)
         } catch (error) {
             if (error instanceof RpcTargetMissingError) throw error

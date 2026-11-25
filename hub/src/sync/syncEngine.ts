@@ -3948,9 +3948,58 @@ export class SyncEngine {
                     throw new ArchiveCleanupError('working')
                 }
             } else if (hasDurableLiveWork(liveBeforeStop)) {
-                // Heartbeat-expired: ignore stale requests, still honor durable
-                // thinking / derivedToolWork / background (#2021 Major).
-                throw new ArchiveCleanupError('working')
+                // Heartbeat-expired durable evidence can strand Archive after a
+                // Runner restart that recorded verified exit without emitting
+                // session-child-exited. Probe checkOnly first; retire the dead
+                // generation when already_gone, else keep 409 (#2021 Approach).
+                const meta = liveBeforeStop.metadata
+                const reconcileMachineId = meta?.codexResumePending?.machineId ?? meta?.machineId
+                const reconcileRunnerSpawned = Boolean(meta?.codexResumePending)
+                    || meta?.startedBy === 'runner'
+                    || meta?.startedFromRunner === true
+                let reconciledGone = false
+                if (reconcileMachineId && reconcileRunnerSpawned) {
+                    const probe = async (id: string, processStartMarker?: string) => {
+                        const timeoutMs = Math.ceil(deadline - performance.now())
+                        if (timeoutMs <= 0) throw new ArchiveCleanupError('timeout')
+                        try {
+                            return await this.rpcGateway.stopRunnerSession(reconcileMachineId, id, {
+                                timeoutMs,
+                                checkOnly: true,
+                                ...(processStartMarker ? { processStartMarker } : {}),
+                            })
+                        } catch (error) {
+                            if (error instanceof RunnerStopRpcError && error.timedOut) {
+                                throw new ArchiveCleanupError('timeout', error)
+                            }
+                            // Missing/unreachable runner — cannot prove exit.
+                            return 'unknown' as const
+                        }
+                    }
+                    let status = await probe(sessionId)
+                    if (status === 'unknown') {
+                        const hostPid = meta?.hostPid
+                        const hostStartMarker = typeof meta?.hostStartMarker === 'string'
+                            ? meta.hostStartMarker
+                            : undefined
+                        if (typeof hostPid === 'number' && hostPid > 0) {
+                            status = await probe(`PID-${hostPid}`, hostStartMarker)
+                        }
+                    }
+                    if (status === 'already_gone') {
+                        this.store.messages.retireOpenChildToolWork(sessionId)
+                        this.sessionCache.setBackgroundTasks(sessionId, [])
+                        this.sessionCache.noteDerivedWork(
+                            sessionId,
+                            this.store.messages.getLiveToolWork(sessionId),
+                        )
+                        const after = this.sessionCache.getSession(sessionId)
+                        reconciledGone = Boolean(after && !hasDurableLiveWork(after))
+                    }
+                }
+                if (!reconciledGone) {
+                    throw new ArchiveCleanupError('working')
+                }
             }
         }
         // tiann/hapi#916 / #1910: KillSession is a session-socket RPC. A missing

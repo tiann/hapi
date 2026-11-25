@@ -1746,10 +1746,81 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // own intentional PIDs and releases the ones this attempt did not
     // terminate: a preserved shared wrapper or a child the stop left alive
     // must not suppress its later real unexpected exit.
+    /**
+     * Non-signaling exit probe for archive reconciliation after Runner restart
+     * (#2021 Approach). Never tree-kills; never marks intentional stops.
+     */
+    const probeSessionExit = async (
+      sessionId: string,
+      opts?: { processStartMarker?: string },
+    ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+      if (hasVerifiedExit(sessionId)) return 'already_gone';
+
+      if (sessionId.startsWith('PID-')) {
+        const pid = parseInt(sessionId.slice(4), 10);
+        if (!Number.isFinite(pid) || pid <= 0) return 'unknown';
+        if (!isProcessAlive(pid)) {
+          rememberVerifiedExit(sessionId);
+          return 'already_gone';
+        }
+        const expected = opts?.processStartMarker;
+        if (expected) {
+          const current = getProcessStartMarker(pid);
+          if (!current || current !== expected) return 'unknown';
+        }
+        return 'still_alive';
+      }
+
+      for (const [pid, session] of pidToTrackedSession) {
+        const matches = session.happySessionId === sessionId
+          || session.requestedHappySessionId === sessionId
+          || Boolean(session.sharedSessions?.[sessionId]);
+        if (!matches) continue;
+        if (isProcessAlive(pid)) return 'still_alive';
+      }
+
+      for (const [pid, record] of persistedResumeProcesses) {
+        if (record.requestedSessionId !== sessionId && record.confirmedSessionId !== sessionId) continue;
+        if (isProcessAlive(pid)) {
+          const generation = probeRecoveredProcessGeneration(pid, record);
+          if (generation === 'exited') continue;
+          return 'still_alive';
+        }
+      }
+
+      for (const [pid, requested] of pidToRequestedSessionId) {
+        if (requested !== sessionId) continue;
+        if (isProcessAlive(pid)) return 'still_alive';
+      }
+      for (const [pid, confirmed] of pidToConfirmedSessionId) {
+        if (confirmed !== sessionId) continue;
+        if (isProcessAlive(pid)) return 'still_alive';
+      }
+
+      try {
+        const { readRuntimes, runtimeAuthHash } = await import('@/codex/shared/registry');
+        const records = (await readRuntimes({ strict: true })).filter((runtime) =>
+          runtime.hub === configuration.apiUrl
+          && runtime.authHash === runtimeAuthHash()
+          && Boolean(runtime.sessions[sessionId]?.active),
+        );
+        if (records.length > 0) return 'still_alive';
+      } catch {
+        // Registry unreadable — do not invent already_gone.
+        return 'unknown';
+      }
+
+      if (hasVerifiedExit(sessionId)) return 'already_gone';
+      return 'unknown';
+    };
+
     const stopSession = coalesceStopRequests(async (
       sessionId: string,
-      opts?: { processStartMarker?: string }
+      opts?: { processStartMarker?: string; checkOnly?: boolean }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+      if (opts?.checkOnly) {
+        return probeSessionExit(sessionId, opts);
+      }
       const intentional = markIntentionalStop(sessionId);
       const terminated = new Set<number>();
       try {

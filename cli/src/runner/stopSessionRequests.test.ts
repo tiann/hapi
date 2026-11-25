@@ -25,3 +25,19 @@ it('does not share stop evidence across PID generations and releases failed oper
     await request('PID-100', { processStartMarker: 'old' }).catch(String)
     expect(stop).toHaveBeenCalledTimes(3)
 })
+
+it('does not join checkOnly probes into a kill coalesce queue (#2021 Approach)', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const stop = vi.fn(async (_id: string, opts?: { checkOnly?: boolean }) => {
+        if (!opts?.checkOnly) await gate
+        return opts?.checkOnly ? 'already_gone' : 'stopped'
+    })
+    const request = coalesceStopRequests(stop)
+    const kill = request('session-a')
+    const probe = request('session-a', { checkOnly: true })
+    expect(stop).toHaveBeenCalledTimes(2)
+    expect(await probe).toBe('already_gone')
+    release()
+    expect(await kill).toBe('stopped')
+})

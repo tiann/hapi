@@ -699,14 +699,17 @@ export class ApiMachineClient {
         })
 
         this.rpcHandlerManager.registerHandler(RPC_METHODS.StopSession, async (params: any) => {
-            const { sessionId, processStartMarker } = params || {}
+            const { sessionId, processStartMarker, checkOnly } = params || {}
             if (!sessionId) {
                 throw new Error('Session ID is required')
             }
 
             const status = await stopSession(
                 sessionId,
-                typeof processStartMarker === 'string' ? { processStartMarker } : undefined
+                {
+                    ...(typeof processStartMarker === 'string' ? { processStartMarker } : {}),
+                    ...(checkOnly === true ? { checkOnly: true } : {}),
+                }
             )
             return { status }
         })
