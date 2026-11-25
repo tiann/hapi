@@ -61,7 +61,7 @@ class SessionFilterSpecimenTest {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {}
                 SessionFilterSheet(
                     state = state(),
-                    onSelectSort = {}, onSetActiveFirst = {}, onSelectStatus = {}, onSetUnreadOnly = {},
+                    onSetGrouped = {}, onSelectSort = {}, onSetActiveFirst = {}, onSelectStatus = {}, onSetUnreadOnly = {},
                     onSelectMachine = {}, onOpenDates = {}, onClearDates = {}, onReset = {}, onDismiss = {},
                 )
             }

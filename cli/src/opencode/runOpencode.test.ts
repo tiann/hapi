@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildCliArgs } from '@/runner/run';
 import { parseRemoteAgentCommandOptions } from '@/commands/agentCommandOptions';
-import { OPENCODE_PERMISSION_MODES } from '@hapi/protocol/modes';
+import { Flavors } from '@hapi/protocol/modes';
 import { DEFAULT_RPC_TIMEOUT_MS, RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { createLocalHistoryPublisher, type LocalHistoryPublisher } from './localHistory';
 import type { Metadata } from '@/api/types';
@@ -334,7 +334,7 @@ describe('runOpencode set-session-config handler', () => {
             directory: '/tmp/project',
             reservedSessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
         });
-        const parsed = parseRemoteAgentCommandOptions(runnerArgs.slice(1), OPENCODE_PERMISSION_MODES);
+        const parsed = parseRemoteAgentCommandOptions(runnerArgs.slice(1), Flavors.opencode.permissionModes);
 
         expect(parsed.reservedSessionId).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
         expect(parsed.existingSessionId).toBeUndefined();
@@ -355,7 +355,7 @@ describe('runOpencode set-session-config handler', () => {
             directory: '/tmp/project',
             existingSessionId: 'live-hub-row'
         });
-        const parsed = parseRemoteAgentCommandOptions(runnerArgs.slice(1), OPENCODE_PERMISSION_MODES);
+        const parsed = parseRemoteAgentCommandOptions(runnerArgs.slice(1), Flavors.opencode.permissionModes);
 
         await runOpencode({ ...parsed, workingDirectory: '/tmp/project' });
 

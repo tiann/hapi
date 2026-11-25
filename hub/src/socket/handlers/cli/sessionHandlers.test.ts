@@ -594,6 +594,7 @@ it.each([
         ['titleSuggestionAutoAttemptedAt', 1234],
         ['titleSuggestionTurn', { first: false, completed: true }],
         ['promptTitle', 'Forged title'],
+        ['translateInput', true],
         ['jobsAcceptedFromSessionIds', ['foreign-session']],
         ['jobsTransferredToSessionId', 'foreign-session'],
         ['jobKeyRedirects', { 'foreign-session/beets': 'beets.foreign' }],
@@ -619,6 +620,26 @@ it.each([
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
         }
     )
+
+    it('preserves the hub-owned translateInput toggle across CLI metadata replacements', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('preserve-translate', {
+            path: '/tmp/project', translateInput: true
+        }, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            metadata: { path: '/tmp/project', translateInput: false }
+        }, () => {})
+        expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata)
+            .toMatchObject({ translateInput: true })
+    })
 
     it.each([1234, null])('preserves Codex import state %s across CLI bootstrap replacements', (codexImportedAt) => {
         const store = new Store(':memory:')

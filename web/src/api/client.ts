@@ -1,4 +1,7 @@
+import { HubClock } from '@/lib/hubClock'
+import type { AttachedJob } from '@hapi/protocol'
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import { isAuthRejectionStatus } from '@/lib/authConnection'
 import type {
     AttachmentMetadata,
     AbortChunkedUploadResponse,
@@ -24,6 +27,8 @@ import type {
     MessagesResponse,
     ClaudeImportSessionsResponse,
     ClaudeLocalSessionsResponse,
+    CursorImportSessionsResponse,
+    CursorLocalSessionsResponse,
     OpencodeImportSessionsResponse,
     OpencodeLocalSessionsResponse,
     PermissionMode,
@@ -256,6 +261,7 @@ export class ApiError extends Error {
 }
 
 export class ApiClient {
+    readonly hubClock = new HubClock()
     private token: string
     private readonly baseUrl: string | null
     private readonly getToken: (() => string | null) | null
@@ -330,16 +336,27 @@ export class ApiClient {
     }
 
     async authenticate(
-        auth: { initData: string } | { accessToken: string } | { passkeySession: string }
+        auth: { initData: string } | { accessToken: string } | { passkeySession: string },
+        options?: { signal?: AbortSignal }
     ): Promise<AuthResponse> {
         const res = await fetchThroughAuthProxy(this.buildUrl('/api/auth'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(auth)
+            body: JSON.stringify(auth),
+            ...(options?.signal ? { signal: options.signal } : {})
         })
 
         if (!res.ok) {
-            const body = await res.text().catch(() => '')
+            let body: string
+            try { body = await res.text() }
+            catch (error) {
+                // Headers already establish a transient server failure. A partial
+                // credential rejection must still remain retryable.
+                if (!isAuthRejectionStatus(res.status)) {
+                    throw new ApiError(`Auth failed: HTTP ${res.status} ${res.statusText}`, res.status)
+                }
+                throw error
+            }
             const code = parseErrorCode(body)
             const detail = body ? `: ${body}` : ''
             throw new ApiError(`Auth failed: HTTP ${res.status} ${res.statusText}${detail}`, res.status, code, body || undefined)
@@ -416,7 +433,10 @@ export class ApiClient {
     }
 
     async getSessions(): Promise<SessionsResponse> {
-        return await this.request<SessionsResponse>('/api/sessions')
+        const sample = this.hubClock.beginSample()
+        const response = await this.request<SessionsResponse>('/api/sessions')
+        if (response.serverTime !== undefined) this.hubClock.observe(response.serverTime, sample)
+        return response
     }
 
     async getScratchlistSessionIds(): Promise<string[]> {
@@ -554,6 +574,21 @@ export class ApiClient {
 
     async importClaudeSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; effort?: string | null; permissionMode?: PermissionMode }): Promise<ClaudeImportSessionsResponse> {
         return await this.request<ClaudeImportSessionsResponse>('/api/claude/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
+
+    async getCursorSessions(cwd?: string | null, machineId?: string | null): Promise<CursorLocalSessionsResponse> {
+        const params = new URLSearchParams()
+        if (cwd?.trim()) params.set('cwd', cwd.trim())
+        if (machineId?.trim()) params.set('machineId', machineId.trim())
+        const query = params.size ? `?${params.toString()}` : ''
+        return await this.request<CursorLocalSessionsResponse>(`/api/cursor/sessions${query}`)
+    }
+
+    async importCursorSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null }): Promise<CursorImportSessionsResponse> {
+        return await this.request<CursorImportSessionsResponse>('/api/cursor/import-sessions', {
             method: 'POST',
             body: JSON.stringify(payload)
         })
@@ -1468,9 +1503,17 @@ export class ApiClient {
         })
     }
 
+    async setSessionTranslateInput(sessionId: string, enabled: boolean): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ translateInput: enabled })
+        })
+    }
+
     async getFeatures(): Promise<{
         githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
         prChipDisplay: import('@hapi/protocol').PrChipDisplayProfile
+        inputTranslation?: { available: boolean }
     }> {
         return await this.request('/api/features')
     }
@@ -1478,6 +1521,7 @@ export class ApiClient {
     async patchFeatures(patch: { githubPrAwareness?: boolean }): Promise<{
         githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
         prChipDisplay: import('@hapi/protocol').PrChipDisplayProfile
+        inputTranslation?: { available: boolean }
     }> {
         return await this.request('/api/features', {
             method: 'PATCH',
@@ -1531,6 +1575,12 @@ export class ApiClient {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/pin`, {
             method: 'PUT',
             body: JSON.stringify({ mode })
+        })
+    }
+
+    async clearStaleSessionJob(sessionId: string, job: AttachedJob): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/jobs/${encodeURIComponent(job.key)}/clear-stale`, {
+            method: 'POST', body: JSON.stringify({ runId: job.runId, startedAt: job.startedAt, heartbeatAt: job.heartbeatAt })
         })
     }
 

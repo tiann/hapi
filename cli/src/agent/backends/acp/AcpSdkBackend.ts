@@ -109,6 +109,7 @@ export function flattenConfigOptionChoices(rawOptions: unknown[]): Array<{ value
 
 type AcpInitializeResult = {
     protocolVersion: number;
+    agentVersion?: string;
     authMethods?: Array<{ id: string; name?: string }>;
     agentCapabilities?: {
         loadSession?: boolean;
@@ -375,6 +376,7 @@ export class AcpSdkBackend implements AgentBackend {
 
         this.initializeResult = {
             protocolVersion: response.protocolVersion,
+            agentVersion: isObject(response.agentInfo) ? asString(response.agentInfo.version) ?? undefined : undefined,
             authMethods: Array.isArray(response.authMethods)
                 ? response.authMethods
                     .filter((entry): entry is Record<string, unknown> => isObject(entry))
@@ -417,6 +419,15 @@ export class AcpSdkBackend implements AgentBackend {
             // Cursor advertises cursor_login but may not implement _client/authenticate yet.
             logger.debug(`[ACP] authenticate skipped (${methodId})`, error);
         }
+    }
+
+    /** False until the first prompt: live updates before that have no handler and are dropped. */
+    hasMessageHandler(): boolean {
+        return this.messageHandler !== null;
+    }
+
+    getAgentVersion(): string | null {
+        return this.initializeResult?.agentVersion ?? null;
     }
 
     supportsLoadSession(): boolean {
@@ -843,6 +854,8 @@ export class AcpSdkBackend implements AgentBackend {
              * real user turn); prompt() then resolves false.
              */
             shouldSend?: () => boolean
+            /** Runs after the pre-prompt drain, right before the new handler replaces the old one. */
+            beforeHandlerSwap?: () => Promise<void>
             // prompt() waits for earlier output before it sends and for late output
             // after the answer; callers timing the agent itself need both moments.
             timing?: { onDispatchStart?: () => void; onSent?: () => void; onAnswered?: () => void }
@@ -865,6 +878,7 @@ export class AcpSdkBackend implements AgentBackend {
         );
         await this.sessionUpdateQueue;
         this.messageHandler?.drainBuffers();
+        await options?.beforeHandlerSwap?.();
         if (options?.shouldSend && !options.shouldSend()) {
             return false;
         }
@@ -891,14 +905,27 @@ export class AcpSdkBackend implements AgentBackend {
             this.promptRequestInFlight = true;
             let response: unknown;
             try {
-                response = await this.transport.sendRequest('session/prompt', {
-                    sessionId,
-                    prompt: content
-                }, {
-                    timeoutMs: Infinity,
-                    onDispatchStart: options?.timing?.onDispatchStart,
-                    onSent: options?.timing?.onSent
-                });
+                if (typeof this.transport.sendRequestWithDispatch === 'function') {
+                    options?.timing?.onDispatchStart?.();
+                    const request = this.transport.sendRequestWithDispatch('session/prompt', {
+                        sessionId,
+                        prompt: content
+                    }, { timeoutMs: Infinity });
+                    // Avoid an unhandled rejection if `completed` settles while awaiting `dispatched`.
+                    void request.completed.catch(() => {});
+                    await request.dispatched;
+                    options?.timing?.onSent?.();
+                    response = await request.completed;
+                } else {
+                    response = await this.transport.sendRequest('session/prompt', {
+                        sessionId,
+                        prompt: content
+                    }, {
+                        timeoutMs: Infinity,
+                        onDispatchStart: options?.timing?.onDispatchStart,
+                        onSent: options?.timing?.onSent
+                    });
+                }
             } finally {
                 this.promptRequestInFlight = false;
                 options?.timing?.onAnswered?.();
@@ -1285,6 +1312,12 @@ export class AcpSdkBackend implements AgentBackend {
 
     getLastSessionUpdateAt(): number {
         return this.lastSessionUpdateAt;
+    }
+
+    /** Emit and seal text still buffered on the current handler, e.g. an idle wakeup reply. */
+    async flushPendingMessageBuffers(): Promise<void> {
+        await this.sessionUpdateQueue;
+        this.messageHandler?.drainBuffers();
     }
 
     /**
