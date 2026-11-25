@@ -122,6 +122,9 @@ export function createOpencodeBackend(opts: {
             spawnCwd: opts.cwd ?? getInvokedCwd(),
             acpModelSwitchViaConfigOption: true,
             childSessionUpdates: true,
+            // OpenCode asks `question` tool calls through form elicitation; the
+            // permission handler answers them from the web card.
+            elicitationForm: true,
             textChunkMode: 'delta',
             flavor: 'opencode',
         });

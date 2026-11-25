@@ -119,12 +119,14 @@ final class SessionSplitPresentationTests: XCTestCase {
         XCTAssertEqual(navigation.selectedSessionId, "a")
         navigation.detailPath.append(Page.files)
         try await settle { self.findView("detail-files", in: window) != nil }
+#if !targetEnvironment(macCatalyst)
         resize(window, host: host, width: 390, height: 844, compact: true)
         try await settle { split.isCollapsed }
         XCTAssertEqual(probe.detailSizeClass, .compact)
         XCTAssertEqual(navigation.selectedSessionId, "a")
         XCTAssertEqual(navigation.detailPath.count, 1)
         XCTAssertNotNil(findView("detail-files", in: window))
+#endif
 
         resize(window, host: host, width: wide.width, height: wide.height, compact: false)
         try await settle { !split.isCollapsed }
@@ -137,6 +139,9 @@ final class SessionSplitPresentationTests: XCTestCase {
     }
 
     func testCompactProgrammaticOpenAndBackAfterAFilePush() async throws {
+#if targetEnvironment(macCatalyst)
+        throw XCTSkip("Mac Catalyst does not expose the compact collapsed split covered by this test")
+#else
         try await requireSplitDevice()
         let navigation = SessionNavigationState()
         let probe = Probe()
@@ -164,6 +169,7 @@ final class SessionSplitPresentationTests: XCTestCase {
         navigation.remove("b")
         try await settle { self.findView("home.sessions", in: window) != nil }
         XCTAssertNil(navigation.selectedSessionId)
+#endif
     }
 
     private struct ChatHarness: View {
@@ -282,9 +288,23 @@ final class SessionSplitPresentationTests: XCTestCase {
             if compact { try capture(window, name: "ipad-compact") }
         }
         navigation.columnVisibility = .detailOnly
+#if targetEnvironment(macCatalyst)
+        // NavigationSplitView column visibility is platform-dependent. Mac
+        // Catalyst may keep the split presentation while the window chrome
+        // owns the sidebar transition, so keep the expanded-width invariant
+        // in the iPad simulator run and verify the binding/identity here.
+        try await settle { navigation.columnVisibility == .detailOnly }
+#else
         try await settle { collection.bounds.width > 1000 }
+        XCTAssertGreaterThan(collection.bounds.width, 1000)
+#endif
         navigation.columnVisibility = .all
+#if targetEnvironment(macCatalyst)
+        try await settle { navigation.columnVisibility == .all }
+#else
         try await settle { collection.bounds.width < 1000 }
+        XCTAssertLessThan(collection.bounds.width, 1000)
+#endif
         XCTAssertTrue(findController(TranscriptCollectionController<TranscriptRow>.self, in: host) === transcript)
         let finalRequests = await http.messageRequests
         XCTAssertEqual(finalRequests, requests, "Geometry must not cold-start the chat's message window")
@@ -305,7 +325,7 @@ final class SessionSplitPresentationTests: XCTestCase {
     /// simulator may boot folded (466×678pt, compact), so this is not read
     /// from the current screen.
     private var wide: CGSize {
-        UIDevice.current.userInterfaceIdiom == .pad
+        isSplitIdiom
             ? CGSize(width: 1194, height: 834)
             : CGSize(width: 951, height: 669)
     }
@@ -313,7 +333,7 @@ final class SessionSplitPresentationTests: XCTestCase {
     /// iPad keeps its fixed wide window; a foldable uses its current screen and
     /// size class so captures match the folded or unfolded device.
     private var current: (size: CGSize, compact: Bool) {
-        guard UIDevice.current.userInterfaceIdiom != .pad,
+        guard !isSplitIdiom,
               let scene = hostScene
         else { return (wide, false) }
         return (scene.screen.bounds.size, scene.traitCollection.horizontalSizeClass == .compact)
@@ -325,9 +345,14 @@ final class SessionSplitPresentationTests: XCTestCase {
         return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
     }
 
-    /// iPad, or a foldable iPhone once its hinge has been reported.
+    /// iPad and Mac (Catalyst) windows always use the split.
+    private var isSplitIdiom: Bool {
+        [.pad, .mac].contains(UIDevice.current.userInterfaceIdiom)
+    }
+
+    /// iPad, Mac, or a foldable iPhone once its hinge has been reported.
     private func requireSplitDevice() async throws {
-        if UIDevice.current.userInterfaceIdiom == .pad || FoldableDevice.shared.hasHinge { return }
+        if isSplitIdiom || FoldableDevice.shared.hasHinge { return }
         let (window, _) = try makeWindow(HingeProbe(), width: 390, height: 844)
         defer { window.isHidden = true }
         for _ in 0..<50 where !FoldableDevice.shared.hasHinge {

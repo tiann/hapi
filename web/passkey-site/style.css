@@ -1,0 +1,9 @@
+:root { color-scheme: light dark; font: 17px/1.6 system-ui, sans-serif; }
+body { margin: 0; padding: 24px; }
+main { max-width: 480px; margin: 10vh auto; }
+h1 { line-height: 1.2; }
+#hub { font-weight: 650; overflow-wrap: anywhere; }
+#status { min-height: 3em; }
+button { font: inherit; padding: 10px 16px; margin: 0 8px 16px 0; cursor: pointer; }
+button:disabled { cursor: default; opacity: .5; }
+main > p:last-child { font-size: 14px; opacity: .7; }

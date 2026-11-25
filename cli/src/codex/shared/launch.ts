@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { resolveCodexCommand, type CodexCommand } from '../utils/codexExecutable';
 import { parseCodexCliOverrides, stripCodexCliOverrides } from '../utils/codexCliOverrides';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
-import { getCodexSystemPrompt } from '../utils/systemPrompt';
+import { resolveModelCatalogArgs } from '../utils/modelCatalog';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 
 export const SharedLaunchSchema = z.object({
@@ -136,6 +136,7 @@ export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
     // Launch-wide flags also apply to later native /new roots, not just the
     // initial HAPI-created root. Explicit config layers keep their order.
     for (const [key, value] of Object.entries(config)) serverArgs.push('-c', `${key}=${JSON.stringify(value)}`);
+    serverArgs.push(...resolveModelCatalogArgs(serverArgs));
     return {
         cwd: directory, serverArgs, tuiArgs,
         threadParams: {
@@ -146,8 +147,8 @@ export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
             ...(overrides.sandbox ? { sandbox: overrides.sandbox } : {}),
             ...(autoReview ? { approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: 'workspace-write' } : {}),
             ...(permission ? { approvalPolicy: permission.approvalPolicy, approvalsReviewer: reviewer, sandbox: permission.sandbox } : {}),
-            config: { ...config, ...(options.modelReasoningEffort ? { model_reasoning_effort: options.modelReasoningEffort } : {}) },
-            developerInstructions: getCodexSystemPrompt()
+            config: { ...config, ...(options.modelReasoningEffort ? { model_reasoning_effort: options.modelReasoningEffort } : {}) }
+            // developerInstructions are resolved by root.config() after session bootstrap loads the Hub summary preference.
         }
     };
 }
@@ -158,8 +159,8 @@ export async function initializeSharedClient(client: CodexAppServerClient): Prom
 }
 
 /** Invalid IDs only: no probes may create turns, mutate threads or call a model. */
-export async function checkSharedCapabilities(client: CodexAppServerClient): Promise<void> {
-    for (const method of ['thread/queue/list', 'thread/queue/add', 'thread/queue/delete', 'thread/queue/start', 'turn/steer', 'thread/settings/update', 'thread/metadata/update', 'thread/fork', 'thread/turns/list']) {
+export async function checkSharedCapabilities(client: Pick<CodexAppServerClient, 'supportsMethod'>): Promise<void> {
+    for (const method of ['thread/queue/list', 'thread/queue/add', 'thread/queue/update', 'thread/queue/delete', 'thread/queue/start', 'turn/steer', 'thread/settings/update', 'thread/metadata/update', 'thread/fork', 'thread/turns/list']) {
         if (!await client.supportsMethod(method)) throw new Error(`Codex lacks ${method}; upgrade to a compatible >= 0.154.0 build`);
     }
 }

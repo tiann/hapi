@@ -185,6 +185,10 @@ export function FueCallout(props: {
             ref={panelRef}
             role="dialog"
             aria-label={props.title}
+            // Portals to document.body, so ancestor-containment checks (blur
+            // collapse, Radix dialog outside-interaction) can't see this as
+            // "inside". Callers detect it via this marker instead.
+            data-fue-callout="true"
             style={
                 pos
                     ? {
@@ -192,6 +196,14 @@ export function FueCallout(props: {
                           top: pos.top,
                           left: pos.left,
                           width: panelWidth,
+                          // A modal host (e.g. Radix Dialog) sets
+                          // document.body's pointer-events to none and only
+                          // re-enables its own content node — this portal is
+                          // a separate sibling of that node, so without this
+                          // override its buttons would inherit "none" and be
+                          // un-clickable by a real pointer while the modal is
+                          // open. Harmless outside a modal context.
+                          pointerEvents: 'auto',
                           ...props.style,
                       }
                     : { position: 'fixed', visibility: 'hidden', width: panelWidth }

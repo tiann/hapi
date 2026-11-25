@@ -1,3 +1,7 @@
+---
+description: "Install the free HAPI web app as a Progressive Web App on your phone or desktop, enable push notifications, and sign in with a passkey."
+---
+
 # Progressive Web App (PWA)
 
 HAPI's web interface is a fully-featured PWA that can be installed on your phone for a native app-like experience.
@@ -5,6 +9,8 @@ HAPI's web interface is a fully-featured PWA that can be installed on your phone
 The web app and PWA are free and full-featured. This page
 covers browser installation. For the paid iOS and Android apps, see
 [Native apps (iOS / Android)](./native-apps.md).
+
+For Markdown image requirements, native-client differences, and display-tool guidance, see [Displaying images](./agents.md#displaying-images).
 
 ## What is PWA?
 
@@ -78,7 +84,7 @@ On Android, HAPI appears in the system share sheet. When you share content to HA
 
 This lets you share images, PDFs, text, and other files directly into a session from any app.
 The share-target session picker starts with recent active sessions; typing a
-query or choosing a date range searches the full snapshot. See the [session
+query searches the full snapshot. See the [session
 list behavior guide](./session-list.md#share-target-picker) for its ordering
 and matching rules.
 
@@ -96,6 +102,16 @@ Companions that cannot use Web Share Target (for example a native app on a heads
 - Deep links cannot embed binaries in the fragment; a companion may hand off one file with `fileUrl`. Use Web Share Target POST for direct or multi-file payloads.
 
 See [Web Share Target](https://developer.chrome.com/docs/capabilities/web-apis/web-share-target) for the POST vs GET distinction.
+
+### Passkey sign-in
+
+After you sign in with the access token once, open **Settings → Passkeys → Add passkey** to register Face ID, Touch ID, Windows Hello, or a security key. Next time, choose **Sign in with a passkey** on the login screen. The browser then no longer keeps your access token.
+
+- Configure the Hub's `HAPI_PUBLIC_URL` as its canonical HTTPS origin and open the web app over HTTPS. Allow the authentication popup.
+- Registration and sign-in open the isolated static page at `auth.hapi.run`. Passkeys created from the web and the official apps work in both, for the same Hub.
+- A separately hosted web app must have its exact origin in the Hub's `CORS_ORIGINS`; a wildcard is not enough for authentication callbacks.
+- Rotating `CLI_API_TOKEN` disables all passkeys. Sign in with the new token and add them again.
+- Credentials from the previous domain-specific/`hapi.run` RP design must be registered again.
 
 ## Caching Strategy
 
@@ -117,9 +133,9 @@ HAPI supports push notifications to alert you when agents need attention.
 
 ### Enable Notifications
 
-1. Open HAPI - a permission popup appears automatically
-2. Tap **Allow** to enable notifications
-3. If you missed the popup, go to system settings to grant permission
+1. Open **Settings → General** and enable **Push notifications on this device**.
+2. Tap **Allow** in the browser permission prompt. On iPhone and iPad, first add HAPI to the Home Screen and open it there.
+3. If permission was blocked, allow notifications in the browser or device settings. You can turn off the subscription from the same HAPI setting.
 
 ### Notification Types
 
@@ -127,7 +143,6 @@ HAPI supports push notifications to alert you when agents need attention.
 |------|-----------|
 | Permission Request | Agent needs your approval |
 | Ready | Agent finished and awaits input |
-| Task completed / Task failed | A background task finishes (success or failure) |
 
 ### Native app notifications
 

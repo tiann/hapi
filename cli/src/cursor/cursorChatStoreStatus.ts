@@ -82,5 +82,9 @@ export async function inspectCursorChatStore(
         return { onDisk: true, store: 'legacy' }
     }
 
+    if (await isFile(join(options.home, '.cursor', 'acp-sessions', cursorSessionId, 'meta.json'))) {
+        return { onDisk: true, store: 'empty' }
+    }
+
     return { onDisk: false, store: null }
 }

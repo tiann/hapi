@@ -24,11 +24,14 @@ import { buildConversationOutline } from '../src/chat/outline'
 // assertions (e.g. "exactly one older page per top-approach").
 
 const SESSION_ID = 'history-load-fixture'
+const SWITCH_OVERFLOW_SESSION_ID = 'session-overflow-margin'
+const SWITCH_SHORT_TAIL_SESSION_ID = 'session-short-tail'
 const TOTAL_MESSAGES = 1200
+const SWITCH_TOTAL_MESSAGES = 220
 const BASE_AT = 1_700_000_000_000
 
 type Probe = {
-    requests: { direction: string; beforeSeq: number | null; limit: number | undefined; at: number }[]
+    requests: { sessionId?: string; direction: string; beforeSeq: number | null; limit: number | undefined; at: number }[]
     loadMore: () => Promise<unknown>
     refetch: () => Promise<void>
     releaseLatest: () => void
@@ -53,6 +56,8 @@ let latestResponseGate: Promise<void> | null = null
 let beforeResponseGate: Promise<void> | null = null
 let releaseBeforeResponse = () => {}
 
+let currentActiveSessionId = SESSION_ID
+
 window.__probe = {
     requests: [],
     loadMore: async () => {},
@@ -68,7 +73,7 @@ window.__probe = {
         releaseBeforeResponse()
     },
     windowState: () => {
-        const state = getMessageWindowState(SESSION_ID)
+        const state = getMessageWindowState(currentActiveSessionId)
         return {
             messageCount: state.messages.length,
             oldestSeq: state.oldestSeq,
@@ -100,9 +105,13 @@ window.__probe = {
 //   is called, making the cached first paint observable.
 // - ?navigationShell=1 — add a pinned header/composer and outline controls.
 // - ?navigationMedia=1 — include generated-image previews in older history.
+// - ?sessionSwitch=1 — render session-switch buttons between a preload-margin
+//   overflow session and a short-tail collapsed-tools session while honoring
+//   the production 20-row latest page size.
 const fixtureParams = new URLSearchParams(window.location.search)
 const navigationShell = fixtureParams.has('navigationShell')
 const navigationMedia = fixtureParams.has('navigationMedia')
+const sessionSwitch = fixtureParams.has('sessionSwitch')
 const shortPages = fixtureParams.has('shortPages')
 const failBeforeCount = Number(fixtureParams.get('failBefore') ?? '0')
 const filteredOlder = fixtureParams.has('filteredOlder')
@@ -111,12 +120,131 @@ const coldInitial = fixtureParams.has('coldInitial')
 const slowBefore = fixtureParams.has('slowBefore')
 const cachedReentry = fixtureParams.has('cachedReentry')
 const holdLatest = fixtureParams.has('holdLatest')
+if (sessionSwitch) {
+    currentActiveSessionId = SWITCH_OVERFLOW_SESSION_ID
+}
 if (holdLatest) {
     latestResponseGate = new Promise<void>((resolve) => {
         releaseLatestResponse = resolve
     })
 }
 let beforeAttempts = 0
+
+function createFixtureMessage(seq: number, content: DecryptedMessage['content']): DecryptedMessage {
+    return {
+        id: `m-${seq}`,
+        seq,
+        localId: null,
+        content,
+        createdAt: BASE_AT + seq,
+        invokedAt: BASE_AT + seq
+    } as DecryptedMessage
+}
+
+function buildOverflowMarginMessages(): DecryptedMessage[] {
+    return Array.from({ length: SWITCH_TOTAL_MESSAGES }, (_, index) => {
+        const seq = index + 1
+        if (seq <= 200) {
+            return createFixtureMessage(seq, {
+                role: 'user',
+                content: { type: 'text', text: `Overflow-margin older ${seq}` }
+            })
+        }
+        if (seq <= 212) {
+            if (seq % 2 === 1) {
+                return createFixtureMessage(seq, {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: {
+                            type: 'tool-call',
+                            callId: `ov-call-${seq}`,
+                            name: 'Read',
+                            input: { file_path: `/tmp/ov-${seq}.ts` }
+                        }
+                    }
+                })
+            }
+            return createFixtureMessage(seq, {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call-result',
+                        callId: `ov-call-${seq - 1}`,
+                        output: 'ok'
+                    }
+                }
+            })
+        }
+        return createFixtureMessage(seq, {
+            role: 'user',
+            content: { type: 'text', text: `Overflow-margin message ${seq}` }
+        })
+    })
+}
+
+function buildShortTailMessages(): DecryptedMessage[] {
+    return Array.from({ length: SWITCH_TOTAL_MESSAGES }, (_, index) => {
+        const seq = index + 1
+        if (seq <= 198) {
+            return createFixtureMessage(seq, {
+                role: 'user',
+                content: { type: 'text', text: `Short-tail older ${seq}` }
+            })
+        }
+        if (seq <= 218) {
+            if (seq % 2 === 1) {
+                return createFixtureMessage(seq, {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: {
+                            type: 'tool-call',
+                            callId: `st-call-${seq}`,
+                            name: 'Read',
+                            input: { file_path: `/tmp/st-${seq}.ts` }
+                        }
+                    }
+                })
+            }
+            return createFixtureMessage(seq, {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call-result',
+                        callId: `st-call-${seq - 1}`,
+                        output: 'ok'
+                    }
+                }
+            })
+        }
+        if (seq === 219) {
+            return createFixtureMessage(seq, {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: { type: 'message', message: 'Short-tail summary 219' }
+                }
+            })
+        }
+        return createFixtureMessage(seq, {
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: { type: 'message', message: 'Short-tail latest 220' }
+            }
+        })
+    })
+}
+
+const sessionMessagesById: Record<string, DecryptedMessage[]> = sessionSwitch
+    ? {
+        [SWITCH_OVERFLOW_SESSION_ID]: buildOverflowMarginMessages(),
+        [SWITCH_SHORT_TAIL_SESSION_ID]: buildShortTailMessages()
+    }
+    : {}
 
 const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (_, index) => {
     const seq = index + 1
@@ -186,20 +314,24 @@ const fakeApi = {
     getHubSettings: async () => ({ sessionSummaryInChat: false }),
     getMachines: async () => ({ machines: [] }),
     getGeneratedImageBlob: async () => new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160"><rect width="240" height="160" fill="lightblue"/></svg>'], { type: 'image/svg+xml' }),
-    getMessages: async (_sessionId: string, query: {
+    getMessages: async (requestedSessionId: string, query: {
         limit?: number
         beforeAt?: number | null
         beforeSeq?: number | null
         afterAt?: number | null
         afterSeq?: number | null
     }): Promise<MessagesResponse> => {
+        const sourceMessages = sessionSwitch
+            ? (sessionMessagesById[requestedSessionId] ?? [])
+            : allMessages
         const requestedLimit = query.limit ?? 200
         let direction = 'latest'
         if (query.beforeSeq != null || query.beforeAt != null) direction = 'before'
         else if (query.afterSeq != null || query.afterAt != null) direction = 'after'
-        const limit = direction === 'latest' && !coldInitial && !cachedReentry ? 200 : requestedLimit
+        const limit = direction === 'latest' && !coldInitial && !cachedReentry && !sessionSwitch ? 200 : requestedLimit
         const responseGate = direction === 'before' ? beforeResponseGate : null
         window.__probe.requests.push({
+            sessionId: requestedSessionId,
             direction,
             beforeSeq: query.beforeSeq ?? null,
             limit: query.limit,
@@ -224,7 +356,7 @@ const fakeApi = {
             }
             const cursorAt = query.beforeAt ?? Number.POSITIVE_INFINITY
             const cursorSeq = query.beforeSeq ?? Number.POSITIVE_INFINITY
-            const older = allMessages.filter((message) => {
+            const older = sourceMessages.filter((message) => {
                 const position = positionOf(message)
                 return position.at < cursorAt || (position.at === cursorAt && position.seq < cursorSeq)
             })
@@ -247,7 +379,7 @@ const fakeApi = {
             }
         }
 
-        const pageMessages = allMessages.slice(-limit)
+        const pageMessages = sourceMessages.slice(-limit)
         // After an epoch bump the "rewritten" tail renders taller rows, so
         // the reset changes content height — this is what re-fires the
         // ResizeObserver coverage re-check in the epoch-reset scenario.
@@ -266,7 +398,7 @@ const fakeApi = {
                 direction: 'latest',
                 limit,
                 reset: true,
-                hasMore: allMessages.length > pageMessages.length
+                hasMore: sourceMessages.length > pageMessages.length
             })
         }
     }
@@ -283,7 +415,8 @@ const fakeSession = {
 const noopSend = () => {}
 const noopAbort = async () => {}
 
-function FixtureThread() {
+function FixtureThreadSession(props: { activeSessionId: string }) {
+    const { activeSessionId } = props
     const [outlineOpen, setOutlineOpen] = useState(false)
     const [forceScrollToken, setForceScrollToken] = useState(0)
     const {
@@ -298,12 +431,16 @@ function FixtureThread() {
         cancelLoadMore,
         refetch,
         setViewMode
-    } = useMessages(fakeApi, SESSION_ID)
+    } = useMessages(fakeApi, activeSessionId)
 
     window.__probe.loadMore = loadMore
     window.__probe.refetch = refetch
 
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
+    const activeSession = useMemo(
+        () => ({ ...fakeSession, id: activeSessionId } as Session),
+        [activeSessionId]
+    )
 
     const normalizedMessages = useMemo(() => {
         const normalized = []
@@ -327,7 +464,7 @@ function FixtureThread() {
     )
 
     const runtime = useHappyRuntime({
-        session: fakeSession,
+        session: activeSession,
         blocks: visibleBlocks,
         messagesVersion,
         historyVersion,
@@ -338,51 +475,82 @@ function FixtureThread() {
 
     return (
         <AssistantRuntimeProvider runtime={runtime}>
-            <div className={navigationShell ? 'flex h-full min-h-0' : 'flex h-screen min-h-0 flex-col'}>
-                {navigationShell ? (
-                    <aside className="hidden w-64 shrink-0 sm:block">Session sidebar</aside>
-                ) : null}
-                <div className="flex h-full min-h-0 flex-1 flex-col">
-                    {navigationShell ? (
-                        <header data-testid="navigation-header" className="flex h-[76px] shrink-0 items-center p-3">
-                            <button type="button" onClick={() => setOutlineOpen(true)}>Open history</button>
-                            <button type="button" onClick={() => setForceScrollToken(value => value + 1)}>Latest messages</button>
-                        </header>
-                    ) : null}
-                    <HappyThread
-                        api={fakeApi}
-                        session={fakeSession}
-                        sessionId={SESSION_ID}
-                        metadata={null}
-                        disabled={false}
-                        onRefresh={() => {}}
-                        onViewModeChange={setViewMode}
-                        isSyncingTail={isSyncingTail}
-                        messagesWarning={warning}
-                        hasMoreMessages={hasMore}
-                        isLoadingMoreMessages={isLoadingMore}
-                        onLoadMore={loadMore}
-                        onCancelLoadMore={cancelLoadMore}
-                        // This fixture drives HappyThread directly, bypassing the
-                        // SessionChat block reduction that computes the real count.
-                        unseenCount={0}
-                        rawMessagesCount={messages.length}
-                        normalizedMessagesCount={normalizedMessages.length}
-                        messagesVersion={messagesVersion}
-                        historyVersion={historyVersion}
-                        forceScrollToken={forceScrollToken}
-                        outlineOpen={navigationShell && outlineOpen}
-                        outlineItems={navigationShell ? buildConversationOutline(reconciled.blocks) : []}
-                        onOutlineOpenChange={setOutlineOpen}
-                    />
-                    {navigationShell ? (
-                        <footer data-testid="navigation-composer" className={`h-[150px] shrink-0 p-3 ${outlineOpen ? 'max-sm:hidden' : ''}`}>
-                            <textarea aria-label="Fixture composer" className="w-full resize-none" />
-                        </footer>
-                    ) : null}
-                </div>
-            </div>
+            {navigationShell ? (
+                <header data-testid="navigation-header" className="flex h-[76px] shrink-0 items-center p-3">
+                    <button type="button" onClick={() => setOutlineOpen(true)}>Open history</button>
+                    <button type="button" onClick={() => setForceScrollToken(value => value + 1)}>Latest messages</button>
+                </header>
+            ) : null}
+            <HappyThread
+                key={sessionSwitch ? `thread-${activeSessionId}` : undefined}
+                api={fakeApi}
+                session={activeSession}
+                sessionId={activeSessionId}
+                metadata={null}
+                disabled={false}
+                onRefresh={() => {}}
+                onViewModeChange={setViewMode}
+                isSyncingTail={isSyncingTail}
+                messagesWarning={warning}
+                hasMoreMessages={hasMore}
+                isLoadingMoreMessages={isLoadingMore}
+                onLoadMore={loadMore}
+                onCancelLoadMore={cancelLoadMore}
+                // This fixture drives HappyThread directly, bypassing the
+                // SessionChat block reduction that computes the real count.
+                unseenCount={0}
+                rawMessagesCount={messages.length}
+                normalizedMessagesCount={normalizedMessages.length}
+                messagesVersion={messagesVersion}
+                historyVersion={historyVersion}
+                forceScrollToken={forceScrollToken}
+                outlineOpen={navigationShell && outlineOpen}
+                outlineItems={navigationShell ? buildConversationOutline(reconciled.blocks) : []}
+                onOutlineOpenChange={setOutlineOpen}
+            />
+            {navigationShell ? (
+                <footer data-testid="navigation-composer" className={`h-[150px] shrink-0 p-3 ${outlineOpen ? 'max-sm:hidden' : ''}`}>
+                    <textarea aria-label="Fixture composer" className="w-full resize-none" />
+                </footer>
+            ) : null}
         </AssistantRuntimeProvider>
+    )
+}
+
+function FixtureThread() {
+    const [activeSessionId, setActiveSessionId] = useState(sessionSwitch ? SWITCH_OVERFLOW_SESSION_ID : SESSION_ID)
+    currentActiveSessionId = activeSessionId
+
+    return (
+        <div className={navigationShell ? 'flex h-full min-h-0' : 'flex h-screen min-h-0 flex-col'}>
+            {navigationShell ? (
+                <aside className="hidden w-64 shrink-0 sm:block">Session sidebar</aside>
+            ) : null}
+            <div className="flex h-full min-h-0 flex-1 flex-col">
+                {sessionSwitch ? (
+                    <header data-testid="session-switch-header" className="flex h-12 shrink-0 items-center gap-2 border-b p-2">
+                        <button
+                            type="button"
+                            data-testid="switch-overflow-margin"
+                            onClick={() => setActiveSessionId(SWITCH_OVERFLOW_SESSION_ID)}
+                        >
+                            Overflow margin
+                        </button>
+                        <button
+                            type="button"
+                            data-testid="switch-short-tail"
+                            onClick={() => setActiveSessionId(SWITCH_SHORT_TAIL_SESSION_ID)}
+                        >
+                            Short tail
+                        </button>
+                    </header>
+                ) : null}
+                <FixtureThreadSession
+                    key={sessionSwitch ? activeSessionId : 'default'}
+                    activeSessionId={activeSessionId}
+                />
+            </div>
+        </div>
     )
 }
 

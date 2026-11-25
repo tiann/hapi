@@ -123,6 +123,11 @@ public struct SessionSummary: Codable, Equatable, Sendable {
     public var futureScheduledMessageCount: Int
     /// Epoch ms of the soonest uninvoked scheduled message, or `nil`.
     public var nextScheduledAt: Int?
+    /// Primary session-attached job (tiann/hapi#1404), or `nil`.
+    public var attachedJob: AttachedJob?
+    /// Watermark for versioned `attachedJob` patches; absent (older hub or
+    /// snapshot) gates as 0.
+    public var attachedJobUpdatedAt: Int?
     public var model: String?
     public var modelReasoningEffort: String?
     public var effort: String?
@@ -151,6 +156,8 @@ public struct SessionSummary: Codable, Equatable, Sendable {
         backgroundTaskCount: Int = 0,
         futureScheduledMessageCount: Int = 0,
         nextScheduledAt: Int? = nil,
+        attachedJob: AttachedJob? = nil,
+        attachedJobUpdatedAt: Int? = nil,
         model: String? = nil,
         modelReasoningEffort: String? = nil,
         effort: String? = nil
@@ -178,6 +185,8 @@ public struct SessionSummary: Codable, Equatable, Sendable {
         self.backgroundTaskCount = backgroundTaskCount
         self.futureScheduledMessageCount = futureScheduledMessageCount
         self.nextScheduledAt = nextScheduledAt
+        self.attachedJob = attachedJob
+        self.attachedJobUpdatedAt = attachedJobUpdatedAt
         self.model = model
         self.modelReasoningEffort = modelReasoningEffort
         self.effort = effort

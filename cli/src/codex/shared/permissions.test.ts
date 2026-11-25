@@ -83,4 +83,47 @@ describe('shared request arbitration', () => {
         f.permissions.receive({ id: 2, method: 'future/request', params: { threadId: 'thread' } });
         await Promise.resolve(); expect(f.respond).not.toHaveBeenCalled();
     });
+
+    it('times the wait for the user from receive to the answer reaching Codex', async () => {
+        let waitOpens = 0;
+        let waitCloses = 0;
+        const handlers = new Map<string, (raw: unknown) => Promise<unknown>>();
+        const respond = vi.fn();
+        const session = { getMetadata: () => ({ codexSessionId: 'thread' }), sendAgentMessage: vi.fn(),
+            updateAgentState: vi.fn(),
+            rpcHandlerManager: { registerHandler: (key: string, fn: (raw: unknown) => Promise<unknown>) => { handlers.set(key, fn); } }
+        } as unknown as ApiSessionClient;
+        const permissions = new SharedCodexPermissions(session, { respond } as unknown as CodexAppServerClient, 'generation',
+            undefined, threadId => {
+                expect(threadId).toBe('thread');
+                waitOpens += 1;
+                return () => { waitCloses += 1; };
+            });
+        const request = { id: 1, method: 'item/tool/requestUserInput', params: { threadId: 'thread', turnId: 'turn', itemId: 'call',
+            questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [{ label: 'A', description: 'A' }] }] } };
+        permissions.receive(request);
+        expect(waitOpens).toBe(1);
+        expect(waitCloses).toBe(0);
+        const id = Object.keys((session.updateAgentState as ReturnType<typeof vi.fn>).mock.calls
+            .at(-1)![0]({}).requests ?? {})[0];
+        await handlers.get('permission')!({ id, approved: true, answers: { choice: ['A'] } });
+        await vi.waitFor(() => expect(respond).toHaveBeenCalled());
+        expect(waitCloses).toBe(1);
+    });
+
+    it('closes the wait when the request is withdrawn without an answer', async () => {
+        let waitCloses = 0;
+        const handlers = new Map<string, (raw: unknown) => Promise<unknown>>();
+        const session = { getMetadata: () => ({ codexSessionId: 'thread' }), sendAgentMessage: vi.fn(),
+            updateAgentState: vi.fn(),
+            rpcHandlerManager: { registerHandler: (key: string, fn: (raw: unknown) => Promise<unknown>) => { handlers.set(key, fn); } }
+        } as unknown as ApiSessionClient;
+        const permissions = new SharedCodexPermissions(session, { respond: vi.fn() } as unknown as CodexAppServerClient, 'generation',
+            undefined, () => () => { waitCloses += 1; });
+        const request = { id: 1, method: 'item/tool/requestUserInput', params: { threadId: 'thread', turnId: 'turn', itemId: 'call',
+            questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [{ label: 'A', description: 'A' }] }] } };
+        permissions.receive(request);
+        permissions.resolved('thread', request.id);
+        await vi.waitFor(() => expect(waitCloses).toBe(1));
+    });
 });

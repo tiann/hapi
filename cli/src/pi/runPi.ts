@@ -17,7 +17,9 @@ import type { PiImageContent, PiThinkingLevel } from './types';
 import { parsePiSpecialCommand, parseLeadingSlashName, type PiSpecialCommand } from './specialCommands';
 import { PiPromptQueue, isPiSpecialQueued, type PiPreparedPrompt } from './promptQueue';
 import { PiSteerDispatcher } from './steerDispatcher';
-import { materializePiTitleExtension } from './titleExtension';
+import { materializePiExtension } from './hapiExtension';
+import { startHappyServer } from '@/claude/utils/startHappyServer';
+import { isPeerToolsDisabled } from '@/modules/common/peerTools';
 import { getBuiltinSlashCommands, mergeSlashCommands } from '@hapi/protocol/slashCommands';
 import type { ListPiModelsResponse, PiCommandSummary, PiModelSummary, SlashCommand, SlashCommandsResponse } from '@hapi/protocol/apiTypes';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
@@ -243,16 +245,28 @@ export async function runPi(opts: {
         expectedNativeSessionId: opts.resumeSessionId,
     });
 
-    const titleExtensionPath = await materializePiTitleExtension();
-    const transportArgs = ['--mode', 'rpc', '--extension', titleExtensionPath];
+    const extensionPath = await materializePiExtension();
+    const peerMcpServer = isPeerToolsDisabled()
+        ? null
+        : await startHappyServer(apiSession, {
+            enableChangeTitle: false,
+            enabledTools: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'],
+        });
+    const transportArgs = ['--mode', 'rpc', '--extension', extensionPath];
     if (opts.resumeSessionId) {
         transportArgs.push('--session', opts.resumeSessionId);
+    }
+    const transportEnv = { ...process.env };
+    if (peerMcpServer) {
+        transportEnv.HAPI_PI_MCP_URL = peerMcpServer.url;
+    } else {
+        delete transportEnv.HAPI_PI_MCP_URL;
     }
     const transport = new PiTransport({
         command: getAgentLaunchCommand('pi'),
         args: transportArgs,
         cwd: workingDirectory,
-        env: process.env,
+        env: transportEnv,
     });
     const conversationHistory = new PiConversationHistory(
         piSession,
@@ -315,6 +329,7 @@ export async function runPi(opts: {
         cleanupInitiated = true;
         steerDispatcher?.stop();
         piSession.cancelReadyGate();
+        peerMcpServer?.stop();
         await lifecycle.cleanupAndExit();
     };
 

@@ -49,12 +49,40 @@ export function resolveDshAcpCommand(env: DshAcpEnvironment = process.env): {
     return { command, args: DSH_DEFAULT_ACP_ARGS }
 }
 
-export function createDshBackend(env: NodeJS.ProcessEnv = process.env): AcpSdkBackend {
+/**
+ * Env overlay resolving the spawn-time HAPI permission mode onto DSH's
+ * `DSH_PERMISSION_MODE` sandbox preset (read-only / workspace-write /
+ * danger-full-access).
+ *
+ * Mapping (verified against the DSH 0.2.2-rc.1 source): `read-only` pins the
+ * read-only preset, `yolo` pins danger-full-access, and `default` /
+ * `safe-yolo` stay UNSET so the server applies its own default
+ * (workspace-write). The preset is read at process spawn only — DSH has no
+ * runtime mode RPC, so mid-session mode switches remain HAPI-side
+ * auto-approval decisions over request_permission and never reach this
+ * overlay. A machine-level `DSH_PERMISSION_MODE` already present in the env
+ * stays authoritative, mirroring the peer-tools overlay.
+ */
+export function dshPermissionModeEnvOverlay(
+    permissionMode: string | undefined,
+    env: DshAcpEnvironment = process.env
+): Record<string, string> {
+    const raw = env.DSH_PERMISSION_MODE
+    if (raw !== undefined && raw !== '') return {}
+    if (permissionMode === 'read-only') return { DSH_PERMISSION_MODE: 'read-only' }
+    if (permissionMode === 'yolo') return { DSH_PERMISSION_MODE: 'danger-full-access' }
+    return {}
+}
+
+export function createDshBackend(
+    env: NodeJS.ProcessEnv = process.env,
+    opts: { permissionMode?: string } = {}
+): AcpSdkBackend {
     const { command, args } = resolveDshAcpCommand(env)
     return new AcpSdkBackend({
         command,
         args,
-        env: filterEnv(env),
+        env: filterEnv({ ...env, ...dshPermissionModeEnvOverlay(opts.permissionMode, env) }),
         flavor: 'dsh'
     })
 }

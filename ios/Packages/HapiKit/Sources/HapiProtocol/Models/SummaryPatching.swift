@@ -218,6 +218,8 @@ public enum SummaryPatching {
     ///   (see the type doc for why equality is safe here and only here), then
     ///   recompute the derived fields. `pendingRequests`' fallback `since` is
     ///   the summary's post-patch `updatedAt`, matching the reference.
+    /// - `attachedJob` gates strictly (`>`) on `attachedJobUpdatedAt`, like
+    ///   the reference: a lagged heartbeat must not resurrect a clear.
     /// - `teamState` is a summary no-op (not rendered on the list).
     /// - `activeTurnStartedAt` / `scratchlistUpdatedAt` / `serviceTier` /
     ///   `permissionMode` / `collaborationMode` / `copilotAgentMode` have no
@@ -256,6 +258,10 @@ public enum SummaryPatching {
         if let metadata = patch.metadata, metadata.version >= current.metadataVersion {
             next.metadata = toSessionSummaryMetadata(metadata.value)
             next.metadataVersion = metadata.version
+        }
+        if let job = patch.attachedJob, job.version > (current.attachedJobUpdatedAt ?? 0) {
+            next.attachedJob = job.value
+            next.attachedJobUpdatedAt = job.version
         }
         return next
     }
@@ -324,6 +330,9 @@ public enum SummaryPatching {
         if current.metadataVersion != next.metadataVersion { return false }
         if current.agentStateVersion != next.agentStateVersion { return false }
         if current.todosUpdatedAt != next.todosUpdatedAt { return false }
+        // Heartbeats move only `heartbeatAt`, which drives the stale state.
+        if current.attachedJob != next.attachedJob { return false }
+        if current.attachedJobUpdatedAt != next.attachedJobUpdatedAt { return false }
         return true
     }
 

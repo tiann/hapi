@@ -4,7 +4,10 @@ import app.hapi.data.sse.ConnectionState
 import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
+import app.hapi.protocol.wire.AttachedJob
 import app.hapi.protocol.wire.Machine
+import app.hapi.protocol.wire.SessionListOrder
+import app.hapi.protocol.wire.SessionListSort
 import app.hapi.protocol.wire.MachineMetadata
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
@@ -172,6 +175,7 @@ private fun TestScope.buildViewModel(
     machines: FakeMachineStore = FakeMachineStore(),
     zoneProvider: () -> ZoneId = { ZoneId.of("UTC") },
     connection: MutableStateFlow<ConnectionState> = MutableStateFlow(ConnectionState(ConnectionState.Phase.Connected)),
+    orderStore: SessionListOrderStore = InMemorySessionListOrderStore(),
 ): Triple<SessionListViewModel, FakeSessionStore, FakeMachineStore> {
     val viewModel = SessionListViewModel(
         sessionStore = sessions,
@@ -182,6 +186,7 @@ private fun TestScope.buildViewModel(
         zoneProvider = zoneProvider,
         connectionState = connection,
         nowMs = { currentTime },
+        orderStore = orderStore,
     )
     return Triple(viewModel, sessions, machines)
 }
@@ -231,6 +236,76 @@ class SessionListViewModelTest {
         viewModel.refresh()
         val offline = viewModel.uiState.first { it.isOffline }
         assertEquals(5_000L, offline.lastRefreshedAt)
+    }
+
+    @Test
+    fun `status and unread filters keep the open session and a running job counts as live`() = runTest {
+        val (viewModel, sessions) = buildViewModel()
+        val job = AttachedJob(key = "k", label = "Import", heartbeatAt = 0, startedAt = 0, updatedAt = 0)
+        sessions.set(
+            summary("live", active = true, updatedAt = 3).copy(contentRevision = 1),
+            summary("stopped", updatedAt = 2),
+            summary("idle-job", updatedAt = 1).copy(attachedJob = job),
+        )
+        viewModel.uiState.first { it.rows.size == 3 }
+
+        viewModel.setStatusFilter(SessionListStatus.Active)
+        val active = viewModel.uiState.first { it.statusFilter == SessionListStatus.Active }
+        assertEquals(setOf("live", "idle-job"), active.rows.map { it.id }.toSet(), "A running job is live work (web #1404)")
+        assertTrue(active.hasActiveFilters)
+
+        viewModel.setStatusFilter(SessionListStatus.Archived)
+        assertEquals(listOf("stopped"), viewModel.uiState.first { it.statusFilter == SessionListStatus.Archived }.rows.map { it.id })
+        viewModel.setUnreadOnly(true)
+        assertTrue(viewModel.uiState.first { it.unreadOnly }.rows.isEmpty(), "Archived and unread: nothing matches")
+        viewModel.onSessionOpened("live")
+        assertEquals(listOf("live"), viewModel.uiState.first { it.rows.isNotEmpty() }.rows.map { it.id }, "The open session never disappears")
+
+        viewModel.clearFilters()
+        val cleared = viewModel.uiState.first { !it.hasActiveFilters }
+        assertEquals(SessionListStatus.All, cleared.statusFilter)
+        assertFalse(cleared.unreadOnly)
+        assertEquals(3, cleared.rows.size)
+    }
+
+    @Test
+    fun `active first is the home default and pins still lead`() = runTest {
+        val (viewModel, sessions) = buildViewModel(orderStore = InMemorySessionListOrderStore(SessionListOrder.Default))
+        sessions.set(
+            summary("old-live", active = true, name = "Review old").copy(createdAt = 3, lastUserMessageAt = 100),
+            summary("new-stopped", name = "Review new").copy(createdAt = 1, lastUserMessageAt = 200),
+            summary("pinned-stopped", name = "Review pinned", pinned = true),
+        )
+        val initial = viewModel.uiState.first { it.rows.size == 3 }
+        assertEquals(listOf("pinned-stopped", "old-live", "new-stopped"), initial.rows.map { it.id })
+        assertFalse(initial.isCustomized)
+
+        viewModel.setActiveFirst(false)
+        val inputOrder = viewModel.uiState.first { !it.order.activeFirst }
+        assertEquals(listOf("pinned-stopped", "new-stopped", "old-live"), inputOrder.rows.map { it.id })
+        viewModel.setSort(SessionListSort.Created)
+        val created = viewModel.uiState.first { it.order.sort == SessionListSort.Created }
+        assertEquals(listOf("pinned-stopped", "old-live", "new-stopped"), created.rows.map { it.id })
+        assertTrue(created.isCustomized)
+        assertFalse(created.hasActiveFilters, "Ordering is a preference, not a filter")
+        viewModel.clearFilters()
+        assertEquals(SessionListSort.Created, viewModel.uiState.value.order.sort, "Reset clears filters only")
+
+        // Search keeps relevance with the base order as tie-break, as on web.
+        viewModel.setActiveFirst(true)
+        viewModel.setSearchQuery("Review")
+        val searched = viewModel.uiState.first { it.isSearching && it.order.activeFirst }
+        assertEquals(listOf("pinned-stopped", "new-stopped", "old-live"), searched.rows.map { it.id })
+    }
+
+    @Test
+    fun `the share picker's base order ignores liveness`() = runTest {
+        val (viewModel, sessions) = buildViewModel(orderStore = InMemorySessionListOrderStore(SessionListOrder.Base))
+        sessions.set(
+            summary("old-live", active = true).copy(lastUserMessageAt = 100),
+            summary("new-stopped").copy(lastUserMessageAt = 200),
+        )
+        assertEquals(listOf("new-stopped", "old-live"), viewModel.uiState.first { it.rows.size == 2 }.rows.map { it.id })
     }
 
     @Test

@@ -72,6 +72,31 @@ describe('getCodexComposerReasoningEffortOptions', () => {
         ])
     })
 
+    it('drops provider-default entries from dynamic options so Default is not duplicated', () => {
+        expect(getCodexComposerReasoningEffortOptions('default', 'opencode', [
+            { value: 'low', name: 'Low' },
+            { value: 'high', name: 'High' },
+            { value: 'max', name: 'Max' },
+            { value: 'default', name: 'Default' }
+        ])).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'low', label: 'Low' },
+            { value: 'high', label: 'High' },
+            { value: 'max', label: 'Max' }
+        ])
+
+        expect(getCodexComposerReasoningEffortOptions('', 'dsh', [
+            { value: '', name: 'Provider default' },
+            { value: 'Default', name: 'Default' },
+            { value: 'low', name: 'Low' },
+            { value: 'high', name: 'High' }
+        ])).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'low', label: 'Low' },
+            { value: 'high', label: 'High' }
+        ])
+    })
+
     it('preserves unsupported current OpenCode values in the dropdown', () => {
         expect(getCodexComposerReasoningEffortOptions('high', 'opencode', [
             { value: 'low', name: 'Low' },
@@ -81,6 +106,26 @@ describe('getCodexComposerReasoningEffortOptions', () => {
             { value: 'high', label: 'High' },
             { value: 'low', label: 'Low' },
             { value: 'medium', label: 'Medium' }
+        ])
+    })
+    it('builds DSH options from the fixed thought_level presets', () => {
+        expect(getCodexComposerReasoningEffortOptions(null, 'dsh')).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'off', label: 'Off' },
+            { value: 'low', label: 'Low' },
+            { value: 'high', label: 'High' },
+            { value: 'max', label: 'Max' }
+        ])
+    })
+
+    it('prefers discovered DSH options over the presets', () => {
+        expect(getCodexComposerReasoningEffortOptions('low', 'dsh', [
+            { value: 'low', name: 'Low' },
+            { value: 'ultra', name: 'Ultra' }
+        ])).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'low', label: 'Low' },
+            { value: 'ultra', label: 'Ultra' }
         ])
     })
 })

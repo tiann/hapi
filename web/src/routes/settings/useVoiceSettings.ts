@@ -85,6 +85,8 @@ export function useVoiceSettings() {
         writeStoredVoiceBackendPreference(value)
         setBackendState(value)
         setVoiceIdState(readStoredVoiceSelection(value))
+        // Wake VoiceBackendSession so the registered realtime impl matches this picker.
+        window.dispatchEvent(new Event('hapi-voice-backends-refresh'))
     }, [])
 
     const setVoice = useCallback((value: string | null) => {
@@ -110,6 +112,9 @@ export function useVoiceSettings() {
             stopPreview()
             return
         }
+        // Preview without selecting used to leave runtime on a previous (often male) voice.
+        setVoiceIdState(voice.id)
+        writeStoredVoiceSelection(backend, voice.id)
         stopPreview()
         const audio = new Audio(voice.previewUrl)
         audioRef.current = audio

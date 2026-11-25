@@ -202,6 +202,12 @@ export function getToolGroupActionKind(block: ToolCallBlock): ToolGroupActionKin
     return 'other'
 }
 
+// Literal CodexBash check: its parsed command can classify as read/search
+// while the card is still a terminal card.
+export function isTerminalToolBlock(block: ToolCallBlock): boolean {
+    return block.tool.name === 'CodexBash' || getToolGroupActionKind(block) === 'command'
+}
+
 function getPrimaryFileTarget(block: ToolCallBlock): string | null {
     return getInputStringAny(block.tool.input, ['file_path', 'path', 'file', 'filePath', 'notebook_path', 'name'])
 }
@@ -293,7 +299,7 @@ function summarizeToolGroup(tools: ToolCallBlock[]): ToolGroupSummary {
     }
 }
 
-function isInteractiveToolBlock(block: ToolCallBlock): boolean {
+export function isInteractiveToolBlock(block: ToolCallBlock): boolean {
     const permission = block.tool.permission
     const hasTerminalPermissionReason = (
         permission?.status === 'denied' || permission?.status === 'canceled'

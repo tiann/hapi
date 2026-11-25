@@ -160,13 +160,15 @@ describe('ToolGroupCard', () => {
         })
         const view = renderCard(group)
 
-        expect(screen.getByText('Started')).toBeInTheDocument()
-        expect(screen.getByText('Duration')).toBeInTheDocument()
+        expect(screen.getByText(/5\.0s|6\.0s/)).toBeInTheDocument()
+        expect(screen.queryByText('Started')).not.toBeInTheDocument()
         expect(screen.queryByText('Finished')).not.toBeInTheDocument()
+        expect(screen.getByText(/5\.0s|6\.0s/).parentElement).toHaveClass('items-center')
+        expect(screen.getByText(/5\.0s|6\.0s/).parentElement).toHaveClass('shrink-0')
         expect(within(view.container).getByLabelText('Running')).toBeInTheDocument()
     })
 
-    it('shows final timing in the collapsed header after every tool finishes', () => {
+    it('shows only the duration in the collapsed header after every tool finishes', () => {
         const startedAt = Date.now() - 4_000
         const first = makeToolBlock('read-1', 'Read')
         first.tool.startedAt = startedAt
@@ -177,10 +179,11 @@ describe('ToolGroupCard', () => {
 
         renderCard(makeGroup({ tools: [first, second] }))
 
-        expect(screen.getByText('Started')).toBeInTheDocument()
-        expect(screen.getByText('Finished')).toBeInTheDocument()
-        expect(screen.getByText('Duration')).toBeInTheDocument()
         expect(screen.getByText('4.0s')).toBeInTheDocument()
+        expect(screen.queryByText('Started')).not.toBeInTheDocument()
+        expect(screen.queryByText('Finished')).not.toBeInTheDocument()
+        expect(screen.getByText('4.0s').parentElement).toHaveClass('items-center')
+        expect(screen.getByText('4.0s').parentElement).toHaveClass('shrink-0')
     })
 
     it('expands to show compact rows and opens a detail dialog per row', async () => {

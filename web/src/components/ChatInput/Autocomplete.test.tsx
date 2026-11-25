@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { Autocomplete } from './Autocomplete'
@@ -74,5 +74,19 @@ describe('Autocomplete', () => {
         )
 
         expect(scrollIntoView).not.toHaveBeenCalled()
+    })
+
+    it('exposes the inactive group control and keeps the selected index', () => {
+        const onSelect = vi.fn()
+        render(<Autocomplete suggestions={[
+            suggestion('active'),
+            { key: 'toggle', text: '', label: 'Inactive sessions', action: { expanded: false, onSelect: vi.fn() } },
+            suggestion('file'),
+        ]} selectedIndex={1} onSelect={onSelect} />)
+        const toggle = screen.getByRole('button', { name: 'Inactive sessions' })
+        expect(toggle).toHaveAttribute('aria-expanded', 'false')
+        fireEvent.click(toggle)
+        expect(onSelect).toHaveBeenCalledWith(1)
+        expect(screen.getByRole('button', { name: 'file' })).toBeInTheDocument()
     })
 })

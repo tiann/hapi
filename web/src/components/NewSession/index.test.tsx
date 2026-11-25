@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactElement } from 'react'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { AgentAvailabilityEntry, ClaudeModelSummary, Machine, PiModelSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 import { saveNewSessionFormDraft } from './newSessionFormDraft'
@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
     opencodeVariantsLoading: false,
     opencodeVariantsEnabled: false,
     piDialogSelection: ['pi-native-1'] as string[],
+    claudeDialogSelection: ['claude-native-1'] as string[],
     piModels: [] as PiModelSummary[],
     piModelsLoading: false,
     piModelsError: null as string | null,
@@ -100,11 +101,12 @@ vi.mock('@/hooks/useActiveSuggestions', () => ({
 }))
 vi.mock('@/hooks/queries/useCodexModels', () => ({
     useCodexModels: () => ({
-        models: [
+        models: mocks.codexModelsLoading ? [] : [
             {
                 id: 'gpt-5.6-sol',
                 displayName: 'GPT-5.6 Sol',
                 isDefault: true,
+                serviceTiers: ['fast'],
                 supportedReasoningEfforts: ['low', 'high', 'xhigh']
             },
             {
@@ -221,6 +223,13 @@ vi.mock('@/components/PiSessionImportDialog', () => ({
                 select pi history
             </button>
         </>
+    ) : null
+}))
+vi.mock('@/components/ClaudeSessionImportDialog', () => ({
+    ClaudeSessionImportDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
+        <button type="button" data-testid="select-claude-history" disabled={props.sessions.length === 0} onClick={() => void props.onConfirm(mocks.claudeDialogSelection)}>
+            select claude history
+        </button>
     ) : null
 }))
 vi.mock('./DirectorySection', () => ({ DirectorySection: () => null }))
@@ -539,6 +548,80 @@ describe('NewSession launch preferences', () => {
             expect(screen.getByTestId('reasoning')).toHaveTextContent('xhigh')
             expect(screen.getByTestId('permission-mode')).toHaveTextContent('default')
         })
+    })
+
+    it('remembers fast mode after a successful Codex launch and restores it on the same machine', async () => {
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'fast-session' })
+        const form = <NewSession api={api} machines={[machine]} initialMachineId="machine-1"
+            initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
+        const first = renderWithQuery(form)
+        const fast = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
+        expect(fast).toHaveValue('standard')
+        fireEvent.change(fast, { target: { value: 'fast' } })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: 'fast' })))
+        await waitFor(() => expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe('fast'))
+        first.unmount()
+        renderWithQuery(form)
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('fast'))
+    })
+
+    it('does not carry fast mode to an unsupported model', async () => {
+        savePreferredLaunchSettings('machine-1', 'codex', {
+            model: 'gpt-5.6-sol', cursorSelectedBase: 'auto', effort: 'auto',
+            modelReasoningEffort: 'default', serviceTier: 'fast'
+        })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1"
+            initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('fast'))
+        fireEvent.click(screen.getByTestId('model'))
+        await waitFor(() => expect(screen.queryByRole('combobox', { name: 'newSession.fastMode' })).toBeNull())
+        mocks.nextModelValue = 'gpt-5.6-sol'
+        fireEvent.click(screen.getByTestId('model'))
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('standard'))
+    })
+
+    it('preserves a remembered fast choice while the model catalog loads', async () => {
+        mocks.codexModelsLoading = true
+        savePreferredLaunchSettings('machine-1', 'codex', {
+            model: 'gpt-5.6-sol', cursorSelectedBase: 'auto', effort: 'auto',
+            modelReasoningEffort: 'default', serviceTier: 'fast'
+        })
+        const form = <NewSession api={api} machines={[machine]} initialMachineId="machine-1"
+            initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
+        const view = renderWithQuery(form)
+        await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
+        expect(screen.queryByRole('combobox', { name: 'newSession.fastMode' })).toBeNull()
+        mocks.codexModelsLoading = false
+        view.rerender(<NewSession api={api} machines={[machine]} initialMachineId="machine-1"
+            initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('fast'))
+    })
+
+    it('remembers an explicit standard choice and does not overwrite preferences on failed launch', async () => {
+        savePreferredLaunchSettings('machine-1', 'codex', {
+            model: 'gpt-5.6-sol', cursorSelectedBase: 'auto', effort: 'auto',
+            modelReasoningEffort: 'default', serviceTier: 'fast'
+        })
+        mocks.spawnSession.mockResolvedValueOnce({ type: 'error', message: 'failed' })
+            .mockResolvedValueOnce({ type: 'success', sessionId: 'standard-session' })
+        const form = <NewSession api={api} machines={[machine]} initialMachineId="machine-1"
+            initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
+        const first = renderWithQuery(form)
+        const fast = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
+        await waitFor(() => expect(fast).toHaveValue('fast'))
+        fireEvent.change(fast, { target: { value: 'standard' } })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledTimes(1))
+        expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe('fast')
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe('standard'))
+        first.unmount()
+        renderWithQuery(form)
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('standard'))
     })
 
     it('does not migrate a legacy YOLO value owned by a non-Codex agent', async () => {
@@ -1329,6 +1412,67 @@ describe('NewSession launch preferences', () => {
         expect(mocks.spawnSession).not.toHaveBeenCalled()
     })
 
+    it('imports the selected Claude history with the chosen launch settings before reopening it', async () => {
+        savePreferredAgent('claude')
+        savePreferredLaunchSettings('machine-1', 'claude', { model: 'sonnet', cursorSelectedBase: 'auto', effort: 'high', modelReasoningEffort: 'default' })
+        const calls: string[] = []
+        const claudeApi = {
+            getClaudeSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                sessions: [{
+                    id: 'claude-native-1',
+                    title: 'Existing Claude session',
+                    cwd: 'C:\\repo',
+                    file: 'C:\\claude-native-1.jsonl',
+                    modifiedAt: 1,
+                    messageCount: 2
+                }]
+            }),
+            importClaudeSessions: vi.fn().mockImplementation(async () => {
+                calls.push('import')
+                return {
+                    success: true,
+                    machineId: 'machine-1',
+                    results: [{ claudeSessionId: 'claude-native-1', hapiSessionId: 'hapi-claude-1', action: 'created', appended: 2 }]
+                }
+            }),
+            reopenSession: vi.fn().mockImplementation(async () => {
+                calls.push('reopen')
+                return { ok: true, sessionId: 'hapi-claude-1', resumed: true }
+            })
+        } as unknown as ApiClient
+
+        renderWithQuery(
+            <NewSession
+                api={claudeApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByTestId('permission-mode-plan'))
+        fireEvent.click(screen.getByRole('button', { name: 'claudeImport.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-claude-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-claude-history'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('hapi-claude-1'))
+        expect(claudeApi.importClaudeSessions).toHaveBeenCalledWith({
+            sessionIds: ['claude-native-1'],
+            cwd: 'C:\\repo',
+            machineId: 'machine-1',
+            model: 'sonnet',
+            effort: 'high',
+            permissionMode: 'plan'
+        })
+        expect(calls).toEqual(['import', 'reopen'])
+        expect(mocks.spawnSession).not.toHaveBeenCalled()
+    })
+
     it('discards a stale Pi scan after switching machines', async () => {
         savePreferredAgent('pi')
         mocks.piDialogSelection = ['pi-machine-b']
@@ -1448,6 +1592,51 @@ describe('NewSession launch preferences', () => {
             body: 'piImport.success.body'
         }))
         expect(mocks.addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'piImport.failed.title' }))
+    })
+
+    it('shows the hub error text, not the raw HTTP envelope, when a Pi bulk import fails', async () => {
+        savePreferredAgent('pi')
+        mocks.piDialogSelection = ['pi-native-1', 'pi-native-2']
+        const piApi = {
+            getPiSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                sessions: [1, 2].map((index) => ({
+                    id: `pi-native-${index}`,
+                    title: `Pi ${index}`,
+                    cwd: 'C:\\repo',
+                    file: `C:\\pi-${index}.jsonl`,
+                    modifiedAt: index,
+                    messageCount: 1
+                }))
+            }),
+            importPiSessions: vi.fn().mockRejectedValue(new ApiError(
+                'HTTP 503 Service Unavailable: {"success":false,"error":"Runner is offline"}',
+                503,
+                undefined,
+                '{"success":false,"error":"Runner is offline"}'
+            ))
+        } as unknown as ApiClient
+
+        renderWithQuery(
+            <NewSession
+                api={piApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'piImport.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-pi-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-pi-history'))
+
+        await waitFor(() => expect(mocks.addToast).toHaveBeenCalledWith(expect.objectContaining({
+            title: 'piImport.failed.title',
+            body: 'Runner is offline'
+        })))
     })
 
     it('does not save changed launch settings when creation fails', async () => {
@@ -1812,18 +2001,38 @@ describe('NewSession launch preferences', () => {
         }
     )
 
-    it('persists explicit YOLO toggle edits across remounts', async () => {
+    it('starts Antigravity on request-review and spawns it with the chosen mode', async () => {
         savePreferredAgent('agy')
-        const form = <NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
-        const view = renderWithQuery(form)
-        await waitFor(() => expect(screen.getByTestId('yolo-toggle')).toHaveTextContent('yolo-off'))
-        expect(localStorage.getItem('hapi:newSession:yolo')).toBeNull()
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'agy-session' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('permission-mode')).toHaveTextContent('request-review'))
 
-        fireEvent.click(screen.getByTestId('yolo-toggle'))
-        expect(localStorage.getItem('hapi:newSession:yolo')).toBe('true')
-        view.unmount()
-        renderWithQuery(form)
-        await waitFor(() => expect(screen.getByTestId('yolo-toggle')).toHaveTextContent('yolo-on'))
+        fireEvent.click(screen.getByTestId('permission-mode-plan'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('agy-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'agy',
+            permissionMode: 'plan',
+            yolo: undefined
+        }))
+        expect(loadPreferredLaunchSettings('machine-1', 'agy')).toMatchObject({ permissionMode: 'plan' })
+    })
+
+    it.each([
+        ['true', 'always-proceed'],
+        ['false', 'request-review']
+    ] as const)('carries a stored YOLO toggle (%s) into the Antigravity mode %s', async (stored, expected) => {
+        savePreferredAgent('agy')
+        localStorage.setItem('hapi:newSession:yolo', stored)
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'agy-session' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('permission-mode')).toHaveTextContent(expected))
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'agy',
+            permissionMode: expected
+        })))
     })
 
     it('keeps Create disabled while getHubSettings is pending', async () => {

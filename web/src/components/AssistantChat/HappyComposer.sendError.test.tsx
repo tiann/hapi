@@ -1,6 +1,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode, TextareaHTMLAttributes } from 'react'
 import { useEffect, useRef, useState } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ApiClient } from '@/api/client'
+import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -33,6 +36,8 @@ const runtime = vi.hoisted(() => ({
     pendingSendIntentRef: null as null | { current: ComposerSendIntent },
     sentIntents: [] as ComposerSendIntent[],
     modelChanges: [] as Array<{ provider: string; modelId: string } | string | null>,
+    cancelRun: () => {},
+    composerEnterBehavior: 'send' as 'send' | 'newline',
     pendingHydration: null as Promise<void> | null,
     dictationEnabled: false,
     dictation: { status: 'connected', supported: true, partialTranscript: '', error: null, toggle: vi.fn(), stopAndSend: vi.fn() },
@@ -60,7 +65,7 @@ vi.mock('@assistant-ui/react', async () => {
             },
             addAttachment: async () => {},
         }),
-        thread: () => ({ cancelRun: () => {} }),
+        thread: () => ({ cancelRun: () => runtime.cancelRun() }),
     }
     return {
         useAui: () => api,
@@ -113,7 +118,9 @@ vi.mock('@/hooks/useDictation', () => ({ useDictation: () => runtime.dictation }
 vi.mock('@/hooks/useVoiceInputPreferences', () => ({
     useVoiceInputPreferences: () => ({ voiceMode: runtime.dictationEnabled ? 'dictation' : 'conversation', provider: 'openai', transcriptionMode: 'standard' }),
 }))
-vi.mock('@/hooks/useComposerEnterBehavior', () => ({ useComposerEnterBehavior: () => ({ composerEnterBehavior: 'send' }) }))
+vi.mock('@/hooks/useComposerEnterBehavior', () => ({
+    useComposerEnterBehavior: () => ({ composerEnterBehavior: runtime.composerEnterBehavior }),
+}))
 vi.mock('@/hooks/usePlatform', () => ({ usePlatform: () => ({ haptic: { impact: () => {}, notification: () => {} }, isTouch: false }) }))
 vi.mock('@/hooks/usePWAInstall', () => ({ usePWAInstall: () => ({ isStandalone: false, isIOS: false }) }))
 vi.mock('@/hooks/useActiveWord', () => ({ useActiveWord: () => null }))
@@ -127,6 +134,8 @@ vi.mock('@/components/AssistantChat/SortableComposerAttachments', () => ({
 vi.mock('@/components/AssistantChat/ComposerButtons', () => ({
     ComposerButtons: (props: {
         onSend: () => void
+        onAbort: () => void
+        abortDisabled: boolean
         onSchedule: (pending: PendingSchedule) => void
         onClearSchedule: () => void
         pendingSchedule: PendingSchedule | null
@@ -137,6 +146,7 @@ vi.mock('@/components/AssistantChat/ComposerButtons', () => ({
         onModelValueToggle?: () => void
     }) => (
         <div>
+            <button type="button" disabled={props.abortDisabled} onClick={props.onAbort}>Abort</button>
             <button type="button" onClick={props.onExpandedToggle}>
                 {props.expanded ? 'collapse' : 'expand'}
             </button>
@@ -172,6 +182,7 @@ function ComposerHarness(props: {
     initialText: string
     initialSchedule?: PendingSchedule | null
     piRunning?: boolean
+    abortPending?: boolean
     controls: { current: HarnessControls | null }
 }) {
     const [snapshot, setSnapshot] = useState<FakeRuntimeState>(() => ({
@@ -221,6 +232,7 @@ function ComposerHarness(props: {
                 key={composerKey}
                 sessionId={composerKey}
                 disabled={isSending}
+                isAborting={props.abortPending}
                 pendingSchedule={schedule}
                 onSchedule={setSchedule}
                 onClearSchedule={() => setSchedule(null)}
@@ -249,10 +261,12 @@ function renderComposer(
     initialText = 'failed text',
     initialSchedule: PendingSchedule | null = { type: 'absolute', ms: 1234 },
     piRunning = false,
+    composerEnterBehavior: 'send' | 'newline' = 'send',
 ) {
     const controls: { current: HarnessControls | null } = { current: null }
     runtime.sentIntents = []
     runtime.modelChanges = []
+    runtime.composerEnterBehavior = composerEnterBehavior
     render(<ComposerHarness initialText={initialText} initialSchedule={initialSchedule} piRunning={piRunning} controls={controls} />)
     return controls
 }
@@ -563,6 +577,51 @@ describe('HappyComposer send intent gestures', () => {
         expect(runtime.pendingSendIntentRef?.current).toBe('default')
     })
 
+    it('sends with Alt+S regardless of the configured Enter behavior', () => {
+        renderComposer('shortcut send', null, true, 'newline')
+
+        fireEvent.keyDown(input(), { key: 's', code: 'KeyS', altKey: true })
+
+        expect(runtime.sentIntents).toEqual(['default'])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('matches the logical S key across keyboard layouts', () => {
+        renderComposer('shortcut send', null, true)
+
+        fireEvent.keyDown(input(), { key: 's', code: 'KeyO', altKey: true })
+
+        expect(runtime.sentIntents).toEqual(['default'])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('does not send Alt+S while an IME composition is active', () => {
+        renderComposer('shortcut send', null, true)
+
+        fireEvent.keyDown(input(), { key: 's', code: 'KeyS', altKey: true, isComposing: true })
+
+        expect(runtime.sentIntents).toEqual([])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('does not treat modified Alt+S combinations as the send shortcut', () => {
+        renderComposer('shortcut send', null, true)
+
+        fireEvent.keyDown(input(), { key: 's', code: 'KeyS', altKey: true, shiftKey: true })
+
+        expect(runtime.sentIntents).toEqual([])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('preserves printable Option characters that share the physical S key', () => {
+        renderComposer('shortcut send', null, true)
+
+        fireEvent.keyDown(input(), { key: 'ß', code: 'KeyS', altKey: true })
+
+        expect(runtime.sentIntents).toEqual([])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
     it('consumes a restored queue retry mark before resetting the shared ref', () => {
         renderComposer('retry queue', null, true)
         runtime.pendingSendIntentRef!.current = 'queue'
@@ -584,6 +643,47 @@ describe('HappyComposer send intent gestures', () => {
         fireEvent.keyDown(input(), { key: 'Enter', altKey: true })
         expect(runtime.sentIntents).toEqual([])
         expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+})
+
+
+describe('HappyComposer Abort request settlement', () => {
+    it.each(['success', 'failure'] as const)('allows a second Stop after %s without an idle render', async (outcome) => {
+        let resolve!: () => void
+        let reject!: (error: Error) => void
+        const deferred = new Promise<void>((res, rej) => { resolve = res; reject = rej })
+        const abort = vi.fn().mockImplementationOnce(() => deferred).mockResolvedValue(undefined)
+        const api = { abortSession: abort } as unknown as ApiClient
+        const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+        let settled: Promise<Error | null> | undefined
+        function StopHarness() {
+            const actions = useSessionActions(api, 'session-stop', 'opencode')
+            runtime.cancelRun = () => {
+                // assistant-ui cancelRun is void and observes its onCancel promise.
+                settled = actions.abortSession().then(() => null, (error: Error) => error)
+            }
+            return <ComposerHarness initialText="" piRunning abortPending={actions.isAborting} controls={{ current: null }} />
+        }
+        render(<QueryClientProvider client={client}><StopHarness /></QueryClientProvider>)
+        const stop = screen.getByRole('button', { name: 'Abort' })
+        expect(stop).toBeEnabled()
+        fireEvent.click(stop)
+        await waitFor(() => expect(stop).toBeDisabled())
+        expect(abort).toHaveBeenCalledExactlyOnceWith('session-stop')
+        fireEvent.click(stop)
+        expect(abort).toHaveBeenCalledTimes(1)
+        const failure = new Error('Abort RPC failed')
+        await act(async () => {
+            if (outcome === 'success') resolve()
+            else reject(failure)
+            expect(await settled).toBe(outcome === 'success' ? null : failure)
+        })
+        await waitFor(() => expect(stop).toBeEnabled())
+        expect(runtime.snapshot.thread.isRunning).toBe(true)
+        fireEvent.click(stop)
+        await waitFor(() => expect(abort).toHaveBeenCalledTimes(2))
+        await act(async () => { expect(await settled).toBeNull() })
+        client.clear()
     })
 })
 

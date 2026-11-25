@@ -54,6 +54,16 @@ const initialSessions: SessionSummary[] = [
         },
     },
     {
+        ...base, id: 'running-completed-source', thinking: true,
+        metadata: { path: '/work/completed', name: '运行中已有历史', flavor: 'codex',
+            conversationHistory: { forkCurrent: true, forkLatestCompleted: true } },
+    },
+    {
+        ...base, id: 'running-empty-source', thinking: true,
+        metadata: { path: '/work/empty', name: '首轮运行中', flavor: 'codex',
+            conversationHistory: { forkCurrent: true, forkLatestCompleted: false } },
+    },
+    {
         ...base,
         id: 'archived-source',
         active: false,
@@ -72,7 +82,21 @@ const initialSessions: SessionSummary[] = [
 function Fixture() {
     const [selected, setSelected] = useState<string | null>(null)
     const api = {
-        forkConversation: async (sessionId: string) => {
+        // The preview flow asks the hub for a boundary first; the fixture
+        // answers like the hub would for each session shape.
+        forkPreview: async (sessionId: string, intent: 'current' | 'message' | 'rewind') => {
+            void intent
+            const mode = sessionId === 'running-completed-source' ? 'latestCompleted' : 'current'
+            return {
+                mode,
+                boundary: { v: 1, mode, epoch: 1, tailSeq: 0 },
+                keptTail: [],
+                excluded: [],
+                counts: { kept: 0, excluded: 0 },
+            }
+        },
+        forkConversation: async (sessionId: string, _message?: string, latestCompleted?: boolean) => {
+            document.body.dataset.latestCompleted = String(latestCompleted)
             document.body.dataset.forkSource = sessionId
             return { sessionId: 'fork-child' }
         },

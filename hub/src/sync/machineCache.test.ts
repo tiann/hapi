@@ -149,3 +149,24 @@ describe('MachineCache.renameMachine', () => {
         expect((store.machines.getMachine('machine-1')?.metadata as { displayName?: string })?.displayName).toBe('Workstation')
     })
 })
+
+describe('MachineCache.refreshMachine activity merge', () => {
+    it('adopts runner-state online even when Date.now matches create ms', () => {
+        const { store, cache } = createCache()
+        const machine = cache.getOrCreateMachine('machine-1', BASE_METADATA, null, 'ns')
+        expect(machine.active).toBe(false)
+
+        const version = machine.runnerStateVersion
+        const updated = store.machines.updateMachineRunnerState(
+            machine.id,
+            { status: 'running', pid: 1 },
+            version,
+            'ns'
+        )
+        expect(updated.result).toBe('success')
+
+        const refreshed = cache.refreshMachine(machine.id)
+        expect(refreshed?.active).toBe(true)
+        expect((refreshed?.activeAt ?? 0) > (machine.activeAt ?? machine.createdAt)).toBe(true)
+    })
+})

@@ -189,6 +189,34 @@ class SessionStoreTest {
     }
 
     @Test
+    fun `attached job patches update the row without a refetch and survive full sessions`() = runStoreTest { store, server ->
+        server.enqueueJson(sessionsResponseJson(summary("s1", updatedAt = 100)))
+        store.refresh()
+        store.applySessionEvent(
+            globalScope,
+            sessionUpdatedEvent(
+                "s1",
+                """{"attachedJob":{"version":3,"value":{"key":"import","label":"Import","status":"running",""" +
+                    """"heartbeatAt":10,"startedAt":5,"updatedAt":10}}}""",
+            ),
+        )
+        assertEquals("Import", store.sessions.value.single().attachedJob?.label)
+        assertEquals(3L, store.sessions.value.single().attachedJobUpdatedAt)
+
+        // A full-session event cannot carry the job; the row keeps it.
+        store.applySessionEvent(globalScope, sessionUpdatedEvent("s1", fullSessionJson(session("s1", updatedAt = 200))))
+        assertEquals("Import", store.sessions.value.single().attachedJob?.label)
+        assertEquals(200, store.sessions.value.single().updatedAt)
+
+        store.applySessionEvent(globalScope, sessionUpdatedEvent("s1", """{"attachedJob":{"version":4,"value":null}}"""))
+        assertNull(store.sessions.value.single().attachedJob)
+        // A rejected patch would schedule a batched list refetch.
+        testScheduler.advanceTimeBy(10_000)
+        testScheduler.runCurrent()
+        assertEquals(1, server.requestCount, "Job patches are applied, not refetched")
+    }
+
+    @Test
     fun `patch for an unlisted session falls back to a list refetch`() = runStoreTest { store, server ->
         server.enqueueJson(sessionsResponseJson(summary("brand-new", updatedAt = 10)))
         store.applySessionEvent(globalScope, sessionUpdatedEvent("brand-new", """{"updatedAt":10}"""))

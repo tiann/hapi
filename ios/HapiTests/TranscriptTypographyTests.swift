@@ -94,6 +94,53 @@ final class TranscriptTypographyTests: XCTestCase {
         return try XCTUnwrap(view.cellForItem(at: IndexPath(item: index, section: 0)))
     }
 
+    private func diagnosticSample(anchorID: String, driver: Driver, view: UICollectionView,
+                                  phase: String, elapsedMilliseconds: Int) -> [String: Any] {
+        let layoutSnapshot = (view.collectionViewLayout as? TranscriptLayout)?
+            .diagnosticSnapshot(anchorID: anchorID, in: view) ?? ["layout": "not TranscriptLayout"]
+        let visibleRows = view.indexPathsForVisibleItems.sorted().map { indexPath -> [String: Any] in
+            let frame = view.cellForItem(at: indexPath)?.frame ?? .zero
+            return [
+                "id": String(indexPath.item),
+                "item": indexPath.item,
+                "frame": [Double(frame.minX), Double(frame.minY), Double(frame.width), Double(frame.height)],
+            ]
+        }
+        return [
+            "phase": phase,
+            "elapsedMilliseconds": elapsedMilliseconds,
+            "dynamicTypeSize": String(describing: driver.size),
+            "bodySize": (driver.typography.map { Double($0.bodySize) } as Any?) ?? NSNull(),
+            "layoutVersions": Array(driver.layouts.suffix(12)),
+            "visibleRows": visibleRows,
+            "layout": layoutSnapshot,
+        ]
+    }
+
+    private func elapsedMilliseconds(since start: TimeInterval) -> Int {
+        Int(((ProcessInfo.processInfo.systemUptime - start) * 1_000).rounded())
+    }
+
+    private func attachDiagnosticTrace(_ samples: [[String: Any]], anchorID: String,
+                                       expectedOffset: CGFloat) {
+        let record: [String: Any] = [
+            "anchorID": anchorID,
+            "expectedAnchorOffset": Double(expectedOffset),
+            "device": UIDevice.current.name,
+            "systemVersion": UIDevice.current.systemVersion,
+            "processVersion": ProcessInfo.processInfo.operatingSystemVersionString,
+            "samples": samples,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys, .prettyPrinted]) else {
+            return
+        }
+        print("HAPI_TRANSCRIPT_DIAGNOSTIC \(String(decoding: data, as: UTF8.self))")
+        let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+        attachment.name = "growing-text-deep-offset-diagnostics"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testEqualItemsResizeAtLargeTextAndKeepTheHistoryAnchor() async throws {
         let driver = Driver()
         let (window, view) = try host(driver)
@@ -159,11 +206,57 @@ final class TranscriptTypographyTests: XCTestCase {
         view.contentOffset.y = cell.frame.minY + deepOffset
         view.layoutIfNeeded()
         await settle()
+
+        let anchorID = "25"
+        var diagnostics: [[String: Any]] = []
+        diagnostics.append(diagnosticSample(anchorID: anchorID, driver: driver, view: view,
+                                            phase: "before-typography-change", elapsedMilliseconds: 0))
+        defer {
+            attachDiagnosticTrace(diagnostics, anchorID: anchorID, expectedOffset: deepOffset)
+        }
+
         let previousSize = try XCTUnwrap(driver.typography).bodySize
+        let elapsedStart = ProcessInfo.processInfo.systemUptime
         driver.size = .accessibility5
-        await settle { (driver.typography?.bodySize ?? 0) > previousSize }
+        var observedTypographyChange = false
+        for _ in 0..<100 {
+            try? await Task.sleep(for: .milliseconds(20))
+            diagnostics.append(diagnosticSample(
+                anchorID: anchorID, driver: driver, view: view, phase: "wait-for-typography",
+                elapsedMilliseconds: elapsedMilliseconds(since: elapsedStart)
+            ))
+            if (driver.typography?.bodySize ?? 0) > previousSize {
+                observedTypographyChange = true
+                break
+            }
+        }
+        XCTAssertTrue(observedTypographyChange, "Typography did not update within the existing 2-second bound")
+
+        // Preserve the original assertion timing while sampling the 160 ms settle window.
+        for _ in 0..<8 {
+            try? await Task.sleep(for: .milliseconds(20))
+            diagnostics.append(diagnosticSample(
+                anchorID: anchorID, driver: driver, view: view, phase: "settle-before-assertion",
+                elapsedMilliseconds: elapsedMilliseconds(since: elapsedStart)
+            ))
+        }
         let grown = try XCTUnwrap(view.cellForItem(at: IndexPath(item: 25, section: 0)))
-        XCTAssertEqual(view.contentOffset.y - grown.frame.minY, deepOffset, accuracy: 1)
+        let assertionOffset = view.contentOffset.y - grown.frame.minY
+        diagnostics.append(diagnosticSample(
+            anchorID: anchorID, driver: driver, view: view, phase: "assertion",
+            elapsedMilliseconds: elapsedMilliseconds(since: elapsedStart)
+        ))
+
+        // This is diagnostic observation only. It does not delay or repair layout.
+        for _ in 0..<100 {
+            try? await Task.sleep(for: .milliseconds(20))
+            diagnostics.append(diagnosticSample(
+                anchorID: anchorID, driver: driver, view: view, phase: "post-assertion",
+                elapsedMilliseconds: elapsedMilliseconds(since: elapsedStart)
+            ))
+        }
+
+        XCTAssertEqual(assertionOffset, deepOffset, accuracy: 1)
     }
 
     func testReadingWidthAndBoldTextChangesKeepHistoryInPlace() async throws {

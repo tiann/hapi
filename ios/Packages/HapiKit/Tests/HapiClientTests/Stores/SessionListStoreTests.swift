@@ -193,6 +193,30 @@ struct SessionListStoreTests {
         #expect(store.sessions.last?.pendingRequestsCount == 1)
     }
 
+    @Test func attachedJobPatchesUpdateTheRowWithoutARefetch() async throws {
+        let (performer, store) = try makeStore()
+        await performer.enqueue(json: try sessionsResponseJSON(storeSummary("s1", updatedAt: 100)))
+        try await store.refresh()
+        store.applySessionEvent(try sessionUpdatedEvent("s1", dataJSON: """
+            {"attachedJob":{"version":3,"value":{"key":"import","label":"Import","status":"running",\
+            "heartbeatAt":10,"startedAt":5,"updatedAt":10}}}
+            """))
+        #expect(store.sessions.first?.attachedJob?.label == "Import")
+        #expect(store.sessions.first?.attachedJobUpdatedAt == 3)
+
+        // A full-session event cannot carry the job; the row keeps it.
+        store.applySessionEvent(
+            try sessionUpdatedEvent("s1", dataJSON: fullSessionJSON(storeSession("s1", updatedAt: 200)))
+        )
+        #expect(store.sessions.first?.attachedJob?.label == "Import")
+        #expect(store.sessions.first?.updatedAt == 200)
+
+        store.applySessionEvent(try sessionUpdatedEvent("s1", dataJSON: "{\"attachedJob\":{\"version\":4,\"value\":null}}"))
+        #expect(store.sessions.first?.attachedJob == nil)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(await performer.requests.count == 1, "Job patches are applied, not refetched")
+    }
+
     @Test func keepAliveActiveAtOnlyPatchKeepsTheListIdentity() async throws {
         let (performer, store) = try makeStore()
         await performer.enqueue(json: try sessionsResponseJSON(

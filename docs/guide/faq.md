@@ -1,3 +1,7 @@
+---
+description: "Answers to common questions about installing, securing, connecting and troubleshooting HAPI."
+---
+
 # FAQ
 
 ## General
@@ -59,6 +63,8 @@ The `CLI_API_TOKEN` is a shared secret that authenticates:
 
 It's auto-generated on first hub start and saved to `~/.hapi/settings.json`.
 
+After signing in once with the token, you can add **passkeys** (Face ID, Touch ID, Windows Hello, or a security key) in Settings and use them to sign in to the web app and native apps. Passkeys are bound to the token that was current when you added them: rotating `CLI_API_TOKEN` disables every existing passkey, so sign in with the new token and add them again. See [Authentication](./authentication.md).
+
 ### Do you support multiple accounts?
 
 Yes. We support lightweight multi-account access via namespaces for shared team hubs. See [Namespace (Advanced)](./namespace.md).
@@ -84,7 +90,7 @@ HAPI's CLI, hub and Web/PWA client are open source and free. The Web/PWA is full
 
 HAPI supports these notification channels:
 
-1. **PWA Push Notifications** - Enable when prompted, works even when app is closed
+1. **PWA Push Notifications** - Enable in Settings → General; works even when the app is closed
 2. **Telegram Bot** - See [Telegram Setup](./notifications.md#telegram-setup)
 3. **Native app notifications** - App Store and Google Play apps use encrypted push delivery; pair your hub and allow notifications, with no push-provider setup required
 4. **ServerChan (Server酱)** - Send notifications to WeChat and other channels; see [ServerChan Setup](./notifications.md#serverchan-server酱-setup)
@@ -113,6 +119,13 @@ Yes. Open any session and use the chat interface to send messages directly to th
 ### Why did my session look idle when the agent woke itself?
 
 Some agents (especially Cursor) can resume after idle from harness signals such as background Shell `notify_on_output` or `/loop`, without you sending a new HAPI message. HAPI updates the session's thinking indicator when the agent resumes work or requests permission, so the list reflects that activity.
+
+### How do I show progress for a long batch that outlives the agent?
+
+Use session-attached jobs (`hapi job run --progress …`). The CLI babysitter registers a job on the session, heartbeats while the child runs, and marks completed/failed on exit. The session list shows remaining / fraction / or an indeterminate "running" meter even when the agent is idle. See [Session-attached jobs](./session-jobs.md). This is Layer 0 list chrome - not an A2A Layer 1 work advertisement ([#1332](https://github.com/tiann/hapi/discussions/1332)).
+
+Exception: when the previous turn already closed with an `AGENT_NOTIFY_SUMMARY` line whose `status` is `done`, Cursor's finished-shell *"Briefly inform the user…"* wake does not open a second spoken reply (assistant text/reasoning and thinking bumps are dropped). Tool activity from a follow-up wake still surfaces. A new message from you re-opens normal speech.
+
 
 ### Can I access a terminal remotely?
 
@@ -143,8 +156,9 @@ The auto-generated token is 256-bit (cryptographically secure). For external acc
 
 ### Can others access my HAPI instance?
 
-Only if they have your access token. For additional security:
+Only if they have your access token or one of the passkeys registered on your hub. For additional security:
 - Use a strong, unique token
+- Remove passkeys you no longer use in Settings; rotate the token to revoke all of them at once
 - Always use HTTPS for external access
 - Consider Tailscale for private networking
 

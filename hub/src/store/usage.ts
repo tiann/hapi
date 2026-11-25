@@ -25,6 +25,8 @@ export type UsageScanState = {
     lastSeq: number
 }
 
+export const USAGE_SCAN_PARSER_VERSION = 2
+
 type UsageEventRow = {
     session_id: string
     source_key: string
@@ -161,17 +163,20 @@ export function recordUsageScan(
         }
 
         db.prepare(`
-            INSERT INTO usage_scan_state (session_id, message_epoch, last_seq)
-            VALUES (?, ?, ?)
+            INSERT INTO usage_scan_state (session_id, message_epoch, last_seq, parser_version)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 message_epoch = excluded.message_epoch,
                 last_seq = CASE
                     WHEN usage_scan_state.message_epoch = excluded.message_epoch
+                        AND usage_scan_state.parser_version = excluded.parser_version
                         THEN MAX(usage_scan_state.last_seq, excluded.last_seq)
                     ELSE excluded.last_seq
-                END
+                END,
+                parser_version = excluded.parser_version
             WHERE excluded.message_epoch >= usage_scan_state.message_epoch
-        `).run(sessionId, messageEpoch, lastSeq)
+                OR usage_scan_state.parser_version < excluded.parser_version
+        `).run(sessionId, messageEpoch, lastSeq, USAGE_SCAN_PARSER_VERSION)
     })()
 }
 
@@ -212,7 +217,8 @@ export function getUsageScanStates(db: Database, sessionIds: string[]): Map<stri
         SELECT session_id, message_epoch, last_seq
         FROM usage_scan_state
         WHERE session_id IN (${placeholders})
-    `).all(...sessionIds) as Array<{ session_id: string; message_epoch: number; last_seq: number }>
+          AND parser_version = ?
+    `).all(...sessionIds, USAGE_SCAN_PARSER_VERSION) as Array<{ session_id: string; message_epoch: number; last_seq: number }>
 
     return new Map(rows.map((row) => [row.session_id, {
         messageEpoch: row.message_epoch,

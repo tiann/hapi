@@ -17,6 +17,37 @@ class SessionSortingTest {
     }
 
     @Test
+    fun `active first leads each pin tier without beating pins`() {
+        val rows = listOf(
+            summary("new-stopped", 2, 200),
+            summary("old-live", 1, 100).copy(active = true),
+            summary("pinned-stopped", at = 1).copy(pinned = true),
+            summary("global", at = 0).copy(globalPinned = true),
+            summary("pinned-live", at = 0).copy(pinned = true, active = true),
+        )
+        assertEquals(
+            listOf("global", "pinned-live", "pinned-stopped", "old-live", "new-stopped"),
+            sortSessionSummaries(rows, SessionListOrder.Default).map { it.id },
+        )
+        assertEquals(
+            listOf("global", "pinned-stopped", "pinned-live", "new-stopped", "old-live"),
+            sortSessionSummaries(rows, SessionListOrder.Base).map { it.id },
+        )
+        assertEquals(sortSessionSummaries(rows), sortSessionSummaries(rows, SessionListOrder.Base))
+    }
+
+    @Test
+    fun `created sort ignores input and stored keys match web`() {
+        val rows = listOf(summary("early", 1, 900), summary("unknown", at = 999), summary("late", 5, 10))
+        val created = SessionListOrder(SessionListSort.Created, activeFirst = false)
+        assertEquals(listOf("late", "early", "unknown"), sortSessionSummaries(rows, created).map { it.id })
+        assertEquals(listOf("unknown", "early", "late"), sortSessionSummaries(rows, SessionListOrder.Base).map { it.id })
+        assertEquals("last-message", SessionListSort.LastMessage.storageKey)
+        assertEquals(SessionListSort.LastMessage, SessionListSort.fromStorageKey("activity"))
+        assertEquals(SessionListOrder(SessionListSort.LastMessage, activeFirst = true), SessionListOrder.Default)
+    }
+
+    @Test
     fun `manual pins still come first`() {
         val rows = listOf(summary("new", at = 99), summary("project", at = 2).copy(pinned = true), summary("global", at = 1).copy(globalPinned = true))
         assertEquals(listOf("global", "project", "new"), sortSessionSummaries(rows).map { it.id })

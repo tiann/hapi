@@ -14,6 +14,8 @@ import {
     GetSessionResponseSchema,
     LocalHandoffResponseSchema,
     LocalResumeTargetResponseSchema,
+    LocalResumeTargetByAgentResponseSchema,
+    LocalResumePrepareResponseSchema,
     ResumableSessionsResponseSchema,
     type ClearOpencodeSessionResponse,
     type ClearOpencodeSessionCallbackRequest,
@@ -31,9 +33,7 @@ export type Usage = z.infer<typeof UsageSchema>
 export type {
     AgentState,
     AttachmentMetadata,
-    ClaudePermissionMode,
     CodexCollaborationMode,
-    CodexPermissionMode,
     Machine,
     MachineMetadata,
     Metadata,
@@ -57,6 +57,8 @@ export {
     GetSessionResponseSchema,
     LocalHandoffResponseSchema,
     LocalResumeTargetResponseSchema,
+    LocalResumeTargetByAgentResponseSchema,
+    LocalResumePrepareResponseSchema,
     ResumableSessionsResponseSchema
 }
 

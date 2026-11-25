@@ -293,6 +293,21 @@ public final class SessionListStore: SessionListStoring {
         }
     }
 
+    /// `PATCH /sessions/:id {translateInput}` — optimistic
+    /// `metadata.translateInput` on the cached detail (the list summary does
+    /// not project it); a failure refetches the detail and rethrows.
+    public func setTranslateInput(sessionId: String, enabled: Bool) async throws {
+        updateDetailLocal(sessionId) { $0.metadata?.translateInput = enabled }
+        do {
+            try await api.setSessionTranslateInput(id: sessionId, enabled: enabled)
+        } catch {
+            if details[sessionId] != nil {
+                Task { _ = try? await self.loadSessionDetail(sessionId) }
+            }
+            throw error
+        }
+    }
+
     public func deleteSession(sessionId: String) async throws {
         let removed = sessions.first { $0.id == sessionId }
         let removedDetail = details[sessionId]
@@ -379,11 +394,13 @@ public final class SessionListStore: SessionListStoring {
         let index = list.firstIndex { $0.id == session.id }
         let existing = index.map { list[$0] }
         // The projection cannot derive the hub-computed scheduled-message
-        // fields — carry them over from the previous row (web
-        // `upsertSessionSummary`).
+        // fields or the attached job — carry them over from the previous row
+        // (web `upsertSessionSummary`).
         var summary = SummaryPatching.toSessionSummary(session)
         summary.futureScheduledMessageCount = existing?.futureScheduledMessageCount ?? 0
         summary.nextScheduledAt = existing?.nextScheduledAt
+        summary.attachedJob = existing?.attachedJob
+        summary.attachedJobUpdatedAt = existing?.attachedJobUpdatedAt
         summary.contentRevision = [existing?.contentRevision, session.contentRevision].compactMap { $0 }.max()
         summary.readState = SessionReadState.merge(existing?.readState, session.readState)
         summary.lastUserMessageAt = session.lastUserMessageAt.map { max(existing?.lastUserMessageAt ?? 0, $0) } ?? existing?.lastUserMessageAt

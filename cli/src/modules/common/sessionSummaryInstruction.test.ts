@@ -63,6 +63,7 @@ describe('sessionSummaryInstruction', () => {
         expect(body).toContain('final answer only')
         expect(body).toContain('Do not emit this line in commentary, progress updates, or before tool calls.')
         expect(body).toContain(USER_LANGUAGE_INSTRUCTION)
+        expect(body).toContain('After status "done", do not emit further user-visible replies')
         expect(body).not.toContain('End every response')
     })
 

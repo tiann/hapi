@@ -4,7 +4,7 @@ import type { AgentMessage, PlanItem } from './types';
 import type { InlineMediaSource } from '@/modules/common/inlineMediaSource';
 
 export type CodexMessage =
-    | { type: 'message'; message: string; id?: string; streamSnapshot?: boolean }
+    | { type: 'message'; message: string; id?: string; live?: boolean; streamSnapshot?: boolean }
     | { type: 'reasoning'; message: string; id: string; live?: boolean }
     | {
         type: 'token_count';
@@ -43,6 +43,18 @@ export type CodexMessage =
     | { type: 'plan'; entries: PlanItem[] }
     | { type: 'error'; message: string }
     | {
+        type: 'round-summary';
+        summary: {
+            usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
+            modelUsage: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number }>;
+            total_cost_usd?: number;
+            num_turns: number;
+            duration_ms: number;
+            generation_ms?: number;
+            generation_output_tokens?: number;
+        };
+    }
+    | {
         type: 'generated-image';
         imageId: string;
         fileName: string;
@@ -58,6 +70,7 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
                 type: 'message',
                 message: message.text,
                 ...(message.id !== undefined ? { id: message.id } : {}),
+                ...(message.live === true ? { live: true } : {}),
                 ...(message.streamSnapshot === true ? { streamSnapshot: true } : {})
             };
         case 'reasoning':
@@ -119,6 +132,24 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
             return {
                 type: 'plan',
                 entries: message.items
+            };
+        case 'round_summary':
+            return {
+                type: 'round-summary',
+                summary: {
+                    usage: {
+                        input_tokens: message.summary.usage.inputTokens,
+                        output_tokens: message.summary.usage.outputTokens,
+                        cache_read_input_tokens: message.summary.usage.cacheReadInputTokens,
+                        cache_creation_input_tokens: message.summary.usage.cacheCreationInputTokens
+                    },
+                    modelUsage: message.summary.modelUsage,
+                    ...(message.summary.totalCostUsd !== undefined ? { total_cost_usd: message.summary.totalCostUsd } : {}),
+                    num_turns: message.summary.numTurns,
+                    duration_ms: message.summary.durationMs,
+                    ...(message.summary.generationMs !== undefined && message.summary.generationOutputTokens !== undefined
+                        ? { generation_ms: message.summary.generationMs, generation_output_tokens: message.summary.generationOutputTokens } : {})
+                }
             };
         case 'generated_image':
             return {

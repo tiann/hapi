@@ -129,6 +129,41 @@ class HomeScreenTest {
         }
     }
 
+    @Test fun manualFolderCollapseHidesOnlyItsOwnRowsAndSurvivesARefresh() {
+        val prefix = "/very/long/shared/parent/project/workspaces"
+        sessions.sessions.value = sessions.sessions.value.map { row ->
+            when (row.id) {
+                "build" -> row.copy(metadata = row.metadata!!.copy(path = "$prefix/team-a/src/app"))
+                "fix" -> row.copy(metadata = row.metadata!!.copy(path = "$prefix/team-b/src/app"))
+                "research" -> row.copy(metadata = row.metadata!!.copy(path = "$prefix/team-a/src/app"))
+                else -> row
+            }
+        }
+        mount()
+        capture("projects-expanded")
+        val folder = compose.onNode(hasClickAction() and hasText("team-a/src/app", substring = true) and hasStateDescription(label(R.string.sessions_folder_expanded)))
+        folder.performClick()
+        compose.onNodeWithText("Build API").assertDoesNotExist()
+        compose.onNodeWithText("Fix Android").assertIsDisplayed()
+        val other = compose.onNode(hasClickAction() and hasText("team-b/src/app", substring = true))
+        other.performClick()
+        compose.onNodeWithText("Fix Android").assertDoesNotExist()
+        capture("project-folded")
+        other.performClick()
+        sessions.sessions.value = sessions.sessions.value.map { it.copy(contentRevision = 10) }
+        compose.waitUntil(10_000) { viewModel.uiState.value.rows.all { it.summary.contentRevision == 10L } }
+        compose.onNodeWithContentDescription(label(R.string.sessions_search_open)).performClick()
+        compose.onNodeWithTag("home-search-input").performTextInput("zznomatchzz")
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithText(label(R.string.sessions_search_no_results_hint)).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithContentDescription(label(R.string.sessions_search_close)).performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Fix Android").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Build API").assertDoesNotExist()
+        compose.onNode(hasClickAction() and hasStateDescription(label(R.string.sessions_folder_collapsed))).performClick()
+        compose.onNodeWithText("Build API").assertIsDisplayed()
+    }
+
     private fun label(id: Int) = context.getString(id)
     private fun openFilters() = compose.onNodeWithContentDescription(label(R.string.sessions_filters)).performClick()
     // Send a real Back event: dispatching straight to the activity skips the
@@ -210,6 +245,26 @@ class HomeScreenTest {
         assertNotNull(viewModel.uiState.value.dateRange)
         compose.onNodeWithContentDescription(label(R.string.sessions_filters))
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, label(R.string.sessions_filters_active)))
+    }
+
+    @Test fun sheetShowsStatusAndSortChoicesBelowTheFilters() {
+        sessions.sessions.value = sessions.sessions.value.map { if (it.id == "research") it.copy(active = false) else it }
+        mount()
+        openFilters()
+        // "Show" is one row whose value opens a menu of statuses.
+        compose.onNodeWithTag("session-status-filter").performClick()
+        compose.onNodeWithText(label(R.string.sessions_view_status_archived)).performClick()
+        compose.waitUntil(10_000) { viewModel.uiState.value.rows.map { it.id } == listOf("research") }
+        compose.onNodeWithTag("session-filters").performScrollToNode(hasTestTag("session-active-first"))
+        compose.onNodeWithTag("session-active-first").assertIsDisplayed().performClick()
+        compose.waitUntil(10_000) { !viewModel.uiState.value.order.activeFirst && viewModel.uiState.value.isCustomized }
+        compose.onNodeWithTag("session-active-first").performClick()
+        compose.waitUntil(10_000) { viewModel.uiState.value.order.activeFirst }
+        compose.onNodeWithText(label(R.string.sessions_filters_reset)).performClick()
+        compose.waitUntil(10_000) { !viewModel.uiState.value.hasActiveFilters && viewModel.uiState.value.rows.size == 3 }
+        compose.onNodeWithText(label(R.string.sessions_filters_done)).performClick()
+        compose.onNodeWithContentDescription(label(R.string.sessions_filters))
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, label(R.string.sessions_filter_all)))
     }
 
     @Test fun singleMachineStillOffersDateFilteringAndReset() {

@@ -31,13 +31,39 @@ describe('AppServerEventConverter', () => {
         })).toEqual([{ type: 'agent_message', message: footer }]);
     });
 
-    it('leaves literal examples and malformed footers in commentary unchanged', () => {
+    it('leaves literal examples and non-final footers in commentary unchanged', () => {
+        // This path strips before storage, not just before display, so a
+        // quoted example lost here is gone rather than merely hidden.
         const converter = new AppServerEventConverter();
-        for (const text of [`Example: ${footer}`, `${footer}\nMore explanation.`, 'AGENT_NOTIFY_SUMMARY {invalid}']) {
+        for (const text of [
+            `Example: ${footer}`,
+            `${footer}\nMore explanation.`,
+            `Use \`${footer}\` at the end.`,
+            `It said "${footer}" verbatim.`,
+            `The agent wrote "Done.${footer}" verbatim.`,
+            `('Done.${footer}')`,
+            `Use \`\`Done.${footer}\`\` at the end.`,
+            `Use \`\`a \` b.${footer}\`\` at the end.`,
+            // Partial payloads too: no object end to measure, so the line
+            // opening with prose is the only signal left.
+            'Use `AGENT_NOTIFY_SUMMARY {"summary":` to reproduce the failure.',
+            'Use `AGENT_NOTIFY_SUMMARY not-json` to reproduce the failure.'
+        ]) {
             expect(converter.handleNotification('item/completed', {
                 item: { id: text, type: 'agentMessage', text, phase: 'commentary' }
             })).toEqual([{ type: 'agent_message', message: text }]);
         }
+    });
+
+    it('suppresses footer-only commentary even when the footer is malformed', () => {
+        // A near-miss footer is still addressed to the harness, not the reader.
+        const converter = new AppServerEventConverter();
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'broken', type: 'agentMessage', text: 'AGENT_NOTIFY_SUMMARY {invalid}', phase: 'commentary' }
+        })).toEqual([]);
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'truncated', type: 'agentMessage', text: 'Working.\nAGENT_NOTIFY_SUMMARY {"status":"done', phase: 'commentary' }
+        })).toEqual([{ type: 'agent_message', message: 'Working.' }]);
     });
 
     it('maps thread/started', () => {
@@ -223,6 +249,60 @@ describe('AppServerEventConverter', () => {
         });
         expect(events).toEqual([expect.objectContaining({ type: 'exec_command_end', call_id: 'late-command',
             command: 'node server.js', cwd: '/repo', status: 'failed', exit_code: -1, duration_ms: 16_636_720 })]);
+    });
+
+    it('carries item timing on tool events for the generation ledger', () => {
+        const converter = new AppServerEventConverter();
+
+        const command = converter.handleNotification('item/started', {
+            item: { id: 'cmd-1', type: 'commandExecution', command: 'ls', startedAtMs: 1_000 }
+        });
+        expect(command).toEqual([expect.objectContaining({ type: 'exec_command_begin', call_id: 'cmd-1', started_at_ms: 1_000 })]);
+        const commandEnd = converter.handleNotification('item/completed', {
+            item: { id: 'cmd-1', type: 'commandExecution', status: 'completed', durationMs: 500, completedAtMs: 1_500 }
+        });
+        expect(commandEnd).toEqual([expect.objectContaining({
+            type: 'exec_command_end', call_id: 'cmd-1', duration_ms: 500, completed_at_ms: 1_500
+        })]);
+
+        const mcp = converter.handleNotification('item/started', {
+            item: { id: 'mcp-1', type: 'mcpToolCall', server: 's', tool: 't', arguments: {}, startedAtMs: 2_000 }
+        });
+        expect(mcp).toEqual([expect.objectContaining({ type: 'mcp_tool_call_begin', call_id: 'mcp-1', started_at_ms: 2_000 })]);
+        const mcpEnd = converter.handleNotification('item/completed', {
+            item: { id: 'mcp-1', type: 'mcpToolCall', server: 's', tool: 't', result: { Ok: 'done' }, durationMs: 250, completedAtMs: 2_250 }
+        });
+        expect(mcpEnd).toEqual([expect.objectContaining({
+            type: 'mcp_tool_call_end', call_id: 'mcp-1', duration_ms: 250, completed_at_ms: 2_250
+        })]);
+
+        const patch = converter.handleNotification('item/started', {
+            item: { id: 'patch-1', type: 'fileChange', changes: {}, startedAtMs: 3_000 }
+        });
+        expect(patch).toEqual([expect.objectContaining({ type: 'patch_apply_begin', call_id: 'patch-1', started_at_ms: 3_000 })]);
+        const patchEnd = converter.handleNotification('item/completed', {
+            item: { id: 'patch-1', type: 'fileChange', success: true, completedAtMs: 3_400 }
+        });
+        expect(patchEnd).toEqual([expect.objectContaining({ type: 'patch_apply_end', call_id: 'patch-1', completed_at_ms: 3_400 })]);
+
+        const collab = converter.handleNotification('item/started', {
+            item: { id: 'agent-1', type: 'collabAgentToolCall', tool: 'spawn_agent', startedAtMs: 4_000 }
+        });
+        expect(collab).toEqual([expect.objectContaining({ type: 'codex_tool_call_begin', call_id: 'agent-1', started_at_ms: 4_000 })]);
+        const collabEnd = converter.handleNotification('item/completed', {
+            item: { id: 'agent-1', type: 'collabAgentToolCall', tool: 'spawn_agent', status: 'completed', completedAtMs: 5_000 }
+        });
+        expect(collabEnd).toEqual([expect.objectContaining({ type: 'codex_tool_call_end', call_id: 'agent-1', completed_at_ms: 5_000 })]);
+    });
+
+    it('omits item timing keys the agent did not send', () => {
+        const converter = new AppServerEventConverter();
+        const started = converter.handleNotification('item/started', {
+            item: { id: 'cmd-1', type: 'commandExecution', command: 'ls' }
+        });
+        expect(started).toEqual([{
+            type: 'exec_command_begin', call_id: 'cmd-1', command: 'ls'
+        }]);
     });
 
     it('maps MCP tool call items', () => {

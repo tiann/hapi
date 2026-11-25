@@ -23,6 +23,7 @@ export function FastModeSelector(props: {
                 <span className="font-normal">({t('newSession.model.optional')})</span>
             </label>
             <SelectControl
+                aria-label={t('newSession.fastMode')}
                 value={props.value}
                 onChange={(e) => props.onChange(e.target.value as NewSessionServiceTier)}
                 disabled={props.isDisabled}

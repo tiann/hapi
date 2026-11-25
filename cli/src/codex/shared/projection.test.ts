@@ -9,6 +9,72 @@ import { extractNotifySummary } from '@hapi/protocol/messages';
 import { asyncQuestionsForItem } from './asyncQuestions';
 
 describe('shared history projection', () => {
+    it('projects accepted batch members under their original IDs and one native turn', async () => {
+        let metadata: Record<string, unknown> = {};
+        const user = vi.fn();
+        const content = [{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }];
+        const aliases = [{ id: 'original-A', input: [content[0]] }, { id: 'original-B', input: [content[1]] }];
+        const committed = vi.fn(async () => aliases);
+        const session = {
+            getMetadata: () => metadata,
+            updateMetadata: (fn: (value: Record<string, unknown>) => Record<string, unknown>) => { metadata = fn(metadata); },
+            sendUserMessage: user, sendAgentMessage: vi.fn()
+        } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', committed);
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn',
+            item: { id: 'item', type: 'userMessage', clientId: 'native-batch', content } });
+        expect(committed).toHaveBeenCalledWith('native-batch', content);
+        expect(user.mock.calls).toEqual([['A', undefined, 'original-A'], ['B', undefined, 'original-B']]);
+        expect(metadata.conversationHistoryTurns).toEqual({ 'original-A': 'turn', 'original-B': 'turn' });
+        expect(metadata.conversationHistoryPoints).toEqual({ 'original-A': true });
+    });
+
+    it('does not echo or create history points for an unproven batch version', async () => {
+        const user = vi.fn(); const update = vi.fn();
+        const session = { getMetadata: () => ({}), updateMetadata: update, sendUserMessage: user,
+            sendAgentMessage: vi.fn() } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => []);
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn',
+            item: { id: 'item', type: 'userMessage', clientId: 'native-batch', content: [{ type: 'text', text: 'unconfirmed' }] } });
+        expect(user).not.toHaveBeenCalled();
+        expect(update).not.toHaveBeenCalled();
+        expect(projection.turnFor('native-batch')).toBeUndefined();
+    });
+
+    it('keeps batch aliases and a failed native command consistent through history replay', async () => {
+        let metadata: Record<string, unknown> = {};
+        const user = vi.fn(); const agent = vi.fn();
+        const input = [{ type: 'text', text: 'first' }, { type: 'text', text: 'second' }];
+        const committed = vi.fn(async () => [{ id: 'first-id', input: [input[0]] }, { id: 'second-id', input: [input[1]] }]);
+        const session = {
+            getMetadata: () => metadata,
+            updateMetadata: (fn: (value: Record<string, unknown>) => Record<string, unknown>) => { metadata = fn(metadata); },
+            sendUserMessage: user, sendAgentMessage: agent
+        } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', committed);
+        const items = [
+            { id: 'batch-item', type: 'userMessage', clientId: 'native-batch', content: input },
+            { id: 'stopped-command', type: 'commandExecution', command: 'sleep 100', status: 'cancelled', exitCode: -1 }
+        ];
+        for (const item of items) {
+            await projection.notification('item/started', { threadId: 'thread', turnId: 'turn', item });
+            await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        }
+        const live = agent.mock.calls.slice();
+        const assertProjection = () => {
+            expect([...new Map(user.mock.calls.map(([text, , id]) => [id, text]))]).toEqual([['first-id', 'first'], ['second-id', 'second']]);
+            expect(metadata.conversationHistoryTurns).toEqual({ 'first-id': 'turn', 'second-id': 'turn' });
+            expect(metadata.conversationHistoryPoints).toEqual({ 'first-id': true });
+            expect(agent.mock.calls.map(([body]) => body).filter(body => body.type === 'tool-call-result'))
+                .toMatchObject([{ callId: 'stopped-command', is_error: true, output: { exit_code: -1 } }]);
+        };
+        assertProjection();
+        projection.reset(); user.mockClear(); agent.mockClear();
+        await projection.history({ turns: [{ id: 'turn', status: 'interrupted', items }] });
+        assertProjection();
+        expect(agent.mock.calls).toEqual(live);
+    });
+
     it('displays async answers as readable user messages while preserving native IDs', async () => {
         const sendUserMessage = vi.fn(); const committed = vi.fn(async () => {});
         const observe = vi.fn();
@@ -20,8 +86,29 @@ describe('shared history projection', () => {
         const item = { type: 'userMessage', id: 'native-answer', clientId: 'client-answer', content: [{ type: 'text', text }] };
         await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
         expect(observe).toHaveBeenCalledWith('thread', item);
-        expect(committed).toHaveBeenCalledWith('client-answer');
+        expect(committed).toHaveBeenCalledWith('client-answer', item.content);
         expect(sendUserMessage).toHaveBeenCalledWith('Which client?\nWeb', undefined, 'client-answer');
+    });
+    it('displays async answers per original batch member and retains the first fork boundary', async () => {
+        let metadata: Record<string, unknown> = {};
+        const user = vi.fn();
+        const text = `<send_user_message_question_reply>\n${JSON.stringify([{
+            questionItemId: '["request_user_input_async","call_async",0]', question: 'Which client?', answer: 'Web'
+        }])}\n</send_user_message_question_reply>`;
+        const content = [{ type: 'text', text }, { type: 'text', text: 'Ordinary follow-up' }];
+        const aliases = [{ id: 'answer-original', input: [content[0]] }, { id: 'followup-original', input: [content[1]] }];
+        const committed = vi.fn(async () => aliases); const observe = vi.fn();
+        const session = { getMetadata: () => metadata,
+            updateMetadata: (fn: (value: Record<string, unknown>) => Record<string, unknown>) => { metadata = fn(metadata); },
+            sendUserMessage: user, sendAgentMessage: vi.fn() } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', committed, undefined, undefined, observe);
+        const item = { id: 'native-answer', type: 'userMessage', clientId: 'native-batch', content };
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        expect(committed).toHaveBeenCalledWith('native-batch', content);
+        expect(user.mock.calls).toEqual([['Which client?\nWeb', undefined, 'answer-original'], ['Ordinary follow-up', undefined, 'followup-original']]);
+        expect(metadata.conversationHistoryTurns).toEqual({ 'answer-original': 'turn', 'followup-original': 'turn' });
+        expect(metadata.conversationHistoryPoints).toEqual({ 'answer-original': true });
+        expect(observe).toHaveBeenCalledWith('thread', item);
     });
     it.each([undefined, 'root'])('projects async questions as actionable cards, including active snapshots (parent: %s)', async parentThreadId => {
         const send = vi.fn();
@@ -225,6 +312,228 @@ describe('shared history projection', () => {
         await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'live', status: 'completed' } }, undefined, 50_000);
         expect(send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([
             expect.objectContaining({ durationMs: 39_426, turn_id: 'live' })
+        ]);
+    });
+
+    it('fills the live turn duration with generation time and round output tokens', async () => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        // Pre-round cumulative usage: the token baseline for the round.
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 1_000 } }
+        }, undefined, 500);
+        await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'turn' } }, undefined, 1_000);
+        await projection.notification('item/started', {
+            threadId: 'thread', turnId: 'turn', item: { id: 'cmd', type: 'commandExecution', command: 'ls', startedAtMs: 2_000 }
+        }, undefined, 2_050);
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 1_050 } }
+        }, undefined, 3_000);
+        await projection.notification('item/completed', {
+            threadId: 'thread', turnId: 'turn', item: { id: 'cmd', type: 'commandExecution', status: 'completed', durationMs: 1_800, completedAtMs: 4_000 }
+        }, undefined, 4_050);
+        await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'turn', status: 'completed' } }, undefined, 5_000);
+
+        const durations = send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration');
+        // 4 s round, Codex-measured 1.8 s command: 2.2 s of generation for 50 tokens.
+        expect(durations).toEqual([expect.objectContaining({
+            turn_id: 'turn', durationMs: 4_000, generationMs: 2_200, generationOutputTokens: 50
+        })]);
+    });
+
+    it('omits the generation pair without a pre-turn usage baseline', async () => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'turn' } }, undefined, 1_000);
+        await projection.notification('item/started', {
+            threadId: 'thread', turnId: 'turn', item: { id: 'cmd', type: 'commandExecution', command: 'ls' }
+        }, undefined, 1_100);
+        await projection.notification('item/completed', {
+            threadId: 'thread', turnId: 'turn', item: { id: 'cmd', type: 'commandExecution', status: 'completed' }
+        }, undefined, 2_000);
+        await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'turn', status: 'completed' } }, undefined, 3_000);
+
+        const durations = send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration');
+        expect(durations).toEqual([expect.objectContaining({ turn_id: 'turn', durationMs: 2_000 })]);
+        expect(durations[0]).not.toHaveProperty('generationMs');
+        expect(durations[0]).not.toHaveProperty('generationOutputTokens');
+    });
+
+    it('fills the generation pair for a fresh thread whose usage arrives mid-turn', async () => {
+        // Mirrors the captured 2026-11-11 16:40 E2E rollout: a new thread's
+        // first tokenUsage notifications land between turn/started and
+        // turn/completed (wire shape per codex rust-v0.167.0
+        // ThreadTokenUsageUpdatedNotification: camelCase breakdowns). The
+        // CLI seeds a thread it created in this process to zero right after
+        // thread/start; resumed or forked threads instead receive the
+        // app-server's attach-time usage replay.
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        projection.seedFreshUsage();
+        await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'turn' } }, undefined, 1_000);
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { outputTokens: 50 } }
+        }, undefined, 2_000);
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { outputTokens: 63 } }
+        }, undefined, 4_000);
+        await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'turn', status: 'completed' } }, undefined, 5_000);
+
+        const durations = send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration');
+        expect(durations).toEqual([expect.objectContaining({
+            turn_id: 'turn', durationMs: 4_000, generationMs: 4_000, generationOutputTokens: 63
+        })]);
+    });
+
+    it('preserves the active generation ledger across a hub-only reconnect reset', async () => {
+        // The hub reconnect replays history with stable IDs, but the native
+        // turn keeps running without a new turn/started: the active round's
+        // identity, baseline and windows must survive the reset.
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 100 } }
+        }, undefined, 500);
+        await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'turn' } }, undefined, 1_000);
+        projection.resetAfterHubReconnect();
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 160 } }
+        }, undefined, 3_000);
+        await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'turn', status: 'completed' } }, undefined, 4_000);
+        expect(send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([
+            expect.objectContaining({ durationMs: 3_000, generationMs: 3_000, generationOutputTokens: 60 })
+        ]);
+    });
+
+    it('does not let mid-turn usage stand in for a baseline on a resumed thread', async () => {
+        // Cold reopen path: a new app-server process resumes with
+        // excludeTurns, so no usage replay arrives (codex rust-v0.167.0
+        // thread_processor.rs skips the replay for excludeTurns resumes).
+        // The session's token state is still seeded from the rollout, so the
+        // first mid-turn cumulative total already includes inherited
+        // history: counting it as this turn's output would overstate tok/s.
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'turn' } }, undefined, 1_000);
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { outputTokens: 47_000 } }
+        }, undefined, 2_000);
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { outputTokens: 47_060 } }
+        }, undefined, 4_000);
+        await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'turn', status: 'completed' } }, undefined, 5_000);
+
+        const durations = send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration');
+        expect(durations).toEqual([expect.objectContaining({ turn_id: 'turn', durationMs: 4_000 })]);
+        expect(durations[0]).not.toHaveProperty('generationMs');
+        expect(durations[0]).not.toHaveProperty('generationOutputTokens');
+    });
+
+    it('does not let history replay feed the generation ledger', async () => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        await projection.history({
+            turns: [{ id: 'old', status: 'completed', items: [{
+                id: 'cmd', type: 'commandExecution', command: 'long', startedAtMs: 100, completedAtMs: 900, durationMs: 800
+            }] }]
+        });
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 100 } }
+        }, undefined, 2_000);
+        await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'live' } }, undefined, 3_000);
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 160 } }
+        }, undefined, 3_500);
+        await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'live', status: 'completed' } }, undefined, 4_000);
+
+        // Replayed tool windows must not shrink the live round's generation time.
+        expect(send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([
+            expect.objectContaining({ durationMs: 1_000, generationMs: 1_000, generationOutputTokens: 60 })
+        ]);
+    });
+
+    it('resets the generation ledger when a turn fails and measures the next one', async () => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 100 } }
+        }, undefined, 500);
+        await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'a' } }, undefined, 1_000);
+        await projection.notification('item/started', {
+            threadId: 'thread', turnId: 'a', item: { id: 'cmd', type: 'commandExecution', command: 'ls' }
+        }, undefined, 1_100);
+        await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'a', status: 'failed' } }, undefined, 2_000);
+        expect(send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([]);
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 160 } }
+        }, undefined, 2_500);
+        await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'b' } }, undefined, 3_000);
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 260 } }
+        }, undefined, 3_500);
+        await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'b', status: 'completed' } }, undefined, 4_000);
+
+        // The failed turn's open tool window must not exclude time from turn b.
+        expect(send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([
+            expect.objectContaining({ turn_id: 'b', durationMs: 1_000, generationMs: 1_000, generationOutputTokens: 100 })
+        ]);
+    });
+
+    it('resets the generation ledger when the projection resets on reconnect', async () => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 100 } }
+        }, undefined, 500);
+        await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'turn' } }, undefined, 1_000);
+        await projection.notification('item/started', {
+            threadId: 'thread', turnId: 'turn', item: { id: 'cmd', type: 'commandExecution', command: 'ls', startedAtMs: 2_000 }
+        }, undefined, 2_050);
+        await projection.notification('item/completed', {
+            threadId: 'thread', turnId: 'turn', item: { id: 'cmd', type: 'commandExecution', status: 'completed', completedAtMs: 3_000 }
+        }, undefined, 3_050);
+        // App-server reconnect: the root resets the projection; the ledger must
+        // drop the pre-disconnect round so the resumed turn re-measures itself.
+        projection.reset();
+        await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'turn' } }, undefined, 20_000);
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 160 } }
+        }, undefined, 20_500);
+        await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'turn', status: 'completed' } }, undefined, 21_000);
+
+        // The round wall clock keeps the upstream stale-start behavior (20000),
+        // but generation time must be measured from the resume, not the
+        // pre-disconnect start, and the stale tool window must not subtract.
+        expect(send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([
+            expect.objectContaining({ durationMs: 20_000, generationMs: 1_000, generationOutputTokens: 60 })
+        ]);
+    });
+
+    it('times an approval wait into the live round through the host hook', async () => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 0 } }
+        }, undefined, 500);
+        await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'turn' } }, undefined, 1_000);
+        const answered = projection.beginUserWait(2_000);
+        answered(3_500);
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 10 } }
+        }, undefined, 4_000);
+        await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'turn', status: 'completed' } }, undefined, 5_000);
+
+        expect(send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([
+            expect.objectContaining({ durationMs: 4_000, generationMs: 2_500, generationOutputTokens: 10 })
         ]);
     });
 

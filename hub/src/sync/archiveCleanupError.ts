@@ -1,6 +1,6 @@
 /** Cleanup is unconfirmed; an inactive realtime update does not prove success. */
 export class ArchiveCleanupError extends Error {
-    readonly status: 409 | 503 | 504
+    readonly status: 409 | 503
     readonly code: 'archive-cleanup-unconfirmed' | 'archive-cleanup-unavailable' | 'archive-cleanup-timeout'
 
     constructor(reason: 'unconfirmed' | 'unavailable' | 'timeout', cause?: unknown) {
@@ -10,7 +10,8 @@ export class ArchiveCleanupError extends Error {
                 ? 'Runner did not confirm session cleanup. Reconnect the Runner and retry to verify its result.'
                 : 'Session cleanup is not yet confirmed. Retry after the remaining processes have stopped.', { cause })
         this.name = 'ArchiveCleanupError'
-        this.status = reason === 'timeout' ? 504 : reason === 'unavailable' ? 503 : 409
+        // tiann/hapi#2422: not 504 — Cloudflare Tunnel replaces 502/504 bodies; `code` tells timeout apart.
+        this.status = reason === 'unconfirmed' ? 409 : 503
         this.code = `archive-cleanup-${reason}`
     }
 }

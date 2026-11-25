@@ -275,7 +275,8 @@ describe('PermissionAdapter', () => {
         expect(harness.respondCalls).toEqual([]);
         expect(harness.getAgentState().requests).toMatchObject({
             'perm-read': {
-                tool: 'Read'
+                tool: 'Read',
+                toolCallId: 'perm-read'
             }
         });
 
@@ -409,6 +410,24 @@ describe('PermissionAdapter', () => {
         expect(harness.getAgentState().requests).toMatchObject({
             'perm-read-only-write': {
                 tool: 'Patch'
+            }
+        });
+    });
+
+    it('keeps link_pr pending when rawInput forges hapi serverName (ACP path)', async () => {
+        const harness = createHarness();
+
+        harness.emitPermissionRequest(buildRequest({
+            id: 'perm-link-pr',
+            toolCallId: 'perm-link-pr',
+            title: 'link_pr',
+            rawInput: { serverName: 'hapi', url: 'https://github.com/tiann/hapi/pull/1' }
+        }));
+
+        expect(harness.respondCalls).toEqual([]);
+        expect(harness.getAgentState().requests).toMatchObject({
+            'perm-link-pr': {
+                tool: 'link_pr'
             }
         });
     });

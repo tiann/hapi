@@ -45,7 +45,7 @@ export function formatMessageTimestamp(date: Date, now: Date = new Date()): stri
 
 export function formatOutlineTimestamp(
     date: Date,
-    locale: 'en' | 'zh-CN' | 'ru',
+    locale: 'en' | 'zh-CN' | 'ru' | 'ja',
     now: Date = new Date()
 ): string {
     const sameDay = date.getFullYear() === now.getFullYear()
@@ -63,6 +63,11 @@ export function formatOutlineTimestamp(
     const sameYear = date.getFullYear() === now.getFullYear()
 
     if (locale === 'zh-CN') {
+        const dateLabel = sameYear ? `${month}月${day}日` : `${year}年${month}月${day}日`
+        return `${dateLabel} ${time}`
+    }
+
+    if (locale === 'ja') {
         const dateLabel = sameYear ? `${month}月${day}日` : `${year}年${month}月${day}日`
         return `${dateLabel} ${time}`
     }
@@ -287,6 +292,28 @@ export function getEventPresentation(event: AgentEvent): EventPresentation {
     }
     if (event.type === 'token-count') {
         return formatTokenCountEvent(event)
+    }
+    if (event.type === 'modelError') {
+        // Banner already surfaces the full model-error UI; avoid dumping
+        // rawSnippet via the JSON.stringify fallback into the chat thread.
+        const kind = typeof event.kind === 'string' ? event.kind : 'unknown'
+        const transient = event.transient === true
+        return {
+            icon: '⚠️',
+            text: transient
+                ? `Model error (${kind}, transient)`
+                : `Model error (${kind})`
+        }
+    }
+    if (event.type === 'modelErrorBridged') {
+        const kind = typeof event.kind === 'string' ? event.kind : 'unknown'
+        const auto = event.auto === true
+        return {
+            icon: '✓',
+            text: auto
+                ? `HAPI auto-bridged after ${kind} — re-sent last user message`
+                : `HAPI bridged after ${kind} — re-sent last user message`
+        }
     }
     try {
         return { icon: null, text: JSON.stringify(event) }

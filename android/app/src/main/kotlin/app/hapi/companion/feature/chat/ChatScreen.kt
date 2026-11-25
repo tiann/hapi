@@ -305,12 +305,21 @@ internal fun ChatScreen(
                         Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.chat_open_settings))
                     }
                     val scratchlistCount by viewModel.scratchlistCount.collectAsState()
+                    val inputTranslationAvailable by viewModel.inputTranslationAvailable.collectAsState()
                     SessionOverflowMenu(
                         active = state.header.active,
                         onOpenFiles = onOpenFiles,
                         scratchlistCount = scratchlistCount,
                         onOpenScratchlist = if (viewModel.scratchlistEnabled) onOpenScratchlist else null,
                         onRename = { renameDialogOpen = true },
+                        translateInputEnabled = state.header.translateInput,
+                        // Web parity: offered when the hub has a provider, or to
+                        // switch off a session that was left translating.
+                        onToggleTranslateInput = if (inputTranslationAvailable || state.header.translateInput) {
+                            viewModel::toggleTranslateInput
+                        } else {
+                            null
+                        },
                         onReopen = viewModel::reopenSession,
                         onDelete = { deleteDialogOpen = true },
                         // Draft-level action, relocated from the composer's
@@ -336,26 +345,12 @@ internal fun ChatScreen(
                         .navigationBarsPadding()
                         .imePadding(),
                 ) {
-                    if (!state.header.active && !state.isInitialLoading && !state.loadFailed) {
-                        InactiveSessionBar(onReopen = viewModel::reopenSession)
-                    }
                     QueuedMessagesBar(
                         rows = queuedRows,
                         onSteer = viewModel::steerQueuedMessage,
                         onRetry = viewModel::retryIndeterminateMessage,
                         onEdit = viewModel::editQueuedMessage,
                         onCancel = viewModel::cancelQueuedMessage,
-                    )
-                    // Context-remaining readout; rides the same strip as the
-                    // mode chip and hides until the thread reports usage.
-                    ContextUsageChip(indicator = state.contextUsage)
-                    // Web StatusBar parity: the current permission mode rides
-                    // directly above the composer; tapping opens the config
-                    // sheet that hosts the switcher (the web span itself is
-                    // not clickable).
-                    PermissionModeChip(
-                        config = configState,
-                        onClick = { configSheetOpen = true },
                     )
                     ChatComposer(
                         state = composerState,
@@ -436,6 +431,7 @@ internal fun ChatScreen(
     if (configSheetOpen) {
         SessionConfigSheet(
             config = configState,
+            contextUsage = state.contextUsage,
             onDismiss = { configSheetOpen = false },
             onSetPermissionMode = viewModel::setPermissionMode,
             onSetModel = viewModel::setModel,
@@ -480,8 +476,8 @@ internal fun ChatScreen(
 
 /**
  * Top-bar ⋮ menu: navigation entries first (Files always, Scratchlist with
- * entry count when enabled), then Rename always; Reopen only for inactive
- * sessions; Delete last.
+ * entry count when enabled), then Rename always; the input-translation toggle
+ * when offered; Reopen only for inactive sessions; Delete last.
  */
 @Composable
 private fun SessionOverflowMenu(
@@ -496,6 +492,9 @@ private fun SessionOverflowMenu(
     onOpenScratchlist: (() -> Unit)? = null,
     /** null ⇒ hidden (scratchlist off or empty composer). */
     onParkDraft: (() -> Unit)? = null,
+    /** null ⇒ hidden (hub has no translation provider and the session is off). */
+    onToggleTranslateInput: (() -> Unit)? = null,
+    translateInputEnabled: Boolean = false,
 ) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }) {
@@ -535,6 +534,25 @@ private fun SessionOverflowMenu(
                 onRename()
             },
         )
+        if (onToggleTranslateInput != null) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        stringResource(
+                            if (translateInputEnabled) {
+                                R.string.chat_translate_input_off
+                            } else {
+                                R.string.chat_translate_input_on
+                            },
+                        ),
+                    )
+                },
+                onClick = {
+                    open = false
+                    onToggleTranslateInput()
+                },
+            )
+        }
         if (onParkDraft != null) {
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.chat_park_draft)) },
@@ -563,31 +581,6 @@ private fun SessionOverflowMenu(
     }
 }
 
-/**
- * Inactive-session affordance above the composer: sending auto-resumes
- * (B-M3ab), Reopen is the explicit restart without a message.
- */
-@Composable
-private fun InactiveSessionBar(onReopen: () -> Unit) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = stringResource(R.string.chat_inactive_bar),
-                style = MaterialTheme.typography.labelMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
-            )
-            TextButton(onClick = onReopen) { Text(stringResource(R.string.sessions_action_reopen)) }
-        }
-    }
-}
 
 @Composable
 private fun ChatTitle(header: ChatHeaderUi, reconnecting: Boolean, retry: () -> Unit) {
@@ -710,4 +703,5 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     is ChatNotice.ModelsLoadFailed -> notice.detail ?: context.getString(R.string.chat_notice_models_failed)
     is ChatNotice.ReadStateFailed -> notice.detail ?: context.getString(R.string.chat_notice_read_state_failed)
     is ChatNotice.ConfigUpdateFailed -> notice.detail ?: context.getString(R.string.chat_notice_config_failed)
+    is ChatNotice.TranslateInputFailed -> notice.detail ?: context.getString(R.string.chat_notice_config_failed)
 }

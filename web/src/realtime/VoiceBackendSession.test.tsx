@@ -82,4 +82,30 @@ describe('VoiceBackendSession', () => {
         })
         expect(onStatusChange).not.toHaveBeenCalled()
     })
+
+    it('remounts the selected backend when settings preference changes', async () => {
+        localStorage.clear()
+        fetchVoiceBackendMock.mockResolvedValue({
+            backend: 'qwen-realtime',
+            backends: ['qwen-realtime', 'elevenlabs'],
+        })
+
+        const view = render(
+            <VoiceBackendSession api={api} micMuted={false} onStatusChange={vi.fn()} />
+        )
+
+        await waitFor(() => {
+            expect(view.getByTestId('qwen-session')).toBeTruthy()
+        })
+
+        localStorage.setItem('hapi-voice-backend', 'elevenlabs')
+        act(() => {
+            window.dispatchEvent(new Event('hapi-voice-backends-refresh'))
+        })
+
+        await waitFor(() => {
+            expect(view.getByTestId('elevenlabs-session')).toBeTruthy()
+        })
+        expect(view.queryByTestId('qwen-session')).toBeNull()
+    })
 })

@@ -3,6 +3,7 @@ import { SessionReadStateSchema } from './sessionReadState'
 import { COPILOT_AGENT_MODES, type CopilotAgentMode } from './copilotModes'
 import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
 import { AgentConfigDescriptorSchema } from './agentConfig'
+import { githubPrIdentityKey, isValidGitHubHost } from './projectRegistry'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
@@ -12,6 +13,18 @@ export const CopilotAgentModeSchema = z.union([
     z.literal('fleet').transform((): CopilotAgentMode => 'interactive'),
 ])
 export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error', 'handoff', 'cleared'])
+/** OpenCode-only durable operation. No native identity change or filesystem rewind. */
+export const OpenCodeRewindSchema = z.object({
+    operationId: z.string().min(1), nativeSessionId: z.string().min(1), workerId: z.string().min(1),
+    workerPid: z.number().int().positive().optional(), workerStartMarker: z.string().min(1).optional(),
+    requestedLocalId: z.string().min(1), nativeMessageId: z.string().min(1),
+    cutoffSeq: z.number().int().positive(), sourceEpoch: z.number().int().nonnegative(),
+    sourceMaxSeq: z.number().int().nonnegative(), reservationVersion: z.number().int().nonnegative(),
+    sourceTranscriptHash: z.string().regex(/^[a-f0-9]{64}$/),
+    phase: z.enum(['reserved', 'prepared', 'unknown', 'committed', 'rejected']),
+    sourceHash: z.string().optional(), prefixHash: z.string().optional()
+})
+export type OpenCodeRewindOperation = z.infer<typeof OpenCodeRewindSchema>
 export type SessionEndReason = z.infer<typeof SessionEndReasonSchema>
 
 const MetadataSummarySchema = z.object({
@@ -21,8 +34,11 @@ const MetadataSummarySchema = z.object({
 
 const ConversationHistoryCapabilitiesSchema = z.object({
     forkCurrent: z.boolean().optional(),
+    forkLatestCompleted: z.boolean().optional(),
     forkAtMessage: z.boolean().optional(),
-    rewindToMessage: z.boolean().optional()
+    rewindToMessage: z.boolean().optional(),
+    /** Runner answers fork-preview boundary questions for this session. */
+    forkPreview: z.boolean().optional()
 })
 
 // Written to an archived OpenCode source before the runner is asked to spawn.
@@ -53,6 +69,118 @@ export const WorktreeMetadataSchema = z.object({
 
 export type WorktreeMetadata = z.infer<typeof WorktreeMetadataSchema>
 
+/** owner/name — GitHub-style repo slug (no leading slash, exactly one slash). */
+export const GithubRepoSlugSchema = z.string()
+    .max(140, 'owner/name is too long')
+    .regex(
+        /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
+        'expected owner/name'
+    )
+
+/**
+ * Structured link from a HAPI session to an external contribution surface.
+ * v1: GitHub pull requests only. Do not parse session titles for this identity.
+ * tiann/hapi#1160 / #1163.
+ *
+ * Optional forge snapshot fields are GitHub-shaped facts only. Babysit / Meta
+ * vocabulary lives in estate display config (`pr-chip-display.json`), not here.
+ */
+
+/** PR open/closed/merged/draft as reported by GitHub (cached). */
+export const GithubPrOpenStateSchema = z.enum(['open', 'closed', 'merged', 'draft'])
+export type GithubPrOpenState = z.infer<typeof GithubPrOpenStateSchema>
+
+/** CI / status-check rollup (cached). */
+export const GithubPrChecksSchema = z.enum(['pass', 'fail', 'pending', 'none', 'unknown'])
+export type GithubPrChecks = z.infer<typeof GithubPrChecksSchema>
+
+/**
+ * Merge readiness subset of GitHub `mergeStateStatus` (cached).
+ * Not a babysit disposition — estate codes overlay presentation.
+ */
+export const GithubPrMergeSchema = z.enum([
+    'clean',
+    'conflicting',
+    'blocked',
+    'behind',
+    'unstable',
+    'draft',
+    'unknown'
+])
+export type GithubPrMerge = z.infer<typeof GithubPrMergeSchema>
+
+export const GithubPrExternalRefSchema = z.object({
+    kind: z.literal('github_pr'),
+    repo: GithubRepoSlugSchema,
+    number: z.number().int().positive(),
+    url: z.string().url(),
+    role: z.enum(['primary', 'secondary']),
+    // Optional provenance. Absent source reads as trusted ('user') for pre-#1162 refs.
+    source: z.enum(['agent', 'user', 'inferred']).optional(),
+    linkedAt: z.number().int().positive().optional(),
+    // Optional cached forge snapshot. Not live GitHub; browser never queries.
+    openState: GithubPrOpenStateSchema.optional(),
+    checks: GithubPrChecksSchema.optional(),
+    merge: GithubPrMergeSchema.optional(),
+    statusCheckedAt: z.number().int().positive().optional(),
+    // Opaque estate classifier code; only pr-chip-display estateCodes interpret it.
+    estateCode: z.string().min(1).max(64).optional()
+}).superRefine((ref, ctx) => {
+    let parsed: URL
+    try {
+        parsed = new URL(ref.url)
+    } catch {
+        ctx.addIssue({
+            code: 'custom',
+            path: ['url'],
+            message: 'expected GitHub PR URL matching repo and number'
+        })
+        return
+    }
+    const pathOk = parsed.pathname === `/${ref.repo}/pull/${ref.number}`
+        || parsed.pathname === `/${ref.repo}/pull/${ref.number}/`
+    if (parsed.protocol !== 'https:' || !isValidGitHubHost(parsed.hostname) || !pathOk) {
+        ctx.addIssue({
+            code: 'custom',
+            path: ['url'],
+            message: 'expected GitHub PR URL matching repo and number'
+        })
+    }
+})
+
+export type GithubPrExternalRef = z.infer<typeof GithubPrExternalRefSchema>
+
+/** Expand with more kinds via discriminatedUnion when needed. */
+export const ExternalRefSchema = GithubPrExternalRefSchema
+export type ExternalRef = z.infer<typeof ExternalRefSchema>
+
+export const MAX_EXTERNAL_REFS = 32
+
+/** Array boundary: at most one github_pr with role primary; bounded count. */
+export const ExternalRefsSchema = z.array(ExternalRefSchema)
+    .max(MAX_EXTERNAL_REFS, `at most ${MAX_EXTERNAL_REFS} external refs are allowed`)
+    .superRefine((refs, ctx) => {
+    if (refs.filter((ref) => ref.kind === 'github_pr' && ref.role === 'primary').length > 1) {
+        ctx.addIssue({
+            code: 'custom',
+            message: 'at most one primary GitHub PR is allowed'
+        })
+    }
+    const identities = new Set<string>()
+    refs.forEach((ref, index) => {
+        const key = githubPrIdentityKey(ref.repo, ref.number, ref.url)
+        if (identities.has(key)) {
+            ctx.addIssue({
+                code: 'custom',
+                path: [index],
+                message: 'duplicate external ref identity'
+            })
+        }
+        identities.add(key)
+    })
+})
+export type ExternalRefs = z.infer<typeof ExternalRefsSchema>
+
 export const MetadataSchema = z.object({
     path: z.string(),
     host: z.string(),
@@ -60,6 +188,10 @@ export const MetadataSchema = z.object({
     name: z.string().optional(),
     titleLocked: z.boolean().optional(),
     os: z.string().optional(),
+    // Set when the title was chosen via the hapi change_title MCP tool. ACP
+    // native session-title sync must not overwrite it, including after
+    // launcher recreation or session resume.
+    acpManualTitle: z.boolean().optional(),
     summary: MetadataSummarySchema.optional(),
     // Hub-owned marker: the automatic first-turn title fallback has been
     // attempted for this session. It prevents silent retries after failures.
@@ -69,20 +201,49 @@ export const MetadataSchema = z.object({
     // Hub-owned provisional title from the first user prompt. Shown only until
     // `name` or `summary` exists; it never blocks generated/native titles.
     promptTitle: z.string().optional(),
+    // Hub-owned per-session toggle: translate user prompts to English before
+    // they reach the agent (falls back to the original text on failure).
+    translateInput: z.boolean().optional(),
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(),
+    // Earlier Claude session ids of this HAPI session (Claude rotates the id on
+    // some resumes / local↔remote switches). Lets a resume by an older Claude
+    // id find the same HAPI session instead of minting a duplicate.
+    claudeSessionIdHistory: z.array(z.string()).optional(),
     // Parent HAPI session id when this session was created by message-level fork
     // (`claude --resume <id> --fork-session`). Lets the web list mark the new
     // session as a branch of `<id>` instead of an unrelated duplicate.
     forkedFrom: z.string().optional(),
+    // Portable branches carry visible reference context, never native session ids.
+    conversationBranch: z.object({
+        sourceSessionId: z.string(),
+        messageLocalId: z.string().optional(),
+        messageId: z.string().optional(),
+        boundary: z.enum(['before', 'after']),
+        mode: z.literal('visible-text'),
+        requestFingerprint: z.string(),
+        state: z.enum(['launching', 'started', 'uncertain']),
+        createdAt: z.number(),
+        messageCount: z.number().int().nonnegative(),
+        workspace: z.enum(['current', 'worktree'])
+    }).optional(),
     codexSessionId: z.string().optional(),
+    // A bridge to an externally owned app-server, never an owned cold-resume target.
+    codexRuntime: z.object({
+        kind: z.literal('attached'),
+        bindingId: z.string().uuid(),
+        state: z.enum(['attached', 'detached', 'unavailable', 'history-changed'])
+    }).optional(),
     // 原始 Codex thread id。导入 Codex 历史后，HAPI 会 fork 出自己的续写 thread；
     // codexSessionId 保存 fork 后的 thread，codexSourceSessionId 保留来源 thread 便于同步/展示。
     codexSourceSessionId: z.string().optional(),
+    codexImportedAt: z.number().nullable().optional(),
     geminiSessionId: z.string().optional(),
     opencodeSessionId: z.string().optional(),
     grokSessionId: z.string().optional(),
     agySessionId: z.string().optional(),
+    /** Set while an agy session runs on `agy acp`; absent otherwise. */
+    agyProtocol: z.literal('acp').optional(),
     cursorSessionId: z.string().optional(),
     cursorSessionProtocol: z.enum(['acp', 'stream-json']).optional(),
     // Drives the web `CursorMigrationBanner`:
@@ -151,6 +312,18 @@ export const MetadataSchema = z.object({
     // Set only after a completed fresh-session clear. The source row remains
     // archived; web clients use this durable link to follow the replacement.
     supersededBySessionId: z.string().optional(),
+    // After session merge/dedup transfers session_jobs: the target remembers
+    // which source ids it absorbed (so job REST can follow a deleted
+    // pre-merge $HAPI_SESSION_ID), and a kept-alive source points at the
+    // post-merge owner. Must be declared here — SessionCache.refreshSession
+    // parses via MetadataSchema and strips unknown keys (tiann/hapi#1404).
+    // Hub-owned: CLI update-metadata cannot forge/erase (HUB_OWNED_METADATA_KEYS).
+    jobsAcceptedFromSessionIds: z.array(z.string()).optional(),
+    jobsTransferredToSessionId: z.string().optional(),
+    // When merge remaps a live source job key (same-key dual-running), map
+    // `${fromSessionId}/${fromKey}` → toKey on the post-merge owner so
+    // pre-merge supervisors keep PATCHing the right row.
+    jobKeyRedirects: z.record(z.string(), z.string()).optional(),
     // Durable in-progress state for runner-backed OpenCode /clear.
     opencodeClearOperation: OpencodeClearOperationSchema.optional(),
     preferredPermissionMode: PermissionModeSchema.optional(),
@@ -164,11 +337,49 @@ export const MetadataSchema = z.object({
     // Native locators for historical fork/rewind (e.g. Grok prompt indexes).
     // Kept separately from the boolean UI markers above.
     conversationHistoryIndexes: z.record(z.string(), z.number().int().nonnegative()).optional(),
+    opencodeHistoryCheckpoint: z.object({
+        sessionId: z.string().min(1),
+        messageIds: z.array(z.string().min(1)),
+        userMessageIds: z.array(z.string().min(1)),
+        // Present even when empty once local publication tracking is enabled.
+        localMessageIds: z.array(z.string().min(1)).optional(),
+        localPublicationPending: z.literal(true).optional()
+    }).optional(),
+    // Hub-owned until the child's first validated session-ready is committed.
+    opencodeForkPending: z.literal(true).optional(),
+    opencodeWorkerId: z.string().optional(),
+    opencodeWorkerProcess: z.object({ workerId: z.string().min(1), pid: z.number().int().positive(),
+        startMarker: z.string().min(1) }).optional(),
+    opencodeRewind: OpenCodeRewindSchema.optional(),
     // Codex localId → turnId mapping (durable across runner relaunches).
     conversationHistoryTurns: z.record(z.string(), z.string().min(1)).optional(),
     // Pi localId → append-only session entry id mapping. Pi entry ids are the
     // only stable native boundary accepted by its fork API.
     conversationHistoryEntryIds: z.record(z.string(), z.string().min(1)).optional(),
+    // Durable re-arm record for Claude's native rewind (--resume-session-at,
+    // v2.1.223+). Presence means the native branch is still pending: the hub
+    // already truncated at rewind-RPC success, and the CLI derives the
+    // boundary flag on every spawn until the dropped turns leave the native
+    // active chain. History RPCs (fork/rewind) must refuse while this is set.
+    // A malformed value (e.g. an older shape written by a previous hub) parses
+    // as undefined instead of failing MetadataSchema: the hub would otherwise
+    // drop the whole session metadata (flavor, machine, path, lifecycle).
+    claudeRewind: z.object({
+        targetLocalId: z.string().min(1),
+        truncateFromLocalId: z.string().min(1),
+        keepBoundary: z.string().min(1),
+        droppedPrompts: z.array(z.string().min(1)),
+        // Hub-owned confirmation that the transcript cut for this intent was
+        // applied. The CLI's native proof (the re-parented post-rewind input)
+        // only clears the intent once this marker is visible, so a lost RPC
+        // reply leaves the intent in place for the hub's timeout/reconnect
+        // reconcile instead of stranding the transcript mismatched.
+        hubCutApplied: z.boolean().optional(),
+        // Newest transcript seq at dispatch (echoed by the CLI from the RPC
+        // payload): the hub's cut never deletes rows created after it. Absent
+        // on intents written by an older CLI or hub, which cut unbounded.
+        discardedThroughSeq: z.number().int().nonnegative().optional()
+    }).optional().catch(undefined),
     // Latest Pi append-log entry observed by HAPI. Import uses it as the
     // incremental cursor so native history already streamed live is not copied twice.
     piHistoryLeafEntryId: z.string().optional(),
@@ -200,7 +411,35 @@ export const MetadataSchema = z.object({
     // field stores only modelId (shared across all flavors); this preserves
     // the provider so web can resolve the exact model when two providers
     // share a modelId.
-    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional()
+    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
+    // Structured session↔contribution links (e.g. GitHub PRs). tiann/hapi#1160.
+    externalRefs: ExternalRefsSchema.optional(),
+    lastModelError: z.object({
+        /** Stable identity for this error event (not wall-clock order). */
+        eventId: z.string().min(1),
+        kind: z.string(),
+        transient: z.boolean(),
+        rawSnippet: z.string(),
+        /** Display / telemetry timestamp only — not used for notify/ack identity. */
+        atTs: z.number(),
+        priorAssistantClaimsDone: z.boolean(),
+        lastUserMessage: z.string().optional(),
+        bridgedForEventId: z.string().optional(),
+        retriedAndFailed: z.boolean().optional(),
+        /**
+         * Set when a non-bridge user turn starts after this error was recorded.
+         * Blocks Bridge so a later retry cannot replay work the newer turn already handled.
+         */
+        supersededByUserTurn: z.boolean().optional(),
+        /**
+         * Explicit false blocks Bridge (idle stderr after a successful turn).
+         * Omitted / true keeps the existing transient gate.
+         */
+        bridgeable: z.boolean().optional(),
+        acknowledgedAt: z.number().optional(),
+        /** Hub-owned: successful push/FCM/Telegram delivery watermark. */
+        notifiedAt: z.number().optional()
+    }).optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>
@@ -352,6 +591,8 @@ export const DecryptedMessageSchema = z.object({
     // The agent was sent the steer but its final outcome could not be proven.
     // The row stays uninvoked and requires an explicit user resolution.
     deliveryState: z.literal('indeterminate').optional(),
+    // A live dispatch is still unconfirmed, but is not an invitation to resend.
+    deliveryPending: z.literal(true).optional(),
     // Live signal via messages-consumed (steered:true); not persisted by the hub.
     steered: z.boolean().optional()
 })
@@ -391,6 +632,11 @@ export const SessionSchema = z.object({
     activeTurnStartedAt: z.number().nullable().optional(),
     backgroundTaskCount: z.number().optional(),
     backgroundTasks: z.array(BackgroundTaskSchema).optional(),
+    // Hub-derived "open tool work exists in the transcript tail" signal
+    // (work-scoped liveness). Transient — never persisted, recomputed by the
+    // hub's inactivity tick; covers autonomous rounds the CLI's turn-scoped
+    // `thinking` flag misses.
+    derivedToolWork: z.boolean().optional(),
     todos: TodosSchema.optional(),
     teamState: TeamStateSchema.optional(),
     // Watermarks for structured SSE patches (PR #897). Dual EventSource
@@ -439,6 +685,84 @@ const VersionedTeamStatePatchSchema = z.object({
     value: TeamStateSchema.nullable()
 })
 
+/** Opt-in long-running work owned by a session (tiann/hapi#1404). */
+export const AttachedJobStatusSchema = z.enum(['running', 'completed', 'failed'])
+
+export const AttachedJobSchema = z.object({
+    key: z.string().min(1).max(128),
+    label: z.string().min(1).max(200),
+    status: AttachedJobStatusSchema,
+    done: z.number().nonnegative().optional(),
+    total: z.number().positive().optional(),
+    remaining: z.number().nonnegative().optional(),
+    unit: z.string().min(1).max(64).optional(),
+    detail: z.string().max(500).optional(),
+    /** Opaque run generation — supervisors CAS against this on PATCH. */
+    runId: z.string().min(1).max(64).optional(),
+    /**
+     * Opt-in (tiann/hapi#1489): when the job hits completed/failed, hub resumes
+     * the owning session and posts a wake prompt. Default off.
+     */
+    wakeOnTerminal: z.boolean().optional(),
+    /** Optional prescription text appended to the hub wake message. */
+    wakePrompt: z.string().max(2000).optional(),
+    /** In list / primary projections, the newest heartbeat across running jobs. */
+    latestRunningHeartbeatAt: z.number().optional(),
+    heartbeatAt: z.number(),
+    startedAt: z.number(),
+    updatedAt: z.number()
+}).strict()
+
+export type AttachedJob = z.infer<typeof AttachedJobSchema>
+export type AttachedJobStatus = z.infer<typeof AttachedJobStatusSchema>
+
+export const AttachedJobUpsertSchema = z.object({
+    label: z.string().min(1).max(200),
+    status: AttachedJobStatusSchema.optional().default('running'),
+    done: z.number().nonnegative().optional(),
+    total: z.number().positive().optional(),
+    remaining: z.number().nonnegative().optional(),
+    unit: z.string().min(1).max(64).optional(),
+    detail: z.string().max(500).optional(),
+    startedAt: z.number().optional(),
+    /** Supervisor-owned generation; hub mints one when omitted. */
+    runId: z.string().min(1).max(64).optional(),
+    /** Opt-in job-complete wake (#1489). Default off when omitted. */
+    wakeOnTerminal: z.boolean().optional(),
+    wakePrompt: z.string().max(2000).optional()
+}).strict()
+
+export type AttachedJobUpsert = z.infer<typeof AttachedJobUpsertSchema>
+
+/** Progress/heartbeat only — no startedAt (use PUT upsert with explicit startedAt to correct). */
+export const AttachedJobPatchSchema = z.object({
+    label: z.string().min(1).max(200).optional(),
+    status: AttachedJobStatusSchema.optional(),
+    done: z.number().nonnegative().nullable().optional(),
+    total: z.number().positive().nullable().optional(),
+    remaining: z.number().nonnegative().nullable().optional(),
+    unit: z.string().min(1).max(64).nullable().optional(),
+    detail: z.string().max(500).nullable().optional(),
+    /**
+     * Run generation fence. Supervisors that stamped runId on PUT must send the
+     * same value so a stale process cannot mutate a newer key-reuse run.
+     * Date.now()/startedAt is not unique enough for concurrent supervisors.
+     */
+    expectedRunId: z.string().min(1).max(64).optional(),
+    wakeOnTerminal: z.boolean().optional(),
+    wakePrompt: z.string().max(2000).nullable().optional()
+}).strict()
+
+export type AttachedJobPatch = z.infer<typeof AttachedJobPatchSchema>
+
+// Dual SSE (global + per-session) has no shared delivery order. Version is a
+// monotonic per-session emit watermark (not primary.updatedAt — primary
+// switches can go backwards). Lagged heartbeats cannot resurrect a clear.
+const VersionedAttachedJobPatchSchema = z.object({
+    version: z.number(),
+    value: AttachedJobSchema.nullable()
+})
+
 export const SessionPatchSchema = z.object({
     contentRevision: z.number().int().nonnegative().safe().optional(),
     readState: SessionReadStateSchema.optional(),
@@ -469,13 +793,21 @@ export const SessionPatchSchema = z.object({
     copilotAgentMode: CopilotAgentModeSchema.optional(),
     backgroundTaskCount: z.number().optional(),
     backgroundTasks: z.array(BackgroundTaskSchema).optional(),
+    // Hub-derived open-tool-work signal (see SessionSchema). Emitted by the
+    // hub's derived-work sweep so list rows can render a working state for
+    // autonomous rounds that carry no `thinking` flag.
+    derivedToolWork: z.boolean().optional(),
     // tiann/hapi#893 (scratchlist v2). Bumped whenever any entry on the
     // session_scratchlist table mutates. Web client uses the change as a
     // trigger to refetch the entries query - the timestamp itself is the
     // signal, not the payload. Keep this minimal: per the operator's 80/20
     // ruling, scratchlist mutations are rare relative to keep-alive
     // patches, so a fresh event type would be overkill.
-    scratchlistUpdatedAt: z.number().optional()
+    scratchlistUpdatedAt: z.number().optional(),
+    // tiann/hapi#1404 — session-attached long-running jobs. Unlike
+    // scratchlist (watermark → refetch), the list row needs the progress
+    // payload inline. Versioned like todos so dual-SSE reorder is safe.
+    attachedJob: VersionedAttachedJobPatchSchema.optional()
 }).strict()
 
 export type SessionPatch = z.infer<typeof SessionPatchSchema>
@@ -667,7 +999,9 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     }),
     SessionChangedSchema.extend({
         type: z.literal('messages-indeterminate'),
-        localIds: z.array(z.string())
+        localIds: z.array(z.string()),
+        // Older clients conservatively retain the unresolved row.
+        dispatching: z.literal(true).optional()
     }),
     SessionChangedSchema.extend({
         type: z.literal('messages-requeued'),

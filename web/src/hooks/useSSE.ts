@@ -22,15 +22,21 @@ import type {
     SessionSummary,
     SyncEvent
 } from '@/types/api'
+import { observeSessionDetail } from '@/lib/sessionDetailRead'
 import { queryKeys } from '@/lib/query-keys'
 import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
-import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
-import { applySessionDetailPatch } from '@/lib/sessionPatch'
+import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesDispatching, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
+import {
+    applySessionDetailPatch,
+    isNewerVersionedPatch,
+    isRenderIrrelevantSessionPatch
+} from '@/lib/sessionPatch'
 
 // Pure patch-application rules live in @/lib/sessionPatch (React-free, shared
 // with the fixture generator); re-exported here so hook consumers and existing
-// tests keep their import site.
-export { applySessionDetailPatch, isNewerVersionedPatch, isRenderIrrelevantSessionPatch } from '@/lib/sessionPatch'
+// tests keep their import site. Named imports (not `export … from`) so this
+// module can call `isNewerVersionedPatch` on attachedJob list patches.
+export { applySessionDetailPatch, isNewerVersionedPatch, isRenderIrrelevantSessionPatch }
 
 type SSESubscription = {
     all?: boolean
@@ -55,26 +61,6 @@ export function isGlobalScopedMessageStreamEvent(scope: SSEScope, eventType: Syn
 
 export function shouldInvalidateSessionListForEvent(scope: SSEScope, eventType: SyncEvent['type']): boolean {
     return scope === 'global' && eventType === 'messages-invalidated'
-}
-
-/**
- * @deprecated Prefer gating against SessionSummary watermarks. Kept for unit
- * tests of the old "detail required" rule; summary path no longer uses this
- * for metadata/agentState/todos (teamState is a summary no-op).
- */
-export function canApplyVersionedSummaryPatch(
-    patch: Pick<SessionPatch, 'metadata' | 'agentState' | 'todos' | 'teamState'>,
-    detailPresent: boolean
-): boolean {
-    // teamState is not rendered on SessionSummary — never block list patches.
-    if (
-        patch.metadata === undefined
-        && patch.agentState === undefined
-        && patch.todos === undefined
-    ) {
-        return true
-    }
-    return detailPresent
 }
 
 type VisibilityState = 'visible' | 'hidden'
@@ -151,6 +137,19 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         && current.updatedAt === next.updatedAt
         && current.lastUserMessageAt === next.lastUserMessageAt
         && current.backgroundTaskCount === next.backgroundTaskCount
+        && current.derivedToolWork === next.derivedToolWork
+        && current.attachedJob?.key === next.attachedJob?.key
+        && current.attachedJob?.label === next.attachedJob?.label
+        && current.attachedJob?.status === next.attachedJob?.status
+        && current.attachedJob?.done === next.attachedJob?.done
+        && current.attachedJob?.total === next.attachedJob?.total
+        && current.attachedJob?.remaining === next.attachedJob?.remaining
+        && current.attachedJob?.unit === next.attachedJob?.unit
+        && current.attachedJob?.detail === next.attachedJob?.detail
+        && current.attachedJob?.heartbeatAt === next.attachedJob?.heartbeatAt
+        && current.attachedJob?.startedAt === next.attachedJob?.startedAt
+        && (current.attachedJob == null) === (next.attachedJob == null)
+        && (current.attachedJobUpdatedAt ?? 0) === (next.attachedJobUpdatedAt ?? 0)
         && current.model === next.model
         && current.modelReasoningEffort === next.modelReasoningEffort
         && current.effort === next.effort
@@ -240,6 +239,7 @@ export function useSSE(options: {
     baseUrl: string
     subscription?: SSESubscription
     scope?: SSEScope
+    hubClock?: import('@/lib/hubClock').HubClock
     onEvent: (event: SyncEvent) => void
     /**
      * Fires on the server's connection-changed handshake. `resumed` is true
@@ -264,7 +264,8 @@ export function useSSE(options: {
         machines: boolean
         sessionIds: Set<string>
         scratchlistSessionIds: Set<string>
-    }>({ sessions: false, machines: false, sessionIds: new Set(), scratchlistSessionIds: new Set() })
+        scratchlistStatus: boolean
+    }>({ sessions: false, machines: false, sessionIds: new Set(), scratchlistSessionIds: new Set(), scratchlistStatus: false })
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const reconnectAttemptRef = useRef(0)
     // Set when a reconnect was due while the tab was hidden. Hidden tabs do
@@ -319,6 +320,7 @@ export function useSSE(options: {
             pendingInvalidationsRef.current.machines = false
             pendingInvalidationsRef.current.sessionIds.clear()
             pendingInvalidationsRef.current.scratchlistSessionIds.clear()
+            pendingInvalidationsRef.current.scratchlistStatus = false
             if (reconnectTimerRef.current) {
                 clearTimeout(reconnectTimerRef.current)
                 reconnectTimerRef.current = null
@@ -405,17 +407,20 @@ export function useSSE(options: {
                 && !pending.machines
                 && pending.sessionIds.size === 0
                 && pending.scratchlistSessionIds.size === 0
+                && !pending.scratchlistStatus
             ) {
                 return
             }
 
             const shouldInvalidateSessions = pending.sessions
             const shouldInvalidateMachines = pending.machines
+            const shouldInvalidateScratchlistStatus = pending.scratchlistStatus
             const sessionIds = Array.from(pending.sessionIds)
             const scratchlistSessionIds = Array.from(pending.scratchlistSessionIds)
 
             pending.sessions = false
             pending.machines = false
+            pending.scratchlistStatus = false
             pending.sessionIds.clear()
             pending.scratchlistSessionIds.clear()
 
@@ -428,6 +433,9 @@ export function useSSE(options: {
             }
             for (const sessionId of scratchlistSessionIds) {
                 tasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.scratchlist(sessionId) }))
+            }
+            if (shouldInvalidateScratchlistStatus) {
+                tasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.scratchlistSessionIds }))
             }
             if (shouldInvalidateMachines) {
                 tasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.machines }))
@@ -464,6 +472,11 @@ export function useSSE(options: {
             scheduleInvalidationFlush()
         }
 
+        const queueScratchlistStatusInvalidation = () => {
+            pendingInvalidationsRef.current.scratchlistStatus = true
+            scheduleInvalidationFlush()
+        }
+
         const queueMachinesInvalidation = () => {
             pendingInvalidationsRef.current.machines = true
             scheduleInvalidationFlush()
@@ -479,6 +492,8 @@ export function useSSE(options: {
                 const existing = existingIndex >= 0 ? previous.sessions[existingIndex] : undefined
                 const summary = {
                     ...toSessionSummary(session),
+                    attachedJob: existing?.attachedJob ?? null,
+                    attachedJobUpdatedAt: existing?.attachedJobUpdatedAt ?? 0,
                     contentRevision: Math.max(existing?.contentRevision ?? 0, session.contentRevision ?? 0),
                     readState: mergeReadState(existing?.readState, session.readState),
                     lastUserMessageAt: session.lastUserMessageAt === undefined
@@ -534,6 +549,11 @@ export function useSSE(options: {
                     backgroundTaskCount: Object.prototype.hasOwnProperty.call(patch, 'backgroundTaskCount')
                         ? patch.backgroundTaskCount ?? 0
                         : current.backgroundTaskCount,
+                    derivedToolWork: Object.prototype.hasOwnProperty.call(patch, 'derivedToolWork')
+                        ? patch.derivedToolWork === true
+                        : current.derivedToolWork === true,
+                    attachedJob: current.attachedJob ?? null,
+                    attachedJobUpdatedAt: current.attachedJobUpdatedAt ?? 0,
                     model: Object.prototype.hasOwnProperty.call(patch, 'model') ? patch.model ?? null : current.model,
                     modelReasoningEffort: Object.prototype.hasOwnProperty.call(patch, 'modelReasoningEffort')
                         ? patch.modelReasoningEffort ?? null
@@ -558,6 +578,16 @@ export function useSSE(options: {
                 if (patch.metadata !== undefined && patch.metadata.version >= current.metadataVersion) {
                     nextSummary.metadata = toSessionSummaryMetadata(patch.metadata.value)
                     nextSummary.metadataVersion = patch.metadata.version
+                }
+                if (
+                    patch.attachedJob !== undefined
+                    && isNewerVersionedPatch(
+                        patch.attachedJob.version,
+                        current.attachedJobUpdatedAt ?? 0
+                    )
+                ) {
+                    nextSummary.attachedJob = patch.attachedJob.value
+                    nextSummary.attachedJobUpdatedAt = patch.attachedJob.version
                 }
 
                 patched = true
@@ -649,6 +679,7 @@ export function useSSE(options: {
             lastActivityAtRef.current = Date.now()
 
             if (event.type === 'heartbeat') {
+                if (event.data) options.hubClock?.observe(event.data.timestamp)
                 return
             }
 
@@ -699,7 +730,9 @@ export function useSSE(options: {
                     markMessagesConsumed(event.sessionId, event.localIds, event.invokedAt, event.steered)
                 }
                 if (event.type === 'messages-indeterminate') {
-                    markMessagesIndeterminate(event.sessionId, event.localIds)
+                    event.dispatching
+                        ? markMessagesDispatching(event.sessionId, event.localIds)
+                        : markMessagesIndeterminate(event.sessionId, event.localIds)
                 }
                 if (event.type === 'messages-requeued') {
                     markMessagesRequeued(event.sessionId, event.localIds)
@@ -716,7 +749,9 @@ export function useSSE(options: {
             }
 
             if (event.type === 'messages-indeterminate') {
-                markMessagesIndeterminate(event.sessionId, event.localIds)
+                event.dispatching
+                        ? markMessagesDispatching(event.sessionId, event.localIds)
+                        : markMessagesIndeterminate(event.sessionId, event.localIds)
             }
 
             if (event.type === 'messages-requeued') {
@@ -738,17 +773,23 @@ export function useSSE(options: {
                     removeSessionSummary(event.sessionId)
                     void queryClient.removeQueries({ queryKey: queryKeys.session(event.sessionId) })
                     clearMessageWindow(event.sessionId)
+                    queueScratchlistStatusInvalidation()
                 } else if (isSessionRecord(event.data) && event.data.id === event.sessionId) {
                     const incoming = event.data
+                    observeSessionDetail(queryClient, event.sessionId, incoming)
                     queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), previous => ({ session: {
                         ...incoming,
                         contentRevision: Math.max(previous?.session.contentRevision ?? 0, incoming.contentRevision ?? 0),
                         readState: mergeReadState(previous?.session.readState, incoming.readState)
                     } }))
                     upsertSessionSummary(event.data)
+                    if (event.type === 'session-added') {
+                        queueScratchlistStatusInvalidation()
+                    }
                 } else {
                     const patch = getSessionPatch(event.data)
                     if (patch) {
+                        observeSessionDetail(queryClient, event.sessionId, patch)
                         const detailPatched = patchSessionDetail(event.sessionId, patch)
                         const summaryPatched = patchSessionSummary(event.sessionId, patch)
 
@@ -764,6 +805,7 @@ export function useSSE(options: {
                         // which triggers the dedicated query refetch.
                         if (Object.prototype.hasOwnProperty.call(patch, 'scratchlistUpdatedAt')) {
                             queueScratchlistInvalidation(event.sessionId)
+                            queueScratchlistStatusInvalidation()
                         }
                     } else {
                         queueSessionDetailInvalidation(event.sessionId)
@@ -919,6 +961,8 @@ export function useSSE(options: {
             pendingInvalidationsRef.current.sessions = false
             pendingInvalidationsRef.current.machines = false
             pendingInvalidationsRef.current.sessionIds.clear()
+            pendingInvalidationsRef.current.scratchlistSessionIds.clear()
+            pendingInvalidationsRef.current.scratchlistStatus = false
             if (reconnectTimerRef.current) {
                 clearTimeout(reconnectTimerRef.current)
                 reconnectTimerRef.current = null
@@ -929,7 +973,7 @@ export function useSSE(options: {
             }
             setSubscriptionId(null)
         }
-    }, [options.baseUrl, options.enabled, options.scope, options.token, scope, subscriptionKey, queryClient, reconnectNonce])
+    }, [options.baseUrl, options.enabled, options.scope, options.token, options.hubClock, scope, subscriptionKey, queryClient, reconnectNonce])
 
     return { subscriptionId }
 }

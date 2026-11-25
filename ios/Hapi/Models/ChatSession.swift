@@ -247,6 +247,13 @@ final class ChatSession {
             Task { try? await store.loadSessionDetail(id) }
         }
         if let controller = windowController {
+            // Web fires the window recovery (`recoverWindowAfterGapResume`)
+            // and the queued-state reconciliation as two concurrent post-gap
+            // steps; the queued reconciliation's drain joins the recovery's
+            // run (or replaces it when it started first).
+            Task {
+                await controller.recoverAfterGapResume()
+            }
             Task {
                 do {
                     try await controller.reconcileQueuedState()

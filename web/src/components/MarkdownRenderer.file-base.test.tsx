@@ -16,6 +16,7 @@ const listSessionDirectory = vi.hoisted(() => vi.fn(async () => ({
 
 vi.mock('@tanstack/react-router', () => ({
     useNavigate: () => vi.fn(),
+    useRouter: () => undefined,
 }))
 
 vi.mock('@/lib/app-context', () => ({
@@ -31,12 +32,12 @@ const markdown = [
     '![Remote](https://example.com/image.png)',
 ].join('\n\n')
 
-function renderPreview(filePath: string, workspacePath: string | null = null, fileSearch = {}) {
+function renderPreview(filePath: string, workspacePath: string | null = null, fileSearch = {}, content = markdown) {
     return render(
         <QueryClientProvider client={new QueryClient()}>
             <I18nProvider>
                 <MarkdownRenderer
-                    content={markdown}
+                    content={content}
                     standalone
                     sessionId="session-1"
                     filePath={filePath}
@@ -49,6 +50,20 @@ function renderPreview(filePath: string, workspacePath: string | null = null, fi
 }
 
 describe('MarkdownRenderer standalone file base', () => {
+    it('keeps anchors around standalone local file-preview images', async () => {
+        renderPreview(
+            'docs/notes-01.md',
+            null,
+            {},
+            '[![Linked local](images/page-001.png)](error-notes.md)',
+        )
+
+        await waitFor(() => expect(screen.getByRole('img', { name: 'Linked local' })).toBeInTheDocument())
+        const link = screen.getByRole('img', { name: 'Linked local' }).closest('a')
+        expect(link).not.toBeNull()
+        expect(link?.getAttribute('href')).toMatch(/\/sessions\/session-1\/file\?/)
+    })
+
     it('resolves relative links and images against the Markdown file directory', async () => {
         renderPreview('docs/notes-01.md', null, { tab: 'directories' })
 

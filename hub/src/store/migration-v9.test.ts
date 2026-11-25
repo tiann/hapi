@@ -242,7 +242,7 @@ describe('Store V9: scheduled_at store operations', () => {
         const now = Date.now()
 
         // Immediate queued (no scheduledAt) — included
-        const immediate = store.messages.addMessage(session.id, 'immediate', 'local-imm')
+        const immediate = store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'immediate' } }, 'local-imm')
         // Mature scheduled — must be excluded so the mature-scan path can deliver it
         // with the no-stamp + re-emit-until-ack contract.
         store.messages.addMessage(session.id, 'mature', 'local-mature', now - 1000)

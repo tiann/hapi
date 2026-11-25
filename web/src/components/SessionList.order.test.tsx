@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, expect, it, vi } from 'vitest'
 import { toSessionSummary, type Session } from '@hapi/protocol'
@@ -41,7 +41,7 @@ it('keeps rendered rows and machine filters stable by default, but promotes new 
     const { rerender } = render(list(sessions))
     const rowOrder = () => screen.getAllByRole('button', { name: /Order [ABC]/ })
         .map(row => row.textContent?.match(/Order [ABC]/)?.[0])
-    const machineOrder = () => screen.getAllByRole('button', { name: /Machine (One|Two)/ })
+    const machineOrder = () => screen.getAllByRole('button', { name: /^Machine (One|Two)/ })
         .map(button => button.textContent)
     expect(rowOrder()).toEqual(['Order C', 'Order B', 'Order A'])
     const machinesBefore = machineOrder()
@@ -55,4 +55,57 @@ it('keeps rendered rows and machine filters stable by default, but promotes new 
     rerender(list(sessions.map(s => s.id === 'A' ? { ...s, lastUserMessageAt: 100_000 } : s)))
     expect(rowOrder()).toEqual(['Order A', 'Order C', 'Order B'])
     expect(machineOrder()).toEqual([...machinesBefore].reverse())
+})
+
+function renderSessions(rows: Array<{ id: string; path: string; active: boolean; lastUserMessageAt: number }>) {
+    const sessions = rows.map((row): Session => ({
+        id: row.id, namespace: 'default', seq: 1, createdAt: 1, lastUserMessageAt: row.lastUserMessageAt, updatedAt: row.lastUserMessageAt,
+        active: row.active, activeAt: 1, thinking: false, thinkingAt: 1,
+        metadata: { path: row.path, host: 'mac', name: `Row ${row.id}`, machineId: 'm1', ...(row.active ? {} : { lifecycleState: 'archived' }) },
+        metadataVersion: 1, agentState: null, agentStateVersion: 1,
+        model: null, modelReasoningEffort: null, effort: null, serviceTier: null
+    }))
+    render(
+        <QueryClientProvider client={new QueryClient()}>
+            <ToastProvider>
+                <I18nProvider>
+                    <SessionList
+                        sessions={sessions.map(s => toSessionSummary(s))}
+                        onSelect={vi.fn()} onNewSession={vi.fn()} onRefresh={vi.fn()}
+                        isLoading={false} renderHeader={false} api={null}
+                    />
+                </I18nProvider>
+            </ToastProvider>
+        </QueryClientProvider>
+    )
+    return () => screen.queryAllByRole('button', { name: /Row \w+/ }).map(row => row.textContent?.match(/Row ([a-zA-Z]+)/)?.[1])
+}
+
+const MIXED_ROWS = [
+    { id: 'archivedNew', path: '/a', active: false, lastUserMessageAt: 9_000 },
+    { id: 'liveOld', path: '/a', active: true, lastUserMessageAt: 1_000 },
+    { id: 'archivedOther', path: '/b', active: false, lastUserMessageAt: 5_000 }
+]
+
+it('lists active sessions ahead of archived ones by default', () => {
+    const rowOrder = renderSessions(MIXED_ROWS)
+    // Archived-only /b stays collapsed as before; within /a the live row leads.
+    expect(rowOrder()).toEqual(['liveOld', 'archivedNew'])
+})
+
+it('shows archived sessions expanded when filtering to archived only', () => {
+    window.localStorage.setItem('hapi-session-list-status', 'archived')
+    const rowOrder = renderSessions(MIXED_ROWS)
+    expect(rowOrder()).toEqual(['archivedNew', 'archivedOther'])
+})
+
+it('keeps the default project order for equally relevant search results', () => {
+    window.localStorage.setItem('hapi-session-list-sort', 'created')
+    const rowOrder = renderSessions([
+        { id: 'archivedNewer', path: '/x', active: false, lastUserMessageAt: 9_000 },
+        { id: 'liveOlder', path: '/y', active: true, lastUserMessageAt: 1_000 }
+    ])
+    fireEvent.click(screen.getByRole('button', { name: 'Search sessions (title, path, Agent, machine name, ID, and more)' }))
+    fireEvent.change(screen.getByPlaceholderText('Search title/path/Agent/machine/ID…'), { target: { value: 'Row' } })
+    expect(rowOrder()).toEqual(['archivedNewer', 'liveOlder'])
 })

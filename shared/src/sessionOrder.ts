@@ -9,9 +9,19 @@ export function getSessionOrderKey(session: SessionOrderFields): number {
     return session.lastUserMessageAt ?? session.createdAt ?? 0
 }
 
+/** Creation-time key for Fixed session order (#1424) — ignores user-activity clocks. */
+export function getCreatedAtOrderKey(session: SessionOrderFields): number {
+    return session.createdAt ?? 0
+}
+
 export function compareSessionsByOrderKeyDesc(a: SessionOrderFields, b: SessionOrderFields): number {
     return getSessionOrderKey(b) - getSessionOrderKey(a)
         || (b.createdAt ?? 0) - (a.createdAt ?? 0)
+        || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+}
+
+export function compareSessionsByCreatedAtDesc(a: SessionOrderFields, b: SessionOrderFields): number {
+    return getCreatedAtOrderKey(b) - getCreatedAtOrderKey(a)
         || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
 }
 

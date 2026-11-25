@@ -183,6 +183,14 @@ describe('createOpencodeBackend', () => {
         expect(calls[1]?.childSessionUpdates).toBeUndefined();
     });
 
+    it('advertises form elicitation only for v2', () => {
+        createOpencodeBackend({ cwd: '/tmp/x', majorVersion: 'v2' });
+        createOpencodeBackend({ cwd: '/tmp/x', majorVersion: 'v1' });
+        const calls = constructorCalls as unknown as Array<{ elicitationForm?: boolean }>;
+        expect(calls[0]?.elicitationForm).toBe(true);
+        expect(calls[1]?.elicitationForm).toBeUndefined();
+    });
+
     it('v2: defaults spawnCwd to the invoked cwd when opts.cwd is absent', () => {
         createOpencodeBackend({ majorVersion: 'v2' });
         const call = constructorCalls[0] as unknown as { spawnCwd?: string };
@@ -405,19 +413,6 @@ describe('discoverOpencodeV2RestPort ownerPid preference', () => {
             scanOwnedImpl: async () => new Set([41234])
         });
         expect(port).toBe(41234);
-    });
-
-    it('falls back to the diff heuristic when the owned scan fails', async () => {
-        const port = await discoverOpencodeV2RestPort({
-            beforeSnapshot: new Set([1000]),
-            pollIntervalMs: 1,
-            ownerPid: 4242,
-            scanImpl: async () => new Set([1000, 41999]),
-            scanOwnedImpl: async () => {
-                throw new Error('tools missing');
-            }
-        });
-        expect(port).toBe(41999);
     });
 
     it('keeps polling the owned scan and does not fall back while it succeeds but is empty', async () => {

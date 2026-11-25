@@ -146,6 +146,30 @@ describe('listCodexModels cwd', () => {
         expect(constructorOptions).toHaveLength(4);
     });
 
+    it('invalidates the environment-selected catalog and honors its precedence over config.toml', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-codex-env-models-'));
+        temporaryHomes.push(home);
+        vi.stubEnv('CODEX_HOME', home);
+        const configured = join(home, 'configured.json');
+        const selected = join(home, 'selected.json');
+        await writeFile(join(home, 'config.toml'), `model_catalog_json = ${JSON.stringify(configured)}\n`);
+        await writeFile(configured, 'configured');
+        await writeFile(selected, 'first');
+        vi.stubEnv('HAPI_CODEX_MODEL_CATALOG_JSON', selected);
+        listModelsMock.mockResolvedValue({ data: [{ id: 'first' }] });
+        await listCodexModels();
+        await writeFile(configured, 'unused-change');
+        await listCodexModels();
+        expect(constructorOptions).toHaveLength(1);
+        await writeFile(selected, 'second');
+        listModelsMock.mockResolvedValue({ data: [{ id: 'second' }] });
+        expect((await listCodexModels())[0]?.id).toBe('second');
+        expect(constructorOptions).toHaveLength(2);
+        vi.stubEnv('HAPI_CODEX_MODEL_CATALOG_JSON', '');
+        await listCodexModels();
+        expect(constructorOptions).toHaveLength(3);
+    });
+
     it('resolves a relative catalog path from the Codex config directory', async () => {
         const home = await mkdtemp(join(tmpdir(), 'hapi-codex-models-'));
         temporaryHomes.push(home);

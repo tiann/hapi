@@ -1,3 +1,7 @@
+---
+description: "Talk to your coding agent hands-free with the HAPI voice assistant, or dictate messages and review them before sending."
+---
+
 # Voice input and assistant
 
 Control your AI coding agent with your voice. The built-in voice assistant supports three backends: **ElevenLabs** Conversational AI, **Gemini Live**, and **Qwen Realtime**. Pick whichever provider you have credentials for — the hub detects what's configured and the web app lets you switch.
@@ -226,6 +230,12 @@ If voice cannot start on a Xiaomi/MIUI device, or the browser cannot request mic
 - Verify your API key is valid
 - Check your ElevenLabs account has available quota
 - Try setting a custom `ELEVENLABS_AGENT_ID`
+
+### Preview voice differs from the live assistant
+
+- Confirm **Settings → Voice → Backend** is the provider you expect (hub `VOICE_BACKEND` is only the default; a stale session can keep an older backend until the picker remounts it).
+- Previewing an ElevenLabs voice also selects it for runtime; if you still hear the wrong voice, hard-refresh so `VoiceBackendSession` re-resolves.
+- With multiple backends configured, picking ElevenLabs JessicaX while the session is still on Qwen/Gemini will sound like a completely different person.
 
 ### Poor audio quality
 

@@ -31,6 +31,14 @@ async function runDshModelsProbe(): Promise<ListDshModelsForMachineResponse> {
                     cwd: process.cwd(),
                     mcpServers: []
                 })
+                // dsh sessions are durable on disk and session/new always
+                // flushes: without an explicit session/close (advertised
+                // under sessionCapabilities), every probe would leave one
+                // throwaway durable session behind in ~/.dsh. Best effort —
+                // a close failure must not mask the probe result, and the
+                // disconnect below still tears the child down.
+                await backend.sendExtensionRequest('session/close', { sessionId }, { timeoutMs: 5000 })
+                    .catch(() => {})
                 const metadata = backend.getSessionModelsMetadata(sessionId)
                 if (!metadata || metadata.availableModels.length === 0) {
                     return {

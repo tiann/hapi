@@ -29,6 +29,8 @@ function makeSummary(overrides: Partial<SessionSummary> & { id: string }): Sessi
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides
@@ -40,6 +42,31 @@ function makeRequest(overrides: Partial<PendingRequest> & { id: string; kind: Pe
 }
 
 describe('SessionAttentionIndicator tooltip', () => {
+    it('keeps background tooltips left-anchored while pending tooltips stay inside the right edge', () => {
+        const pending = renderWithI18n(
+            <SessionAttentionIndicator
+                attention={{ kind: 'input' }}
+                summary={makeSummary({ id: 'pending' })}
+                label="Awaiting your answer"
+                tooltipId="pending-alignment"
+            />
+        )
+        expect(screen.getByRole('tooltip', { hidden: true })).toHaveClass('right-0')
+        expect(screen.getByRole('tooltip', { hidden: true })).not.toHaveClass('left-0')
+        pending.unmount()
+
+        renderWithI18n(
+            <SessionAttentionIndicator
+                attention={{ kind: 'background' }}
+                summary={makeSummary({ id: 'background', backgroundTaskCount: 1 })}
+                label="Background tasks running"
+                tooltipId="background-alignment"
+            />
+        )
+        expect(screen.getByRole('tooltip', { hidden: true })).toHaveClass('left-0')
+        expect(screen.getByRole('tooltip', { hidden: true })).not.toHaveClass('right-0')
+    })
+
     it('renders permission tooltip body listing each pending tool', () => {
         const summary = makeSummary({
             id: 's1',
@@ -173,7 +200,13 @@ describe('SessionAttentionIndicator tooltip', () => {
         const tooltip = screen.getByRole('tooltip', { hidden: true })
         expect(tooltip.textContent).toContain('Background tasks running')
         expect(tooltip.textContent).toContain('3 tasks running')
-        expect(container.querySelector('svg.animate-spin-slow.text-blue-400')).not.toBeNull()
+        // Rotation comes from the shared low-rate ticker, so the class is gone
+        // but the blue spinner element is still there.
+        const spinner = container.querySelector('svg.text-blue-400') as SVGElement | null
+        expect(spinner).not.toBeNull()
+        expect(spinner).not.toHaveClass('animate-spin-slow')
+        // The old CSS class must be gone everywhere, not just renamed.
+        expect(container.querySelector('.animate-spin-slow')).toBeNull()
         expect(container.querySelector('.rounded-full')).toBeNull()
     })
 

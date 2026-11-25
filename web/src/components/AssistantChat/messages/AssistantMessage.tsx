@@ -6,7 +6,7 @@ import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { getAssistantCopyText } from '@/components/AssistantChat/messages/assistantCopyText'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { CodexReviewCard } from '@/components/AssistantChat/messages/CodexReviewCard'
-import { MessageActions } from '@/components/AssistantChat/messages/MessageActions'
+import { MessageActions, isConversationHistoryBlocked } from '@/components/AssistantChat/messages/MessageActions'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import { NotifySummaryText } from '@/components/AssistantChat/messages/NotifySummaryText'
 import { useSessionSummaryInChat } from '@/hooks/useSessionSummaryInChat'
@@ -27,6 +27,10 @@ export function HappyAssistantMessage() {
     const showSessionSummaryInChat = useSessionSummaryInChat()
     const messageId = useAuiState((s) => s.message.id)
     const elementId = getConversationMessageAnchorId(messageId)
+    const sourceMessageIds = useAuiState((s) => {
+        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        return custom?.sourceMessageIds
+    })
     const isCliOutput = useAuiState((s) => {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.kind === 'cli-output'
@@ -60,11 +64,21 @@ export function HappyAssistantMessage() {
 
     const metadata = { durationMs, usage, model: messageModel ?? null, turnCount, roundSummary }
 
-    const history = ctx.metadata?.capabilities?.conversationHistory
+    const historyLocked = isConversationHistoryBlocked(ctx.metadata)
+    const history = historyLocked ? undefined : ctx.metadata?.capabilities?.conversationHistory
+    const historicalForkLocalId = ctx.assistantForkPoints?.get(messageId)
     const showForkCurrent = Boolean(
-        (history?.forkCurrent || ctx.allowInactiveFork)
+        !historyLocked
+        && (history?.forkCurrent || ctx.allowInactiveFork)
         && ctx.isLatestCompletedBoundary?.(messageId)
         && (!ctx.disabled || ctx.allowInactiveFork === true)
+        && ctx.onForkConversation
+    )
+    const showHistoricalFork = Boolean(
+        !showForkCurrent
+        && history?.forkAtMessage
+        && historicalForkLocalId
+        && !ctx.disabled
         && ctx.onForkConversation
     )
 
@@ -76,6 +90,7 @@ export function HappyAssistantMessage() {
         <MessagePrimitive.Root
             id={elementId}
             data-hapi-message-role="assistant"
+            data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
             className={`happy-message ${rootClass} scroll-mt-4`}
         >
             {isCliOutput
@@ -88,9 +103,15 @@ export function HappyAssistantMessage() {
                 copyText={copyText || undefined}
                 metadata={metadata}
                 messageElementId={elementId}
-                showFork={showForkCurrent}
+                onBranch={!historyLocked && ctx.onBranchConversation && ctx.isLatestCompletedBoundary?.(messageId) === true
+                    ? () => ctx.onBranchConversation?.() : undefined}
+                showFork={showForkCurrent || showHistoricalFork}
                 historyActionPending={ctx.historyActionPending}
-                onFork={showForkCurrent ? () => ctx.onForkConversation!() : undefined}
+                onFork={showForkCurrent
+                    ? () => ctx.onForkConversation!()
+                    : showHistoricalFork
+                        ? () => ctx.onForkConversation!(historicalForkLocalId!)
+                        : undefined}
             />
         </MessagePrimitive.Root>
     )

@@ -9,6 +9,8 @@ export interface Suggestion {
     source?: 'builtin' | 'user' | 'plugin' | 'project'
     /** When set, rich composer inserts an inline session atom instead of `text`. */
     sessionMention?: { id: string; title: string }
+    /** An interactive row that changes the menu instead of inserting text. */
+    action?: { expanded: boolean; onSelect: () => void }
 }
 
 export interface SuggestionRequestContext {

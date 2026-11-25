@@ -1,6 +1,7 @@
 import { ApiClient, ApiSessionClient } from '@/lib'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { AgentSessionBase } from '@/agent/sessionBase'
+import type { SessionModelReasoningEffort, SessionPermissionMode } from '@/api/types'
 import type { DshMode } from './types'
 
 /** Remote-only HAPI session wrapper for the DSH ACP server. */
@@ -14,6 +15,10 @@ export class DshSession extends AgentSessionBase<DshMode> {
         logPath: string
         /** Spawn-time model override (opaque ACP config-option value). */
         model?: string
+        /** Spawn-time permission mode: pins DSH_PERMISSION_MODE on the child
+         *  env (read-only / danger-full-access) and drives the ACP permission
+         *  bridge's auto-approval decisions. */
+        permissionMode?: SessionPermissionMode
         sessionId?: string | null
         messageQueue: MessageQueue2<DshMode>
         onModeChange: (mode: 'local' | 'remote') => void
@@ -26,6 +31,7 @@ export class DshSession extends AgentSessionBase<DshMode> {
             logPath: opts.logPath,
             sessionId: opts.sessionId ?? null,
             model: opts.model,
+            permissionMode: opts.permissionMode,
             messageQueue: opts.messageQueue,
             onModeChange: opts.onModeChange,
             mode: 'remote',
@@ -43,6 +49,14 @@ export class DshSession extends AgentSessionBase<DshMode> {
 
     setModel = (model: string | null): void => {
         this.model = model;
+    };
+
+    /** Runtime/rollback updates for the reasoning-effort preference: writes
+     * the inherited field so the keepalive runtime (which the hub picker
+     * mirrors) reports the live value — the launcher's onEffortRollback
+     * corrects a failed switch through here, exactly like setModel. */
+    setModelReasoningEffort = (effort: SessionModelReasoningEffort | undefined): void => {
+        this.modelReasoningEffort = effort;
     };
 
     sendAgentMessage = (message: unknown): void => {

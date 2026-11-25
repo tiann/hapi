@@ -122,6 +122,27 @@ describe('normalizeDecryptedMessage', () => {
         })
     })
 
+    it('keeps the Codex generation pair on the turn-duration event only when both are valid', () => {
+        const normalize = (data: Record<string, unknown>) => normalizeDecryptedMessage(makeMessage({
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'turn_duration', flavor: 'codex', turn_id: 'turn', durationMs: 4_000, ...data } }
+        }))
+        expect(normalize({ generationMs: 2_200, generationOutputTokens: 50 })).toMatchObject({
+            content: { type: 'turn-duration', provider: 'codex', durationMs: 4_000, generationMs: 2_200, generationOutputTokens: 50 }
+        })
+        for (const generation of [
+            {}, { generationMs: 2_200 }, { generationOutputTokens: 50 },
+            ...[0, -1, NaN, Infinity, '5', 0.5, Number.MAX_SAFE_INTEGER + 1].flatMap(value => [
+                { generationMs: value, generationOutputTokens: 50 },
+                { generationMs: 2_200, generationOutputTokens: value }
+            ])
+        ]) {
+            const normalized = normalize(generation)
+            expect(normalized?.content).not.toHaveProperty('generationMs')
+            expect(normalized?.content).not.toHaveProperty('generationOutputTokens')
+        }
+    })
+
     it('drops fractional and unsafe token counters and turn counts while retaining valid model fields', () => {
         const message = makeMessage({
             role: 'agent',

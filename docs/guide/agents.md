@@ -1,3 +1,7 @@
+---
+description: "Coding agents supported by HAPI (Claude Code, Codex, Cursor, Grok Build, OpenCode, Kimi, Copilot, Antigravity, Pi, DeepSeek Harness) and which features each supports."
+---
+
 # Supported Agents
 
 HAPI is a wrapper around AI coding agents. One CLI (`hapi <agent>`) starts any supported agent locally and exposes the same session for remote control from the web app, PWA, and Telegram — with permission prompts, message queueing, and seamless handoff between terminal and phone.
@@ -12,7 +16,7 @@ agent's integration; their supported syntax varies by agent.
 
 | Agent | Command | Integration | Local | Remote | Permission modes | Resume |
 |-------|---------|-------------|:-----:|:------:|------------------|:------:|
-| Claude Code | `hapi claude` | Terminal wrapper (local) + Claude Agent SDK (remote) | ✓ | ✓ | `default` `acceptEdits` `auto` `bypassPermissions` `plan` | ✓ |
+| Claude Code | `hapi claude` | Terminal wrapper (local) + `claude` in stream-json mode (remote) | ✓ | ✓ | `default` `acceptEdits` `auto` `bypassPermissions` `plan` | ✓ |
 | Codex | `hapi codex` | Native terminal + `codex app-server` (Codex 0.154.0+) | ✓ | ✓ | `default` `read-only` `autoReview` `yolo` (+ `plan` collaboration mode) | ✓ |
 | Cursor Agent | `hapi cursor` | ACP (`agent acp`); legacy stream-json resume | ✓ | ✓ | `default` `plan` `ask` `debug` `autoReview` `yolo` | ✓ |
 | Grok Build | `hapi grok` | ACP (`grok agent stdio`) | ✓ | ✓ | `default` `auto` `plan` `bypassPermissions` | ✓ |
@@ -20,21 +24,44 @@ agent's integration; their supported syntax varies by agent.
 | Kimi | `hapi kimi` | ACP (`kimi acp`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
 | DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | Managed by DSH ACP composition | ✓* |
-| Antigravity (agy) | `hapi agy` | Persistent headless NDJSON over stdio | — | ✓ | `request-review` `always-proceed` | ✓ |
+| Antigravity (agy) | `hapi agy` | ACP (`agy acp`, agy 1.5.0+); persistent stream-json for older agy | — | ✓ | `request-review` `acceptEdits` `plan` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
 
 Gemini is no longer launchable: `hapi gemini` is kept as a tombstone command that prints a clear error, and existing Gemini sessions remain viewable in the web UI but cannot be resumed.
 
+### Feature support
+
+Steer, effort and history controls apply to sessions under remote control. The web UI shows a control only when the running session supports it; "probed" means HAPI checks the installed agent build at runtime and hides the control on builds without it.
+
+| Agent | Steer | Effort switch | Fork / rewind | Branch | Import local history |
+|-------|:-----:|:-------------:|:-------------:|:------:|:--------------------:|
+| Claude Code | ✓ | ✓ | Fork current point | ✓ | ✓ |
+| Codex | ✓ | ✓ (reasoning effort) | Fork (no rewind) | ✓ | ✓ |
+| Cursor Agent | ✓ (ACP sessions) | — | — | — | — |
+| Grok Build | — | ✓ | Probed | — | — |
+| GitHub Copilot | — | ✓ | — | — | — |
+| Kimi | — | ✓ | — | — | — |
+| OpenCode | ✓ | ✓ (reasoning effort) | Probed (OpenCode v2) | — | ✓ |
+| DeepSeek Harness | — | — | — | — | — |
+| Antigravity | ✓ (ACP sessions) | ✓ | — | — | — |
+| Pi | ✓ | ✓ | Probed | — | ✓ |
+
+- **Steer** delivers a queued message into the running turn instead of waiting for it to end. See [Composer](./composer.md).
+- **Fork / rewind** use the agent's native history; **Branch** starts a new Claude Code or Codex session from a Claude Code or Codex conversation's visible history, optionally switching agents. See [Conversation history](./conversation-history.md).
+- **Import local history** brings sessions started outside HAPI into the session list. See [Import local sessions](./import-local-sessions.md).
+
+Source: `STEERING_SUPPORTED_FLAVORS` in `shared/src/modes.ts`, `shared/src/flavors.ts`, and the per-agent history capabilities in `shared/src/conversationHistory.ts`.
+
 ## Common concepts
 
 ### ACP
 
-Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, and DeepSeek Harness remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-turn model switching through `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry. Legacy or incompatible DSH ACP servers fall back to a fresh session when native resume is unavailable.
+Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, Antigravity, and DeepSeek Harness remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-turn model switching through `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry. Legacy or incompatible DSH ACP servers fall back to a fresh session when native resume is unavailable.
 
 ### Permission modes
 
-Permission modes are per-agent — each flavor exposes its own set (see the matrix above). Set the mode at launch with `--permission-mode <mode>` or a shortcut flag (`--yolo`, `--plan`, `--auto-review`, depending on the agent), and switch it mid-session from the web UI. Semantics vary per agent; see the per-agent sections below.
+Permission modes are per-agent — each flavor exposes its own set (see the matrix above). Set the mode at launch with `--permission-mode <mode>` or a shortcut flag (`--yolo`, `--plan`, `--auto-review`, depending on the agent), and switch it mid-session from the web UI or with `hapi set-mode <session-id-or-prefix> <mode>` (active sessions switch immediately; inactive ones use it on their next resume). Semantics vary per agent; see the per-agent sections below.
 
 ### Local and remote mode
 
@@ -53,6 +80,76 @@ hapi resume <session-id>   # Resume a specific HAPI session
 ```
 
 `hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini cannot be resumed. DSH resume depends on the configured ACP server: current DSH ACP profiles restore the native session, while a fresh-session-only server starts a new session with a status message. Pi and Antigravity resume with input still controlled from HAPI rather than the terminal.
+
+### Displaying images
+
+HAPI supports two image delivery methods: Markdown images embedded in conversation text and the `display_image` tool.
+
+#### Client support
+
+| Client | Local workspace Markdown images | HTTP(S) Markdown images |
+|--------|---------------------------------|-------------------------|
+| Web/PWA | Loaded through the authenticated session file API | Loaded directly by the browser |
+| Native iOS | Placeholder rows or alternative text; no image loading | Placeholder rows or alternative text, with links where applicable; no inline image loading |
+| Native Android | Alternative text or links; no image loading | Alternative text or links; no inline image loading |
+
+The native clients can display images delivered through `display_image`. Those generated-image messages use a separate rendering path from Markdown images.
+
+#### Local Markdown images in Web/PWA
+
+Use standard Markdown image syntax:
+
+```markdown
+![Screenshot](screenshots/result.png)
+```
+
+For paths containing spaces, enclose the path in angle brackets:
+
+```markdown
+![Screenshot](<screenshots/my result.png>)
+```
+
+Local Markdown images must meet these requirements:
+
+- The file exists within the current session's configured working directory. Relative paths resolve from that directory, not from the browser URL or a shell command's temporary working directory.
+- The file is no larger than 10 MiB (10,485,760 bytes).
+- The file has a supported image extension and can be decoded by the browser.
+- The normalized path remains within the session workspace. Out-of-workspace paths and `file:`, `data:`, or `blob:` URLs are not supported.
+
+Recognized extensions are APNG, AVIF, BMP, GIF, ICO, JPEG, JPG, PNG, SVG, TIF, TIFF, and WebP. Recognizing an extension does not guarantee browser decoding; for example, Chromium does not normally display TIFF images. PNG, JPEG, GIF, and WebP are recommended for broad browser compatibility.
+
+Local images are read through the authenticated session file API. The referenced file and the session file-reading connection must remain available. A Markdown reference does not create a permanent attachment.
+
+Reachable HTTP(S) images load directly in the browser. The 10 MiB session-file limit applies to local images, not remote image URLs.
+
+In Web/PWA, successfully loaded Markdown images can be clicked, tapped, or opened from the keyboard to launch the same zoomable fullscreen viewer used by `display_image`. Images keep their inline presentation and `no-referrer` behavior. Loading and failed-image fallbacks do not open a viewer.
+
+#### Using display_image
+
+Use the available HAPI `display_image` tool with an absolute filesystem path when:
+
+- The image needs to be viewable in both Web/PWA and native clients.
+- The image is outside the session workspace.
+- Markdown image delivery is unsuitable, or the user prefers a separate image card.
+
+The MCP tool accepts supported image content up to 25 MiB. Its supported formats differ from Markdown/browser rendering, so a file unsupported by one method is not necessarily supported by the other.
+
+The MCP `display_image` tool presents the image to the user; it does not provide image input to the model for inspection or analysis. Pi's separate `hapi_display_image` extension tool also returns image bytes to the model context.
+
+Neither Markdown references nor the current generated-image delivery path guarantee permanent image storage.
+
+#### Choosing a delivery method
+
+Follow an explicit user or workspace preference when supported and permitted. Without a stated preference, use the available `display_image` tool.
+
+For a Web/PWA-only workflow, users can record a preference in their agent's workspace instruction file, such as `AGENTS.md`:
+
+> I use HAPI Web/PWA only. Prefer Markdown for local images that meet HAPI's workspace, size, and format requirements. Otherwise, use the available `display_image` tool when the file meets that tool's requirements.
+
+Normally show each image once. Do not deliver the same image through both Markdown and a display tool, or redisplay a user-provided image, unless requested.
+
+Check each method's own requirements before using it. Do not switch delivery methods to bypass denied file access or tool approval.
+
 
 ### Mathematical formulas in HAPI Markdown
 
@@ -137,6 +234,10 @@ Interactive TUI-only commands (`/config`, `/mcp`, `/sandbox`, `/btw`, `/rewind`,
 
 - **Local mode** - Run `hapi cursor` from terminal. Full interactive experience.
 - **Remote mode** - Spawn from web/phone when no terminal. New Cursor sessions use `agent acp` with HAPI permission approval, plan/question UI, and richer tool updates. Legacy sessions created before the ACP migration may still resume via the old `agent -p` stream-json path temporarily.
+
+### Model errors
+
+Cursor sometimes reports a transient model error inside a turn instead of failing it. HAPI detects these, shows a banner in the chat and an indicator in the session list, and sends a notification. **Bridge & retry** re-sends your last message as a one-shot recovery prompt; a new message from you always takes precedence. The hub owner can opt in to automatic retry (off by default).
 
 ### Limitations
 
@@ -310,33 +411,68 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
 
 ## Other agents
 
-- **Claude Code** (`hapi claude`) — local sessions wrap the native TUI, remote sessions drive the Claude Agent SDK. [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code)
-- **Codex** (`hapi codex`) — OpenAI's Codex CLI, with terminal/Web control and a dedicated `plan` mode. See [Codex usage and limits](./codex-shared-sessions.md) for resume, terminal-exit behavior, and launch options. [openai/codex](https://github.com/openai/codex)
-- **GitHub Copilot** (`hapi copilot`) — Copilot CLI over ACP (`copilot --acp --stdio`). [GitHub Copilot](https://github.com/features/copilot)
-- **Kimi** (`hapi kimi`) — Moonshot AI's Kimi CLI over ACP (`kimi acp`). [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)
-- **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). [opencode.ai](https://opencode.ai)
-- **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`), driven through
-  `agy --input-format stream-json --output-format stream-json`. HAPI starts the
-  process on the first prompt and reuses it for subsequent turns with the same
-  model, effort, and permission settings. Each prompt is sent through stdin;
-  the next turn starts after HAPI finishes handling the current `result` and
-  chat output.
-  Changing settings restarts the process with `--conversation <uuid>`. Stop
-  terminates the process and its tools; the next send resumes the conversation.
-  A process failure also causes the next turn to start a fresh process, without
-  automatically replaying a prompt the agent already accepted.
+- **Claude Code** (`hapi claude`) — local sessions wrap the native TUI; remote sessions run the `claude` CLI with stream-json input/output. In remote sessions you can **Steer** a queued message into the running turn (Claude folds it in at the next tool boundary) and change the effort level without restarting Claude. [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code)
+- **Codex** (`hapi codex`) — OpenAI's Codex CLI, with terminal/Web control and a dedicated `plan` mode. See [Codex shared sessions](./codex-shared-sessions.md) for resume, terminal-exit behavior, and launch options. [openai/codex](https://github.com/openai/codex)
 
-  Requires an agy CLI with `--input-format stream-json` support. Native CLI
-  commands such as `/model` and `/usage` cannot run inside this stream; use
-  HAPI's model and effort controls to change settings. Remote-only — there is
-  no local terminal input path or PTY/TUI wrapper.
+  The composer remembers and toggles **fast mode** (Codex's fast service tier) for remote sessions. Remote sessions also load the MCP servers configured in your Codex config alongside HAPI's own tools. To use a custom model catalog, set `HAPI_CODEX_MODEL_CATALOG_JSON` to an absolute path (or `~/…`); HAPI passes it to Codex as `model_catalog_json` unless you already pass that setting with `-c`.
+- **GitHub Copilot** (`hapi copilot`) — Copilot CLI over ACP (`copilot --acp --stdio`). Remote sessions can pick a reasoning effort in the composer when the active model offers one; HAPI applies it before the next turn through ACP `session/set_config_option`. [GitHub Copilot](https://github.com/features/copilot)
+- **Kimi** (`hapi kimi`) — Moonshot AI's Kimi CLI over ACP (`kimi acp`). Remote sessions can pick a thinking level in the composer when the active model offers one; HAPI applies it before the next turn through ACP `session/set_config_option`. [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)
+- **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). Remote sessions support **Steer**; on OpenCode v2, steered messages are delivered at the next step boundary, and HAPI can fork and rewind the conversation through OpenCode's native history. Local OpenCode sessions can be imported into HAPI ([Import local sessions](./import-local-sessions.md)). [opencode.ai](https://opencode.ai)
+- **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`) over ACP
+  (`agy acp`, added in agy 1.5.0). HAPI checks `agy --version` when the
+  session starts; older agy releases, an agy whose version cannot be read,
+  and an `agy acp` that fails to start keep the previous persistent
+  stream-json integration (no approval prompts in
+  HAPI: tools without an allow-rule in agy's `settings.json` are auto-denied).
 
-  Permission handling uses agy's `settings.json` allow/deny rules
-  (`request-review`) or `--dangerously-skip-permissions` (`always-proceed`),
-  without a hook-based approval bridge. Tools without an allow-rule are
-  auto-denied and shown as a chat hint. MCP servers are loaded natively from
-  `~/.gemini/config/mcp_config.json` or workspace `.agents/mcp_config.json`;
-  HAPI does not inject its own MCP server. [Google Antigravity](https://antigravity.google)
+  **Experimental:** HAPI makes agy usable, but Antigravity/agy itself has
+  protocol and runtime limitations that can affect reliability and usability.
+  These limitations are in agy, not HAPI; we do not recommend agy for routine
+  work when a more reliable agent is available.
+
+  On ACP, one `agy acp` process serves the whole session. The agy conversation
+  id is the ACP session id, so a session continues the same conversation
+  through `session/resume` without replaying history, whichever integration
+  started it. If the agy process dies, the next message restarts it and
+  resumes the conversation; a prompt agy never started is restored to the
+  composer. Stop sends `session/cancel`, which also ends open tool calls; a
+  prompt stopped before agy answered anything also goes back to the composer.
+
+  On ACP, **Steer** a queued message to add it to the running turn instead of
+  waiting for the turn to end. HAPI sends it as another `session/prompt`; agy
+  finishes any tool call already running, then continues the same turn with
+  the new message. The turn's usage includes the steered part.
+
+  Permission modes map to agy's session modes. `request-review` is agy's
+  `default` mode, which asks only as agy's own `toolPermission` setting
+  (`~/.gemini/antigravity-cli/settings.json`) says; on ACP its approval
+  requests show in HAPI. With `toolPermission: always-proceed`, agy runs
+  commands and edits without asking, so HAPI shows no approval prompts; set
+  it to `request-review` in agy to approve each command and edit from HAPI.
+  HAPI cannot override this per session. `acceptEdits` is agy's
+  `accept-edits` mode, which also runs edits without asking, and `plan` is
+  agy's `plan` mode, which writes a plan instead of running commands or
+  edits. `always-proceed` approves every request automatically, including
+  one a PreToolUse hook marks `force_ask` (agy does not tell HAPI a request
+  came from a hook). On ACP, mode changes apply to the next message without
+  restarting agy. Conversation titles come from agy when available; otherwise
+  HAPI uses a cleaned first-prompt preview. On ACP each response's
+  details show the turn's token usage.
+
+  Remote-only — there is no local terminal input path or PTY/TUI wrapper. MCP
+  servers are loaded natively from `~/.gemini/config/mcp_config.json` or
+  workspace `.agents/mcp_config.json`; HAPI does not inject its own MCP server.
+  [Google Antigravity](https://antigravity.google)
+
+  On ACP, HAPI offers agy's own slash commands in the `/` menu, including
+  `/swarm`. `/swarm board` (optionally `/swarm board #channel`) shows the
+  swarm's members and board posts in the chat. Each response's details show
+  the round's turn count, and running background commands stay visible while
+  agy keeps working on them.
+
+  On ACP, agy's questions (`ask_question`) appear as the question card; the
+  choice goes back as agy's answer, and no permission mode answers a question
+  for you.
 
   In the web model picker, models with multiple effort variants appear once,
   with a separate effort selector showing the levels in the machine's catalog.
@@ -357,6 +493,8 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
   Pi's extension commands and prompt templates (discovered via `get_commands`) keep working from the `/` menu, and skills are available through `$skill-name` like other ACP flavors. Other Pi TUI builtins (e.g. `/tree`, `/export`, `/reload`) cannot run over RPC; typing them in web shows an explicit "terminal-only" notice instead of silently forwarding the text to the model.
 
   Pi sessions include a `hapi_display_image` tool for showing local PNG, JPEG, GIF, or WebP images up to 25 MiB in the chat. Images returned by Pi tools render inline even when the selected model has no vision support. The display tool also returns image bytes to Pi's model context.
+
+  On Pi versions with built-in MCP support (0.99+), HAPI also exposes its peer-session tools through Pi: `list_peers`, `inspect_peer`, `ping_peer`, and `spawn_peer`. Calls that read another session, send to it, or spawn a session require confirmation in the HAPI UI. `HAPI_DISABLE_PEER_TOOLS=1` hides the tools and keeps the disabled citation guidance in the system prompt.
 
 ## Related
 

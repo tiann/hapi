@@ -31,47 +31,6 @@ function createSession(overrides: Partial<Session> = {}): Session {
 }
 
 describe('ServerChanChannel', () => {
-    it('does not send completed task notifications', async () => {
-        const fetchMock = mock(async () => new Response('ok', { status: 200 }))
-        const originalFetch = globalThis.fetch
-        globalThis.fetch = fetchMock as unknown as typeof fetch
-
-        try {
-            const channel = new ServerChanChannel('SCT_TEST', 'https://hapi.example.com')
-            await channel.sendTaskNotification(createSession(), {
-                status: 'completed',
-                summary: 'Subtask finished'
-            })
-
-            expect(fetchMock).not.toHaveBeenCalled()
-        } finally {
-            globalThis.fetch = originalFetch
-        }
-    })
-
-    it('sends failed task notifications', async () => {
-        const fetchMock = mock(async () => new Response('ok', { status: 200 }))
-        const originalFetch = globalThis.fetch
-        globalThis.fetch = fetchMock as unknown as typeof fetch
-
-        try {
-            const channel = new ServerChanChannel('SCT_TEST', 'https://hapi.example.com')
-            await channel.sendTaskNotification(createSession(), {
-                status: 'failed',
-                summary: 'Subtask failed'
-            })
-
-            expect(fetchMock).toHaveBeenCalledTimes(1)
-            const call = fetchMock.mock.calls[0] as unknown[] | undefined
-            const url = call?.[0]
-            const init = call?.[1] as RequestInit | undefined
-            expect(String(url)).toContain('https://sctapi.ftqq.com/SCT_TEST.send')
-            expect((init?.body as URLSearchParams).get('title')).toBe('HAPI Task failed')
-        } finally {
-            globalThis.fetch = originalFetch
-        }
-    })
-
     it('sends session completion notifications', async () => {
         const fetchMock = mock(async () => new Response('ok', { status: 200 }))
         const originalFetch = globalThis.fetch
@@ -116,10 +75,6 @@ describe('ServerChanChannel', () => {
 
             await channel.sendReady(createSession())
             await channel.sendPermissionRequest(createSession())
-            await channel.sendTaskNotification(createSession(), {
-                status: 'failed',
-                summary: 'Subtask failed'
-            })
             await channel.sendSessionCompletion(createSession(), 'completed' satisfies SessionEndReason)
 
             expect(fetchMock).not.toHaveBeenCalled()

@@ -7,6 +7,7 @@ const {
     listResumableSessionsMock,
     getLocalResumeTargetMock,
     handoffSessionToLocalMock,
+    prepareSessionForLocalResumeMock,
     renderMock,
     runCodexMock,
     runClaudeMock,
@@ -14,7 +15,6 @@ const {
     runPiMock,
     runAgyMock,
     runDshMock,
-    assertCodexLocalSupportedMock,
     existsSyncMock
 } = vi.hoisted(() => ({
     initializeTokenMock: vi.fn(async () => {}),
@@ -23,6 +23,7 @@ const {
     listResumableSessionsMock: vi.fn(),
     getLocalResumeTargetMock: vi.fn(),
     handoffSessionToLocalMock: vi.fn(async () => {}),
+    prepareSessionForLocalResumeMock: vi.fn(async () => {}),
     renderMock: vi.fn(),
     runCodexMock: vi.fn(async () => {}),
     runClaudeMock: vi.fn(async () => {}),
@@ -30,7 +31,6 @@ const {
     runPiMock: vi.fn(async () => {}),
     runAgyMock: vi.fn(async () => {}),
     runDshMock: vi.fn(async () => {}),
-    assertCodexLocalSupportedMock: vi.fn(),
     existsSyncMock: vi.fn(() => true)
 }))
 
@@ -42,7 +42,8 @@ vi.mock('@/api/api', () => ({
         create: async () => ({
             listResumableSessions: listResumableSessionsMock,
             getLocalResumeTarget: getLocalResumeTargetMock,
-            handoffSessionToLocal: handoffSessionToLocalMock
+            handoffSessionToLocal: handoffSessionToLocalMock,
+            prepareSessionForLocalResume: prepareSessionForLocalResumeMock
         })
     }
 }))
@@ -56,7 +57,6 @@ vi.mock('@/grok/runGrok', () => ({ runGrok: runGrokMock }))
 vi.mock('@/pi/runPi', () => ({ runPi: runPiMock }))
 vi.mock('@/agy/runAgy', () => ({ runAgy: runAgyMock }))
 vi.mock('@/dsh/runDsh', () => ({ runDsh: runDshMock }))
-vi.mock('@/codex/utils/codexVersion', () => ({ assertCodexLocalSupported: assertCodexLocalSupportedMock }))
 vi.mock('node:fs', () => ({ existsSync: existsSyncMock }))
 
 import { resumeCommand } from './resume'
@@ -77,6 +77,7 @@ describe('resumeCommand', () => {
         listResumableSessionsMock.mockReset()
         getLocalResumeTargetMock.mockReset()
         handoffSessionToLocalMock.mockClear()
+        prepareSessionForLocalResumeMock.mockClear()
         renderMock.mockReset()
         renderMock.mockImplementation((element: { props?: { onSelect?: (sessionId: string) => void } }) => {
             queueMicrotask(() => element.props?.onSelect?.('picked-session'))
@@ -88,7 +89,6 @@ describe('resumeCommand', () => {
         runPiMock.mockClear()
         runAgyMock.mockClear()
         runDshMock.mockClear()
-        assertCodexLocalSupportedMock.mockClear()
         existsSyncMock.mockReturnValue(true)
     })
 
@@ -111,7 +111,6 @@ describe('resumeCommand', () => {
         await resumeCommand.run(createContext(['hapi-session-1']))
 
         expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
-        expect(assertCodexLocalSupportedMock).not.toHaveBeenCalled()
         expect(runCodexMock).toHaveBeenCalledWith({
             existingSessionId: 'hapi-session-1',
             workingDirectory: '/tmp/project',
@@ -250,6 +249,10 @@ describe('resumeCommand', () => {
         await resumeCommand.run(createContext(['hapi-session-2']))
 
         expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+        // The hub clears a hub-authored archive before the reopen (#1911 guard).
+        expect(prepareSessionForLocalResumeMock).toHaveBeenCalledWith('hapi-session-2')
+        expect(prepareSessionForLocalResumeMock.mock.invocationCallOrder[0])
+            .toBeLessThan(runClaudeMock.mock.invocationCallOrder[0]!)
         expect(runClaudeMock).toHaveBeenCalledWith({
             existingSessionId: 'hapi-session-2',
             workingDirectory: '/tmp/project',
@@ -482,14 +485,16 @@ describe('resumeCommand', () => {
                 thinking: false,
                 controlledByUser: false,
                 agentSessionId: 'claude-session-1',
-                updatedAt: 1
+                updatedAt: 1,
+                promptTitle: 'Fix a redirect',
+                firstUserMessage: 'Look at my browser'
             }
         ])
 
         try {
             await expect(resumeCommand.run(createContext([]))).rejects.toThrow('process.exit:1')
             expect(renderMock).not.toHaveBeenCalled()
-            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('hapi-session-1'))
+            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Fix a redirect  /tmp/project  hapi-session-1'))
             expect(consoleErrorSpy).toHaveBeenCalledWith(expect.any(String), 'Run: hapi resume <session-id>')
         } finally {
             Object.defineProperty(process.stdin, 'isTTY', {

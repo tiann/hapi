@@ -12,6 +12,58 @@ function renderGallery() {
 }
 
 describe('ImagePreview gallery navigation', () => {
+    it('gates preview activation and forwards thumbnail loading behavior', () => {
+        const onThumbnailLoad = vi.fn()
+        const onThumbnailError = vi.fn()
+        const { rerender } = render(
+            <ImagePreview
+                src="/gated.png"
+                fileName="gated.png"
+                label="Gated image"
+                disabled
+                loading="lazy"
+                referrerPolicy="no-referrer"
+                thumbnailProps={{ title: 'Image source title' }}
+                onThumbnailLoad={onThumbnailLoad}
+                onThumbnailError={onThumbnailError}
+            />
+        )
+
+        const disabledTrigger = screen.getByRole('button', { name: /gated image/i })
+        expect(disabledTrigger).toBeDisabled()
+        expect(disabledTrigger).toHaveAttribute('title', 'Loading image')
+        fireEvent.click(disabledTrigger)
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+        const thumbnail = within(disabledTrigger).getByRole('img', { name: 'Gated image' })
+        expect(thumbnail).toHaveAttribute('loading', 'lazy')
+        expect(thumbnail).toHaveAttribute('referrerpolicy', 'no-referrer')
+        expect(thumbnail).toHaveAttribute('title', 'Image source title')
+        fireEvent.load(thumbnail)
+        fireEvent.error(thumbnail)
+        expect(onThumbnailLoad).toHaveBeenCalledTimes(1)
+        expect(onThumbnailError).toHaveBeenCalledTimes(1)
+
+        rerender(
+            <ImagePreview
+                src="/gated.png"
+                fileName="gated.png"
+                label="Gated image"
+                loading="lazy"
+                referrerPolicy="no-referrer"
+                thumbnailProps={{ title: 'Image source title' }}
+                onThumbnailLoad={onThumbnailLoad}
+                onThumbnailError={onThumbnailError}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: /gated image/i }))
+        const dialog = screen.getByRole('dialog', { name: 'Gated image' })
+        expect(document.body.querySelector('[data-image-preview-viewer]')).toBe(dialog)
+        expect(within(dialog).getByRole('img', { name: 'Gated image' }))
+            .toHaveAttribute('referrerpolicy', 'no-referrer')
+    })
+
     it.each(['mouse', 'touch', 'pen'])('keeps %s preview gestures out of the surrounding attachment drag handler', (pointerType) => {
         const onAttachmentPointerDown = vi.fn()
         render(

@@ -45,6 +45,16 @@ describe('PermissionField', () => {
         expect(screen.getByText(/did not enable Auto permissions/i)).toBeInTheDocument()
     })
 
+    it('renders the Antigravity permission modes as a native select', () => {
+        const onChange = vi.fn()
+        renderField({ agent: 'agy', nativeValue: 'request-review', onNativeChange: onChange })
+        expect(screen.queryByRole('switch')).toBeNull()
+        expect(screen.getAllByRole('option').map(option => (option as HTMLOptionElement).value))
+            .toEqual(['request-review', 'acceptEdits', 'plan', 'always-proceed'])
+        fireEvent.change(screen.getByRole('combobox'), { target: { value: 'plan' } })
+        expect(onChange).toHaveBeenCalledWith('plan')
+    })
+
     it('renders Claude permission modes as a native select', () => {
         const onChange = vi.fn()
         renderField({ agent: 'claude', nativeValue: 'default', onNativeChange: onChange })
@@ -64,10 +74,13 @@ describe('PermissionField', () => {
         expect(onChange).toHaveBeenCalledWith('plan')
     })
 
-    it('renders the YOLO toggle with its native mapping for toggle flavors', () => {
-        renderField({ agent: 'agy' })
-        expect(screen.getByRole('checkbox')).toBeTruthy()
-        expect(screen.getByText(/applies native Always Proceed mode/i)).toBeInTheDocument()
+    it('offers every built-in agent with a permission select its native modes, not the YOLO toggle', () => {
+        for (const agent of ['agy', 'claude', 'codex', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode'] as const) {
+            const { unmount } = renderField({ agent })
+            expect(screen.getByRole('combobox')).toBeTruthy()
+            expect(screen.queryByRole('checkbox')).toBeNull()
+            unmount()
+        }
     })
 
     it('reports Pi permission as managed instead of offering a silent YOLO toggle', () => {

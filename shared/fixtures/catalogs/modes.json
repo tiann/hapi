@@ -17,6 +17,16 @@
                 "tone": "neutral"
             },
             {
+                "label": "Accept Edits",
+                "mode": "acceptEdits",
+                "tone": "warning"
+            },
+            {
+                "label": "Plan Mode",
+                "mode": "plan",
+                "tone": "info"
+            },
+            {
                 "label": "Always Proceed",
                 "mode": "always-proceed",
                 "tone": "danger"

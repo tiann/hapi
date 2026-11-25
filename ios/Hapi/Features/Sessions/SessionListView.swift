@@ -11,10 +11,13 @@ import SwiftUI
 ///   home owns the filter menu and connection notice;
 /// - pinned section first (the sort already puts globalPinned/pinned rows on
 ///   top; a header makes the boundary visible);
-/// - per row: a two-line-tall flavor icon whose presence badge marks
-///   connected sessions (pulsing while running); title with trailing
+/// - rows follow the persisted order (Active first and the sort key, within
+///   the pin tiers), except while searching;
+/// - per row: a two-line-tall flavor icon whose presence badge gives every
+///   state its own mark (working / background / waiting / stopped); title with trailing
 ///   relative `updatedAt` (unread: semibold title + accent time, no dot so
-///   the badge stays the only dot); a quiet second line has project left and an attention symbol right. No preview, task progress,
+///   the badge stays the only dot); a quiet second line has project left and an attention symbol right
+///   (a running attached job takes the project's place). No preview, todo progress,
 ///   machine/path details or spinners. Disconnected rows are not dimmed;
 /// - swipe actions: leading pin/mark-read, trailing archive or delete/reopen;
 /// - long-press context menu → rename, pin (none/project/global), then
@@ -122,7 +125,7 @@ struct SessionListView: View {
     private var sessionList: some View {
         let rows = frozenRows ?? model.rows
         return KeyedContent(key: ListRenderKey(rows: rows, selectable: selection != nil,
-                                               theme: theme, filters: model.filters)) {
+                                               theme: theme, filters: model.filters, order: model.order)) {
             list(rows)
         }
         .equatable()
@@ -169,13 +172,14 @@ struct SessionListView: View {
                 }
             }
         }
-        .listStyle(.plain)
+        .modifier(PlatformSessionListStyle())
         // The default plain header height leaves a blank band between
         // Pinned and Recent; headers size to their compact text instead.
         .environment(\.defaultMinListHeaderHeight, 0)
-        // An explicit filter change starts at the top. SSE/count/name changes
-        // keep this identity (and the reading position), as does chat return.
-        .id(model.filters)
+        // An explicit filter or order change starts at the top. SSE/count/name
+        // changes keep this identity (and the reading position), as does chat
+        // return.
+        .id(ListIdentity(filters: model.filters, order: model.order))
         .accessibilityIdentifier("home.sessions")
         .overlay {
             if rows.isEmpty {
@@ -211,7 +215,7 @@ struct SessionListView: View {
                 .buttonStyle(.plain)
             }
         }
-        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+        .listRowInsets(EdgeInsets(top: Self.rowVerticalInset, leading: 16, bottom: Self.rowVerticalInset, trailing: 16))
         // Default separator color reads heavy against these rows; the theme
         // divider is the WeChat-style faint hairline.
         .listRowSeparatorTint(theme.divider)
@@ -224,6 +228,15 @@ struct SessionListView: View {
         .contextMenu {
             contextMenuActions(row)
         }
+    }
+
+    /// Pointer rows on a Mac sidebar are denser than touch rows.
+    private static var rowVerticalInset: CGFloat {
+        #if targetEnvironment(macCatalyst)
+        6
+        #else
+        12
+        #endif
     }
 
     /// Compact header (Mail-style) instead of the large plain-list default.
@@ -406,6 +419,12 @@ private struct ListRenderKey: Equatable {
     let selectable: Bool
     let theme: HapiTheme
     let filters: SessionListFilters
+    let order: SessionListOrder
+}
+
+private struct ListIdentity: Hashable {
+    let filters: SessionListFilters
+    let order: SessionListOrder
 }
 
 struct SessionRowView: View {
@@ -432,28 +451,15 @@ struct SessionRowView: View {
         .accessibilityIdentifier("home.session.\(row.id)")
     }
 
-    /// The agent owns the leading column; a presence badge marks connected
-    /// sessions (pulsing while the agent works) instead of dimming the rest.
+    /// The agent owns the leading column; its presence badge carries the
+    /// session state instead of dimming disconnected rows.
     private var agentIcon: some View {
         AgentFlavorIconView(flavor: row.flavor, size: iconSize * 0.8)
             .frame(width: iconSize, height: iconSize)
             .overlay(alignment: .bottomTrailing) {
-                if row.summary.active {
-                    presenceBadge
-                }
+                SessionPresenceBadge(presence: row.presence, size: iconSize * 0.3)
+                    .offset(x: 2, y: 2)
             }
-    }
-
-    private var presenceBadge: some View {
-        let isRunning = row.status == .running
-        return Image(systemName: "circle.fill")
-            .font(.system(size: iconSize * 0.3))
-            .foregroundStyle(theme.success)
-            .symbolEffect(.pulse, options: .repeating, isActive: isRunning)
-            .padding(2)
-            .background(Circle().fill(theme.background))
-            .offset(x: 2, y: 2)
-            .accessibilityLabel(isRunning ? Text("Running") : Text("Connected"))
     }
 
     private var titleLine: some View {
@@ -482,14 +488,18 @@ struct SessionRowView: View {
     /// trailing symbol. Routine activity lives on the icon badge.
     private var detailLine: some View {
         HStack(alignment: .center, spacing: 0) {
-            // Keep the same text line height when metadata is missing,
-            // so the row height does not jump.
-            Text(verbatim: row.project ?? " ")
-                .lineLimit(1)
-                .accessibilityHidden(row.project == nil)
+            if let job = row.runningJob {
+                AttachedJobLine(job: job)
+            } else {
+                // Keep the same text line height when metadata is missing,
+                // so the row height does not jump.
+                Text(verbatim: row.project ?? " ")
+                    .lineLimit(1)
+                    .accessibilityHidden(row.project == nil)
+            }
             Spacer(minLength: 12)
-            if let status = row.status, let symbol = status.symbolName {
-                Image(systemName: symbol)
+            if let status = row.status {
+                Image(systemName: status.symbolName)
                     .symbolVariant(.none)
                     .symbolRenderingMode(.monochrome)
                     .foregroundStyle(attentionColor)
@@ -514,10 +524,96 @@ struct SessionRowView: View {
     /// another visible number or badge to every waiting conversation.
     private func statusAccessibilityText(_ status: SessionRowStatus) -> Text {
         let title = Text(LocalizedStringKey(status.titleKey))
-        if let count = status.count, count > 1 {
-            return Text("\(title) · \(count) requests")
+        if status.count > 1 {
+            return Text("\(title) · \(status.count) requests")
         }
         return title
+    }
+}
+
+/// A running attached job on the row's second line (web `SessionRowSummary`
+/// job line, without the bar): label, then remaining or percent, then
+/// elapsed wall time — never an ETA. After 15 minutes without a heartbeat it
+/// turns amber and says so instead of passing frozen progress off as live.
+struct AttachedJobLine: View {
+    @Environment(\.hapiTheme) private var theme
+    let job: AttachedJob
+
+    var body: some View {
+        // Minute ticks: elapsed and stale age are minute-granular.
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let nowMs = Int(context.date.timeIntervalSince1970 * 1000)
+            let stale = job.isStale(nowMs: nowMs)
+            Text(verbatim: Self.text(job, nowMs: nowMs))
+                .lineLimit(1)
+                .foregroundStyle(stale ? staleColor : theme.success)
+        }
+    }
+
+    private var staleColor: Color {
+        theme.isDark ? theme.warning : Color(hex: 0x9A6700)
+    }
+
+    static func text(_ job: AttachedJob, nowMs: Int) -> String {
+        var parts = [job.label]
+        let unit = job.unit.map { " \($0)" } ?? ""
+        if let remaining = job.remaining {
+            parts.append(String(format: String(localized: "%@ left"), formatJobQuantity(remaining) + unit))
+        } else if let percent = job.percent, let done = job.done, let total = job.total {
+            parts.append("\(percent)%")
+            parts.append("\(formatJobQuantity(done))/\(formatJobQuantity(total))\(unit)")
+        }
+        if job.isStale(nowMs: nowMs) {
+            parts.append(String(format: String(localized: "no heartbeat %@"),
+                                formatCompactElapsed(ms: max(0, nowMs - job.heartbeatAt))))
+        } else {
+            parts.append(formatCompactElapsed(ms: max(0, nowMs - job.startedAt)))
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// Web presence badge (#2296) at native size: shape carries the state and
+/// colour keeps its old meaning. Solid green = working, solid blue =
+/// background tasks only (both pulse), green ring = connected and waiting,
+/// power mark = stopped or archived. The background-coloured halo separates
+/// it from the agent icon.
+struct SessionPresenceBadge: View {
+    @Environment(\.hapiTheme) private var theme
+    let presence: SessionPresence
+    let size: CGFloat
+
+    /// Tailwind blue-400, web's background-work colour in both themes.
+    static let backgroundWorkColor = Color(hex: 0x60A5FA)
+
+    var body: some View {
+        mark
+            .frame(width: size, height: size)
+            .padding(2)
+            .background(Circle().fill(theme.background))
+            .accessibilityElement()
+            .accessibilityLabel(Text(LocalizedStringKey(presence.titleKey)))
+    }
+
+    @ViewBuilder
+    private var mark: some View {
+        switch presence {
+        case .working, .background:
+            // SF Symbol so the system pulse animates it; the still marks
+            // (ring, power) never run an animation.
+            Image(systemName: "circle.fill")
+                .resizable()
+                .foregroundStyle(presence == .working ? theme.success : Self.backgroundWorkColor)
+                .symbolEffect(.pulse, options: .repeating, isActive: presence.pulses)
+        case .waiting:
+            Circle()
+                .strokeBorder(theme.success, lineWidth: max(1.5, size * 0.2))
+        case .stopped:
+            // Drawn heavier than the other symbols: it renders at ~9pt.
+            Image(systemName: "power")
+                .font(.system(size: size, weight: .heavy))
+                .foregroundStyle(theme.textHint)
+        }
     }
 }
 
@@ -558,5 +654,17 @@ struct FilterChip: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// Mac windows get the native sidebar list (vibrant background, rounded
+/// accent selection, hover); touch layouts keep the plain list.
+private struct PlatformSessionListStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        #if targetEnvironment(macCatalyst)
+        content.listStyle(.sidebar)
+        #else
+        content.listStyle(.plain)
+        #endif
     }
 }

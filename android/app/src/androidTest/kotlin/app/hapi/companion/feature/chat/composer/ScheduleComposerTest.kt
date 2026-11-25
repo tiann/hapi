@@ -74,8 +74,11 @@ class ScheduleComposerTest {
     }
 
     private fun openPicker() {
-        // With the tray empty only the clock button carries this description
-        // (the panel's own semantics node exists just after the tap).
+        // The resting composer is one row (+ / field / send); focusing the
+        // field expands it to the tool row that hosts the clock. With the
+        // tray empty only the clock button carries this description (the
+        // panel's own semantics node exists just after the tap).
+        compose.onNodeWithTag("chat-composer-input").performClick()
         compose.onNodeWithContentDescription("Schedule send").performClick()
     }
 

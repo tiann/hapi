@@ -7,6 +7,8 @@ export type Toast = {
     body: string
     sessionId: string
     url: string
+    /** Optional inline action, e.g. reopening a just-archived session. */
+    action?: { label: string; onClick: () => void }
 }
 
 export type ToastContextValue = {
@@ -16,6 +18,7 @@ export type ToastContextValue = {
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null)
+const AddToastContext = createContext<ToastContextValue['addToast'] | null>(null)
 const TOAST_DURATION_MS = 6000
 
 function createToastId(): string {
@@ -60,9 +63,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     }), [toasts, addToast, removeToast])
 
     return (
-        <ToastContext.Provider value={value}>
-            {children}
-        </ToastContext.Provider>
+        <AddToastContext.Provider value={addToast}>
+            <ToastContext.Provider value={value}>
+                {children}
+            </ToastContext.Provider>
+        </AddToastContext.Provider>
     )
 }
 
@@ -72,4 +77,17 @@ export function useToast(): ToastContextValue {
         throw new Error('useToast must be used within ToastProvider')
     }
     return ctx
+}
+
+export function useAddToast(): ToastContextValue['addToast'] {
+    const addToast = useContext(AddToastContext)
+    if (!addToast) {
+        throw new Error('useAddToast must be used within ToastProvider')
+    }
+    return addToast
+}
+
+/** Like `useAddToast`, but returns null outside a ToastProvider (embedded / test shells). */
+export function useOptionalAddToast(): ToastContextValue['addToast'] | null {
+    return useContext(AddToastContext)
 }

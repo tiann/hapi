@@ -23,6 +23,9 @@ struct HapiApp: App {
         .onChange(of: scenePhase, initial: true) { _, phase in
             model.handleScenePhase(phase)
         }
+        .commands {
+            HapiCommands()
+        }
     }
 
     /// `hapicompanion://bind?hub=<url>&code=<accessToken>` — parse and route

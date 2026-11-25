@@ -269,7 +269,7 @@ final class ManualEntryPresentationTests: XCTestCase {
         try await settle()
         XCTAssertNil(driver.failure)
         driver.isPairing = true
-        try await settle()
+        try await waitForEnabled(false, in: [address, token])
         XCTAssertFalse(address.isEnabled)
         XCTAssertFalse(token.isEnabled)
         XCTAssertEqual(address.delegate?.textField?(address, shouldChangeCharactersIn: NSRange(location: 0, length: 0), replacementString: "late"), false)
@@ -352,6 +352,22 @@ final class ManualEntryPresentationTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(50))
         }
         XCTAssertEqual(field.text, text, file: file, line: line)
+    }
+
+    private func waitForEnabled(
+        _ enabled: Bool,
+        in fields: [UITextField],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(3))
+        while fields.contains(where: { $0.isEnabled != enabled }), clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        for field in fields {
+            XCTAssertEqual(field.isEnabled, enabled, file: file, line: line)
+        }
     }
 
     private func paste(_ value: String, into field: UITextField, range: UITextRange? = nil) throws {

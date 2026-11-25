@@ -65,6 +65,7 @@ describe('runAgy model and effort config', () => {
             session: {
                 onUserMessage: mocks.onUserMessage,
                 onCancelQueuedMessage: vi.fn(),
+                onRetryQueuedMessage: vi.fn(),
                 rpcHandlerManager: { registerHandler: mocks.registerHandler },
             },
         }
@@ -127,6 +128,17 @@ describe('runAgy model and effort config', () => {
         expect(mocks.loop).toHaveBeenCalledWith(expect.objectContaining({ model: undefined, effort: 'high' }))
     })
 
+    it('queues the first message with the permission mode the session was spawned with', async () => {
+        mocks.loop.mockImplementation(async ({ messageQueue }: { messageQueue: MessageQueue2<AgyMode> }) => {
+            const send = mocks.onUserMessage.mock.calls[0]![0]
+            send({ content: { text: 'plan this' } }, 'first')
+            expect((await messageQueue.waitForMessagesAndGetAsString())?.mode)
+                .toMatchObject({ permissionMode: 'plan' })
+        })
+        await runAgy({ permissionMode: 'plan', workingDirectory: '/tmp' })
+        expect(mocks.loop).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: 'plan' }))
+    })
+
     it('cleans up a bootstrapped session if catalog initialization rejects', async () => {
         mocks.listModels.mockRejectedValueOnce(new Error('catalog unavailable'))
         await runAgy({ model: 'gemini-4-argon-medium', workingDirectory: '/tmp' })
@@ -172,6 +184,27 @@ describe('runAgy model and effort config', () => {
             mocks.onUserMessage.mock.calls[0]![0]({ content: { text: 'still original' } }, 'first')
             expect((await messageQueue.waitForMessagesAndGetAsString())?.mode)
                 .toMatchObject({ model: 'gemini-4-argon', effort: 'medium' })
+        })
+        await runAgy({ model: 'gemini-4-argon-medium', workingDirectory: '/tmp' })
+    })
+
+    it('enqueues /swarm board as an isolated control message while leaving /swarm tasks mergeable', async () => {
+        mocks.loop.mockImplementation(async ({ messageQueue }: { messageQueue: MessageQueue2<AgyMode> }) => {
+            const send = mocks.onUserMessage.mock.calls[0]![0]
+            send({ content: { text: 'first prompt' } }, 'm1')
+            send({ content: { text: '/swarm board --channel parser' } }, 'm2')
+            send({ content: { text: '/swarm refactor parser' } }, 'm3')
+
+            const firstBatch = await messageQueue.waitForMessagesAndGetAsString()
+            expect(firstBatch?.message).toBe('first prompt')
+
+            const boardBatch = await messageQueue.waitForMessagesAndGetAsString()
+            expect(boardBatch?.message).toBe('/swarm board --channel parser')
+            expect(boardBatch?.isolate).toBe(true)
+
+            const swarmTaskBatch = await messageQueue.waitForMessagesAndGetAsString()
+            expect(swarmTaskBatch?.message).toBe('/swarm refactor parser')
+            expect(swarmTaskBatch?.isolate).toBe(false)
         })
         await runAgy({ model: 'gemini-4-argon-medium', workingDirectory: '/tmp' })
     })

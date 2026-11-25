@@ -1,12 +1,15 @@
-import type { ReactNode } from 'react'
+import type { ReactNode, Ref } from 'react'
 
 type IconProps = {
     className?: string
+    /** Lets a caller hand the SVG to a direct-DOM animation (e.g. the low-rate ticker). */
+    ref?: Ref<SVGSVGElement>
 }
 
 function createIcon(paths: ReactNode, props: IconProps, strokeWidth = 1.5) {
     return (
         <svg
+            ref={props.ref}
             className={props.className ?? 'h-4 w-4'}
             viewBox="0 0 24 24"
             fill="none"
@@ -120,6 +123,32 @@ export function InfoIcon(props: IconProps) {
     )
 }
 
+export function ArchiveIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <rect width="20" height="5" x="2" y="3" rx="1" />
+            <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+            <path d="M10 12h4" />
+        </>,
+        props,
+        2
+    )
+}
+
+export function PinOffIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M12 17v5" />
+            <path d="M15 9.34V4h2V2H7.66" />
+            <path d="M9 9v4l-2 2h8" />
+            <path d="M5 17h12" />
+            <path d="m2 2 20 20" />
+        </>,
+        props,
+        2
+    )
+}
+
 export function ForkIcon(props: IconProps) {
     return createIcon(
         <>
@@ -165,6 +194,21 @@ export function ScheduleIcon(props: IconProps) {
         </>,
         props,
         2
+    )
+}
+
+/**
+ * Power/standby mark — a stopped or archived session's presence badge. Drawn
+ * heavier than the other icons (stroke 3.6 of 24) because it renders at 10px.
+ */
+export function StoppedBadgeIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M7.2 6.2a8.6 8.6 0 1 0 9.6 0" />
+            <path d="M12 2v8.4" />
+        </>,
+        props,
+        3.6
     )
 }
 

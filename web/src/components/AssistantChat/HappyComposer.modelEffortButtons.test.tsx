@@ -251,6 +251,40 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(screen.queryByText('Effort')).toBeNull()
     })
 
+    it('offers Codex fast mode in the model picker', () => {
+        const onServiceTierChange = vi.fn()
+        renderComposer('codex', { model: 'gpt-5.6', availableModelOptions: [{ value: 'gpt-5.6', label: 'GPT-5.6' }],
+            serviceTier: 'standard', onServiceTierChange })
+        fireEvent.click(screen.getByRole('button', { name: 'GPT-5.6' }))
+        expect(screen.getByText('Fast Mode')).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Fast' }))
+        expect(onServiceTierChange).toHaveBeenCalledWith('fast')
+    })
+
+    it('toggles Codex fast mode directly from the composer toolbar', () => {
+        const onServiceTierChange = vi.fn()
+        renderComposer('codex', { serviceTier: 'standard', onServiceTierChange })
+        const fast = screen.getByRole('button', { name: 'Fast Mode' })
+        expect(fast).toHaveAttribute('aria-pressed', 'false')
+        fireEvent.click(fast)
+        expect(onServiceTierChange).toHaveBeenCalledWith('fast')
+    })
+
+    it('offers the fast toggle on narrow screens and turns fast off', () => {
+        runtime.narrowViewport = true
+        const onServiceTierChange = vi.fn()
+        renderComposer('codex', { serviceTier: 'fast', onServiceTierChange })
+        const fast = screen.getByRole('button', { name: 'Fast Mode' })
+        expect(fast).toHaveAttribute('aria-pressed', 'true')
+        fireEvent.click(fast)
+        expect(onServiceTierChange).toHaveBeenCalledWith('standard')
+    })
+
+    it('does not show a fast toggle when it is unavailable', () => {
+        renderComposer('codex', { onServiceTierChange: undefined })
+        expect(screen.queryByRole('button', { name: 'Fast Mode' })).toBeNull()
+    })
+
     it('opens only the Effort section from the effort button (anchored open)', () => {
         renderComposer('claude')
         fireEvent.click(screen.getByRole('button', { name: 'High' }))

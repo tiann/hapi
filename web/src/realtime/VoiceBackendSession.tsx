@@ -21,11 +21,20 @@ export type VoiceBackendSessionProps = RealtimeVoiceSessionProps & {
 
 /**
  * Selects voice session from user preference (when multiple backends configured) or hub default.
- * Queries GET /voice/backend once on mount and renders the appropriate component.
+ * Re-resolves on mount and whenever Settings changes the backend preference
+ * (`hapi-voice-backends-refresh`), so preview selection cannot disagree with the registered
+ * realtime session.
  * Only signals readiness after the selected backend has mounted and registered its session.
  */
 export function VoiceBackendSession(props: VoiceBackendSessionProps) {
     const [backend, setBackend] = useState<VoiceBackendType | null>(null)
+    const [resolveEpoch, setResolveEpoch] = useState(0)
+
+    useEffect(() => {
+        const onRefresh = () => setResolveEpoch((n) => n + 1)
+        window.addEventListener('hapi-voice-backends-refresh', onRefresh)
+        return () => window.removeEventListener('hapi-voice-backends-refresh', onRefresh)
+    }, [])
 
     useEffect(() => {
         let cancelled = false
@@ -46,7 +55,7 @@ export function VoiceBackendSession(props: VoiceBackendSessionProps) {
             cancelled = true
             props.onReadyChange?.(false)
         }
-    }, [props.api]) // eslint-disable-line react-hooks/exhaustive-deps
+    }, [props.api, resolveEpoch]) // eslint-disable-line react-hooks/exhaustive-deps
 
     const handleRegistered = useCallback(() => {
         props.onReadyChange?.(true)

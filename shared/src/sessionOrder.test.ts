@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'bun:test'
-import { compareSessionSummaries, compareSessionsByOrderKeyDesc, getSessionOrderKey } from './sessionOrder'
+import {
+    compareSessionSummaries,
+    compareSessionsByCreatedAtDesc,
+    compareSessionsByOrderKeyDesc,
+    getCreatedAtOrderKey,
+    getSessionOrderKey
+} from './sessionOrder'
 
 describe('user-activity session order', () => {
     it('uses original user-message time, or creation before any user input', () => {
@@ -36,5 +42,16 @@ describe('user-activity session order', () => {
         ]
         expect([...sessions].sort(compareSessionsByOrderKeyDesc).map(s => s.id)).toEqual(['a', 'b', 'c'])
         expect([...sessions].reverse().sort(compareSessionsByOrderKeyDesc).map(s => s.id)).toEqual(['a', 'b', 'c'])
+    })
+
+    it('fixed created-at order ignores later user-activity clocks', () => {
+        expect(getCreatedAtOrderKey({ id: 'a', createdAt: 10, lastUserMessageAt: 999 })).toBe(10)
+        const sessions = [
+            { id: 'old', createdAt: 10, lastUserMessageAt: 500 },
+            { id: 'new', createdAt: 20, lastUserMessageAt: 100 }
+        ]
+        expect([...sessions].sort(compareSessionsByCreatedAtDesc).map(s => s.id)).toEqual(['new', 'old'])
+        sessions[0]!.lastUserMessageAt = 10_000
+        expect([...sessions].sort(compareSessionsByCreatedAtDesc).map(s => s.id)).toEqual(['new', 'old'])
     })
 })

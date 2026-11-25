@@ -6,29 +6,33 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.PermissionAction
 import app.hapi.companion.feature.chat.PermissionRowOverride
+import app.hapi.companion.ui.components.ChatActionButton
+import app.hapi.companion.ui.components.ChatActionProminence
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
 import app.hapi.protocol.catalog.Flavors
@@ -111,37 +115,41 @@ private fun PermissionActionsRow(
     val canAllowAllEdits = flavor == "claude" && tool.name in EDIT_TOOLS
     var overflowOpen by remember { mutableStateOf(false) }
 
+    // The status line above owns the in-flight spinner; buttons only disable,
+    // so the row never changes shape while a decision is submitting.
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        OutlinedButton(
+        ChatActionButton(
             onClick = { onAction(requestId, PermissionAction.Allow) },
             enabled = !resolving,
+            prominence = ChatActionProminence.Primary,
             modifier = Modifier.weight(1f),
         ) {
-            Text(stringResource(R.string.chat_perm_allow), color = MaterialTheme.colorScheme.primary)
+            Text(stringResource(R.string.chat_perm_allow))
         }
-        OutlinedButton(
+        ChatActionButton(
             onClick = {
                 onAction(requestId, if (codex) PermissionAction.Abort else PermissionAction.Deny)
             },
             enabled = !resolving,
             modifier = Modifier.weight(1f),
         ) {
-            Text(
-                stringResource(if (codex) R.string.chat_perm_abort else R.string.chat_perm_deny),
-                color = MaterialTheme.colorScheme.error,
-            )
+            Text(stringResource(if (codex) R.string.chat_perm_abort else R.string.chat_perm_deny))
         }
-        if (resolving) {
-            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-        } else if (codex || canAllowForSession || canAllowAllEdits) {
+        if (codex || canAllowForSession || canAllowAllEdits) {
             Box {
-                TextButton(onClick = { overflowOpen = true }) { Text("⋯") }
+                IconButton(onClick = { overflowOpen = true }, enabled = !resolving) {
+                    Icon(
+                        painterResource(R.drawable.ic_sym_more_horiz),
+                        contentDescription = stringResource(R.string.chat_perm_more_options),
+                        tint = MaterialTheme.hapi.textSecondary,
+                    )
+                }
                 DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
                     if (codex || canAllowForSession) {
                         DropdownMenuItem(
@@ -163,6 +171,8 @@ private fun PermissionActionsRow(
                     }
                 }
             }
+        } else {
+            Spacer(Modifier.width(4.dp))
         }
     }
 }
@@ -171,9 +181,9 @@ private fun PermissionActionsRow(
 private fun AlreadyHandledLine(modifier: Modifier = Modifier) {
     Text(
         text = stringResource(R.string.chat_perm_already_handled),
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.hapi.hint,
-        modifier = modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+        style = HapiTypography.caption,
+        color = MaterialTheme.hapi.textSecondary,
+        modifier = modifier.padding(horizontal = 12.dp, vertical = 8.dp),
     )
 }
 

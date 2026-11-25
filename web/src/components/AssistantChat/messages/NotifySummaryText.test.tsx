@@ -1,5 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import type { ComponentType } from 'react'
+import type { TextMessagePartProps } from '@assistant-ui/react'
 import { I18nProvider } from '@/lib/i18n-context'
 import { NotifySummaryText } from './NotifySummaryText'
 
@@ -25,10 +27,23 @@ vi.mock('@/components/MarkdownRenderer', () => ({
     )
 }))
 
-function renderText(text: string, statusType: 'complete' | 'running' = 'complete') {
+const RenderNotifySummaryText = NotifySummaryText as unknown as ComponentType<
+    TextMessagePartProps & { sourceMessageId?: string }
+>
+
+function renderText(
+    text: string,
+    statusType: 'complete' | 'running' = 'complete',
+    sourceMessageId?: string
+) {
     return render(
         <I18nProvider>
-            <NotifySummaryText type="text" text={text} status={{ type: statusType }} />
+            <RenderNotifySummaryText
+                type="text"
+                text={text}
+                status={{ type: statusType }}
+                sourceMessageId={sourceMessageId}
+            />
         </I18nProvider>
     )
 }
@@ -102,11 +117,36 @@ describe('NotifySummaryText', () => {
         expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
     })
 
+    it('marks the individual rendered part for content-search navigation', () => {
+        renderText('Plain assistant prose.', 'complete', 'message-42')
+
+        expect(screen.getByTestId('raw-markdown').parentElement).toHaveAttribute(
+            'data-hapi-source-message-id',
+            'message-42'
+        )
+    })
+
     it('hides a recognized footer with no displayable fields instead of raw JSON', () => {
         renderText('Did the work.\n\nAGENT_NOTIFY_SUMMARY {"version":1,"agent":"codex"}')
 
         expect(screen.getByTestId('visible-markdown')).toHaveTextContent('Did the work.')
         expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
+        expect(screen.queryByText(/AGENT_NOTIFY_SUMMARY/)).toBeNull()
+    })
+
+    it('never shows a truncated footer once the message completes', () => {
+        renderText('Did the work.\n\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok')
+
+        expect(screen.getByTestId('visible-markdown')).toHaveTextContent('Did the work.')
+        expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
+        expect(screen.queryByText(/AGENT_NOTIFY_SUMMARY/)).toBeNull()
+    })
+
+    it('never shows a truncated footer when chat display is off', () => {
+        mockUseSessionSummaryInChat.mockReturnValue(false)
+        renderText('Did the work.\n\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok')
+
+        expect(screen.getByTestId('visible-markdown')).toHaveTextContent('Did the work.')
         expect(screen.queryByText(/AGENT_NOTIFY_SUMMARY/)).toBeNull()
     })
 

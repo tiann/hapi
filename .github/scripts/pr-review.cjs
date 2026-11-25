@@ -7,6 +7,16 @@ const SIGNATURE = '*HAPI Bot*';
 const VERSION = 2;
 const SEVERITIES = ['Blocker', 'Major', 'Minor', 'Nit'];
 const DECISIONS = ['pass', 'needs_changes', 'needs_clarification'];
+// Minor and Nit findings are advisory; only these keep a PR from passing.
+const BLOCKING_SEVERITIES = ['Blocker', 'Major'];
+// Exactly one of these labels marks the latest review outcome of a PR.
+const VERDICT_LABELS = {
+    pass: { name: 'codex-review:pass', color: '0e8a16', description: 'HAPI Bot: all review stages passed, no Blocker/Major findings' },
+    needs_changes: { name: 'codex-review:changes', color: 'd93f0b', description: 'HAPI Bot: review requests changes' },
+    needs_clarification: { name: 'codex-review:clarify', color: 'fbca04', description: 'HAPI Bot: review needs clarification' },
+    error: { name: 'codex-review:error', color: 'b60205', description: 'HAPI Bot: review run failed; re-run the workflow' },
+};
+const VERDICT_LABEL_NAMES = Object.values(VERDICT_LABELS).map(label => label.name);
 
 function hash(value) {
     return createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -84,6 +94,34 @@ function skip(core, reason) {
     return { skipped: true, reason };
 }
 
+// Labels carry no commit, so they are reconciled on every review: cleared when
+// new inputs start a review, then set once the outcome for them is known.
+async function syncVerdictLabel(github, request, core, labels, verdictKey) {
+    const target = verdictKey ? VERDICT_LABELS[verdictKey] : null;
+    const current = new Set((labels || []).map(label => typeof label === 'string' ? label : label.name));
+    const issue = { owner: request.owner, repo: request.repo, issue_number: request.pull_number };
+    try {
+        for (const name of VERDICT_LABEL_NAMES) {
+            if (name === target?.name || !current.has(name)) continue;
+            try {
+                await github.rest.issues.removeLabel({ ...issue, name });
+            } catch (error) {
+                if (error.status !== 404) throw error;
+            }
+        }
+        if (!target || current.has(target.name)) return;
+        try {
+            await github.rest.issues.createLabel({ owner: request.owner, repo: request.repo, ...target });
+        } catch (error) {
+            if (error.status !== 422) throw error;
+        }
+        await github.rest.issues.addLabels({ ...issue, labels: [target.name] });
+    } catch (error) {
+        // A label is a convenience view of the review; never fail or mislabel it over this.
+        core.warning(`Could not update review verdict label: ${error.message}`);
+    }
+}
+
 async function listBotReviews(github, request, env) {
     return botReviews(await github.paginate(github.rest.pulls.listReviews, {
         ...request,
@@ -121,6 +159,9 @@ async function prepareReview({ github, context, core, env = process.env }) {
         commit_id: latest.commit_id,
         body: latest.body,
     } : null;
+    // The previous verdict described other inputs; do not leave it standing
+    // while this review runs (or if it is cancelled or fails).
+    await syncVerdictLabel(github, request, core, pull.labels, null);
     const contextPath = path.join(env.RUNNER_TEMP, 'hapi-pr-review-context.json');
     fs.writeFileSync(contextPath, JSON.stringify(snapshot, null, 2));
     core.setOutput('context_path', contextPath);
@@ -205,6 +246,14 @@ function validateResult(raw) {
     return result;
 }
 
+function verdict(result) {
+    const stages = [result.requirement.status, result.approach.status];
+    if (stages.includes('needs_changes')) return 'needs_changes';
+    if (stages.includes('needs_clarification')) return 'needs_clarification';
+    if (result.code.findings.some(finding => BLOCKING_SEVERITIES.includes(finding.severity))) return 'needs_changes';
+    return 'pass';
+}
+
 // With zero context, every line in each hunk range is changed. Keep the new
 // filename for renamed files on both sides, matching GitHub review comments.
 function changedLines(diff) {
@@ -264,6 +313,8 @@ const LABELS = {
         not_reviewed: 'Not reviewed', reviewed: 'Reviewed', evidence: 'Evidence', suggestions: 'Suggestions',
         fix: 'Suggested fix', noFindings: 'No reportable code issues found.',
         notRun: 'Not run (automation; PR code execution is prohibited).',
+        headline: { pass: '✅ All stages passed', needs_changes: '⚠️ Needs changes', needs_clarification: '❓ Needs clarification' },
+        counts: items => ` (${items.join(', ')})`,
     },
     zh: {
         mode: '评审模式', initial: '首次评审', follow_up_context: '说明更新后的复评',
@@ -273,12 +324,19 @@ const LABELS = {
         not_reviewed: '未评审', reviewed: '已评审', evidence: '依据', suggestions: '建议',
         fix: '修复建议', noFindings: '未发现可报告的代码缺陷。',
         notRun: '未运行测试（自动评审禁止执行 PR 代码）。',
+        headline: { pass: '✅ 全部通过', needs_changes: '⚠️ 需要调整', needs_clarification: '❓ 需要澄清' },
+        counts: items => `（${items.join('，')}）`,
     },
 };
 
 function renderReview(result, snapshot) {
     const labels = LABELS[result.language];
-    const parts = [`${labels.mode}: ${labels[snapshot.mode]}`];
+    const counts = SEVERITIES
+        .map(severity => [severity, result.code.findings.filter(finding => finding.severity === severity).length])
+        .filter(([, count]) => count)
+        .map(([severity, count]) => `${count} ${severity}`);
+    const headline = `**${labels.headline[verdict(result)]}**${counts.length ? labels.counts(counts) : ''}`;
+    const parts = [headline, `${labels.mode}: ${labels[snapshot.mode]}`];
     for (const key of ['requirement', 'approach']) {
         const stage = result[key];
         parts.push(`**${labels[key]} — ${labels[stage.status]}**`, stage.summary);
@@ -342,8 +400,27 @@ async function publishReview({ github, context, core, env = process.env, getDiff
     const { data: review } = await github.rest.pulls.createReview({ ...request, ...payload });
     core.setOutput('published', 'true');
     core.setOutput('review_url', review.html_url);
+    const verdictKey = verdict(result);
+    core.setOutput('verdict', verdictKey);
+    await syncVerdictLabel(github, request, core, latest.labels, verdictKey);
     await core.summary.addRaw(payload.body).write();
     return review;
 }
 
-module.exports = { inputId, marker, botReviews, hasReview, prepareReview, validateResult, changedLines, readDiff, renderReview, publishReview };
+// Runs only when a review of these inputs failed. A newer run (new commits or
+// description) owns the label instead, so stale failures leave it alone.
+async function markReviewError({ github, context, core, env = process.env }) {
+    const request = requestContext(context);
+    const snapshot = JSON.parse(fs.readFileSync(env.REVIEW_CONTEXT_PATH, 'utf8'));
+    const { data: live } = await github.rest.pulls.get(request);
+    if (skipReason(live) || inputId(snapshotPull(live), snapshot.policy_digest) !== snapshot.input_id) {
+        return skip(core, 'PR inputs changed since the failed review');
+    }
+    await syncVerdictLabel(github, request, core, live.labels, 'error');
+    return { labeled: VERDICT_LABELS.error.name };
+}
+
+module.exports = {
+    VERDICT_LABELS, inputId, marker, botReviews, hasReview, prepareReview, validateResult, verdict,
+    changedLines, readDiff, renderReview, publishReview, markReviewError,
+};

@@ -6,6 +6,8 @@ import { toHtml } from 'hast-util-to-html'
 import remarkBreaks from 'remark-breaks'
 import remarkNonHttpsAutolink from '@/lib/remark-non-https-autolink'
 import remarkStripCjkAutolink from '@/lib/remark-strip-cjk-autolink'
+import remarkRepairTables from '@/lib/remark-repair-tables'
+import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly'
 import {
     MARKDOWN_PLUGINS,
     MARKDOWN_PLUGINS_STANDALONE,
@@ -30,6 +32,69 @@ describe('MARKDOWN_PLUGINS integration', () => {
     it('keeps hard-break parsing scoped to opt-in user prompt rendering', () => {
         expect(MARKDOWN_PLUGINS).not.toContain(remarkBreaks)
         expect(MARKDOWN_PLUGINS_WITH_BREAKS).toContain(remarkBreaks)
+    })
+
+    it('places remarkCjkFriendly after remarkRepairTables, keeping remarkRepairTables immediately after remarkGfm', () => {
+        const idxRepair = MARKDOWN_PLUGINS.indexOf(remarkRepairTables)
+        const idxCjk = MARKDOWN_PLUGINS.indexOf(remarkCjkFriendly)
+        expect(idxRepair).toBeGreaterThan(0) // not first (remarkGfm slot is first)
+        expect(idxCjk).toBeGreaterThan(idxRepair)
+    })
+})
+
+describe('MARKDOWN_PLUGINS — CJK emphasis flanking', () => {
+    // CommonMark fails to close `**` when the closing delimiter run's inner
+    // neighbor is punctuation and its outer neighbor is a CJK letter
+    // (commonmark/commonmark-spec#650). remark-cjk-friendly repairs exactly
+    // that class at parse time. All sentences below are synthetic.
+    const pluginVariants = [
+        ['default', MARKDOWN_PLUGINS],
+        ['standalone', MARKDOWN_PLUGINS_STANDALONE],
+        ['with breaks', MARKDOWN_PLUGINS_WITH_BREAKS],
+        ['standalone with breaks', MARKDOWN_PLUGINS_STANDALONE_WITH_BREAKS],
+    ] as const
+
+    it.each(pluginVariants)(
+        'closes emphasis runs before CJK particles that directly follow punctuation (%s)',
+        (_, plugins) => {
+            const cases = [
+                // Korean particle after a closing parenthesis
+                ['**속도 제한(시속 30km)**은 지켜야 합니다', '<strong>속도 제한(시속 30km)</strong>은 지켜야 합니다'],
+                // Korean particle after a closing double quote
+                ['**"먼저 확인하세요"**를 누르세요', '<strong>"먼저 확인하세요"</strong>를 누르세요'],
+                // Korean particle after a closing single quote
+                ["**'조용히 진행하세요'**해 주세요", "<strong>'조용히 진행하세요'</strong>해 주세요"],
+                // Korean particle right after sentence-ending punctuation
+                ['**먼저 저장하세요.**그 다음에 실행하세요', '<strong>먼저 저장하세요.</strong>그 다음에 실행하세요'],
+                // Chinese particle after a full-width quote
+                ['**“示例”**的说明如下', '<strong>“示例”</strong>的说明如下'],
+                // Japanese particle after a corner bracket
+                ['**「注意事項」**を読んでください', '<strong>「注意事項」</strong>を読んでください'],
+            ] as const
+            for (const [markdown, expectedHtml] of cases) {
+                expect(render(markdown, plugins)).toContain(expectedHtml)
+            }
+        }
+    )
+
+    it('keeps already-working space-separated CJK emphasis unchanged', () => {
+        expect(render('**속도 제한(시속 30km)** 을 지키세요')).toContain(
+            '<strong>속도 제한(시속 30km)</strong> 을 지키세요'
+        )
+    })
+})
+
+describe('MARKDOWN_PLUGINS — Latin emphasis regressions', () => {
+    // remark-cjk-friendly only alters runs adjacent to CJK text; Latin and
+    // intraword emphasis must render exactly as before the plugin.
+    it.each([
+        ['plain **english emphasis** text', '<p>plain <strong>english emphasis</strong> text</p>'],
+        ['foo**bar**baz', '<p>foo<strong>bar</strong>baz</p>'],
+        ['**a**b', '<p><strong>a</strong>b</p>'],
+        ['snake_case_name', '<p>snake_case_name</p>'],
+        ['2*3*4', '<p>2<em>3</em>4</p>'],
+    ])('renders %s unchanged', (markdown, expectedHtml) => {
+        expect(render(markdown)).toBe(expectedHtml)
     })
 })
 

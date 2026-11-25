@@ -15,6 +15,10 @@ export class OpencodeNativeTranscript {
     private readFailureReported = false;
     private closed = false;
     private initializing = true;
+    /** Compaction identities this runtime observed through live events; never part of the inherited baseline. */
+    private readonly liveCompactionIds = new Set<string>();
+    /** True only while the first successful snapshot's synchronous flush decides compaction outcomes. */
+    private suppressingBaselineFlush = false;
     private readonly liveTextParts = new Set<string>();
     private readonly initialText = new Map<string, OpencodeNativeText>();
     private readonly unbasedDeltas = new Map<string, string>();
@@ -32,12 +36,31 @@ export class OpencodeNativeTranscript {
         onFailure?: (id: string, trigger: OpencodeCompactionTrigger) => void;
         onStart?: (id: string, trigger: OpencodeCompactionTrigger) => void;
         onReadFailure?: () => void;
+        /**
+         * Fork children resume a native session whose history already holds
+         * the source's compactions, and the hub's transcript copy already
+         * published their cards under the source session's localId. Outcomes
+         * reported only by the first successful snapshot are inherited and
+         * dropped; anything this runtime observed through live events
+         * publishes normally, including while a failed baseline read is
+         * still recovering.
+         */
+        suppressInheritedCompactions?: boolean;
         fetchImpl?: FetchLike;
     }) {
+        const { onFailure } = options;
         this.projector = new OpencodeCompactionProjector({
             sessionId: options.sessionId,
-            onSummary: options.onSummary,
-            onFailure: options.onFailure,
+            onSummary: (id, summary, trigger) => {
+                if (this.suppressingBaselineFlush && !this.liveCompactionIds.has(id)) return;
+                options.onSummary(id, summary, trigger);
+            },
+            onFailure: onFailure
+                ? (id, trigger) => {
+                    if (this.suppressingBaselineFlush && !this.liveCompactionIds.has(id)) return;
+                    onFailure(id, trigger);
+                }
+                : undefined,
             onStart: options.onStart,
             onText: part => {
                 if (this.closed) return;
@@ -55,14 +78,17 @@ export class OpencodeNativeTranscript {
             && properties.sessionID === this.options.sessionId && typeof eventId === 'string' && eventId.startsWith('evt_')) {
             // Session.Message.ID.fromEvent: the persisted row shares this durable event identity.
             const id = typeof properties.inputID === 'string' ? properties.inputID : eventId.replace(/^evt_/, 'msg_');
+            this.liveCompactionIds.add(id);
             this.projector.start(id, properties.reason === 'auto' ? 'auto' : properties.reason === 'manual' ? 'manual' : undefined);
         }
         if (type === 'message.updated' && isObject(properties.info)) {
+            this.observeLiveCompaction(properties.info);
             this.projector.message(properties.info);
             if (typeof properties.info.finish === 'string') this.projector.flush();
         }
         if (type === 'message.part.updated' && isObject(properties.part)) {
             const part = properties.part;
+            if (part.type === 'compaction' && typeof part.messageID === 'string') this.liveCompactionIds.add(part.messageID);
             if (typeof part.id === 'string') {
                 this.parts.set(part.id, part);
                 this.unbasedDeltas.delete(part.id);
@@ -86,6 +112,12 @@ export class OpencodeNativeTranscript {
         }
         if (type === 'session.status' && isObject(properties.status) && properties.status.type === 'idle') void this.refresh();
         if (type.startsWith('session.compaction.')) void this.refresh();
+    }
+
+    /** Compaction identities carried by live events: v2 compaction rows, v1 summary links, and marker parts. */
+    private observeLiveCompaction(info: Record<string, unknown>): void {
+        if (info.type === 'compaction' && typeof info.id === 'string') this.liveCompactionIds.add(info.id);
+        if (info.summary === true && typeof info.parentID === 'string') this.liveCompactionIds.add(info.parentID);
     }
 
     refresh(): Promise<void> {
@@ -167,10 +199,19 @@ export class OpencodeNativeTranscript {
                 const liveParts = [...this.liveTextParts]
                     .flatMap(id => this.parts.has(id) ? [this.parts.get(id)!] : []);
                 this.initialText.clear();
-                this.projector.snapshot(this.options.mode === 'v2'
-                    ? entries.filter(entry => isObject(entry) && (entry.sessionID === undefined || entry.sessionID === this.options.sessionId))
-                        .map(entry => isObject(entry) ? { ...entry, sessionID: this.options.sessionId } : entry)
-                    : entries, liveParts, this.initializing);
+                // The first successful snapshot is the inherited baseline: its
+                // never-live-observed compaction outcomes are already published
+                // on the hub (fork transcript copy). Outcomes this runtime saw
+                // live belong to it and publish even during recovery.
+                this.suppressingBaselineFlush = this.initializing && this.options.suppressInheritedCompactions === true;
+                try {
+                    this.projector.snapshot(this.options.mode === 'v2'
+                        ? entries.filter(entry => isObject(entry) && (entry.sessionID === undefined || entry.sessionID === this.options.sessionId))
+                            .map(entry => isObject(entry) ? { ...entry, sessionID: this.options.sessionId } : entry)
+                        : entries, liveParts, this.initializing);
+                } finally {
+                    this.suppressingBaselineFlush = false;
+                }
                 this.readFailureReported = false;
                 if (this.initializing && !this.closed) {
                     // Only an applied baseline primes historical text. Keep the

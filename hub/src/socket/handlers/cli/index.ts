@@ -5,7 +5,7 @@ import type { SyncEvent } from '../../../sync/syncEngine'
 import type { TerminalRegistry } from '../../terminalRegistry'
 import type { CliSocketWithData, SocketServer } from '../../socketTypes'
 import type { AccessErrorReason, AccessResult } from './types'
-import { registerMachineHandlers } from './machineHandlers'
+import { registerMachineHandlers, type SessionChildExitedPayload } from './machineHandlers'
 import { registerRpcHandlers } from './rpcHandlers'
 import { registerSessionHandlers } from './sessionHandlers'
 import { cleanupTerminalHandlers, registerTerminalHandlers } from './terminalHandlers'
@@ -47,6 +47,7 @@ export type CliHandlersDeps = {
     onSessionReady?: (payload: SessionReadyPayload) => void
     onSessionEnd?: (payload: SessionEndPayload) => void
     onMachineAlive?: (payload: MachineAlivePayload) => void
+    onSessionChildExited?: (payload: SessionChildExitedPayload & { namespace: string }) => void
     onWebappEvent?: (event: SyncEvent) => void
     onBackgroundTasks?: (sessionId: string, tasks: BackgroundTask[]) => void
     onSessionActivity?: (sessionId: string, updatedAt: number) => void
@@ -84,7 +85,7 @@ const SESSION_ACCESS_CACHE_TTL_MS = 1_000
 const SESSION_ACCESS_CACHE_MAX_SESSIONS = 64
 
 export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlersDeps): void {
-    const { io, store, rpcRegistry, terminalRegistry, onSessionAlive, onSessionReady, onSessionEnd, onMachineAlive, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { io, store, rpcRegistry, terminalRegistry, onSessionAlive, onSessionReady, onSessionEnd, onMachineAlive, onSessionChildExited, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed } = deps
     const terminalNamespace = io.of('/terminal')
     const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
 
@@ -189,8 +190,22 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
         resolveMachineAccess,
         emitAccessError,
         onMachineAlive,
+        onSessionChildExited,
         onWebappEvent
     })
+
+    // A machine-scoped socket connection is itself proof of liveness: mark the
+    // machine active immediately instead of waiting for the runner's first
+    // machine-alive heartbeat (which can be delayed by a versioned state
+    // update retry loop after an unclean runner stop — the machine appeared
+    // offline for minutes even though the socket was connected). Gate on the
+    // same machine authorization the real machine-alive handler enforces, so
+    // an unauthorized machineId cannot mark a machine alive by connecting.
+    // The 45s expireInactive sweep still guards against genuinely dead
+    // connections.
+    if (machineId && resolveMachineAccess(machineId).ok && onMachineAlive) {
+        onMachineAlive({ machineId, time: Date.now() })
+    }
     registerTerminalHandlers(socket, {
         terminalRegistry,
         terminalNamespace,

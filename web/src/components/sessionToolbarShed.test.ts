@@ -5,7 +5,7 @@ const icon = (id: string, keep: number) => ({ id, keep, widthPx: TOOLBAR_ICON_PX
 
 describe('shedToolbarSlots', () => {
     const slots = [
-        icon('unread', 5),
+        icon('view', 5),
         icon('mark-all', 7),
         icon('new', 4),
         icon('settings', 6),
@@ -15,7 +15,7 @@ describe('shedToolbarSlots', () => {
     it('keeps every slot when the row has room', () => {
         const result = shedToolbarSlots(slots, 400)
         expect(result.overflowIds).toEqual([])
-        expect(result.visibleIds).toEqual(['unread', 'mark-all', 'new', 'settings', 'browse'])
+        expect(result.visibleIds).toEqual(['view', 'mark-all', 'new', 'settings', 'browse'])
     })
 
     it('sheds browse, then mark-all, then settings — new stays', () => {
@@ -23,12 +23,12 @@ describe('shedToolbarSlots', () => {
         // not free a slot. Three survivors + More is the first fit.
         const threePlusMore = 40 * 3 + 40 + 4 * 3
         const tight = shedToolbarSlots(slots, threePlusMore)
-        expect(tight.visibleIds).toEqual(['unread', 'new', 'settings'])
+        expect(tight.visibleIds).toEqual(['view', 'new', 'settings'])
         expect(tight.overflowIds).toEqual(['mark-all', 'browse'])
 
         const twoPlusMore = 40 * 2 + 40 + 4 * 2
         const tighter = shedToolbarSlots(slots, twoPlusMore)
-        expect(tighter.visibleIds).toEqual(['unread', 'new'])
+        expect(tighter.visibleIds).toEqual(['view', 'new'])
         expect(tighter.overflowIds).toEqual(['mark-all', 'settings', 'browse'])
     })
 
@@ -59,7 +59,7 @@ describe('shedToolbarSlots', () => {
         // without also shedding the next one — More occupies a slot too.
         const result = shedToolbarSlots(slots, 40 + 40 + 4)
         expect(result.visibleIds).toEqual(['new'])
-        expect(result.overflowIds).toEqual(['unread', 'mark-all', 'settings', 'browse'])
+        expect(result.overflowIds).toEqual(['view', 'mark-all', 'settings', 'browse'])
     })
 })
 

@@ -15,6 +15,7 @@ import { getInvokedCwd } from '@/utils/invokedCwd';
 import type { SessionEffort, SessionModel } from '@/api/types';
 import { splitAgyModelSelection } from '@hapi/protocol';
 import { listAgyModels } from '@/modules/common/agyModels';
+import { parseAgySwarmBoardCommand } from './agySwarmBoard';
 import { normalizeAgyModelSelection } from './utils/agyModelSelection';
 
 export async function runAgy(opts: {
@@ -114,17 +115,11 @@ export async function runAgy(opts: {
         };
 
         session.onCancelQueuedMessage((localId) => {
-            // A batch held in the driver's retry backoff is outside MessageQueue2;
-            // the driver-owned cancel handles it (returns true when removed).
-            const retryRemoved = sessionWrapperRef.current?.cancelRetryDelivery?.(localId) ?? false;
-            if (retryRemoved) {
-                logger.debug(`[agy] cancelByLocalId(${localId}): removed from retry backoff`);
-                return true;
-            }
             const removed = messageQueue.cancelByLocalId(localId);
             logger.debug(`[agy] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found'}`);
             return removed;
         });
+        session.onRetryQueuedMessage((localId) => messageQueue.releaseIndeterminateReservation(localId));
 
         registerSessionConfigRpc<PermissionMode>({
             rpcHandlerManager: session.rpcHandlerManager,
@@ -169,6 +164,10 @@ export async function runAgy(opts: {
                 model: sessionModel,
                 effort: sessionEffort,
             };
+            if (parseAgySwarmBoardCommand(formattedText)) {
+                messageQueue.pushIsolated(formattedText, mode, localId);
+                return;
+            }
             messageQueue.push(formattedText, mode, localId);
         });
 

@@ -34,18 +34,24 @@ export class SessionEnumerationCache {
         }
     ) {}
 
-    /** Drop every entry belonging to the given session. Keys are
-     *  `<sessionId>|<agent>` composites and session ids cannot contain '|',
-     *  so a `sessionId|` prefix match is unambiguous. A fetch still in
+    /** Drop every entry whose key starts with `prefix` (e.g. a session id
+     *  or machine id followed by the `|` separator). A fetch still in
      *  flight resolves against its detached entry object, so a late success
      *  cannot resurrect a released key — the next get() starts cold. */
-    releaseSession(sessionId: string): void {
-        const prefix = `${sessionId}|`
+    release(prefix: string): void {
+        const scoped = `${prefix}|`
         for (const key of [...this.entries.keys()]) {
-            if (key.startsWith(prefix)) {
+            if (key.startsWith(scoped)) {
                 this.entries.delete(key)
             }
         }
+    }
+
+    /** Drop every entry belonging to the given session. Keys are
+     *  `<sessionId>|<agent>` composites and session ids cannot contain '|',
+     *  so a `sessionId|` prefix match is unambiguous. */
+    releaseSession(sessionId: string): void {
+        this.release(sessionId)
     }
 
     async get<T>(

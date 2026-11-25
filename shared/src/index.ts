@@ -2,7 +2,12 @@ export * from './peerSpawnDefaults'
 export * from './scratchlistAttachments'
 export * from './workGraph'
 export * from './apiTypes'
+export * from './forkBoundary'
+export * from './codexTranscript'
 export * from './cursorCliSku'
+export * from './externalRefs'
+export * from './projectRegistry'
+export * from './prChipDisplay'
 export * from './messages'
 export * from './buildInfo'
 export * from './conversationHistory'
@@ -12,6 +17,8 @@ export * from './models'
 export * from './agyModels'
 export * from './modes'
 export * from './resume'
+export * from './claudeSessionIdHistory'
+export * from './sessionRedirect'
 export * from './rpcMethods'
 export * from './runnerCapabilities'
 export * from './search'
@@ -22,6 +29,7 @@ export * from './sessionOrder'
 export * from './sessionCitation'
 export * from './peerParentStamp'
 export * from './sessionLifecycle'
+export * from './sessionJobs'
 export * from './sessionExport'
 export * from './piThinkingLevel'
 export * from './runnerCapabilities'
@@ -30,5 +38,20 @@ export * from './copilotModes'
 export * from './slashCommands'
 export * from './utils'
 export * from './usage'
+export * from './usageQuery'
 export * from './version'
+export {
+    AttachedJobSchema,
+    AttachedJobUpsertSchema,
+    AttachedJobPatchSchema,
+    AttachedJobStatusSchema
+} from './schemas'
+export type {
+    AttachedJob,
+    AttachedJobUpsert,
+    AttachedJobPatch,
+    AttachedJobStatus
+} from './schemas'
 export type * from './types'
+
+export * from './passkey'

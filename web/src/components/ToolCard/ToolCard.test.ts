@@ -41,10 +41,19 @@ function makeToolCallChild(overrides: Partial<ToolCallBlock> = {}): ToolCallBloc
 
 describe('ToolCard terminal display mode helpers', () => {
     it('treats terminal-related cards as compact by default', () => {
+        expect(shouldUseCompactTerminalToolCard('Bash', 'compact')).toBe(true)
         expect(shouldUseCompactTerminalToolCard('CodexBash', 'compact')).toBe(true)
         expect(shouldUseCompactTerminalToolCard('shell_command', 'compact')).toBe(true)
         expect(shouldUseCompactTerminalToolCard('run_shell_command', 'compact')).toBe(true)
         expect(shouldUseCompactTerminalToolCard('Read', 'compact')).toBe(false)
+    })
+
+    it('resolves the OpenCode bash alias for terminal card treatment', () => {
+        // 'bash' is no longer a literal member of TERMINAL_RELATED_TOOL_NAMES;
+        // it reaches the Bash entry through the shared alias resolver.
+        expect(shouldUseCompactTerminalToolCard('bash', 'compact')).toBe(true)
+        expect(shouldShowInlineToolCardBody('bash', true, 'detailed')).toBe(true)
+        expect(shouldShowInlineToolCardBody('bash', true, 'compact')).toBe(false)
     })
 
     it('hides inline terminal previews in compact mode', () => {

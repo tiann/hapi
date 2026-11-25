@@ -4,7 +4,7 @@ import Foundation
 
 /// `AGENT_MESSAGE_PAYLOAD_TYPE` (shared/src/modes.ts) — the generic agent
 /// envelope used by the non-Claude-SDK flavors.
-let agentMessagePayloadType = "codex"
+public let agentMessagePayloadType = "codex"
 
 // MARK: - Small helpers
 

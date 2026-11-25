@@ -21,6 +21,19 @@ public enum PairingFailure: Error, Equatable, Sendable {
     /// The exchange succeeded but the credentials could not be persisted
     /// (Keychain write failure).
     case storageFailure
+    /// Passkey sign-in: the hub rejected the assertion (revoked, unknown,
+    /// expired challenge, failed verification).
+    case passkeyRejected
+    /// Passkey sign-in without a hub URL: the selected passkey does not name
+    /// its hub (missing, malformed, or deliberately opaque long-address user
+    /// handle). Offer manual entry; nothing was sent anywhere.
+    case passkeyHubAddressRequired
+    /// Passkey sign-in with a hub URL: the selected passkey belongs to a
+    /// different hub. The assertion was not sent anywhere.
+    case passkeyWrongHub
+    /// Passkey sign-in: the system could not run the ceremony (missing
+    /// Associated Domains entitlement, AASA unreachable, …).
+    case passkeyUnavailable
 }
 
 /// Result of a successful pairing.
@@ -46,6 +59,10 @@ public struct PairedHub: Equatable, Sendable {
 /// 3. `POST /api/auth {accessToken}` — the token is opaque, passed verbatim,
 /// 4. persist ``HubCredentials`` (access token + first JWT) in the credential
 ///    store, register the hub, and make it active.
+///
+/// `signInWithPasskey` replaces step 3 with one native passkey ceremony
+/// (the hub may come from the credential itself) and persists a passkey
+/// session instead of an access token.
 ///
 /// `unpair` deletes the credentials, drops the hub from the registry, and
 /// reports which hub (if any) is active afterwards. The app layer owns
@@ -82,15 +99,128 @@ public struct HubPairingService: Sendable {
             throw PairingFailure.invalidAccessToken
         }
 
-        // Throwaway client: both calls are unauthenticated, so the auth
-        // manager is wiring-only and never consulted.
-        let client = APIClient(
+        let client = makeUnauthenticatedClient(baseURL: baseURL)
+        try await checkHealth(client)
+
+        // Token exchange.
+        let auth: AuthResponse
+        do {
+            auth = try await client.authenticate(accessToken: token)
+        } catch let error as APIError {
+            throw error.status == 401
+                ? PairingFailure.invalidAccessToken
+                : PairingFailure.hubError(status: error.status)
+        } catch {
+            throw PairingFailure.unreachable
+        }
+
+        return try persist(
+            HubCredentials(
+                hubUrl: normalized,
+                credential: .accessToken(token),
+                jwt: auth.token,
+                jwtObtainedAt: Int(now().timeIntervalSince1970 * 1000)
+            )
+        )
+    }
+
+    /// Signs in with a native passkey in a single system ceremony over a
+    /// self-issued challenge (``PasskeyAssertionRequest/nativeLogin(now:)``).
+    ///
+    /// - Without `rawHubUrl`: ceremony → hub from the credential's user handle
+    ///   → `GET /health` → `POST /api/passkey/login/verify`. A handle that does
+    ///   not name its hub throws ``PairingFailure/passkeyHubAddressRequired``
+    ///   before any request.
+    /// - With `rawHubUrl` (manual entry): `GET /health` first (no prompt for
+    ///   an unreachable hub) → ceremony → the handle must belong to that hub
+    ///   (``PairingFailure/passkeyWrongHub`` otherwise) → verify.
+    ///
+    /// The returned passkey session is stored as the hub's credential (no
+    /// access token). Throws ``PairingFailure``, or ``PasskeyError/canceled``
+    /// when the user dismissed the sheet.
+    public func signInWithPasskey(
+        rawHubUrl: String? = nil,
+        authenticator: any PasskeyAuthenticating
+    ) async throws -> PairedHub {
+        var expectedHub: String?
+        if let rawHubUrl {
+            guard let normalized = HubURLNormalization.normalize(rawHubUrl),
+                  let baseURL = URL(string: normalized),
+                  // Passkeys bind HTTPS origins only; no credential can match.
+                  (try? PasskeyHubBinding.origin(baseURL)) != nil else {
+                throw PairingFailure.invalidHubURL
+            }
+            try await checkHealth(makeUnauthenticatedClient(baseURL: baseURL))
+            expectedHub = normalized
+        }
+
+        let assertion: PasskeyAssertionResult
+        do {
+            assertion = try await authenticator.authenticate(.nativeLogin(now: now()))
+        } catch PasskeyError.canceled {
+            throw PasskeyError.canceled
+        } catch {
+            throw PairingFailure.passkeyUnavailable
+        }
+
+        let hub: String
+        if let expectedHub {
+            guard let user = assertion.userID, let url = URL(string: expectedHub),
+                  (try? PasskeyHubBinding.validateUser(user, hub: url)) != nil else {
+                throw PairingFailure.passkeyWrongHub
+            }
+            hub = expectedHub
+        } else {
+            // A locator only: the hub authenticates the assertion itself.
+            guard let user = assertion.userID,
+                  let located = try? PasskeyHubBinding.userHub(user),
+                  let normalized = HubURLNormalization.normalize(located) else {
+                throw PairingFailure.passkeyHubAddressRequired
+            }
+            hub = normalized
+        }
+        guard let baseURL = URL(string: hub) else { throw PairingFailure.invalidHubURL }
+        let client = makeUnauthenticatedClient(baseURL: baseURL)
+        if expectedHub == nil {
+            try await checkHealth(client)
+        }
+
+        let login: PasskeyLoginResponse
+        do {
+            login = try await client.verifyPasskeyLogin(PasskeyAssertionResponseJSON(assertion))
+        } catch let error as APIError {
+            // 401 = revoked / unknown / expired challenge; 400 = bad body.
+            throw (error.status == 401 || error.status == 400)
+                ? PairingFailure.passkeyRejected
+                : PairingFailure.hubError(status: error.status)
+        } catch {
+            throw PairingFailure.unreachable
+        }
+
+        return try persist(
+            HubCredentials(
+                hubUrl: hub,
+                credential: .passkeySession(login.passkeySession),
+                jwt: login.token,
+                jwtObtainedAt: Int(now().timeIntervalSince1970 * 1000)
+            )
+        )
+    }
+
+    // MARK: - Steps
+
+    /// Throwaway client: pairing calls are unauthenticated, so the auth
+    /// manager is wiring-only and never consulted.
+    private func makeUnauthenticatedClient(baseURL: URL) -> APIClient {
+        APIClient(
             baseURL: baseURL,
             authManager: AuthManager(baseURL: baseURL, credentialStore: credentialStore, performer: performer),
             performer: performer
         )
+    }
 
-        // 1. Reachability + protocol compatibility.
+    /// Reachability + protocol compatibility.
+    private func checkHealth(_ client: APIClient) async throws {
         let health: HubHealthResponse
         do {
             health = try await client.health()
@@ -110,35 +240,20 @@ public struct HubPairingService: Sendable {
                 supportedVersion: ProtocolVersion.supported
             )
         }
+    }
 
-        // 2. Token exchange.
-        let auth: AuthResponse
+    /// Persists the record — credentials first: a hub registered without
+    /// credentials would restore as paired-but-dead — then registers the hub
+    /// and makes it active.
+    private func persist(_ credentials: HubCredentials) throws -> PairedHub {
         do {
-            auth = try await client.authenticate(accessToken: token)
-        } catch let error as APIError {
-            throw error.status == 401
-                ? PairingFailure.invalidAccessToken
-                : PairingFailure.hubError(status: error.status)
-        } catch {
-            throw PairingFailure.unreachable
-        }
-
-        // 3. Persist. Credentials first: a hub registered without
-        // credentials would restore as paired-but-dead.
-        do {
-            try credentialStore.store(HubCredentials(
-                hubUrl: normalized,
-                accessToken: token,
-                jwt: auth.token,
-                jwtObtainedAt: Int(now().timeIntervalSince1970 * 1000)
-            ))
+            try credentialStore.store(credentials)
         } catch {
             throw PairingFailure.storageFailure
         }
-        registry.register(normalized)
-        registry.setActiveHub(normalized)
-
-        return PairedHub(hubUrl: normalized, claims: JWT.claims(from: auth.token))
+        registry.register(credentials.hubUrl)
+        registry.setActiveHub(credentials.hubUrl)
+        return PairedHub(hubUrl: credentials.hubUrl, claims: credentials.jwt.flatMap(JWT.claims(from:)))
     }
 
     /// Removes a hub: credentials deleted, registry entry dropped, active

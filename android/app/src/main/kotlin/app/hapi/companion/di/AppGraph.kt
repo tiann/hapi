@@ -9,6 +9,7 @@ import app.hapi.companion.feature.pairing.PairingClient
 import app.hapi.companion.feature.pairing.PairingClientFactory
 import app.hapi.companion.feature.settings.AppLanguage
 import app.hapi.companion.feature.settings.LanguagePrefs
+import app.hapi.companion.feature.sessions.SessionListOrderPrefs
 import app.hapi.companion.feature.settings.ThemePrefs
 import app.hapi.companion.feature.share.ContentResolverShareReader
 import app.hapi.companion.feature.share.ShareInbox
@@ -33,6 +34,7 @@ import app.hapi.protocol.pairing.BindLink
 import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.HubHealthResponse
+import app.hapi.protocol.wire.PasskeyLoginResponse
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,6 +54,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import okhttp3.OkHttpClient
 
 /** One terminal auth failure, re-emitted off OkHttp threads as a flow. */
@@ -121,6 +124,9 @@ class AppGraph(context: Context) {
     /** Appearance choice (B-M4e); MainActivity reads it at setContent. */
     val themePrefs: ThemePrefs = ThemePrefs(appContext.hapiDataStore)
 
+    /** Session-list sort + Active first, app-wide like web's localStorage view keys. */
+    val sessionListOrderPrefs: SessionListOrderPrefs = SessionListOrderPrefs(appContext.hapiDataStore)
+
     /** Language choice (B-M5a: applied via per-app locales; Settings writes it). */
     val languagePrefs: LanguagePrefs = LanguagePrefs(appContext.hapiDataStore)
 
@@ -175,8 +181,9 @@ class AppGraph(context: Context) {
     val pairingNotice = MutableStateFlow<String?>(null)
 
     /**
-     * Bare client for the two pre-pairing endpoints (`GET /health`,
-     * `POST /api/auth`) — no interceptors: there are no credentials yet.
+     * Bare client for the pre-pairing endpoints (`GET /health`,
+     * `POST /api/auth`, passkey sign-in) — no interceptors: there are no
+     * credentials yet.
      */
     private val pairingHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -190,6 +197,8 @@ class AppGraph(context: Context) {
             override suspend fun health(): HubHealthResponse = api.health()
             override suspend fun authenticate(accessToken: String): AuthResponse =
                 api.authenticate(accessToken)
+            override suspend fun passkeyLoginVerify(response: JsonObject): PasskeyLoginResponse =
+                api.passkeyLoginVerify(response)
         }
     }
 

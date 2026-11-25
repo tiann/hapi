@@ -18,6 +18,13 @@ describe('newSessionFormDraft', () => {
         clearNewSessionFormDraft()
     })
 
+    it('restores an Antigravity draft from the YOLO-toggle era with a mode agy accepts', () => {
+        sessionStorage.setItem('hapi:new-session-form-draft', JSON.stringify({ agent: 'agy', model: 'auto', yoloMode: false }))
+        expect(loadNewSessionFormDraft()).toMatchObject({ nativePermissionMode: 'request-review' })
+        sessionStorage.setItem('hapi:new-session-form-draft', JSON.stringify({ agent: 'agy', model: 'auto', yoloMode: true }))
+        expect(loadNewSessionFormDraft()).toMatchObject({ nativePermissionMode: 'always-proceed' })
+    })
+
     it('round-trips cursor model fields through sessionStorage', () => {
         saveNewSessionFormDraft({
             agent: 'cursor',
@@ -141,10 +148,10 @@ describe('newSessionFormDraft', () => {
         expect(loaded.machineId).toBe('machine-1')
     })
 
-    it('does not bridge a legacy yoloMode for a flavor outside the legacy YOLO allow-list (copilot)', () => {
+    it('does not bridge a legacy yoloMode for a flavor that declares no YOLO toggle migration (copilot)', () => {
         // copilot moved to the native permission select before the YOLO
         // toggle era; its restore-time bridge target already settled on
-        // 'default' and stays there (see LEGACY_YOLO_BRIDGE_AGENTS).
+        // 'default' and stays there (see yoloToggleMigrationMode in shared/src/flavors.ts).
         sessionStorage.setItem('hapi:new-session-form-draft', JSON.stringify({
             agent: 'copilot',
             model: 'auto',

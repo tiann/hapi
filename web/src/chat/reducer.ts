@@ -49,6 +49,8 @@ export type LatestUsage = {
 
 export type ReduceChatBlocksOptions = {
     goalStateMessages?: NormalizedMessage[]
+    /** Pending request selected for navigation. This live-only request may be synthesized even when it predates the loaded window. */
+    pendingRequestTargetId?: string
 }
 
 function getLatestThreadGoal(normalized: NormalizedMessage[]): ThreadGoal | null {
@@ -176,7 +178,9 @@ export function reduceChatBlocks(
 
         // Skip permissions that are older than the oldest message in the current view.
         // These will be shown when the user loads older messages.
-        if (oldestMessageTime !== null && createdAt < oldestMessageTime) {
+        if (oldestMessageTime !== null && createdAt < oldestMessageTime
+            && id !== options.pendingRequestTargetId
+            && entry.permission.id !== options.pendingRequestTargetId) {
             continue
         }
 

@@ -26,12 +26,38 @@ data class MessagesPage(
     val hasMore: Boolean,
     val readThroughRevision: Long? = null,
 )
-
 /** `GET /api/sessions/:id/messages` — messages in ascending display order. */
 @Serializable
 data class MessagesResponse(
     val messages: List<DecryptedMessage>,
     val page: MessagesPage,
+)
+
+/**
+ * Cursor block of `GET /api/sessions/:id/messages/:messageId/context`
+ * (`MessageContextResponse['page']` in `shared/src/apiTypes.ts`): the bounded
+ * context window carries no direction/limit/reset keys.
+ */
+@Serializable
+data class MessageContextPage(
+    val epoch: Long,
+    val nextBeforeSeq: Long? = null,
+    val nextBeforeAt: Long? = null,
+    val snapshotHeadSeq: Long? = null,
+    val snapshotHeadAt: Long? = null,
+    val hasMore: Boolean,
+)
+
+/**
+ * `GET /api/sessions/:id/messages/:messageId/context` — a bounded history
+ * window centered on one message. The hub answers a bare JSON `null` when the
+ * message does not resolve (web `MessageContextResponse | null`).
+ */
+@Serializable
+data class MessageContextResponse(
+    val messages: List<DecryptedMessage>,
+    val targetMessageId: String,
+    val page: MessageContextPage,
 )
 
 /** `GET /api/sessions`. */
@@ -348,3 +374,32 @@ data class TranscriptionProviderInfo(
     /** Subset of `standard` / `realtime`; native dictation uses `standard`. */
     val modes: List<String>,
 )
+
+/**
+ * `GET /api/hub-settings` — only what the app reads (readable by every
+ * namespace). [translateInputByDefault] is the hub-wide input-translation
+ * default for sessions without an explicit `metadata.translateInput`;
+ * absent (older hub) ⇒ off.
+ */
+@Serializable
+data class HubSettingsResponse(
+    val translateInputByDefault: Boolean = false,
+)
+
+/** `inputTranslation` in `GET /api/features` — true when the hub has a translation provider. */
+@Serializable
+data class InputTranslationFeature(
+    val available: Boolean = false,
+)
+
+/**
+ * `GET /api/features` — only the fields a native client branches on;
+ * `ignoreUnknownKeys` drops the rest (`githubPrAwareness`, `prChipDisplay`).
+ * [inputTranslation] is optional on the wire; absent ⇒ unavailable.
+ */
+@Serializable
+data class FeaturesResponse(
+    val inputTranslation: InputTranslationFeature? = null,
+) {
+    val inputTranslationAvailable: Boolean get() = inputTranslation?.available == true
+}

@@ -43,6 +43,7 @@ export type SocketServerDeps = {
     onSessionReady?: (payload: { sid: string; time: number }) => void
     onSessionEnd?: (payload: { sid: string; time: number }) => void
     onMachineAlive?: (payload: { machineId: string; time: number; health?: unknown }) => void
+    onSessionChildExited?: (payload: { machineId: string; sid: string; pid: number; processStartMarker?: string; time: number; namespace: string }) => void
     onBackgroundTasks?: (sessionId: string, tasks: BackgroundTask[]) => void
     onSessionActivity?: (sessionId: string, updatedAt: number) => void
     onAgentProgress?: (sessionId: string, at: number) => void
@@ -131,6 +132,7 @@ export function createSocketServer(deps: SocketServerDeps): {
         onSessionReady: deps.onSessionReady,
         onSessionEnd: deps.onSessionEnd,
         onMachineAlive: deps.onMachineAlive,
+        onSessionChildExited: deps.onSessionChildExited,
         onWebappEvent: deps.onWebappEvent,
         onBackgroundTasks: deps.onBackgroundTasks,
         onSessionActivity: deps.onSessionActivity,

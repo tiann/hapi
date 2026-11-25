@@ -1,15 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { toSessionSummary, type Session } from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
+import { sessionIsUnread } from '@/lib/sessionAttention'
 import {
+    computeOpenSessionTickRatio,
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
     groupSessionsByDirectory,
     filterActiveSessionsOnly,
+    filterScratchlistSessionsOnly,
     filterUnreadSessionsOnly,
+    filterWorkingSessionsOnly,
     UNKNOWN_MACHINE_ID,
     bucketRunningSessions,
-    getSessionTimeRange,
+    filterSessionsForListStatus,
     getNextSessionVisibleCount,
     getPullRefreshIndicatorRotation,
     getPreviousSessionVisibleCount,
@@ -21,7 +25,8 @@ import {
     normalizeSearch,
     prepareSidebarSessions,
     sessionMatchesQuery,
-    sessionMatchesTimeRange,
+    sessionMatchesSearchMode,
+    shouldShowOpenSessionTick,
     shouldShowPinnedDivider,
     shouldShowSessionInSidebar
 } from './SessionList'
@@ -43,6 +48,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides
@@ -126,6 +133,18 @@ describe('deduplicateSessionsByAgentId', () => {
         expect(result[0].id).toBe('b') // more recent wins
     })
 
+    it('keeps machine-local agent ids recorded on different machines apart', () => {
+        for (const flavor of ['codex', 'claude', 'pi', 'opencode']) {
+            const sessions = [
+                makeSession({ id: `${flavor}-a`, metadata: { path: '/p', agentSessionId: 'native-1', flavor, machineId: 'machine-a' }, updatedAt: 100 }),
+                makeSession({ id: `${flavor}-b`, metadata: { path: '/p', agentSessionId: 'native-1', flavor, machineId: 'machine-b' }, updatedAt: 200 }),
+                makeSession({ id: `${flavor}-b2`, metadata: { path: '/p', agentSessionId: 'native-1', flavor, machineId: 'machine-b' }, updatedAt: 300 })
+            ]
+            expect(deduplicateSessionsByAgentId(sessions).map((session) => session.id).sort())
+                .toEqual([`${flavor}-a`, `${flavor}-b2`])
+        }
+    })
+
     it('keeps active session over inactive duplicate', () => {
         const sessions = [
             makeSession({ id: 'a', active: true, metadata: { path: '/p', agentSessionId: 'thread-1' }, updatedAt: 100 }),
@@ -134,6 +153,51 @@ describe('deduplicateSessionsByAgentId', () => {
         const result = deduplicateSessionsByAgentId(sessions)
         expect(result).toHaveLength(1)
         expect(result[0].id).toBe('a') // active wins despite older updatedAt
+    })
+
+    it('keeps a job-bearing duplicate when the winner has no attached job', () => {
+        const sessions = [
+            makeSession({
+                id: 'winner-active',
+                active: true,
+                metadata: { path: '/p', agentSessionId: 'thread-1', flavor: 'codex' },
+                updatedAt: 300,
+            }),
+            makeSession({
+                id: 'job-loser',
+                active: false,
+                metadata: { path: '/p', agentSessionId: 'thread-1', flavor: 'codex' },
+                updatedAt: 100,
+                attachedJob: {
+                    key: 'beets',
+                    label: 'beets',
+                    status: 'running',
+                    heartbeatAt: 1,
+                    startedAt: 1,
+                    updatedAt: 1,
+                },
+            }),
+        ]
+        const result = deduplicateSessionsByAgentId(sessions)
+        expect(result.map((s) => s.id).sort()).toEqual(['job-loser', 'winner-active'])
+    })
+
+    it('keeps every live Claude duplicate visible (hub does not merge two live rows)', () => {
+        const sessions = [
+            makeSession({ id: 'runner', active: true, metadata: { path: '/p', agentSessionId: 'claude-1', flavor: 'claude' }, updatedAt: 100 }),
+            makeSession({ id: 'terminal', active: true, metadata: { path: '/p', agentSessionId: 'claude-1', flavor: 'claude' }, updatedAt: 200 }),
+            makeSession({ id: 'old', metadata: { path: '/p', agentSessionId: 'claude-1', flavor: 'claude' }, updatedAt: 300 })
+        ]
+        const result = deduplicateSessionsByAgentId(sessions)
+        expect(result.map((s) => s.id)).toEqual(['terminal', 'runner'])
+    })
+
+    it('still collapses live Codex duplicates', () => {
+        const sessions = [
+            makeSession({ id: 'a', active: true, metadata: { path: '/p', agentSessionId: 'thread-1', flavor: 'codex' }, updatedAt: 100 }),
+            makeSession({ id: 'b', active: true, metadata: { path: '/p', agentSessionId: 'thread-1', flavor: 'codex' }, updatedAt: 200 })
+        ]
+        expect(deduplicateSessionsByAgentId(sessions).map((s) => s.id)).toEqual(['b'])
     })
 
     it('prefers selected session among inactive duplicates', () => {
@@ -368,6 +432,26 @@ describe('shouldShowSessionInSidebar', () => {
         expect(shouldShowSessionInSidebar({ ...stub, active: true })).toBe(true)
         expect(shouldShowSessionInSidebar({ ...stub, pinned: true })).toBe(true)
     })
+
+    it('keeps idle empty stubs with a running attached job (pre-title register)', () => {
+        const stub = makeSession({
+            id: 'job-stub',
+            active: false,
+            metadata: { path: '/work/hapi' },
+            attachedJob: {
+                key: 'beets',
+                label: 'beets import',
+                status: 'running',
+                heartbeatAt: 1_000,
+                startedAt: 1_000,
+                updatedAt: 1_000,
+                remaining: 10,
+            },
+        })
+        expect(isSidebarEmptySessionStub(stub)).toBe(true)
+        expect(shouldShowSessionInSidebar(stub)).toBe(true)
+        expect(prepareSidebarSessions([stub]).map((s) => s.id)).toEqual(['job-stub'])
+    })
 })
 
 describe('session list search helpers', () => {
@@ -406,6 +490,16 @@ describe('session list search helpers', () => {
         expect(sessionMatchesQuery(session, normalizeSearch('hapi-worktrees'), 'desktop')).toBe(true)
     })
 
+    it('keeps metadata search independent from message content', () => {
+        const session = makeSession({
+            id: 'metadata-session',
+            metadata: { path: '/work/hapi', name: 'Session title' }
+        })
+
+        expect(sessionMatchesQuery(session, normalizeSearch('session title'), 'desktop')).toBe(true)
+        expect(sessionMatchesQuery(session, normalizeSearch('message-only phrase'), 'desktop')).toBe(false)
+    })
+
     it('supports complete wildcard patterns without changing plain text matching', () => {
         const session = makeSession({
             id: 'session-123',
@@ -422,22 +516,31 @@ describe('session list search helpers', () => {
         expect(sessionMatchesQuery(session, normalizeSearch('bot*review'), 'desktop')).toBe(false)
         expect(sessionMatchesQuery(session, normalizeSearch('bot review'), 'desktop')).toBe(true)
     })
-})
 
-describe('session list time filter helpers', () => {
-    it('treats the selected end date as inclusive in local time', () => {
-        const range = getSessionTimeRange('2026-07-01', '2026-07-18')
-        expect(range).toEqual({
-            start: new Date(2026, 6, 1).getTime(),
-            end: new Date(2026, 6, 19).getTime()
+    it('negates the existing matcher in exclude mode and keeps empty queries neutral', () => {
+        const matching = makeSession({
+            id: 'matching-session',
+            metadata: { path: '/work/archive', name: 'Archive task' }
         })
-        expect(sessionMatchesTimeRange(makeSession({ id: 'inside', updatedAt: new Date(2026, 6, 18, 23, 59).getTime() }), range)).toBe(true)
-        expect(sessionMatchesTimeRange(makeSession({ id: 'outside', updatedAt: new Date(2026, 6, 19).getTime() }), range)).toBe(false)
+        const nonMatching = makeSession({
+            id: 'non-matching-session',
+            metadata: { path: '/work/hapi', name: 'Current task' }
+        })
+
+        expect(sessionMatchesSearchMode(matching, 'archive', 'desktop', 'default')).toBe(true)
+        expect(sessionMatchesSearchMode(matching, 'archive', 'desktop', 'exclude')).toBe(false)
+        expect(sessionMatchesSearchMode(nonMatching, 'archive', 'desktop', 'exclude')).toBe(true)
+        expect(sessionMatchesSearchMode(matching, '', 'desktop', 'exclude')).toBe(true)
     })
 
-    it('does not filter until both dates are selected', () => {
-        expect(getSessionTimeRange('', '')).toBeNull()
-        expect(getSessionTimeRange('2026-07-01', '')).toBeNull()
+    it('preserves wildcard matching when excluding sessions', () => {
+        const matching = makeSession({
+            id: 'session-123',
+            metadata: { path: '/work/hapi', name: 'Fix Bot Review' }
+        })
+
+        expect(sessionMatchesSearchMode(matching, '*bot*', 'desktop', 'exclude')).toBe(false)
+        expect(sessionMatchesSearchMode(matching, '*missing*', 'desktop', 'exclude')).toBe(true)
     })
 })
 
@@ -457,6 +560,21 @@ describe('getVisibleSessionPreview', () => {
         })
 
         expect(preview.map(session => session.id)).toEqual(['s-1', 's-5', 's-6'])
+    })
+
+    it('keeps unread sessions inside the preview without promoting them', () => {
+        const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
+            id: `s-${index + 1}`,
+            metadata: { path: '/work/hapi' },
+            updatedAt: 100 - index
+        }))
+
+        const preview = getVisibleSessionPreview(sessions, {
+            limit: 3,
+            isUnread: session => session.id === 's-5'
+        })
+
+        expect(preview.map(session => session.id)).toEqual(['s-1', 's-2', 's-5'])
     })
 
     it('does not let archived pending sessions displace active ones', () => {
@@ -543,9 +661,13 @@ describe('filterActiveSessionsOnly', () => {
 
 describe('filterUnreadSessionsOnly', () => {
     const lastSeen = (id: string): number => {
-        if (id === 'unread') return 1000
+        if (id === 'unread' || id === 'unread-a') return 1000
         return 10_000
     }
+    const isUnread = (session: SessionSummary) => sessionIsUnread(session, {
+        lastSeenAt: lastSeen(session.id),
+        manualUnreadAt: session.id === 'manual-thinking' ? 0 : null
+    })
 
     it('keeps only sessions newer than lastSeen; drops seen and selected-only quiet rows stay when selected', () => {
         const sessions = [
@@ -559,7 +681,7 @@ describe('filterUnreadSessionsOnly', () => {
                 metadata: { path: '/p' },
             }),
         ]
-        expect(filterUnreadSessionsOnly(sessions, null, lastSeen).map(s => s.id))
+        expect(filterUnreadSessionsOnly(sessions, isUnread).map(s => s.id))
             .toEqual(['unread'])
     })
 
@@ -568,7 +690,7 @@ describe('filterUnreadSessionsOnly', () => {
             makeSession({ id: 'unread', contentRevision: 5000, metadata: { path: '/p' } }),
             makeSession({ id: 'selected-quiet', contentRevision: 1000, metadata: { path: '/p' } }),
         ]
-        expect(filterUnreadSessionsOnly(sessions, 'selected-quiet', lastSeen).map(s => s.id))
+        expect(filterUnreadSessionsOnly(sessions, isUnread, 'selected-quiet').map(s => s.id))
             .toEqual(['unread', 'selected-quiet'])
     })
 
@@ -587,8 +709,7 @@ describe('filterUnreadSessionsOnly', () => {
                 metadata: { path: '/b', machineId: 'machine-b' },
             }),
         ]
-        const lastSeenById = (id: string) => (id === 'unread-a' ? 0 : 10_000)
-        const unreadFiltered = filterUnreadSessionsOnly(sessions, null, lastSeenById)
+        const unreadFiltered = filterUnreadSessionsOnly(sessions, isUnread)
         const machineB = unreadFiltered.filter(
             session => (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === 'machine-b'
         )
@@ -603,13 +724,85 @@ describe('filterUnreadSessionsOnly', () => {
 
         expect(filterUnreadSessionsOnly(
             sessions,
-            null,
-            () => 5000,
-            () => 5000
+            isUnread
         ).map(s => s.id)).toEqual(['manual-thinking'])
+    })
+
+    it('keeps only unread sessions when nothing is open', () => {
+        const sessions = [
+            makeSession({ id: 'unread', metadata: { path: '/p' } }),
+            makeSession({ id: 'read', metadata: { path: '/p' } }),
+            makeSession({ id: 'open', metadata: { path: '/p' } })
+        ]
+        const byId = (s: { id: string }) => s.id === 'unread'
+        expect(filterUnreadSessionsOnly(sessions, byId).map(s => s.id)).toEqual(['unread'])
+    })
+
+    it('keeps the open session visible even when read', () => {
+        const sessions = [
+            makeSession({ id: 'unread', metadata: { path: '/p' } }),
+            makeSession({ id: 'read', metadata: { path: '/p' } }),
+            makeSession({ id: 'open', metadata: { path: '/p' } })
+        ]
+        const byId = (s: { id: string }) => s.id === 'unread'
+        expect(filterUnreadSessionsOnly(sessions, byId, 'open').map(s => s.id)).toEqual(['unread', 'open'])
     })
 })
 
+describe('filterScratchlistSessionsOnly', () => {
+    it('keeps sessions with scratchlist entries and drops empty sessions', () => {
+        const sessions = [
+            makeSession({ id: 'with-draft', metadata: { path: '/p' } }),
+            makeSession({ id: 'without-draft', metadata: { path: '/p' } }),
+        ]
+
+        expect(filterScratchlistSessionsOnly(sessions, null, new Set(['with-draft'])).map(s => s.id))
+            .toEqual(['with-draft'])
+    })
+
+    it('keeps the selected session visible even without a scratchlist entry', () => {
+        const sessions = [
+            makeSession({ id: 'with-draft', metadata: { path: '/p' } }),
+            makeSession({ id: 'selected-quiet', metadata: { path: '/p' } }),
+        ]
+
+        expect(filterScratchlistSessionsOnly(sessions, 'selected-quiet', new Set(['with-draft'])).map(s => s.id))
+            .toEqual(['with-draft', 'selected-quiet'])
+    })
+})
+describe('filterWorkingSessionsOnly', () => {
+    it('keeps connected thinking sessions and sessions with a running background task', () => {
+        const sessions = [
+            makeSession({ id: 'thinking', active: true, thinking: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'background-job', active: true, backgroundTaskCount: 1, metadata: { path: '/p' } }),
+            makeSession({ id: 'idle', active: true, metadata: { path: '/p' } }),
+        ]
+
+        expect(filterWorkingSessionsOnly(sessions).map(s => s.id).sort())
+            .toEqual(['background-job', 'thinking'])
+    })
+
+    it('keeps the selected session visible even when idle', () => {
+        const sessions = [
+            makeSession({ id: 'thinking', active: true, thinking: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'selected-idle', metadata: { path: '/p' } }),
+        ]
+
+        expect(filterWorkingSessionsOnly(sessions, 'selected-idle').map(s => s.id).sort())
+            .toEqual(['selected-idle', 'thinking'])
+    })
+
+    it('excludes a disconnected session with stale thinking/backgroundTaskCount data', () => {
+        const sessions = [
+            makeSession({ id: 'disconnected-stale-thinking', active: false, thinking: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'disconnected-stale-job', active: false, backgroundTaskCount: 1, metadata: { path: '/p' } }),
+            makeSession({ id: 'connected-thinking', active: true, thinking: true, metadata: { path: '/p' } }),
+        ]
+
+        expect(filterWorkingSessionsOnly(sessions).map(s => s.id))
+            .toEqual(['connected-thinking'])
+    })
+})
 describe('getNextSessionVisibleCount', () => {
     it('reveals one batch of step size per call', () => {
         expect(getNextSessionVisibleCount(8, 8, 20)).toBe(16)
@@ -685,53 +878,88 @@ describe('getPullRefreshIndicatorRotation', () => {
 })
 
 describe('bucketRunningSessions', () => {
-    // tiann/hapi#1820: a keepalive-only session stays `active` (its socket is
-    // genuinely up) but must not read as a ready session in the list.
-    const idle = makeSession({
-        id: 'idle-1',
-        active: true,
-        updatedAt: 10,
-        metadata: { path: '/p', host: 'h', lifecycleState: 'idle' } as SessionSummary['metadata']
-    })
+    // Quiet connected / keepalive-idle never float (#1404). Under mode `all`,
+    // only working / pending / running attachedJob reach the In progress section.
     const quiet = makeSession({
         id: 'quiet-1',
         active: true,
         updatedAt: 20,
         metadata: { path: '/p', host: 'h', lifecycleState: 'running' } as SessionSummary['metadata']
     })
+    const withJob = makeSession({
+        id: 'job-1',
+        active: false,
+        updatedAt: 30,
+        attachedJob: {
+            key: 'batch',
+            label: 'batch',
+            status: 'running',
+            heartbeatAt: Date.now(),
+            startedAt: 1,
+            updatedAt: 1,
+        },
+        attachedJobUpdatedAt: 1,
+    })
 
-    it('separates keepalive-only sessions from quiet-but-ready ones', () => {
-        const buckets = bucketRunningSessions([idle, quiet], true)
-
-        expect(buckets.idle.map((s) => s.id)).toEqual(['idle-1'])
-        expect(buckets.active.map((s) => s.id)).toEqual(['quiet-1'])
-        // Exactly one bucket each — the row must not be duplicated.
+    it('leaves quiet connected out of every pin bucket', () => {
+        const buckets = bucketRunningSessions([quiet], 'all')
+        expect(buckets.jobs).toHaveLength(0)
         expect(buckets.working).toHaveLength(0)
         expect(buckets.pending).toHaveLength(0)
     })
 
-    it('moves a session out of idle once it is working again', () => {
-        const woken = { ...idle, thinking: true }
-        const buckets = bucketRunningSessions([woken, quiet], true)
-
-        expect(buckets.idle).toHaveLength(0)
-        expect(buckets.working.map((s) => s.id)).toEqual(['idle-1'])
+    it('keeps an archived session in Archived even if its job is still reporting', () => {
+        const archived = { ...withJob, metadata: { path: '/p', lifecycleState: 'archived' } }
+        expect(bucketRunningSessions([archived], 'jobs').jobs).toEqual([])
+        expect(bucketRunningSessions([archived], 'all').jobs).toEqual([])
+        expect(filterSessionsForListStatus([archived], 'active')).toEqual([])
+        const prepared = prepareSidebarSessions([archived])
+        expect(filterSessionsForListStatus(prepared, 'archived')).toEqual([archived])
     })
 
-    it('keeps real work ahead of the idle mark', () => {
-        // An idle-marked session that picked up a background task or a pending
-        // request belongs in its work bucket, not in idle.
-        expect(bucketRunningSessions([{ ...idle, backgroundTaskCount: 1 }], true).working).toHaveLength(1)
-        expect(bucketRunningSessions([{ ...idle, pendingRequestsCount: 1 }], true).pending).toHaveLength(1)
+    it('removes a stale job from In progress without archiving the session', () => {
+        const stale = { ...withJob, attachedJob: { ...withJob.attachedJob!, heartbeatAt: 1 } }
+        expect(bucketRunningSessions([stale], 'jobs').jobs).toEqual([])
+        expect(filterSessionsForListStatus([stale], 'active')).toEqual([stale])
+        expect(filterSessionsForListStatus([stale], 'archived')).toEqual([])
     })
 
-    it('ignores disconnected and pinned sessions', () => {
+    it('keeps a session with another reporting job in progress when its primary meter expires', () => {
+        const mixed = { ...withJob, attachedJob: { ...withJob.attachedJob!, heartbeatAt: 1, latestRunningHeartbeatAt: Date.now() } }
+        expect(bucketRunningSessions([mixed], 'jobs').jobs).toEqual([mixed])
+    })
+
+    it('puts running attachedJob into jobs under mode jobs', () => {
+        const buckets = bucketRunningSessions([withJob, quiet], 'jobs')
+        expect(buckets.jobs.map((s) => s.id)).toEqual(['job-1'])
+        expect(buckets.working).toHaveLength(0)
+        expect(buckets.pending).toHaveLength(0)
+    })
+
+    it('buckets working and pending under mode all', () => {
+        expect(bucketRunningSessions([{ ...quiet, backgroundTaskCount: 1 }], 'all').working).toHaveLength(1)
+        expect(bucketRunningSessions([{ ...quiet, pendingRequestsCount: 1 }], 'all').pending).toHaveLength(1)
+    })
+
+    it('lets pending outrank jobs when both apply', () => {
+        const both = {
+            ...withJob,
+            active: true,
+            pendingRequestsCount: 1,
+        }
+        const buckets = bucketRunningSessions([both], 'all')
+        expect(buckets.pending.map((s) => s.id)).toEqual(['job-1'])
+        expect(buckets.jobs).toHaveLength(0)
+    })
+
+    it('ignores disconnected (no job) and pinned sessions', () => {
         const buckets = bucketRunningSessions([
-            { ...idle, active: false },
-            { ...idle, id: 'idle-pinned', pinned: true }
-        ], true)
-
-        expect(buckets.idle).toHaveLength(0)
+            { ...quiet, active: false },
+            { ...withJob, id: 'job-pinned', pinned: true },
+        ], 'all')
+        expect(buckets.jobs).toHaveLength(0)
+        expect(buckets.working).toHaveLength(0)
+        expect(buckets.pending).toHaveLength(0)
     })
 })
 
@@ -761,7 +989,171 @@ describe('session list user-activity ordering', () => {
 
     it('keeps the optional in-progress layout, with stable order inside each bucket', () => {
         const sessions = [session('old', 1_000, '/proj', { active: true, thinking: true, updatedAt: 90_000 }), session('new', 2_000, '/proj', { active: true, thinking: true, updatedAt: 1 })]
-        expect(bucketRunningSessions(sessions, true).working.map(s => s.id)).toEqual(['new', 'old'])
-        expect(bucketRunningSessions(sessions.map(s => ({ ...s, updatedAt: 200_000 })), true).working.map(s => s.id)).toEqual(['new', 'old'])
+        expect(bucketRunningSessions(sessions, 'all').working.map(s => s.id)).toEqual(['new', 'old'])
+        expect(bucketRunningSessions(sessions.map(s => ({ ...s, updatedAt: 200_000 })), 'all').working.map(s => s.id)).toEqual(['new', 'old'])
+    })
+
+    it('fixed created-at order keeps rows and workspaces when lastUserMessageAt moves', () => {
+        const createdView = { sort: 'created' as const, activeFirst: false }
+        const fixedIds = (sessions: SessionSummary[]) =>
+            groupSessionsByDirectory(sessions, createdView).flatMap(g => g.sessions.map(s => s.id))
+        const sessions = [session('old', 1_000, '/old'), session('new', 2_000, '/new')]
+        expect(fixedIds(sessions)).toEqual(['new', 'old'])
+        const bumped = sessions.map(s => s.id === 'old'
+            ? { ...s, lastUserMessageAt: 100_000 }
+            : s)
+        expect(fixedIds(bumped)).toEqual(['new', 'old'])
+        expect(groupSessionsByDirectory(bumped, createdView).map(g => g.directory)).toEqual(['/new', '/old'])
+    })
+})
+
+describe('session list sort and filter view', () => {
+    const session = (id: string, extra: Partial<SessionSummary> & { path?: string } = {}) => {
+        const { path = '/proj', ...rest } = extra
+        return makeSession({ id, createdAt: 1_000, lastUserMessageAt: 1_000, updatedAt: 1_000, metadata: { path }, ...rest })
+    }
+    const ids = (sessions: SessionSummary[], view: Parameters<typeof groupSessionsByDirectory>[1]) =>
+        groupSessionsByDirectory(sessions, view).flatMap(g => g.sessions.map(s => s.id))
+
+    it('orders by last message or creation time, never by agent output', () => {
+        const sessions = [
+            session('old-chatty', { createdAt: 1_000, lastUserMessageAt: 9_000, updatedAt: 9_000 }),
+            session('new-quiet', { createdAt: 5_000, lastUserMessageAt: 5_000, updatedAt: 5_000 }),
+            session('agent-busy', { createdAt: 2_000, lastUserMessageAt: 3_000, updatedAt: 20_000 })
+        ]
+        expect(ids(sessions, { sort: 'last-message', activeFirst: false })).toEqual(['old-chatty', 'new-quiet', 'agent-busy'])
+        expect(ids(sessions, { sort: 'created', activeFirst: false })).toEqual(['new-quiet', 'agent-busy', 'old-chatty'])
+    })
+
+    it('puts active sessions and projects ahead of archived ones when active-first is on', () => {
+        const sessions = [
+            session('archived-recent', { lastUserMessageAt: 9_000, path: '/a' }),
+            session('active-older', { lastUserMessageAt: 2_000, path: '/a', active: true }),
+            session('archived-project', { lastUserMessageAt: 8_000, path: '/b' }),
+            session('active-project', { lastUserMessageAt: 1_000, path: '/c', active: true })
+        ]
+        expect(ids(sessions, { sort: 'last-message', activeFirst: true }))
+            .toEqual(['active-older', 'archived-recent', 'active-project', 'archived-project'])
+        expect(ids(sessions, { sort: 'last-message', activeFirst: false }))
+            .toEqual(['archived-recent', 'active-older', 'archived-project', 'active-project'])
+    })
+
+    it('still keeps manual pins first when active-first is on', () => {
+        const sessions = [
+            session('active', { active: true }),
+            session('pinned-archived', { pinned: true })
+        ]
+        expect(ids(sessions, { sort: 'last-message', activeFirst: true })).toEqual(['pinned-archived', 'active'])
+    })
+})
+
+describe('filterSessionsForListStatus', () => {
+    const base = (id: string, extra: Partial<SessionSummary> = {}): SessionSummary =>
+        makeSession({ id, active: false, metadata: { path: '/p' }, ...extra })
+
+    it('keeps inactive running-job rows under the active status filter', () => {
+        const job = base('job', {
+            attachedJob: {
+                key: 'drain', label: 'drain', status: 'running',
+                heartbeatAt: Date.now(), startedAt: 1, updatedAt: 1
+            }
+        })
+        const idle = base('idle')
+        const ids = filterSessionsForListStatus([job, idle], 'active', null).map(s => s.id)
+        expect(ids).toEqual(['job'])
+    })
+
+    it('excludes running-job rows from the archived status filter', () => {
+        const job = base('job', {
+            attachedJob: {
+                key: 'drain', label: 'drain', status: 'running',
+                heartbeatAt: Date.now(), startedAt: 1, updatedAt: 1
+            }
+        })
+        const archived = base('archived')
+        const ids = filterSessionsForListStatus([job, archived], 'archived', null).map(s => s.id)
+        expect(ids).toEqual(['archived'])
+    })
+})
+
+describe('computeOpenSessionTickRatio', () => {
+    it('maps the row midpoint into the scroll extent as a 0..1 rail ratio', () => {
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 1000,
+            clientHeight: 400,
+            contentOffsetTop: 200,
+            targetHeight: 40,
+        })).toBeCloseTo(0.22)
+    })
+
+    it('clamps to the rail ends', () => {
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 1000,
+            clientHeight: 400,
+            contentOffsetTop: -10,
+            targetHeight: 20,
+        })).toBe(0)
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 1000,
+            clientHeight: 400,
+            contentOffsetTop: 990,
+            targetHeight: 40,
+        })).toBe(1)
+    })
+
+    it('hides when the list does not overflow (no scrollbar)', () => {
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 300,
+            clientHeight: 400,
+            contentOffsetTop: 40,
+            targetHeight: 40,
+        })).toBeNull()
+    })
+
+    it('hides when the row has no laid-out height', () => {
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 1000,
+            clientHeight: 400,
+            contentOffsetTop: 200,
+            targetHeight: 0,
+        })).toBeNull()
+    })
+})
+
+describe('shouldShowOpenSessionTick', () => {
+    it('shows only when the open session row is present and not collapsed away', () => {
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: 's-1',
+            rowFound: true,
+            insideCollapsedPanel: false,
+            tickRatio: 0.4,
+        })).toBe(true)
+    })
+
+    it('hides when nothing is open, the row is missing, collapsed, or the ratio is null', () => {
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: null,
+            rowFound: true,
+            insideCollapsedPanel: false,
+            tickRatio: 0.4,
+        })).toBe(false)
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: 's-1',
+            rowFound: false,
+            insideCollapsedPanel: false,
+            tickRatio: 0.4,
+        })).toBe(false)
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: 's-1',
+            rowFound: true,
+            insideCollapsedPanel: true,
+            tickRatio: 0.4,
+        })).toBe(false)
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: 's-1',
+            rowFound: true,
+            insideCollapsedPanel: false,
+            tickRatio: null,
+        })).toBe(false)
     })
 })

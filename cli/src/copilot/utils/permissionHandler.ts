@@ -1,8 +1,9 @@
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentBackend, PermissionRequest, PermissionResponse } from '@/agent/types';
-import type { CopilotPermissionMode } from '@hapi/protocol/types';
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
 import { deriveToolInput, deriveToolName } from '@/agent/utils';
 import { logger } from '@/ui/logger';
+import { settleRequestsOfPreviousAgentProcess } from '@/modules/common/permission/settleStaleRequests';
 import {
     BasePermissionHandler,
     type AutoApprovalDecision,
@@ -70,9 +71,10 @@ export class CopilotPermissionHandler extends BasePermissionHandler<PermissionRe
     constructor(
         session: ApiSessionClient,
         private readonly backend: AgentBackend,
-        private readonly getPermissionMode: () => CopilotPermissionMode | undefined
+        private readonly getPermissionMode: () => PermissionModeOf<typeof Flavors.copilot> | undefined
     ) {
         super(session);
+        settleRequestsOfPreviousAgentProcess(this.backend, session);
         this.backend.onPermissionRequest((request) => this.handlePermissionRequest(request));
     }
 
@@ -97,7 +99,7 @@ export class CopilotPermissionHandler extends BasePermissionHandler<PermissionRe
         this.addPendingRequest(request.id, toolName, toolInput, {
             resolve: () => {},
             reject: () => {}
-        });
+        }, request.toolCallId);
 
         logger.debug(`[Copilot] Permission request queued for ${toolName} (${request.id})`);
     }
@@ -117,6 +119,7 @@ export class CopilotPermissionHandler extends BasePermissionHandler<PermissionRe
                 ...currentState.completedRequests,
                 [request.id]: {
                     tool: toolName,
+                    toolCallId: request.toolCallId,
                     arguments: toolInput,
                     createdAt: Date.now(),
                     completedAt: Date.now(),

@@ -273,6 +273,9 @@ fun ThemePresetPalette.extendedColors(base: HapiExtendedColors): HapiExtendedCol
     divider = border,
     link = accent,
     hint = hint,
+    textSecondary = mix(hint, foreground, 0.35),
+    cardSurface = surface,
+    composerSurface = if (isDark) surfaceHover else background,
 )
 
 /** Card-face preview colors for the preset picker (web `COLOR_THEME_OPTIONS`). */

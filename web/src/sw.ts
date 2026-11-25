@@ -9,7 +9,8 @@ import {
     putShareTransfer,
 } from './lib/shareTransfer'
 import { shareTargetPathname } from './lib/sharePath'
-import { cacheOkResponsesOnly } from './lib/swCachePolicy'
+import { cacheOkResponsesOnly, cacheJavaScriptOnly } from './lib/swCachePolicy'
+import { focusOrOpenNotificationClient, resolveNotificationTarget } from './lib/notificationClick'
 
 const sharePath = shareTargetPathname()
 
@@ -31,6 +32,17 @@ type PushPayload = {
 }
 
 precacheAndRoute(self.__WB_MANIFEST)
+
+registerRoute(
+    ({ url }) => url.origin === self.location.origin && /\/assets\/shiki-[^/]+\.js$/.test(url.pathname),
+    new CacheFirst({
+        cacheName: 'syntax-grammars',
+        plugins: [
+            cacheJavaScriptOnly,
+            new ExpirationPlugin({ maxEntries: 64, maxAgeSeconds: 60 * 60 * 24 * 30 }),
+        ],
+    }),
+)
 
 registerRoute(
     ({ url }) => url.pathname === '/api/sessions',
@@ -140,8 +152,8 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
     event.notification.close()
     const data = event.notification.data as { url?: string } | undefined
-    const url = data?.url ?? '/'
-    event.waitUntil(self.clients.openWindow(url))
+    const url = resolveNotificationTarget(data?.url, self.registration.scope)
+    event.waitUntil(focusOrOpenNotificationClient(self.clients, url, self.registration.scope))
 })
 
 // Web Share Target — manifest declares POST /share, Android Chrome posts a

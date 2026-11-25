@@ -33,11 +33,14 @@ import app.hapi.protocol.wire.AgentState
 import app.hapi.protocol.wire.AgentStateRequest
 import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.CancelMessageResponse
+import app.hapi.protocol.wire.MessageContextResponse
 import app.hapi.protocol.chat.NormalizedMessage
 import app.hapi.protocol.chat.normalizeDecryptedMessage
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DecryptedMessage
 import app.hapi.protocol.wire.DeleteUploadResponse
+import app.hapi.protocol.wire.FeaturesResponse
+import app.hapi.protocol.wire.InputTranslationFeature
 import app.hapi.protocol.wire.FileSearchItem
 import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.HapiJson
@@ -210,6 +213,8 @@ private class RecordingChatApi : ChatSessionApi {
     override suspend fun getQueuedState(sessionId: String, localIds: List<String>): QueuedStateResponse =
         QueuedStateResponse(queuedLocalIds = localIds, invokedLocalMessages = emptyList())
 
+    override suspend fun getMessageContext(sessionId: String, messageId: String): MessageContextResponse? = null
+
     override suspend fun sendMessage(sessionId: String, message: SendMessageRequest) {
         sendCalls.value = sendCalls.value + (sessionId to message)
         sendFailures.removeFirstOrNull()?.let { throw it }
@@ -234,6 +239,19 @@ private class RecordingChatApi : ChatSessionApi {
     }
 
     override suspend fun clearConversation(sessionId: String): ResumeSessionResponse = error("Unexpected clear")
+
+    var featuresResult: FeaturesResponse = FeaturesResponse()
+    override suspend fun getFeatures(): FeaturesResponse = featuresResult
+
+    var hubSettingsResult: app.hapi.protocol.wire.HubSettingsResponse = app.hapi.protocol.wire.HubSettingsResponse()
+    override suspend fun getHubSettings(): app.hapi.protocol.wire.HubSettingsResponse = hubSettingsResult
+
+    val translateCalls = MutableStateFlow<List<Pair<String, Boolean>>>(emptyList())
+    var translateFailure: Exception? = null
+    override suspend fun setSessionTranslateInput(sessionId: String, enabled: Boolean) {
+        translateCalls.value = translateCalls.value + (sessionId to enabled)
+        translateFailure?.let { throw it }
+    }
 
     val planCalls = MutableStateFlow<List<Pair<String, String>>>(emptyList())
     var planGate: CompletableDeferred<Unit>? = null
@@ -578,7 +596,7 @@ class ChatViewModelInteractionTest {
     }
 
     @Test fun `plan errors survive withdrawal and do not automatically resubmit`() = runTest {
-        for ((status, code) in listOf(409 to "stale_plan", 409 to "unavailable", 502 to "failed", 503 to "indeterminate")) {
+        for ((status, code) in listOf(409 to "stale_plan", 409 to "unavailable", 500 to "failed", 503 to "indeterminate")) {
             val harness = InteractionHarness(this, planDetail())
             harness.api.planFailures.add(ApiError.from(status, """{"ok":false,"code":"$code","error":"Not confirmed"}"""))
             harness.sessionStore.detailToLoad = planDetail().copy(agentState = AgentState())
@@ -596,7 +614,7 @@ class ChatViewModelInteractionTest {
 
     @Test fun `confirmed failure allows an explicit retry and clears its error`() = runTest {
         val harness = InteractionHarness(this, planDetail())
-        harness.api.planFailures.add(ApiError.from(502, """{"code":"failed","error":"Try again"}"""))
+        harness.api.planFailures.add(ApiError.from(500, """{"code":"failed","error":"Try again"}"""))
         harness.viewModel.implementCodexPlan("plan-1")
         testScheduler.runCurrent()
         assertTrue(harness.viewModel.codexPlanActions.value.forPlan("plan-1").canAct)
@@ -1797,6 +1815,60 @@ class ChatViewModelInteractionTest {
         harness.viewModel.renameSession("Other")
         collector.join()
         assertEquals(ChatNotice.RenameFailed("nope"), notice)
+    }
+
+    @Test
+    fun `translate toggle follows features, patches the flag, and surfaces failure`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.api.featuresResult = FeaturesResponse(inputTranslation = InputTranslationFeature(available = true))
+        harness.viewModel.start()
+
+        harness.viewModel.inputTranslationAvailable.first { it }
+        assertFalse(harness.viewModel.uiState.first { it.header.title.isNotEmpty() }.header.translateInput)
+
+        // Server truth after the PATCH: the refetched detail carries the flag.
+        val enabledDetail = detail().copy(metadata = detail().metadata!!.copy(translateInput = true))
+        harness.sessionStore.detailToLoad = enabledDetail
+        harness.viewModel.toggleTranslateInput()
+        harness.api.translateCalls.first { it == listOf(IX_SESSION to true) }
+        harness.viewModel.uiState.first { it.header.translateInput }
+
+        var notice: ChatNotice? = null
+        val collector = launch(start = CoroutineStart.UNDISPATCHED) {
+            notice = harness.viewModel.events.filterIsInstance<ChatEvent.Notice>().first().notice
+        }
+        harness.api.translateFailure = ApiError(status = 400, message = "Input translation is not configured on this hub")
+        harness.viewModel.toggleTranslateInput()
+        collector.join()
+        assertEquals(listOf(IX_SESSION to true, IX_SESSION to false), harness.api.translateCalls.value)
+        assertIs<ChatNotice.TranslateInputFailed>(notice)
+        // A failed PATCH leaves the cached flag untouched.
+        assertTrue(harness.sessionStore.currentDetail(IX_SESSION)?.metadata?.translateInput == true)
+    }
+
+    @Test
+    fun `translate toggle follows the hub default until the session chooses`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.api.featuresResult = FeaturesResponse(inputTranslation = InputTranslationFeature(available = true))
+        harness.api.hubSettingsResult = app.hapi.protocol.wire.HubSettingsResponse(translateInputByDefault = true)
+        harness.viewModel.start()
+
+        // No explicit metadata.translateInput: the hub default turns it on.
+        harness.viewModel.uiState.first { it.header.translateInput }
+
+        val disabledDetail = detail().copy(metadata = detail().metadata!!.copy(translateInput = false))
+        harness.sessionStore.detailToLoad = disabledDetail
+        harness.viewModel.toggleTranslateInput()
+        harness.api.translateCalls.first { it == listOf(IX_SESSION to false) }
+        harness.viewModel.uiState.first { !it.header.translateInput }
+    }
+
+    @Test
+    fun `translate toggle stays hidden when features are unavailable or fail`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.viewModel.uiState.first { it.header.title.isNotEmpty() }
+        assertFalse(harness.viewModel.inputTranslationAvailable.value)
     }
 
     // ------------------------------------------------------ slash commands --

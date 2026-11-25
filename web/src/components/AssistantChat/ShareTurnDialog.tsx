@@ -493,6 +493,54 @@ function copyLoadedStyleSheets(source: Document, target: Document): void {
     }
 }
 
+function readBlobAsDataUrl(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => {
+            if (typeof reader.result === 'string') {
+                resolve(reader.result)
+                return
+            }
+            reject(new Error('Failed to inline shared image'))
+        }
+        reader.onerror = () => reject(reader.error ?? new Error('Failed to inline shared image'))
+        reader.readAsDataURL(blob)
+    })
+}
+
+/**
+ * html2canvas-pro's foreign-object renderer omits blob-backed images even
+ * after they load. Keep that renderer for KaTeX and wrapped inline code, but
+ * inline the image bytes in the export clone first.
+ */
+export async function inlineBlobImageSources(root: HTMLElement): Promise<void> {
+    const dataUrls = new Map<string, Promise<string>>()
+    const images = Array.from(root.querySelectorAll<HTMLImageElement>('img'))
+
+    await Promise.all(images.map(async (image) => {
+        const source = image.currentSrc || image.src
+        if (!/^blob:/i.test(source)) return
+
+        let dataUrl = dataUrls.get(source)
+        if (!dataUrl) {
+            dataUrl = fetch(source)
+                .then((response) => {
+                    if (!response.ok) throw new Error(`Failed to inline shared image: ${response.status}`)
+                    return response.blob()
+                })
+                .then(readBlobAsDataUrl)
+            dataUrls.set(source, dataUrl)
+        }
+
+        try {
+            image.removeAttribute('srcset')
+            image.removeAttribute('sizes')
+            image.src = await dataUrl
+        } catch {
+            // Keep the original source so the normal image fallback still applies.
+        }
+    }))
+}
 async function waitForImages(root: HTMLElement): Promise<void> {
     const images = Array.from(root.querySelectorAll('img'))
     await Promise.all(images.map(async (image) => {
@@ -584,6 +632,7 @@ async function elementToPngBlob(
     frameDocument.body.appendChild(captureElement)
     let canvas: HTMLCanvasElement
     try {
+        await inlineBlobImageSources(captureElement)
         await waitForExportReady(captureElement)
         const captureWidth = captureElement.scrollWidth
         const captureHeight = captureElement.scrollHeight

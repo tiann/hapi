@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { sharedLaunchConfig, takeReservedSessionId } from './launch';
+import { checkSharedCapabilities, sharedLaunchConfig, takeReservedSessionId } from './launch';
 import { parseCodexCliOverrides } from '../utils/codexCliOverrides';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
 
@@ -27,6 +27,7 @@ describe('shared launch configuration', () => {
         }
     });
     it('keeps unspecified settings inherited and explicit Standard distinct', () => {
+        expect(sharedLaunchConfig({}, '/tmp').threadParams).not.toHaveProperty('developerInstructions');
         expect(sharedLaunchConfig({}, '/tmp').threadParams).not.toHaveProperty('serviceTier');
         expect(sharedLaunchConfig({}, '/tmp').threadParams.config).not.toHaveProperty('model_reasoning_effort');
         expect(sharedLaunchConfig({ serviceTier: 'standard' }, '/tmp').threadParams.serviceTier).toBeNull();
@@ -66,4 +67,9 @@ describe('takeReservedSessionId', () => {
         expect(options.reservedSessionId).toBeUndefined();
         expect(takeReservedSessionId(options)).toBeUndefined();
     });
+});
+
+it('rejects an engine without atomic queue replacement before accepting batched messages', async () => {
+    const client = { supportsMethod: async (method: string) => method !== 'thread/queue/update' };
+    await expect(checkSharedCapabilities(client)).rejects.toThrow('Codex lacks thread/queue/update');
 });

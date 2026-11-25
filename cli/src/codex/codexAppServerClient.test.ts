@@ -106,6 +106,22 @@ describe('CodexAppServerClient process cwd', () => {
         await client.disconnect();
     });
 
+    it('passes the explicit catalog to a single app-server without preparation processes', async () => {
+        const file = process.platform === 'win32' ? 'C:\\Models with spaces\\catalog.json' : '/Models with spaces/catalog.json';
+        vi.stubEnv('HAPI_CODEX_MODEL_CATALOG_JSON', file);
+        const client = new CodexAppServerClient();
+        try {
+            spawnMock.mockReturnValue(fakeChild());
+            await client.connect();
+            expect(spawnMock).toHaveBeenCalledTimes(1);
+            expect(spawnMock).toHaveBeenCalledWith('codex', ['app-server', '-c', `model_catalog_json=${JSON.stringify(file)}`],
+                expect.objectContaining({ shell: false }));
+        } finally {
+            await client.disconnect();
+            vi.unstubAllEnvs();
+        }
+    });
+
     it('steerTurn resolves dispatch on stdin accept and completes with the turn response', async () => {
         const child = fakeChild();
         child.stdin.write = vi.fn((_data: unknown, cb?: (error?: Error | null) => void) => {

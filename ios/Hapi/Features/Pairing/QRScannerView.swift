@@ -36,6 +36,9 @@ struct QRScannerView: View {
 
     @ViewBuilder
     private var scannerContent: some View {
+        #if targetEnvironment(macCatalyst)
+        scanningUnavailableView
+        #else
         if DataScannerViewController.isSupported {
             DataScannerRepresentable(
                 isActive: !attempt.isPairing && attempt.failure == nil,
@@ -55,16 +58,21 @@ struct QRScannerView: View {
                     cameraDenied = !(await DataScannerViewController.isAvailable)
                 }
         } else {
-            ContentUnavailableView {
-                Label("Scanning unavailable", systemImage: "camera")
-            } description: {
-                Text("This device cannot scan QR codes (for example the Simulator). Go back and use manual entry instead.")
-            } actions: {
-                Button("Close") {
-                    dismiss()
-                }
-                .buttonStyle(.bordered)
+            scanningUnavailableView
+        }
+        #endif
+    }
+
+    private var scanningUnavailableView: some View {
+        ContentUnavailableView {
+            Label("Scanning unavailable", systemImage: "camera")
+        } description: {
+            Text("This device cannot scan QR codes (for example the Simulator). Go back and use manual entry instead.")
+        } actions: {
+            Button("Close") {
+                dismiss()
             }
+            .buttonStyle(.bordered)
         }
     }
 
@@ -137,6 +145,7 @@ struct QRScannerView: View {
     }
 }
 
+#if !targetEnvironment(macCatalyst)
 /// `DataScannerViewController` wrapped for SwiftUI, restricted to QR codes.
 /// `isActive` gates scanning so a successful scan freezes the camera while
 /// pairing runs (or its error is showing) and re-arms on "Scan Again".
@@ -213,3 +222,4 @@ private struct DataScannerRepresentable: UIViewControllerRepresentable {
         }
     }
 }
+#endif

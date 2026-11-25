@@ -8,6 +8,7 @@ import app.hapi.protocol.window.MessageWindowState
 import app.hapi.protocol.window.OlderLoadOutcome
 import app.hapi.protocol.window.WindowMessage
 import app.hapi.protocol.wire.HapiJson
+import app.hapi.protocol.wire.MessageContextResponse
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.OptionalField
 import app.hapi.protocol.wire.QueuedStateResponse
@@ -285,6 +286,8 @@ internal class ScriptedMessagesApi : MessagesApi {
         queue.addAll(responses)
         requests.clear()
     }
+
+    override suspend fun getMessageContext(sessionId: String, messageId: String): MessageContextResponse? = null
 
     override suspend fun getMessages(sessionId: String, query: MessagesQuery): MessagesResponse {
         requests += query.toRequestJson()

@@ -1,12 +1,14 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
-import type { ApiClient } from '@/api/client'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
-import { SessionList } from './SessionList'
+import { markSessionSeen, markSessionUnread } from '@/lib/sessionLastSeen'
+import { SessionList, SessionListSearch } from './SessionList'
+
 
 const SEARCH_LABEL = 'Search sessions (title, path, Agent, machine name, ID, and more)'
 const SEARCH_PLACEHOLDER = 'Search title/path/Agent/machine/ID…'
@@ -14,7 +16,9 @@ const SEARCH_PLACEHOLDER = 'Search title/path/Agent/machine/ID…'
 afterEach(() => {
     cleanup()
     localStorage.removeItem('hapi-session-preview-limit')
-    localStorage.removeItem('hapi-pin-in-progress-sessions')
+    // Explicit off — unset now defaults to `jobs` (session-attached jobs stand).
+    localStorage.setItem('hapi-pin-in-progress-sessions', 'off')
+    localStorage.removeItem('hapi-session-list-machine-filter')
 })
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
@@ -34,6 +38,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides
@@ -57,6 +63,14 @@ function renderWithProviders(children: ReactNode) {
             </ToastProvider>
         </QueryClientProvider>
     )
+}
+
+function getSessionPath(label: string) {
+    const element = screen.getAllByText(label).find((node) => node.getAttribute('title') === label)
+    if (!element) {
+        throw new Error(`Session path not found: ${label}`)
+    }
+    return element
 }
 
 describe('SessionList directory action', () => {
@@ -116,6 +130,59 @@ describe('SessionList directory action', () => {
             machineId: 'machine-1',
             directory: '/home/ubuntu',
         })
+    })
+
+    it('archives only the live sessions of a project from its context menu', async () => {
+        const archiveSession = vi.fn(async () => {})
+        const metadata = (name: string, lifecycleState: string) => ({
+            path: '/work/proj', machineId: 'machine-1', name, flavor: 'codex', lifecycleState
+        })
+        renderWithProviders(
+            <SessionList
+                sessions={[
+                    makeSession({ id: 'live', active: true, updatedAt: 3, metadata: metadata('Live', 'running') }),
+                    makeSession({ id: 'stale', updatedAt: 2, metadata: metadata('Stale', 'idle') }),
+                    makeSession({ id: 'done', updatedAt: 1, metadata: metadata('Done', 'archived') }),
+                ]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={{ archiveSession } as unknown as ApiClient}
+            />
+        )
+
+        fireEvent.contextMenu(screen.getByTitle('/work/proj'))
+        expect(screen.getByRole('menuitem', { name: 'Copy path' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Archive all' }))
+        expect(screen.getByText('Archive 2 sessions in "work/proj"?')).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
+
+        await waitFor(() => expect(archiveSession).toHaveBeenCalledTimes(2))
+        expect(archiveSession).toHaveBeenCalledWith('live')
+        expect(archiveSession).toHaveBeenCalledWith('stale')
+    })
+
+    it('opens the project menu from the keyboard with Shift+F10', () => {
+        renderWithProviders(
+            <SessionList
+                sessions={[makeSession({ id: 's1', metadata: { path: '/work/proj', name: 'S1', flavor: 'codex' } })]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        const header = screen.getByTitle('/work/proj')
+        expect(header).toHaveAttribute('tabindex', '0')
+        fireEvent.keyDown(header, { key: 'F10', shiftKey: true })
+        expect(screen.getByRole('menuitem', { name: 'Copy path' })).toBeInTheDocument()
     })
 
     it('keeps the sticky project header opaque and aligned with the list viewport', () => {
@@ -188,7 +255,7 @@ describe('SessionList time filter', () => {
         vi.useRealTimers()
     })
 
-    it('keeps the date filter beside collapsed search and filters without expanding it', () => {
+    it('opens the date filter from the unified menu and filters without expanding search', () => {
         const recent = makeSession({
             id: 'recent',
             updatedAt: Date.now(),
@@ -220,21 +287,22 @@ describe('SessionList time filter', () => {
         expect(screen.getByRole('button', { name: /Old session/ })).toBeInTheDocument()
 
         const searchButton = screen.getByRole('button', { name: SEARCH_LABEL })
-        const filterButton = screen.getByRole('button', { name: 'Filter sessions by last activity' })
+        const filterButton = screen.getByRole('button', { name: 'Sort and filter' })
         const searchControl = searchButton.parentElement
-        expect(searchControl?.nextElementSibling).toBe(filterButton.parentElement)
-        expect(searchControl?.parentElement).toBe(filterButton.parentElement?.parentElement)
         // #2039: collapsed search must not shrink under neighbors (overlap);
         // header wraps trailing actions instead.
         expect(searchControl?.parentElement).toHaveClass('relative', 'gap-1', 'shrink-0', 'max-w-full')
         expect(searchControl?.parentElement?.className.split(/\s+/)).not.toContain('min-w-0')
         expect(screen.getByTestId('session-list-header-row')).toHaveClass('flex-nowrap', '@container')
         expect(screen.getByTestId('session-list-header-actions')).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Filter sessions by update date' })).toBeNull()
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
 
         fireEvent.click(filterButton)
-        const emptyDate = screen.getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
-        const activeDate = screen.getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` })
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
+        const emptyDate = within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
+        const activeDate = within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` })
         expect(emptyDate).toHaveClass('text-[var(--app-hint)]')
         expect(activeDate).toHaveClass('text-[var(--app-fg)]')
         expect(activeDate).toHaveAttribute('title', `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity`)
@@ -244,9 +312,44 @@ describe('SessionList time filter', () => {
         expect(screen.getByRole('button', { name: /Recent session/ })).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: /Old session/ })).toBeNull()
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
-        expect(filterButton).toHaveAttribute('title', '2026-07-17 - 2026-07-18')
-        expect(filterButton).toHaveAccessibleName('Filter sessions by last activity: 2026-07-17 - 2026-07-18')
-        expect(filterButton).toHaveFocus()
+        expect(filterButton).toHaveAttribute('aria-expanded', 'true')
+        expect(screen.getByRole('menuitem', { name: /^Updated date/ })).toHaveAccessibleName('Updated date: 2026-07-17 – 2026-07-18')
+    })
+
+    it('keeps the selected session visible when the date range excludes it', () => {
+        const recent = makeSession({
+            id: 'recent-selected-time-filter',
+            updatedAt: Date.now(),
+            metadata: { path: '/work/recent-time', name: 'Recent selected-time row' }
+        })
+        const selected = makeSession({
+            id: 'selected-outside-time-filter',
+            updatedAt: new Date(2020, 0, 1).getTime(),
+            metadata: { path: '/work/selected-time', name: 'Selected outside range' }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[recent, selected]}
+                selectedSessionId={selected.id}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        expect(screen.getByRole('button', { name: /Selected outside range/ })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Sort and filter' }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
+        fireEvent.click(within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() }))
+        fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
+
+        expect(screen.getByRole('button', { name: /Selected outside range/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Recent selected-time row/ })).toBeInTheDocument()
     })
 
     it('highlights today without requiring hover or session activity', () => {
@@ -269,10 +372,11 @@ describe('SessionList time filter', () => {
             />
         )
 
-        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
-        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions by last activity' }))
-        const today = screen.getByRole('button', { name: new Date(2026, 6, 18).toLocaleDateString() })
-        const anotherDay = screen.getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
+        fireEvent.click(screen.getByRole('button', { name: 'Sort and filter' }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
+        const today = within(calendar).getByRole('button', { name: new Date(2026, 6, 18).toLocaleDateString() })
+        const anotherDay = within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
 
         expect(today).toHaveClass('bg-[var(--app-subtle-bg)]')
         expect(today).toHaveAttribute('aria-current', 'date')
@@ -299,21 +403,21 @@ describe('SessionList time filter', () => {
             />
         )
 
-        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
-        const filterButton = screen.getByRole('button', { name: 'Filter sessions by last activity' })
+        const filterButton = screen.getByRole('button', { name: 'Sort and filter' })
         fireEvent.click(filterButton)
-        const startDate = screen.getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() })
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
+        const startDate = within(calendar).getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() })
         fireEvent.click(startDate)
         expect(startDate).toHaveClass('bg-[var(--app-button)]', 'text-[var(--app-button-text)]')
         expect(startDate).not.toHaveClass('text-white')
         expect(screen.getByText('Select end date')).toBeInTheDocument()
-        fireEvent.click(screen.getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
+        fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
 
-        expect(filterButton).toHaveAttribute('aria-expanded', 'false')
-        expect(filterButton).toHaveAttribute('title', '2026-07-01 - 2026-07-18')
+        expect(filterButton).toHaveAttribute('aria-expanded', 'true')
     })
 
-    it('returns focus to the search input after clearing the date range', () => {
+    it('returns focus to the date filter row after clearing the date range', () => {
         const session = makeSession({
             id: 'session-1',
             updatedAt: Date.now(),
@@ -333,21 +437,53 @@ describe('SessionList time filter', () => {
             />
         )
 
-        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
-        const input = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
-        const filterButton = screen.getByRole('button', { name: 'Filter sessions by last activity' })
+        const filterButton = screen.getByRole('button', { name: 'Sort and filter' })
         fireEvent.click(filterButton)
-        fireEvent.click(screen.getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() }))
-        fireEvent.click(screen.getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        let calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
+        fireEvent.click(within(calendar).getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() }))
+        fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
 
         // The footer Clear button unmounts with the range; focus must not drop to body.
-        fireEvent.click(filterButton)
-        fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+        fireEvent.click(screen.getByRole('menuitem', { name: /^Updated date/ }))
+        calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
+        fireEvent.click(within(calendar).getByRole('button', { name: 'Clear' }))
 
-        expect(input).toHaveFocus()
-        expect(filterButton).toHaveAttribute('title', 'Filter sessions by last activity')
+        expect(screen.getByRole('menuitem', { name: 'Updated date' })).toHaveFocus()
+        expect(screen.getByRole('menuitem', { name: 'Updated date' })).not.toHaveAttribute('aria-checked')
     })
 })
+
+describe('SessionList collapsed search', () => {
+    it('keeps collapsed search compact beside the actions without expanding it', () => {
+        renderWithProviders(
+            <SessionList
+                sessions={[makeSession({
+                    id: 'session-1',
+                    updatedAt: Date.now(),
+                    metadata: { path: '/work/hapi', name: 'Session' }
+                })]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        const searchGroup = screen.getByTestId('session-list-search')
+        expect(searchGroup).toHaveAttribute('data-expanded', 'false')
+        // #2039: collapsed search must not shrink under neighbors (overlap).
+        expect(searchGroup).toHaveClass('relative', 'gap-1', 'shrink-0', 'max-w-full')
+        expect(searchGroup.className.split(/\s+/)).not.toContain('min-w-0')
+        expect(searchGroup.nextElementSibling).toBe(screen.getByTestId('session-list-header-actions'))
+        expect(screen.getByTestId('session-list-header-row')).toHaveClass('flex-nowrap', '@container')
+        expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
+    })
+})
+
 
 describe('SessionList action menu parity', () => {
     it.each([
@@ -391,8 +527,19 @@ describe('SessionList action menu parity', () => {
 })
 
 describe('SessionList fork session action', () => {
-    it('forks a supported active session from the menu and opens the child', async () => {
+    function previewResponse(mode: 'current' | 'latestCompleted' = 'current') {
+        return {
+            mode,
+            boundary: { v: 1 as const, mode, epoch: 3, tailSeq: 4 },
+            keptTail: [],
+            excluded: [],
+            counts: { kept: 4, excluded: 0 }
+        }
+    }
+
+    it('previews a supported active session from the menu and forks through the hub boundary', async () => {
         const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const forkPreview = vi.fn(async () => previewResponse())
         const onSelect = vi.fn()
         const session = makeSession({
             id: 'source-session',
@@ -407,15 +554,47 @@ describe('SessionList fork session action', () => {
         })
         renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
             onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
-            api={{ forkConversation } as unknown as ApiClient} />)
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
 
         fireEvent.contextMenu(screen.getByRole('button', { name: /Source session/ }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
-        const dialog = screen.getByRole('dialog')
-        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
-        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+        const dialog = await screen.findByTestId('fork-preview-thread')
+        expect(dialog).toBeInTheDocument()
+        await waitFor(() => expect(forkPreview).toHaveBeenCalledWith('source-session', 'current', undefined))
 
-        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session'))
+        fireEvent.click(screen.getByTestId('fork-preview-confirm'))
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session', undefined, false,
+            { v: 1, mode: 'current', epoch: 3, tailSeq: 4 }))
+        expect(onSelect).toHaveBeenCalledWith('child-session')
+    })
+
+    it('forks a running capable session through the hub-resolved latest completed mode', async () => {
+        const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const forkPreview = vi.fn(async () => previewResponse('latestCompleted'))
+        const onSelect = vi.fn()
+        const session = makeSession({
+            id: 'source-session',
+            active: true,
+            thinking: true,
+            updatedAt: Date.now(),
+            metadata: {
+                path: '/work/source',
+                name: 'Source session',
+                flavor: 'codex',
+                conversationHistory: { forkCurrent: true, forkAtMessage: true, forkLatestCompleted: true },
+            },
+        })
+        renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Source session/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
+        await screen.findByTestId('fork-preview-thread')
+        fireEvent.click(screen.getByTestId('fork-preview-confirm'))
+
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session', undefined, true,
+            { v: 1, mode: 'latestCompleted', epoch: 3, tailSeq: 4 }))
         expect(onSelect).toHaveBeenCalledWith('child-session')
     })
 
@@ -437,7 +616,7 @@ describe('SessionList fork session action', () => {
 
         fireEvent.contextMenu(screen.getByRole('button', { name: /Running source/ }))
         expect(screen.getByRole('menuitem', { name: 'Fork session' })).toHaveAttribute('aria-disabled', 'true')
-        expect(screen.queryByRole('dialog')).toBeNull()
+        expect(screen.queryByTestId('fork-preview-thread')).toBeNull()
     })
 
     it('hides Fork session for locally controlled sessions', () => {
@@ -476,8 +655,9 @@ describe('SessionList fork session action', () => {
         expect(screen.queryByRole('menuitem', { name: 'Fork session' })).toBeNull()
     })
 
-    it('forks an archived Codex session directly from the list menu', async () => {
+    it('previews an archived Codex session directly from the list menu', async () => {
         const forkConversation = vi.fn(async () => ({ sessionId: 'archived-child' }))
+        const forkPreview = vi.fn(async () => previewResponse())
         const onSelect = vi.fn()
         const session = makeSession({
             id: 'archived-source',
@@ -493,20 +673,21 @@ describe('SessionList fork session action', () => {
         })
         renderWithProviders(<SessionList sessions={[session]} selectedSessionId={null} onSelect={onSelect}
             onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
-            api={{ forkConversation } as unknown as ApiClient} />)
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
 
         fireEvent.click(screen.getByTitle('/work/archived'))
         fireEvent.contextMenu(screen.getByRole('button', { name: /Archived source/ }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
-        const dialog = screen.getByRole('dialog')
-        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+        await screen.findByTestId('fork-preview-thread')
+        fireEvent.click(screen.getByTestId('fork-preview-confirm'))
 
-        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('archived-source'))
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('archived-source', undefined, false,
+            { v: 1, mode: 'current', epoch: 3, tailSeq: 4 }))
         expect(onSelect).toHaveBeenCalledWith('archived-child')
     })
 
-    it('keeps the dialog open and reports a fork failure without navigating', async () => {
-        const forkConversation = vi.fn(async () => { throw new Error('fork failed') })
+    it('reports a preview failure without navigating', async () => {
+        const forkPreview = vi.fn(async () => { throw new Error('Session is busy') })
         const onSelect = vi.fn()
         const session = makeSession({
             id: 'failing-source',
@@ -520,16 +701,72 @@ describe('SessionList fork session action', () => {
         })
         renderWithProviders(<SessionList sessions={[session]} selectedSessionId={null} onSelect={onSelect}
             onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
-            api={{ forkConversation } as unknown as ApiClient} />)
+            api={{ forkPreview } as unknown as ApiClient} />)
 
         fireEvent.contextMenu(screen.getByRole('button', { name: /Failing source/ }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
-        const dialog = screen.getByRole('dialog')
+        const dialog = await screen.findByRole('dialog')
+        await waitFor(() => expect(within(dialog).getByText('Session is busy')).toBeInTheDocument())
+        expect(onSelect).not.toHaveBeenCalled()
+    })
+
+    it('falls back to the legacy confirm when the hub has no preview route', async () => {
+        const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const forkPreview = vi.fn(async () => { throw new ApiError('HTTP 404 Not Found', 404) })
+        const onSelect = vi.fn()
+        const session = makeSession({
+            id: 'legacy-source',
+            active: true,
+            metadata: {
+                path: '/work/legacy',
+                name: 'Legacy source',
+                flavor: 'codex',
+                conversationHistory: { forkCurrent: true },
+            },
+        })
+        renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Legacy source/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
+        const dialog = await screen.findByRole('dialog')
+        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
         fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
 
-        await waitFor(() => expect(within(dialog).getByText('fork failed')).toBeInTheDocument())
-        expect(onSelect).not.toHaveBeenCalled()
-        expect(dialog).toBeInTheDocument()
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('legacy-source', undefined))
+        expect(onSelect).toHaveBeenCalledWith('child-session')
+    })
+
+    it('forks latest completed on the legacy fallback of a running capable session', async () => {
+        const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const forkPreview = vi.fn(async () => { throw new ApiError('HTTP 404 Not Found', 404) })
+        const onSelect = vi.fn()
+        const session = makeSession({
+            id: 'legacy-source',
+            active: true,
+            thinking: true,
+            metadata: {
+                path: '/work/legacy',
+                name: 'Legacy source',
+                flavor: 'codex',
+                conversationHistory: { forkCurrent: true, forkLatestCompleted: true },
+            },
+        })
+        renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Legacy source/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
+        const dialog = await screen.findByRole('dialog')
+        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+
+        // The summary carries the capability flat on metadata (not under
+        // capabilities): a running session must still fork latest completed.
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('legacy-source', undefined, true))
+        expect(onSelect).toHaveBeenCalledWith('child-session')
     })
 })
 
@@ -585,7 +822,11 @@ describe('SessionList selection', () => {
 })
 
 describe('SessionList collapse behavior', () => {
-    function renderSessionList(sessions: SessionSummary[], selectedSessionId: string | null = 'session-running') {
+    function renderSessionList(
+        sessions: SessionSummary[],
+        selectedSessionId: string | null = 'session-running',
+        machineLabelsById: Record<string, string> = {}
+    ) {
         return (
             <QueryClientProvider client={new QueryClient({
                 defaultOptions: {
@@ -604,6 +845,7 @@ describe('SessionList collapse behavior', () => {
                             isLoading={false}
                             renderHeader={false}
                             api={null}
+                            machineLabelsById={machineLabelsById}
                         />
                     </I18nProvider>
                 </ToastProvider>
@@ -621,7 +863,7 @@ describe('SessionList collapse behavior', () => {
     }
 
     it('keeps a selected running path collapsed across live session-list refreshes', async () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const baseSessions = [
             makeSession({
                 id: 'session-running',
@@ -659,6 +901,7 @@ describe('SessionList collapse behavior', () => {
     })
 
     it('leaves active sessions in directory groups when pin-in-progress is off', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'off')
         const sessions = [
             makeSession({
                 id: 'session-running',
@@ -682,8 +925,8 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByTitle('/work/hapi').nextElementSibling?.getAttribute('data-open')).toBe('true')
     })
 
-    it('pins active sessions into In progress when the preference is on', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+    it('pins active sessions into In progress when mode is all activity', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
                 id: 'session-running',
@@ -707,7 +950,7 @@ describe('SessionList collapse behavior', () => {
     })
 
     it('keeps project-pinned active sessions in their project group when the preference is on', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
                 id: 'session-pinned-running',
@@ -731,6 +974,7 @@ describe('SessionList collapse behavior', () => {
     })
 
     it('keeps In progress above project-pin groups; project pin stays first inside its group', () => {
+        // Legacy true → all (tri-state); floater under In progress; project folders stay below.
         localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
         const sessions = [
             makeSession({
@@ -782,7 +1026,316 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Unpinned floater/ })).toBeInTheDocument()
     })
 
-    it('does not label quiet active sessions as Idle', () => {
+    it('omits the redundant machine label from global pinned rows with one machine', () => {
+        const sessions = [
+            makeSession({
+                id: 'session-global-pinned',
+                globalPinned: true,
+                updatedAt: 100,
+                metadata: {
+                    path: '/work/hapi',
+                    machineId: 'machine-1',
+                    name: 'Global pinned task',
+                    flavor: 'codex',
+                },
+            }),
+        ]
+
+        render(renderSessionList(sessions, null, { 'machine-1': 'NUC' }))
+
+        expect(screen.getByTitle('work/hapi')).toBeInTheDocument()
+        expect(screen.queryByText('work/hapi · NUC')).toBeNull()
+    })
+
+    it('keeps machine labels on global pinned rows with multiple machines', () => {
+        const sessions = [
+            makeSession({
+                id: 'session-global-pinned-one',
+                globalPinned: true,
+                updatedAt: 100,
+                metadata: {
+                    path: '/work/hapi',
+                    machineId: 'machine-1',
+                    name: 'Global pinned task',
+                    flavor: 'codex',
+                },
+            }),
+            makeSession({
+                id: 'session-global-pinned-two',
+                globalPinned: true,
+                updatedAt: 90,
+                metadata: {
+                    path: '/work/docs',
+                    machineId: 'machine-2',
+                    name: 'Other global pinned task',
+                    flavor: 'codex',
+                },
+            }),
+        ]
+
+        render(renderSessionList(sessions, null, {
+            'machine-1': 'NUC',
+            'machine-2': 'Laptop',
+        }))
+
+        expect(screen.getByText('work/hapi · NUC')).toHaveAttribute('title', 'work/hapi · NUC')
+        expect(screen.getByText('work/docs · Laptop')).toHaveAttribute('title', 'work/docs · Laptop')
+    })
+
+    it('omits the machine label from global pinned rows when filtered to one machine', () => {
+        localStorage.setItem('hapi-session-list-machine-filter', 'machine-1')
+        const sessions = [
+            makeSession({
+                id: 'session-global-pinned-one',
+                globalPinned: true,
+                updatedAt: 100,
+                metadata: {
+                    path: '/work/hapi',
+                    machineId: 'machine-1',
+                    name: 'Global pinned task',
+                    flavor: 'codex',
+                },
+            }),
+            makeSession({
+                id: 'session-global-pinned-two',
+                globalPinned: true,
+                updatedAt: 90,
+                metadata: {
+                    path: '/work/docs',
+                    machineId: 'machine-2',
+                    name: 'Other global pinned task',
+                    flavor: 'codex',
+                },
+            }),
+        ]
+
+        render(renderSessionList(sessions, null, {
+            'machine-1': 'NUC',
+            'machine-2': 'Laptop',
+        }))
+
+        expect(screen.getByTitle('work/hapi')).toBeInTheDocument()
+        expect(screen.queryByText('work/hapi · NUC')).toBeNull()
+        expect(screen.queryByRole('button', { name: /Other global pinned task/ })).toBeNull()
+    })
+
+    it('omits the redundant machine label from pinned rows with one machine', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        const sessions = [
+            makeSession({
+                id: 'session-running',
+                active: true,
+                thinking: true,
+                updatedAt: 100,
+                metadata: {
+                    path: '/work/hapi',
+                    machineId: 'machine-1',
+                    name: 'Running task',
+                    flavor: 'codex',
+                },
+            }),
+        ]
+
+        render(renderSessionList(sessions, null, { 'machine-1': 'NUC' }))
+
+        expect(getSessionPath('work/hapi')).toHaveAttribute('title', 'work/hapi')
+        expect(screen.queryByText('work/hapi · NUC')).toBeNull()
+    })
+
+    it('keeps machine labels on pinned rows with multiple machines', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        const sessions = [
+            makeSession({
+                id: 'session-running',
+                active: true,
+                thinking: true,
+                updatedAt: 100,
+                metadata: {
+                    path: '/work/hapi',
+                    machineId: 'machine-1',
+                    name: 'Running task',
+                    flavor: 'codex',
+                },
+            }),
+            makeSession({
+                id: 'session-pending',
+                active: true,
+                pendingRequestsCount: 1,
+                updatedAt: 90,
+                metadata: {
+                    path: '/work/docs',
+                    machineId: 'machine-2',
+                    name: 'Pending task',
+                    flavor: 'codex',
+                },
+            }),
+        ]
+
+        render(renderSessionList(sessions, null, {
+            'machine-1': 'NUC',
+            'machine-2': 'Laptop',
+        }))
+
+        expect(getSessionPath('work/hapi · NUC')).toHaveAttribute('title', 'work/hapi · NUC')
+        expect(getSessionPath('work/docs · Laptop')).toHaveAttribute('title', 'work/docs · Laptop')
+    })
+
+    it('omits the machine label when a multi-machine list is filtered to one machine', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-session-list-machine-filter', 'machine-1')
+        const sessions = [
+            makeSession({
+                id: 'session-running',
+                active: true,
+                thinking: true,
+                updatedAt: 100,
+                metadata: {
+                    path: '/work/hapi',
+                    machineId: 'machine-1',
+                    name: 'Running task',
+                    flavor: 'codex',
+                },
+            }),
+            makeSession({
+                id: 'session-other-machine',
+                active: true,
+                thinking: true,
+                updatedAt: 90,
+                metadata: {
+                    path: '/work/docs',
+                    machineId: 'machine-2',
+                    name: 'Other machine task',
+                    flavor: 'codex',
+                },
+            }),
+        ]
+
+        render(renderSessionList(sessions, null, {
+            'machine-1': 'NUC',
+            'machine-2': 'Laptop',
+        }))
+
+        expect(getSessionPath('work/hapi')).toHaveAttribute('title', 'work/hapi')
+        expect(screen.queryByText('work/hapi · NUC')).toBeNull()
+        expect(screen.queryByRole('button', { name: /Other machine task/ })).toBeNull()
+    })
+
+    it('pins idle sessions with a running attachedJob when mode is jobs (default)', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'jobs')
+        const sessions = [
+            makeSession({
+                id: 'session-beets',
+                active: false,
+                updatedAt: 100,
+                metadata: { path: '/music', name: 'Music drain', flavor: 'claude' },
+                attachedJob: {
+                    key: 'beets',
+                    label: 'beets import',
+                    status: 'running',
+                    remaining: 12,
+                    heartbeatAt: Date.now(),
+                    startedAt: 1,
+                    updatedAt: 1,
+                },
+            }),
+            makeSession({
+                id: 'session-thinking',
+                active: true,
+                thinking: true,
+                updatedAt: 90,
+                metadata: { path: '/work/hapi', name: 'Thinking agent', flavor: 'codex' },
+            }),
+        ]
+        render(renderSessionList(sessions, null))
+
+        expect(screen.getByTitle('In progress')).toBeInTheDocument()
+        expect(screen.getByText(/Jobs \(1\)/)).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Music drain/ })).toBeInTheDocument()
+        // Thinking agent is not a long-running job — stays in directory under jobs mode.
+        expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Thinking agent/ })).toBeInTheDocument()
+    })
+
+    it('moves a disconnected job back to its project when its heartbeat expires without an SSE event', () => {
+        vi.useFakeTimers()
+        try {
+            const now = Date.now()
+            localStorage.setItem('hapi-pin-in-progress-sessions', 'jobs')
+            const sessions = [makeSession({ id: 'stale', active: false, updatedAt: now,
+                metadata: { path: '/batch', name: 'History' }, attachedJob: {
+                    key: 'job', label: 'Batch', status: 'running', startedAt: now - 900_000,
+                    heartbeatAt: now - 899_999, updatedAt: now,
+                } })]
+            render(renderSessionList(sessions, null))
+            expect(screen.getByTitle('In progress')).toBeInTheDocument()
+            act(() => vi.advanceTimersByTime(60_000))
+            expect(screen.queryByTitle('In progress')).toBeNull()
+            fireEvent.click(screen.getByTitle('/batch'))
+            expect(screen.getByTestId('attached-job-status')).toHaveTextContent('no heartbeat')
+            expect(screen.getByTestId('attached-job-status')).not.toHaveTextContent('running')
+            expect(screen.queryByTestId('session-activity')).toBeNull()
+        } finally { vi.useRealTimers() }
+    })
+
+    it('keeps a real agent turn in Running when a job is also attached (#1553)', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        const sessions = [
+            makeSession({
+                id: 'session-job-thinking',
+                active: true,
+                thinking: true,
+                updatedAt: 100,
+                metadata: { path: '/music', name: 'Comfy batch', flavor: 'cursor' },
+                attachedJob: {
+                    key: 'comfy',
+                    label: 'Animate stills',
+                    status: 'running',
+                    remaining: 16,
+                    heartbeatAt: Date.now(),
+                    startedAt: 1,
+                    updatedAt: 1,
+                },
+            }),
+        ]
+        render(renderSessionList(sessions, null))
+
+        expect(screen.getByTitle('In progress')).toBeInTheDocument()
+        expect(screen.getByText(/^Running \(1\)/i)).toBeInTheDocument()
+        expect(screen.queryByText(/^Jobs \(/i)).toBeNull()
+        expect(screen.getByRole('button', { name: /Comfy batch/ })).toBeInTheDocument()
+    })
+
+    it('puts pending operator action ahead of Jobs when both apply', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'jobs')
+        const sessions = [
+            makeSession({
+                id: 'session-job-and-pending',
+                active: true,
+                thinking: false,
+                pendingRequestsCount: 1,
+                pendingRequestKinds: ['permission'],
+                updatedAt: 100,
+                metadata: { path: '/music', name: 'Needs approval', flavor: 'claude' },
+                attachedJob: {
+                    key: 'beets',
+                    label: 'beets import',
+                    status: 'running',
+                    remaining: 8,
+                    heartbeatAt: Date.now(),
+                    startedAt: 1,
+                    updatedAt: 1,
+                },
+            }),
+        ]
+        render(renderSessionList(sessions, null))
+
+        expect(screen.getByTitle('In progress')).toBeInTheDocument()
+        expect(screen.getByText(/^pending \(1\)$/i)).toBeInTheDocument()
+        expect(screen.queryByText(/^Jobs \(/i)).toBeNull()
+        expect(screen.getByRole('button', { name: /Needs approval/ })).toBeInTheDocument()
+    })
+
+    it('does not label quiet connected sessions as Idle', () => {
         const sessions = [
             makeSession({
                 id: 'session-quiet',
@@ -798,8 +1351,8 @@ describe('SessionList collapse behavior', () => {
         expect(screen.queryByTitle('Idle')).toBeNull()
     })
 
-    it('keeps quiet active sessions in the Active section when pin-in-progress is on', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+    it('keeps quiet connected sessions in directory groups when pin-in-progress is on', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
                 id: 'session-running',
@@ -827,28 +1380,23 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByTitle('In progress')).toBeInTheDocument()
         expect(screen.getByText(/Running \(1\)/)).toBeInTheDocument()
         expect(screen.getByText(/pending \(1\)/)).toBeInTheDocument()
-        // Quiet active sessions float into their own Active section (finished
-        // executing, still connected) instead of falling into directory groups.
-        expect(screen.getByTitle('Active sessions')).toBeInTheDocument()
-        expect(screen.getByText(/Active \(1\)/)).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: /Quiet task/ })).toBeInTheDocument()
-        // The directory header survives as an action-only header (copy-path /
-        // new-session-in-directory) even though every row floated.
+        expect(screen.queryByText(/Idle \(/)).toBeNull()
+        // Quiet active stays under its project directory, not an Idle pin bucket.
         expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
-        expect(screen.getByTitle('/work/hapi').nextElementSibling).toBeNull()
-        expect(screen.getByTitle('/work/other')).toBeInTheDocument()
-        expect(screen.getByTitle('/work/other').nextElementSibling).toBeNull()
+        expect(screen.getByRole('button', { name: /Quiet task/ })).toBeInTheDocument()
+        expect(getProjectPanel().getAttribute('data-open')).toBe('true')
     })
 
     it('keeps new-session-in-directory actions for projects whose rows all floated', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const onNewSessionInDirectory = vi.fn()
         const sessions = [
             makeSession({
-                id: 'session-quiet',
+                id: 'session-running',
                 active: true,
+                thinking: true,
                 updatedAt: 100,
-                metadata: { path: '/work/hapi', machineId: 'machine-1', name: 'Quiet task', flavor: 'codex' },
+                metadata: { path: '/work/hapi', machineId: 'machine-1', name: 'Running task', flavor: 'codex' },
             }),
         ]
         renderWithProviders(
@@ -865,7 +1413,7 @@ describe('SessionList collapse behavior', () => {
             />
         )
 
-        expect(screen.getByTitle('Active sessions')).toBeInTheDocument()
+        expect(screen.getByTitle('In progress')).toBeInTheDocument()
         // The project header survives as an action-only header.
         const header = screen.getByTitle('/work/hapi')
         expect(header.nextElementSibling).toBeNull()
@@ -875,6 +1423,20 @@ describe('SessionList collapse behavior', () => {
             machineId: 'machine-1',
             directory: '/work/hapi',
         })
+    })
+
+    it('keeps an explicit fold when a selected job expires and moves back into its project', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        const idle = makeSession({ id: 'idle', active: true, metadata: { path: '/work/hapi', name: 'Idle' } })
+        const job = makeSession({ id: 'job', active: false, metadata: { path: '/work/hapi', name: 'Batch' },
+            attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: Date.now() } })
+        const { rerender } = render(renderSessionList([idle, job], null))
+        fireEvent.click(screen.getByTitle('/work/hapi'))
+        expect(getProjectPanel().getAttribute('data-open')).toBeNull()
+        rerender(renderSessionList([idle, job], 'job'))
+        rerender(renderSessionList([idle, { ...job, attachedJob: { ...job.attachedJob!, heartbeatAt: 1 } }], 'job'))
+        await waitFor(() => expect(screen.queryByTitle('In progress')).toBeNull())
+        expect(getProjectPanel().getAttribute('data-open')).toBeNull()
     })
 
     it('auto-expands the path again when the selected session changes', async () => {
@@ -933,8 +1495,10 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Idle task/ })).toBeInTheDocument()
     })
 
-    it('toggles the Active section independently of In progress', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+    it('does not pin quiet connected sessions as in-progress (#1404 jobs stand)', () => {
+        // Connected (session.active) ≠ working. Mode key `all` floats jobs +
+        // working + pending only — never quiet connected sockets.
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
                 id: 'session-running',
@@ -952,27 +1516,16 @@ describe('SessionList collapse behavior', () => {
         ]
         render(renderSessionList(sessions, null))
 
-        const activeHeader = screen.getByTitle('Active sessions')
-        const activePanel = () => activeHeader.nextElementSibling
-        expect(activePanel()?.getAttribute('data-open')).toBe('true')
-        expect(activeHeader.getAttribute('aria-expanded')).toBe('true')
-
-        // Keyboard toggle mirrors the In progress section.
-        fireEvent.keyDown(activeHeader, { key: 'Enter' })
-        expect(activeHeader.getAttribute('aria-expanded')).toBe('false')
-        expect(activePanel()?.getAttribute('data-open')).toBeNull()
-
-        // Searching forces the section open even while collapsed.
-        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
-        fireEvent.change(screen.getByPlaceholderText(SEARCH_PLACEHOLDER), {
-            target: { value: 'Quiet' },
-        })
-        expect(activePanel()?.getAttribute('data-open')).toBe('true')
-        expect(activeHeader.getAttribute('aria-expanded')).toBe('true')
+        expect(screen.getByTitle('In progress')).toBeInTheDocument()
+        expect(screen.queryByTitle('Active sessions')).toBeNull()
+        expect(screen.getByRole('button', { name: /Quiet task/ })).toBeInTheDocument()
+        expect(getProjectPanel().getAttribute('data-open')).toBe('true')
+        // Quiet connected stays under the project; working floats.
+        expect(screen.getByRole('button', { name: /Running task/ })).toBeInTheDocument()
     })
 
     it('keeps the running section open while searching even when collapsed', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
                 id: 'session-running',
@@ -1089,7 +1642,7 @@ describe('SessionList collapse behavior', () => {
     })
 
     it('toggles the running section with the keyboard', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
                 id: 'session-running',
@@ -1198,12 +1751,13 @@ describe('SessionList collapse behavior', () => {
 
         const header = screen.getByTitle('/work/hapi')
         fireEvent.click(header)
-        fireEvent.contextMenu(screen.getByRole('button', { name: /Closed task/ }))
+        const row = screen.getByRole('button', { name: /Closed task/ })
+        fireEvent.contextMenu(row)
         fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
         expect(screen.getByRole('dialog', { name: 'Rename Session' })).toBeInTheDocument()
 
         fireEvent.click(header)
-        const panel = document.querySelector('.collapsible-panel')!
+        const panel = row.closest('.collapsible-panel')!
         fireEvent.transitionEnd(panel)
         expect(screen.getByRole('dialog', { name: 'Rename Session' })).toBeInTheDocument()
 
@@ -1363,6 +1917,309 @@ describe('SessionList search toggle', () => {
         expect(screen.queryByRole('button', { name: /Other task/ })).toBeNull()
     })
 
+    it('clears stale content results before the next query debounce finishes', async () => {
+        vi.useFakeTimers()
+        try {
+            const matchingSession = makeSession({
+                id: 'content-match',
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Content match', flavor: 'codex' },
+            })
+            const api = {
+                searchSessionContent: vi.fn().mockResolvedValue({
+                    results: [{
+                        session: matchingSession,
+                        match: {
+                            messageId: 'message-1',
+                            role: 'user' as const,
+                            seq: 1,
+                            createdAt: 1,
+                            snippet: 'old query result',
+                        },
+                    }],
+                }),
+            } as unknown as ApiClient
+
+            renderWithProviders(
+                <SessionList
+                    sessions={[matchingSession]}
+                    selectedSessionId={null}
+                    onSelect={vi.fn()}
+                    onNewSession={vi.fn()}
+                    onRefresh={vi.fn()}
+                    isLoading={false}
+                    renderHeader={false}
+                    api={api}
+                />
+            )
+
+            fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+            fireEvent.click(screen.getByTestId('session-list-search-scope'))
+            const input = screen.getByRole('searchbox')
+            fireEvent.change(input, { target: { value: 'old query' } })
+
+            await act(async () => {
+                vi.advanceTimersByTime(180)
+                await Promise.resolve()
+                await Promise.resolve()
+            })
+            expect(screen.getByRole('button', { name: /Content match/ })).toBeInTheDocument()
+
+            fireEvent.change(input, { target: { value: 'new query' } })
+
+            expect(screen.queryByRole('button', { name: /Content match/ })).toBeNull()
+            expect(screen.getByText('Searching message content…')).toBeInTheDocument()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('applies the active-only sidebar filter to content-search results', async () => {
+        localStorage.setItem('hapi-show-active-sessions-only', 'true')
+        vi.useFakeTimers()
+        try {
+            const inactiveMatch = makeSession({
+                id: 'inactive-content-match',
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Inactive content match', flavor: 'codex' },
+            })
+            const api = {
+                searchSessionContent: vi.fn().mockResolvedValue({
+                    results: [{
+                        session: inactiveMatch,
+                        match: {
+                            messageId: 'message-1',
+                            role: 'user' as const,
+                            seq: 1,
+                            createdAt: 1,
+                            snippet: 'content result',
+                        },
+                    }],
+                }),
+            } as unknown as ApiClient
+
+            renderWithProviders(
+                <SessionList
+                    sessions={[inactiveMatch]}
+                    selectedSessionId={null}
+                    onSelect={vi.fn()}
+                    onNewSession={vi.fn()}
+                    onRefresh={vi.fn()}
+                    isLoading={false}
+                    renderHeader={false}
+                    api={api}
+                />
+            )
+
+            fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+            fireEvent.click(screen.getByTestId('session-list-search-scope'))
+            fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'content' } })
+
+            await act(async () => {
+                vi.advanceTimersByTime(180)
+                await Promise.resolve()
+                await Promise.resolve()
+            })
+
+            expect(screen.queryByRole('button', { name: /Inactive content match/ })).toBeNull()
+        } finally {
+            vi.useRealTimers()
+            localStorage.removeItem('hapi-show-active-sessions-only')
+        }
+    })
+
+    it('passes the filtered sidebar session scope before applying the content result limit', async () => {
+        localStorage.setItem('hapi-show-active-sessions-only', 'true')
+        vi.useFakeTimers()
+        try {
+            const activeMatch = makeSession({
+                id: 'active-content-match',
+                active: true,
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Active content match', flavor: 'codex' },
+            })
+            const inactiveMatch = makeSession({
+                id: 'inactive-content-match',
+                updatedAt: 90,
+                metadata: { path: '/work/hapi', name: 'Inactive content match', flavor: 'codex' },
+            })
+            const api = {
+                searchSessionContent: vi.fn().mockResolvedValue({ results: [] }),
+            } as unknown as ApiClient
+
+            renderWithProviders(
+                <SessionList
+                    sessions={[activeMatch, inactiveMatch]}
+                    selectedSessionId={null}
+                    onSelect={vi.fn()}
+                    onNewSession={vi.fn()}
+                    onRefresh={vi.fn()}
+                    isLoading={false}
+                    renderHeader={false}
+                    api={api}
+                />
+            )
+
+            fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+            fireEvent.click(screen.getByTestId('session-list-search-scope'))
+            fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'content' } })
+
+            await act(async () => {
+                vi.advanceTimersByTime(180)
+                await Promise.resolve()
+            })
+
+            expect(api.searchSessionContent).toHaveBeenCalledWith(
+                'content',
+                50,
+                expect.any(AbortSignal),
+                ['active-content-match']
+            )
+        } finally {
+            vi.useRealTimers()
+            localStorage.removeItem('hapi-show-active-sessions-only')
+        }
+    })
+
+
+    it('explains when no content result may be incomplete because long messages were truncated', async () => {
+        vi.useFakeTimers()
+        try {
+            const session = makeSession({
+                id: 'content-truncated',
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Content truncated', flavor: 'codex' },
+            })
+            const api = {
+                searchSessionContent: vi.fn().mockResolvedValue({
+                    results: [],
+                    hasPotentiallyIncompleteResults: true,
+                }),
+            } as unknown as ApiClient
+
+            renderWithProviders(
+                <SessionList
+                    sessions={[session]}
+                    selectedSessionId={null}
+                    onSelect={vi.fn()}
+                    onNewSession={vi.fn()}
+                    onRefresh={vi.fn()}
+                    isLoading={false}
+                    renderHeader={false}
+                    api={api}
+                />
+            )
+
+            fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+            fireEvent.click(screen.getByTestId('session-list-search-scope'))
+            fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'missing' } })
+
+            await act(async () => {
+                vi.advanceTimersByTime(180)
+                await Promise.resolve()
+                await Promise.resolve()
+            })
+
+            expect(screen.getByText(/Some long messages were truncated/)).toBeInTheDocument()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('shows incomplete coverage when content results are nonempty', async () => {
+        vi.useFakeTimers()
+        try {
+            const session = makeSession({
+                id: 'content-partial',
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Content partial', flavor: 'codex' },
+            })
+            const api = {
+                searchSessionContent: vi.fn().mockResolvedValue({
+                    results: [{
+                        session,
+                        match: {
+                            messageId: 'message-1',
+                            role: 'user' as const,
+                            seq: 1,
+                            createdAt: 1,
+                            snippet: 'partial result',
+                            truncated: false,
+                        },
+                    }],
+                    hasPotentiallyIncompleteResults: true,
+                }),
+            } as unknown as ApiClient
+
+            renderWithProviders(
+                <SessionList
+                    sessions={[session]}
+                    selectedSessionId={null}
+                    onSelect={vi.fn()}
+                    onNewSession={vi.fn()}
+                    onRefresh={vi.fn()}
+                    isLoading={false}
+                    renderHeader={false}
+                    api={api}
+                />
+            )
+
+            fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+            fireEvent.click(screen.getByTestId('session-list-search-scope'))
+            fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'partial' } })
+
+            await act(async () => {
+                vi.advanceTimersByTime(180)
+                await Promise.resolve()
+                await Promise.resolve()
+            })
+
+            expect(screen.getByRole('button', { name: /Content partial/ })).toBeInTheDocument()
+            expect(screen.getByText(/Some long messages were truncated/)).toBeInTheDocument()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('does not issue a corpus search for a one-character content query', async () => {
+        vi.useFakeTimers()
+        try {
+            const api = {
+                searchSessionContent: vi.fn().mockResolvedValue({ results: [] }),
+            } as unknown as ApiClient
+
+            renderWithProviders(
+                <SessionList
+                    sessions={[makeSession({
+                        id: 'short-query-session',
+                        updatedAt: 100,
+                        metadata: { path: '/work/hapi', name: 'Short query session', flavor: 'codex' },
+                    })]}
+                    selectedSessionId={null}
+                    onSelect={vi.fn()}
+                    onNewSession={vi.fn()}
+                    onRefresh={vi.fn()}
+                    isLoading={false}
+                    renderHeader={false}
+                    api={api}
+                />
+            )
+
+            fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+            fireEvent.click(screen.getByTestId('session-list-search-scope'))
+            fireEvent.change(screen.getByRole('searchbox'), { target: { value: '你' } })
+
+            await act(async () => {
+                vi.advanceTimersByTime(500)
+                await Promise.resolve()
+            })
+
+            expect(api.searchSessionContent).not.toHaveBeenCalled()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
     it('shows truncated query text on the collapsed search control when a text filter is active', () => {
         const sessions = [
             makeSession({
@@ -1446,8 +2303,8 @@ describe('SessionList search toggle', () => {
         expect(screen.queryByRole('button', { name: 'Clear search' })).toBeNull()
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
         expect(screen.getByRole('button', { name: SEARCH_LABEL })).toHaveFocus()
-        expect(screen.getByRole('button', { name: /Matching task/ })).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: /Other task/ })).toBeInTheDocument()
+        // The filter no longer narrows the (collapsed again) project group.
+        expect(within(screen.getByTitle('/work/hapi')).getByText('(2)')).toBeInTheDocument()
     })
 
     it('keeps collapsed search chrome from sharing a shrink row with header actions (tiann/hapi#2039)', () => {
@@ -1498,7 +2355,10 @@ describe('SessionList search toggle', () => {
         expect(headerRow.className.split(/\s+/)).not.toContain('flex-wrap')
         // Unmeasured query: keep the daily lens on the row. Do not collapse
         // to [chip][⋯] and waste the right half of a Quest sidebar.
-        expect(within(actions).getByRole('button', { name: 'Unread only' })).toBeInTheDocument()
+
+        expect(within(actions).getByTestId('session-toolbar-slot-view')).toBeInTheDocument()
+        expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
     })
@@ -1605,12 +2465,13 @@ describe('SessionList search toggle', () => {
         )
 
         // Empty query + 320px still fits the daily controls. Do not collapse
-        // the row to [search][⋯]. Machine menu stays in the row (not shed).
+        // the row to [search][⋯]. Machine choices live in the unified view menu.
         const actions = screen.getByTestId('session-list-header-actions')
-        expect(within(actions).getByRole('button', { name: 'Unread only' })).toBeInTheDocument()
+
+        expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(within(actions).getByRole('button', { name: 'New Session' })).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
-        expect(within(actions).getByRole('button', { name: 'Filter sessions by machine' })).toBeInTheDocument()
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
 
         vi.unstubAllGlobals()
@@ -1622,7 +2483,7 @@ describe('SessionList search toggle', () => {
         // Phone row 320px; actions leftover crushed to ~80px (the bug geometry).
         // Search must cap itself so machine menu + More still fit in that row.
         stubHeaderWidth({ row: 320, actions: 80 })
-        const machineMenuPx = 47
+        const machineMenuPx = 0
         const morePx = 47
         const originalOffset = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')
         Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
@@ -1693,7 +2554,6 @@ describe('SessionList search toggle', () => {
         expect(maxWidth).toBeLessThanOrEqual(320 - machineMenuPx - morePx)
         expect(screen.getByTestId('session-list-header-overflow')).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: /more/i })).toBeInTheDocument()
-        expect(within(actions).getByTestId('session-list-header-machine-menu')).toBeInTheDocument()
 
         if (originalOffset) {
             Object.defineProperty(HTMLElement.prototype, 'offsetWidth', originalOffset)
@@ -1727,7 +2587,10 @@ describe('SessionList search toggle', () => {
 
         const actions = screen.getByTestId('session-list-header-actions')
         expect(actions).toHaveClass('flex-1')
-        expect(within(actions).getByRole('button', { name: 'Unread only' })).toBeInTheDocument()
+
+        expect(within(actions).getByTestId('session-toolbar-slot-view')).toBeInTheDocument()
+        expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(within(actions).getByRole('button', { name: 'New Session' })).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
         // Nothing shed — no More, and no ml-auto hole between + and ⋯.
@@ -1781,7 +2644,10 @@ describe('SessionList search toggle', () => {
 
         // Wide header + query: New stays inline (not folded into More-only).
         expect(screen.getByRole('button', { name: 'New Session' })).toBeInTheDocument()
-        expect(within(screen.getByTestId('session-list-header-actions')).getByRole('button', { name: 'Unread only' })).toBeInTheDocument()
+
+        expect(within(screen.getByTestId('session-list-header-actions')).getByTestId('session-toolbar-slot-view')).toBeInTheDocument()
+        expect(within(screen.getByTestId('session-list-header-actions')).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
 
         vi.unstubAllGlobals()
     })
@@ -1806,11 +2672,14 @@ describe('SessionList search toggle', () => {
         )
 
         expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: 'Unread only' })).toBeInTheDocument()
+
+        expect(screen.getByTestId('session-toolbar-slot-view')).toBeInTheDocument()
+expect(screen.getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
     })
 
-    it('gives expanded search a 48px clear end-cap with calendar immediately left (tiann/hapi#2019)', () => {
+    it('gives expanded search a 48px clear end-cap at the end of the field (tiann/hapi#2019)', () => {
         renderWithProviders(
             <SessionList
                 sessions={[makeSession({
@@ -1837,10 +2706,30 @@ describe('SessionList search toggle', () => {
         expect(clearButton.className).toMatch(/min-h-\[48px\]/)
         expect(clearButton.className).toMatch(/min-w-\[48px\]/)
 
+
+        expect(screen.queryByTestId('session-list-search-date-embedded')).toBeNull()
+    })
+
+    it('keeps the embedded calendar when expanded search enables date filtering', () => {
+        renderWithProviders(
+            <SessionListSearch
+                value="DJ"
+                onChange={vi.fn()}
+                customStart=""
+                customEnd=""
+                sessionActivityDates={new Set()}
+                onDateRangeChange={vi.fn()}
+                expanded={true}
+                onExpandedChange={vi.fn()}
+            />
+        )
+
         const dateButton = screen.getByTestId('session-list-search-date-embedded')
         expect(dateButton.className).toMatch(/min-h-\[48px\]/)
         expect(dateButton.className).toMatch(/min-w-\[48px\]/)
+        const clearButton = screen.getByRole('button', { name: 'Clear search' })
         expect(clearButton.parentElement?.contains(dateButton)).toBe(true)
+
 
         const fieldChildren = Array.from(clearButton.parentElement?.children ?? [])
         const dateIndex = fieldChildren.findIndex((node) => node === dateButton.parentElement || node.contains(dateButton))

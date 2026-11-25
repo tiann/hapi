@@ -2,12 +2,24 @@ import { describe, expect, test } from 'bun:test'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from './modes'
 import {
     extractAssistantPlainText,
+    extractInjectedTurnUuid,
+    extractMessageRenderKey,
+    extractSearchableMessageText,
+    extractUserPlainText,
+    isLiveStreamSnapshot,
     hasConversationMessageContent,
     extractNotifySummary,
+    getAgyTaskLogId,
     getLiveReasoningStreamId,
+    getTextLiveStreamId,
+    getTextSnapshotStreamId,
+    getTextStreamId,
     getReasoningStreamId,
+    getToolCallId,
     isRedundantGoalStatusEventContent,
+    detectNotifySummaryNearMiss,
     splitNotifySummary,
+    stripAgyEchoedTaskResult,
     stripNotifySummaryFooter,
     type NotifySummary
 } from './messages'
@@ -18,6 +30,28 @@ describe('extractAssistantPlainText', () => {
         expect(extractAssistantPlainText(undefined)).toBeNull()
         expect(extractAssistantPlainText('string')).toBeNull()
         expect(extractAssistantPlainText(42)).toBeNull()
+    })
+
+    test('extracts Claude assistant prose sent as a plain string content', () => {
+        const content = {
+            type: 'output',
+            data: {
+                type: 'assistant',
+                message: { role: 'assistant', content: 'Here is the answer.' }
+            }
+        }
+        expect(extractAssistantPlainText(content)).toBe('Here is the answer.')
+    })
+
+    test('returns null for blank string assistant content', () => {
+        const content = {
+            type: 'output',
+            data: {
+                type: 'assistant',
+                message: { role: 'assistant', content: '   ' }
+            }
+        }
+        expect(extractAssistantPlainText(content)).toBeNull()
     })
 
     test('extracts codex/message text', () => {
@@ -111,6 +145,382 @@ describe('extractAssistantPlainText', () => {
     test('returns null for unknown content shapes', () => {
         expect(extractAssistantPlainText({ type: 'event', data: {} })).toBeNull()
         expect(extractAssistantPlainText({ type: 'text' })).toBeNull()
+    })
+})
+
+describe('extractSearchableMessageText', () => {
+    test('identifies live stream snapshots without treating terminal snapshots as live', () => {
+        expect(isLiveStreamSnapshot({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: { type: 'message', streamSnapshot: true, live: true, message: 'partial' }
+            }
+        })).toBe(true)
+        expect(isLiveStreamSnapshot({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: { type: 'message', streamSnapshot: true, message: 'complete' }
+            }
+        })).toBe(false)
+        expect(isLiveStreamSnapshot({
+            role: 'agent',
+            content: { type: 'text', streamSnapshot: true, live: true, text: 'partial' }
+        })).toBe(true)
+    })
+
+    test('extracts user text and normalizes whitespace', () => {
+        expect(extractUserPlainText([{ type: 'text', text: ' hello\nworld ' }, { type: 'image' }]))
+            .toBe('hello world')
+        expect(extractUserPlainText('Use **KV Cache** for this path.'))
+            .toBe('Use KV Cache for this path.')
+        expect(extractSearchableMessageText({
+            role: 'user',
+            content: { type: 'text', text: 'Find this prompt' }
+        })).toEqual({ role: 'user', text: 'Find this prompt' })
+    })
+
+    test('bounds oversized structured user text before Markdown normalization', () => {
+        const text = extractUserPlainText([
+            { type: 'text', text: 'Head '.repeat(50) },
+            { type: 'text', text: 'Middle '.repeat(50) },
+            { type: 'text', text: 'Tail phrase' }
+        ], 32)
+
+        expect(text).toMatch(/^Head/)
+        expect(text).toContain('Tail phrase')
+        expect(text).not.toContain('Middle')
+        expect(text?.length).toBeLessThanOrEqual(32)
+    })
+
+    test('normalizes GFM strikethrough and tables like the renderer', () => {
+        // `Use ~~old~~ cache` displays as "Use old cache"; the tildes must not
+        // break the indexed phrase.
+        expect(extractSearchableMessageText({
+            role: 'user',
+            content: { type: 'text', text: 'Use ~~old~~ cache' }
+        })?.text).toContain('Use old cache')
+
+        // Table pipes are source markup, not displayed text.
+        const table = extractSearchableMessageText({
+            role: 'user',
+            content: { type: 'text', text: '| key | value |\n| --- | --- |\n| ttl | 30s |' }
+        })?.text
+        expect(table).not.toContain('---')
+        expect(table).toContain('ttl')
+    })
+
+    test('does not index hidden HTML comments', () => {
+        // The renderer omits these, so a hit would have nothing to highlight.
+        expect(extractSearchableMessageText({
+            role: 'user',
+            content: { type: 'text', text: 'visible text <!-- hidden phrase -->' }
+        })?.text).not.toContain('hidden phrase')
+    })
+
+    test('indexes Claude assistant prose sent as a plain string content', () => {
+        // Rendered via normalizeAgent's string branch; it must reach search too.
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    message: { role: 'assistant', content: 'Here is the answer.' }
+                }
+            }
+        })).toEqual({ role: 'assistant', text: 'Here is the answer.' })
+    })
+
+    test('bounds string assistant content like block text', () => {
+        const assistant = extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    message: {
+                        role: 'assistant',
+                        content: `head ${'middle filler '.repeat(20)}unique middle-only marker tail phrase`
+                    }
+                }
+            }
+        }, { maxSourceCharacters: 32 })
+
+        expect(assistant).toMatchObject({ role: 'assistant', truncated: true })
+        expect(assistant?.text).toContain('tail phrase')
+        expect(assistant?.text).not.toContain('unique middle-only marker')
+    })
+
+    test('applies the injected-turn sentinel filter to string assistant content', () => {
+        const sentinel = {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    parentUuid: 'injected-turn',
+                    message: { role: 'assistant', content: 'No response requested.' }
+                }
+            }
+        }
+
+        expect(extractSearchableMessageText(sentinel, {
+            injectedTurnUuids: new Set(['injected-turn'])
+        })).toBeNull()
+        expect(extractSearchableMessageText(sentinel, {
+            injectedTurnUuids: new Set(['other-turn'])
+        })).toEqual({ role: 'assistant', text: 'No response requested.' })
+    })
+
+    test('skips blank string assistant content', () => {
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { role: 'assistant', content: '   ' } }
+            }
+        })).toBeNull()
+    })
+
+    test('marks searchable text that was truncated for indexing', () => {
+        const user = extractSearchableMessageText({
+            role: 'user',
+            content: { type: 'text', text: `head ${'middle filler '.repeat(20)}unique middle-only marker tail phrase` }
+        }, { maxSourceCharacters: 32 })
+        const assistant = extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: { type: 'message', message: `head ${'middle filler '.repeat(20)}unique middle-only marker tail phrase` }
+            }
+        }, { maxSourceCharacters: 32 })
+
+        expect(user).toMatchObject({ role: 'user', truncated: true })
+        expect(user?.text).toContain('tail phrase')
+        expect(user?.text).not.toContain('unique middle-only marker')
+        expect(assistant).toMatchObject({ role: 'assistant', truncated: true })
+        expect(assistant?.text).toContain('tail phrase')
+        expect(assistant?.text).not.toContain('unique middle-only marker')
+    })
+
+    test('extracts assistant prose but excludes tool and reasoning records', () => {
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', id: 'stream-1', message: 'Visible answer' } }
+        })).toEqual({ role: 'assistant', text: 'Visible answer', renderKey: 'stream-1' })
+        expect(extractSearchableMessageText({ role: 'agent', content: 'Legacy visible answer' }))
+            .toEqual({ role: 'assistant', text: 'Legacy visible answer' })
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'tool-call', input: { secret: 'do not index' } } }
+        })).toBeNull()
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: { type: 'output', data: { type: 'user', message: { content: 'not assistant prose' } } }
+        })).toBeNull()
+    })
+
+    test('excludes Claude Task/Agent prompts rendered only in the tool card', () => {
+        const content = {
+            type: 'output',
+            data: {
+                type: 'assistant',
+                message: {
+                    content: [
+                        { type: 'text', text: 'Inspect the repository' },
+                        { type: 'tool_use', name: 'Task', input: { prompt: 'Inspect the repository' } },
+                        { type: 'text', text: 'The repository is ready.' },
+                        { type: 'tool_use', name: 'Agent', input: { prompt: 'Run the second agent' } },
+                        { type: 'text', text: 'Run the second agent' },
+                    ]
+                }
+            }
+        }
+
+        expect(extractSearchableMessageText({ role: 'agent', content }))
+            .toEqual({ role: 'assistant', text: 'The repository is ready. Run the second agent' })
+    })
+
+    test('excludes No response requested only when its parent is system-injected', () => {
+        const sidechain = {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'user',
+                    uuid: 'injected-turn',
+                    message: { content: '<system-reminder>...</system-reminder>' }
+                }
+            }
+        }
+        const sentinel = {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    parentUuid: 'injected-turn',
+                    message: { content: [{ type: 'text', text: 'No response requested.' }] }
+                }
+            }
+        }
+        const normalSentinel = {
+            ...sentinel,
+            content: {
+                ...sentinel.content,
+                data: {
+                    ...sentinel.content.data,
+                    parentUuid: 'normal-turn'
+                }
+            }
+        }
+
+        expect(extractInjectedTurnUuid(sidechain)).toBe('injected-turn')
+        expect(extractSearchableMessageText(sentinel, {
+            injectedTurnUuids: new Set(['injected-turn'])
+        })).toBeNull()
+        expect(extractSearchableMessageText(normalSentinel, {
+            injectedTurnUuids: new Set(['injected-turn'])
+        })).toEqual({ role: 'assistant', text: 'No response requested.' })
+    })
+
+    test('extracts visible non-sidechain Claude user records', () => {
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'user',
+                    isSidechain: false,
+                    message: {
+                        content: [
+                            { type: 'text', text: 'Find this Claude prompt.' },
+                            { type: 'text', text: 'Keep searching.' }
+                        ]
+                    }
+                }
+            }
+        })).toEqual({ role: 'user', text: 'Find this Claude prompt. Keep searching.' })
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'user',
+                    isSidechain: false,
+                    message: {
+                        content: [
+                            { type: 'text', text: 'Visible mixed prompt.' },
+                            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'ignored' } },
+                            { type: 'tool_result', tool_use_id: 'tool-1', content: 'ignored tool output' }
+                        ]
+                    }
+                }
+            }
+        })).toEqual({ role: 'user', text: 'Visible mixed prompt.' })
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'user',
+                    isSidechain: true,
+                    message: { content: [{ type: 'text', text: 'Hidden prompt.' }] }
+                }
+            }
+        })).toBeNull()
+    })
+
+    test('normalizes assistant Markdown to the rendered text', () => {
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: { type: 'message', message: 'Use **KV Cache** and [the docs](https://example.com).' }
+            }
+        })).toEqual({ role: 'assistant', text: 'Use KV Cache and the docs.' })
+        expect(extractUserPlainText('## Deploy\n\nRun migrations')).toBe('Deploy Run migrations')
+        expect(extractUserPlainText('cache  \nkey')).toBe('cache key')
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: { type: 'message', message: 'cache  \nkey' }
+            }
+        })).toEqual({ role: 'assistant', text: 'cache key' })
+    })
+
+    test('keeps the stream identity even when a snapshot has no searchable text', () => {
+        const emptySnapshot = {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', id: 'stream-1', message: '' } }
+        }
+        expect(extractSearchableMessageText(emptySnapshot)).toBeNull()
+        expect(extractMessageRenderKey(emptySnapshot)).toBe('stream-1')
+    })
+
+    test('excludes hidden assistant metadata, compact-summary, and sidechain output', () => {
+        for (const flag of ['isMeta', 'isCompactSummary', 'isSidechain'] as const) {
+            expect(extractSearchableMessageText({
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        type: 'assistant',
+                        [flag]: true,
+                        message: { content: [{ type: 'text', text: 'Hidden renderer output' }] }
+                    }
+                }
+            })).toBeNull()
+        }
+    })
+
+    test('excludes a trailing notify summary footer from assistant search text', () => {
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'message',
+                    message: 'Visible answer.\n\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"Hidden footer"}'
+                }
+            }
+        })).toEqual({ role: 'assistant', text: 'Visible answer.' })
+
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: 'AGENT_NOTIFY_SUMMARY {"status":"done","summary":"Only footer"}'
+        })).toBeNull()
+    })
+
+    test('matches the rendered AGY text by removing echoed task results', () => {
+        expect(stripAgyEchoedTaskResult(
+            'Inside the task-246 log...\n[Message] timestamp=2026-07-08T06:04:31Z sender=u/task-246 content=Task finished with result:\nHidden task output'
+        )).toBe('Inside the task-246 log...')
+
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'agy_message',
+                    content: 'Visible planner prose\n[Message] timestamp=2026-07-08T06:04:31Z content=Hidden task output'
+                }
+            }
+        })).toEqual({ role: 'assistant', text: 'Visible planner prose' })
+    })
+
+    test('excludes AGY task-log narration rendered as a tool chip', () => {
+        expect(getAgyTaskLogId('Inside the task-246 log...')).toBe('246')
+        expect(extractSearchableMessageText({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'agy_message', content: 'Inside the task-246 log...\n[Message] timestamp=2026-07-08T06:04:31Z content=Hidden task output' }
+            }
+        })).toBeNull()
     })
 })
 
@@ -293,11 +703,96 @@ describe('stripNotifySummaryFooter', () => {
         expect(stripNotifySummaryFooter(`Done.\n${FOOTER}\n\n`)).toBe('Done.')
     })
 
-    test('leaves malformed or truncated footers untouched', () => {
-        const truncated = 'Done.\nAGENT_NOTIFY_SUMMARY {"summary":'
-        const bogus = 'Done.\nAGENT_NOTIFY_SUMMARY {bogus}'
-        expect(stripNotifySummaryFooter(truncated)).toBe(truncated)
-        expect(stripNotifySummaryFooter(bogus)).toBe(bogus)
+    test('strips a truncated footer so the raw machine line never reaches the reader', () => {
+        // Observed in the wild: the closing brace is missing after truncation.
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok')).toBe('Done.')
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY {bogus}')).toBe('Done.')
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY not-json')).toBe('Done.')
+    })
+
+    test('strips a half-streamed footer as it is being written', () => {
+        expect(stripNotifySummaryFooter('Working.\nAGENT_NOTIFY_SUMMARY {"ver')).toBe('Working.')
+    })
+
+    test('keeps a whitespace-delimited mention of the token even when its JSON is broken', () => {
+        const mention = 'The contract looks like Example: AGENT_NOTIFY_SUMMARY {"summary":'
+        expect(stripNotifySummaryFooter(mention)).toBe(mention)
+    })
+
+    test('keeps a footer example written in an inline-code span', () => {
+        const inlineCode = 'Use `AGENT_NOTIFY_SUMMARY {"status":"done"}` at the end.'
+        const bareSpan = 'Use `AGENT_NOTIFY_SUMMARY {"status":"done"}`'
+        const gluedInsideSpan = 'The shape is `Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`'
+        expect(stripNotifySummaryFooter(inlineCode)).toBe(inlineCode)
+        expect(stripNotifySummaryFooter(bareSpan)).toBe(bareSpan)
+        expect(stripNotifySummaryFooter(gluedInsideSpan)).toBe(gluedInsideSpan)
+    })
+
+    test('keeps a footer example in quoted prose', () => {
+        const quoted = 'It said "AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.'
+        const parenthesised = 'The footer (AGENT_NOTIFY_SUMMARY {"status":"done"}) goes last.'
+        expect(stripNotifySummaryFooter(quoted)).toBe(quoted)
+        expect(stripNotifySummaryFooter(parenthesised)).toBe(parenthesised)
+    })
+
+    test('keeps a quoted example that has glued prose inside the quotes', () => {
+        // Quoting is a span, not the one character before the token: the char
+        // before the token here is ordinary prose punctuation.
+        const quotedGlue = 'The agent wrote "Done.AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.'
+        const parenthesisedGlue = `('Done.AGENT_NOTIFY_SUMMARY {"status":"done"}')`
+        const bracketed = 'See [Done.AGENT_NOTIFY_SUMMARY {"status":"done"}] above.'
+        expect(stripNotifySummaryFooter(quotedGlue)).toBe(quotedGlue)
+        expect(stripNotifySummaryFooter(parenthesisedGlue)).toBe(parenthesisedGlue)
+        expect(stripNotifySummaryFooter(bracketed)).toBe(bracketed)
+    })
+
+    test('keeps an example in a multi-backtick code span', () => {
+        // Markdown closes a span with a run of the same length, so a literal
+        // backtick inside a ``...`` span is content, not a delimiter.
+        const doubled = 'Use ``Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`` at the end.'
+        const withLiteralTick = 'Use ``a ` b.AGENT_NOTIFY_SUMMARY {"status":"done"}`` at the end.'
+        const tripled = 'Use ```Done.AGENT_NOTIFY_SUMMARY {"status":"done"}``` at the end.'
+        expect(stripNotifySummaryFooter(doubled)).toBe(doubled)
+        expect(stripNotifySummaryFooter(withLiteralTick)).toBe(withLiteralTick)
+        expect(stripNotifySummaryFooter(tripled)).toBe(tripled)
+    })
+
+    test('keeps a near-miss footer that shares its line with prose', () => {
+        // A partial payload has no object end to measure, so the only signal
+        // left is that the line opens with prose - and prose is the thing we
+        // must not delete. The status is lost either way; this decides only
+        // whether one odd line stays on screen.
+        const quotedPartial = 'Use `AGENT_NOTIFY_SUMMARY {"summary":` to reproduce the failure.'
+        const quotedNonObject = 'Use `AGENT_NOTIFY_SUMMARY not-json` to reproduce the failure.'
+        const quotedGluedPartial = 'It wrote "Done.AGENT_NOTIFY_SUMMARY {"summary":" and stopped.'
+        const gluedTruncation = 'Ownership session pinged.AGENT_NOTIFY_SUMMARY {"summary":'
+        // The reason this is decided by the line and not by the payload: an
+        // open string swallows whatever follows it, so the payload of this
+        // example is byte-for-byte the shape of a real truncation
+        // (`"summary":"ok`). No payload-shape test can separate the two.
+        const quotedOpenString = 'Use `AGENT_NOTIFY_SUMMARY {"summary":"` to reproduce the failure.'
+        expect(stripNotifySummaryFooter(quotedPartial)).toBe(quotedPartial)
+        expect(stripNotifySummaryFooter(quotedNonObject)).toBe(quotedNonObject)
+        expect(stripNotifySummaryFooter(quotedGluedPartial)).toBe(quotedGluedPartial)
+        expect(stripNotifySummaryFooter(gluedTruncation)).toBe(gluedTruncation)
+        expect(stripNotifySummaryFooter(quotedOpenString)).toBe(quotedOpenString)
+    })
+
+    test('still strips a near miss that owns its line, indented or not', () => {
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY {"summary":')).toBe('Done.')
+        expect(stripNotifySummaryFooter('Done.\n    AGENT_NOTIFY_SUMMARY {"summary":')).toBe('Done.')
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY not-json')).toBe('Done.')
+    })
+
+    test('still strips a VALID footer glued to prose - it is its own evidence', () => {
+        expect(stripNotifySummaryFooter('Ownership session pinged.AGENT_NOTIFY_SUMMARY {"summary":"ok"}')).toBe(
+            'Ownership session pinged.'
+        )
+    })
+
+    test('keeps the bare token with no payload', () => {
+        const bare = 'Done.\nAGENT_NOTIFY_SUMMARY'
+        expect(stripNotifySummaryFooter(bare)).toBe(bare)
     })
 
     test('leaves mid-body mentions and non-final footers untouched', () => {
@@ -309,6 +804,118 @@ describe('stripNotifySummaryFooter', () => {
 
     test('returns empty string when the message is only a footer', () => {
         expect(stripNotifySummaryFooter(FOOTER)).toBe('')
+    })
+})
+
+describe('detectNotifySummaryNearMiss', () => {
+    test('returns null for non-string and empty input', () => {
+        expect(detectNotifySummaryNearMiss(null)).toBeNull()
+        expect(detectNotifySummaryNearMiss(undefined)).toBeNull()
+        expect(detectNotifySummaryNearMiss(42)).toBeNull()
+        expect(detectNotifySummaryNearMiss('')).toBeNull()
+        expect(detectNotifySummaryNearMiss('   \n\n  ')).toBeNull()
+    })
+
+    test('reports a truncated footer as unterminated JSON', () => {
+        const near = detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok')
+        expect(near?.reason).toBe('unterminated-json')
+        expect(near?.payloadLength).toBe('{"status":"done","summary":"ok'.length)
+    })
+
+    test('reports a complete object followed by prose on the same line', () => {
+        const near = detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {"status":"done"} and one more thing')
+        expect(near?.reason).toBe('trailing-content')
+    })
+
+    test('reports balanced braces that do not parse', () => {
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {bogus}')?.reason).toBe('invalid-json')
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {"a":1,}')?.reason).toBe('invalid-json')
+    })
+
+    test('reports a payload that is not an object', () => {
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY [1,2]')?.reason).toBe('not-an-object')
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY not-json')?.reason).toBe('not-an-object')
+    })
+
+    test('does not confuse a brace inside a string value for the end of the object', () => {
+        expect(
+            detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {"summary":"a } brace","status":"done"')?.reason
+        ).toBe('unterminated-json')
+    })
+
+    test('returns null for a well-formed footer', () => {
+        expect(detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok"}')).toBeNull()
+        expect(
+            detectNotifySummaryNearMiss('Done.AGENT_NOTIFY_SUMMARY {"summary":"mentions AGENT_NOTIFY_SUMMARY here"}')
+        ).toBeNull()
+    })
+
+    test('returns null for a whitespace-delimited prose mention, however broken', () => {
+        expect(detectNotifySummaryNearMiss('The shape is AGENT_NOTIFY_SUMMARY {...}')).toBeNull()
+        expect(detectNotifySummaryNearMiss('Example: AGENT_NOTIFY_SUMMARY {"summary":')).toBeNull()
+    })
+
+    test('classifies every quoting style of example as trailing content', () => {
+        // Not null: a stray-text emitter is worth logging. Not stripped
+        // either - see the stripNotifySummaryFooter suite. One rule covers
+        // every quoting style because an example closes its delimiter *after*
+        // the payload, which is exactly what trailing content means.
+        for (const example of [
+            'Use `AGENT_NOTIFY_SUMMARY {"status":"done"}` at the end.',
+            'It said "AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.',
+            'The shape is `Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`',
+            'The agent wrote "Done.AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.',
+            `('Done.AGENT_NOTIFY_SUMMARY {"status":"done"}')`,
+            'See [Done.AGENT_NOTIFY_SUMMARY {"status":"done"}] above.',
+            'Use ``Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`` at the end.',
+            'Use ``a ` b.AGENT_NOTIFY_SUMMARY {"status":"done"}`` at the end.'
+        ]) {
+            expect(detectNotifySummaryNearMiss(example)?.reason).toBe('trailing-content')
+            expect(stripNotifySummaryFooter(example)).toBe(example)
+        }
+    })
+
+    test('still reports a genuine glued footer after an earlier inline-code span', () => {
+        expect(detectNotifySummaryNearMiss('Ran `bun test`.AGENT_NOTIFY_SUMMARY {"status":')?.reason).toBe(
+            'unterminated-json'
+        )
+        expect(detectNotifySummaryNearMiss('He said "hello".AGENT_NOTIFY_SUMMARY {"status":')?.reason).toBe(
+            'unterminated-json'
+        )
+        expect(detectNotifySummaryNearMiss(`I didn't finish.AGENT_NOTIFY_SUMMARY {"status":`)?.reason).toBe(
+            'unterminated-json'
+        )
+    })
+
+    test('marks a near miss sharing its line with prose as kept, not removed', () => {
+        const quotedPartial = detectNotifySummaryNearMiss(
+            'Use `AGENT_NOTIFY_SUMMARY {"summary":` to reproduce the failure.'
+        )
+        expect(quotedPartial?.reason).toBe('unterminated-json')
+        expect(quotedPartial?.removedFromDisplay).toBe(false)
+
+        const owned = detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY {"summary":')
+        expect(owned?.reason).toBe('unterminated-json')
+        expect(owned?.removedFromDisplay).toBe(true)
+    })
+
+    test('returns null for a bare token with no payload', () => {
+        expect(detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY')).toBeNull()
+        expect(detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY   ')).toBeNull()
+    })
+
+    test('returns null when the broken footer is not the last non-empty line', () => {
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {"summary":\nOh, one more thing.')).toBeNull()
+    })
+
+    test('returns null for ordinary prose', () => {
+        expect(detectNotifySummaryNearMiss('Plain assistant prose.')).toBeNull()
+    })
+
+    test('a near miss still yields no summary and no split', () => {
+        const truncated = 'Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok'
+        expect(extractNotifySummary(truncated)).toBeNull()
+        expect(splitNotifySummary(truncated)).toBeNull()
     })
 })
 
@@ -403,6 +1010,38 @@ describe('reasoning stream identity', () => {
     })
 })
 
+describe('tool-call identity', () => {
+    function toolCallContent(overrides: Record<string, unknown> = {}, type = 'tool-call') {
+        return {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type, callId: 'call-1', name: 'Read', input: { file_path: '/a' }, ...overrides }
+            }
+        }
+    }
+
+    test('reads the callId from a tool-call payload', () => {
+        expect(getToolCallId(toolCallContent())).toBe('call-1')
+    })
+
+    test('does not match the result that shares the callId', () => {
+        expect(getToolCallId(toolCallContent({}, 'tool-call-result'))).toBeNull()
+    })
+
+    test.each([
+        ['a user-role envelope', { role: 'user', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'tool-call', callId: 'call-1' } } }],
+        ['a different payload type', { role: 'agent', content: { type: 'event', data: { type: 'tool-call', callId: 'call-1' } } }],
+        ['a different data type', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', callId: 'call-1' } } }],
+        ['a missing callId', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'tool-call' } } }],
+        ['a blank callId', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'tool-call', callId: '   ' } } }],
+        ['a non-string callId', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'tool-call', callId: 7 } } }],
+        ['a non-object value', 'tool-call']
+    ])('returns null for %s', (_label, value) => {
+        expect(getToolCallId(value)).toBeNull()
+    })
+})
+
 
 describe('hasConversationMessageContent', () => {
     test.each([
@@ -435,5 +1074,70 @@ describe('hasConversationMessageContent', () => {
         { role: 'agent', content: { type: 'codex', data: { type: 'error', message: 'Launch failed' } } },
     ])('rejects bookkeeping and empty content: %j', (content) => {
         expect(hasConversationMessageContent(content)).toBe(false)
+    })
+})
+
+describe('text stream identity', () => {
+    function textContent(overrides: Record<string, unknown> = {}) {
+        return {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'message', message: 'answer', id: 'text-stream-1', ...overrides }
+            }
+        }
+    }
+
+    test('reads the stream id from a live snapshot', () => {
+        const live = textContent({ streamSnapshot: true, live: true })
+        expect(getTextStreamId(live)).toBe('text-stream-1')
+        expect(getTextLiveStreamId(live)).toBe('text-stream-1')
+        expect(getTextSnapshotStreamId(live)).toBe('text-stream-1')
+    })
+
+    test('treats a settled text message as part of the stream but not as live', () => {
+        const settled = textContent({ streamSnapshot: true })
+        expect(getTextStreamId(settled)).toBe('text-stream-1')
+        expect(getTextLiveStreamId(settled)).toBeNull()
+        expect(getTextSnapshotStreamId(settled)).toBe('text-stream-1')
+    })
+
+    test('a snapshot-marked row without the live marker still groups by stream (backfill shape)', () => {
+        // Rows written before the hub learned to sweep text streams: the wire
+        // carried streamSnapshot but never live, so only the snapshot reader
+        // can recognise them as members of a stream.
+        const legacy = textContent({ streamSnapshot: true })
+        expect(getTextSnapshotStreamId(legacy)).toBe('text-stream-1')
+        expect(getTextLiveStreamId(legacy)).toBeNull()
+    })
+
+    test('an id-less text message never reads as a stream', () => {
+        const plain = { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'answer' } } }
+        expect(getTextStreamId(plain)).toBeNull()
+        expect(getTextLiveStreamId(plain)).toBeNull()
+        expect(getTextSnapshotStreamId(plain)).toBeNull()
+    })
+
+    test('an id-bearing text message without the snapshot marker is not a backfill candidate', () => {
+        const noMarker = textContent()
+        expect(getTextStreamId(noMarker)).toBe('text-stream-1')
+        expect(getTextSnapshotStreamId(noMarker)).toBeNull()
+    })
+
+    test('does not treat a non-boolean live marker as live', () => {
+        expect(getTextLiveStreamId(textContent({ streamSnapshot: true, live: 'yes' }))).toBeNull()
+    })
+
+    test.each([
+        ['a user-role envelope', { role: 'user', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'hi', id: 's', streamSnapshot: true } } }],
+        ['a different payload type', { role: 'agent', content: { type: 'event', data: { type: 'message', message: 'hi', id: 's', streamSnapshot: true } } }],
+        ['a different data type', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'reasoning', message: 'hi', id: 's', streamSnapshot: true } } }],
+        ['a blank id', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'hi', id: '   ', streamSnapshot: true } } }],
+        ['a non-string id', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'hi', id: 7, streamSnapshot: true } } }],
+        ['a non-object value', 'text']
+    ])('returns null for %s', (_label, value) => {
+        expect(getTextStreamId(value)).toBeNull()
+        expect(getTextLiveStreamId(value)).toBeNull()
+        expect(getTextSnapshotStreamId(value)).toBeNull()
     })
 })
