@@ -267,13 +267,14 @@ describe('AcpSdkBackend', () => {
         }
     });
 
-    it('hides the ACP stdio shell on Windows', () => {
+    it('hides the ACP stdio window on Windows without shell:true (#2021 Job Object)', () => {
         setPlatform('win32');
 
         expect(buildAcpStdioSpawnOptions({ TEST_ENV: '1' })).toMatchObject({
             env: { TEST_ENV: '1' },
             stdio: ['pipe', 'pipe', 'pipe'],
-            shell: true,
+            // shell:false so Assign targets the agent PID, not cmd.exe (#2021).
+            shell: false,
             windowsHide: true,
             detached: false,
         });

@@ -1,5 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process';
-import { tryAssignWindowsAgentJob, type WindowsAgentJob } from '@/utils/windowsJobObject';
+import { resolveExecutable } from '@/agent/agentLaunchCommand';
+import {
+    canContainWithoutShell,
+    tryAssignWindowsAgentJob,
+    type WindowsAgentJob,
+} from '@/utils/windowsJobObject';
 import {
     acquireAgentCliSpawnLease,
     releaseAgentCliSpawnLeaseFromAcpRegisterSync
@@ -65,13 +70,20 @@ export type AcpStderrError = {
     raw: string;
 };
 
+function resolveWindowsLaunchCommand(command: string, cwd?: string): string {
+    if (process.platform !== 'win32') return command;
+    return resolveExecutable(command, { cwd }) ?? command;
+}
+
 /** @internal Exported for regression tests. */
 export function buildAcpStdioSpawnOptions(env?: Record<string, string>, cwd?: string): SpawnOptions {
     return {
         env,
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
-        shell: process.platform === 'win32',
+        // shell:false — Job Object settlement forbids a cmd.exe intermediary that
+        // can start the agent before Assign (#2021 Approach).
+        shell: false,
         windowsHide: process.platform === 'win32',
         // Own process group on POSIX so Stop can cover mid-teardown forks
         // without signaling HAPI's inherited group (#2021).
@@ -127,12 +139,13 @@ export class AcpStdioTransport {
             try {
                 registerActiveAcpTransport();
                 try {
+                    const command = resolveWindowsLaunchCommand(options.command, options.cwd);
                     const child = spawn(
-                        options.command,
+                        command,
                         options.args ?? [],
                         buildAcpStdioSpawnOptions(options.env, options.cwd)
                     ) as ChildProcessWithoutNullStreams;
-                    const transport = new AcpStdioTransport(child, true, options.command);
+                    const transport = new AcpStdioTransport(child, true, command);
                     await transport.attachWindowsJobIfNeeded();
                     return transport;
                 } catch (error) {
@@ -144,20 +157,25 @@ export class AcpStdioTransport {
             }
         }
 
+        const command = resolveWindowsLaunchCommand(options.command, options.cwd);
         const child = spawn(
-            options.command,
+            command,
             options.args ?? [],
             buildAcpStdioSpawnOptions(options.env, options.cwd)
         ) as ChildProcessWithoutNullStreams;
-        const transport = new AcpStdioTransport(child, false, options.command);
+        const transport = new AcpStdioTransport(child, false, command);
         await transport.attachWindowsJobIfNeeded();
         return transport;
     }
 
-    /** Assign a kill-on-close Job Object immediately after spawn (#2021 Approach). */
+    /**
+     * Suspend→Assign→confirm→Resume after a shell:false spawn so the agent
+     * cannot fork outside the job (#2021 Approach). Skips .cmd/.bat roots.
+     */
     private async attachWindowsJobIfNeeded(): Promise<void> {
         const pid = this.getProcessPid();
         if (typeof pid !== 'number' || pid <= 0 || process.platform !== 'win32') return;
+        if (!canContainWithoutShell(this.command)) return;
         this.windowsAgentJob = await tryAssignWindowsAgentJob(pid);
     }
 

@@ -5,9 +5,15 @@
  * taskkill /T after the root exits. A dedicated job without breakaway keeps
  * every descendant that CreateProcess-forks after AssignProcessToJobObject,
  * and QueryInformationJobObject / TerminateJobObject give settlement evidence
- * that survives root exit — the Approach gap ancestry snapshots cannot close.
+ * that survives root exit.
  *
- * Binding uses bun:ffi → kernel32 on win32. Non-Windows, missing FFI, or
+ * Assignment sequence (bot Approach): NtSuspendProcess → Assign →
+ * IsProcessInJob → NtResumeProcess so the agent cannot run (or fork tools)
+ * before membership is confirmed. Callers must spawn with shell:false — a
+ * cmd.exe intermediary that starts the agent before Assign leaves the agent
+ * outside the job and empty-job settlement is forbidden.
+ *
+ * Binding uses bun:ffi → kernel32/ntdll on win32. Non-Windows, missing FFI, or
  * Assign failure returns null so callers keep the sticky-incomplete fallback.
  *
  * https://learn.microsoft.com/windows/win32/procthread/job-objects
@@ -20,8 +26,8 @@ const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x0000_2000;
 const JobObjectBasicAccountingInformation = 1;
 /** JobObjectExtendedLimitInformation */
 const JobObjectExtendedLimitInformation = 9;
-/** PROCESS_SET_QUOTA | PROCESS_TERMINATE */
-const PROCESS_ASSIGN_ACCESS = 0x0101;
+/** PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_SUSPEND_RESUME | PROCESS_QUERY_INFORMATION */
+const PROCESS_ASSIGN_ACCESS = 0x0101 | 0x0800 | 0x0400;
 /** DWORD ActiveProcesses offset in JOBOBJECT_BASIC_ACCOUNTING_INFORMATION (x64). */
 const ACTIVE_PROCESSES_OFFSET = 40;
 const BASIC_ACCOUNTING_SIZE = 48;
@@ -38,6 +44,7 @@ export type WindowsJobKernel = {
     ): number;
     OpenProcess(access: number, inherit: number, pid: number): number | bigint;
     AssignProcessToJobObject(job: number | bigint, process: number | bigint): number;
+    IsProcessInJob(process: number | bigint, job: number | bigint, result: Buffer): number;
     QueryInformationJobObject(
         job: number | bigint,
         infoClass: number,
@@ -48,6 +55,8 @@ export type WindowsJobKernel = {
     TerminateJobObject(job: number | bigint, exitCode: number): number;
     CloseHandle(handle: number | bigint): number;
     GetLastError(): number;
+    NtSuspendProcess?(process: number | bigint): number;
+    NtResumeProcess?(process: number | bigint): number;
     ptr(buffer: Buffer): unknown;
     closeLibrary(): void;
 };
@@ -93,6 +102,10 @@ async function loadKernel(): Promise<WindowsJobKernel | null> {
                 args: [FFIType.u64, FFIType.u64],
                 returns: FFIType.i32,
             },
+            IsProcessInJob: {
+                args: [FFIType.u64, FFIType.u64, FFIType.ptr],
+                returns: FFIType.i32,
+            },
             QueryInformationJobObject: {
                 args: [FFIType.u64, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr],
                 returns: FFIType.i32,
@@ -104,6 +117,18 @@ async function loadKernel(): Promise<WindowsJobKernel | null> {
             CloseHandle: { args: [FFIType.u64], returns: FFIType.i32 },
             GetLastError: { args: [], returns: FFIType.u32 },
         });
+        let ntSuspend: ((process: number | bigint) => number) | undefined;
+        let ntResume: ((process: number | bigint) => number) | undefined;
+        try {
+            const ntdll = dlopen('ntdll.dll', {
+                NtSuspendProcess: { args: [FFIType.u64], returns: FFIType.u32 },
+                NtResumeProcess: { args: [FFIType.u64], returns: FFIType.u32 },
+            });
+            ntSuspend = (process) => ntdll.symbols.NtSuspendProcess(process as never) as number;
+            ntResume = (process) => ntdll.symbols.NtResumeProcess(process as never) as number;
+        } catch {
+            // Suspend helpers optional — Assign still attempted.
+        }
         const s = lib.symbols;
         return {
             CreateJobObjectW: (attrs, name) =>
@@ -119,6 +144,8 @@ async function loadKernel(): Promise<WindowsJobKernel | null> {
                 s.OpenProcess(access as never, inherit as never, pid as never) as number | bigint,
             AssignProcessToJobObject: (job, process) =>
                 s.AssignProcessToJobObject(job as never, process as never) as number,
+            IsProcessInJob: (process, job, result) =>
+                s.IsProcessInJob(process as never, job as never, ptr(result) as never) as number,
             QueryInformationJobObject: (job, infoClass, info, length, returnLength) =>
                 s.QueryInformationJobObject(
                     job as never,
@@ -131,6 +158,8 @@ async function loadKernel(): Promise<WindowsJobKernel | null> {
                 s.TerminateJobObject(job as never, exitCode as never) as number,
             CloseHandle: (handle) => s.CloseHandle(handle as never) as number,
             GetLastError: () => s.GetLastError() as number,
+            NtSuspendProcess: ntSuspend,
+            NtResumeProcess: ntResume,
             ptr,
             closeLibrary: () => lib.close(),
         };
@@ -212,7 +241,8 @@ export class WindowsAgentJob {
 }
 
 /**
- * Create a kill-on-close job and assign `rootPid` immediately after spawn.
+ * Create a kill-on-close job and assign `rootPid` while suspended so the
+ * process cannot execute (or fork) before membership is confirmed (#2021 Approach).
  * Returns null when containment is unavailable — callers keep incomplete sticky.
  */
 export async function tryAssignWindowsAgentJob(rootPid: number): Promise<WindowsAgentJob | null> {
@@ -225,6 +255,7 @@ export async function tryAssignWindowsAgentJob(rootPid: number): Promise<Windows
 
     let job: number | bigint = 0;
     let processHandle: number | bigint = 0;
+    let suspended = false;
     try {
         job = kernel.CreateJobObjectW(null, null);
         if (!handleOk(job)) {
@@ -255,16 +286,48 @@ export async function tryAssignWindowsAgentJob(rootPid: number): Promise<Windows
             return null;
         }
 
+        // Suspend before Assign so the agent cannot CreateProcess tool children
+        // that would escape membership (#2021 Approach — suspended launch).
+        if (kernel.NtSuspendProcess) {
+            const status = kernel.NtSuspendProcess(processHandle);
+            // NTSTATUS success is 0; treat any non-zero as soft failure and continue.
+            suspended = status === 0;
+        }
+
         if (!kernel.AssignProcessToJobObject(job, processHandle)) {
+            if (suspended && kernel.NtResumeProcess) kernel.NtResumeProcess(processHandle);
             kernel.CloseHandle(processHandle);
             kernel.CloseHandle(job);
             kernel.closeLibrary();
             return null;
         }
+
+        const inJob = Buffer.alloc(4);
+        if (
+            !kernel.IsProcessInJob(processHandle, job, inJob)
+            || inJob.readUInt32LE(0) === 0
+        ) {
+            if (suspended && kernel.NtResumeProcess) kernel.NtResumeProcess(processHandle);
+            kernel.CloseHandle(processHandle);
+            kernel.CloseHandle(job);
+            kernel.closeLibrary();
+            return null;
+        }
+
+        if (suspended && kernel.NtResumeProcess) {
+            kernel.NtResumeProcess(processHandle);
+        }
         kernel.CloseHandle(processHandle);
         processHandle = 0;
         return WindowsAgentJob.fromAssigned(kernel, job);
     } catch {
+        if (suspended && handleOk(processHandle) && kernel.NtResumeProcess) {
+            try {
+                kernel.NtResumeProcess(processHandle);
+            } catch {
+                // ignore
+            }
+        }
         if (handleOk(processHandle)) kernel.CloseHandle(processHandle);
         if (handleOk(job)) kernel.CloseHandle(job);
         try {
@@ -274,4 +337,13 @@ export async function tryAssignWindowsAgentJob(rootPid: number): Promise<Windows
         }
         return null;
     }
+}
+
+/**
+ * True when `command` is a PE image we can spawn without cmd.exe.
+ * .cmd/.bat require a shell intermediary — do not claim Job Object settlement.
+ */
+export function canContainWithoutShell(command: string): boolean {
+    const lower = command.toLowerCase();
+    return lower.endsWith('.exe') || lower.endsWith('.com');
 }

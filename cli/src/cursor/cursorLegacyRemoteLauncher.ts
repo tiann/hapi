@@ -17,7 +17,12 @@ import {
     verifyAgentOwnedProcessGroupExited,
     type RetainedProcessIdentity,
 } from '@/utils/process';
-import { tryAssignWindowsAgentJob, type WindowsAgentJob } from '@/utils/windowsJobObject';
+import { getAgentLaunchCommand, resolveExecutable } from '@/agent/agentLaunchCommand';
+import {
+    canContainWithoutShell,
+    tryAssignWindowsAgentJob,
+    type WindowsAgentJob,
+} from '@/utils/windowsJobObject';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import {
@@ -28,7 +33,6 @@ import {
 import type { CursorSession } from './session';
 import type { EnhancedMode } from './loop';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
-import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 // TODO(cursor-acp): remove legacy stream-json resume path after migration window.
 // New Cursor sessions use ACP only. This path exists because pre-ACP Cursor
 // session_id values are not loadable via ACP session/load.
@@ -373,11 +377,18 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         cwd: string,
         onEvent: (event: ReturnType<typeof parseCursorEvent> & object) => void
     ): Promise<{ exitCode: number | null; stderr: string }> {
-        const child = spawn(getAgentLaunchCommand('cursor'), args, {
+        // Never shell:true on Windows for Job Object settlement — cmd.exe can
+        // start the agent before Assign, leaving tools outside the job (#2021).
+        const launchCmd = getAgentLaunchCommand('cursor');
+        const resolved = isWindows()
+            ? (resolveExecutable(launchCmd, { cwd }) ?? launchCmd)
+            : launchCmd;
+        const containable = !isWindows() || canContainWithoutShell(resolved);
+        const child = spawn(resolved, args, {
             cwd,
             env: process.env,
             stdio: ['ignore', 'pipe', 'pipe'],
-            shell: process.platform === 'win32',
+            shell: false,
             windowsHide: process.platform === 'win32',
             // Own process group on POSIX so Stop can signal -pgid without
             // killing the HAPI wrapper (#2021 Blocker).
@@ -393,6 +404,11 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         // Capture identity + tree at spawn while the root is still alive —
         // a later Stop after root exit can still verify retained members (#2021).
         if (typeof child.pid === 'number' && child.pid > 0) {
+            // Suspend→Assign→confirm→Resume before any tree snapshot / settle
+            // trust so the agent cannot fork outside the job (#2021 Approach).
+            if (isWindows() && containable) {
+                this.windowsAgentJob = await tryAssignWindowsAgentJob(child.pid);
+            }
             this.spawnedRootIdentity = {
                 pid: child.pid,
                 startMarker: getProcessStartMarker(child.pid),
@@ -401,11 +417,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 pgid: getProcessGroupId(child.pid),
             };
             this.retainedStopTree = snapshotProcessTreeIdentities(child.pid);
-            // Windows Job Object at launch — descendants inherit membership, so
-            // exit state survives root death. Without a job, keep incomplete
-            // sticky (ancestry cannot recover mid-turn forks) (#2021 Approach).
             if (isWindows()) {
-                this.windowsAgentJob = await tryAssignWindowsAgentJob(child.pid);
                 this.stopTreeSnapshotIncomplete = !this.windowsAgentJob;
             } else if (!this.retainedStopTree) {
                 this.stopTreeSnapshotIncomplete = true;
