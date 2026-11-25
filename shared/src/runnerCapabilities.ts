@@ -39,6 +39,8 @@ export const MACHINE_CAPABILITIES = {
     WorkspaceFileAccess: 'workspace-file-access',
     /** Normalized local-session import transcripts via ListLocalSessions. */
     LocalSessionImport: 'local-session-import',
+    /** Non-signaling session exit probe (archive durable-work reconcile). */
+    ProbeSessionExit: RPC_METHODS.ProbeSessionExit,
 } as const
 
 export type MachineCapability =
@@ -54,6 +56,7 @@ export const CURRENT_MACHINE_CAPABILITIES: readonly MachineCapability[] = [
     MACHINE_CAPABILITIES.UsageQuery,
     MACHINE_CAPABILITIES.WorkspaceFileAccess,
     MACHINE_CAPABILITIES.LocalSessionImport,
+    MACHINE_CAPABILITIES.ProbeSessionExit,
 ]
 
 /**

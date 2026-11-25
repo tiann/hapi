@@ -781,15 +781,18 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(live.active).toBe(false)
 
         setKillSessionMissingTarget()
-        const stopCalls: Array<{ id: string; checkOnly?: boolean }> = []
-        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
-            async (_machineId: string, id: string, opts?: { checkOnly?: boolean }) => {
-                stopCalls.push({ id, checkOnly: opts?.checkOnly })
-                return 'already_gone'
-            }
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        let probed = false
+        gateway.rpcGateway.stopRunnerSession = async () => 'already_gone'
+        gateway.rpcGateway.probeRunnerSessionExit = async () => {
+            probed = true
+            return 'already_gone'
+        }
 
         await engine.archiveSession(sessionId)
-        expect(stopCalls.some((call) => call.checkOnly === true)).toBe(true)
+        expect(probed).toBe(true)
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
         expect(store.messages.getLiveToolWork(sessionId)).toBe(false)
     })
@@ -822,19 +825,21 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().expireInactive(Date.now())).toContain(sessionId)
 
         setKillSessionMissingTarget()
-        let killStopCalled = false
-        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
-            async (_machineId: string, _id: string, opts?: { checkOnly?: boolean }) => {
-                if (opts?.checkOnly) return 'still_alive'
-                killStopCalled = true
-                return 'still_alive'
-            }
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'still_alive'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => 'still_alive'
 
         const error = await engine.archiveSession(sessionId).catch(error => error)
         expect(error).toBeInstanceOf(ArchiveCleanupError)
         expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
         // Generation may still be working — no killing StopSession (#2021 Approach).
-        expect(killStopCalled).toBe(false)
+        expect(stopCalled).toBe(false)
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
@@ -858,13 +863,18 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(live.backgroundTaskCount).toBe(1)
 
         setKillSessionMissingTarget()
-        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
-            async (_machineId: string, _id: string, opts?: { checkOnly?: boolean }) => {
-                if (opts?.checkOnly) return 'already_gone'
-                return 'already_gone'
-            }
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        let probed = false
+        gateway.rpcGateway.stopRunnerSession = async () => 'already_gone'
+        gateway.rpcGateway.probeRunnerSessionExit = async () => {
+            probed = true
+            return 'already_gone'
+        }
 
         await engine.archiveSession(sessionId)
+        expect(probed).toBe(true)
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
         expect(cache().getSession(sessionId)?.backgroundTaskCount).toBe(0)
     })
@@ -883,19 +893,86 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().expireInactive(Date.now())).toContain(sessionId)
 
         setKillSessionMissingTarget()
-        let killStopCalled = false
-        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
-            async (_machineId: string, _id: string, opts?: { checkOnly?: boolean }) => {
-                if (opts?.checkOnly) return 'unknown'
-                killStopCalled = true
-                return 'already_gone'
-            }
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => 'unknown'
 
         const error = await engine.archiveSession(sessionId).catch(error => error)
         expect(error).toBeInstanceOf(ArchiveCleanupError)
         expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
-        expect(killStopCalled).toBe(false)
+        expect(stopCalled).toBe(false)
         expect(cache().getSession(sessionId)?.backgroundTaskCount).toBe(1)
+    })
+
+    it('refuses expired durable work on older Runners without ProbeSessionExit (#2021 Approach)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE, MACHINE_CAPABILITIES } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-expired-old-runner', 'machine-old', undefined, {
+            flavor: 'opencode',
+        })
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-old',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child_old',
+                    },
+                },
+            },
+            'child-old',
+        )
+        const live = cache().getSession(sessionId)!
+        live.activeAt = Date.now() - 360_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+
+        // Connected older Runner advertised caps without the read-only probe.
+        ;(engine as unknown as {
+            getMachine: (id: string) => { metadata: { capabilities: string[] } }
+        }).getMachine = (id: string) => {
+            expect(id).toBe('machine-old')
+            return {
+                metadata: {
+                    capabilities: [
+                        MACHINE_CAPABILITIES.AgentAvailability,
+                        MACHINE_CAPABILITIES.CursorChatStoreStatus,
+                        MACHINE_CAPABILITIES.StopRunner,
+                    ],
+                },
+            }
+        }
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        let probeCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => {
+            probeCalled = true
+            return 'already_gone'
+        }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+        expect(probeCalled).toBe(false)
     })
 
     it('refuses still_alive when lifecycle is idle but transport already expired (#2021 Major)', async () => {

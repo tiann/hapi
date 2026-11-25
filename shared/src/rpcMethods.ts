@@ -12,6 +12,11 @@ export const RPC_METHODS = {
     HandoffLocal: 'handoff-local',
     SpawnHappySession: 'spawn-happy-session',
     StopSession: 'stop-session',
+    /**
+     * Read-only session exit probe for archive reconcile (#2021 Approach).
+     * Older Runners lack this handler — hub must not fall back to StopSession.
+     */
+    ProbeSessionExit: 'probe-session-exit',
     StopRunner: 'stop-runner',
     ListMachineDirectory: 'list-directory',
     PathExists: 'path-exists',

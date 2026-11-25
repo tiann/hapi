@@ -1816,11 +1816,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     const stopSession = coalesceStopRequests(async (
       sessionId: string,
-      opts?: { processStartMarker?: string; checkOnly?: boolean }
+      opts?: { processStartMarker?: string }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
-      if (opts?.checkOnly) {
-        return probeSessionExit(sessionId, opts);
-      }
       const intentional = markIntentionalStop(sessionId);
       const terminated = new Set<number>();
       try {
@@ -1991,6 +1988,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     apiMachine.setRPCHandlers({
       spawnSession,
       stopSession,
+      probeSessionExit,
       requestShutdown: () => requestShutdown('hapi-app')
     });
 

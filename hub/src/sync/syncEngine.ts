@@ -3950,8 +3950,9 @@ export class SyncEngine {
             } else if (hasDurableLiveWork(liveBeforeStop)) {
                 // Heartbeat-expired durable evidence can strand Archive after a
                 // Runner restart that recorded verified exit without emitting
-                // session-child-exited. Probe checkOnly first; retire the dead
-                // generation when already_gone, else keep 409 (#2021 Approach).
+                // session-child-exited. Use the dedicated read-only probe RPC —
+                // never StopSession (older Runners ignore unknown flags and
+                // would kill a live worker) (#2021 Approach).
                 const meta = liveBeforeStop.metadata
                 const reconcileMachineId = meta?.codexResumePending?.machineId ?? meta?.machineId
                 const reconcileRunnerSpawned = Boolean(meta?.codexResumePending)
@@ -3959,42 +3960,53 @@ export class SyncEngine {
                     || meta?.startedFromRunner === true
                 let reconciledGone = false
                 if (reconcileMachineId && reconcileRunnerSpawned) {
-                    const probe = async (id: string, processStartMarker?: string) => {
-                        const timeoutMs = Math.ceil(deadline - performance.now())
-                        if (timeoutMs <= 0) throw new ArchiveCleanupError('timeout')
-                        try {
-                            return await this.rpcGateway.stopRunnerSession(reconcileMachineId, id, {
-                                timeoutMs,
-                                checkOnly: true,
-                                ...(processStartMarker ? { processStartMarker } : {}),
-                            })
-                        } catch (error) {
-                            if (error instanceof RunnerStopRpcError && error.timedOut) {
-                                throw new ArchiveCleanupError('timeout', error)
+                    const machine = this.getMachine(reconcileMachineId)
+                    const caps = machine?.metadata?.capabilities
+                    // Advertised caps without ProbeSessionExit ⇒ older Runner.
+                    // Do not fall back to StopSession / KillSession.
+                    const probeSupported = !caps
+                        || caps.includes(MACHINE_CAPABILITIES.ProbeSessionExit)
+                    if (probeSupported) {
+                        const probe = async (id: string, processStartMarker?: string) => {
+                            const timeoutMs = Math.ceil(deadline - performance.now())
+                            if (timeoutMs <= 0) throw new ArchiveCleanupError('timeout')
+                            try {
+                                return await this.rpcGateway.probeRunnerSessionExit(
+                                    reconcileMachineId,
+                                    id,
+                                    {
+                                        timeoutMs,
+                                        ...(processStartMarker ? { processStartMarker } : {}),
+                                    },
+                                )
+                            } catch (error) {
+                                if (error instanceof RunnerStopRpcError && error.timedOut) {
+                                    throw new ArchiveCleanupError('timeout', error)
+                                }
+                                // Handler absent / unreachable — cannot prove exit.
+                                return 'unknown' as const
                             }
-                            // Missing/unreachable runner — cannot prove exit.
-                            return 'unknown' as const
                         }
-                    }
-                    let status = await probe(sessionId)
-                    if (status === 'unknown') {
-                        const hostPid = meta?.hostPid
-                        const hostStartMarker = typeof meta?.hostStartMarker === 'string'
-                            ? meta.hostStartMarker
-                            : undefined
-                        if (typeof hostPid === 'number' && hostPid > 0) {
-                            status = await probe(`PID-${hostPid}`, hostStartMarker)
+                        let status = await probe(sessionId)
+                        if (status === 'unknown') {
+                            const hostPid = meta?.hostPid
+                            const hostStartMarker = typeof meta?.hostStartMarker === 'string'
+                                ? meta.hostStartMarker
+                                : undefined
+                            if (typeof hostPid === 'number' && hostPid > 0) {
+                                status = await probe(`PID-${hostPid}`, hostStartMarker)
+                            }
                         }
-                    }
-                    if (status === 'already_gone') {
-                        this.store.messages.retireOpenChildToolWork(sessionId)
-                        this.sessionCache.setBackgroundTasks(sessionId, [])
-                        this.sessionCache.noteDerivedWork(
-                            sessionId,
-                            this.store.messages.getLiveToolWork(sessionId),
-                        )
-                        const after = this.sessionCache.getSession(sessionId)
-                        reconciledGone = Boolean(after && !hasDurableLiveWork(after))
+                        if (status === 'already_gone') {
+                            this.store.messages.retireOpenChildToolWork(sessionId)
+                            this.sessionCache.setBackgroundTasks(sessionId, [])
+                            this.sessionCache.noteDerivedWork(
+                                sessionId,
+                                this.store.messages.getLiveToolWork(sessionId),
+                            )
+                            const after = this.sessionCache.getSession(sessionId)
+                            reconciledGone = Boolean(after && !hasDurableLiveWork(after))
+                        }
                     }
                 }
                 if (!reconciledGone) {
