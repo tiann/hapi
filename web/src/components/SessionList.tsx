@@ -14,7 +14,7 @@ import {
 import { useLongPress } from '@/hooks/useLongPress'
 import { useLowRateAnimation } from '@/hooks/useLowRateAnimation'
 import { usePlatform } from '@/hooks/usePlatform'
-import { sessionArchiveMutationKey, sessionExternalRefMutationKey, sessionPinMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { sessionArchiveMutationKey, sessionExternalRefMutationKey, sessionPinMutationKey, sessionTitleMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useIsMutating } from '@tanstack/react-query'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
@@ -627,6 +627,12 @@ export function groupSessionsByDirectory(
         })
 }
 
+
+type ProjectSection = 'detailed' | 'active' | 'archived'
+
+function getProjectSectionStateKey(projectKey: string, section: ProjectSection = 'detailed'): string {
+    return JSON.stringify([section, projectKey])
+}
 
 function readClosedProjects(storageKey: string | null): Set<string> {
     if (!storageKey) return new Set()
@@ -2058,6 +2064,7 @@ function StableRenameSessionDialog(props: {
         session.id,
         session.metadata?.flavor ?? null
     )
+    const isSavingTitle = useIsMutating({ mutationKey: sessionTitleMutationKey(session.id), exact: true }) > 0
     return (
         <RenameSessionDialog
             isOpen={true}
@@ -2068,7 +2075,7 @@ function StableRenameSessionDialog(props: {
             onRename={renameSession}
             onSuggestTitle={api && titleSuggestionAvailable ? suggestSessionTitle : undefined}
             onUpdateSummary={api && titleSuggestionAvailable ? updateSessionSummary : undefined}
-            isPending={isPending}
+            isPending={isPending || isSavingTitle}
         />
     )
 }
@@ -2730,7 +2737,7 @@ export function SessionList(props: {
     const allDirectoryGroups = useMemo(() => {
         const grouped = groupSessionsByDirectory(
             machineFilteredSessions.filter((session) => !session.globalPinned),
-            hasTextQuery ? undefined : listView
+            searchScoreIndex && hasTextQuery ? undefined : listView
         )
         if (searchScoreIndex && hasTextQuery) {
             return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
@@ -2772,9 +2779,16 @@ export function SessionList(props: {
     )
     // Save explicit folds only, never temporary search expansion or inferred liveness.
     const identity = api?.getReadStateScope?.()
-    const foldKey = identity ? `hapi.closed-projects.v1:${identity}` : null
+    // Detailed retains its legacy storage key and raw project keys. Combined
+    // stores its two section folds separately from real directory names.
+    const foldKey = identity
+        ? `${isCombinedPinLayout ? 'hapi.closed-projects.combined.v1' : 'hapi.closed-projects.v1'}:${identity}`
+        : null
     const [foldRevision, setFoldRevision] = useState(0)
-    const savedFolds = useMemo(() => readClosedProjects(foldKey), [foldKey, foldRevision])
+    const savedFolds = useMemo(() => {
+        const persisted = readClosedProjects(foldKey)
+        return isCombinedPinLayout ? persisted : new Set([...persisted].map(key => getProjectSectionStateKey(key)))
+    }, [foldKey, foldRevision, isCombinedPinLayout])
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
@@ -2788,7 +2802,7 @@ export function SessionList(props: {
     const groupOverrides = ephemeralFilter ? filterCollapseOverrides : collapseOverrides
     const isGroupCollapsed = (
         group: SessionGroup,
-        stateKey = group.key,
+        stateKey = getProjectSectionStateKey(group.key),
         expandedByDefault = false
     ): boolean => {
         const override = groupOverrides.get(stateKey)
@@ -2808,11 +2822,13 @@ export function SessionList(props: {
         return !expandedByDefault && !group.hasActiveSession && !group.hasPinnedSession && !hasSelectedSession
     }
 
-    const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
+    const toggleGroup = (groupKey: string, section: ProjectSection, isCollapsed: boolean) => {
+        const stateKey = getProjectSectionStateKey(groupKey, section)
         if (foldKey && !ephemeralFilter) {
+            const persistedKey = section === 'detailed' ? groupKey : stateKey
             const closed = readClosedProjects(foldKey)
-            if (isCollapsed) closed.delete(groupKey)
-            else closed.add(groupKey)
+            if (isCollapsed) closed.delete(persistedKey)
+            else closed.add(persistedKey)
             try {
                 localStorage.setItem(foldKey, JSON.stringify([...closed]))
                 setFoldRevision(n => n + 1)
@@ -2821,7 +2837,7 @@ export function SessionList(props: {
         const setOverrides = ephemeralFilter ? setFilterCollapseOverrides : setCollapseOverrides
         setOverrides(prev => {
             const next = new Map(prev)
-            next.set(groupKey, !isCollapsed)
+            next.set(stateKey, !isCollapsed)
             return next
         })
     }
@@ -3084,10 +3100,11 @@ export function SessionList(props: {
 
     const renderDirectoryGroup = (
         group: SessionGroup,
-        options: { showAllSessions?: boolean; stateKey?: string; expandedByDefault?: boolean } = {}
+        options: { showAllSessions?: boolean; section?: ProjectSection; expandedByDefault?: boolean } = {}
     ) => {
         const showAllSessions = options.showAllSessions ?? false
-        const stateKey = options.stateKey ?? group.key
+        const section = options.section ?? 'detailed'
+        const stateKey = getProjectSectionStateKey(group.key, section)
         const isCollapsed = isGroupCollapsed(group, stateKey, options.expandedByDefault)
         const visibleGroupSessions = showAllSessions ? group.sessions : getVisibleGroupSessions(group)
         // A collapsed group still shows its unread rows, so new output in a
@@ -3122,7 +3139,7 @@ export function SessionList(props: {
                     directory={group.directory}
                     displayName={groupTitle}
                     onArchiveAll={requestProjectArchive(group, groupTitle)}
-                    onClick={() => toggleGroup(stateKey, isCollapsed)}
+                    onClick={() => toggleGroup(group.key, section, isCollapsed)}
                     expanded={!isCollapsed}
                     onNewSession={getNewSessionInGroup(group)}
                 >
@@ -3195,10 +3212,10 @@ export function SessionList(props: {
     const visibleDirectoryGroups = useMemo(
         () => isCombinedPinLayout
             ? [
-                ...combinedActiveGroups.map((group) => ({ group, stateKey: `${group.key}::active` })),
-                ...combinedArchivedGroups.map((group) => ({ group, stateKey: `${group.key}::archived` })),
+                ...combinedActiveGroups.map((group) => ({ group, stateKey: getProjectSectionStateKey(group.key, 'active') })),
+                ...combinedArchivedGroups.map((group) => ({ group, stateKey: getProjectSectionStateKey(group.key, 'archived') })),
             ]
-            : groups.map((group) => ({ group, stateKey: group.key })),
+            : groups.map((group) => ({ group, stateKey: getProjectSectionStateKey(group.key) })),
         [combinedActiveGroups, combinedArchivedGroups, groups, isCombinedPinLayout]
     )
 
@@ -3272,7 +3289,7 @@ export function SessionList(props: {
             ? activeGroup ?? combinedArchivedGroups.find(containsTarget)
             : groups.find(containsTarget)
         if (targetGroup) {
-            const stateKey = isCombinedPinLayout ? `${targetGroup.key}::${activeGroup ? 'active' : 'archived'}` : targetGroup.key
+            const stateKey = getProjectSectionStateKey(targetGroup.key, isCombinedPinLayout ? (activeGroup ? 'active' : 'archived') : 'detailed')
             const collapsed = isGroupCollapsed(targetGroup, stateKey, isCombinedPinLayout)
             const peekingUnread = collapsed
                 && keepUnreadSessionsVisible
@@ -3331,15 +3348,14 @@ export function SessionList(props: {
             const next = new Map(prev)
             const knownKeys = new Set<string>()
             for (const g of allGroups) {
-                knownKeys.add(g.key)
-                knownKeys.add(`sessions::${g.key}`)
+                knownKeys.add(getProjectSectionStateKey(g.key))
             }
             // Keep both Combined-mode states for projects hidden by search,
             // machine, unread, or active-only filters. Those filters should not
             // reset a user's explicit collapse choice.
             for (const g of unfilteredGroups) {
-                knownKeys.add(`${g.key}::active`)
-                knownKeys.add(`${g.key}::archived`)
+                knownKeys.add(getProjectSectionStateKey(g.key, 'active'))
+                knownKeys.add(getProjectSectionStateKey(g.key, 'archived'))
             }
             let changed = false
             for (const key of next.keys()) {
@@ -4019,7 +4035,7 @@ export function SessionList(props: {
                         {combinedActiveGroups.map((group) => renderDirectoryGroup(group, {
                             showAllSessions: true,
                             expandedByDefault: true,
-                            stateKey: `${group.key}::active`,
+                            section: 'active',
                         }))}
                         {combinedActiveGroups.length > 0 && combinedArchivedGroups.length > 0 ? (
                             <div
@@ -4029,7 +4045,7 @@ export function SessionList(props: {
                             />
                         ) : null}
                         {combinedArchivedGroups.map((group) => renderDirectoryGroup(group, {
-                            stateKey: `${group.key}::archived`,
+                            section: 'archived',
                             expandedByDefault: true,
                         }))}
                     </>

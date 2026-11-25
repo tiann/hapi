@@ -10,17 +10,20 @@ import '../src/index.css'
 
 const params = new URLSearchParams(window.location.search)
 const crossTab = params.has('crossTab')
-const actionSearch = params.get('mode') === 'action-search'
+const actionSearchCreated = params.get('mode') === 'action-search-created'
+const actionSearch = params.get('mode') === 'action-search' || actionSearchCreated
+const foldCollision = params.has('foldCollision')
 if (params.get('mode') === 'count' || crossTab) {
     window.localStorage.setItem('hapi-session-project-sort-mode', 'count')
 } else {
     window.localStorage.removeItem('hapi-session-project-sort-mode')
 }
 if (actionSearch) {
-    window.localStorage.setItem('hapi-session-project-sort-mode', 'count')
+    if (actionSearchCreated) window.localStorage.setItem('hapi-session-list-sort', 'created')
+    else window.localStorage.setItem('hapi-session-project-sort-mode', 'count')
     window.localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
     window.localStorage.removeItem('hapi-pin-in-progress-sessions-mode')
-} else if (params.get('mode') === 'combined-count') {
+} else if (params.get('mode') === 'combined-count' || foldCollision) {
     window.localStorage.setItem('hapi-session-project-sort-mode', 'count')
     window.localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
     window.localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
@@ -81,12 +84,17 @@ const sessions: SessionSummary[] = [
 ]
 
 const actionSearchSessions: SessionSummary[] = [
-    makeSession({ id: 'strong-title', active: true, thinking: true, updatedAt: now,
+    makeSession({ id: 'strong-title', active: true, thinking: true, updatedAt: now, lastUserMessageAt: now, createdAt: now - 10,
         metadata: { path: '/projects/strong', name: 'home', flavor: 'codex' } }),
-    makeSession({ id: 'weak-path-1', active: true, thinking: true, updatedAt: now + 1,
+    makeSession({ id: 'weak-path-1', active: true, thinking: true, updatedAt: now + 1, lastUserMessageAt: now + 1, createdAt: now - 50,
         metadata: { path: '/projects/home-weak', name: 'Task one', flavor: 'codex' } }),
-    makeSession({ id: 'weak-path-2', active: true, thinking: true, updatedAt: now + 2,
+    makeSession({ id: 'weak-path-2', active: true, thinking: true, updatedAt: now + 2, lastUserMessageAt: now + 2, createdAt: now - 60,
         metadata: { path: '/projects/home-weak', name: 'Task two', flavor: 'codex' } }),
+]
+
+const collidingProjectSessions: SessionSummary[] = [
+    makeSession({ id: 'plain', active: true, metadata: { path: '/projects/app', name: 'Plain project session', flavor: 'codex' } }),
+    makeSession({ id: 'suffixed', active: true, metadata: { path: '/projects/app::active', name: 'Suffixed project session', flavor: 'codex' } }),
 ]
 
 const staleJobSession = makeSession({
@@ -131,6 +139,12 @@ const exportApi = {
     })
 } as unknown as ApiClient
 
+const renameApi = {
+    renameSession: () => new Promise<void>(resolve => { window.finishProjectRename = resolve })
+} as unknown as ApiClient
+
+const foldApi = { getReadStateScope: () => 'project-sort-fixture' } as unknown as ApiClient
+
 declare global {
     interface Window {
         updateProjectSession: (id: string, patch: Partial<SessionSummary>) => void
@@ -138,11 +152,12 @@ declare global {
         finishProjectExport: () => void
         finishProjectArchive: () => void
         finishProjectLink: () => void
+        finishProjectRename: () => void
     }
 }
 
 function ProjectSortFixture() {
-    const [currentSessions, setCurrentSessions] = useState<SessionSummary[]>(crossTab ? [] : actionSearch ? actionSearchSessions : params.has('archivedJob') ? [...sessions, archivedJobSession] : params.has('staleJob') ? [...sessions, staleJobSession] : sessions)
+    const [currentSessions, setCurrentSessions] = useState<SessionSummary[]>(crossTab ? [] : foldCollision ? collidingProjectSessions : actionSearch ? actionSearchSessions : params.has('archivedJob') ? [...sessions, archivedJobSession] : params.has('staleJob') ? [...sessions, staleJobSession] : sessions)
     window.showProjectSortProjects = (names) => {
         setCurrentSessions(names.map((name, index) => makeSession({
             id: name,
@@ -166,7 +181,7 @@ function ProjectSortFixture() {
                 onRefresh={async () => {}}
                 isLoading={false}
                 renderHeader={actionSearch}
-                api={params.has('forkPreview') ? forkApi : params.has('archivePending') ? archiveApi : params.has('linkPr') ? linkPrApi : params.has('exportPending') ? exportApi : null}
+                api={foldCollision ? foldApi : params.has('renamePending') ? renameApi : params.has('forkPreview') ? forkApi : params.has('archivePending') ? archiveApi : params.has('linkPr') ? linkPrApi : params.has('exportPending') ? exportApi : null}
             />
         </div>
     )

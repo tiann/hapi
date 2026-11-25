@@ -12,6 +12,7 @@ export const sessionModelMutationKey = (sessionId: string) => ['session-model', 
 export const sessionArchiveMutationKey = (sessionId: string | null) => ['session-archive', sessionId] as const
 export const sessionExternalRefMutationKey = (sessionId: string | null) => ['session-external-ref', sessionId] as const
 export const sessionPinMutationKey = (sessionId: string | null) => ['session-pin', sessionId] as const
+export const sessionTitleMutationKey = (sessionId: string | null) => ['session-title', sessionId] as const
 
 export function useSessionActions(
     api: ApiClient | null,
@@ -246,6 +247,7 @@ export function useSessionActions(
     })
 
     const renameMutation = useMutation({
+        mutationKey: sessionTitleMutationKey(sessionId),
         mutationFn: async ({ name, titleLocked }: { name: string | undefined; titleLocked?: boolean }) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
@@ -298,6 +300,7 @@ export function useSessionActions(
     })
 
     const summaryMutation = useMutation({
+        mutationKey: sessionTitleMutationKey(sessionId),
         mutationFn: async ({ text, titleLocked }: { text: string; titleLocked?: boolean }) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')

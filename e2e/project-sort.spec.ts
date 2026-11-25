@@ -71,6 +71,43 @@ test('uses count order for action-only projects during Exclude search', async ({
 })
 
 
+test('keeps Date created order on action-only projects during Exclude search', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=action-search-created`)
+    await page.getByRole('button', { name: /Search sessions/ }).click()
+    await page.getByRole('button', { name: 'Search scope' }).click()
+    await page.getByRole('button', { name: 'Exclude' }).click()
+    await page.getByPlaceholder('Search title/path/Agent/machine/ID…').fill('no-such-session')
+    const headers = page.locator('[title^="/projects/"]')
+    await expect(headers).toHaveCount(2)
+    await expect(headers.first()).toHaveAttribute('title', '/projects/strong')
+    await expect(headers.last()).toHaveAttribute('title', '/projects/home-weak')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-exclude-created.png`, fullPage: true })
+})
+
+
+test('Combined folds stay separate from Detailed project names', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?foldCollision=1`)
+    const plain = page.locator('[title="/projects/app"]')
+    const suffixed = page.locator('[title="/projects/app::active"]')
+    await expect(plain).toHaveAttribute('aria-expanded', 'true')
+    await plain.click()
+    await expect(plain).toHaveAttribute('aria-expanded', 'false')
+    const setLayout = (layout: 'combined' | 'detailed') => page.evaluate(mode => {
+        const key = 'hapi-pin-in-progress-sessions-mode'
+        window.localStorage.setItem(key, mode)
+        window.dispatchEvent(new StorageEvent('storage', { key, newValue: mode }))
+    }, layout)
+    await setLayout('detailed')
+    await expect(suffixed).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.getByRole('button', { name: /Suffixed project session/ })).toBeInViewport()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-fold-collision.png`, fullPage: true })
+    await setLayout('combined')
+    await expect(plain).toHaveAttribute('aria-expanded', 'false')
+})
+
+
 test('keeps an archived session with a running job below the Combined divider', async ({ page }) => {
     await page.goto(`${fixtureUrl}?mode=combined-count&archivedJob=1`)
     const separator = page.getByRole('separator', { name: 'Archived project sessions' })
@@ -271,6 +308,28 @@ test('keeps a Combined rename draft when its session disconnects', async ({ page
     await expect(page.locator('[role="separator"][aria-label="Archived project sessions"]')).toBeVisible()
     const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
     if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-rename-draft-after-disconnect.png`, fullPage: true })
+})
+
+
+test('keeps a reopened Rename dialog busy until its previous save settles', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=combined-count&renamePending=1`)
+    const rename = async () => {
+        await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })
+        await page.getByRole('menuitem', { name: 'Rename' }).click()
+    }
+    const dialog = page.getByRole('dialog', { name: 'Rename Session' })
+    await rename()
+    await dialog.getByRole('textbox').fill('First title')
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click()
+    await page.waitForFunction(() => typeof window.finishProjectRename === 'function')
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await rename()
+    await expect(dialog.getByRole('button', { name: 'Saving…' })).toBeDisabled()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-rename-pending.png`, fullPage: true })
+    await page.evaluate(() => window.finishProjectRename())
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeEnabled()
 })
 
 
