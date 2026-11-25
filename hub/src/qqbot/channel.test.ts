@@ -181,6 +181,22 @@ describe('QQ bot DM notifications', () => {
         expect(fetch.mock.calls.map(([url]) => url)).toEqual([tokenUrl])
     })
 
+    it.each([false, true])('skips a ready alert when a new turn starts during authentication (was thinking: %s)', async (wasThinking) => {
+        const releaseAuth = Promise.withResolvers<Response>()
+        const fetch = mockFetch(url => url === tokenUrl ? releaseAuth.promise : Response.json({ id: 'message-id' }))
+        const session = createSession({ thinking: wasThinking, activeTurnStartedAt: wasThinking ? 10 : null })
+        const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), () => session, fetch)
+        const delivery = channel.sendReady(session)
+        expect(fetch.mock.calls.map(([url]) => url)).toEqual([tokenUrl])
+        // The real session cache can mutate the same session object in place.
+        session.thinking = true
+        session.activeTurnStartedAt = 20
+        releaseAuth.resolve(tokenResponse())
+        await delivery
+
+        expect(fetch.mock.calls.map(([url]) => url)).toEqual([tokenUrl])
+    })
+
     it.each(['imported name', 'generated summary', 'workspace path'])(
         'keeps private session metadata and input request arguments out of QQ (%s)', async (source) => {
             const fetch = mockFetch()
