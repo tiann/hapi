@@ -4,7 +4,7 @@
  * Handles CLI_API_TOKEN initialization with priority:
  * 1. Environment variable (highest - allows temporary override)
  * 2. Settings file (~/.hapi/settings.json)
- * 3. Interactive prompt (only when both above are missing)
+ * 3. Interactive prompt (only when both above are missing and interactive is not false)
  */
 
 import * as readline from 'node:readline/promises'
@@ -20,7 +20,7 @@ import { initializeExtraHeaders } from '@/ui/extraHeadersInit'
  * Initialize CLI API token
  * Must be called before any API operations
  */
-export async function initializeToken(): Promise<void> {
+export async function initializeToken(options: { interactive?: boolean } = {}): Promise<void> {
     // Initialize API URL first (env > settings.json > default)
     const apiUrlSource = await initializeApiUrl()
     await initializeExtraHeaders()
@@ -41,7 +41,7 @@ export async function initializeToken(): Promise<void> {
     }
 
     // 3. Non-TTY environment cannot prompt, fail with clear error
-    if (!process.stdin.isTTY) {
+    if (options.interactive === false || !process.stdin.isTTY) {
         throw new Error('CLI_API_TOKEN is required. Set it via environment variable or run `hapi auth login`.')
     }
 

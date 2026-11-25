@@ -237,6 +237,27 @@ hapi spawn-peer --dir ~/project --name "Fix flaky test" --message-file -
 When run inside a HAPI session, the first message is stamped with a link to
 the parent session.
 
+### `hapi peer-tool <name>`
+
+Runs one of the peer MCP tools (`list_peers`, `inspect_peer`, `ping_peer`,
+`spawn_peer`) with the same input schema and result as the in-session tool, so
+scripts and non-Node hosts can call them without embedding the MCP server.
+Arguments are a JSON object on stdin; the MCP tool result is printed as JSON on
+stdout.
+
+```bash
+echo '{"includeInactive":true}' | hapi peer-tool list_peers
+echo '{"sessionIdPrefix":"7d55ed21","message":"Build is green"}' | hapi peer-tool ping_peer
+```
+
+Exit code `0` on success, `1` when the result has `isError`, `2` on usage
+errors (unknown tool, invalid JSON or arguments) or when
+`HAPI_DISABLE_PEER_TOOLS` is set. `HAPI_SESSION_ID` identifies the calling
+session (excluded from `list_peers`, Parent of `spawn_peer`, receiver of
+`waitForReply` replies, which a detached background process forwards so the
+command returns at once). Relative `spawn_peer` directories resolve against the
+current directory, like `hapi spawn-peer`.
+
 ## Jobs
 
 ### `hapi job`
