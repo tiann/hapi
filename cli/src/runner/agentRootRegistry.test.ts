@@ -99,4 +99,35 @@ describe('agentRootRegistry', () => {
         reg.clearAgentRootForCurrentHost()
         delete process.env.HAPI_SESSION_ID
     })
+
+    it('Windows shim fallback keeps containment active after root exit (#2021 Approach)', async () => {
+        vi.resetModules()
+        vi.doMock('@/utils/process', async () => {
+            const actual = await vi.importActual<typeof import('@/utils/process')>('@/utils/process')
+            return {
+                ...actual,
+                isWindows: () => true,
+                retainedIdentityStillAlive: () => false,
+            }
+        })
+        const reg = await import('./agentRootRegistry')
+        const uncontained = {
+            hostPid: 424260,
+            pid: 999010,
+            startMarker: 'Mon Jan 1 00:00:00 2026',
+            containmentEstablished: false as const,
+            sessionId: 'hapi-sess-win-shim',
+        }
+        expect(reg.agentRootContainmentActive(uncontained)).toBe(true)
+        reg.writeAgentRoot(uncontained)
+        expect(reg.findLiveAgentRootForSession('hapi-sess-win-shim', [424260])).not.toBeNull()
+
+        const contained = {
+            ...uncontained,
+            hostPid: 424261,
+            containmentEstablished: true as const,
+            sessionId: 'hapi-sess-win-job',
+        }
+        expect(reg.agentRootContainmentActive(contained)).toBe(false)
+    })
 })

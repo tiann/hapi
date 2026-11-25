@@ -29,6 +29,15 @@ export type AgentRootRecord = {
     pgid?: number | null
     /** HAPI hub session UUID — never the ACP agent session id. */
     sessionId?: string
+    /**
+     * True when CREATE_SUSPENDED Job Object (Windows) or an agent-owned POSIX
+     * process group backs settlement. False for Windows shim / shell fallback
+     * launches where descendants can outlive the root — fail closed until
+     * graceful clearAgentRoot (#2021 Approach).
+     */
+    containmentEstablished?: boolean
+    /** Wrapper generation marker (HAPI hostPid start marker) when known. */
+    hostStartMarker?: string | null
 }
 
 function agentRootsDir(): string {
@@ -59,6 +68,12 @@ function parseRecord(raw: unknown): AgentRootRecord | null {
         tgid: typeof rec.tgid === 'number' ? rec.tgid : rec.tgid === null ? null : undefined,
         pgid: typeof rec.pgid === 'number' ? rec.pgid : rec.pgid === null ? null : undefined,
         sessionId: typeof rec.sessionId === 'string' ? rec.sessionId : undefined,
+        containmentEstablished: typeof rec.containmentEstablished === 'boolean'
+            ? rec.containmentEstablished
+            : undefined,
+        hostStartMarker: typeof rec.hostStartMarker === 'string'
+            ? rec.hostStartMarker
+            : rec.hostStartMarker === null ? null : undefined,
     }
 }
 
@@ -157,7 +172,17 @@ export function agentRootContainmentActive(record: AgentRootRecord): boolean {
         // empty/foreign ⇒ containment ended; ours/unknown ⇒ still blocking
         return state === 'ours' || state === 'unknown'
     }
-    // Windows / no pgid: generation-bound root identity (match or unknown).
+    if (isWindows()) {
+        // Job Object with KILL_ON_JOB_CLOSE: wrapper/handle death reaps members.
+        // Root identity gone ⇒ containment ended.
+        if (record.containmentEstablished === true) {
+            return retainedIdentityStillAlive(identity)
+        }
+        // Shim / shell fallback (or legacy publish without the flag): descendants
+        // can escape. Keep blocking until graceful clearAgentRoot (#2021 Approach).
+        return true
+    }
+    // Non-Windows without a usable pgid: generation-bound root identity.
     return retainedIdentityStillAlive(identity)
 }
 
@@ -210,10 +235,16 @@ export function hostAgentContainmentActive(hostPid: number): boolean {
 /** Publish spawn identity for the current HAPI host process. */
 export function publishAgentRootFromIdentity(
     identity: RetainedProcessIdentity,
-    extras?: { sessionId?: string },
+    extras?: {
+        sessionId?: string
+        containmentEstablished?: boolean
+        hostStartMarker?: string | null
+    },
 ): void {
     const fromEnv = (process.env[HAPI_SESSION_ID_ENV] ?? '').trim()
     const sessionId = (extras?.sessionId ?? fromEnv) || undefined
+    const containmentEstablished = extras?.containmentEstablished
+        ?? (!isWindows() ? true : false)
     writeAgentRoot({
         hostPid: process.pid,
         pid: identity.pid,
@@ -222,6 +253,9 @@ export function publishAgentRootFromIdentity(
         tgid: identity.tgid,
         pgid: identity.pgid,
         sessionId,
+        containmentEstablished,
+        hostStartMarker: extras?.hostStartMarker
+            ?? getProcessStartMarker(process.pid),
     })
 }
 

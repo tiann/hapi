@@ -444,7 +444,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 tgid: getProcessThreadGroupId(child.pid),
                 pgid: getProcessGroupId(child.pid),
             };
-            publishAgentRootFromIdentity(this.spawnedRootIdentity);
+            publishAgentRootFromIdentity(this.spawnedRootIdentity, {
+                containmentEstablished: !!this.windowsAgentJob?.establishedAtCreate || !isWindows(),
+            });
             this.retainedStopTree = snapshotProcessTreeIdentities(child.pid);
             if (isWindows()) {
                 // Empty-job settlement only when CREATE_SUSPENDED path confirmed

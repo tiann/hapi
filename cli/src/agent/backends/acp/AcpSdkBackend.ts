@@ -386,7 +386,9 @@ export class AcpSdkBackend implements AgentBackend {
                 pgid: getProcessGroupId(spawnPid),
             };
             // Durable for Runner probe after wrapper crash (#2021 Approach).
-            publishAgentRootFromIdentity(this.spawnedRootIdentity);
+            publishAgentRootFromIdentity(this.spawnedRootIdentity, {
+                containmentEstablished: this.windowsJobContained || !isWindows(),
+            });
             const spawnTree = snapshotProcessTreeIdentities(spawnPid);
             if (spawnTree && spawnTree.length > 0) {
                 this.retainedAgentTree = spawnTree;
@@ -1899,7 +1901,9 @@ export class AcpSdkBackend implements AgentBackend {
         // Re-publish with HAPI_SESSION_ID from env (never the ACP agent session
         // id) so Runner probe can find containment after restart (#2021 Approach).
         if (this.spawnedRootIdentity) {
-            publishAgentRootFromIdentity(this.spawnedRootIdentity);
+            publishAgentRootFromIdentity(this.spawnedRootIdentity, {
+                containmentEstablished: this.windowsJobContained || !isWindows(),
+            });
         }
         // Calls of this session still open when a previous process stopped
         // keep their ids (an agent that outlives HAPI's restart may report them).
