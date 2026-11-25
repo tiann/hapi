@@ -2479,6 +2479,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     });
                     this.backendLost = true;
                     verified = await this.retireBackend(backendRef);
+                    // Verified retirement kills commands from earlier prompts too —
+                    // clear their background snapshot before a replacement so
+                    // Archive does not stay blocked on dead tasks (#2021 Major).
+                    if (verified) {
+                        this.clearBackgroundTasksSnapshot();
+                    }
                     // Only respawn after verified exit — and only if this
                     // generation is still current (completion may have disarmed
                     // the timer while we awaited retirement) (#2021 Minor).

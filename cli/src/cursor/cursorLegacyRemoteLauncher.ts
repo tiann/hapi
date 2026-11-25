@@ -393,11 +393,10 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     pgid: getProcessGroupId(child.pid),
                 };
                 this.retainedStopTree = snapshotProcessTreeIdentities(child.pid);
-                // Windows: spawn-time PIDs alone are not teardown evidence —
-                // tools started later with separate stdio can be missing
-                // (#2021 Major). Clear incomplete only on a later Stop refresh
-                // while the root still matches.
-                if (isWindows() || !this.retainedStopTree) {
+                // Windows ancestry-validated spawn trees are generation-bound
+                // evidence that can finish a natural close after the root exits.
+                // Only mark incomplete when the snapshot itself failed (#2021 Major).
+                if (!this.retainedStopTree) {
                     this.stopTreeSnapshotIncomplete = true;
                 }
             } else {

@@ -276,13 +276,22 @@ function getPosixProcessCommandLine(pid: number): string | null {
   return commandLine.trim() ? commandLine : null;
 }
 
-function killProcessWindows(pid: number, force: boolean, deadlineMs?: number): boolean {
+function killProcessWindows(
+  pid: number,
+  force: boolean,
+  deadlineMs?: number,
+  opts?: { tree?: boolean },
+): boolean {
   if (!isProcessAlive(pid)) {
     return true;
   }
   if (!signalAllowed(deadlineMs)) return false;
 
-  const args = ['/T', '/PID', pid.toString()];
+  // Retained-tree cleanup already enumerated generation-checked members —
+  // avoid /T so taskkill cannot widen into unchecked cousins (#2021 Major).
+  const args = opts?.tree === false
+    ? ['/PID', pid.toString()]
+    : ['/T', '/PID', pid.toString()];
   if (force) {
     args.unshift('/F');
   }
@@ -451,9 +460,27 @@ export type RetainedProcessIdentity = {
 export function snapshotProcessTreeIdentities(rootPid: number): RetainedProcessIdentity[] | null {
   const n = typeof rootPid === 'number' ? rootPid : Number(rootPid);
   if (!Number.isFinite(n) || n <= 0) return null;
-  const pids = isWindows() ? collectWindowsProcessTree(n) : collectProcessTree(n);
-  if (pids === 'scan_failed') return null;
   const bootId = getSystemBootId();
+  if (isWindows()) {
+    // Build the initial retained tree from the same generation-checked ancestry
+    // walk used on refresh — numeric ParentProcessId alone can adopt an
+    // unrelated prior child after PID reuse (#2021 Major).
+    const root: RetainedProcessIdentity = {
+      pid: n,
+      startMarker: getProcessStartMarker(n),
+      bootId,
+      tgid: null,
+      pgid: null,
+    };
+    const expanded = expandWindowsRetainedIdentities([root]);
+    if (expanded === null || expanded.length === 0) return null;
+    // Root-last for callers that index [-1].
+    const withoutRoot = expanded.filter((identity) => identity.pid !== n);
+    withoutRoot.push(expanded.find((identity) => identity.pid === n) ?? root);
+    return withoutRoot;
+  }
+  const pids = collectProcessTree(n);
+  if (pids === 'scan_failed') return null;
   return pids.map((pid) => ({
     pid,
     startMarker: getProcessStartMarker(pid),
@@ -502,7 +529,7 @@ async function killMatchingRetainedIdentity(
     if (classifyRetainedIdentity(identity) !== 'match') return false;
     try {
       if (isWindows()) {
-        killProcessWindows(identity.pid, forceKill);
+        killProcessWindows(identity.pid, forceKill, undefined, { tree: false });
       } else {
         process.kill(identity.pid, forceKill ? 'SIGKILL' : 'SIGTERM');
       }
@@ -583,8 +610,19 @@ export function readWindowsAncestryTable(): Map<number, WindowsAncestryEntry> | 
     { encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024 * 1024, timeout: SPAWN_SYNC_TIMEOUT_MS },
   );
   if (result.error || result.status !== 0) return null;
+  return parseWindowsAncestryTableJson((result.stdout ?? '').toString(), process.pid);
+}
+
+/**
+ * Parse a Win32 CIM ancestry JSON listing. Skips PID 0 (System Idle Process)
+ * without rejecting the table (#2021 Major).
+ */
+export function parseWindowsAncestryTableJson(
+  raw: string,
+  scannerPid: number,
+): Map<number, WindowsAncestryEntry> | null {
   try {
-    const parsed = JSON.parse((result.stdout ?? '').toString() || 'null') as unknown;
+    const parsed = JSON.parse(raw || 'null') as unknown;
     const rows = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
     const table = new Map<number, WindowsAncestryEntry>();
     let sawScanner = false;
@@ -593,8 +631,10 @@ export function readWindowsAncestryTable(): Map<number, WindowsAncestryEntry> | 
       const pid = Number((row as { ProcessId?: unknown }).ProcessId);
       const parentPid = Number((row as { ParentProcessId?: unknown }).ParentProcessId);
       const markerRaw = (row as { CreationDate?: unknown }).CreationDate;
-      if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(parentPid)) return null;
-      if (pid === process.pid) sawScanner = true;
+      // System Idle Process is PID 0 — skip it; do not reject the whole table.
+      if (pid === 0) continue;
+      if (!Number.isFinite(pid) || pid < 0 || !Number.isFinite(parentPid)) return null;
+      if (pid === scannerPid) sawScanner = true;
       table.set(pid, {
         parentPid,
         marker: typeof markerRaw === 'string' && markerRaw.length > 0 ? markerRaw : null,
@@ -748,7 +788,7 @@ export async function killRetainedProcessTree(
     if (classifyRetainedIdentity(identity) !== 'match') continue;
     try {
       if (isWindows()) {
-        killProcessWindows(identity.pid, force);
+        killProcessWindows(identity.pid, force, undefined, { tree: false });
       } else {
         process.kill(identity.pid, force ? 'SIGKILL' : 'SIGTERM');
       }

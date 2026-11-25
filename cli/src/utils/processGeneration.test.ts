@@ -23,6 +23,7 @@ import {
     classifyAgentOwnedProcessGroup,
     isAgentOwnedProcessGroup,
     killRetainedProcessTree,
+    parseWindowsAncestryTableJson,
     retainedIdentityStillAlive,
     type RetainedProcessIdentity,
 } from './process'
@@ -312,6 +313,22 @@ describe('retained process identity classification (#2021)', () => {
         if (leaderIdx >= 0) {
             expect(groupIdx).toBeLessThan(leaderIdx)
         }
+    })
+
+    it('skips Windows System Idle Process (PID 0) in ancestry scans (#2021 Major)', () => {
+        const table = parseWindowsAncestryTableJson(JSON.stringify([
+            { ProcessId: 0, ParentProcessId: 0, CreationDate: null },
+            { ProcessId: 4242, ParentProcessId: 100, CreationDate: '2026-01-01T00:00:00.0000000Z' },
+            { ProcessId: 9001, ParentProcessId: 4242, CreationDate: '2026-01-01T00:00:01.0000000Z' },
+            { ProcessId: process.pid, ParentProcessId: 1, CreationDate: '2026-01-01T00:00:00.0000000Z' },
+        ]), process.pid)
+        expect(table).not.toBeNull()
+        expect(table!.has(0)).toBe(false)
+        expect(table!.get(4242)).toEqual({
+            parentPid: 100,
+            marker: '2026-01-01T00:00:00.0000000Z',
+        })
+        expect(table!.get(9001)?.parentPid).toBe(4242)
     })
 
     it('reads process group id on macOS via ps (#2021)', () => {

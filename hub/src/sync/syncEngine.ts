@@ -1041,6 +1041,25 @@ export class SyncEngine {
         // heartbeat expiry flips inactive before the exit notice arrives.
         this.store.messages.retireOpenChildToolWork(after.id)
         this.sessionCache.noteDerivedWork(after.id, this.store.messages.getLiveToolWork(after.id))
+        // Previous worker's background snapshot must not block Archive under a
+        // replacement that never re-emits membership (#2021 Major). Keep only a
+        // durable snapshot already bound to the new hostStartMarker.
+        const durable = after.metadata?.backgroundWork
+        const ownerMarker = after.metadata?.hostStartMarker
+        const keepForOwner = Boolean(
+            durable
+            && Array.isArray(durable.tasks)
+            && durable.tasks.length > 0
+            && (
+                durable.hostStartMarker === undefined
+                || ownerMarker === undefined
+                || durable.hostStartMarker === ownerMarker
+            ),
+        )
+        this.sessionCache.setBackgroundTasks(
+            after.id,
+            keepForOwner ? durable!.tasks : [],
+        )
         // Steer admission ownership is OpenCode/Claude only; Cursor/Codex keep
         // their separate delivery owner (see steerDeliveryLifecycle tests).
         if (before.flavor === 'opencode' || before.flavor === 'claude') {
