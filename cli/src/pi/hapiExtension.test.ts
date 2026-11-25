@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PEER_CONTACT_SUMMARY } from '@hapi/protocol/sessionCitation';
 import { materializePiExtension, PI_EXTENSION_SOURCE } from './hapiExtension';
 
 describe('pi bundled extension source', () => {
@@ -102,10 +103,9 @@ describe('pi peer MCP integration', () => {
             exposure: 'direct',
             description: 'HAPI peer-session tools for this HAPI session',
         });
-        expect(harness.prompt()).toContain('mcp__hapi__inspect_peer');
-        expect(harness.prompt()).toContain('mcp__hapi__ping_peer');
-        expect(harness.prompt()).toContain('mcp__hapi__spawn_peer');
-        expect(harness.prompt()).toContain('mcp__hapi__list_peers');
+        expect(harness.prompt()).toContain('read it with mcp__hapi__inspect_peer');
+        expect(harness.prompt()).toContain(PEER_CONTACT_SUMMARY);
+        expect(harness.prompt().length).toBeLessThanOrEqual(800);
         expect(harness.prompt()).not.toContain('Peer session tools (inspect_peer / ping_peer / list_peers) are disabled');
     });
 
@@ -128,10 +128,9 @@ describe('pi peer MCP integration', () => {
         expect(harness.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'mcp__hapi__ping_peer' }));
         expect(harness.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'mcp__hapi__list_peers' }));
         expect(harness.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'mcp__hapi__spawn_peer' }));
-        expect(harness.prompt()).toContain('mcp__hapi__inspect_peer');
-        expect(harness.prompt()).toContain('mcp__hapi__ping_peer');
-        expect(harness.prompt()).toContain('mcp__hapi__spawn_peer');
-        expect(harness.prompt()).toContain('mcp__hapi__list_peers');
+        expect(harness.prompt()).toContain('read it with mcp__hapi__inspect_peer');
+        expect(harness.prompt()).toContain(PEER_CONTACT_SUMMARY);
+        expect(harness.prompt().length).toBeLessThanOrEqual(800);
         expect(harness.prompt()).not.toContain('Peer session tools (inspect_peer / ping_peer / list_peers) are disabled');
     });
 
