@@ -17,6 +17,10 @@ import {
     verifyAgentOwnedProcessGroupExited,
     type RetainedProcessIdentity,
 } from '@/utils/process';
+import {
+    clearAgentRootForCurrentHost,
+    publishAgentRootFromIdentity,
+} from '@/runner/agentRootRegistry';
 import { getAgentLaunchCommand, resolveExecutable } from '@/agent/agentLaunchCommand';
 import { canContainWithoutShell, type WindowsAgentJob } from '@/utils/windowsJobObject';
 import {
@@ -440,6 +444,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 tgid: getProcessThreadGroupId(child.pid),
                 pgid: getProcessGroupId(child.pid),
             };
+            publishAgentRootFromIdentity(this.spawnedRootIdentity);
             this.retainedStopTree = snapshotProcessTreeIdentities(child.pid);
             if (isWindows()) {
                 // Empty-job settlement only when CREATE_SUSPENDED path confirmed
@@ -626,6 +631,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     }
                     this.stopTreeVerified = verified;
                     if (verified) {
+                        clearAgentRootForCurrentHost();
                         finish(closeExitCode);
                         return;
                     }
@@ -939,6 +945,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             }
             this.stopTreeVerified = stopped;
             if (stopped) {
+                clearAgentRootForCurrentHost();
                 this.retainedStopTree = null;
                 this.stopTreeSnapshotIncomplete = false;
                 this.stopDrainArmed = true;
@@ -969,6 +976,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             // No live child — still abort waiters; nothing to drain-bound.
             this.stopDrainArmed = true;
             this.stopTreeVerified = true;
+            clearAgentRootForCurrentHost();
             this.resolveAfterStopTreeVerified?.();
         }
         // Terminal cleanup resets the queue only after kill confirms — a rejected

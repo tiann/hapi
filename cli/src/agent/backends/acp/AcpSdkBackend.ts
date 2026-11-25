@@ -28,6 +28,10 @@ import {
     verifyAgentOwnedProcessGroupExited,
     type RetainedProcessIdentity,
 } from '@/utils/process';
+import {
+    clearAgentRootForCurrentHost,
+    publishAgentRootFromIdentity,
+} from '@/runner/agentRootRegistry';
 
 /** Why the backend is bumping/clearing hub thinking — launchers filter chatter here (#1553). */
 export type AgentActivitySource =
@@ -381,6 +385,8 @@ export class AcpSdkBackend implements AgentBackend {
                 tgid: getProcessThreadGroupId(spawnPid),
                 pgid: getProcessGroupId(spawnPid),
             };
+            // Durable for Runner probe after wrapper crash (#2021 Approach).
+            publishAgentRootFromIdentity(this.spawnedRootIdentity);
             const spawnTree = snapshotProcessTreeIdentities(spawnPid);
             if (spawnTree && spawnTree.length > 0) {
                 this.retainedAgentTree = spawnTree;
@@ -1791,6 +1797,8 @@ export class AcpSdkBackend implements AgentBackend {
             };
             if (agentEnded) {
                 this.publishPendingDisconnectSettle();
+                // Containment verified — wrapper exit may now mean already_gone (#2021).
+                clearAgentRootForCurrentHost();
             }
         }
         this.activeSessionId = null;
@@ -1888,6 +1896,11 @@ export class AcpSdkBackend implements AgentBackend {
             this.toolCallLifetimes = this.createToolCallLifetimes();
         }
         this.activeSessionId = sessionId;
+        // Stamp sessionId onto the durable agent-root publish so Runner probe
+        // can find it after host-pid maps are cleared (#2021 Approach).
+        if (this.spawnedRootIdentity) {
+            publishAgentRootFromIdentity(this.spawnedRootIdentity, { sessionId });
+        }
         // Calls of this session still open when a previous process stopped
         // keep their ids (an agent that outlives HAPI's restart may report them).
         const stored = this.toolCallLifetimeStore?.load(sessionId) ?? [];

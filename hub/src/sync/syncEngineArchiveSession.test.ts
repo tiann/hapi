@@ -819,6 +819,64 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(store.messages.getLiveToolWork(sessionId)).toBe(false)
     })
 
+    it('refuses archive when wrapper tombstone but agent containment still live (#2021 Approach)', async () => {
+        // Runner probe returns still_alive when an ACP process group survives
+        // the HAPI wrapper exit — Archive must 409 with zero Kill/Stop.
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-wrapper-dead-agent-live', 'machine-x', 5151, {
+            flavor: 'cursor',
+        })
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'acp-shell',
+                        name: 'Shell',
+                        input: {},
+                        status: 'in_progress',
+                    },
+                },
+            },
+            'acp-shell',
+        )
+        const live = cache().getSession(sessionId)!
+        live.activeAt = Date.now() - 360_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+        expect(live.active).toBe(false)
+
+        // Late wrapper-exit notice must not clear sticky tools.
+        engine.handleSessionChildExited({
+            machineId: 'machine-x',
+            namespace: live.namespace,
+            sid: sessionId,
+            pid: 5151,
+            time: Date.now(),
+        })
+        expect(store.messages.getLiveToolWork(sessionId)).toBe(true)
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => 'still_alive'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+        expect(store.messages.getLiveToolWork(sessionId)).toBe(true)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
     it('refuses archive when durable tool work is still live after expiry (#2021 Approach)', async () => {
         const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
         const sessionId = insertActiveSession('sess-expired-durable-live', 'machine-x', 4242, {

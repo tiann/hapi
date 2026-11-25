@@ -18,6 +18,7 @@ import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquire
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
 import { findStopSessionOrphanTargets, listWindowsProcessesWithCommandLine, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
+import { findLiveAgentRootForSession } from '@/runner/agentRootRegistry';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import { cleanupFailedStartupAfterExit, sessionStartupTimeout, waitForRecoverableStartup } from './sessionStartup';
 import { buildChildExitNotices, type ChildExitNotice } from './childExitNotice';
@@ -357,6 +358,18 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       verifiedExitTombstones.add(id);
       persistVerifiedExits();
     };
+    // Survives wrapper exit (pid maps are cleared onChildExited) so probe can
+    // still find agent-root publishes for this session (#2021 Approach).
+    const sessionLastHostPids = new Map<string, Set<number>>();
+    const rememberSessionHostPid = (sessionId: string, pid: number) => {
+      if (!sessionId || !Number.isSafeInteger(pid) || pid <= 0) return;
+      let set = sessionLastHostPids.get(sessionId);
+      if (!set) {
+        set = new Set<number>();
+        sessionLastHostPids.set(sessionId, set);
+      }
+      set.add(pid);
+    };
     const hasVerifiedExit = (id: string): boolean => {
       return id.startsWith('PID-')
         ? verifiedPidExitTombstones.has(id)
@@ -487,6 +500,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       logger.debug(`[RUNNER RUN] Session webhook: ${sessionId}, PID: ${pid}, started by: ${sessionMetadata.startedBy || 'unknown'}`);
       logger.debug(`[RUNNER RUN] Current tracked sessions before webhook: ${Array.from(pidToTrackedSession.keys()).join(', ')}`);
+      rememberSessionHostPid(sessionId, pid);
 
       // Check if we already have this PID (runner-spawned)
       const existingSession = pidToTrackedSession.get(pid);
@@ -1750,11 +1764,49 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
      * Non-signaling exit probe for archive reconciliation after Runner restart
      * (#2021 Approach). Never tree-kills; never marks intentional stops.
      */
+    /**
+     * Host PIDs that once owned this session — used to look up durable agent
+     * roots after the wrapper itself has exited (#2021 Approach).
+     */
+    const hostPidsForSession = (sessionId: string): number[] => {
+      const pids = new Set<number>(sessionLastHostPids.get(sessionId) ?? []);
+      for (const [pid, session] of pidToTrackedSession) {
+        const matches = session.happySessionId === sessionId
+          || session.requestedHappySessionId === sessionId
+          || Boolean(session.sharedSessions?.[sessionId]);
+        if (matches) pids.add(pid);
+      }
+      for (const [pid, record] of persistedResumeProcesses) {
+        if (record.requestedSessionId === sessionId || record.confirmedSessionId === sessionId) {
+          pids.add(pid);
+        }
+      }
+      for (const [pid, requested] of pidToRequestedSessionId) {
+        if (requested === sessionId) pids.add(pid);
+      }
+      for (const [pid, confirmed] of pidToConfirmedSessionId) {
+        if (confirmed === sessionId) pids.add(pid);
+      }
+      return [...pids];
+    };
+
+    /**
+     * Wrapper exit tombstones are not proof that a detached ACP process group
+     * (or Windows Job survivors) have ended. Refuse already_gone while a
+     * published agent root for this session is still alive.
+     */
+    const agentContainmentBlocksAlreadyGone = (sessionId: string): boolean => {
+      return findLiveAgentRootForSession(sessionId, hostPidsForSession(sessionId)) !== null;
+    };
+
     const probeSessionExit = async (
       sessionId: string,
       opts?: { processStartMarker?: string },
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
-      if (hasVerifiedExit(sessionId)) return 'already_gone';
+      if (hasVerifiedExit(sessionId)) {
+        if (agentContainmentBlocksAlreadyGone(sessionId)) return 'still_alive';
+        return 'already_gone';
+      }
 
       if (sessionId.startsWith('PID-')) {
         const pid = parseInt(sessionId.slice(4), 10);
@@ -1810,7 +1862,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         return 'unknown';
       }
 
-      if (hasVerifiedExit(sessionId)) return 'already_gone';
+      if (hasVerifiedExit(sessionId)) {
+        if (agentContainmentBlocksAlreadyGone(sessionId)) return 'still_alive';
+        return 'already_gone';
+      }
+      // No wrapper tombstone — still block already_gone when a published agent
+      // root survives (wrapper may have died before tombstone persistence).
+      if (agentContainmentBlocksAlreadyGone(sessionId)) return 'still_alive';
       return 'unknown';
     };
 

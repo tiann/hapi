@@ -1093,9 +1093,11 @@ export class SyncEngine {
 
     handleSessionEnd(payload: { sid: string; time: number; reason?: SessionEndReason }): void {
         const before = this.sessionCache.getSession(payload.sid)
-        // Worker is gone — retire open child work so a later resume does not
-        // inherit sticky live-work from the dead generation (#2021).
-        this.store.messages.retireOpenChildToolWork(payload.sid)
+        // Do NOT retire open child work on wrapper session-end alone. ACP
+        // agents run in a detached process group / Job; wrapper exit is not
+        // containment proof. Sticky tools stay until Archive probe returns
+        // already_gone (Runner verified agent root exit) or a replacement
+        // host generation clears them via reconcileSteerDeliveryOwner (#2021).
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
             const operation = before.metadata.opencodeClearOperation
             if (this.transitionClearOperation(payload.sid, before.namespace, operation, 'abort-needed')) {
@@ -1189,12 +1191,10 @@ export class SyncEngine {
         }
         if (!session.active && !session.thinking) {
             // Heartbeat expiry can flip inactive before this exit notice
-            // arrives. Still retire sticky tool work and clear the preserved
-            // background snapshot so Archive is not stuck on a dead worker
-            // (#2021 Major).
-            this.store.messages.retireOpenChildToolWork(session.id)
-            this.sessionCache.setBackgroundTasks(session.id, [])
-            this.sessionCache.noteDerivedWork(session.id, false)
+            // arrives. Do NOT retire sticky tool work or clear background here
+            // — wrapper exit is not agent-containment proof (#2021 Approach).
+            // Archive probeSessionExit retires after the Runner verifies the
+            // agent root (or reports already_gone with no live agent root).
             return false
         }
 
