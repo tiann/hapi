@@ -1158,3 +1158,124 @@ describe('tool-call upsert', () => {
         store.close()
     })
 })
+
+describe('text snapshot sweep', () => {
+    function textMessage(streamId: string, text: string, live: boolean) {
+        return {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'message',
+                    message: text,
+                    id: streamId,
+                    streamSnapshot: true,
+                    ...(live ? { live: true } : {})
+                }
+            }
+        }
+    }
+
+    function textBodies(store: Store, sessionId: string): string[] {
+        return store.messages.getAllMessages(sessionId)
+            .map((message) => message.content as { content: { data: { type: string; message?: string } } })
+            .filter((content) => content.content.data.type === 'message')
+            .map((content) => content.content.data.message as string)
+    }
+
+    it('collapses a live text stream into its newest row via the combined store call', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'text-snapshot-collapse')
+
+        // The handler walks a stream exactly like this: every stream message
+        // is stored and sweeps its own predecessors in one transaction.
+        for (const text of ['an', 'answ', 'answer i', 'answer in progress']) {
+            store.messages.addMessageSweepingLiveSnapshots(session.id, textMessage('stream-1', text, true))
+        }
+        store.messages.addMessageSweepingLiveSnapshots(session.id, textMessage('stream-1', 'answer in progress, done', false))
+
+        expect(textBodies(store, session.id)).toEqual(['answer in progress, done'])
+    })
+
+    it('keeps the settled boundary message and never treats it as live', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'text-snapshot-settled-kept')
+
+        store.messages.addMessage(session.id, textMessage('stream-1', 'partial', true))
+        const removed = store.messages.deleteLiveTextSnapshots(session.id, 'stream-1')
+
+        expect(removed).toBe(1)
+        // The settled shape (streamSnapshot without live) must never match.
+        store.messages.addMessage(session.id, textMessage('stream-1', 'final', false))
+        expect(store.messages.deleteLiveTextSnapshots(session.id, 'stream-1')).toBe(0)
+        expect(textBodies(store, session.id)).toEqual(['final'])
+    })
+
+    it('sweeps only rows of the same stream id and session', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'text-snapshot-scope')
+        const other = makeSession(store, 'text-snapshot-other')
+
+        store.messages.addMessage(session.id, textMessage('stream-1', 'first', true))
+        store.messages.addMessage(session.id, textMessage('stream-2', 'second', true))
+        store.messages.addMessage(other.id, textMessage('stream-1', 'theirs', true))
+
+        const kept = store.messages.addMessageSweepingLiveSnapshots(session.id, textMessage('stream-2', 'second more', true))
+
+        expect(kept.sweptSnapshots).toBe(1)
+        expect(textBodies(store, session.id)).toEqual(['first', 'second more'])
+        expect(textBodies(store, other.id)).toEqual(['theirs'])
+    })
+
+    it('never lets a stream pass through zero rows', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'text-snapshot-never-empty')
+
+        let expectedSwept = 0
+        for (const text of ['a', 'ab', 'abc']) {
+            const stored = store.messages.addMessageSweepingLiveSnapshots(session.id, textMessage('stream-1', text, true))
+            // The first snapshot has no predecessor; every later one retires
+            // exactly its predecessor while keeping the stream non-empty.
+            expect(stored.sweptSnapshots).toBe(expectedSwept)
+            expectedSwept = 1
+            expect(textBodies(store, session.id)).toEqual([text])
+        }
+    })
+
+    it('leaves plain id-less text messages alone', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'text-snapshot-plain')
+
+        const first = store.messages.addMessageSweepingLiveSnapshots(session.id, {
+            role: 'agent',
+            content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'old plain' } }
+        })
+        const second = store.messages.addMessageSweepingLiveSnapshots(session.id, {
+            role: 'agent',
+            content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'new plain' } }
+        })
+
+        expect(first.sweptSnapshots).toBe(0)
+        expect(second.sweptSnapshots).toBe(0)
+        expect(textBodies(store, session.id)).toEqual(['old plain', 'new plain'])
+    })
+
+    it('retires live reasoning snapshots of the same content in the same transaction', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sweep-mixed-streams')
+
+        // Sanity that the combined call still sweeps reasoning streams, which
+        // previously ran as a second transaction after addMessage.
+        const reasoning = { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'reasoning', message: 'th', id: 'r-1', live: true } } }
+        store.messages.addMessageSweepingLiveSnapshots(session.id, reasoning)
+        const settled = store.messages.addMessageSweepingLiveSnapshots(session.id, {
+            role: 'agent',
+            content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'reasoning', message: 'thinking', id: 'r-1' } }
+        })
+
+        expect(settled.sweptSnapshots).toBe(1)
+        const rows = store.messages.getAllMessages(session.id)
+        expect(rows).toHaveLength(1)
+        expect((rows[0]!.content as { content: { data: { message: string } } }).content.data.message).toBe('thinking')
+    })
+})

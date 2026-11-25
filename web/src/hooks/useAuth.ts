@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { AuthProxyRedirectError } from '@/api/authProxy'
 import { ApiClient, ApiError } from '@/api/client'
 import { decodeJwtExpMs, decodeJwtIdentityKey, isCloudflareToken } from '@/lib/authIdentity'
 import type { AuthResponse } from '@/types/api'
+import { isAuthRejectionStatus, TELEGRAM_AUTH_DISABLED_MESSAGE, type AuthConnectionFailure } from '@/lib/authConnection'
+
+const AUTH_REQUEST_TIMEOUT_MS = 15_000
 
 export type AuthSource =
     | { type: 'telegram'; initData: string }
@@ -9,21 +13,48 @@ export type AuthSource =
     | { type: 'cloudflareAccess' }
     | { type: 'passkey'; session: string }
 
-async function authenticateWith(client: ApiClient, source: AuthSource): Promise<AuthResponse> {
+async function authenticateWith(
+    client: ApiClient,
+    source: AuthSource,
+    signal?: AbortSignal
+): Promise<AuthResponse> {
     if (source.type === 'cloudflareAccess') {
+        // The Access assertion is injected by the edge on a same-origin GET;
+        // there is no request body and no abortable fetch to thread here.
         return await client.authenticateWithCloudflare()
     }
     if (source.type === 'passkey') {
-        return await client.authenticate({ passkeySession: source.session })
+        return await client.authenticate({ passkeySession: source.session }, { signal })
     }
     if (source.type === 'telegram') {
-        return await client.authenticate({ initData: source.initData })
+        return await client.authenticate({ initData: source.initData }, { signal })
     }
-    return await client.authenticate({ accessToken: source.token })
+    return await client.authenticate({ accessToken: source.token }, { signal })
 }
 
-function isNotBoundError(error: unknown): boolean {
-    return error instanceof ApiError && error.status === 401 && error.code === 'not_bound'
+type AuthErrorKind = 'not_bound' | 'rejected' | 'redirected' | 'transient'
+
+function classifyAuthError(error: unknown): AuthErrorKind {
+    if (error instanceof ApiError) {
+        if (error.status === 401 && error.code === 'not_bound') {
+            return 'not_bound'
+        }
+        if (isAuthRejectionStatus(error.status)) {
+            return 'rejected'
+        }
+        return 'transient'
+    }
+    if (error instanceof AuthProxyRedirectError) {
+        return 'redirected'
+    }
+    return 'transient'
+}
+
+function getTransientRetryDelayMs(attempt: number, hasToken: boolean): number {
+    if (hasToken) {
+        return Math.min(15_000, 5_000 * (2 ** Math.min(attempt - 1, 2)))
+    }
+    return Math.min(15_000, 3_000 * (2 ** Math.min(attempt - 1, 3)))
 }
 
 function isTerminalAuthRejection(error: unknown, sourceType: AuthSource['type']): boolean {
@@ -57,46 +88,75 @@ export function useAuth(
     isLoading: boolean
     error: string | null
     needsBinding: boolean
+    connectionError: AuthConnectionFailure | null
+    retryConnection: () => void
+    cancelRecovery: () => void
     bind: (accessToken: string) => Promise<void>
     retry: () => Promise<string | null>
+    handleSseClosed: () => void
 } {
-    const [token, setToken] = useState<string | null>(null)
-    const [user, setUser] = useState<AuthResponse['user'] | null>(null)
+    const [session, setSession] = useState<{
+        token: string
+        user: AuthResponse['user']
+        authSource: AuthSource
+        baseUrl: string
+    } | null>(null)
+    const [connectionFailure, setConnectionFailure] = useState<{ source: AuthSource; baseUrl: string; failure: AuthConnectionFailure } | null>(null)
+    const connectionError = connectionFailure?.source === authSource && connectionFailure.baseUrl === baseUrl ? connectionFailure.failure : null
     const [isLoading, setIsLoading] = useState<boolean>(false)
     const [error, setError] = useState<string | null>(null)
     const [needsBinding, setNeedsBinding] = useState<boolean>(false)
+    const [transientRetryTick, setTransientRetryTick] = useState<number>(0)
     const refreshPromiseRef = useRef<Promise<string | null> | null>(null)
+    const authAbortRef = useRef<AbortController | null>(null)
     const tokenRef = useRef<string | null>(null)
     const lastRefreshAttemptRef = useRef<number>(0)
+    const authEpochRef = useRef<number>(0)
+    const transientFailureCountRef = useRef<number>(0)
+    const nextTransientRetryAtRef = useRef<number>(0)
+    const lastErrorKindRef = useRef<AuthErrorKind | null>(null)
     const activeIdentityRef = useRef<string | null>(null)
     const onIdentityChangeRef = useRef(options?.onIdentityChange)
     onIdentityChangeRef.current = options?.onIdentityChange
+
+    const isCurrentSession =
+        session !== null &&
+        session.authSource === authSource &&
+        session.baseUrl === baseUrl
+    const token = isCurrentSession ? session.token : null
+    const user = isCurrentSession ? session.user : null
 
     // Stable reference for auth source to use in effects
     const authSourceRef = useRef(authSource)
     authSourceRef.current = authSource
     tokenRef.current = token
 
-    const applyAuthenticatedSession = useCallback((auth: AuthResponse) => {
+    const applyAuthenticatedSession = useCallback((auth: AuthResponse, source: AuthSource) => {
         const nextIdentity = decodeJwtIdentityKey(auth.token)
         if (activeIdentityRef.current !== null && nextIdentity !== activeIdentityRef.current) {
             onIdentityChangeRef.current?.(nextIdentity)
         }
         activeIdentityRef.current = nextIdentity
         tokenRef.current = auth.token
-        setToken(auth.token)
-        setUser(auth.user)
+        setSession({ token: auth.token, user: auth.user, authSource: source, baseUrl })
         setError(null)
+        setConnectionFailure(null)
         setNeedsBinding(false)
-    }, [])
+    }, [baseUrl])
 
     const refreshAuth = useCallback(async (options?: {
         minTtlMs?: number
         hardFail?: boolean
         force?: boolean
+        expectedEpoch?: number
     }): Promise<string | null> => {
+        const epoch = authEpochRef.current
+        if (options?.expectedEpoch !== undefined && options.expectedEpoch !== epoch) {
+            return null
+        }
         const currentSource = authSourceRef.current
         const currentToken = tokenRef.current
+        const hadToken = currentToken !== null
         if (!currentSource) {
             return null
         }
@@ -118,35 +178,98 @@ export function useAuth(
 
         const run = async () => {
             lastRefreshAttemptRef.current = now
-
+            const controller = new AbortController()
+            authAbortRef.current = controller
+            let timedOut = false
+            const timeout = setTimeout(() => { timedOut = true; controller.abort() }, AUTH_REQUEST_TIMEOUT_MS)
             try {
                 const client = new ApiClient('', { baseUrl })
-                const auth = await authenticateWith(client, currentSource)
-                applyAuthenticatedSession(auth)
+                const auth = await authenticateWith(client, currentSource, controller.signal)
+                if (controller.signal.aborted) throw controller.signal.reason
+                if (authEpochRef.current !== epoch) {
+                    return null
+                }
+                transientFailureCountRef.current = 0
+                nextTransientRetryAtRef.current = 0
+                lastErrorKindRef.current = null
+                applyAuthenticatedSession(auth, currentSource)
+                setTransientRetryTick(0)
                 return auth.token
             } catch (error) {
-                if (currentSource.type === 'telegram' && isNotBoundError(error)) {
+                if (authEpochRef.current !== epoch) {
+                    return null
+                }
+                if (controller.signal.aborted && !timedOut) return tokenRef.current
+                setConnectionFailure(null)
+                // A Cloudflare Access session that was disabled mid-flight (404),
+                // like a revoked one (401/403), is terminal rather than transient.
+                const terminal = isTerminalAuthRejection(error, currentSource.type)
+                const kind = controller.signal.aborted ? 'transient' : terminal ? 'rejected' : classifyAuthError(error)
+                lastErrorKindRef.current = kind
+
+                if (currentSource.type === 'telegram' && kind === 'not_bound') {
+                    transientFailureCountRef.current = 0
+                    nextTransientRetryAtRef.current = 0
                     tokenRef.current = null
-                    setToken(null)
-                    setUser(null)
+                    setSession(null)
                     setError(null)
+                    setConnectionFailure(null)
                     setNeedsBinding(true)
                     return null
                 }
-                const isExpired = expMs ? Date.now() >= expMs : false
-                const isTerminal = isTerminalAuthRejection(error, currentSource.type)
-                if (options?.hardFail || isExpired || isTerminal || currentToken === null) {
+
+                if (kind === 'rejected') {
+                    transientFailureCountRef.current = 0
+                    nextTransientRetryAtRef.current = 0
                     tokenRef.current = null
-                    setToken(null)
-                    setUser(null)
-                    const msg = currentSource.type === 'telegram' && !isTerminal
-                        ? 'Session expired. Reopen the Mini App from Telegram.'
-                        : error instanceof Error && (isTerminal || currentToken === null)
-                            ? error.message
-                            : 'Session expired. Please login again.'
-                    setError(msg)
+                    setSession(null)
+                    setNeedsBinding(false)
+                    // Cloudflare-derived sessions surface the hub's specific
+                    // rejection (revoked Access assertion, disabled config, ...)
+                    // instead of the generic expired-session copy.
+                    if (options?.hardFail || currentSource.type === 'cloudflareAccess' || isCloudflareToken(currentToken ?? '')) {
+                        setError(error instanceof Error ? error.message : 'Auth failed')
+                    } else if (hadToken) {
+                        setError(currentSource.type === 'telegram'
+                            ? 'Session expired. Reopen the Mini App from Telegram.'
+                            : 'Session expired. Please login again.')
+                    } else {
+                        setError(error instanceof Error ? error.message : 'Auth failed')
+                    }
+                    return null
+                }
+
+                if (kind === 'redirected') {
+                    transientFailureCountRef.current = 0
+                    nextTransientRetryAtRef.current = 0
+                    setTransientRetryTick(0)
+                    const isExpired = expMs !== null ? Date.now() >= expMs : false
+                    if (!hadToken || isExpired || options?.hardFail) {
+                        tokenRef.current = null
+                        setSession(null)
+                        setNeedsBinding(false)
+                        setError(error instanceof Error ? error.message : 'Auth failed')
+                    }
+                    return null
+                }
+
+                // Transient network / gateway failure: schedule bounded retries.
+                // Preserve an active session even past JWT expMs so flaky networks
+                // do not dump authenticated users onto the login prompt.
+                setConnectionFailure({ source: currentSource, baseUrl, failure: error instanceof ApiError && (!controller.signal.aborted || !isAuthRejectionStatus(error.status)) ? { status: error.status,
+                    ...(error.status === 503 && error.code === TELEGRAM_AUTH_DISABLED_MESSAGE ? { diagnostic: TELEGRAM_AUTH_DISABLED_MESSAGE } : {}) } : {} })
+                const attempt = transientFailureCountRef.current + 1
+                transientFailureCountRef.current = attempt
+                nextTransientRetryAtRef.current = Date.now() + getTransientRetryDelayMs(attempt, hadToken)
+                setTransientRetryTick((tick) => tick + 1)
+                if (!hadToken) {
+                    setNeedsBinding(false)
+                    setError(error instanceof Error ? error.message : 'Auth failed')
                 }
                 return null
+            } finally {
+                clearTimeout(timeout)
+                if (authAbortRef.current === controller) authAbortRef.current = null
             }
         }
 
@@ -160,7 +283,7 @@ export function useAuth(
                 refreshPromiseRef.current = null
             }
         }
-    }, [baseUrl])
+    }, [baseUrl, applyAuthenticatedSession])
 
     const bind = useCallback(async (accessToken: string) => {
         const currentSource = authSourceRef.current
@@ -169,23 +292,37 @@ export function useAuth(
             return
         }
 
+        const epoch = authEpochRef.current
         setIsLoading(true)
         setError(null)
+        setConnectionFailure(null)
         try {
             const client = new ApiClient('', { baseUrl })
             const auth = await client.bind({ initData: currentSource.initData, accessToken })
-            applyAuthenticatedSession(auth)
+            if (authEpochRef.current !== epoch) {
+                return
+            }
+            transientFailureCountRef.current = 0
+            nextTransientRetryAtRef.current = 0
+            lastErrorKindRef.current = null
+            refreshPromiseRef.current = null
+            setTransientRetryTick(0)
+            applyAuthenticatedSession(auth, currentSource)
             // Persist the CLI access token so Settings → Companion pairing QR
             // can encode the same long-lived token in the deeplink. The PWA
             // already does this for browser/CLI logins via useAuthSource.
             rememberAccessToken(baseUrl, accessToken)
         } catch (error) {
-            setError(error instanceof Error ? error.message : 'Binding failed')
+            if (authEpochRef.current === epoch) {
+                setError(error instanceof Error ? error.message : 'Binding failed')
+            }
             throw error
         } finally {
-            setIsLoading(false)
+            if (authEpochRef.current === epoch) {
+                setIsLoading(false)
+            }
         }
-    }, [baseUrl])
+    }, [baseUrl, applyAuthenticatedSession])
 
     const retry = useCallback(async (): Promise<string | null> => {
         if (!authSourceRef.current) {
@@ -207,124 +344,129 @@ export function useAuth(
     // `api`'s identity, which remounts everything keyed on it (VoiceBackendSession `[props.api]`,
     // GeneratedImageCard `[ctx.api, ...]`) and drives the remount/refetch storm. Issue #927.
     const hasToken = token !== null
-    const api = useMemo(() => (
-        hasToken
-            ? new ApiClient(tokenRef.current ?? '', {
-                baseUrl,
-                getToken: () => tokenRef.current,
-                onUnauthorized: () => refreshAuth({ force: true })
-            })
-            : null
-    ), [baseUrl, refreshAuth, hasToken])
+    const api = useMemo(() => {
+        if (!hasToken) {
+            return null
+        }
+        const clientEpoch = authEpochRef.current
+        return new ApiClient(tokenRef.current ?? '', {
+            baseUrl,
+            getToken: () => (authEpochRef.current === clientEpoch ? tokenRef.current : null),
+            onUnauthorized: () => refreshAuth({ force: true, expectedEpoch: clientEpoch })
+        })
+    }, [baseUrl, refreshAuth, hasToken])
 
     useEffect(() => {
-        let isCancelled = false
-
-        async function run() {
-            if (!authSource) {
-                // No auth source - waiting for login
-                setNeedsBinding(false)
-                return
-            }
-
-            setIsLoading(true)
-            setError(null)
-            setNeedsBinding(false)
-            try {
-                const client = new ApiClient('', { baseUrl }) // temporary for auth call
-                const auth = await authenticateWith(client, authSource)
-                if (isCancelled) return
-                applyAuthenticatedSession(auth)
-            } catch (e) {
-                if (isCancelled) return
-                if (authSource.type === 'telegram' && isNotBoundError(e)) {
-                    setToken(null)
-                    setUser(null)
-                    setError(null)
-                    setNeedsBinding(true)
-                    return
-                }
-                setNeedsBinding(false)
-                setError(e instanceof Error ? e.message : 'Auth failed')
-            } finally {
-                if (!isCancelled) {
-                    setIsLoading(false)
-                }
-            }
-        }
-
-        run()
-
-        return () => {
-            isCancelled = true
-        }
-    }, [authSource, baseUrl])
-
-    useEffect(() => {
+        authEpochRef.current += 1
+        authAbortRef.current?.abort()
+        authAbortRef.current = null
+        const epoch = authEpochRef.current
+        authSourceRef.current = authSource
         tokenRef.current = null
         refreshPromiseRef.current = null
         lastRefreshAttemptRef.current = 0
+        transientFailureCountRef.current = 0
+        nextTransientRetryAtRef.current = 0
+        lastErrorKindRef.current = null
         activeIdentityRef.current = null
-        setToken(null)
-        setUser(null)
+        setTransientRetryTick(0)
+        setSession(null)
         setError(null)
+        setConnectionFailure(null)
         setNeedsBinding(false)
-    }, [baseUrl])
 
-    useEffect(() => {
-        if (!token || !authSource) {
-            return
-        }
-
-        const expMs = decodeJwtExpMs(token)
-        if (!expMs) {
-            return
-        }
-
-        let isCancelled = false
-        let timeout: ReturnType<typeof setTimeout> | null = null
-
-        const schedule = (delayMs: number) => {
-            if (timeout) {
-                clearTimeout(timeout)
-            }
-            // Cloudflare-derived JWTs expire with the Access assertion, so the
-            // final-60s window can schedule 0 on every changed token and loop
-            // the login endpoint. Bound CF scheduled refreshes to one per 15s;
-            // force/onUnauthorized refreshes stay immediate.
-            const minDelayMs = isCloudflareToken(token) ? 15_000 : 0
-            timeout = setTimeout(() => void refresh(), Math.max(minDelayMs, delayMs))
-        }
-
-        const refresh = async () => {
-            if (isCancelled) return
-            const refreshed = await refreshAuth({ force: true })
-            if (isCancelled) return
-            if (!refreshed) {
-                if (Date.now() < expMs) {
-                    schedule(15_000)
-                } else if (tokenRef.current === token) {
-                    tokenRef.current = null
-                    setToken(null)
-                    setUser(null)
-                    setError(
-                        authSource.type === 'telegram'
-                            ? 'Session expired. Reopen the Mini App from Telegram.'
-                            : 'Session expired. Please login again.'
-                    )
-                }
+        if (!authSource) {
+            setIsLoading(false)
+            return () => {
+                authEpochRef.current += 1
+                authAbortRef.current?.abort()
+                authAbortRef.current = null
+                refreshPromiseRef.current = null
             }
         }
 
-        schedule(expMs - 60_000 - Date.now())
+        setIsLoading(true)
+        void refreshAuth({ force: true }).finally(() => {
+            if (authEpochRef.current === epoch) {
+                setIsLoading(false)
+            }
+        })
 
         return () => {
-            isCancelled = true
-            if (timeout) {
-                clearTimeout(timeout)
+            authEpochRef.current += 1
+            authAbortRef.current?.abort()
+            authAbortRef.current = null
+            refreshPromiseRef.current = null
+        }
+    }, [authSource, baseUrl, refreshAuth])
+
+    useEffect(() => {
+        if (!authSource) {
+            return
+        }
+
+        const isHidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+        let delayMs: number | null = null
+
+        if (!token) {
+            if (transientFailureCountRef.current <= 0 || isHidden) {
+                return
+            }
+            delayMs = Math.max(0, nextTransientRetryAtRef.current - Date.now())
+        } else if (transientFailureCountRef.current > 0) {
+            if (isHidden) {
+                return
+            }
+            delayMs = Math.max(0, nextTransientRetryAtRef.current - Date.now())
+        } else {
+            const expMs = decodeJwtExpMs(token)
+            if (!expMs) {
+                return
+            }
+            delayMs = Math.max(0, expMs - 60_000 - Date.now())
+            // Cloudflare-derived JWTs expire with the Access assertion, so the
+            // final-60s window can otherwise schedule 0 on every changed token
+            // and loop the login endpoint. Bound scheduled CF refreshes to 15s;
+            // forced refreshes (401, retry, SSE close) remain immediate.
+            if (isCloudflareToken(token)) {
+                delayMs = Math.max(delayMs, 15_000)
             }
         }
-    }, [authSource, refreshAuth, token])
+
+        const epoch = authEpochRef.current
+        const timeout = setTimeout(() => {
+            void refreshAuth({ force: true }).then((refreshed) => {
+                if (isHidden || refreshed || authEpochRef.current !== epoch) {
+                    return
+                }
+                if (!token) {
+                    return
+                }
+                const expMs = decodeJwtExpMs(token)
+                if (!expMs || !isCloudflareToken(token)) {
+                    return
+                }
+                if (Date.now() < expMs) {
+                    // Retry a transient failure while the assertion is still valid.
+                    if (transientFailureCountRef.current > 0) {
+                        setTimeout(() => {
+                            if (authEpochRef.current === epoch) void refreshAuth({ force: true })
+                        }, 15_000)
+                    }
+                } else if (tokenRef.current === token) {
+                    tokenRef.current = null
+                    setSession(null)
+                    setError(authSource.type === 'telegram'
+                        ? 'Session expired. Reopen the Mini App from Telegram.'
+                        : 'Session expired. Please login again.')
+                }
+            })
+        }, delayMs)
+
+        return () => {
+            clearTimeout(timeout)
+        }
+    }, [authSource, refreshAuth, token, transientRetryTick])
 
     useEffect(() => {
         if (!authSource) {
@@ -332,6 +474,28 @@ export function useAuth(
         }
 
         const handleActive = () => {
+            if (transientFailureCountRef.current > 0) {
+                void refreshAuth({ force: true })
+                return
+            }
+            if (lastErrorKindRef.current === 'rejected' || lastErrorKindRef.current === 'not_bound') {
+                return
+            }
+            void refreshAuth({ minTtlMs: 60_000 })
+        }
+
+        const handleOnline = () => {
+            if (transientFailureCountRef.current > 0 || !tokenRef.current) {
+                if (
+                    lastErrorKindRef.current === 'rejected' ||
+                    lastErrorKindRef.current === 'not_bound' ||
+                    lastErrorKindRef.current === 'redirected'
+                ) {
+                    return
+                }
+                void refreshAuth({ force: true })
+                return
+            }
             void refreshAuth({ minTtlMs: 60_000 })
         }
 
@@ -342,13 +506,52 @@ export function useAuth(
         }
 
         window.addEventListener('focus', handleActive)
+        window.addEventListener('online', handleOnline)
         document.addEventListener('visibilitychange', handleVisibilityChange)
 
         return () => {
             window.removeEventListener('focus', handleActive)
+            window.removeEventListener('online', handleOnline)
             document.removeEventListener('visibilitychange', handleVisibilityChange)
         }
     }, [authSource, refreshAuth])
 
-    return { token, user, api, isLoading, error, needsBinding, bind, retry }
+    const handleSseClosed = useCallback(() => {
+        if (!authSourceRef.current || !tokenRef.current) {
+            return
+        }
+        const now = Date.now()
+        if (transientFailureCountRef.current > 0) {
+            if (now < nextTransientRetryAtRef.current) {
+                return
+            }
+            void refreshAuth({ force: true })
+            return
+        }
+        const expMs = decodeJwtExpMs(tokenRef.current)
+        if (expMs !== null && expMs - now <= 60_000) {
+            void refreshAuth({ force: true })
+            return
+        }
+        if (now - lastRefreshAttemptRef.current >= 15_000) {
+            void refreshAuth({ force: true })
+        }
+    }, [refreshAuth])
+
+    const retryConnection = useCallback(() => {
+        const epoch = authEpochRef.current
+        const retry = () => { void refreshAuth({ force: true, expectedEpoch: epoch }) }
+        const pending = refreshPromiseRef.current
+        if (pending) {
+            authAbortRef.current?.abort()
+            void pending.then(retry, retry)
+        } else retry()
+    }, [refreshAuth])
+    const cancelRecovery = useCallback(() => {
+        authEpochRef.current += 1
+        authAbortRef.current?.abort()
+        authAbortRef.current = null
+        refreshPromiseRef.current = null
+    }, [])
+    return { token, user, api, isLoading, error, needsBinding, connectionError, retryConnection, cancelRecovery, bind, retry, handleSseClosed }
 }

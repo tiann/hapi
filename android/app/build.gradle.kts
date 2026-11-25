@@ -101,7 +101,7 @@ android {
         targetSdk = 36
         versionCode = gitCommitCount ?: 1
         // Tracks the hapi CLI/hub release train.
-        versionName = providers.gradleProperty("hapiVersionName").orElse("0.36.2").get()
+        versionName = providers.gradleProperty("hapiVersionName").orElse("0.36.7").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

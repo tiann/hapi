@@ -83,25 +83,19 @@ class PasskeyApiTest {
     }
 
     @Test
-    fun `login options and verify go out without a bearer header`() {
-        server.enqueue(ok("""{"challenge":"Y2g","rpId":"auth.hapi.run","allowCredentials":[]}"""))
+    fun `login verify goes out without a bearer header and needs no options request`() {
         server.enqueue(
             ok("""{"token":"jwt-2","user":{"id":1,"firstName":"Web User"},"passkeySession":"ps-1"}"""),
         )
 
-        val options = runBlocking { session.api.passkeyLoginOptions() }
         val login = runBlocking { session.api.passkeyLoginVerify(NativePasskeys.credentialResponse(assertion)) }
 
-        assertEquals("auth.hapi.run", NativePasskeys.requestRpId(options))
         assertEquals("ps-1", login.passkeySession)
         assertEquals("jwt-2", login.token)
-
-        val optionsRequest = server.takeRequest()
-        assertEquals("/api/passkey/login/options", optionsRequest.path)
-        assertNull(optionsRequest.getHeader("Authorization"))
-        assertEquals("""{"client":"native"}""", optionsRequest.body.readUtf8())
+        assertEquals(1, server.requestCount, "the challenge is client-generated")
 
         val verifyRequest = server.takeRequest()
+        assertEquals("POST", verifyRequest.method)
         assertEquals("/api/passkey/login/verify", verifyRequest.path)
         assertNull(verifyRequest.getHeader("Authorization"))
         val body = Json.parseToJsonElement(verifyRequest.body.readUtf8()).jsonObject
@@ -109,13 +103,15 @@ class PasskeyApiTest {
     }
 
     @Test
-    fun `no registered passkeys surfaces 404 no_passkeys`() {
-        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"no_passkeys"}"""))
+    fun `rejected assertion surfaces the hub's 401 reason`() {
+        server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":"Passkey challenge expired"}"""))
 
-        val error = assertFailsWith<ApiError> { runBlocking { session.api.passkeyLoginOptions() } }
+        val error = assertFailsWith<ApiError> {
+            runBlocking { session.api.passkeyLoginVerify(NativePasskeys.credentialResponse(assertion)) }
+        }
 
-        assertEquals(404, error.status)
-        assertEquals("no_passkeys", error.code)
+        assertEquals(401, error.status)
+        assertEquals("Passkey challenge expired", error.code)
     }
 
     @Test

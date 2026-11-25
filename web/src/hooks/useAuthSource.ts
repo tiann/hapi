@@ -109,6 +109,7 @@ export function useAuthSource(baseUrl: string): {
     const [isLoading, setIsLoading] = useState(true)
     const [isTelegram, setIsTelegram] = useState(false)
     const retryCountRef = useRef(0)
+    const ignoreLaunchCredentialsRef = useRef(false)
     const accessTokenKey = useMemo(() => getAccessTokenKey(baseUrl), [baseUrl])
     const passkeySessionKey = useMemo(() => getPasskeySessionKey(baseUrl), [baseUrl])
 
@@ -134,14 +135,14 @@ export function useAuthSource(baseUrl: string): {
         }
 
         const setTelegram = (initData: string) => {
-            if (cancelled || committed) return
+            if (cancelled || committed || ignoreLaunchCredentialsRef.current) return
             committed = true
             setAuthSource({ type: 'telegram', initData })
             setIsTelegram(true)
             setIsLoading(false)
         }
         const setCloudflare = () => {
-            if (cancelled || committed) return
+            if (cancelled || committed || ignoreLaunchCredentialsRef.current) return
             committed = true
             setAuthSource({ type: 'cloudflareAccess' })
             setIsLoading(false)
@@ -161,6 +162,11 @@ export function useAuthSource(baseUrl: string): {
             const retryInterval = 250 // ms
 
             telegramInterval = setInterval(() => {
+                if (ignoreLaunchCredentialsRef.current) {
+                    if (telegramInterval) clearInterval(telegramInterval)
+                    setManual()
+                    return
+                }
                 retryCountRef.current += 1
                 const initData = getTelegramInitData()
 
@@ -183,6 +189,11 @@ export function useAuthSource(baseUrl: string): {
 
         const afterDiscovery = () => {
             if (cancelled) return
+            // An explicit sign-out must not replay a launch credential.
+            if (ignoreLaunchCredentialsRef.current) {
+                setManual()
+                return
+            }
             // Check if we're in a Telegram environment before polling
             if (!isTelegramEnvironment()) {
                 // Plain browser - show login prompt
@@ -192,7 +203,7 @@ export function useAuthSource(baseUrl: string): {
             startTelegramPolling()
         }
 
-        const telegramInitData = getTelegramInitData()
+        const telegramInitData = ignoreLaunchCredentialsRef.current ? null : getTelegramInitData()
 
         if (telegramInitData) {
             // Telegram Mini App environment
@@ -201,7 +212,7 @@ export function useAuthSource(baseUrl: string): {
         }
 
         // Check for URL token parameter (for direct access links)
-        const urlToken = getTokenFromUrlParams()
+        const urlToken = ignoreLaunchCredentialsRef.current ? null : getTokenFromUrlParams()
         if (urlToken) {
             storeAccessToken(accessTokenKey, urlToken) // Save to localStorage for refresh
             setAuthSource({ type: 'accessToken', token: urlToken })
@@ -225,10 +236,10 @@ export function useAuthSource(baseUrl: string): {
             return
         }
 
-        // Cloudflare Access discovery — same-origin hub requests only, bounded
+        // Cloudflare Access discovery - same-origin hub requests only, bounded
         // to 5s. Older hubs (404), disabled capability, network failures and
         // cross-origin hubs all fall through to the existing manual login.
-        if (!isSameOriginHub(baseUrl)) {
+        if (ignoreLaunchCredentialsRef.current || !isSameOriginHub(baseUrl)) {
             afterDiscovery()
             return cleanup
         }
@@ -244,7 +255,7 @@ export function useAuthSource(baseUrl: string): {
             if (cancelled || discoveryDone) return
             discoveryDone = true
             if (discoveryTimer) clearTimeout(discoveryTimer)
-            if (!available) {
+            if (!available || ignoreLaunchCredentialsRef.current) {
                 afterDiscovery()
                 return
             }
@@ -284,6 +295,9 @@ export function useAuthSource(baseUrl: string): {
     }, [accessTokenKey, passkeySessionKey])
 
     const clearAuth = useCallback(() => {
+        // An explicit sign-out must not replay a launch credential on a new hub.
+        ignoreLaunchCredentialsRef.current = true
+        setIsLoading(false)
         clearStoredAccessToken(accessTokenKey)
         clearStoredAccessToken(passkeySessionKey)
         setAuthSource(null)

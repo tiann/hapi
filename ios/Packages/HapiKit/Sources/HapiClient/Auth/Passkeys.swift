@@ -23,8 +23,6 @@ public enum PasskeyError: Error, Equatable, Sendable {
     case relyingPartyMismatch(String)
     /// The options JSON lacked a field or carried invalid base64url.
     case malformedOptions
-    /// `POST /api/passkey/login/options` answered `404 {"error":"no_passkeys"}`.
-    case noPasskeys
     /// The platform returned a registration without an attestation object.
     case missingAttestation
     /// The user dismissed the system sheet. Callers treat this as silent.
@@ -102,14 +100,6 @@ public struct PasskeyRegistrationOptions: Decodable, Equatable, Sendable {
     public var excludeCredentials: [PasskeyCredentialDescriptor]?
 }
 
-/// `PublicKeyCredentialRequestOptionsJSON` — the fields a platform
-/// assertion needs.
-public struct PasskeyAssertionOptions: Decodable, Equatable, Sendable {
-    public var challenge: String
-    public var rpId: String?
-    public var allowCredentials: [PasskeyCredentialDescriptor]?
-}
-
 // MARK: - Platform requests (decoded options)
 
 /// Input for a platform registration, already validated and decoded.
@@ -151,33 +141,31 @@ public struct PasskeyRegistrationRequest: Equatable, Sendable {
     }
 }
 
-/// Input for a platform assertion, already validated and decoded.
+/// Input for a platform sign-in assertion: always the shared RP, user
+/// verification required, no allow list (resident credentials only, so the
+/// user picks the account and with it the Hub), no extensions. Built only from
+/// ``nativeLogin(now:)``, never from Hub-supplied options.
 public struct PasskeyAssertionRequest: Equatable, Sendable {
     public let relyingPartyID: String
+    /// Raw challenge bytes: the self-issued native login JSON.
     public let challenge: Data
-    /// This hub's passkeys; the system sheet offers only these.
-    public let allowedCredentialIDs: [Data]
 
-    public init(
-        options: PasskeyAssertionOptions,
-        hubURL: URL,
-        expectedRelyingPartyID: String = NativePasskeys.nativeRelyingPartyID
-    ) throws {
-        guard let rpId = options.rpId, rpId == expectedRelyingPartyID else {
-            throw PasskeyError.relyingPartyMismatch(options.rpId ?? "")
-        }
-        guard let challenge = Base64URL.decode(options.challenge), !challenge.isEmpty else {
-            throw PasskeyError.malformedOptions
-        }
-        try PasskeyHubBinding.validate(challenge, hub: hubURL, operation: "login")
-        let allowed = try (options.allowCredentials ?? []).map { descriptor in
-            guard let id = Base64URL.decode(descriptor.id) else { throw PasskeyError.malformedOptions }
-            return id
-        }
-        self.relyingPartyID = rpId
+    /// A fresh self-issued native login challenge
+    /// (`shared/src/passkey.ts` `createPasskeyNativeLoginChallenge`):
+    /// `{"v":2,"operation":"login","channel":"native","iat":<epoch ms>,"nonce":<32 random bytes, base64url>}`.
+    /// The Hub accepts it once, within minutes of `iat`.
+    public static func nativeLogin(now: Date = Date()) -> Self {
+        let nonce = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
+        let iat = Int64((now.timeIntervalSince1970 * 1000).rounded(.down))
+        let challenge = try! JSONSerialization.data(withJSONObject: [
+            "v": 2, "operation": "login", "channel": "native", "iat": iat, "nonce": Base64URL.encode(nonce)
+        ] as [String: Any], options: [.sortedKeys])
+        return Self(relyingPartyID: NativePasskeys.nativeRelyingPartyID, challenge: challenge)
+    }
+
+    private init(relyingPartyID: String, challenge: Data) {
+        self.relyingPartyID = relyingPartyID
         self.challenge = challenge
-        guard !allowed.isEmpty else { throw PasskeyError.malformedOptions }
-        self.allowedCredentialIDs = allowed
     }
 }
 

@@ -94,6 +94,12 @@ data class RenameSessionRequest(
     val name: String,
 )
 
+/** `PATCH /api/sessions/:id {translateInput}` — 400 when enabling on a hub without a provider. */
+@Serializable
+data class SetSessionTranslateInputRequest(
+    val translateInput: Boolean,
+)
+
 /** `PATCH /api/sessions/:id/summary` (`UpdateSessionSummaryRequestSchema`, 1–255 chars). */
 @Serializable
 data class UpdateSessionSummaryRequest(

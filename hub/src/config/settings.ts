@@ -23,6 +23,8 @@ export interface Settings {
     listenPort?: number
     publicUrl?: string
     corsOrigins?: string[]
+    /** Opt-in GitHub PR awareness for sessions (tiann/hapi#1162). Default off. */
+    githubPrAwareness?: boolean
     // Push delivery (FCM + iOS/APNs) — persisted from env like the rest of
     // this section; interpreted by fcmConfig.ts / iosPushConfig.ts.
     androidPushMode?: string
@@ -53,6 +55,11 @@ export interface Settings {
      * transient model error. Default off. Survives hub/CLI restarts.
      */
     autoBridgeTransientModelErrors?: boolean
+    /**
+     * Hub-wide default for input translation. Sessions without an explicit
+     * `metadata.translateInput` follow it. Default off.
+     */
+    translateInputByDefault?: boolean
     /**
      * Hub-side provider API keys / endpoints managed from Settings.
      * Env vars still win when set at process start (ops override).

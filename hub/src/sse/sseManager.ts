@@ -12,7 +12,7 @@ export type SSESubscription = {
 }
 
 type SSEConnection = SSESubscription & {
-    send: (event: SyncEvent, eventId?: string) => void | Promise<void>
+    send: (event: SyncEvent, eventId?: string, serializedEvent?: string) => void | Promise<void>
     sendHeartbeat: () => void | Promise<void>
     close?: () => void
     inflight: number
@@ -23,13 +23,13 @@ type SSEConnection = SSESubscription & {
      * broadcasts land here instead of on the wire so replayed events keep
      * their original order. `drainPending` flushes and clears it.
      */
-    pending: Array<{ event: SyncEvent; eventId: string }> | null
+    pending: Array<{ event: SyncEvent; eventId: string; serialized: string }> | null
 }
 
 export type SSEResumeResult = {
     /** 'ok': `replay` holds every missed event; client may skip its resync. */
     resume: 'ok' | 'gap'
-    replay: Array<{ event: SyncEvent; eventId: string }>
+    replay: Array<{ event: SyncEvent; eventId: string; serialized: string }>
 }
 
 /** How many broadcast events are kept for reconnect replay. */
@@ -57,7 +57,7 @@ export class SSEManager {
      */
     private readonly epoch = randomUUID().slice(0, 8)
     private nextSeq = 1
-    private readonly eventBuffer: Array<{ seq: number; event: SyncEvent; bytes: number }> = []
+    private readonly eventBuffer: Array<{ seq: number; event: SyncEvent; serialized: string; bytes: number }> = []
     private eventBufferBytes = 0
     private readonly namespaceTags = new Map<string, string>()
 
@@ -75,7 +75,7 @@ export class SSEManager {
         visibility?: VisibilityState
         /** Last event id the client saw; enables replay instead of resync. */
         resumeFrom?: string | null
-        send: (event: SyncEvent, eventId?: string) => void | Promise<void>
+        send: (event: SyncEvent, eventId?: string, serializedEvent?: string) => void | Promise<void>
         sendHeartbeat: () => void | Promise<void>
         close?: () => void
     }): SSESubscription & SSEResumeResult {
@@ -140,7 +140,7 @@ export class SSEManager {
             }
             for (const item of batch) {
                 try {
-                    await connection.send(item.event, item.eventId)
+                    await connection.send(item.event, item.eventId, item.serialized)
                 } catch {
                     this.unsubscribe(connection.id)
                     return
@@ -186,19 +186,23 @@ export class SSEManager {
             // Events between the cursor and the buffer were evicted.
             return { resume: 'gap', replay: [] }
         }
-        const replay: Array<{ event: SyncEvent; eventId: string }> = []
+        const replay: Array<{ event: SyncEvent; eventId: string; serialized: string }> = []
         for (const entry of this.eventBuffer) {
             if (entry.seq > seq && this.shouldSend(connection, entry.event)) {
-                replay.push({ event: entry.event, eventId: this.eventIdFor(entry.seq, connection.namespace) })
+                replay.push({
+                    event: entry.event,
+                    eventId: this.eventIdFor(entry.seq, connection.namespace),
+                    serialized: entry.serialized
+                })
             }
         }
         return { resume: 'ok', replay }
     }
 
-    private recordEvent(event: SyncEvent): number {
+    private recordEvent(event: SyncEvent, serialized: string): number {
         const seq = this.nextSeq++
-        const bytes = JSON.stringify(event).length
-        this.eventBuffer.push({ seq, event, bytes })
+        const bytes = serialized.length
+        this.eventBuffer.push({ seq, event, serialized, bytes })
         this.eventBufferBytes += bytes
         while (
             this.eventBuffer.length > EVENT_BUFFER_CAPACITY
@@ -225,6 +229,7 @@ export class SSEManager {
     }
 
     async sendToast(namespace: string, event: Extract<SyncEvent, { type: 'toast' }>): Promise<number> {
+        let serialized: string | undefined
         const deliveries: Array<Promise<{ id: string; ok: boolean }>> = []
         for (const connection of this.connections.values()) {
             if (connection.namespace !== namespace) {
@@ -234,8 +239,9 @@ export class SSEManager {
                 continue
             }
 
+            serialized ??= JSON.stringify(event)
             deliveries.push(
-                Promise.resolve(connection.send(event))
+                Promise.resolve(connection.send(event, undefined, serialized))
                     .then(() => ({ id: connection.id, ok: true }))
                     .catch(() => ({ id: connection.id, ok: false }))
             )
@@ -259,8 +265,9 @@ export class SSEManager {
     }
 
     broadcast(event: SyncEvent): void {
-        const seq = this.recordEvent(event)
-        const eventBytes = JSON.stringify(event).length * 2
+        const serialized = JSON.stringify(event)
+        const seq = this.recordEvent(event, serialized)
+        const eventBytes = serialized.length * 2
         for (const connection of this.connections.values()) {
             if (!this.shouldSend(connection, event)) {
                 continue
@@ -275,7 +282,7 @@ export class SSEManager {
                     connection.close?.()
                     continue
                 }
-                connection.pending.push({ event, eventId })
+                connection.pending.push({ event, eventId, serialized })
                 connection.pendingBytes += eventBytes
                 continue
             }
@@ -286,7 +293,7 @@ export class SSEManager {
                 continue
             }
             try {
-                const result = connection.send(event, eventId)
+                const result = connection.send(event, eventId, serialized)
                 if (result) {
                     connection.inflight++
                     connection.inflightBytes += eventBytes

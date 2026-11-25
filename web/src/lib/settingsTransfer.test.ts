@@ -35,6 +35,7 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi:queued-edit-recovery',
     'hapi:message-window:v2:',
     // Transient UI state and filters
+    'hapi.closed-projects.v1:',
     'hapi-dir-scroll-',
     'hapi-dir-expanded-',
     'hapi-file-candidate',
@@ -43,6 +44,7 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi-session-list-machine-filter',
     'hapi.scratchlist-collapsed.v1.',
     // Onboarding and dismissals
+    'hapi.nativeAppPromo.v1',
     'hapi.fue.v1.',
     'hapi.fue.v1.scratchlist-toggle',
     'hapi-voice-context-notice',

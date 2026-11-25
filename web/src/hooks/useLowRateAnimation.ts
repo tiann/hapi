@@ -2,6 +2,32 @@ import { useEffect, type RefObject } from 'react'
 import { LOW_RATE_TICK_MS, subscribeLowRateTicker } from '@/lib/lowRateTicker'
 
 /**
+ * Indicator smoothing switch. When on (default), ticker writes also set a
+ * 125 ms compositor transition and the pulse interpolates as a triangle
+ * wave, so the browser fills in GPU frames between the 8 Hz ticks. When
+ * off, the writers behave exactly like the original #2447 ticker: square
+ * opacity flips and stepped rotations. Stored in localStorage so the
+ * choice survives reloads; writers re-read it on every tick, so toggling
+ * takes effect immediately without any React state.
+ */
+export const INDICATOR_SMOOTHING_KEY = 'hapi-smooth-list-indicators'
+
+export function isIndicatorSmoothingEnabled(): boolean {
+    if (typeof window === 'undefined' || typeof window.localStorage !== 'object') return true
+    return window.localStorage.getItem(INDICATOR_SMOOTHING_KEY) !== 'false'
+}
+
+export function setIndicatorSmoothing(enabled: boolean): void {
+    if (typeof window === 'undefined' || typeof window.localStorage !== 'object') return
+    if (enabled) {
+        window.localStorage.removeItem(INDICATOR_SMOOTHING_KEY)
+    } else {
+        window.localStorage.setItem(INDICATOR_SMOOTHING_KEY, 'false')
+    }
+}
+
+
+/**
  * Idle indicator motion, driven by the one shared low-rate ticker instead of a
  * running CSS animation (see `@/lib/lowRateTicker`). Sizes, colors and layouts
  * are unchanged: only the property that used to animate is written here.
@@ -42,13 +68,35 @@ const PING_FULL_SCALE = 2
 export const LOW_RATE_STRIPES_CLASS = 'attached-job-stripes'
 
 function writeSpin(element: AnimatableElement, frame: number): void {
+    if (isIndicatorSmoothingEnabled()) {
+        // The transition lets the compositor interpolate between 125 ms ticker
+        // steps at native smoothness (transform/opacity are compositor-only
+        // properties; no main-thread style recalc, so the low-rate ticker keeps
+        // its perf win while the motion reads as 60 fps).
+        element.style.transition = 'transform 125ms linear'
+    } else {
+        element.style.transition = ''
+    }
     element.style.transform = `rotate(${frame * SPIN_STEP_DEGREES}deg)`
 }
 
 function writePulse(element: AnimatableElement, frame: number): void {
-    // Frames are 1-based, so this makes ticks 1-8 high and 9-16 low.
-    const high = (frame - 1) % PULSE_TOTAL_FRAMES < PULSE_HIGH_FRAMES
-    element.style.opacity = high ? '1' : String(PULSE_LOW_OPACITY)
+    if (isIndicatorSmoothingEnabled()) {
+        // Triangle wave: opacity glides 1.0 -> 0.5 -> 1.0 across the cycle
+        // (a binary flip at 8 Hz reads as harsh blinking; a triangle reads
+        // as breathing at the same cadence), and the compositor transition
+        // fills in the frames between ticks.
+        const phase = ((frame - 1) % PULSE_TOTAL_FRAMES) / PULSE_TOTAL_FRAMES
+        const triangle = phase < 0.5 ? 1 - phase * 2 : (phase - 0.5) * 2
+        const opacity = PULSE_LOW_OPACITY + (1 - PULSE_LOW_OPACITY) * triangle
+        element.style.transition = 'opacity 125ms linear'
+        element.style.opacity = opacity.toFixed(3)
+    } else {
+        // The original #2447 cadence: ticks 1-8 high, 9-16 low.
+        element.style.transition = ''
+        const high = (frame - 1) % PULSE_TOTAL_FRAMES < PULSE_HIGH_FRAMES
+        element.style.opacity = high ? '1' : String(PULSE_LOW_OPACITY)
+    }
 }
 
 /** The Tailwind `ping` cue, stepped by the ticker: scale 1 -> 2 while fading out. */
@@ -79,8 +127,10 @@ const WRITERS: Record<LowRateAnimationKind, (element: AnimatableElement, frame: 
 /** Reset to the resting state so a disabled/reduced-motion indicator is static. */
 function writeStatic(element: AnimatableElement, kind: LowRateAnimationKind): void {
     if (kind === 'pulse') {
+        element.style.transition = ''
         element.style.opacity = '1'
     } else if (kind === 'spin') {
+        element.style.transition = ''
         element.style.transform = ''
     } else if (kind === 'ping') {
         // Unscaled and fully opaque: the halo at rest, not frozen mid-expansion.

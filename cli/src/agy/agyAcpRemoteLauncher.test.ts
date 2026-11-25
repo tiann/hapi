@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
@@ -46,6 +49,10 @@ class FakeAgyBackend {
     isTransportAlive(): boolean {
         return this.alive;
     }
+    getAgentVersion(): string | null {
+        return null;
+    }
+    async flushPendingMessageBuffers(): Promise<void> {}
     supportsSessionResume(): boolean {
         return true;
     }
@@ -165,6 +172,16 @@ class FakeAgyBackend {
     }
     async refreshSessionInfo(): Promise<void> {}
     setSessionInfoUpdateListener(): void {}
+    availableCommands: Array<{ name: string; description?: string }> = [];
+    availableCommandsListener: ((sessionId: string | null, commands: Array<{ name: string; description?: string }>) => void) | null = null;
+    getAvailableCommands(): Array<{ name: string; description?: string }> {
+        return this.availableCommands;
+    }
+    setAvailableCommandsUpdateListener(
+        listener: ((sessionId: string | null, commands: Array<{ name: string; description?: string }>) => void) | null
+    ): void {
+        this.availableCommandsListener = listener;
+    }
     echo: ((text: string) => void) | null = null;
     setUserMessageChunkListener(listener: ((text: string) => void) | null): void {
         this.echo = listener;
@@ -239,12 +256,17 @@ function makeSession(sessionId: string | null = null) {
     return { session, queue, client };
 }
 
-function launch(session: AgySession, backends: FakeAgyBackend[], opts: { cancelHardStopMs?: number; killSettleMs?: number } = {}) {
+function launch(
+    session: AgySession,
+    backends: FakeAgyBackend[],
+    opts: { cancelHardStopMs?: number; killSettleMs?: number; brainDir?: string } = {}
+) {
     const created: FakeAgyBackend[] = [];
     const launcher = new AgyAcpRemoteLauncher(session, {
         steerCancelGraceMs: 50,
         cancelHardStopMs: opts.cancelHardStopMs ?? 2_000,
         killSettleMs: opts.killSettleMs,
+        brainDir: opts.brainDir,
         createBackend: () => {
             const backend = backends.shift() ?? new FakeAgyBackend();
             created.push(backend);
@@ -305,6 +327,31 @@ describe('AgyAcpRemoteLauncher', () => {
         expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['local-1']);
         expect(sessionEvents(client)).toContainEqual({ type: 'ready' });
         expect(backend.disconnected).toBe(true);
+    });
+
+    it('acknowledges a prompt as soon as session/prompt is sent even without a user_message_chunk echo', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let finishPrompt!: () => void;
+        backend.promptScripts.push(async (onUpdate) => {
+            // Simulate agy 1.5.11 slow TTFB: no user_message_chunk echo and no output yet.
+            await new Promise<void>((resolve) => { finishPrompt = resolve; });
+            onUpdate({ type: 'text', text: 'answer' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('hello', REVIEW, 'local-1');
+        const { run } = launch(session, [backend]);
+
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        expect(client.emitMessagesConsumed).toHaveBeenCalledTimes(1);
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['local-1']);
+
+        finishPrompt();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+
+        expect(client.emitMessagesConsumed).toHaveBeenCalledTimes(1);
     });
 
     it('tells the user why agy could not start', async () => {
@@ -574,6 +621,58 @@ describe('AgyAcpRemoteLauncher Stop', () => {
         await run;
 
         expect(sessionEvents(client)).toContainEqual({ type: 'abort-restore', text: 'build it' });
+    });
+
+    it('still restores a prompt cancelled before output when acknowledged on send without an echo', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let cancelled!: () => void;
+        backend.onCancel = () => cancelled?.();
+        backend.promptScripts.push(async (onUpdate) => {
+            // agy 1.5.11 does not echo user_message_chunk; cancel arrives before any output.
+            await new Promise<void>((resolve) => { cancelled = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+        });
+        queue.push('build it', REVIEW, 'a');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['a']);
+
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+
+        expect(sessionEvents(client)).toContainEqual({ type: 'abort-restore', text: 'build it' });
+        expect(client.emitMessagesConsumed).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips onSent acknowledgement when Stop already aborted the turn before dispatch', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.preSendDelayMs = 150;
+        let consumedAtOnSent: number | null = null;
+        let cancelled!: () => void;
+        backend.onCancel = () => { if (backend.promptInFlight) cancelled?.(); };
+        backend.promptScripts.push(async (onUpdate) => {
+            consumedAtOnSent = client.emitMessagesConsumed.mock.calls.length;
+            await new Promise<void>((resolve) => { cancelled = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+        });
+        queue.push('build it', REVIEW, 'a');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.setModeCalls).toEqual(['default']));
+        expect(backend.prompts).toHaveLength(0);
+
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        queue.close();
+        await run;
+
+        expect(consumedAtOnSent).toBe(0);
+        expect(sessionEvents(client)).toContainEqual({ type: 'abort-restore', text: 'build it' });
+        expect(client.emitMessagesConsumed).toHaveBeenCalledTimes(1);
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['a']);
     });
 
     it('keeps a cancelled turn that already produced output', async () => {
@@ -2234,5 +2333,136 @@ describe('AgyAcpRemoteLauncher questions (agy ask_question)', () => {
         finish();
         queue.close();
         await run;
+    });
+
+    it('negotiates slash commands from ACP available_commands_update and serves them via ListSlashCommands RPC', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const { run } = launch(session, [backend]);
+
+        await vi.waitFor(() => expect(client.emitSessionReady).toHaveBeenCalledOnce());
+
+        backend.availableCommandsListener?.('agy-conv-new', [
+            { name: 'swarm', description: 'Run a native swarm' },
+            { name: 'run-workflow', description: 'Run a Python workflow script' },
+            { name: 'custom-skill', description: 'Project skill advertised over ACP' }
+        ]);
+
+        const metadataUpdates = client.updateMetadata.mock.calls.map(
+            ([updater]) => (updater as (m: Record<string, unknown>) => Record<string, unknown>)({})
+        );
+        expect(metadataUpdates).toContainEqual(expect.objectContaining({
+            slashCommands: ['swarm', 'run-workflow', 'custom-skill']
+        }));
+
+        const listHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.ListSlashCommands)!;
+        const result = await listHandler({ agent: 'agy' }) as {
+            success: boolean;
+            commands: Array<{ name: string; description?: string; source: string }>;
+        };
+        expect(result.success).toBe(true);
+        expect(result.commands).toEqual(expect.arrayContaining([
+            expect.objectContaining({ name: 'swarm', description: 'Run a native swarm', source: 'builtin' }),
+            expect.objectContaining({ name: 'run-workflow', description: 'Run a Python workflow script', source: 'builtin' }),
+            expect.objectContaining({ name: 'custom-skill', description: 'Project skill advertised over ACP', source: 'builtin' }),
+            expect.objectContaining({ name: 'goal', source: 'builtin' })
+        ]));
+
+        // A subsequent empty catalog update replaces the cached catalog and clears metadata.slashCommands.
+        backend.availableCommands = [
+            { name: 'stale-backend-command', description: 'Should not be re-read after empty update' }
+        ];
+        backend.availableCommandsListener?.('agy-conv-new', []);
+
+        const updatedMetadata = client.updateMetadata.mock.calls.map(
+            ([updater]) => (updater as (m: Record<string, unknown>) => Record<string, unknown>)({})
+        );
+        expect(updatedMetadata.at(-1)).toEqual(expect.objectContaining({
+            slashCommands: []
+        }));
+
+        const clearedResult = await listHandler({ agent: 'agy' }) as {
+            success: boolean;
+            commands: Array<{ name: string; description?: string; source: string }>;
+        };
+        expect(clearedResult.success).toBe(true);
+        const clearedNames = clearedResult.commands.map((cmd) => cmd.name);
+        expect(clearedNames).not.toContain('custom-skill');
+        expect(clearedNames).not.toContain('run-workflow');
+        expect(clearedNames).not.toContain('stale-backend-command');
+        expect(clearedNames).toContain('swarm');
+
+        queue.close();
+        await run;
+    });
+
+    it('renders the local swarm board for /swarm board without sending a prompt turn to agy acp', async () => {
+        const brainDir = mkdtempSync(join(tmpdir(), 'hapi-agy-swarm-board-'));
+        try {
+            const swarmDir = join(brainDir, 'agy-conv-new', '.system_generated', 'swarm');
+            mkdirSync(swarmDir, { recursive: true });
+            writeFileSync(join(swarmDir, 'members.json'), JSON.stringify({
+                title: 'parser rewrite',
+                members: {
+                    coordinator: {
+                        role: 'coordinator',
+                        phase: 'WAITING',
+                        applied_model: 'gemini-4-argon-high',
+                        workspace_mode: 'inherit'
+                    },
+                    parser: {
+                        role: 'worker',
+                        phase: 'RUNNING',
+                        applied_model: 'gemini-4-argon-high',
+                        workspace_mode: 'share'
+                    }
+                }
+            }));
+            writeFileSync(join(swarmDir, 'board.jsonl'), [
+                JSON.stringify({
+                    seq: 1,
+                    agent: 'coordinator',
+                    text: '@parser fix parser_test.rs',
+                    time: '2026-11-17 04:00:00',
+                    channel: 'parser'
+                }),
+                JSON.stringify({
+                    seq: 2,
+                    agent: 'parser',
+                    text: '@coordinator [done] all 3 tests pass',
+                    time: '2026-11-17 04:01:00',
+                    channel: 'parser'
+                })
+            ].join('\n') + '\n');
+
+            const { session, queue, client } = makeSession();
+            const backend = new FakeAgyBackend();
+            const { run } = launch(session, [backend], { brainDir });
+
+            await vi.waitFor(() => expect(client.emitSessionReady).toHaveBeenCalledOnce());
+
+            queue.pushIsolated('/swarm board --channel parser', REVIEW, 'local-board-1');
+            await vi.waitFor(() => expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['local-board-1']));
+
+            expect(backend.prompts).toHaveLength(0);
+            expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'message',
+                message: expect.stringContaining('### Swarm Board — parser rewrite (#parser)')
+            }));
+            expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'message',
+                message: expect.stringContaining('@coordinator [done] all 3 tests pass')
+            }));
+
+            // Normal /swarm <task> prompts are forwarded to agy acp as usual.
+            queue.push('/swarm split the lexer into modules', REVIEW, 'local-swarm-task-1');
+            await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+            expect(backend.prompts[0]).toEqual([{ type: 'text', text: '/swarm split the lexer into modules' }]);
+
+            queue.close();
+            await run;
+        } finally {
+            rmSync(brainDir, { recursive: true, force: true });
+        }
     });
 });

@@ -1,4 +1,5 @@
-import { createHash, createHmac } from 'node:crypto'
+import { createHmac } from 'node:crypto'
+import { encodePasskeyUserHandle, PASSKEY_ACCOUNT_TAG_BYTES } from '@hapi/protocol/passkey'
 import { SignJWT, jwtVerify } from 'jose'
 import { z } from 'zod'
 
@@ -65,9 +66,9 @@ export function cliTokenFingerprint(jwtSecret: Uint8Array, cliApiToken: string):
 }
 
 /** Stable, hub-specific WebAuthn user handle for a namespace. */
-export function passkeyUserHandle(jwtSecret: Uint8Array, namespace: string, hub: string): Uint8Array<ArrayBuffer> {
+export async function passkeyUserHandle(jwtSecret: Uint8Array, namespace: string, hub: string): Promise<Uint8Array<ArrayBuffer>> {
     const digest = createHmac('sha256', jwtSecret)
         .update(`hapi-passkey-user:${namespace}`)
         .digest()
-    return new Uint8Array(Buffer.concat([createHash('sha256').update(hub).digest(), digest]))
+    return encodePasskeyUserHandle(hub, digest.subarray(0, PASSKEY_ACCOUNT_TAG_BYTES))
 }

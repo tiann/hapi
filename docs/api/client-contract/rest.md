@@ -1,3 +1,7 @@
+---
+description: "HAPI hub REST endpoints for native clients, grouped by feature."
+---
+
 # REST endpoints
 
 Endpoint tables for native clients, grouped by feature. Request/response shapes reference the Zod schemas in `shared/src/schemas.ts` and `shared/src/apiTypes.ts` (package `@hapi/protocol`) — those schemas, not the prose here, are the field-level source of truth. Route behavior is grounded in `hub/src/web/routes/*.ts`; `web/src/api/client.ts` is the reference consumer.
@@ -17,6 +21,15 @@ does not mean the app offers that feature.
 
 ## Interactive client API
 
+### Passkeys
+
+Source: `hub/src/web/routes/passkey.ts`. Sign-in and registration ceremonies are specified in [Auth → Passkeys](./auth.md#passkeys-web).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/passkeys` | — | `{passkeys: [{id, name, rpId, createdAt, lastUsedAt, valid}]}` for the caller's namespace |
+| `DELETE /api/passkeys/:id` | — | `{ok: true}`; `404` when not found in the namespace |
+
 ### Health
 
 Source: `hub/src/web/server.ts`.
@@ -31,9 +44,13 @@ Source: `hub/src/web/routes/sessions.ts`; shapes `SessionSchema` (`shared/src/sc
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[]}` |
+| `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[], serverTime: number}` — Hub epoch milliseconds at response time; use this clock to age job heartbeats. |
+| `GET /api/sessions/content-search` | Query: `query`, `limit?` (1–100, default 50), repeated `sessionId?` to scope | `SessionContentSearchResponse` `{results: [{session: SessionSummary, match}], hasPotentiallyIncompleteResults}` — message-text search across sessions |
+| `POST /api/sessions/content-search` | `{query, limit?, sessionIds?: string[]}` | Same as `GET`; use for long `sessionIds` scopes (`413` above the body limit) |
+| `GET /api/sessions/:id/content-search` | Query: `query`, `limit?` (1–1000) | `SessionContentMatchesResponse` `{matches, total, hasPotentiallyIncompleteResults}` — matches inside one session; empty `query` returns no matches |
 | `PUT /api/sessions/:id/read-state` | `{type: "read", readRevision, expectedVersion}` or `{type: "unread", expectedVersion}` | `{status, contentRevision, readState}`; see [Read state](./read-state.md) |
 | `GET /api/sessions/:id` | — | `{session: Session}` (full record incl. `metadata`, `agentState`, `todos`, versions) |
+| `GET /api/sessions/scratchlist-status` | — | `{sessionIds: string[]}` — session IDs in the caller's namespace with at least one scratchlist entry |
 
 Default list order is `globalPinned` → `pinned` →
 `lastUserMessageAt ?? createdAt` descending, then `createdAt` descending and
@@ -47,7 +64,8 @@ not rewind the timestamp.
 `updatedAt` retains its activity/date-filter semantics; `activeAt`
 remains transport keep-alive state. The Web session list may
 apply client-side grouping and search ranking after receiving this response;
-`GET /api/sessions` itself has no text-search parameter. List badges come from
+`GET /api/sessions` itself has no text-search parameter; message-text search uses
+the `content-search` routes above. List badges come from
 `SessionSummary.pendingRequestsCount` (authoritative total) and
 `pendingRequests` (capped at 5, oldest-first) — do not derive counts from
 `pendingRequests.length`.
@@ -76,7 +94,21 @@ Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiType
 Both endpoints return the id of the session that now carries the conversation — which **may differ from the id you called them on** (fresh spawn under a new id; the old row is superseded). Clients must migrate composer drafts and replace navigation to the returned id. Reference: `web/src/routes/sessions/followSupersedingSession.ts`; the durable link also appears as `metadata.supersededBySessionId` on the old session.
 :::
 
-Additional session APIs without a current native UI: `POST /api/sessions/:id/fork` `{messageLocalId?}` → `{sessionId}`, `POST /api/sessions/:id/rewind` `{messageLocalId}` → `{success: true}`, `GET /api/sessions/:id/export` (413 when too large). Availability also depends on session history capabilities.
+Conversation history APIs (iOS has UI for them; Android does not): `POST /api/sessions/:id/fork` `{messageLocalId?} | {latestCompleted?: true}` → `{sessionId}`, `POST /api/sessions/:id/rewind` `{messageLocalId}` → `{success: true}`, `GET /api/sessions/:id/export` (413 when too large). Availability also depends on session history capabilities.
+
+### Portable conversation branches
+
+Source: `hub/src/web/routes/sessions.ts`; schema `BranchConversationRequestSchema` (`shared/src/apiTypes.ts`).
+
+`POST /api/sessions/:id/branch` accepts `{requestId, messageLocalId? | messageId?, boundary?: 'before'|'after', agent: 'claude'|'codex', model?, workspace?: 'current'|'worktree', worktreeName?, instruction}`. Invalid options return `400`; a rejected launch returns `409 {error}`.
+
+- `requestId` is a UUID. Reusing it with identical options returns the same child, including after a hub restart; different options are rejected. Keep it when retrying a lost response.
+- The source may be active or inactive, but must be idle, have no queued input, and belong to the authenticated namespace. Its machine must be online for a new launch. Initial sources and targets are Claude Code and Codex.
+- `messageLocalId` (client local id) or `messageId` (hub message id; specify at most one) identifies an invoked user message. `before` excludes it; `after` includes it and subsequent output up to the next invoked user message. Omitting the id selects the idle tail.
+- A fresh target receives one queued user prompt containing allowlisted visible prose/tool observations and the required new `instruction`. Native session ids, reasoning, private system events and pending input are not copied. Attachments and references larger than 256 KiB are rejected rather than silently omitted/truncated.
+- Files are not rewound. `current` shares the source directory; `worktree` uses the existing runner worktree behavior at current Git HEAD and does not copy uncommitted changes.
+- Response: `{sessionId, warning?}`. Navigate to that child even when `warning` reports an uncertain launch; inspect it before creating another branch. Ambiguous launches retain the child and its instruction. A confirmed pre-exec rejection returns 409 and removes the unused stub.
+- `metadata.forkedFrom` and `metadata.conversationBranch` record provenance, cutoff, import mode and launch state. Existing native `/fork` semantics are unchanged; this endpoint deliberately uses portable reference context even when targeting the same harness.
 
 ### Messages
 
@@ -86,6 +118,7 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 |---|---|---|
 | `GET /api/sessions/:id/messages` | Query: `limit?` (1–200, default 50), cursor pairs `beforeSeq+beforeAt` \| `afterSeq+afterAt` (+ optional `untilSeq+untilAt`, `epoch` with `after`) | `MessagesResponse` `{messages: DecryptedMessage[], page: {direction, limit, epoch, reset, nextBefore*/nextAfter*, snapshotHead*, hasMore}}` — full cursor semantics in [Pagination](./pagination.md) |
 | `POST /api/sessions/:id/messages` | `{text, localId?, attachments?, scheduledAt?, deliveryMode?: 'queue'\|'steer'}` — text or attachments required; `scheduledAt` requires `localId`, must be ≤ 7 days out, excludes attachments and steer | `{ok: true}` — the message itself arrives via SSE (`message-received`), reconciled by `localId` |
+| `GET /api/sessions/:id/messages/:messageId/context` | — | `MessageContextResponse` `{messages, targetMessageId, page: {epoch, nextBefore*, snapshotHead*, hasMore}}` or `null` when the message is not found — a window around one message (used to jump to a search result) |
 | `DELETE /api/sessions/:id/messages/:messageId` | — | `{status: 'cancelled', localId}` \| `{status: 'invoked', message}` \| `{status: 'busy', localId}` (cancel; `busy` = native delivery/removal is unresolved) |
 | `POST /api/sessions/:id/messages/:messageId/steer` | — | `{status: 'steered', localId}` \| `{status: 'invoked', message}` \| `{status: 'failed', error, localId}` |
 | `POST /api/sessions/:id/messages/:messageId/retry` | — | `{status: 'retried', localId}` \| `{status: 'already-queued', localId}` \| `{status: 'retry-unavailable', localId}` \| `{status: 'invoked', message}` \| `{status: 'not-found'}` — explicit retry only; never automatic replay |
@@ -124,6 +157,9 @@ Source: `hub/src/web/routes/sessions.ts`; flavor gates in `shared/src/modes.ts` 
 | `POST /api/sessions/:id/service-tier` | `{serviceTier: 'fast' \| 'standard'}` | codex (remote-only) |
 | `POST /api/sessions/:id/collaboration-mode` | `{mode: 'default' \| 'plan'}` | codex (remote-only) |
 | `POST /api/sessions/:id/copilot-agent-mode` | `{mode}` | copilot (remote-only) |
+| `POST /api/sessions/:id/model-error/acknowledge` | `{eventId}` | Any flavor; dismisses a model-error notice (`409` on a concurrent change) |
+| `POST /api/sessions/:id/model-error/bridge` | `{eventId}` | cursor, active session; retries a transient model error inline (`409 {ok: false, reason}` when not bridgeable) |
+| `POST /api/sessions/:id/model-error/auto-bridge-setting` | `{enabled: boolean}` | cursor, active session; owner-only (`403` for other namespaces) |
 
 `metadata.capabilities.concurrentClients === true`: ignore the legacy
 `agentState.controlledByUser` input/settings gate. Shared keepalives have no
@@ -152,10 +188,11 @@ The configuration routes in the table above respond `{ok: true}`; apply-failures
 
 | Method & path | Notes |
 |---|---|
-| `GET /api/sessions/:id/codex-models`, `/opencode-models`, `/cursor-models`, `/grok-models`, `/copilot-models`, `/kimi-models`, `/pi-models` | Active session of the matching flavor; 400 otherwise |
+| `GET /api/sessions/:id/codex-models`, `/opencode-models`, `/cursor-models`, `/grok-models`, `/copilot-models`, `/kimi-models`, `/pi-models`, `/dsh-models` | Active session of the matching flavor; 400 otherwise |
 | `GET /api/sessions/:id/opencode-reasoning-effort-options`, `/grok-reasoning-effort-options`, `/copilot-reasoning-effort-options`, `/kimi-reasoning-effort-options` | Same pattern |
-| `GET /api/machines/:id/agy-models`, `/pi-models`, `/codex-models`, `/cursor-models` | Machine-level (pre-spawn pickers). `agy-models` takes `?refresh=true` to skip the machine's cached catalog, and may answer `success: true` with an advisory `error` (see [Errors](./errors.md#rpc-wrapped-endpoints)) |
+| `GET /api/machines/:id/agy-models`, `/pi-models`, `/codex-models`, `/cursor-models`, `/claude-models`, `/dsh-models` | Machine-level (pre-spawn pickers). `agy-models` takes `?refresh=true` to skip the machine's cached catalog, and may answer `success: true` with an advisory `error` (see [Errors](./errors.md#rpc-wrapped-endpoints)) |
 | `GET /api/machines/:id/opencode-models?cwd=`, `/grok-models?cwd=`, `/copilot-models?cwd=`, `/kimi-models?cwd=` | `cwd` query required (400 without) |
+| `GET /api/machines/:id/opencode-model-variants?cwd=` | Effort variants per OpenCode model; `cwd` optional |
 
 ### Machines & spawning
 
@@ -182,6 +219,11 @@ connected Runner predates the usage-query capability.
 | `PUT /api/machines/:id/usage-query/settings` | `{agent, enabled, templateId, template}` | Same sanitized settings response |
 | `POST /api/machines/:id/usage-query/test` | `{agent, template}` | Sanitized `UsageQueryResult`; provider/test failures use `{status: 'error', error}` |
 | `POST /api/machines/:id/usage-query/query` | `{agent, force?}` | Sanitized `UsageQueryResult`; Runner cache TTL is five minutes and `force=true` bypasses it |
+
+`GET /api/machines/:id/agent-quotas?refresh=1` returns the Runner's built-in
+quota inspection for the agent accounts on that machine (`409
+runner_upgrade_required` without the `agent-quotas` machine capability). The
+owner-only `GET /api/usage/quotas` below aggregates it across online machines.
 
 An error result keeps the last successful windows when one exists and marks the
 result `stale: true`; a failed attempt is still recorded in `queriedAt`. The
@@ -284,6 +326,7 @@ Source: `hub/src/web/routes/usage.ts`, `hub/src/web/routes/storage.ts`. Both `40
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/usage/summary` | Query: `range=7d\|30d\|all` (default 7d), `timeZone` (IANA, validated) | `UsageSummaryResponse` `{range, totals, daily[], byAgent[], byModel[], updatedAt}` |
+| `GET /api/usage/quotas` | Query: `refresh=1\|true` (bypass Runner caches) | `UsageQuotasResponse` `{machines: [{machineId, machineName, supported, accounts[], fetchedAt, error?}], updatedAt}`; `Cache-Control: no-store` |
 | `GET /api/storage/sqlite` | — | `{path, databaseBytes, walBytes, shmBytes, totalBytes}` |
 
 ### Agent activity
@@ -342,15 +385,16 @@ internal and must never be used by clients.
 | Area | Paths | Current use or restriction |
 |------|-------|------------------|
 | Codex Desktop import | `/api/codex/*` (`hub/src/web/routes/codexDesktop.ts`) | Desktop-import tooling |
-| Pi session import | `/api/pi/*`, `/api/sessions/:id/pi-*` (`hub/src/web/routes/piSessions.ts`, `sessions.ts`) | Import tooling (the `pi-models` catalog above is the one exception) |
+| Local session import | `GET /api/{pi,opencode,claude}/sessions?machineId=&cwd=`, `POST /api/{pi,opencode,claude}/import-sessions` `{sessionIds, machineId?, cwd?}` (`hub/src/web/routes/localSessions/`) | Import registry for local agent histories; Codex uses `/api/codex/*` |
 | Work graph | `/api/work-graph/*` (`hub/src/web/routes/workGraph.ts`) | Web-only feature |
 | Web Push | `/api/push/*` (`hub/src/web/routes/push.ts`) | Browser Push API; natives use `/api/devices/register` (Android/iOS push contract) |
 | Hub settings write | `PUT /api/hub-settings` | Owner-only hub administration |
+| Session jobs | `GET /api/sessions/:id/jobs`, `PUT`/`PATCH`/`DELETE /api/sessions/:id/jobs/:jobKey`, `POST /api/sessions/:id/jobs/:jobKey/clear-stale` (requires the observed `startedAt`, `heartbeatAt` and, when present, `runId`; returns 409 if changed or still fresh) | Web job meters and controls; see [Session jobs](../../guide/session-jobs.md) |
 | Telegram | `POST /api/bind` | Telegram Mini App binding only |
 | Web voice | `/api/voice/token`, `/voices`, `/backend`, `/gemini-token`, `/qwen-token`, `/qwen-ws`, `/gemini-ws`, `/transcription/realtime-token`, `/telemetry`, credentials endpoints | Realtime assistant/dictation and provider administration; native apps use standard dictation |
 | Cursor maintenance | `/api/sessions/:id/migrate-to-acp`, `/cursor-chat-store` | Desktop store migration |
-| Session export | `GET /api/sessions/:id/export` | Whole-session export through the web; separate from Android's full-text reader file export |
-| **CLI plane** | `/cli/*` (`hub/src/web/routes/cli.ts`) | **Forbidden for clients** — internal CLI↔hub surface; authenticates with the raw access token instead of a JWT and bypasses the client middleware. Never call it from a client, and never send the access token as a bearer anywhere except `POST /api/auth`'s JSON body |
+| Session export | `GET /api/sessions/:id/export` | Whole-session export (web and iOS); separate from Android's full-text reader file export |
+| **CLI plane** | `/cli/*` (`hub/src/web/routes/cli.ts`), including the resume/handoff helpers (`/cli/sessions/resumable`, `/resume-target`, `/prepare-local-resume`, `/prepare-stop`, `/handoff-local`, `/opencode-rewind`, `/clear-opencode*`) | **Forbidden for clients** — internal CLI↔hub surface; authenticates with the raw access token instead of a JWT and bypasses the client middleware. Never call it from a client, and never send the access token as a bearer anywhere except `POST /api/auth`'s JSON body |
 
 ### Session title protection
 

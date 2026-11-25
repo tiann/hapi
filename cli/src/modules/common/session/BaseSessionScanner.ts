@@ -27,11 +27,15 @@ type BaseSessionScannerOptions = {
 
 export abstract class BaseSessionScanner<TEvent> {
     private readonly sync: InvalidateSync;
-    private readonly watchers = new Map<string, () => void>();
+    private readonly watchers = new Map<string, ReturnType<typeof startFileWatcher>>();
+    private readonly healthyWatchers = new Set<string>();
+    private pollMs = 0;
+    private allFilesSelected = false;
     private readonly processedEventKeys = new Set<string>();
     private readonly fileCursors = new Map<string, number>();
     private intervalId: ReturnType<typeof setInterval> | null = null;
-    private stopped = false;
+    private trailingScan: ReturnType<typeof setTimeout> | undefined;
+    private cleanupPromise: Promise<void> | null = null;
     private scanPromise: Promise<void> | null = null;
 
     protected constructor(private readonly options: BaseSessionScannerOptions) {
@@ -58,15 +62,30 @@ export abstract class BaseSessionScanner<TEvent> {
         return true;
     }
 
-    protected shouldWatchFile(_filePath: string): boolean {
-        return true;
-    }
+    protected shouldWatchFile?(filePath: string): boolean;
+
+    private onFileChange = (): void => {
+        if (this.cleanupPromise) return;
+        this.sync.invalidate();
+        if (this.pollMs <= this.options.intervalMs) return;
+        clearTimeout(this.trailingScan);
+        this.trailingScan = setTimeout(() => this.sync.invalidate(), this.options.intervalMs);
+    };
 
     protected ensureWatcher(filePath: string): void {
-        if (this.watchers.has(filePath)) {
+        if (this.cleanupPromise || this.watchers.has(filePath)) {
             return;
         }
-        this.watchers.set(filePath, startFileWatcher(filePath, () => this.sync.invalidate()));
+        this.watchers.set(filePath, startFileWatcher(filePath, this.onFileChange, (healthy) => {
+            if (healthy) {
+                this.healthyWatchers.add(filePath);
+                if (this.watchers.has(filePath)) this.invalidate();
+            } else {
+                this.healthyWatchers.delete(filePath);
+            }
+            if (this.watchers.has(filePath) && this.pollMs) this.updatePoll();
+        }));
+        if (this.pollMs) this.updatePoll();
     }
 
     protected invalidate(): void {
@@ -99,41 +118,57 @@ export abstract class BaseSessionScanner<TEvent> {
             }
             stop();
             this.watchers.delete(filePath);
+            this.healthyWatchers.delete(filePath);
         }
+        if (this.pollMs) this.updatePoll();
     }
 
     public async start(): Promise<void> {
         await this.initialize();
         await this.sync.invalidateAndAwait();
-        this.intervalId = setInterval(() => this.sync.invalidate(), this.options.intervalMs);
+        this.updatePoll();
+    }
+
+    private updatePoll(): void {
+        if (this.cleanupPromise) return;
+        const healthy = this.allFilesSelected && this.watchers.size > 0 && this.healthyWatchers.size === this.watchers.size;
+        const intervalMs = healthy ? Math.max(30_000, this.options.intervalMs) : this.options.intervalMs;
+        if (this.pollMs === intervalMs) return;
+        this.pollMs = intervalMs;
+        if (this.intervalId) clearInterval(this.intervalId);
+        this.intervalId = setInterval(() => {
+            if (healthy) for (const watcher of this.watchers.values()) watcher.verifyIdentity();
+            this.sync.invalidate();
+        }, intervalMs);
     }
 
     public async flush(): Promise<void> {
-        if (this.stopped) {
-            return;
-        }
+        if (this.cleanupPromise) return this.cleanupPromise;
         await this.sync.invalidateAndAwait();
     }
 
-    public async cleanup(): Promise<void> {
-        this.stopped = true;
-        if (this.intervalId) {
-            clearInterval(this.intervalId);
-            this.intervalId = null;
-        }
+    public cleanup(): Promise<void> {
+        return this.cleanupPromise ??= this.drain();
+    }
+
+    private async drain(): Promise<void> {
         this.sync.stop();
-        const pendingScan = this.scanPromise;
+        clearTimeout(this.trailingScan);
+        if (this.intervalId) clearInterval(this.intervalId);
         for (const stop of this.watchers.values()) {
             stop();
         }
-        this.watchers.clear();
-        if (pendingScan) {
-            await pendingScan.catch(() => {});
+        try {
+            await this.scanPromise?.catch(() => {});
+            await this.runScan();
+        } finally {
+            this.watchers.clear();
+            this.healthyWatchers.clear();
         }
     }
 
     private async scan(): Promise<void> {
-        if (this.stopped || !this.shouldScan()) {
+        if (!this.shouldScan()) {
             return;
         }
         if (this.scanPromise) {
@@ -148,16 +183,18 @@ export abstract class BaseSessionScanner<TEvent> {
     }
 
     private async runScan(): Promise<void> {
-        if (this.stopped || !this.shouldScan()) {
+        if (!this.shouldScan()) {
             return;
         }
         await this.beforeScan();
         const files = await this.findSessionFiles();
+        this.allFilesSelected = files.length > 0 && files.every(path => this.shouldWatchFile?.(path) === true);
+        if (this.pollMs) this.updatePoll();
         for (const filePath of files) {
-            if (this.stopped || !this.shouldScan()) {
+            if (!this.shouldScan()) {
                 return;
             }
-            if (this.shouldWatchFile(filePath)) {
+            if (this.shouldWatchFile?.(filePath) ?? true) {
                 this.ensureWatcher(filePath);
             }
             const cursor = this.getCursor(filePath);

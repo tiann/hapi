@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Outlet, useLocation, useMatchRoute, useRouter } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { getTelegramWebApp, isTelegramApp } from '@/hooks/useTelegram'
@@ -6,6 +6,8 @@ import { initializeChatSurfaceColors } from '@/hooks/useChatSurfaceColors'
 import { initializeTheme } from '@/hooks/useTheme'
 import { initializeThemeColors } from '@/hooks/useThemeColors'
 import { useAuth } from '@/hooks/useAuth'
+import { useOnlineStatus } from '@/hooks/useOnlineStatus'
+import { authConnectionMessage } from '@/lib/authConnection'
 import { useAuthSource } from '@/hooks/useAuthSource'
 import { useServerUrl } from '@/hooks/useServerUrl'
 import { useSSE } from '@/hooks/useSSE'
@@ -16,7 +18,7 @@ import { useSyncingState } from '@/hooks/useSyncingState'
 import { pushNotificationsDisabled, usePushNotifications } from '@/hooks/usePushNotifications'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
 import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
-import { queryKeys } from '@/lib/query-keys'
+import { getAppSseResyncQueryKeys } from '@/lib/sseResync'
 import { refreshAllAgyCatalogs } from '@/lib/agyCatalogAnnouncement'
 import { AppContextProvider } from '@/lib/app-context'
 import { clearAllMessageWindows, clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
@@ -41,7 +43,7 @@ import { RunnerVersionSkewBanner } from '@/components/RunnerVersionSkewBanner'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
 import { PwaUpdateProvider } from '@/lib/pwa-update-context'
-import { ToastProvider, useToast } from '@/lib/toast-context'
+import { ToastProvider, useAddToast } from '@/lib/toast-context'
 import { getNotificationClickHref, NOTIFICATION_CLICK_ACK_TYPE } from '@/lib/notificationClick'
 import type { SyncEvent } from '@/types/api'
 
@@ -91,10 +93,10 @@ function AppInner() {
         clearUserCaches(nextIdentity)
         setIdentityEpoch((epoch) => epoch + 1)
     }, [clearUserCaches])
-    const { authSource, isLoading: isAuthSourceLoading, setAccessToken, setPasskeySession } = useAuthSource(baseUrl)
+    const { authSource, isLoading: isAuthSourceLoading, setAccessToken, setPasskeySession, clearAuth } = useAuthSource(baseUrl)
     // The hub rejects passkey registration for Cloudflare Access sessions (HTTP 403).
     const passkeyRegistrationAllowed = authSource?.type !== 'cloudflareAccess'
-    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind, retry: retryAuth } = useAuth(authSource, baseUrl, {
+    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, retry: retryAuth, connectionError, retryConnection, cancelRecovery, bind, handleSseClosed } = useAuth(authSource, baseUrl, {
         onIdentityChange: handleIdentityChange
     })
     useEffect(() => {
@@ -107,12 +109,14 @@ function AppInner() {
             void clearAuthenticatedApiCaches()
         }
     }, [token])
+    const isOnline = useOnlineStatus()
+    const connectionMessage = connectionError ? authConnectionMessage(connectionError, isOnline) : null
     const [titleSuggestionAvailable, setTitleSuggestionAvailable] = useState(false)
     const goBack = useAppGoBack()
     const pathname = useLocation({ select: (location) => location.pathname })
     const matchRoute = useMatchRoute()
     const router = useRouter()
-    const { addToast } = useToast()
+    const addToast = useAddToast()
 
     const handleCloudflareReauth = useCallback(() => {
         const nextUrl = new URL(window.location.href)
@@ -261,22 +265,36 @@ function AppInner() {
         clearUserCaches()
     }, [baseUrl, clearUserCaches])
 
-    // Clean up URL params after successful auth (for direct access links and Cloudflare re-auth)
-    useEffect(() => {
-        if (!token || !api) return
-        const { pathname, search, hash, state } = router.history.location
-        const searchParams = new URLSearchParams(search)
-        if (!searchParams.has('server') && !searchParams.has('hub') && !searchParams.has('token') && !searchParams.has('cf_reauth')) {
-            return
+    const clearSignInUrl = useCallback((dropLaunchData = false) => {
+        const cleanParams = (value: string, prefix: '?' | '#') => {
+            const params = new URLSearchParams(value.slice(1))
+            let changed = false
+            for (const key of [...params.keys()]) {
+                // cf_reauth is the Cloudflare Access re-login nonce added by the
+                // sign-in flow; strip it alongside the other direct-link params.
+                if (['token', 'server', 'hub', 'cf_reauth'].includes(key) || dropLaunchData && (key === 'initData' || key === 'startapp' || key.startsWith('tgWebApp'))) {
+                    params.delete(key); changed = true
+                }
+            }
+            const cleaned = params.toString()
+            return changed ? cleaned ? prefix + cleaned : '' : value
         }
-        searchParams.delete('server')
-        searchParams.delete('hub')
-        searchParams.delete('token')
-        searchParams.delete('cf_reauth')
-        const nextSearch = searchParams.toString()
-        const nextHref = `${pathname}${nextSearch ? `?${nextSearch}` : ''}${hash}`
-        router.history.replace(nextHref, state)
-    }, [token, api, router])
+        const { pathname, search, hash, state } = router.history.location
+        const browserUrl = new URL(window.location.href)
+        const nextHref = pathname + cleanParams(search, '?') + (dropLaunchData ? cleanParams(hash, '#') : hash)
+        const browserHref = browserUrl.pathname + cleanParams(browserUrl.search, '?') + (dropLaunchData ? cleanParams(browserUrl.hash, '#') : browserUrl.hash)
+        if (nextHref !== pathname + search + hash) router.history.replace(nextHref, state)
+        // Telegram bootstrap may use memory history; auth reads the real URL.
+        if (browserHref !== browserUrl.pathname + browserUrl.search + browserUrl.hash) window.history.replaceState(window.history.state, '', browserHref)
+    }, [router])
+    // Clean up direct access links after success or an explicit abandoned recovery.
+    useEffect(() => { if (token && api) clearSignInUrl() }, [token, api, clearSignInUrl])
+    const abandonRecovery = useCallback(() => {
+        if (authSource?.type === 'telegram' || isTelegramApp()) return
+        cancelRecovery()
+        clearAuth()
+        clearSignInUrl(true)
+    }, [authSource, cancelRecovery, clearSignInUrl, clearAuth])
 
     useEffect(() => {
         if (!api || !token) {
@@ -304,11 +322,14 @@ function AppInner() {
         // Clear disconnected state on successful connection
         reportSseConnect()
 
+        const isFirstConnect = isFirstConnectRef.current
+        const invalidationKeys = getAppSseResyncQueryKeys(info, isFirstConnect)
+
         // The hub replayed every event missed during the gap, so the caches
         // are already consistent - the full refetch below would only re-download
         // what the replay just delivered. First connects and long gaps arrive
         // with resumed=false and take the resync path.
-        if (info.resumed && !isFirstConnectRef.current) {
+        if (invalidationKeys.length === 0) {
             return
         }
 
@@ -318,20 +339,14 @@ function AppInner() {
         // Only force show banner on first connect (page load)
         // Subsequent connects (session switches) use non-forced mode
         // which only shows banner when returning from background
-        if (isFirstConnectRef.current) {
+        if (isFirstConnect) {
             isFirstConnectRef.current = false
             startSync({ force: true })
         } else {
             startSync()
         }
         const invalidations = [
-            queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
-            // Invalidate ALL cached session-detail entries on reconnect, not just
-            // the selected one.  With `SESSION_DETAIL_STALE_TIME_MS` extending the
-            // freshness window on `useSession`, a previously-viewed session that
-            // received updates during the SSE gap would otherwise serve stale
-            // cached data on remount.  See tiann/hapi#884.
-            queryClient.invalidateQueries({ queryKey: ['session'] }),
+            ...invalidationKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
             refreshAllAgyCatalogs(queryClient)
         ]
         const refreshMessages = (selectedSessionId && api)
@@ -354,7 +369,10 @@ function AppInner() {
         if (!isFirstConnectRef.current) {
             reportSseDisconnect(reason)
         }
-    }, [reportSseDisconnect])
+        if (reason === 'closed') {
+            handleSseClosed()
+        }
+    }, [handleSseClosed, reportSseDisconnect])
 
     const handleSseEvent = useCallback((event: SyncEvent) => {
         if (event.type !== 'messages-invalidated') {
@@ -456,10 +474,6 @@ function AppInner() {
         [selectedSessionId]
     )
     const sseEnabled = Boolean(api && token)
-    const showReconnectingBanner = sseDisconnected && !isSyncing
-    // Transient states wait before showing; quick reconnects never flash.
-    const revealReconnecting = useDelayedFlag(showReconnectingBanner, CONNECTION_STATUS_DELAY_MS)
-    const revealSyncing = useDelayedFlag(isSyncing, CONNECTION_STATUS_DELAY_MS)
 
     const { subscriptionId: globalSubscriptionId } = useSSE({
         enabled: sseEnabled,
@@ -468,6 +482,7 @@ function AppInner() {
         sessionEpoch: identityEpoch,
         subscription: globalEventSubscription,
         scope: 'global',
+        hubClock: api?.hubClock,
         onConnect: handleSseConnect,
         onDisconnect: handleSseDisconnect,
         onEvent: () => {},
@@ -484,6 +499,15 @@ function AppInner() {
         onConnect: handleSessionSseConnect,
         onEvent: handleSseEvent
     })
+
+    const streamConnected = globalSubscriptionId !== null
+    const showReconnectingBanner = !streamConnected && !isSyncing && (Boolean(connectionError) || sseDisconnected || !isOnline)
+    const showAuthRefreshBanner = streamConnected && !isSyncing && isOnline && Boolean(connectionError)
+    // Transient states wait before showing; quick reconnects never flash.
+    const revealReconnecting = useDelayedFlag(showReconnectingBanner, CONNECTION_STATUS_DELAY_MS)
+    const revealAuthRefresh = useDelayedFlag(showAuthRefreshBanner, CONNECTION_STATUS_DELAY_MS)
+    const [connectionBannerHeight, setConnectionBannerHeight] = useState(0)
+    const revealSyncing = useDelayedFlag(isSyncing, CONNECTION_STATUS_DELAY_MS)
 
     useVisibilityReporter({
         api,
@@ -532,6 +556,22 @@ function AppInner() {
                 clearServerUrl={clearServerUrl}
                 requireServerUrl={REQUIRE_SERVER_URL}
                 error={authError ?? undefined}
+            />,
+        )
+    }
+
+    if (connectionError && !token) {
+        return withPwaBanner(
+            <LoginPrompt
+                mode="reconnect"
+                onReconnect={retryConnection}
+                onChooseHub={authSource.type === 'telegram' || isTelegramApp() ? undefined : abandonRecovery}
+                error={connectionMessage}
+                baseUrl={baseUrl}
+                serverUrl={serverUrl}
+                setServerUrl={setServerUrl}
+                clearServerUrl={clearServerUrl}
+                requireServerUrl={REQUIRE_SERVER_URL}
             />,
         )
     }
@@ -597,23 +637,36 @@ function AppInner() {
     return (
         <AppContextProvider key={identityEpoch} value={{ api, token, baseUrl, titleSuggestionAvailable, passkeyRegistrationAllowed }}>
             <VoiceProvider>
-                <PwaUpdateBannerWithStatusOffset
-                    isSyncing={revealSyncing}
-                    isReconnecting={revealReconnecting}
-                />
                 <SyncingBanner isSyncing={revealSyncing} />
                 <ReconnectingBanner
-                    isReconnecting={revealReconnecting}
-                    reason={sseDisconnectReason}
+                    isReconnecting={revealReconnecting && !streamConnected}
+                    reason={!isOnline ? authConnectionMessage({}, false) : connectionMessage ?? sseDisconnectReason}
+                    onHeightChange={setConnectionBannerHeight}
+                />
+                <ReconnectingBanner
+                    isReconnecting={revealAuthRefresh && streamConnected}
+                    message="Sign-in refresh failed. Chat updates may be delayed; retrying automatically."
+                    onHeightChange={setConnectionBannerHeight}
+                    reason={connectionError?.diagnostic ?? (connectionError?.status ? `HTTP ${connectionError.status}` : null)}
                 />
                 <VoiceErrorBanner />
                 <OfflineBanner
                     isHubConnected={globalSubscriptionId !== null}
                     isReconnecting={showReconnectingBanner}
                 />
-                <RunnerVersionSkewBanner />
-                <div className="h-full min-h-0 flex flex-col">
-                    <Outlet />
+                <div className="h-full min-h-0 flex flex-col" style={{
+                    paddingTop: connectionBannerHeight,
+                    '--route-safe-area-top': connectionBannerHeight ? '0px' : undefined
+                } as CSSProperties}>
+                    <PwaUpdateBannerWithStatusOffset
+                        isSyncing={revealSyncing}
+                        isReconnecting={revealReconnecting || revealAuthRefresh}
+                        inStatusStack={connectionBannerHeight > 0}
+                    />
+                    <RunnerVersionSkewBanner inStatusStack={connectionBannerHeight > 0} />
+                    <div className="flex min-h-0 flex-1 flex-col">
+                        <Outlet />
+                    </div>
                 </div>
                 <ToastContainer />
                 <InstallPrompt />

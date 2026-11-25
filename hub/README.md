@@ -52,6 +52,23 @@ Configure `HAPI_TITLE_PROVIDER_BASE_URL`, `HAPI_TITLE_PROVIDER_API_KEY`, and
 manual or Agent titles arriving during generation are preserved. No automatic
 request is made without a configured provider.
 
+### Optional (translate input to English)
+
+The per-session `metadata.translateInput` toggle is owned by the hub. The CLI
+cannot set or clear it, and it is changed through `PATCH /api/sessions/:id`
+with `{ "translateInput": boolean }`. When a session has no explicit value, the
+hub-wide `translateInputByDefault` setting (`PUT /api/hub-settings`, owner
+only) decides. While translation is on, `MessageService.sendMessage`
+translates user-authored prompts (web/native and Telegram, but not peer pings
+or system rows) before storing them. It stores the English in `content.text`
+and the original in `meta.translatedFrom`. Sends for that session are queued
+in order, so a slow translation cannot reorder prompts. If translation fails,
+the original text is sent with `meta.translationFailed: true`. `GET /api/features` reports
+`inputTranslation.available`. The provider comes from
+`HAPI_TRANSLATION_PROVIDER_*`; if those are unset, the hub uses the title
+provider. See the
+[configuration guide](../docs/guide/configuration.md#translating-input-to-english).
+
 ### Optional
 
 - `HAPI_LISTEN_HOST` - HTTP bind address (default: 127.0.0.1).
@@ -126,7 +143,7 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 ### Authentication (`src/web/routes/auth.ts`, `src/web/routes/bind.ts`)
 
 - `POST /api/auth` - Get JWT token (Telegram initData, `CLI_API_TOKEN[:namespace]`, or a `passkeySession`).
-- `POST /api/passkey/login/options`, `POST /api/passkey/login/verify` - Unauthenticated WebAuthn sign-in; returns a JWT plus a 30-day `passkeySession`.
+- `POST /api/passkey/login/verify` - Unauthenticated native WebAuthn sign-in with an app-issued, short-lived, one-time challenge; returns a JWT plus a 30-day `passkeySession`.
 - `POST /api/passkey/register/options`, `POST /api/passkey/register/verify`, `GET /api/passkeys`, `DELETE /api/passkeys/:id` - Manage passkeys for the caller's namespace (JWT required). Web and App passkeys share RP ID `auth.hapi.run` and are scoped to this Hub/namespace and the current `CLI_API_TOKEN`; rotating the token revokes them. Browser ceremonies use `/api/passkey/browser/{login,register}/start`, `/complete`, and `/exchange`. Set `HAPI_PUBLIC_URL` to the canonical HTTPS Hub origin. See the [client contract](../docs/api/client-contract/auth.md#passkeys-web).
 - `POST /api/bind` - Bind a Telegram account using initData + `CLI_API_TOKEN:<namespace>`.
 - `GET /api/auth/methods` - Report login capabilities (`{cloudflareAccess: boolean}`); no identities or secrets.
@@ -135,6 +152,7 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 ### Sessions (`src/web/routes/sessions.ts`)
 
 - `GET /api/sessions` - List all sessions. The default order is global-pinned, project-pinned, then `lastUserMessageAt ?? createdAt` descending (creation time and ID break ties); `?order=updatedAt` requests pure recency. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag. See the [client contract](../docs/api/client-contract/rest.md) for the wire-level ordering rules.
+- `GET /api/sessions/scratchlist-status` - List session IDs with scratchlist entries in the caller namespace.
 - `GET /api/sessions/:id` - Get session details.
 - `POST /api/sessions/:id/abort` - Abort session.
 - `POST /api/sessions/:id/switch` - Hand off session control to the web.

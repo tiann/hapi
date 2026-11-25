@@ -6,7 +6,9 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Hono } from 'hono'
-import { PASSKEY_ORIGIN, PASSKEY_RP_ID } from '@hapi/protocol/passkey'
+import { cors } from 'hono/cors'
+import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
+import { createPasskeyNativeLoginChallenge, PASSKEY_ORIGIN, PASSKEY_RP_ID, passkeyUserHandleHub } from '@hapi/protocol/passkey'
 import { createConfiguration } from '../src/configuration'
 import { Store } from '../src/store'
 import { signWebJwt } from '../src/web/authTokens'
@@ -15,6 +17,7 @@ import { createPasskeyLoginRoutes, createPasskeyManagementRoutes, PasskeyChallen
 import { SoftAuthenticator } from '../src/web/testHelpers/passkeyAuthenticator'
 
 const hub = 'https://hub.test'
+const webOrigin = 'https://app.test'
 const androidOrigin = 'android:apk-key-hash:browser-integration-test'
 const secret = randomBytes(32)
 const home = await mkdtemp(join(tmpdir(), 'hapi-passkey-browser-'))
@@ -23,10 +26,11 @@ process.env.HAPI_HOME = home
 await createConfiguration()
 const store = new Store(':memory:')
 const deps = {
-    jwtSecret: secret, store, hubUrl: () => hub, corsOrigins: () => [],
+    jwtSecret: secret, store, hubUrl: () => hub, corsOrigins: () => [webOrigin],
     challenges: new PasskeyChallengeStore(), native: { rpId: PASSKEY_RP_ID, origins: [PASSKEY_ORIGIN, androidOrigin] }
 }
 const app = new Hono<WebAppEnv>()
+app.use('/api/*', cors({ origin: [webOrigin], allowMethods: ['GET', 'POST', 'OPTIONS'], allowHeaders: ['authorization', 'content-type', FOLLOW_SESSION_REDIRECTS_HEADER] }))
 app.route('/api', createPasskeyLoginRoutes(deps))
 app.use('/api/*', createAuthMiddleware(secret))
 app.route('/api', createPasskeyManagementRoutes(deps))
@@ -53,17 +57,29 @@ try {
             const response = await app.request(request.url(), {
                 method: request.method(), headers: request.headers(), body: request.postDataBuffer() ?? undefined
             })
-            requests.push(`→ ${response.status}`)
-            await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) })
-        } else if (url.origin === hub && url.pathname === '/fixture.js') {
+            const location = response.headers.get('location')
+            requests.push(`→ ${response.status}${location ? ` ${location}` : ''}`)
+            // Playwright route.fulfill drops Location fragments on 3xx navigations, so the
+            // passkey callback never sees #state/#code and the opener hangs. Apply the
+            // fragment client-side the way a real document navigation would.
+            if (response.status >= 300 && response.status < 400 && location?.includes('#')) {
+                await route.fulfill({
+                    status: 200,
+                    contentType: 'text/html',
+                    body: `<!doctype html><script>location.replace(${JSON.stringify(location)})</script>`
+                })
+            } else {
+                await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) })
+            }
+        } else if (url.origin === webOrigin && url.pathname === '/fixture.js') {
             await route.fulfill({ contentType: 'text/javascript', body: bundleJS })
-        } else if (url.origin === hub && url.pathname === '/passkey/callback') {
+        } else if (url.origin === webOrigin && url.pathname === '/passkey/callback') {
             await route.fulfill({ contentType: 'text/html', body: `<script type="module">import { completePasskeyCallback } from '/callback.js'; completePasskeyCallback()</script>` })
-        } else if (url.origin === hub && url.pathname === '/callback.js') {
+        } else if (url.origin === webOrigin && url.pathname === '/callback.js') {
             // Exported production callback handler, without mounting the app/router.
             await route.fulfill({ contentType: 'text/javascript', body: callbackJS })
-        } else if (url.origin === hub && url.pathname === '/') {
-            await route.fulfill({ contentType: 'text/html', body: `<body data-token="${token}"><button id="register">Register</button><button id="login">Login</button><p id="result"></p><script type="module" src="/fixture.js"></script></body>` })
+        } else if (url.origin === webOrigin && url.pathname === '/') {
+            await route.fulfill({ contentType: 'text/html', body: `<body data-token="${token}" data-hub="${hub}"><button id="register">Register</button><button id="login">Login</button><p id="result"></p><script type="module" src="/fixture.js"></script></body>` })
         } else if (url.origin === PASSKEY_ORIGIN && ['/', '/main.js', '/style.css'].includes(url.pathname)) {
             const file = resolve(import.meta.dir, '../../website/dist/auth', url.pathname === '/' ? 'index.html' : url.pathname.slice(1))
             await route.fulfill({
@@ -77,7 +93,7 @@ try {
     if (!callbackBuild.success) throw new AggregateError(callbackBuild.logs)
     const callbackJS = await callbackBuild.outputs[0].text()
     const page = await context.newPage()
-    await page.goto(hub)
+    await page.goto(webOrigin)
 
     type Credential = { credentialId: string; privateKey: string; userHandle?: string; signCount: number; rpId: string; isResidentCredential: boolean }
     async function virtualPopup(button: string, credential?: Credential): Promise<{ popup: Page; id: string }> {
@@ -103,11 +119,13 @@ try {
     ]).finally(() => clearTimeout(timer))
     await page.waitForFunction(() => Boolean(document.querySelector('#result')?.textContent))
     if (await page.locator('#result').textContent() !== 'registered') throw new Error(await page.locator('#result').textContent() ?? 'Registration failed')
+    if (!credential.userHandle || passkeyUserHandleHub(Buffer.from(credential.userHandle, 'base64')) !== hub) throw new Error('Browser-created passkey did not store its Hub')
     if (store.passkeys.listByNamespace('team').length !== 1) throw new Error('Browser registration did not reach Hub')
 
-    // A synced browser-created key signs an Android-origin assertion to the real Hub.
-    const optionsResponse = await app.request('/api/passkey/login/options', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"client":"native"}' })
-    const options = await optionsResponse.json() as { challenge: string }
+    // A synced browser-created key signs an Android-origin assertion to the real
+    // Hub in one ceremony: the app's own fresh challenge, Hub from the handle.
+    const options = { challenge: createPasskeyNativeLoginChallenge() }
+    if (passkeyUserHandleHub(Buffer.from(credential.userHandle, 'base64')) !== hub) throw new Error('Native sign-in could not locate the Hub')
     const hash = (value: string | Buffer) => createHash('sha256').update(value).digest()
     const data = Buffer.from(JSON.stringify({ type: 'webauthn.get', challenge: options.challenge, origin: androidOrigin, crossOrigin: false }))
     const counter = Buffer.alloc(4); counter.writeUInt32BE(credential.signCount + 1)

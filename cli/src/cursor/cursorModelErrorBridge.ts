@@ -20,13 +20,6 @@ export type ModelErrorBridgeGate = {
     bridgeable?: boolean;
 };
 
-export function truncateLastUserMessage(message: string): string {
-    if (message.length <= MAX_LAST_USER_MESSAGE_CHARS) {
-        return message;
-    }
-    return message.slice(0, MAX_LAST_USER_MESSAGE_CHARS);
-}
-
 export function buildModelErrorBridgePrompt(input: ModelErrorBridgeInput): string {
     const excerpt = input.rawSnippet
         .replace(/\s+/g, ' ')

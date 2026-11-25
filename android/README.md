@@ -139,16 +139,17 @@ refresh requires re-pairing. See the [auth contract](../docs/api/client-contract
 After pairing with the access token, **Settings → Passkeys** registers a
 passkey for the active hub through Credential Manager
 (`androidx.credentials` + `credentials-play-services-auth`). On another
-device, **Sign in with a passkey** on the pairing screen needs only the hub
-URL: the hub returns a JWT plus a `passkeySession`, which is stored in
+device, **Sign in with a passkey** on the pairing screen takes one system
+passkey sheet and no Hub address (see [single-ceremony sign-in](#single-ceremony-passkey-sign-in)):
+the hub returns a JWT plus a `passkeySession`, which is stored in
 `EncryptedSharedPreferences` instead of an access token and exchanged by the
 normal silent re-auth loop (`POST /api/auth {"passkeySession": …}`; a 401
 there signs the device out with a "sign in again" notice). App passkeys use
-the fixed RP ID `auth.hapi.run`; the app refuses options for any other RP ID, and
-passkeys created through the web authentication page also sign in to the app.
-The app validates the connected Hub, operation/channel and registration user
-handle before opening Credential Manager. Set the Hub’s `HAPI_PUBLIC_URL` to
-its canonical HTTPS origin.
+the fixed RP ID `auth.hapi.run`; the app refuses registration options for any
+other RP ID, and passkeys created through the web authentication page also sign
+in to the app. Registration validates the connected Hub, operation/channel and
+user handle before opening Credential Manager. Set the Hub’s `HAPI_PUBLIC_URL`
+to its canonical HTTPS origin.
 See the [native passkey contract](../docs/api/client-contract/auth.md#passkeys-native).
 
 Ceremonies only work when two things match the APK's **signing
@@ -308,7 +309,7 @@ Dependency direction: `:app` → `:core:data` → `:core:protocol`.
 
 ## Internationalization
 
-The app ships English (default) and Simplified Chinese
+The app ships English (default), Simplified Chinese, Russian and Japanese
 (`app/src/main/res/values-zh-rCN/strings.xml`). App UI strings
 live in resources; both files carry the **same key set** (lint
 `MissingTranslation` is the gate).
@@ -476,14 +477,17 @@ Home centers the Sessions title between a **Hubs and settings** icon and a
 **Sort & filter** icon, keeping the new-session FAB. The hub menu is the only entry
 for switching/adding hubs, app settings and sign-out; the active hub is checked.
 The icon carries a dot for any applied filter or a non-default order and opens
-one compact Material 3 sheet that mirrors the web sort and filter menu without
-scrolling: under **Filter**, single "label · value" rows for **Machines** (two or
+one Material 3 sheet: under **Filter**, single "label · value" rows for **Machines** (two or
 more machines; a menu with per-machine session counts), **Activity dates**
 (opens the range picker) and **Show** all / active only / archived only, plus an
 **Unread only** switch; under **Sort**, **Sort by** last message (default) or
 date created and an **Active first** switch (on by default: connected sessions
 lead the pinned and recent sections, below manual pins), both persisted
-app-wide in `hapi_prefs`. **Reset** and **Done** sit in the sheet header. Status and unread
+app-wide in `hapi_prefs`. Home groups sessions by project folder and machine;
+worktrees share their repository folder. Tap a folder to fold all its sessions.
+Global pins stay above folders; project pins stay inside. Search keeps its flat
+relevance ranking. Turn off **Group by project folder** for the original flat
+layout. The layout preference persists across launches. **Reset** and **Done** sit in the sheet header. Status and unread
 filters keep the open session listed; search ranks by relevance with the base
 order as tie-break, as on web. Machine choices come from all sessions, including historical
 machines; names/IDs determine ordering, never counts. Duplicate names include
@@ -496,7 +500,7 @@ solid green pulsing while working, solid blue pulsing when only background
 tasks run, a green ring when connected and waiting, and a power mark when
 stopped or archived. A running [attached job](../docs/guide/session-jobs.md)
 counts as working even when the agent is idle or disconnected, keeps the session
-under **Active only**, and adds a line under the meta line:
+under **Active only** unless the session is archived, and adds a line under the meta line:
 `label · remaining or percent · elapsed` with a thin bar (determinate only for
 an honest fraction), amber with `no heartbeat` after 15 minutes. Job patches are
 versioned like web's: a lagged heartbeat cannot resurrect a cleared job.
@@ -504,7 +508,7 @@ The home holder follows the active connection instance, releasing the previous
 store and filter even when switching back to a previously used hub URL.
 
 Pairing and Settings both link to the [privacy policy](https://hapi.run/docs/privacy).
-These controls and notices ship in English and Simplified Chinese.
+These controls and notices ship in English, Simplified Chinese, Russian and Japanese.
 
 ### Validation status (2026-09-12)
 
@@ -529,3 +533,27 @@ frame-time, memory, or predictive-back measurements are claimed by these checks.
 Unread state uses the hub’s [revision read-state contract](../docs/api/client-contract/read-state.md).
 List selection and metadata updates never acknowledge reading. The resumed chat
 acknowledges only its rendered tail, with a durable outbox scoped by hub and namespace.
+
+### Single-ceremony Passkey sign-in
+
+Sign-in runs exactly one Credential Manager ceremony. The app builds its own
+challenge, base64url (no padding) of the UTF-8 JSON
+`{"v":2,"operation":"login","channel":"native","iat":<epoch ms>,"nonce":<43-char base64url of 32 random bytes>}`,
+and requests `{challenge, rpId: "auth.hapi.run", userVerification: "required", timeout: 120000}`
+with no `allowCredentials` or extensions (`NativePasskeys.nativeLoginOptions`).
+`NativePasskeys.loginHub` reads the Hub from the selected credential's v2 user
+handle; the app then probes `GET /health` there and posts the assertion to
+`POST /api/passkey/login/verify`. The Hub accepts a native challenge only
+within [now − 5 min, now + 1 min] and only once; there is no login options
+endpoint. The user handle only locates the Hub; the Hub's signature check is
+the authentication.
+
+**Enter Hub address manually** passes an expected Hub: the app probes it before
+opening the sheet, and the credential must belong to it (equal origin, or the
+SHA-256 origin hash for long addresses). A passkey for another Hub fails before
+its assertion is posted anywhere. The handle fits 46 ASCII authority bytes; longer
+addresses produce an opaque handle, so sign-in without an address reports
+"Hub address required" and opens manual entry (a second ceremony in that rare
+case). Credentials registered before v2 handles need re-registration. No
+central server is involved; the credential must be available through the
+local/synced provider.

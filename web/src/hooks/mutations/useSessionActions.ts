@@ -19,6 +19,7 @@ export function useSessionActions(
     codexCollaborationModeSupported?: boolean
 ): {
     abortSession: () => Promise<void>
+    isAborting: boolean
     archiveSession: () => Promise<void>
     reopenSession: () => Promise<ReopenSessionResponse>
     switchSession: () => Promise<void>
@@ -30,6 +31,9 @@ export function useSessionActions(
     setEffort: (effort: string | null) => Promise<void>
     setServiceTier: (serviceTier: string | null) => Promise<void>
     renameSession: (name: string | undefined, titleLocked?: boolean) => Promise<void>
+    setExternalRefs: (refs: import('@/types/api').ExternalRef[]) => Promise<void>
+    upsertExternalRef: (ref: import('@/types/api').ExternalRef) => Promise<void>
+    removePrimaryExternalRef: () => Promise<void>
     suggestSessionTitle: () => Promise<string>
     updateSessionSummary: (text: string, titleLocked?: boolean) => Promise<void>
     setPinMode: (mode: 'none' | 'project' | 'global') => Promise<void>
@@ -250,6 +254,36 @@ export function useSessionActions(
         onSuccess: () => void invalidateSession(),
     })
 
+    const externalRefsMutation = useMutation({
+        mutationFn: async (refs: import('@/types/api').ExternalRef[]) => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            await api.setSessionExternalRefs(sessionId, refs)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
+    const upsertExternalRefMutation = useMutation({
+        mutationFn: async (ref: import('@/types/api').ExternalRef) => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            await api.upsertSessionExternalRef(sessionId, ref)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
+    const removePrimaryExternalRefMutation = useMutation({
+        mutationFn: async () => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            await api.removePrimarySessionExternalRef(sessionId)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
     const titleSuggestionMutation = useMutation({
         mutationFn: async () => {
             if (!api || !sessionId) {
@@ -296,6 +330,7 @@ export function useSessionActions(
 
     return {
         abortSession: abortMutation.mutateAsync,
+        isAborting: abortMutation.isPending,
         archiveSession: archiveMutation.mutateAsync,
         reopenSession: reopenMutation.mutateAsync,
         switchSession: switchMutation.mutateAsync,
@@ -307,6 +342,9 @@ export function useSessionActions(
         setEffort: effortMutation.mutateAsync,
         setServiceTier: serviceTierMutation.mutateAsync,
         renameSession: (name: string | undefined, titleLocked?: boolean) => renameMutation.mutateAsync({ name, titleLocked }),
+        setExternalRefs: externalRefsMutation.mutateAsync,
+        upsertExternalRef: upsertExternalRefMutation.mutateAsync,
+        removePrimaryExternalRef: removePrimaryExternalRefMutation.mutateAsync,
         suggestSessionTitle: titleSuggestionMutation.mutateAsync,
         updateSessionSummary: (text: string, titleLocked?: boolean) => summaryMutation.mutateAsync({ text, titleLocked }),
         setPinMode: pinMutation.mutateAsync,
@@ -323,6 +361,9 @@ export function useSessionActions(
             || effortMutation.isPending
             || serviceTierMutation.isPending
             || renameMutation.isPending
+            || externalRefsMutation.isPending
+            || upsertExternalRefMutation.isPending
+            || removePrimaryExternalRefMutation.isPending
             || titleSuggestionMutation.isPending
             || summaryMutation.isPending
             || pinMutation.isPending

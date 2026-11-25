@@ -15,6 +15,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -61,6 +63,7 @@ import app.hapi.companion.feature.pairing.PairingScreen
 import app.hapi.companion.feature.pairing.PasskeySignInScreen
 import app.hapi.companion.feature.passkey.CredentialManagerPasskeyPlatform
 import app.hapi.companion.feature.passkey.findActivity
+import app.hapi.companion.feature.pairing.PairingError
 import app.hapi.companion.feature.pairing.PairingUiState
 import app.hapi.companion.feature.pairing.PairingViewModel
 import app.hapi.companion.feature.pairing.QrScanScreen
@@ -243,23 +246,7 @@ fun HapiNavigation() {
         }
     }
 
-    // Last hub signed out (or roster wiped): nothing to show but pairing.
-    // Any other active-hub change invalidates an open chat (old hub's session).
-    LaunchedEffect(registryState.activeHubUrl) {
-        val activeHubUrl = registryState.activeHubUrl
-        if (activeHubUrl == null) {
-            val onPairing = navController.currentDestination
-                ?.hierarchy?.any { it.route == Routes.PAIRING } == true
-            if (!onPairing) {
-                navController.navigateClearingBackStack(Routes.PAIRING)
-            }
-        } else if (
-            navController.currentDestination?.route in
-                setOf(Routes.CHAT, Routes.FILES, Routes.FILE_VIEWER, Routes.SCRATCHLIST)
-        ) {
-            navController.popBackStack(Routes.HOME, inclusive = false)
-        }
-    }
+    HandleActiveHubNavigation(navController, registryState.activeHubUrl)
 
     // Pending payloads outlive pairing and HubGraph replacement. A target is
     // persisted before navigation, so process restoration follows the same path.
@@ -711,6 +698,19 @@ fun HapiNavigation() {
                     }
                 }
                 NavigateHomeOnSuccess(navController, state)
+                val context = LocalContext.current
+                // Passkey sign-in starts the single system sheet right here.
+                // A passkey failure (incl. "enter the Hub address") continues
+                // on the passkey screen, which shares this ViewModel's state.
+                // Plain remember: returning to this screen must not re-navigate.
+                var passkeyStarted by remember { mutableStateOf(false) }
+                LaunchedEffect(state, passkeyStarted) {
+                    if (!passkeyStarted || state == PairingUiState.Validating) return@LaunchedEffect
+                    passkeyStarted = false
+                    if ((state as? PairingUiState.Error)?.error is PairingError.Passkey) {
+                        navController.navigate(Routes.PAIRING_PASSKEY)
+                    }
+                }
 
                 PairingScreen(
                     state = state,
@@ -722,7 +722,12 @@ fun HapiNavigation() {
                     },
                     onScanQr = { navController.navigate(Routes.PAIRING_SCAN) },
                     onManualEntry = { navController.navigate(Routes.PAIRING_MANUAL) },
-                    onPasskeySignIn = { navController.navigate(Routes.PAIRING_PASSKEY) },
+                    onPasskeySignIn = {
+                        context.findActivity()?.let { activity ->
+                            passkeyStarted = true
+                            viewModel.signInWithPasskey(null, CredentialManagerPasskeyPlatform(activity))
+                        }
+                    },
                     onPairPrefill = viewModel::pairFromPrefill,
                     onSwitchToPrefilledHub = viewModel::switchToPrefilledHub,
                     onDismissPrefill = viewModel::dismissPrefill,
@@ -1118,6 +1123,44 @@ private fun NavigateHomeOnSuccess(navController: NavHostController, state: Pairi
         if (state is PairingUiState.Success) {
             graph.pairingNotice.value = null
             navController.navigateClearingBackStack(Routes.HOME)
+        }
+    }
+}
+
+private val hubScopedSessionRoutes = setOf(Routes.CHAT, Routes.FILES, Routes.FILE_VIEWER, Routes.SCRATCHLIST)
+
+@Composable
+internal fun HandleActiveHubNavigation(navController: NavHostController, activeHubUrl: String?) {
+    // Restore the Hub alongside the back stack: the effect also runs on
+    // first composition, which by itself does not indicate a Hub switch.
+    var lastHandledHubUrl by rememberSaveable { mutableStateOf(activeHubUrl) }
+    LaunchedEffect(activeHubUrl) {
+        val hubChanged = lastHandledHubUrl != activeHubUrl
+        lastHandledHubUrl = activeHubUrl
+        if (activeHubUrl == null) {
+            val onPairing = navController.currentDestination
+                ?.hierarchy?.any { it.route == Routes.PAIRING } == true
+            if (!onPairing) {
+                navController.navigateClearingBackStack(Routes.PAIRING)
+            }
+        } else if (hubChanged) {
+            val currentEntry = navController.currentBackStackEntry
+            val currentRoute = currentEntry?.destination?.route
+            if (currentRoute in hubScopedSessionRoutes) {
+                navController.popBackStack(Routes.HOME, inclusive = false)
+            } else if (
+                currentRoute == Routes.SHARE &&
+                navController.previousBackStackEntry?.destination?.route in hubScopedSessionRoutes
+            ) {
+                // The pending share lives in the inbox. Keep its picker open, but
+                // don't let Cancel or Back reveal a session from the old Hub.
+                val requestId = currentEntry?.arguments?.getString("requestId") ?: return@LaunchedEffect
+                if (!navController.popBackStack(Routes.HOME, inclusive = false)) {
+                    // A notification can open chat directly over pairing, without Home.
+                    navController.navigateClearingBackStack(Routes.HOME)
+                }
+                navController.navigate(Routes.share(requestId))
+            }
         }
     }
 }

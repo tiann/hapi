@@ -45,12 +45,6 @@ export function parsePreset(preset: string, now: number): number {
     throw new Error(`Unknown preset: ${preset}`)
 }
 
-/** Clamp an epoch-ms value so it does not exceed now + maxDays days. */
-export function clampToMaxDays(value: number, now: number, maxDays: number): number {
-    const max = now + maxDays * 24 * 60 * 60 * 1000
-    return Math.min(value, max)
-}
-
 /** Validate a specific datetime (epoch ms) against now.
  * Returns null if valid, or a translation key string if invalid.
  *

@@ -67,6 +67,25 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
     })
 
+    it('keeps a hub archive deletable after a late thinking heartbeat, and accepts an explicit reopen', async () => {
+        setKillSessionMissingTarget()
+        for (const reopen of [false, true]) {
+            const id = insertActiveSession(`late-alive-${reopen}`, undefined, undefined, { startedBy: 'terminal' })
+            await engine.archiveSession(id)
+            engine.handleSessionAlive({ sid: id, time: Date.now(), thinking: true })
+            expect(cache().getSession(id)?.active).toBe(false)
+            expect(cache().getSession(id)?.thinking).toBe(false)
+            if (reopen) {
+                await cache().clearSessionArchiveMetadata(id)
+                engine.handleSessionAlive({ sid: id, time: Date.now() })
+                expect(cache().getSession(id)?.active).toBe(true)
+            } else {
+                await engine.deleteSession(id)
+                expect(store.sessions.getSession(id)).toBeNull()
+            }
+        }
+    })
+
     function setRewindPhase(id: string, phase: 'reserved' | 'prepared' | 'unknown' | 'rejected'): void {
         const current = store.sessions.getSession(id)!
         const operation = { operationId: 'archive-guard', nativeSessionId: 'native', workerId: 'worker',
@@ -112,6 +131,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
             if (result.status === 'rejected') {
                 expect(result.reason).toBeInstanceOf(ArchiveCleanupError)
                 expect(result.reason.status).toBe(503)
+                expect(result.reason.code).toBe('archive-cleanup-timeout')
             }
         }
         expect(cache().getSession(id)?.active).toBe(true)

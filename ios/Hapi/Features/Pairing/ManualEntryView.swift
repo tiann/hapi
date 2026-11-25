@@ -4,18 +4,26 @@ import SwiftUI
 /// Manual pairing path for hubs without `--relay` (nothing to scan): type or
 /// paste the hub URL and the access token the hub prints at startup, then
 /// pair directly with inline progress and error states. The `.passkey` mode
-/// asks only for the hub URL and signs in with a native passkey.
+/// asks only for the hub URL and signs in with a native passkey that must
+/// belong to that hub (used when the passkey does not name its hub).
 struct ManualEntryView: View {
     enum Mode {
         case accessToken
         case passkey
     }
 
-    var mode: Mode = .accessToken
+    let mode: Mode
 
     @Environment(\.dismiss) private var dismiss
     @Environment(AppModel.self) private var model
-    @State private var attempt = PairingAttempt()
+    @State private var attempt: PairingAttempt
+
+    /// `initialFailure` explains why the form opened (e.g. a passkey without
+    /// its hub address); editing the form clears it.
+    init(mode: Mode = .accessToken, initialFailure: PairingFailure? = nil) {
+        self.mode = mode
+        _attempt = State(initialValue: PairingAttempt(failure: initialFailure))
+    }
 
     var body: some View {
         NavigationStack {

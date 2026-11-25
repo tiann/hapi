@@ -21,12 +21,16 @@ public enum PairingFailure: Error, Equatable, Sendable {
     /// The exchange succeeded but the credentials could not be persisted
     /// (Keychain write failure).
     case storageFailure
-    /// Passkey sign-in: the hub has no valid native passkeys
-    /// (`404 no_passkeys`) — pair with the access token and add one first.
-    case noPasskeys
     /// Passkey sign-in: the hub rejected the assertion (revoked, unknown,
-    /// expired challenge) or asked for a foreign RP ID.
+    /// expired challenge, failed verification).
     case passkeyRejected
+    /// Passkey sign-in without a hub URL: the selected passkey does not name
+    /// its hub (missing, malformed, or deliberately opaque long-address user
+    /// handle). Offer manual entry; nothing was sent anywhere.
+    case passkeyHubAddressRequired
+    /// Passkey sign-in with a hub URL: the selected passkey belongs to a
+    /// different hub. The assertion was not sent anywhere.
+    case passkeyWrongHub
     /// Passkey sign-in: the system could not run the ceremony (missing
     /// Associated Domains entitlement, AASA unreachable, …).
     case passkeyUnavailable
@@ -56,8 +60,9 @@ public struct PairedHub: Equatable, Sendable {
 /// 4. persist ``HubCredentials`` (access token + first JWT) in the credential
 ///    store, register the hub, and make it active.
 ///
-/// `signInWithPasskey` replaces step 3 with the native passkey ceremony and
-/// persists a passkey session instead of an access token.
+/// `signInWithPasskey` replaces step 3 with one native passkey ceremony
+/// (the hub may come from the credential itself) and persists a passkey
+/// session instead of an access token.
 ///
 /// `unpair` deletes the credentials, drops the hub from the registry, and
 /// reports which hub (if any) is active afterwards. The app layer owns
@@ -119,43 +124,65 @@ public struct HubPairingService: Sendable {
         )
     }
 
-    /// Signs in to the hub at `rawHubUrl` with a native passkey — only the
-    /// hub URL is needed. Same health check as ``pair(rawHubUrl:accessToken:)``,
-    /// then login options (`{client: "native"}`) → RP check → system sheet →
-    /// verify; the returned passkey session is stored as the hub's
-    /// credential (no access token). Throws ``PairingFailure``, or
-    /// ``PasskeyError/canceled`` when the user dismissed the sheet.
+    /// Signs in with a native passkey in a single system ceremony over a
+    /// self-issued challenge (``PasskeyAssertionRequest/nativeLogin(now:)``).
+    ///
+    /// - Without `rawHubUrl`: ceremony → hub from the credential's user handle
+    ///   → `GET /health` → `POST /api/passkey/login/verify`. A handle that does
+    ///   not name its hub throws ``PairingFailure/passkeyHubAddressRequired``
+    ///   before any request.
+    /// - With `rawHubUrl` (manual entry): `GET /health` first (no prompt for
+    ///   an unreachable hub) → ceremony → the handle must belong to that hub
+    ///   (``PairingFailure/passkeyWrongHub`` otherwise) → verify.
+    ///
+    /// The returned passkey session is stored as the hub's credential (no
+    /// access token). Throws ``PairingFailure``, or ``PasskeyError/canceled``
+    /// when the user dismissed the sheet.
     public func signInWithPasskey(
-        rawHubUrl: String,
+        rawHubUrl: String? = nil,
         authenticator: any PasskeyAuthenticating
     ) async throws -> PairedHub {
-        guard let normalized = HubURLNormalization.normalize(rawHubUrl),
-              let baseURL = URL(string: normalized) else {
-            throw PairingFailure.invalidHubURL
-        }
-        let client = makeUnauthenticatedClient(baseURL: baseURL)
-        try await checkHealth(client)
-
-        let request: PasskeyAssertionRequest
-        do {
-            request = try PasskeyAssertionRequest(options: try await client.passkeyLoginOptions(), hubURL: baseURL)
-        } catch PasskeyError.noPasskeys {
-            throw PairingFailure.noPasskeys
-        } catch is PasskeyError {
-            throw PairingFailure.passkeyRejected
-        } catch let error as APIError {
-            throw PairingFailure.hubError(status: error.status)
-        } catch {
-            throw PairingFailure.unreachable
+        var expectedHub: String?
+        if let rawHubUrl {
+            guard let normalized = HubURLNormalization.normalize(rawHubUrl),
+                  let baseURL = URL(string: normalized),
+                  // Passkeys bind HTTPS origins only; no credential can match.
+                  (try? PasskeyHubBinding.origin(baseURL)) != nil else {
+                throw PairingFailure.invalidHubURL
+            }
+            try await checkHealth(makeUnauthenticatedClient(baseURL: baseURL))
+            expectedHub = normalized
         }
 
         let assertion: PasskeyAssertionResult
         do {
-            assertion = try await authenticator.authenticate(request)
+            assertion = try await authenticator.authenticate(.nativeLogin(now: now()))
         } catch PasskeyError.canceled {
             throw PasskeyError.canceled
         } catch {
             throw PairingFailure.passkeyUnavailable
+        }
+
+        let hub: String
+        if let expectedHub {
+            guard let user = assertion.userID, let url = URL(string: expectedHub),
+                  (try? PasskeyHubBinding.validateUser(user, hub: url)) != nil else {
+                throw PairingFailure.passkeyWrongHub
+            }
+            hub = expectedHub
+        } else {
+            // A locator only: the hub authenticates the assertion itself.
+            guard let user = assertion.userID,
+                  let located = try? PasskeyHubBinding.userHub(user),
+                  let normalized = HubURLNormalization.normalize(located) else {
+                throw PairingFailure.passkeyHubAddressRequired
+            }
+            hub = normalized
+        }
+        guard let baseURL = URL(string: hub) else { throw PairingFailure.invalidHubURL }
+        let client = makeUnauthenticatedClient(baseURL: baseURL)
+        if expectedHub == nil {
+            try await checkHealth(client)
         }
 
         let login: PasskeyLoginResponse
@@ -172,7 +199,7 @@ public struct HubPairingService: Sendable {
 
         return try persist(
             HubCredentials(
-                hubUrl: normalized,
+                hubUrl: hub,
                 credential: .passkeySession(login.passkeySession),
                 jwt: login.token,
                 jwtObtainedAt: Int(now().timeIntervalSince1970 * 1000)

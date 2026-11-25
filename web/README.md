@@ -24,6 +24,15 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 - With optional Cloudflare Access configured on a same-origin hub, allowlisted users can sign in automatically after Access login, without entering a HAPI access token.
 - The login screen includes a top-right hub picker; if unset, the app uses the same origin it was loaded from.
 - Live updates come from the hub via SSE.
+- Temporary sign-in connection failures show a reconnecting screen with automatic retry.
+  Each attempt has a 15-second deadline; Retry now cancels a stalled attempt.
+  Browser offline status and HTTP server failures have separate diagnostics. An already
+  authenticated tab keeps its cached chats browsable while reconnecting.
+  Aborted or incomplete authentication responses retain the current sign-in.
+  If live updates remain connected, a failed sign-in refresh gets its own warning
+  rather than reporting a hub outage.
+  Browser users can explicitly sign out of recovery before selecting another hub;
+  the old attempt and pairing-link credential are cleared before hub selection.
 - Session `@` suggestions require conversation content, including untitled conversations. Names and directory labels affect display/search, not eligibility; empty stubs stay excluded. See the [session list behavior guide](../docs/guide/session-list.md) for search and picker rules.
 
 ## Routes
@@ -56,10 +65,13 @@ See `src/router.tsx` for route definitions.
 ### Session list (`src/components/SessionList.tsx`)
 
 - Active/inactive status indicator.
-- Title-side activity/unread indicator: grey spinner while a foreground turn runs with all output read, blue spinner while it runs with unread output, a blue static dot while only background tasks remain, and a theme-foreground dot for unread content when no work is running. Reading clears the unread state without stopping the spinner. Permission/input requests keep their own symbols; the title indicator does not certify a successful turn outcome, and background work is owned by the title rather than duplicated on the agent icon.
+- Title-side activity/unread indicator: grey spinner while work runs with all output read, blue spinner while it runs with unread output, and a theme-foreground dot for unread content when no work is running. Work includes a foreground turn and background-only tasks (such as a background subagent); the spinner's label says which. Reading clears the unread state without stopping the spinner. Permission/input requests keep their own symbols; the title indicator does not certify a successful turn outcome, and background work is owned by the title rather than duplicated on the agent icon.
 - Session title from name, summary, or path.
 - Todo progress display.
 - Pending permission request count.
+- Agent flavor label (claude/codex/gemini).
+- Model mode display.
+- One Sort and filter menu combines the persisted sort/status/unread view with transient update-date and scratchlist filters and machine selection; Reset to default clears all conditions. Its popover sizes to its content, centers on the trigger, and stays within the viewport.
 - Pending-request status and session-row symbols distinguish questions from approvals and locate the correlated card; async questions open the live question panel.
 - Agent name and model display.
 - Metadata search with relevance ranking, wildcard matching, and date/unread/machine filters.
@@ -94,6 +106,7 @@ The Hub persists and enforces the lock across clients, restarts, and resume.
 - Per-session scratchlist (`src/components/AssistantChat/ScratchlistPanel.tsx`)
   - Workbench panel for held notes/drafts; **distinct from the queue**.
   - Add/delete/reorder entries; promote to composer (copy) or queue (send).
+  - Persists in the Hub and syncs across clients; `localStorage` is an offline cache and migration source.
   - Entries and attachments saved on the hub and synced across devices.
   - Reordering affects only the current view and resets when entries refresh.
   - Keyboard shortcut: Ctrl/Cmd+Shift+S to focus the add-input.

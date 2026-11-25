@@ -3,7 +3,7 @@
 package app.hapi.companion.feature.settings
 
 import app.hapi.protocol.wire.NativePasskeys
-import app.hapi.companion.feature.passkey.boundPasskeyOptions
+import app.hapi.companion.feature.passkey.boundRegistrationOptions
 import app.hapi.companion.feature.passkey.FakePasskeyPlatform
 import app.hapi.companion.feature.passkey.PasskeyCeremonyException
 import app.hapi.companion.feature.passkey.PasskeyIssue
@@ -32,7 +32,7 @@ class PasskeysViewModelTest {
         override val hubUrl = "https://hub.example.com"
         var passkeys = mutableListOf<PasskeySummary>()
         var options: () -> String = {
-            boundPasskeyOptions(hubUrl, "register")
+            boundRegistrationOptions(hubUrl)
         }
         var verifyError: Exception? = null
         val verified = mutableListOf<Pair<JsonObject, String?>>()
@@ -83,7 +83,7 @@ class PasskeysViewModelTest {
         assertEquals(PasskeysBusy.Adding, vm.busy.value)
         advanceUntilIdle()
 
-        assertEquals(listOf(NativePasskeys.ceremonyOptions(gateway.options(), gateway.hubUrl, "register")), platform.createRequests)
+        assertEquals(listOf(NativePasskeys.registrationOptions(gateway.options(), gateway.hubUrl)), platform.createRequests)
         val (response, name) = gateway.verified.single()
         assertEquals("Pixel 9", name)
         assertEquals("public-key", response["type"]?.jsonPrimitive?.content)

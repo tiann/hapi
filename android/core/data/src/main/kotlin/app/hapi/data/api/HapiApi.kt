@@ -38,6 +38,9 @@ import app.hapi.protocol.wire.QueuedStateResponse
 import app.hapi.protocol.wire.RegisterDeviceRequest
 import app.hapi.protocol.wire.RenameMachineRequest
 import app.hapi.protocol.wire.RenameSessionRequest
+import app.hapi.protocol.wire.SetSessionTranslateInputRequest
+import app.hapi.protocol.wire.FeaturesResponse
+import app.hapi.protocol.wire.HubSettingsResponse
 import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionRequest
 import app.hapi.protocol.wire.ResumeSessionResponse
@@ -241,19 +244,10 @@ class HapiApi internal constructor(
         )
 
     /**
-     * `POST /api/passkey/login/options` (no JWT) — `PublicKeyCredentialRequestOptionsJSON`
-     * with `allowCredentials` limited to this hub's native passkeys.
-     * 404 `no_passkeys` means none are registered: use the access token.
+     * `POST /api/passkey/login/verify` (no JWT) — JWT + passkey session. The
+     * assertion signs a client-generated challenge
+     * (`NativePasskeys.nativeLoginOptions`); there is no options request.
      */
-    suspend fun passkeyLoginOptions(): String =
-        requestText(
-            "POST",
-            url("api", "passkey", "login", "options").build(),
-            PasskeyOptionsRequest.Native.toJsonBody(),
-            authClient,
-        )
-
-    /** `POST /api/passkey/login/verify` (no JWT) — JWT + passkey session. */
     suspend fun passkeyLoginVerify(response: JsonObject): PasskeyLoginResponse =
         request(
             "POST",
@@ -429,6 +423,23 @@ class HapiApi internal constructor(
     suspend fun renameSession(sessionId: String, name: String) {
         request<Unit>("PATCH", url("api", "sessions", sessionId).build(), RenameSessionRequest(name).toJsonBody())
     }
+
+    /** `PATCH /api/sessions/:id {translateInput}` — hub-owned per-session input translation. */
+    override suspend fun setSessionTranslateInput(sessionId: String, enabled: Boolean) {
+        request<Unit>(
+            "PATCH",
+            url("api", "sessions", sessionId).build(),
+            SetSessionTranslateInputRequest(enabled).toJsonBody(),
+        )
+    }
+
+    /** `GET /api/features`. */
+    override suspend fun getFeatures(): FeaturesResponse =
+        request("GET", url("api", "features").build())
+
+    /** `GET /api/hub-settings`. */
+    override suspend fun getHubSettings(): HubSettingsResponse =
+        request("GET", url("api", "hub-settings").build())
 
     /** `PATCH /api/sessions/:id/summary` (1–255 chars). */
     suspend fun updateSessionSummary(sessionId: String, text: String) {

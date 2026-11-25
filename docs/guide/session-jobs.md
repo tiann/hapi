@@ -1,3 +1,7 @@
+---
+description: "Attach long-running processes such as batch imports or overnight scripts to a HAPI session so the session list shows their progress after the agent goes idle."
+---
+
 # Session-attached jobs
 
 Hub-persisted progress for work that **outlives the agent** — batch imports, `nohup` scripts, long drains — so the session list still shows something truthful while the chat is idle (`active: false`).
@@ -307,7 +311,7 @@ hapi job run <session> <job-key> --label <text> --progress unknown|fraction|unti
 hapi job --help
 ```
 
-Needs a hub/CLI build that includes `job` (soup / feat — global npm releases may lag).
+Requires HAPI 0.34.5 or newer on both the hub and the CLI. Run `hapi --version` to check, and upgrade if `hapi job` is not recognized.
 
 | Method | Path | Notes |
 |--------|------|-------|
@@ -325,7 +329,7 @@ Attached jobs ship with a **tri-state** "Pin in-progress sessions" control (not 
 | Mode | Floats to In progress |
 |------|------------------------|
 | Off | Nothing |
-| Long-running jobs (default) | Sessions with a running attached job (even when the agent is idle) |
+| Long-running jobs (default) | Unarchived sessions with a running attached job (even when the agent is idle) |
 | Working & pending | Jobs **plus** thinking / pending / in-agent background tasks (storage key `all`). Quiet connected stays in project folders. |
 
 Unset preference defaults to **Long-running jobs** — that is the product stand for this capability. Legacy `true` maps to Working & pending; legacy `false` maps to Off.

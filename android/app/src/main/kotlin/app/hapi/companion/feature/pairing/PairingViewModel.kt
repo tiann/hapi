@@ -12,6 +12,7 @@ import app.hapi.data.auth.HubRegistry
 import app.hapi.data.auth.HubUrls
 import app.hapi.protocol.pairing.BindLink
 import app.hapi.protocol.wire.NativePasskeys
+import app.hapi.protocol.wire.PasskeyHubAddressRequiredException
 import app.hapi.protocol.wire.SUPPORTED_PROTOCOL_VERSION
 import java.io.IOException
 import kotlin.coroutines.cancellation.CancellationException
@@ -70,9 +71,10 @@ data class BindPrefill(
  * in the [HubRegistry] → [PairingUiState.Success].
  *
  * [signInWithPasskey] is the token-free alternative
- * (`docs/api/client-contract/auth.md#passkeys-native`): same probe, then
- * login options → RP-ID check → platform ceremony → verify, storing the
- * returned passkey session (no access token) as the hub's credential.
+ * (`docs/api/client-contract/auth.md#passkeys-native`): one platform ceremony
+ * over a locally generated challenge, the Hub read from the credential's user
+ * handle, the same probe, then verify — storing the returned passkey session
+ * (no access token) as the hub's credential.
  *
  * Shared by the landing / QR-scan / manual-entry destinations (scoped to the
  * pairing nav graph), so an attempt started from a scan result reports into
@@ -157,40 +159,53 @@ class PairingViewModel(
     }
 
     /**
-     * Signs in to [hubUrl] with a passkey instead of an access token; no-op
-     * while an attempt is validating. A dismissed system sheet returns to
+     * Signs in with a passkey in a single system ceremony; no-op while an
+     * attempt is validating. Without [hubUrl] the selected credential names
+     * its Hub; a credential that cannot (long address) ends in
+     * [PasskeyIssue.HubAddressRequired] so the screen offers manual entry.
+     * With [hubUrl] (manual entry) the Hub is probed first and the credential
+     * must belong to it. A dismissed system sheet returns to
      * [PairingUiState.Idle] silently. [platform] wraps the hosting Activity
      * and is only held for the duration of the attempt.
      */
-    fun signInWithPasskey(hubUrl: String, platform: PasskeyPlatform) {
+    fun signInWithPasskey(hubUrl: String?, platform: PasskeyPlatform) {
         if (mutableState.value == PairingUiState.Validating) return
-        val normalized = HubUrls.normalize(hubUrl)
-        if (normalized == null) {
-            mutableState.value = PairingUiState.Error(PairingError.InvalidUrl)
-            return
+        val expectedHub = hubUrl?.let {
+            HubUrls.normalize(it) ?: run {
+                mutableState.value = PairingUiState.Error(PairingError.InvalidUrl)
+                return
+            }
         }
         mutableState.value = PairingUiState.Validating
         viewModelScope.launch {
-            mutableState.value = runPasskeySignIn(normalized, platform)
+            mutableState.value = runPasskeySignIn(expectedHub, platform)
         }
     }
 
-    private suspend fun runPasskeySignIn(hubUrl: String, platform: PasskeyPlatform): PairingUiState {
+    private suspend fun runPasskeySignIn(expectedHub: String?, platform: PasskeyPlatform): PairingUiState {
+        // Probe a typed Hub before prompting, so an unreachable address never
+        // costs the user a system sheet.
+        if (expectedHub != null) probeHub(clientFactory.create(expectedHub), expectedHub)?.let { return it }
+
+        val (hubUrl, assertion) = try {
+            val assertion = platform.getPasskey(NativePasskeys.nativeLoginOptions(nowMs()))
+            val located = NativePasskeys.loginHub(assertion, expectedHub)
+            (HubUrls.normalize(located) ?: throw PasskeyHubAddressRequiredException()) to assertion
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            return passkeyFailure(error, expectedHub)
+        }
+
         val client = clientFactory.create(hubUrl)
-        probeHub(client, hubUrl)?.let { return it }
+        if (expectedHub == null) probeHub(client, hubUrl)?.let { return it }
 
         val login = try {
-            val options = client.passkeyLoginOptions()
-            val checkedOptions = NativePasskeys.ceremonyOptions(options, hubUrl, "login")
-            val assertion = platform.getPasskey(checkedOptions)
             client.passkeyLoginVerify(NativePasskeys.credentialResponse(assertion))
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (error: Exception) {
-            val issue = passkeyIssueOf(error) ?: return PairingUiState.Idle
-            return PairingUiState.Error(
-                if (issue == PasskeyIssue.Unreachable) PairingError.Unreachable(hubUrl) else PairingError.Passkey(issue),
-            )
+            return passkeyFailure(error, hubUrl)
         }
 
         // A passkey sign-in replaces any previous pairing secret for this hub:
@@ -208,6 +223,18 @@ class PairingViewModel(
         registry.addHub(hubUrl, makeActive = true)
         mutablePrefill.value = null
         return PairingUiState.Success(hubUrl)
+    }
+
+    /** Cancellation → silent [PairingUiState.Idle]; everything else → an error. */
+    private fun passkeyFailure(error: Exception, hubUrl: String?): PairingUiState {
+        val issue = passkeyIssueOf(error) ?: return PairingUiState.Idle
+        return PairingUiState.Error(
+            if (issue == PasskeyIssue.Unreachable && hubUrl != null) {
+                PairingError.Unreachable(hubUrl)
+            } else {
+                PairingError.Passkey(issue)
+            },
+        )
     }
 
     /** `GET /health` reachability + protocol check; null when the hub is usable. */

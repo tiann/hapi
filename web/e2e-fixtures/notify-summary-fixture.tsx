@@ -15,6 +15,8 @@ import { NotifySummaryText } from '../src/components/AssistantChat/messages/Noti
 
 const FOOTER = 'AGENT_NOTIFY_SUMMARY {"version":1,"status":"done","summary":"Inspection complete","action":"Review the result"}'
 const RESPONSE = `The test result has been inspected.\n\n${FOOTER}`
+// A near miss: the turn was cut off before the closing brace arrived.
+const TRUNCATED = 'The test result has been inspected.\n\nAGENT_NOTIFY_SUMMARY {"version":1,"status":"done","summary":"Inspection comp'
 const INITIAL: readonly VisibleChatBlock[] = [
     { kind: 'user-text', id: 'u1', localId: 'u1', createdAt: 1000, invokedAt: 1000, text: 'Inspect the test result.' },
     { kind: 'agent-text', id: 'a1', localId: 'a1', createdAt: 1001, invokedAt: 1001, text: RESPONSE }
@@ -90,6 +92,8 @@ function Fixture() {
                 <button onClick={() => setRunning(false)}>Complete response</button>
                 <button onClick={() => { setRunning(true); setBlocks(INITIAL.map(block => block.kind === 'agent-text'
                     ? { ...block, text: `${RESPONSE}\nMore output.` } : block)) }}>Continue existing text</button>
+                <button onClick={() => setBlocks(INITIAL.map(block => block.kind === 'agent-text'
+                    ? { ...block, text: TRUNCATED } : block))}>Truncate the footer</button>
                 <label><input type="checkbox" checked={showSummary} onChange={event => setShowSummary(event.target.checked)} /> Show summaries</label>
             </div>
         </main>

@@ -1,3 +1,7 @@
+---
+description: "How HAPI compares with Happy: a decentralized, self-hosted hub instead of a central cloud server, plus support for many coding agents."
+---
+
 # Why HAPI?
 
 [Happy](https://github.com/slopus/happy) is an excellent project. So why build HAPI?

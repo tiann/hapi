@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { monotonicTimeMs } from './time'
+import { windowsSystemTool } from './windowsSystemTools'
 
 export type WindowsProcessEntry = { parentPid: number; marker: string | null; name: string; commandLine: string }
 export type WindowsProcessTable = Map<number, WindowsProcessEntry>
@@ -49,7 +50,7 @@ function execute(file: string, args: string[], timeout: number): Promise<string 
 
 export async function readWindowsProcessTable(timeout = 15_000, pids?: number[], includeCommandLine = false): Promise<WindowsProcessTable | null> {
     if (pids?.some(pid => !Number.isInteger(pid) || pid < 0)) return null
-    const output = await execute('powershell', ['-NoProfile', '-NonInteractive', '-Command', windowsProcessTableCommand(pids, includeCommandLine)], timeout)
+    const output = await execute(windowsSystemTool('powershell'), ['-NoProfile', '-NonInteractive', '-Command', windowsProcessTableCommand(pids, includeCommandLine)], timeout)
     if (output === null) return null
     try {
         const parsed = JSON.parse(output)
@@ -94,7 +95,7 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
         callerDeadlineMs === undefined ? Infinity : callerDeadlineMs - monotonicTimeMs()))
     const signal = async (pid: number, hard: boolean, tree: boolean) => {
         phase = 'signal'
-        return execute('taskkill', [
+        return execute(windowsSystemTool('taskkill'), [
             ...(hard ? ['/F'] : []), ...(tree ? ['/T'] : []), '/PID', String(pid),
         ], Math.min(5_000, remaining()))
     }

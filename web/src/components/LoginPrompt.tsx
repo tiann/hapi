@@ -10,7 +10,9 @@ import { isPasskeyCancelled, isPasskeySupported, signInWithPasskey } from '@/lib
 import type { ServerUrlResult } from '@/hooks/useServerUrl'
 
 type LoginPromptProps = {
-    mode?: 'login' | 'bind' | 'cloudflare'
+    mode?: 'login' | 'bind' | 'cloudflare' | 'reconnect'
+    onReconnect?: () => void
+    onChooseHub?: () => void
     onLogin?: (token: string) => void
     onBind?: (token: string) => Promise<void>
     onRetryCloudflare?: () => Promise<unknown> | void
@@ -28,6 +30,7 @@ export function LoginPrompt(props: LoginPromptProps) {
     const { t } = useTranslation()
     const isBindMode = props.mode === 'bind'
     const isCloudflareMode = props.mode === 'cloudflare'
+    const isReconnecting = props.mode === 'reconnect'
     const [showTokenFallback, setShowTokenFallback] = useState(false)
     const [isRetryingCloudflare, setIsRetryingCloudflare] = useState(false)
     const [accessToken, setAccessToken] = useState('')
@@ -158,8 +161,8 @@ export function LoginPrompt(props: LoginPromptProps) {
     const redirected = displayError === AUTH_PROXY_REDIRECT_MESSAGE
     const hubOrigin = new URL(props.baseUrl || window.location.origin, window.location.href).origin
     const serverSummary = props.serverUrl ?? `${props.baseUrl} ${t('login.server.default')}`
-    const title = isBindMode ? t('login.bind.title') : t('login.title')
-    const subtitle = t('login.subtitle')
+    const title = isReconnecting ? 'Reconnecting to hub' : isBindMode ? t('login.bind.title') : t('login.title')
+    const subtitle = isReconnecting ? 'Your saved sign-in will be retried automatically.' : t('login.subtitle')
     const submitLabel = isBindMode ? t('login.bind.submit') : t('login.submit')
     const showCloudflareActions = isCloudflareMode && !showTokenFallback
 
@@ -179,8 +182,14 @@ export function LoginPrompt(props: LoginPromptProps) {
                     </div>
                 </div>
 
-                {/* Form or Cloudflare Access actions */}
-                {showCloudflareActions ? (
+                {/* Form, Cloudflare Access actions, or reconnect prompt */}
+                {isReconnecting ? (
+                    <div className="space-y-4">
+                        <p role="status" className="text-sm text-[var(--app-hint)] text-center">{props.error}</p>
+                        <Button type="button" className="w-full" onClick={props.onReconnect}>Retry now</Button>
+                        {props.onChooseHub ? <Button type="button" variant="secondary" className="w-full" onClick={props.onChooseHub}>Sign out and choose hub</Button> : null}
+                    </div>
+                ) : showCloudflareActions ? (
                     <div className="space-y-3">
                         {displayError && (
                             <div className="text-sm text-red-500 text-center">
@@ -313,7 +322,7 @@ export function LoginPrompt(props: LoginPromptProps) {
                         <a href="https://hapi.run/docs" target="_blank" rel="noopener noreferrer" className="underline hover:text-[var(--app-fg)]">
                             {t('login.help')}
                         </a>
-                        <Dialog open={isServerDialogOpen} onOpenChange={handleServerDialogOpenChange}>
+                        {!isReconnecting && <Dialog open={isServerDialogOpen} onOpenChange={handleServerDialogOpenChange}>
                             <DialogTrigger asChild>
                                 <button type="button" className="underline hover:text-[var(--app-fg)]">
                                     Hub {props.serverUrl ? `${t('login.server.custom')}` : `${t('login.server.default')}`}
@@ -365,7 +374,7 @@ export function LoginPrompt(props: LoginPromptProps) {
                                     </div>
                                 </form>
                             </DialogContent>
-                        </Dialog>
+                        </Dialog>}
                     </div>
                 )}
             </div>
