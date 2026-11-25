@@ -224,6 +224,47 @@ test('a cached re-entry cannot reclaim the viewport after a footer jump', async 
 })
 
 
+test('conversation start waits for epoch verification of complete cached history', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&cachedReentry=1&cachedComplete=1&holdLatest=1')
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Cached reply before rewind' })
+    await expect.poll(() => page.evaluate(() => window.__probe.requests.some(r => r.direction === 'latest'))).toBe(true)
+    await reply.getByRole('button', { name: 'Jump to conversation start' }).press('Enter')
+    await expect(page.getByText(/Loading earlier messages|Reached conversation start/)).toHaveText('Loading earlier messages…')
+    await page.evaluate(() => {
+        window.__probe.setEpoch(2)
+        window.__probe.releaseLatest()
+    })
+    await expect(page.getByText('Current history after rewind')).toBeInViewport()
+    await expect(page.getByText('Reached conversation start', { exact: true })).toHaveCount(0)
+    await expect(reply).toHaveCount(0)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-verified-rewind.png` })
+})
+
+test('finds the turn input in concise mode across pages with no rendered overlap', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&conciseLongTurn=1')
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Concise reply after a long turn' })
+    const prompt = page.getByText('Prompt before the hidden tool output', { exact: true })
+    await expect(reply).toBeInViewport()
+    await expect(prompt).toHaveCount(0)
+    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter')
+    await expect(prompt).toBeInViewport()
+    await expect(page.locator('[data-hapi-turn-input="true"]')).toBeFocused()
+    await expect(reply).toHaveCount(0)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-concise-long-turn.png` })
+})
+
+test('does not cross a system wake while scanning concise history', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&conciseLongTurn=1&conciseJobWake=1')
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Concise reply after a long turn' })
+    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter')
+    await expect(page.locator('[data-hapi-system-turn="true"]')).toHaveText(/Job wake before the hidden tool output/)
+    await expect(page.getByText('Loading turn input…', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('Could not load turn input. Try again.', { exact: true })).toHaveCount(0)
+    await expect(page.locator('[data-hapi-turn-input="true"]')).not.toBeFocused()
+})
+
 test('the jump feedback stays below the search toolbar on a narrow viewport', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 780 })
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&rekeyReply=1&target=m-3&targetQuery=Last')
@@ -424,6 +465,22 @@ for (const action of ['Jump to conversation start', 'Jump to turn input']) {
     })
 }
 
+
+for (const action of ['Jump to conversation start', 'Jump to turn input']) {
+    test(`keeps keyboard focus on ${action} when the history request fails`, async ({ page }) => {
+        await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&conciseLongTurn=1&failBefore=100')
+        const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Concise reply after a long turn' })
+        const button = reply.getByRole('button', { name: action })
+        await button.press('Enter')
+        await expect(button).toBeDisabled()
+        await expect(button).toBeFocused()
+        await expect(page.getByText(/could not load (earlier messages|turn input)/i)).toBeVisible({ timeout: 15_000 })
+        await expect(button).toBeEnabled()
+        await expect(button).toBeFocused()
+        const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+        if (screenshots && action === 'Jump to turn input') await page.screenshot({ path: `${screenshots}/reply-navigation-keyboard-retry.png` })
+    })
+}
 
 test('keeps following live output after finding the prompt of a short chat', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&rekeyReply=1')

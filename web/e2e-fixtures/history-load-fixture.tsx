@@ -17,6 +17,7 @@ import { HappyThread } from '../src/components/AssistantChat/HappyThread'
 import type { ChatBlock } from '../src/chat/types'
 import { getMessageWindowState, ingestIncomingMessages, recoverWindowAfterGapResume } from '../src/lib/message-window-store'
 import { buildConversationOutline } from '../src/chat/outline'
+import { filterConciseChatBlocks } from '../src/chat/conciseView'
 
 // Drives the real message-window store + chat pipeline + HappyThread against a
 // fake paginated message API, so e2e tests can exercise older-history loading
@@ -36,6 +37,7 @@ type Probe = {
     loadMore: () => Promise<unknown>
     refetch: () => Promise<void>
     gap: (nextEpoch?: number) => Promise<void>
+    setEpoch: (epoch: number) => void
     confirmSteer: () => Promise<void>
     releaseLatest: () => void
     holdBefore: () => void
@@ -75,6 +77,7 @@ window.__probe = {
         if (nextEpoch !== undefined) fixtureEpoch = nextEpoch
         await recoverWindowAfterGapResume(fakeApi, currentActiveSessionId)
     },
+    setEpoch: epoch => { fixtureEpoch = epoch },
     confirmSteer: async () => {
         fixtureSteerConfirmed = true
         await recoverWindowAfterGapResume(fakeApi, currentActiveSessionId)
@@ -272,7 +275,29 @@ let fixtureEpoch = 1
 let fixtureSteerConfirmed = false
 const rekeyReply = fixtureParams.has('rekeyReply')
 if (rekeyReply) window.__probe.holdBefore()
-const allMessages: DecryptedMessage[] = rekeyReply ? [
+const conciseLongTurn = fixtureParams.has('conciseLongTurn')
+const cachedComplete = fixtureParams.has('cachedComplete')
+const allMessages: DecryptedMessage[] = conciseLongTurn ? Array.from({ length: TOTAL_MESSAGES }, (_, index) => {
+    const seq = index + 1
+    if (seq === 1) return createFixtureMessage(seq, { role: 'user', content: { type: 'text', text: 'Prompt before the hidden tool output' } })
+    if (seq === 21 && fixtureParams.has('conciseJobWake')) {
+        return createFixtureMessage(seq, {
+            role: 'user', content: { type: 'text', text: 'Job wake before the hidden tool output' }, meta: { sentFrom: 'hapi-system' }
+        })
+    }
+    if (seq === TOTAL_MESSAGES) {
+        return createFixtureMessage(seq, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Concise reply after a long turn' } } })
+    }
+    return createFixtureMessage(seq, {
+        role: 'agent',
+        content: { type: 'codex', data: seq % 2 === 0
+            ? { type: 'tool-call', callId: `hidden-${seq}`, name: 'Read', input: { file_path: `/tmp/hidden-${seq}.txt` } }
+            : { type: 'tool-call-result', callId: `hidden-${seq - 1}`, output: 'ok' } }
+    })
+}) : cachedComplete ? Array.from({ length: 30 }, (_, index) => index === 29
+    ? createFixtureMessage(index + 1, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Cached reply before rewind' } } })
+    : createFixtureMessage(index + 1, { role: 'user', content: { type: 'text', text: `Cached prompt ${index + 1}` } })
+) : rekeyReply ? [
     createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Prompt from the older page' } }),
     createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Earlier part of the reply' } } }),
     createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Last part of the reply' } } }),
@@ -337,7 +362,7 @@ if (cachedReentry) {
     const newestPosition = positionOf(cachedNewest)
     sessionStorage.setItem(`hapi:message-window:v2:${SESSION_ID}`, JSON.stringify({
         messages: cachedMessages,
-        hasMore: true,
+        hasMore: !cachedComplete,
         oldestPositionAt: oldestPosition.at,
         oldestPositionSeq: oldestPosition.seq,
         newestPositionAt: newestPosition.at,
@@ -447,7 +472,10 @@ const fakeApi = {
             }
         }
 
-        const pageMessages = sourceMessages.slice(-limit).map(message =>
+        const latestMessages = cachedComplete && fixtureEpoch === 2
+            ? [createFixtureMessage(31, { role: 'user', content: { type: 'text', text: 'Current history after rewind' } })]
+            : sourceMessages
+        const pageMessages = latestMessages.slice(-limit).map(message =>
             fixtureSteerConfirmed && message.id === 'm-2' ? { ...message, steered: true } : message)
         // After an epoch bump the "rewritten" tail renders taller rows, so
         // the reset changes content height — this is what re-fires the
@@ -468,7 +496,7 @@ const fakeApi = {
                 limit,
                 epoch: fixtureEpoch,
                 reset: true,
-                hasMore: sourceMessages.length > pageMessages.length
+                hasMore: latestMessages.length > pageMessages.length
             })
         }
     }
@@ -533,7 +561,7 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
     )
     blocksByIdRef.current = reconciled.byId
     const visibleBlocks = useMemo(
-        () => buildVisibleChatBlocks(reconciled.blocks, { hasMoreMessages: hasMore }),
+        () => buildVisibleChatBlocks(conciseLongTurn ? filterConciseChatBlocks(reconciled.blocks) : reconciled.blocks, { hasMoreMessages: hasMore }),
         [reconciled.blocks, hasMore]
     )
 

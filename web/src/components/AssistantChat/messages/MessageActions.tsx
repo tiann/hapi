@@ -197,9 +197,10 @@ function NavigationButton(props: {
             type="button"
             title={props.title}
             aria-label={props.title}
-            onClick={props.onClick}
-            disabled={props.disabled}
-            className="flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-wait disabled:opacity-70"
+            // Stay focusable so a failed keyboard jump can be retried in place.
+            aria-disabled={props.disabled || undefined}
+            onClick={event => { if (!props.disabled) props.onClick(event) }}
+            className="flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] aria-disabled:cursor-wait aria-disabled:opacity-70"
         >
             {props.children}
         </button>

@@ -494,6 +494,7 @@ type PromptAnchorState = {
     oldestSourceMessageIds?: readonly string[]
     sourceMessageIds?: readonly string[]
     blockedBySystemTurn?: boolean
+    rawBoundary?: { epoch: number; rowId: string }
 }
 
 function getPromptAnchorSourceMessageIds(anchor: HTMLElement): string[] {
@@ -627,6 +628,30 @@ export function findPromptTarget(
     return null
 }
 
+// In concise view an entire overlap can consist of hidden tool output. Prove
+// continuity with raw rows, but keep the rendered turn markers authoritative
+// for which rows are inputs, steers, batch continuations, or system wakes.
+function findPromptBeforeRawOverlap(
+    viewport: HTMLElement,
+    state: PromptAnchorState,
+    window: ReturnType<typeof getMessageWindowState>
+): HTMLElement | null {
+    const boundary = state.rawBoundary
+    if (!boundary || boundary.epoch !== window.epoch || state.blockedBySystemTurn) return null
+    const boundaryIndex = window.messages.findIndex(row => row.id === boundary.rowId)
+    if (boundaryIndex <= 0) return null
+    const earlierIds = new Set(window.messages.slice(0, boundaryIndex).map(row => row.id))
+    const messages = Array.from(viewport.querySelectorAll<HTMLElement>(MESSAGE_ANCHOR_SELECTOR)).filter(anchor =>
+        (anchor.dataset.hapiTurnInput === 'true' || anchor.dataset.hapiSystemTurn === 'true')
+        && getPromptAnchorSourceMessageIds(anchor).some(id => earlierIds.has(id)))
+    const target = findPromptBefore(messages, messages.length, state)
+    if (!target && !state.blockedBySystemTurn) {
+        const oldest = window.messages.find(row => typeof row.seq === 'number')
+        if (oldest) boundary.rowId = oldest.id
+    }
+    return target
+}
+
 export function capturePromptAnchorState(
     viewport: HTMLElement | null,
     messageId: string,
@@ -651,17 +676,15 @@ export function capturePromptAnchorState(
 }
 
 async function findPreviousUserMessageAfterRender(
-    viewport: HTMLElement,
-    messageId: string,
-    assistantAnchorState: PromptAnchorState,
-    replyToMessageId?: string
+    findTarget: () => HTMLElement | null,
+    state: PromptAnchorState
 ): Promise<HTMLElement | null> {
     for (let attempt = 0; attempt < 4; attempt += 1) {
-        const target = findPromptTarget(viewport, messageId, assistantAnchorState, replyToMessageId)
-        if (target || assistantAnchorState.blockedBySystemTurn) return target
+        const target = findTarget()
+        if (target || state.blockedBySystemTurn) return target
         await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
     }
-    return findPromptTarget(viewport, messageId, assistantAnchorState, replyToMessageId)
+    return findTarget()
 }
 
 export async function loadAllOlderMessages(options: {
@@ -3001,14 +3024,24 @@ export function HappyThread(props: {
             if (isCancelled()) return false
             if (!viewport) throw new Error('Chat viewport is unavailable')
             let loadedOlderHistory = false
+            const findTarget = () => {
+                const target = findPromptTarget(viewport, messageId, assistantAnchorState, replyToMessageId)
+                if (target || assistantAnchorState.blockedBySystemTurn || !assistantAnchorState.rawBoundary) return target
+                const window = getMessageWindowState(sessionIdRef.current)
+                // Don't advance the boundary using raw rows the runtime has
+                // not rendered yet, even when they may all be hidden.
+                return appliedMessagesVersionRef.current === window.messagesVersion
+                    ? findPromptBeforeRawOverlap(viewport, assistantAnchorState, window)
+                    : null
+            }
             const locatePrompt = async () => {
-                let prompt = await findPreviousUserMessageAfterRender(viewport, messageId, assistantAnchorState, replyToMessageId)
+                let prompt = await findPreviousUserMessageAfterRender(findTarget, assistantAnchorState)
                 while (!isCancelled() && !prompt && !assistantAnchorState.blockedBySystemTurn && hasMoreMessagesRef.current) {
                     const loaded = await loadOlderForNavigation()
                     if (isCancelled()) return null
                     if (!loaded) throw new Error('Could not load older messages')
                     loadedOlderHistory = true
-                    prompt = await findPreviousUserMessageAfterRender(viewport, messageId, assistantAnchorState, replyToMessageId)
+                    prompt = await findPreviousUserMessageAfterRender(findTarget, assistantAnchorState)
                 }
                 return prompt
             }
@@ -3023,7 +3056,10 @@ export function HappyThread(props: {
                 if (focusTarget) target.focus({ preventScroll: true })
                 target.scrollIntoView({ block: 'start', behavior: 'smooth' })
                 const settled = await waitForPromptScrollSettlement(viewport, target, isCancelled)
-                if (heldWindow && !await heldWindow.verify()) return false
+                if (heldWindow && !await heldWindow.verify()) {
+                    if (isCancelled()) return false
+                    throw new Error('Could not verify prompt history')
+                }
                 if (isCancelled()) return false
                 // The reconnect may have marked the current node as a steer
                 // without removing it. Let the updated assistant runtime commit
@@ -3039,7 +3075,7 @@ export function HappyThread(props: {
                     }
                 }
                 if (isCancelled()) return false
-                const current = findPromptTarget(viewport, messageId, assistantAnchorState, replyToMessageId)
+                const current = findTarget()
                 if (settled && current === target && target.isConnected) break
                 if (attempt >= 2 || (current === target && !settled)) throw new Error('Prompt scroll did not settle')
             }
@@ -3069,7 +3105,7 @@ export function HappyThread(props: {
         // a viewport the reader already asked to navigate explicitly.
         userCancelledInitialTailRef.current = true
         const runId = navigationRunRef.current
-        const heldWindow = holdHistoryNavigationWindow(props.sessionId)
+        const heldWindow = holdHistoryNavigationWindow(props.sessionId, props.api)
         historyNavigationWindowRef.current = heldWindow
         const runCancelled = () => navigationRunRef.current !== runId
         const isCancelled = () => runCancelled() || heldWindow?.isCurrent() === false
@@ -3081,6 +3117,12 @@ export function HappyThread(props: {
         releaseSearchTargetHistoryLock()
         try {
             const assistantAnchorState = capturePromptAnchorState(viewportRef.current, messageId, replyToMessageId)
+            const messageWindow = getMessageWindowState(props.sessionId)
+            if (messageWindow.epoch !== null && assistantAnchorState.sourceMessageIds?.length) {
+                const ids = new Set(assistantAnchorState.sourceMessageIds)
+                const replyRow = messageWindow.messages.find(row => typeof row.seq === 'number' && ids.has(row.id))
+                if (replyRow) assistantAnchorState.rawBoundary = { epoch: messageWindow.epoch, rowId: replyRow.id }
+            }
             // Resolve the prompt through the history-aware path even when its
             // message anchor is already rendered. A direct scroll to the
             // replyToMessageId can race assistant-ui's tail restoration and
@@ -3121,7 +3163,7 @@ export function HappyThread(props: {
                 scheduleCoverageAfterSettling()
             }
         }
-    }, [clearConversationStartFeedback, clearPromptNavigationFeedback, props.sessionId, releaseSearchTargetHistoryLock, scheduleCoverageAfterSettling, scrollToPromptForMessage])
+    }, [clearConversationStartFeedback, clearPromptNavigationFeedback, props.api, props.sessionId, releaseSearchTargetHistoryLock, scheduleCoverageAfterSettling, scrollToPromptForMessage])
 
     const scrollToConversationStart = useCallback(async (focusTarget = false): Promise<boolean> => {
         if (navigationInFlightRef.current) return false
@@ -3130,7 +3172,8 @@ export function HappyThread(props: {
         const wasTailFollowing = autoScrollEnabledRef.current && atBottomRef.current
         // A short, fully loaded conversation is already at both ends. There
         // is no scroll event to restore tail follow if we enter history mode.
-        if (!isSyncingTailRef.current && !hasMoreMessagesRef.current && currentViewport
+        if (!isSyncingTailRef.current && !getMessageWindowState(props.sessionId).preferLatestOnActivation
+            && !hasMoreMessagesRef.current && currentViewport
             && currentViewport.scrollTop <= 1
             && currentViewport.scrollHeight - currentViewport.clientHeight <= 1) {
             if (focusTarget) focusFirstConversationMessage(currentViewport)
@@ -3146,7 +3189,7 @@ export function HappyThread(props: {
         // a viewport the reader already asked to navigate explicitly.
         userCancelledInitialTailRef.current = true
         const runId = navigationRunRef.current
-        const heldWindow = holdHistoryNavigationWindow(props.sessionId)
+        const heldWindow = holdHistoryNavigationWindow(props.sessionId, props.api)
         historyNavigationWindowRef.current = heldWindow
         const runCancelled = () => navigationRunRef.current !== runId
         const isCancelled = () => runCancelled() || heldWindow?.isCurrent() === false
@@ -3239,6 +3282,7 @@ export function HappyThread(props: {
         clearPromptNavigationFeedback,
         loadOlderForNavigation,
         markExplicitNavigationAwayFromBottom,
+        props.api,
         props.sessionId,
         releaseSearchTargetHistoryLock
     ])

@@ -666,6 +666,23 @@ it('fetches one older context page before first paint when the cold page is tool
         expect(getMessageWindowState(id).isSyncingTail).toBe(false)
     })
 
+    it('does not verify a complete cached history when the activation probe fails', async () => {
+        const id = sessionId('cached-history-jump-offline')
+        const cached = makeAgentMessage({ id: 'cached', seq: 1, at: 100 })
+        await syncTailMessages(createApi(async () => latestResponse([cached], { epoch: 1 })), id)
+        activateMessageWindow(id)
+        const probe = deferred<MessagesResponse>()
+        const api = createApi(async () => probe.promise)
+        const held = holdHistoryNavigationWindow(id, api)!
+        const verifying = held.verifyStart()
+        probe.reject(new Error('offline'))
+        expect(await verifying).toBe(false)
+        expect(await held.verify()).toBe(false)
+        expect(getMessageWindowState(id).messages).toEqual([cached])
+        expect(getMessageWindowState(id).preferLatestOnActivation).toBe(true)
+        held.finish(false)
+    })
+
     it('renders a persisted window immediately, then requests a small latest tail on re-entry', async () => {
         const id = sessionId('reentry')
         const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })

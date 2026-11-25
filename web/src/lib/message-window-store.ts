@@ -144,6 +144,7 @@ type HeldHistoryNavigation = {
     epoch: number
     owner: symbol
     probe?: Promise<void>
+    activationEpochPending?: boolean
     recovery?: { api: ApiClient; after: MessagePosition | null }
     catchUpNeeded?: boolean
 }
@@ -1483,8 +1484,9 @@ function releaseHeldHistory(sessionId: string, window: HeldHistoryNavigation): v
 }
 
 /** Keep explicit history navigation intact across background reconciliation. */
-export function holdHistoryNavigationWindow(sessionId: string): HistoryNavigationWindow | null {
-    const epoch = getState(sessionId).epoch
+export function holdHistoryNavigationWindow(sessionId: string, api?: ApiClient): HistoryNavigationWindow | null {
+    const initial = getState(sessionId)
+    const epoch = initial.epoch
     if (epoch === null) return null
     const previous = heldHistoryWindows.get(sessionId)
     const owner = Symbol('history-navigation')
@@ -1495,24 +1497,32 @@ export function holdHistoryNavigationWindow(sessionId: string): HistoryNavigatio
     heldHistoryWindows.set(sessionId, window)
     const controller = tailSyncControllers.get(sessionId)
     const pending = deferredGapCursors.get(sessionId)
-    if (controller && pending?.epoch === epoch && getState(sessionId).pendingGapRecovery) {
+    if (controller && pending?.epoch === epoch && initial.pendingGapRecovery) {
         window.recovery = { api: controller.api, after: pending.after }
         window.catchUpNeeded = true
     }
+    // A cached window can report hasMore=false without proving it belongs to
+    // the current epoch. Replace the canceled activation sync with a held
+    // probe instead of letting the jump succeed against that cache alone.
     cancelTailSync(sessionId)
+    if (initial.preferLatestOnActivation) {
+        window.activationEpochPending = true
+        const activationApi = api ?? controller?.api
+        if (activationApi) void reconcileHeldHistoryNavigation(activationApi, sessionId)
+    }
     const ownsHold = () => window.owner === owner && heldHistoryWindows.get(sessionId) === window
     const isCurrent = () => ownsHold() && getState(sessionId).epoch === epoch
     return {
         isCurrent,
         verify: async () => {
             await window.probe
-            return isCurrent()
+            return isCurrent() && !window.activationEpochPending
         },
         verifyStart: async () => {
             const oldestSeq = getState(sessionId).oldestSeq
             await window.probe
             const state = getState(sessionId)
-            return isCurrent() && !state.hasMore && state.oldestSeq === oldestSeq
+            return isCurrent() && !window.activationEpochPending && !state.hasMore && state.oldestSeq === oldestSeq
         },
         finish: (keepHistory) => {
             if (!ownsHold()) return
@@ -1558,6 +1568,10 @@ function reconcileHeldHistoryNavigation(api: ApiClient, sessionId: string): Prom
     const probe = api.getMessages(sessionId, { limit: PAGE_SIZE }).then(async response => {
         if (!isCurrent()) return
         if (response.page.epoch !== held.epoch) return reset()
+        if (held.activationEpochPending) {
+            held.activationEpochPending = false
+            updateState(sessionId, previous => buildState(previous, { preferLatestOnActivation: false }))
+        }
 
         // Refresh retained rows, never splice a disconnected latest page into
         // the historical window. Leave the pagination cursors untouched.
