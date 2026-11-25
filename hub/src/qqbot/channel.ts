@@ -23,7 +23,8 @@ export class QqBotChannel implements NotificationChannel {
     }
 
     async sendReady(session: Session): Promise<void> {
-        if (session.active) await this.send(session, () => 'HAPI Ready for input')
+        if (!session.active) return
+        await this.send(session, () => this.getSession(session.id)?.active ? 'HAPI Ready for input' : null)
     }
 
     async sendPermissionRequest(session: Session): Promise<void> {

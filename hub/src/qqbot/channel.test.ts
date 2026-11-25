@@ -167,6 +167,20 @@ describe('QQ bot DM notifications', () => {
         expect(fetch.mock.calls.map(([url]) => url)).toEqual([tokenUrl])
     })
 
+    it('skips a ready alert if the session ends during QQ authentication', async () => {
+        const releaseAuth = Promise.withResolvers<Response>()
+        const fetch = mockFetch(url => url === tokenUrl ? releaseAuth.promise : Response.json({ id: 'message-id' }))
+        let current = createSession()
+        const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), () => current, fetch)
+        const delivery = channel.sendReady(current)
+        expect(fetch.mock.calls.map(([url]) => url)).toEqual([tokenUrl])
+        current = createSession({ active: false })
+        releaseAuth.resolve(tokenResponse())
+        await delivery
+
+        expect(fetch.mock.calls.map(([url]) => url)).toEqual([tokenUrl])
+    })
+
     it.each(['imported name', 'generated summary', 'workspace path'])(
         'keeps private session metadata and input request arguments out of QQ (%s)', async (source) => {
             const fetch = mockFetch()
