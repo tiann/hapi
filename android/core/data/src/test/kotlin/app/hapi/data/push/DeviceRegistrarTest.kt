@@ -8,6 +8,7 @@ import app.hapi.data.auth.InMemoryHubRegistryStorage
 import java.io.IOException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -66,11 +67,15 @@ class DeviceRegistrarTest {
         val gateway = FakeGateway()
         val retries = RecordingRetries()
         var identityUnavailable = false
+        var tokenLookupFailure: IOException? = null
         val scope = CoroutineScope(StandardTestDispatcher(testScope.testScheduler))
         val registrar = DeviceRegistrar(
             registry = registry,
             gateway = gateway,
-            tokenSource = { token },
+            tokenSource = {
+                tokenLookupFailure?.let { throw it }
+                token
+            },
             identities = {
                 if (identityUnavailable) throw IOException("Key storage unavailable")
                 IDENTITY
@@ -223,6 +228,24 @@ class DeviceRegistrarTest {
         advanceUntilIdle()
         assertEquals(listOf(hubA), h.retries.retries)
         assertTrue(h.gateway.registrations.isEmpty(), "Re-pair must not register any other hub")
+    }
+
+    @Test
+    fun `transient token lookup failure retries re-pair and the worker keeps retrying`() = test { h ->
+        h.registry.addHub(hubA)
+        h.registry.addHub(hubB)
+        h.tokenLookupFailure = IOException("offline Firebase token lookup")
+
+        h.registrar.onHubRepaired(hubA)
+        advanceUntilIdle()
+        assertEquals(listOf(hubA), h.retries.retries)
+        assertTrue(h.gateway.registrations.isEmpty())
+
+        assertFailsWith<IOException> { h.registrar.registerHubOnce(hubA) }
+        h.registrar.unregisterHub(hubA) // A lookup failure must not prevent sign-out.
+        h.tokenLookupFailure = null
+        h.registrar.registerHubOnce(hubA)
+        assertEquals(listOf(hubA), h.gateway.registrations.map { it.hubUrl })
     }
 
     @Test

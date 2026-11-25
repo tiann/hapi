@@ -12,10 +12,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * Current FCM registration token, or **null when push is unavailable** —
- * Firebase not configured (no `google-services.json`), Play services absent,
- * or the token fetch failed. A null token turns every registrar entry point
- * into a clean no-op (the `PushBinding.isAvailable` gate, threaded through).
+ * Current FCM registration token, or null when Firebase isn't configured.
+ * Lookup failures throw so registration can retry instead of treating push as disabled.
  */
 fun interface PushTokenSource {
     suspend fun currentToken(): String?
@@ -133,8 +131,8 @@ class DeviceRegistrar(
      * self-healing server-side — the hub prunes tokens FCM reports dead.)
      */
     suspend fun unregisterHub(hubUrl: String) {
-        val token = tokenSource.currentToken() ?: return
         try {
+            val token = tokenSource.currentToken() ?: return
             gateway.unregister(hubUrl, token)
         } catch (cancellation: CancellationException) {
             throw cancellation
@@ -144,7 +142,14 @@ class DeviceRegistrar(
     }
 
     private suspend fun registerHubs(hubs: List<String>, presetToken: String? = null) {
-        val token = presetToken ?: tokenSource.currentToken() ?: return // push unavailable
+        val token = try {
+            presetToken ?: tokenSource.currentToken() ?: return // push unavailable
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            if (isTransient(error)) hubs.forEach(retryScheduler::scheduleRetry)
+            return
+        }
         for (hubUrl in hubs) {
             try {
                 register(hubUrl, token)

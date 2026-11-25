@@ -34,19 +34,21 @@ internal object SkillSuggestions {
         isNameChar(text, index)
     }
 
-    private fun isCandidateAt(text: String, index: Int): Boolean = if (text.getOrNull(index) == ':') {
-        isNameChar(text, index - 1) && (index == text.lastIndex || isNameChar(text, index + 1))
-    } else {
-        isNameAt(text, index)
+    private fun isCandidateAt(text: String, index: Int, caret: Int): Boolean = when (text.getOrNull(index)) {
+        ':' -> isNameChar(text, index - 1) &&
+            (index == caret - 1 || index == text.lastIndex || isNameChar(text, index + 1))
+        // Just-typed punctuation is provisional even before a space or at the end.
+        '.' -> if (index == caret - 1) isNameChar(text, index - 1) else isNameAt(text, index)
+        else -> isNameAt(text, index)
     }
 
     fun token(text: String, start: Int, end: Int): Token? {
         if (start != end || start !in 1..text.length) return null
         var wordStart = start - 1
-        while (isCandidateAt(text, wordStart)) wordStart--
+        while (isCandidateAt(text, wordStart, start)) wordStart--
         if (text.getOrNull(wordStart) != '$' || isNameAt(text, wordStart - 1)) return null
         var wordEnd = start
-        while (isCandidateAt(text, wordEnd)) wordEnd++
+        while (isCandidateAt(text, wordEnd, start)) wordEnd++
         return Token(wordStart, wordEnd, text.substring(wordStart, wordEnd), text.substring(wordStart + 1, start))
     }
 

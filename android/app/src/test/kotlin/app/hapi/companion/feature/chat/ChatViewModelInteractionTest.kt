@@ -2064,6 +2064,32 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `typing a dot or qualifier before existing text keeps the same skill picker open`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val dotted = SkillSummary("foo.bar")
+        val qualified = SkillSummary("plugin:review")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(dotted, qualified))
+        vm.start()
+
+        for ((prefix, punctuation, next, skill) in listOf(
+            listOf("foo", ".", "b", dotted.name),
+            listOf("plugin", ":", "r", qualified.name),
+        )) {
+            val before = harness.api.skillsCalls.size
+            for (term in listOf(prefix, prefix + punctuation, prefix + punctuation + next)) {
+                val typed = "Run \$$term"
+                vm.onComposerChange("$typed then continue", typed.length, typed.length)
+                testScheduler.runCurrent()
+                assertEquals(listOf(skill), vm.skillSuggestions.value.map { it.skill.name })
+                assertEquals(before + 1, harness.api.skillsCalls.size)
+            }
+            vm.setComposerText("Run then continue")
+            testScheduler.runCurrent()
+        }
+    }
+
+    @Test
     fun `dotted skill name is one word at mid name and at word end`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel
