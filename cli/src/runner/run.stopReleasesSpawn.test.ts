@@ -162,6 +162,21 @@ describe('runner stop of an adopted child', () => {
         expect(mocks.reapOrphans).not.toHaveBeenCalled()
     })
 
+    it('declines a recovery stop on Windows without confirming or signalling', async () => {
+        const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+        try {
+            await expect(stop({ recovery: { requestId: 'r-win', pid: 4242 } })).resolves.toBe('still_alive')
+            expect(mocks.confirm).not.toHaveBeenCalled()
+            expect(mocks.prepare).not.toHaveBeenCalled()
+            expect(mocks.kill).not.toHaveBeenCalled()
+        } finally {
+            if (originalPlatformDescriptor) {
+                Object.defineProperty(process, 'platform', originalPlatformDescriptor)
+            }
+        }
+    })
+
     it('declines a recovery stop with no tracked child instead of sweeping argv for a same-id MCP bridge', async () => {
         // No tracked or persisted process for this HAPI id: the general argv
         // sweep would match an MCP bridge stamped with the same session id and

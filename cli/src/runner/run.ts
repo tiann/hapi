@@ -1256,6 +1256,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       opts?: StopSessionOptions,
       terminated: Set<number> = new Set<number>()
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+      if (opts?.recovery && process.platform === 'win32') {
+        // Recovery stops are not supported on Windows; leave the wrapper alone.
+        logger.debug('[RUNNER RUN] Declining a recovery stop on Windows');
+        return 'still_alive';
+      }
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
       const signalDeadlines = new Map<number, number>();
       const prepareSessionStop = async (id: string, pid: number, expectedMarker?: string): Promise<boolean> => {

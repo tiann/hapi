@@ -5430,7 +5430,7 @@ export class SyncEngine {
         return await promise
     }
 
-    private async resumeSessionUnlocked(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
+    private async resumeSessionUnlocked(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode, recoverUnreachableWrapper?: Session }): Promise<ResumeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
@@ -5647,6 +5647,11 @@ export class SyncEngine {
             if (flavor === 'codex' && resumeToken) {
                 this.sessionReadyIds.delete(access.sessionId)
                 this.writeCodexResumePending(access.sessionId, namespace, { machineId: targetMachine.id, nativeSessionId: resumeToken })
+            }
+            // Stop an unreachable runner wrapper only after every resume
+            // preflight passed, immediately before the spawn it would block.
+            if (opts?.recoverUnreachableWrapper) {
+                await this.stopUnreachableRunnerWrapper(opts.recoverUnreachableWrapper)
             }
             const spawnResult = await this.rpcGateway.spawnSession(
                 targetMachine.id,
@@ -6080,8 +6085,9 @@ export class SyncEngine {
         // Not active and not archived (e.g. brand-new session that has not yet connected,
         // or one that ended without writing archive metadata). Forward to resume so the
         // operator still gets one-click revival.
-        await this.stopUnreachableRunnerWrapper(session)
-        const resumeResult = await this.resumeSessionUnlocked(access.sessionId, namespace)
+        const resumeResult = await this.resumeSessionUnlocked(access.sessionId, namespace, {
+            recoverUnreachableWrapper: session,
+        })
         if (resumeResult.type === 'error') {
             return resumeResult
         }

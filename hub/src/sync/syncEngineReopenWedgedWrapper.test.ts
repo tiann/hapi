@@ -166,6 +166,19 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
         expect(cache().getSession(id)?.active).toBe(true)
     })
 
+    it('does not stop an unreachable wrapper when resume preflight rejects a cursor session without its native chat id', async () => {
+        const id = insertInactiveSession('cursor-no-native', { flavor: 'cursor' })
+        store.messages.addMessage(id, { role: 'user', content: 'stored before the wrapper went quiet' }, 'stored-user')
+        children.set(id, { pid: 4242, connects: false })
+
+        const result = await engine.reopenSession(id, NAMESPACE)
+
+        expect(result).toMatchObject({ type: 'error', code: 'resume_unavailable' })
+        expect(stopCalls).toBe(0)
+        expect(spawnCalls).toBe(0)
+        expect(children.get(id)?.pid).toBe(4242)
+    })
+
     it('keeps today\'s path with a runner that predates the recovery RPC', async () => {
         oldRunner = true
         const id = insertInactiveSession('old-runner')
