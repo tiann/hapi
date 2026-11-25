@@ -73,7 +73,7 @@ import { hasActiveSteeringTurn } from '@hapi/protocol'
 import { AGY_MODEL_LABELS, AGY_MODEL_PRESETS, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import { getClaudeCatalogOptions } from '@/components/AssistantChat/modelOptions'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
-import { rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
+import { getMessageWindowState, getRegularPrependBudgetCount, rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { ShareSeedConsumer } from '@/components/ShareSeedConsumer'
 import {
     createScratchlistAttachmentAdapter,
@@ -579,6 +579,7 @@ type BoundaryProjection = {
     canonicalBlocks: readonly ChatBlock[]
     visibleBlocks: readonly VisibleChatBlock[]
     isRunning: boolean
+    tailEvictedWhileFollowing?: boolean
 }
 
 function renderedResponseGroups(blocks: readonly VisibleChatBlock[]): { id: string; keys: string[] }[] {
@@ -601,7 +602,28 @@ export function resolveLatestCompletedBoundaryIdForView(
 ): string | null {
     if (viewMode === 'tail') return currentTailBoundaryId
     const memory = rememberedTailBoundary
-    if (!memory || memory.tailRevision !== currentTailRevision) return null
+    if (!memory || memory.tailRevision !== currentTailRevision) {
+        if (
+            projection?.tailEvictedWhileFollowing
+            && !projection.isRunning
+            && currentTailBoundaryId
+        ) {
+            const lastVisibleGroup = renderedResponseGroups(projection.visibleBlocks).at(-1)
+            const lastCanonicalBlock = projection.canonicalBlocks.at(-1)
+            const lastVisibleBlock = projection.visibleBlocks.at(-1)
+            if (
+                lastVisibleGroup
+                && lastVisibleBlock
+                && visibleBlockRole(lastVisibleBlock) === 'assistant'
+                && lastVisibleGroup.id === currentTailBoundaryId
+                && lastCanonicalBlock
+                && lastVisibleGroup.keys.includes(responseBlockKey(lastCanonicalBlock))
+            ) {
+                return currentTailBoundaryId
+            }
+        }
+        return null
+    }
     if (!projection) return memory.id
     if (projection.isRunning || memory.sessionId !== projection.sessionId
         || !memory.id || !memory.canonicalBlocks || !memory.visibleBlocks) return null
@@ -632,6 +654,17 @@ export function resolveLatestCompletedBoundaryIdForView(
     // A hidden event can join distinct original groups into one card. Its extra
     // keys fail the subset check above; do not invent current ownership.
     return cards.length === 1 ? cards[0].id : null
+}
+
+export function resolveRenderedReadThroughRevision(options: {
+    terminalVisible: boolean
+    viewMode: 'tail' | 'history'
+    tailEvictedWhileFollowing?: boolean
+    readThroughRevision?: number
+}): number | undefined {
+    if (options.terminalVisible) return undefined
+    if (options.viewMode !== 'tail' && !options.tailEvictedWhileFollowing) return undefined
+    return options.readThroughRevision
 }
 
 function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
@@ -684,6 +717,7 @@ type SessionChatProps = {
     isLoadingMoreMessages: boolean
     isSending: boolean
     viewMode: 'tail' | 'history'
+    tailEvictedWhileFollowing?: boolean
     messagesVersion: number
     historyVersion: number
     tailRevision: number
@@ -1767,6 +1801,10 @@ function SessionChatInner(props: SessionChatProps) {
         () => props.messages.filter((m) => !isQueuedForInvocation(m)),
         [props.messages]
     )
+    const retainedMessagesCount = useMemo(
+        () => getRegularPrependBudgetCount(props.messages),
+        [props.messages]
+    )
 
     const normalizedMessages: NormalizedMessage[] = useMemo(() => {
         // Clear caches immediately when session changes (before useEffect runs)
@@ -1871,6 +1909,9 @@ function SessionChatInner(props: SessionChatProps) {
         [threadBlocks, props.hasMoreMessages, toolGroupingMode, codexExplorationCollapsed]
     )
 
+    const effectiveTailEvictedWhileFollowing = props.tailEvictedWhileFollowing
+        ?? Boolean(getMessageWindowState(props.session.id).tailEvictedWhileFollowing)
+
     // Fork-current must compare against assistant-ui message ids (`kind:id`),
     // not raw hub message ids — MessageActions receive the rendered card id,
     // and adjacent assistant blocks join under the first block's id.
@@ -1880,13 +1921,13 @@ function SessionChatInner(props: SessionChatProps) {
     // a valid current Fork action, and loading older pages can make the last
     // visible historical message look like the current fork boundary.
     const currentTailBoundaryId = useMemo(() => {
-        if (props.viewMode !== 'tail') return null
+        if (props.viewMode !== 'tail' && !effectiveTailEvictedWhileFollowing) return null
         return findLatestCompletedBoundaryId(
             visibleBlocks,
             props.session.thinking,
             props.session.activeTurnStartedAt ?? null
         )
-    }, [props.viewMode, props.session.activeTurnStartedAt, props.session.thinking, visibleBlocks])
+    }, [effectiveTailEvictedWhileFollowing, props.viewMode, props.session.activeTurnStartedAt, props.session.thinking, visibleBlocks])
 
     useEffect(() => {
         if (props.viewMode !== 'tail') return
@@ -1906,7 +1947,8 @@ function SessionChatInner(props: SessionChatProps) {
         rememberedTailBoundary,
         props.tailRevision,
         { sessionId: props.session.id, canonicalBlocks: reconciled.blocks, visibleBlocks,
-            isRunning: props.session.thinking }
+            isRunning: props.session.thinking,
+            tailEvictedWhileFollowing: effectiveTailEvictedWhileFollowing }
     )
 
     const assistantForkPoints = useMemo(
@@ -1935,7 +1977,11 @@ function SessionChatInner(props: SessionChatProps) {
     // "N new messages" counts rendered blocks, not raw messages: a subagent run
     // is dozens of sidechain messages but a single Task card, and a tool_use +
     // tool_result pair is one card.
-    const unseenCount = useUnseenBlockCount(props.viewMode, visibleBlocks)
+    const unseenCount = useUnseenBlockCount(
+        props.viewMode,
+        visibleBlocks,
+        effectiveTailEvictedWhileFollowing
+    )
 
     const outlineItems = useMemo(
         () => buildConversationOutline(reconciled.blocks),
@@ -2493,7 +2539,12 @@ function SessionChatInner(props: SessionChatProps) {
                         assistantForkPoints={assistantForkPoints}
                         onViewModeChange={props.onViewModeChange}
                         onJumpToTail={props.onJumpToTail}
-                        readThroughRevision={!terminalVisible && props.viewMode === 'tail' ? props.readThroughRevision : undefined}
+                        readThroughRevision={resolveRenderedReadThroughRevision({
+                            terminalVisible,
+                            viewMode: props.viewMode,
+                            tailEvictedWhileFollowing: effectiveTailEvictedWhileFollowing,
+                            readThroughRevision: props.readThroughRevision
+                        })}
                         isSyncingTail={props.isSyncingTail}
                         isCatchingUpFromCache={props.isCatchingUpFromCache}
                         cachedTailFirstFrame={props.cachedTailFirstFrame}
@@ -2506,7 +2557,10 @@ function SessionChatInner(props: SessionChatProps) {
                         onCancelLoadMore={props.onCancelLoadMore}
                         unseenCount={unseenCount}
                         rawMessagesCount={visibleMessages.length}
+                        retainedMessagesCount={retainedMessagesCount}
                         normalizedMessagesCount={normalizedMessages.length}
+                        visibleBlocksCount={visibleBlocks.length}
+                        conciseViewActive={conciseViewActive}
                         messagesVersion={props.messagesVersion}
                         historyVersion={props.historyVersion}
                         forceScrollToken={forceScrollToken}
