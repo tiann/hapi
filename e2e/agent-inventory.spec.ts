@@ -70,6 +70,23 @@ test('uses the plain Claude budget when the resumed sample has no expanded windo
 })
 
 
+for (const [mode, label, cache] of [
+    ['metadata-newer', '120k / 400k', '8k'],
+    ['transcript-newer', '40k / 190k', '2k']
+]) {
+    test(`the Claude ${mode} sample supplies both usage and the window`, async ({ page }) => {
+        await page.goto(`/e2e-fixtures/agent-inventory-fixture.html?provider=claude&claudeSampleOrdering=${mode}`)
+        const status = page.getByTestId('claude-sample-ordering')
+        const usage = status.getByRole('button', { name: 'Context details', exact: true })
+        await expect(usage).toContainText(label)
+        const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+        if (screenshots) await status.screenshot({ path: `${screenshots}/agent-inventory-claude-${mode}.png` })
+        await usage.click()
+        await expect(page.getByRole('dialog')).toContainText(`Cache: ${cache}`)
+    })
+}
+
+
 test('classifies legacy Claude MCP entries separately from system tools', async ({ page }) => {
     await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=claude&legacyMcp=1')
     await page.getByRole('button', { name: /Agent context details/ }).click()

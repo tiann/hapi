@@ -247,6 +247,7 @@ describe('claudeLocalLauncher message filtering', () => {
         harness.scannerOnMessage!({
             type: 'assistant',
             uuid: 'assistant-context-details',
+            timestamp: '2026-09-01T12:00:00.000Z',
             context_usage: {
                 total_tokens: 26_697,
                 raw_max_tokens: 262_144,
@@ -261,7 +262,7 @@ describe('claudeLocalLauncher message filtering', () => {
         expect(getMetadata().contextDetails).toMatchObject({
             provider: 'claude',
             contextWindow: 262_144,
-            usage: { contextTokens: 26_697 },
+            usage: { contextTokens: 26_697, sampledAt: Date.parse('2026-09-01T12:00:00.000Z') },
             claude: {
                 mcpTools: [{ name: 'mcp__hapi__list_peers', serverName: 'hapi' }]
             }

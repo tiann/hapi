@@ -2691,6 +2691,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onPendingRequestClick={locatePendingRequest}
                         backgroundTaskCount={props.session.backgroundTaskCount}
                         contextSize={reduced.latestUsage?.contextSize}
+                        contextSampledAt={reduced.latestUsage?.timestamp}
                         contextCacheRead={reduced.latestUsage?.cacheRead}
                         contextWindow={reduced.latestUsage?.contextWindow ?? piContextWindow}
                         contextDetails={props.session.metadata?.contextDetails as ContextDetails | undefined}

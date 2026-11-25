@@ -476,7 +476,8 @@ export function publishContextDetails(
                 // current context sample. Preserve only the actual saved fields.
                 usage: savedUsage ? {
                     ...(savedUsage.contextTokens !== undefined ? { contextTokens: savedUsage.contextTokens } : {}),
-                    ...(savedUsage.cacheReadTokens !== undefined ? { cacheReadTokens: savedUsage.cacheReadTokens } : {})
+                    ...(savedUsage.cacheReadTokens !== undefined ? { cacheReadTokens: savedUsage.cacheReadTokens } : {}),
+                    ...(savedUsage.sampledAt !== undefined ? { sampledAt: savedUsage.sampledAt } : {})
                 } : undefined
             }
         }

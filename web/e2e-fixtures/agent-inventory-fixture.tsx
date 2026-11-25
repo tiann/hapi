@@ -9,6 +9,7 @@ import { I18nProvider } from '../src/lib/i18n-context'
 const params = new URLSearchParams(location.search)
 const isClaude = params.get('provider') === 'claude'
 const plainClaudeResume = params.has('plainClaudeResume')
+const claudeSampleOrdering = params.get('claudeSampleOrdering')
 const details: ContextDetails = isClaude
     ? { version: 1, updatedAt: 1, provider: 'claude', claude: {
         skills: params.has('emptyRuntime') || params.has('restoredCommand') ? [] : [{ name: 'automatic-skill' }],
@@ -25,6 +26,12 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         {params.has('legacyMcp') ? <div data-testid="legacy-claude-mcp" className="m-4">
             <StatusBar active thinking={false} agentState={null} agentFlavor="claude"
                 contextDetails={{ ...details, claude: {} }} legacyTools={['Read', 'mcp__hapi__list_peers']} />
+        </div> : claudeSampleOrdering ? <div data-testid="claude-sample-ordering" className="m-4">
+            <StatusBar active thinking={false} agentState={null} agentFlavor="claude"
+                contextModel="claude-sonnet-4-6" contextSize={40_000} contextCacheRead={2_000}
+                contextSampledAt={claudeSampleOrdering === 'metadata-newer' ? 1000 : 3000}
+                contextDetails={{ ...details, model: 'claude-sonnet-4-6', contextWindow: 400_000,
+                    usage: { contextTokens: 120_000, cacheReadTokens: 8_000, sampledAt: 2000 } }} />
         </div> : (params.has('savedClaudeAlias') || plainClaudeResume) ? <div data-testid="saved-claude-alias-usage" className="m-4">
             <StatusBar active thinking={false} agentState={null} agentFlavor="claude" model="sonnet"
                 contextDetails={{ ...details, model: 'claude-sonnet-4-6',

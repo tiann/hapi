@@ -33,7 +33,7 @@ describe('MetadataSchema cursorSessionProtocol', () => {
                 provider: 'codex',
                 model: 'gpt-5-codex',
                 contextWindow: 258_400,
-                usage: { contextTokens: 12_000, cacheReadTokens: 8_000 },
+                usage: { contextTokens: 12_000, cacheReadTokens: 8_000, sampledAt: 120 },
                 codex: {
                     slashCommands: ['clear'],
                     skills: [{ name: 'find-docs', scope: 'user' }],
@@ -47,6 +47,7 @@ describe('MetadataSchema cursorSessionProtocol', () => {
         });
 
         expect(result.success).toBe(true);
+        expect(result.data?.contextDetails?.usage?.sampledAt).toBe(120);
         expect(result.data?.contextDetails?.codex?.skills?.[0]?.name).toBe('find-docs');
         expect(result.data?.contextDetails?.codex?.slashCommands).toEqual(['clear']);
         expect(result.data?.contextDetails?.claude?.systemTools).toEqual(['Read', 'Bash']);

@@ -315,6 +315,7 @@ export function HappyComposer(props: {
     inputTranslation?: StatusBarInputTranslation
     backgroundTaskCount?: number
     contextSize?: number
+    contextSampledAt?: number
     contextCacheRead?: number
     contextWindow?: number | null
     contextDetails?: ContextDetails | null
@@ -445,6 +446,7 @@ export function HappyComposer(props: {
         inputTranslation,
         backgroundTaskCount,
         contextSize,
+        contextSampledAt,
         contextCacheRead,
         contextWindow,
         contextDetails,
@@ -2371,6 +2373,7 @@ export function HappyComposer(props: {
                         inputTranslation={inputTranslation}
                         backgroundTaskCount={backgroundTaskCount}
                         contextSize={contextSize}
+                        contextSampledAt={contextSampledAt}
                         contextCacheRead={contextCacheRead}
                         contextWindow={contextWindow}
                         contextDetails={contextDetails}

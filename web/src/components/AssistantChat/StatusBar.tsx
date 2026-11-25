@@ -329,6 +329,7 @@ export function StatusBar(props: {
     agentState: AgentState | null | undefined
     backgroundTaskCount?: number
     contextSize?: number
+    contextSampledAt?: number
     contextCacheRead?: number
     contextWindow?: number | null
     contextDetails?: ContextDetails | null
@@ -365,20 +366,30 @@ export function StatusBar(props: {
         [props.active, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount, t]
     )
 
-    const persistedContextSize = props.contextDetails?.usage?.contextTokens
-    const effectiveContextSize = props.contextSize ?? persistedContextSize
-    // When the loaded transcript has no usage, the saved count and model
-    // describe the same turn, which may have used a rerouted Codex model.
-    const persistedUsageModel = props.contextSize === undefined && persistedContextSize !== undefined
-        ? props.contextDetails?.model
-        : undefined
-    const contextHeuristicModel = persistedUsageModel ?? props.contextModel ?? props.model ?? props.contextDetails?.model
+    const persistedUsage = props.contextDetails?.usage
+    const persistedContextSize = persistedUsage?.contextTokens
+    // A local Claude entry can carry aggregate usage only in metadata. Order it
+    // by the native message time, not the time an inventory update was applied.
+    const persistedSampledAt = persistedUsage?.sampledAt
+    const transcriptSampledAt = props.contextSampledAt
+    const useTimestampOrdering = props.contextDetails?.provider === 'claude'
+        && persistedContextSize !== undefined && props.contextSize !== undefined
+        && persistedSampledAt !== undefined && transcriptSampledAt !== undefined
+    const usePersistedUsage = persistedContextSize !== undefined && (props.contextSize === undefined
+        || (useTimestampOrdering && persistedSampledAt >= transcriptSampledAt))
+    const effectiveContextSize = usePersistedUsage ? persistedContextSize : props.contextSize
+    const persistedUsageModel = usePersistedUsage ? props.contextDetails?.model : undefined
+    const contextHeuristicModel = useTimestampOrdering
+        ? (usePersistedUsage ? persistedUsageModel : props.contextModel) ?? props.model
+        : persistedUsageModel ?? props.contextModel ?? props.model ?? props.contextDetails?.model
     const effectiveContextWindow = getEffectiveContextWindow({
-        explicitContextWindow: props.contextWindow,
-        details: props.contextDetails,
+        explicitContextWindow: useTimestampOrdering && usePersistedUsage ? undefined : props.contextWindow,
+        details: useTimestampOrdering && !usePersistedUsage ? undefined : props.contextDetails,
         model: contextHeuristicModel
     })
-    const effectiveContextCacheRead = props.contextCacheRead ?? props.contextDetails?.usage?.cacheReadTokens
+    const effectiveContextCacheRead = useTimestampOrdering
+        ? usePersistedUsage ? persistedUsage?.cacheReadTokens : props.contextCacheRead
+        : props.contextCacheRead ?? persistedUsage?.cacheReadTokens
     const contextWarning = useMemo(
         () => {
             if (effectiveContextSize === undefined) return null
