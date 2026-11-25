@@ -32,6 +32,7 @@ import { RUNNER_CAPABILITIES } from '@hapi/protocol'
 import type { RunnerState, Machine, MachineMetadata } from './types'
 import { RunnerStateSchema, MachineMetadataSchema } from './types'
 import { getInstalledCliMtimeMs } from '@/runner/controlClient'
+import type { StopSessionOptions } from '@/runner/stopSessionRequests'
 import { backoff } from '@/utils/time'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
@@ -104,7 +105,7 @@ type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
     stopSession: (
         sessionId: string,
-        opts?: { processStartMarker?: string }
+        opts?: StopSessionOptions
     ) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>
     requestShutdown: () => void
 }
@@ -685,7 +686,7 @@ export class ApiMachineClient {
 
             switch (result.type) {
                 case 'success':
-                    return { type: 'success', sessionId: result.sessionId }
+                    return { type: 'success', sessionId: result.sessionId, ...(result.reusedChild ? { reusedChild: true } : {}) }
                 case 'requestToApproveDirectoryCreation':
                     return { type: 'requestToApproveDirectoryCreation', directory: result.directory }
                 case 'error':
@@ -699,15 +700,16 @@ export class ApiMachineClient {
         })
 
         this.rpcHandlerManager.registerHandler(RPC_METHODS.StopSession, async (params: any) => {
-            const { sessionId, processStartMarker } = params || {}
+            const { sessionId, processStartMarker, confirmUnreachable } = params || {}
             if (!sessionId) {
                 throw new Error('Session ID is required')
             }
 
-            const status = await stopSession(
-                sessionId,
-                typeof processStartMarker === 'string' ? { processStartMarker } : undefined
-            )
+            const opts: StopSessionOptions = {
+                ...(typeof processStartMarker === 'string' ? { processStartMarker } : {}),
+                ...(confirmUnreachable === true ? { confirmUnreachable: true } : {}),
+            }
+            const status = await stopSession(sessionId, Object.keys(opts).length > 0 ? opts : undefined)
             return { status }
         })
 

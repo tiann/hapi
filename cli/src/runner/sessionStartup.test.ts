@@ -83,7 +83,7 @@ describe('recoverable Codex startup', () => {
         expect((await first).type).toBe('error');
         expect((await dedupe(input)).type).toBe('error'); expect(calls).toBe(1);
         startup.confirm('requested');
-        await expect(dedupe(input)).resolves.toEqual({ type: 'success', sessionId: 'requested' });
+        await expect(dedupe(input)).resolves.toEqual({ type: 'success', sessionId: 'requested', reusedChild: true });
         dedupe.onChildExited('requested');
         const second = dedupe(input); startup.fail('exit'); await second;
         expect(calls).toBe(2);
@@ -98,7 +98,8 @@ describe('startup deadlines', () => {
         const retry = dedupe({ directory: '/tmp', existingSessionId: 'reserved' });
         expect(spawn).toHaveBeenCalledTimes(1);
         complete({ type: 'success', sessionId: 'reserved' });
-        await expect(fresh).resolves.toEqual(await retry);
+        await expect(fresh).resolves.toEqual({ type: 'success', sessionId: 'reserved' });
+        await expect(retry).resolves.toEqual({ type: 'success', sessionId: 'reserved', reusedChild: true });
     });
     it('gives fresh and resumed Codex the same 30 second budget and other agents 15 seconds', () => {
         expect(sessionStartupTimeout('codex')).toBe(30_000);

@@ -540,10 +540,10 @@ describe('createSpawnDeduplicator', () => {
         expect(calls).toBe(1)
         resolveSpawn?.({ type: 'success', sessionId: 'fresh-hapi-session' })
         await expect(first).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
-        await expect(concurrentRetry).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
+        await expect(concurrentRetry).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session', reusedChild: true })
 
         await expect(dedupe({ directory: '/tmp', existingSessionId: 'fresh-hapi-session' })).resolves.toEqual({
-            type: 'success', sessionId: 'fresh-hapi-session'
+            type: 'success', sessionId: 'fresh-hapi-session', reusedChild: true
         })
         expect(calls).toBe(1)
     })
@@ -595,7 +595,7 @@ describe('createSpawnDeduplicator', () => {
 
         // stopSession() has only requested termination; the child can still be alive.
         dedupe.markChildStopping('fresh-hapi-session')
-        await expect(dedupe(options)).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
+        await expect(dedupe(options)).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session', reusedChild: true })
         expect(calls).toBe(1)
 
         dedupe.onChildExited('fresh-hapi-session')

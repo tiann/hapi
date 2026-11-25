@@ -34,7 +34,12 @@ export interface SpawnSessionOptions {
 }
 
 export type SpawnSessionResult =
-    | { type: 'success'; sessionId: string }
+    | {
+        type: 'success'
+        sessionId: string
+        /** No new process: a child already running for this HAPI id answered. */
+        reusedChild?: true
+    }
     | { type: 'requestToApproveDirectoryCreation'; directory: string; childStarted: false }
     | {
         type: 'error'

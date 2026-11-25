@@ -237,8 +237,8 @@ export class SyncEngine {
     // is in flight.
     private readonly archiveDrainedGenerations = new Map<string, { machineId: string; pid: number; processStartMarker: string }>()
     // Reopen asked the runner to stop this exact unreachable wrapper process;
-    // only its prepare-stop, before the deadline, may skip the drain that
-    // needs the wrapper's own socket.
+    // only its prepare-stop, before the deadline, decides between keeping a
+    // reconnected wrapper and stopping it without the drain.
     private readonly unreachableWrapperStops = new Map<string, { pid: number; deadline: number }>()
     // A wrapper spawned before this hub process started may still be booting;
     // this hub has no record of when it was requested.
@@ -3790,6 +3790,17 @@ export class SyncEngine {
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const metadata = this.sessionCache.getSession(sessionId)?.metadata
         if (metadata?.machineId !== machineId) throw new Error('Session machine does not match runner')
+        // Reopen asked the runner to stop this wrapper process because the hub
+        // could not reach it. The runner asks right before it signals: keep a
+        // wrapper that reconnected meanwhile, stop one that is still
+        // unreachable without the drain it cannot answer.
+        const recovery = this.unreachableWrapperStops.get(sessionId)
+        if (recovery?.pid === pid && Date.now() < recovery.deadline) {
+            if (this.rpcGateway.isSessionConnected(sessionId)) {
+                throw new Error('Session wrapper reconnected; recovery stop cancelled')
+            }
+            return 'not_required'
+        }
         if (metadata?.flavor !== 'opencode') return 'not_required'
         // Only request the session RPC here. Calling archiveSession would
         // recurse into the runner's StopSession handler that is awaiting us.
@@ -3800,14 +3811,6 @@ export class SyncEngine {
         try {
             result = await requestPreparation()
         } catch (error) {
-            // An unreachable wrapper cannot drain. Reopen proved this process
-            // unreachable and asked for its stop; it must still be unreachable
-            // now, right before the runner signals it.
-            const stop = this.unreachableWrapperStops.get(sessionId)
-            if (error instanceof RpcTargetMissingError && stop?.pid === pid
-                && Date.now() < stop.deadline && !this.rpcGateway.isSessionConnected(sessionId)) {
-                return 'not_required'
-            }
             // KillSession's beforeKill drain may already have completed while
             // the CLI's async cleanup closed the session socket: honor the
             // remembered drained generation for this exact target instead of
@@ -6112,7 +6115,7 @@ export class SyncEngine {
         if (metadata.startedBy !== 'runner' && metadata.startedFromRunner !== true) return
         const pid = metadata.hostPid
         if (!(typeof pid === 'number' && pid > 0)) return
-        const quietSince = Math.max(session.activeAt, this.rpcGateway.lastSpawnRequestAt(session.id) ?? 0, this.startedAt)
+        const quietSince = Math.max(session.activeAt, this.rpcGateway.lastLaunchAt(session.id) ?? 0, this.startedAt)
         if (Date.now() - quietSince < UNREACHABLE_WRAPPER_QUIET_MS) return
         if (this.rpcGateway.isSessionConnected(session.id)) return
 
@@ -6121,7 +6124,9 @@ export class SyncEngine {
         this.unreachableWrapperStops.set(session.id, { pid, deadline: Date.now() + DEFAULT_RPC_TIMEOUT_MS })
         const log = { sessionId: session.id, machineId, pid }
         try {
-            const status = await this.rpcGateway.stopRunnerSession(machineId, session.id, { timeoutMs: DEFAULT_RPC_TIMEOUT_MS })
+            const status = await this.rpcGateway.stopRunnerSession(machineId, session.id, {
+                timeoutMs: DEFAULT_RPC_TIMEOUT_MS, confirmUnreachable: true,
+            })
             console.warn(`[reopen] Stop of an unreachable runner wrapper before resume: ${status}`, log)
         } catch (error) {
             // Resume below reports the machine or spawn failure.

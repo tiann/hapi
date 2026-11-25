@@ -173,12 +173,14 @@ export class RpcGateway {
     ) {
     }
 
-    // Last spawn request per HAPI id, so a child that may still be booting is
-    // never taken for an unreachable one.
-    private readonly spawnRequestedAt = new Map<string, number>()
+    // When a spawn last may have started a process for a HAPI id, so a child
+    // that may still be booting is never taken for an unreachable one. A
+    // runner answering with an already running child does not count.
+    private readonly launchedAt = new Map<string, number>()
+    private readonly spawnsInFlight = new Map<string, number>()
 
-    lastSpawnRequestAt(sessionId: string): number | undefined {
-        return this.spawnRequestedAt.get(sessionId)
+    lastLaunchAt(sessionId: string): number | undefined {
+        return this.spawnsInFlight.has(sessionId) ? Date.now() : this.launchedAt.get(sessionId)
     }
 
     /** True while any CLI socket for this session is connected or still serves its KillSession RPC. */
@@ -277,7 +279,7 @@ export class RpcGateway {
     async stopRunnerSession(
         machineId: string,
         sessionId: string,
-        opts?: { processStartMarker?: string; timeoutMs?: number }
+        opts?: { processStartMarker?: string; timeoutMs?: number; confirmUnreachable?: boolean }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
         const timeoutMs = opts?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS
         const started = performance.now()
@@ -286,6 +288,9 @@ export class RpcGateway {
             result = await this.machineRpc(machineId, RPC_METHODS.StopSession, {
                 sessionId,
                 ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
+                // Runners that predate this field ignore it and only ask the
+                // hub before signalling an OpenCode wrapper.
+                ...(opts?.confirmUnreachable ? { confirmUnreachable: true } : {}),
             }, timeoutMs)
         } catch (error) {
             if (error instanceof RpcTargetMissingError) throw error
@@ -361,7 +366,10 @@ export class RpcGateway {
         }
     > {
         const requestedSessionId = reservedSessionId ?? existingSessionId
-        if (requestedSessionId) this.spawnRequestedAt.set(requestedSessionId, Date.now())
+        if (requestedSessionId) this.spawnsInFlight.set(requestedSessionId, (this.spawnsInFlight.get(requestedSessionId) ?? 0) + 1)
+        // An unknown outcome may have started a process.
+        let launched = true
+        let launchedSessionId = requestedSessionId
         try {
             const result = await this.machineRpc(
                 machineId,
@@ -395,7 +403,8 @@ export class RpcGateway {
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
                 if (obj.type === 'success' && typeof obj.sessionId === 'string') {
-                    this.spawnRequestedAt.set(obj.sessionId, Date.now())
+                    launched = obj.reusedChild !== true
+                    launchedSessionId = obj.sessionId
                     return { type: 'success', sessionId: obj.sessionId }
                 }
                 if (obj.type === 'error' && typeof obj.errorMessage === 'string') {
@@ -404,6 +413,7 @@ export class RpcGateway {
                         : undefined
                     const unavailableAgent = typeof obj.agent === 'string' ? obj.agent as AgentFlavor : undefined
                     const childStarted = obj.childStarted === false ? false : undefined
+                    launched = childStarted !== false
                     return {
                         type: 'error',
                         message: obj.errorMessage,
@@ -413,6 +423,7 @@ export class RpcGateway {
                     }
                 }
                 if (obj.type === 'requestToApproveDirectoryCreation' && typeof obj.directory === 'string') {
+                    launched = false
                     return {
                         type: 'error',
                         message: `Directory creation requires approval: ${obj.directory}`,
@@ -440,6 +451,13 @@ export class RpcGateway {
             // Ambiguous: the machine RPC may have started a child before failing.
             // Do not claim childStarted: false — hub keeps the stub.
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+        } finally {
+            if (requestedSessionId) {
+                const remaining = (this.spawnsInFlight.get(requestedSessionId) ?? 1) - 1
+                if (remaining > 0) this.spawnsInFlight.set(requestedSessionId, remaining)
+                else this.spawnsInFlight.delete(requestedSessionId)
+            }
+            if (launched && launchedSessionId) this.launchedAt.set(launchedSessionId, Date.now())
         }
     }
 

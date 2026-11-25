@@ -862,6 +862,37 @@ describe('ApiMachineClient SpawnHappySession handler', () => {
             client.shutdown()
         }
     })
+
+    it('reports a reused child and forwards a stop that must confirm reachability', async () => {
+        const machine = makeMachine('machine-spawn-reused')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const stopSession = vi.fn(async () => 'still_alive' as const)
+        client.setRPCHandlers({
+            spawnSession: vi.fn(async () => ({ type: 'success' as const, sessionId: 'session-1', reusedChild: true as const })),
+            stopSession,
+            requestShutdown: vi.fn()
+        })
+        const manager = (client as unknown as {
+            rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> }
+        }).rpcHandlerManager
+
+        try {
+            await expect(callSpawnHappySession(client, machine.id, { directory: workspaceRoot, agent: 'opencode' }))
+                .resolves.toEqual({ type: 'success', sessionId: 'session-1', reusedChild: true })
+
+            const raw = await manager.handleRequest({
+                method: `${machine.id}:stop-session`,
+                params: JSON.stringify({ sessionId: 'session-1', confirmUnreachable: true })
+            })
+            expect(JSON.parse(raw)).toEqual({ status: 'still_alive' })
+            expect(stopSession).toHaveBeenCalledWith('session-1', { confirmUnreachable: true })
+
+            await manager.handleRequest({ method: `${machine.id}:stop-session`, params: JSON.stringify({ sessionId: 'session-1' }) })
+            expect(stopSession).toHaveBeenLastCalledWith('session-1', undefined)
+        } finally {
+            client.shutdown()
+        }
+    })
 })
 
 describe('ApiMachineClient keepAlive lifecycle', () => {

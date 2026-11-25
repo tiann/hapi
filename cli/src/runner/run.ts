@@ -47,7 +47,7 @@ import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
 import { readRuntimes, runtimeMayBeAlive, runtimeAuthHash } from '@/codex/shared/registry';
 import { readWindowsProcessTable } from '@/utils/windowsProcessStop';
-import { coalesceStopRequests } from './stopSessionRequests';
+import { coalesceStopRequests, type StopSessionOptions } from './stopSessionRequests';
 import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
 import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
 import { agentUnavailableMessage, getAgentAvailability } from '@/agent/agentAvailability';
@@ -78,7 +78,9 @@ export function createSpawnDeduplicator(
     }
     const existing = completedOrInFlight.get(key);
     if (existing) {
-      return await existing;
+      const result = await existing;
+      // Tell the hub no process started for this request.
+      return result.type === 'success' ? { ...result, reusedChild: true } : result;
     }
 
     const task = spawnOnce(options);
@@ -1239,7 +1241,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // suppression only while their own exit event is still pending.
     const attemptStopSession = async (
       sessionId: string,
-      opts?: { processStartMarker?: string },
+      opts?: StopSessionOptions,
       terminated: Set<number> = new Set<number>()
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
@@ -1248,7 +1250,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         if (!isProcessAlive(pid)) return true;
         const flavor = pidToTrackedSession.get(pid)?.happySessionMetadataFromLocalWebhook?.flavor
           ?? persistedResumeProcesses.get(pid)?.flavor;
-        if (flavor && flavor !== 'opencode') return true;
+        if (flavor && flavor !== 'opencode' && opts?.confirmUnreachable !== true) return true;
         const marker = expectedMarker ?? getProcessStartMarker(pid);
         if (!marker) return false;
         try {
@@ -1610,11 +1612,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           pidToRequestedSessionId.delete(pid);
           pidToConfirmedSessionId.delete(pid);
           if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
-          // Exit is proven here. An adopted child has no exit event and would
-          // otherwise keep answering spawns for its id until the next heartbeat.
-          releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
           logger.debug(`[RUNNER RUN] Removed terminated session ${sessionId} from tracking`);
-          return await finishWithOrphanSweep('stopped');
+          const status = await finishWithOrphanSweep('stopped');
+          // Exit is proven. An adopted child has no exit event and would
+          // otherwise keep answering spawns for its id until the next
+          // heartbeat. Release only after the sweep: a new child for this id
+          // started during the sweep would match its argv scan.
+          releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
+          return status;
         }
       }
 
@@ -1751,7 +1756,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // must not suppress its later real unexpected exit.
     const stopSession = coalesceStopRequests(async (
       sessionId: string,
-      opts?: { processStartMarker?: string }
+      opts?: StopSessionOptions
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       const intentional = markIntentionalStop(sessionId);
       const terminated = new Set<number>();
