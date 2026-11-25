@@ -608,6 +608,11 @@
                 "contains": "\"steeringActive\":true",
                 "event": "update-state",
                 "result": "success"
+              },
+              {
+                "event": "update-metadata",
+                "contains": "\"model\":\"sonnet\"",
+                "result": "success"
               }
             ]
           }
@@ -872,101 +877,7 @@
         ],
         "connection": 1,
         "event": "update-metadata"
-      }
-    ],
-    "1/update-state": [
-      {
-        "ack": [
-          {
-            "agentState": {
-              "controlledByUser": false,
-              "startingMode": "remote",
-              "steeringActive": true
-            },
-            "result": "success",
-            "version": 4
-          }
-        ],
-        "ackRequested": true,
-        "args": [
-          {
-            "agentState": {
-              "controlledByUser": false,
-              "startingMode": "remote",
-              "steeringActive": true
-            },
-            "expectedVersion": 3,
-            "sid": "<uuid:1>"
-          }
-        ],
-        "connection": 1,
-        "event": "update-state"
-      }
-    ],
-    "2/chat": [
-      {
-        "ackRequested": false,
-        "args": [
-          {
-            "message": {
-              "content": {
-                "data": {
-                  "message": "Aborted by user",
-                  "type": "message"
-                },
-                "id": "<uuid:7>",
-                "type": "event"
-              },
-              "role": "agent"
-            },
-            "sid": "<uuid:1>"
-          }
-        ],
-        "connection": 1,
-        "event": "message"
-      }
-    ],
-    "2/others": [
-      {
-        "ackRequested": false,
-        "args": [
-          null
-        ],
-        "connection": 1,
-        "event": "rpc-ack"
-      }
-    ],
-    "2/step": [
-      {
-        "ackRequested": false,
-        "args": [
-          {
-            "params": {},
-            "rpc": "abort",
-            "until": [
-              {
-                "count": 3,
-                "event": "update-state",
-                "result": "success"
-              },
-              {
-                "contains": "\"requests\":{}",
-                "count": 2,
-                "event": "update-state",
-                "result": "success"
-              },
-              {
-                "contains": "Aborted by user",
-                "event": "message"
-              }
-            ]
-          }
-        ],
-        "connection": 1,
-        "event": "step"
-      }
-    ],
-    "2/update-metadata": [
+      },
       {
         "ack": [
           {
@@ -1097,6 +1008,98 @@
         ],
         "connection": 1,
         "event": "update-metadata"
+      }
+    ],
+    "1/update-state": [
+      {
+        "ack": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote",
+              "steeringActive": true
+            },
+            "result": "success",
+            "version": 4
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote",
+              "steeringActive": true
+            },
+            "expectedVersion": 3,
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 1,
+        "event": "update-state"
+      }
+    ],
+    "2/chat": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "message": {
+              "content": {
+                "data": {
+                  "message": "Aborted by user",
+                  "type": "message"
+                },
+                "id": "<uuid:7>",
+                "type": "event"
+              },
+              "role": "agent"
+            },
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 1,
+        "event": "message"
+      }
+    ],
+    "2/others": [
+      {
+        "ackRequested": false,
+        "args": [
+          null
+        ],
+        "connection": 1,
+        "event": "rpc-ack"
+      }
+    ],
+    "2/step": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "params": {},
+            "rpc": "abort",
+            "until": [
+              {
+                "count": 3,
+                "event": "update-state",
+                "result": "success"
+              },
+              {
+                "contains": "\"requests\":{}",
+                "count": 2,
+                "event": "update-state",
+                "result": "success"
+              },
+              {
+                "contains": "Aborted by user",
+                "event": "message"
+              }
+            ]
+          }
+        ],
+        "connection": 1,
+        "event": "step"
       }
     ],
     "2/update-state": [
