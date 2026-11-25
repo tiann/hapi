@@ -13,3 +13,6 @@ export const CURSOR_POST_TOOL_INTERRUPT_AUTO_CONTINUE_STATUS =
 
 export const CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE =
     'Cursor connection interrupted after tool activity; auto-continue also failed.';
+
+export const CURSOR_POST_TOOL_INTERRUPT_STEER_TIMEOUT_MESSAGE =
+    'Cursor connection interrupted after tool activity while waiting for a pending soft steer; skipped auto-continue.';
