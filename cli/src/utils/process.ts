@@ -447,6 +447,44 @@ export function retainedIdentityStillAlive(identity: RetainedProcessIdentity): b
 }
 
 /**
+ * Signal one retained identity with a generation recheck before every signal,
+ * including SIGKILL escalation. Never escalate on a replaced/unknown PID (#2021).
+ */
+async function killMatchingRetainedIdentity(
+  identity: RetainedProcessIdentity,
+  force = false,
+): Promise<void> {
+  const signalIfMatch = (forceKill: boolean): boolean => {
+    if (classifyRetainedIdentity(identity) !== 'match') return false;
+    try {
+      if (isWindows()) {
+        killProcessWindows(identity.pid, forceKill);
+      } else {
+        process.kill(identity.pid, forceKill ? 'SIGKILL' : 'SIGTERM');
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const waitWhileMatch = async (ms: number): Promise<void> => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline && classifyRetainedIdentity(identity) === 'match') {
+      await new Promise((resolve) => setTimeout(resolve, isWindows() ? 100 : 20));
+    }
+  };
+
+  if (!signalIfMatch(force)) return;
+  await waitWhileMatch(2000);
+  if (!force && classifyRetainedIdentity(identity) === 'match') {
+    // Recheck immediately before escalation — PID may have been reused (#2021).
+    if (!signalIfMatch(true)) return;
+    await waitWhileMatch(1000);
+  }
+}
+
+/**
  * Kill retained tree members whose generation still matches, then verify none remain.
  * Signals only confirmed matches; unknown identities keep Stop unresolved (#2021).
  */
@@ -460,7 +498,7 @@ export async function killRetainedProcessTree(
   for (const identity of identities) {
     if (classifyRetainedIdentity(identity) !== 'match') continue;
     try {
-      await killProcess(identity.pid, force);
+      await killMatchingRetainedIdentity(identity, force);
     } catch {
       // continue verifying others
     }

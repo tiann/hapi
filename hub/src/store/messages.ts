@@ -754,6 +754,15 @@ export function invalidateChildToolWorkState(db: Database, sessionId: string): v
     invalidateLiveTail(db, sessionId)
 }
 
+/**
+ * Evict the session's tool-work and live-tail cache entries after deletion so
+ * settled IDs do not accumulate for the life of the hub process (#2021).
+ */
+export function releaseChildToolWorkState(db: Database, sessionId: string): void {
+    childToolCallsByDb.get(db)?.delete(sessionId)
+    invalidateLiveTail(db, sessionId)
+}
+
 function classifyTailRow(id: string, seq: number, decoded: unknown): TailRowMeta {
     const reasoningStreamId = getLiveReasoningStreamId(decoded)
     const callId = getToolCallId(decoded)

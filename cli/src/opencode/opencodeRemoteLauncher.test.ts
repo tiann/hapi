@@ -234,6 +234,8 @@ vi.mock('./utils/opencodeBackend', () => ({
                 await harness.disconnectImpl();
             }
         }),
+        wasAgentTreeEnded: vi.fn(() => true),
+        verifyRetainedAgentExit: vi.fn(async () => true),
         getSessionModelsMetadata: vi.fn(() => harness.sessionModelsMetadata),
         hasAvailableCommand: vi.fn((_id: string, command: string) => command === 'compact' && harness.advertisesCompact),
         hasSessionAvailableCommands: vi.fn(() => !harness.commandCatalogPending),

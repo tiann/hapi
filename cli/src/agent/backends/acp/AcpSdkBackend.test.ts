@@ -3353,6 +3353,16 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             expect(alive).toHaveBeenCalled();
             expect(backend.wasAgentTreeEnded()).toBe(false);
             expect(childEmits.filter((m) => m.type === 'turn_complete')).toEqual([]);
+
+            // Later verification publishes the deferred child interruption.
+            alive.mockReturnValue(false);
+            expect(await backend.verifyRetainedAgentExit(true)).toBe(true);
+            expect(backend.wasAgentTreeEnded()).toBe(true);
+            expect(childEmits.some((m) =>
+                m.type === 'turn_complete'
+                && (m as { childSessionId?: string }).childSessionId === 'child-1'
+                && (m as { childStatus?: string }).childStatus === 'interrupted'
+            )).toBe(true);
         } finally {
             createSpy.mockRestore();
             snap.mockRestore();

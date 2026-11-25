@@ -153,6 +153,11 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
      * from a possibly-exited root (#2021 tip Major).
      */
     private retainedStopTree: RetainedProcessIdentity[] | null = null;
+    /**
+     * First pre-signal snapshot failed — never take a replacement scan from a
+     * possibly-exited root on later Stops; keep thinking unresolved (#2021).
+     */
+    private stopTreeSnapshotIncomplete = false;
     /** Resolve a close that arrived before Stop finished verifying the tree. */
     private resolveAfterStopTreeVerified: (() => void) | null = null;
     /**
@@ -358,6 +363,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             this.stopDrainArmed = false;
             this.stopTreeVerified = null;
             this.retainedStopTree = null;
+            this.stopTreeSnapshotIncomplete = false;
             this.resolveAfterStopTreeVerified = null;
             this.abandonStopVerification = null;
 
@@ -437,6 +443,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     this.abandonStopVerification = null;
                     this.stopTreeVerified = null;
                     this.retainedStopTree = null;
+                    this.stopTreeSnapshotIncomplete = false;
                 }
             };
 
@@ -584,8 +591,12 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         if (child?.pid) {
             // Capture the original tree once — later retries must not rescan
             // from a root that already exited and left reparented descendants.
-            if (!this.retainedStopTree) {
-                this.retainedStopTree = snapshotProcessTreeIdentities(child.pid);
+            // A failed first snapshot stays sticky: a later scan from an absent
+            // root would falsely report "gone" while descendants survive (#2021).
+            if (!this.retainedStopTree && !this.stopTreeSnapshotIncomplete) {
+                const snap = snapshotProcessTreeIdentities(child.pid);
+                if (snap) this.retainedStopTree = snap;
+                else this.stopTreeSnapshotIncomplete = true;
             }
             let force = this.stopKillEscalated || leavingRemote;
             const attempts = leavingRemote ? 2 : 1;
@@ -594,7 +605,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     if (this.retainedStopTree) {
                         stopped = await killRetainedProcessTree(this.retainedStopTree, force);
                     } else {
-                        // Incomplete snapshot: best-effort kill, never claim verified.
+                        // Incomplete snapshot: best-effort kill, never claim verified
+                        // and never replace with a fresh root scan.
                         await killProcessByChildProcess(child, force);
                         stopped = false;
                     }

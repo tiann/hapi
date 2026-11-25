@@ -832,6 +832,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                             agyRoundSummary(converted.usage, converted.durationMs, this.currentModelId, null, wakeupNumTurns)
                         );
                     }
+                    if (abortController.signal.aborted || this.pendingVerifiedWakeupStop) {
+                        // Stop landed during settlement — verification gate owns thinking/ready.
+                        return;
+                    }
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
                         session.sendSessionEvent({ type: 'ready' });
@@ -844,6 +848,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     // late output under the same `SYSTEM_MESSAGE` still wakes HAPI.
                     this.pausedWakeupStepIndex = inspection.latestStepIndex;
                     if (this.usesLiveWakeupRendering()) await this.backend?.flushPendingMessageBuffers();
+                    // Stop may have arrived during the flush drain — do not clear
+                    // thinking/ready while retirement is still pending (#2021).
+                    if (abortController.signal.aborted || this.pendingVerifiedWakeupStop) {
+                        return;
+                    }
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
                         session.sendSessionEvent({ type: 'ready' });

@@ -8,6 +8,7 @@ import type { StoredSession, VersionedUpdateResult } from './types'
 import { safeJsonParse } from './json'
 import { updateVersionedField } from './versionedUpdates'
 import { removeMessageContentSearchForSession } from './messageContentSearch'
+import { releaseChildToolWorkState } from './messages'
 
 function runInTransaction<T>(db: Database, operation: () => T): T {
     return db.inTransaction ? operation() : db.transaction(operation)()
@@ -1079,6 +1080,9 @@ export function deleteSession(db: Database, id: string, namespace: string): bool
             // bumping makes their next event re-resolve instead of serving a
             // grant for a row that no longer exists.
             bumpSessionDeletionEpoch()
+            // Drop in-memory OpenCode child-work / live-tail caches for this
+            // session — including deletions during dedup merge (#2021 Minor).
+            releaseChildToolWorkState(db, id)
         }
         return result.changes > 0
     })

@@ -584,6 +584,44 @@ describe('getLiveToolWork', () => {
     })
 })
 
+describe('child tool-work cache eviction (#2021)', () => {
+    it('releases tool-work cache entries when a session is deleted', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'evict-child-work')
+        const sessionId = session.id
+        store.messages.upsertToolCallMessage(sessionId, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'child-evict',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_evict',
+                },
+            },
+        }, 'child-evict')
+        expect(store.messages.getLiveToolWork(sessionId)).toBe(true)
+        expect(store.sessions.deleteSession(sessionId, 'default')).toBe(true)
+        // Same id, empty transcript: a leaked WeakMap entry would still report live.
+        const again = store.sessions.getOrCreateSession(
+            'evict-child-work-2',
+            { path: '/tmp/evict-2' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            sessionId,
+        )
+        expect(again.id).toBe(sessionId)
+        expect(store.messages.getLiveToolWork(sessionId)).toBe(false)
+        store.close()
+    })
+})
+
 describe('periodic derived-work scan cost (#2021)', () => {
     it('skips durable childToolWork seeding for non-OpenCode cold rebuilds', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-live-work-claude-skip-'))

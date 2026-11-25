@@ -217,6 +217,14 @@ export class AcpSdkBackend implements AgentBackend {
      * close so Stop retry verifies the original members (not a reused PID) (#2021).
      */
     private retainedAgentTree: RetainedProcessIdentity[] | null = null;
+    /**
+     * Child interruption deferred until process-tree exit is verified. Cleared
+     * only after publish or when a later verified close has nothing to settle (#2021).
+     */
+    private pendingChildInterrupt: {
+        childIds: string[];
+        sink: (msg: AgentMessage) => void;
+    } | null = null;
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -1360,7 +1368,10 @@ export class AcpSdkBackend implements AgentBackend {
      * close. Root PID absence alone is not enough — descendants may survive (#2021).
      */
     async verifyRetainedAgentExit(force = false): Promise<boolean> {
-        if (this.agentTreeEnded) return true;
+        if (this.agentTreeEnded) {
+            this.publishPendingChildInterrupts();
+            return true;
+        }
         if (this.transport) {
             await this.disconnect();
             return this.agentTreeEnded;
@@ -1370,14 +1381,43 @@ export class AcpSdkBackend implements AgentBackend {
         if (tree.every((identity) => !retainedIdentityStillAlive(identity))) {
             this.agentTreeEnded = true;
             this.retainedAgentTree = null;
+            this.publishPendingChildInterrupts();
             return true;
         }
         const killed = await killRetainedProcessTree(tree, force);
         if (killed) {
             this.agentTreeEnded = true;
             this.retainedAgentTree = null;
+            this.publishPendingChildInterrupts();
         }
         return killed;
+    }
+
+    /** Publish deferred OpenCode child interruptions once the tree is gone (#2021). */
+    private publishPendingChildInterrupts(): void {
+        const pending = this.pendingChildInterrupt;
+        if (!pending) return;
+        this.pendingChildInterrupt = null;
+        for (const childSessionId of pending.childIds) {
+            const scope = childToolCallScope(childSessionId);
+            this.toolCallLifetimes.cancel(scope);
+            const settledCallIds = this.toolCallLifetimes.settleCancelled(scope);
+            this.toolCallLifetimes.beginGeneration(scope);
+            try {
+                pending.sink({
+                    type: 'turn_complete',
+                    stopReason: 'cancelled',
+                    childSessionId,
+                    childStatus: 'interrupted',
+                    ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
+                });
+            } catch (error) {
+                logger.debug(
+                    '[AcpSdkBackend] deferred child interrupt publish failed:',
+                    error instanceof Error ? error.message : String(error)
+                );
+            }
+        }
     }
 
     getLastSessionUpdateAt(): number {
@@ -1518,30 +1558,18 @@ export class AcpSdkBackend implements AgentBackend {
         // Snapshot after the post-close drain so children first reported during
         // teardown (and any queued status that ran above) are included.
         const childIds = [...this.knownChildSessionIds];
-        if (sink && agentEnded) {
-            for (const childSessionId of childIds) {
-                const scope = childToolCallScope(childSessionId);
-                this.toolCallLifetimes.cancel(scope);
-                const settledCallIds = this.toolCallLifetimes.settleCancelled(scope);
-                this.toolCallLifetimes.beginGeneration(scope);
-                try {
-                    sink({
-                        type: 'turn_complete',
-                        stopReason: 'cancelled',
-                        childSessionId,
-                        childStatus: 'interrupted',
-                        ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
-                    });
-                } catch (error) {
-                    logger.debug(
-                        '[AcpSdkBackend] child interrupt-on-disconnect publish failed:',
-                        error instanceof Error ? error.message : String(error)
-                    );
-                }
-            }
-        }
         this.knownChildSessionIds.clear();
         this.childEmitSink = null;
+        if (sink && childIds.length > 0) {
+            if (agentEnded) {
+                this.pendingChildInterrupt = { childIds, sink };
+                this.publishPendingChildInterrupts();
+            } else {
+                // Keep settlement evidence until verifyRetainedAgentExit confirms
+                // the tree is gone — otherwise Archive sticks on open children (#2021).
+                this.pendingChildInterrupt = { childIds, sink };
+            }
+        }
         this.activeSessionId = null;
         this.sessionModelsMetadata.clear();
         this.initialAvailableCommands.clear();

@@ -149,15 +149,41 @@ describe('retained process identity classification (#2021)', () => {
 
         // Confirmed match then gone after kill → verified.
         let alive = true
+        const signals: Array<NodeJS.Signals | number | undefined> = []
         vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
             if (signal === 0) {
                 if (!alive) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
                 return true
             }
+            signals.push(signal)
             alive = false
             return true
         }) as typeof process.kill)
         mockPsMarker('Wed Nov 25 00:00:00 2026')
         expect(await killRetainedProcessTree([identity()], true)).toBe(true)
+        expect(signals).toEqual(['SIGKILL'])
+
+        // Generation changes after SIGTERM — must not escalate SIGKILL to the replacement.
+        alive = true
+        let marker = 'Wed Nov 25 00:00:00 2026'
+        signals.length = 0
+        mockPsMarker(marker)
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === 'ps') {
+                return { status: 0, stdout: marker, stderr: '', error: null }
+            }
+            return { status: 1, stdout: '', stderr: '', error: null }
+        })
+        vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (signal === 0) return true
+            signals.push(signal)
+            if (signal === 'SIGTERM') {
+                marker = 'Thu Nov 26 00:00:00 2026' // PID reused during grace
+            }
+            return true
+        }) as typeof process.kill)
+        expect(await killRetainedProcessTree([identity()], false)).toBe(true)
+        expect(signals).toEqual(['SIGTERM'])
+        expect(signals).not.toContain('SIGKILL')
     })
 })

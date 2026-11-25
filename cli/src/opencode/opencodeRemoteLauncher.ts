@@ -2503,10 +2503,22 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         if (this.backend) {
             try {
                 await this.backend.disconnect();
+                // Remote→local keeps the wrapper PID, so hub never sees worker-exit.
+                // Do not release the backend (or finish handoff) while tree exit /
+                // deferred child settlement is still unverified (#2021).
+                if (!this.backend.wasAgentTreeEnded()) {
+                    const verified = await this.backend.verifyRetainedAgentExit(true);
+                    if (!verified) {
+                        throw new Error('OpenCode agent process still open after disconnect');
+                    }
+                }
+                this.backend = null;
             } catch (error) {
                 failures.push(error);
-            } finally {
-                this.backend = null;
+                // Keep backend when exit is unverified so a later retry can settle children.
+                if (this.backend?.wasAgentTreeEnded()) {
+                    this.backend = null;
+                }
             }
         }
         if (this.happyServer) {

@@ -588,6 +588,65 @@ describe('cursorLegacyRemoteLauncher', () => {
         killMock.mockResolvedValue(true);
     });
 
+    it('keeps Stop unresolved across retries when the first tree snapshot fails (#2021)', async () => {
+        const snapMock = vi.mocked(snapshotProcessTreeIdentities);
+        const killRetained = vi.mocked(killRetainedProcessTree);
+        const killChild = vi.mocked(killProcessByChildProcess);
+        snapMock.mockReturnValueOnce(null);
+        killRetained.mockClear();
+        killChild.mockClear();
+        killChild.mockResolvedValue(true);
+
+        const child1 = makeChild({ hold: true, pid: 9999 });
+        spawnMock.mockReturnValueOnce(child1);
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        queue.push('first', { permissionMode: 'default' }, 'first');
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        const thinking = vi.spyOn(session, 'onThinkingChange');
+
+        const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+        const launchPromise = cursorLegacyRemoteLauncher(session);
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
+        await abort();
+        expect(snapMock).toHaveBeenCalledTimes(1);
+        expect(killChild).toHaveBeenCalled();
+        expect(killRetained).not.toHaveBeenCalled();
+        expect(thinking).not.toHaveBeenCalledWith(false);
+
+        // Second Stop must not take a replacement snapshot from the root.
+        snapMock.mockReturnValue([{ pid: 9999, startMarker: null, bootId: null, tgid: null }]);
+        await abort();
+        expect(snapMock).toHaveBeenCalledTimes(1);
+        expect(killRetained).not.toHaveBeenCalled();
+        expect(thinking).not.toHaveBeenCalledWith(false);
+
+        child1.closeChild?.(null);
+        queue.close();
+        // Unverified incomplete snapshot: turn must not settle on stdout close alone.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        thinking.mockRestore();
+        snapMock.mockImplementation((pid: number) => [{
+            pid,
+            startMarker: `marker-${pid}`,
+            bootId: 'boot',
+            tgid: pid,
+        }]);
+        // Recover so launch can finish: force a verified path is unavailable —
+        // abandon by killing the process mock and closing.
+        killRetained.mockResolvedValue(true);
+        // Reset incomplete state only happens on new child; force-kill path stays false.
+        // Close queue; launch may stay pending — race with timeout.
+        await Promise.race([
+            launchPromise,
+            new Promise<void>((resolve) => setTimeout(resolve, 200)),
+        ]);
+    });
+
     it('blocks Switch when tree kill stays unconfirmed (#2021)', async () => {
         const killMock = vi.mocked(killRetainedProcessTree);
         killMock.mockReset();
