@@ -472,12 +472,12 @@ describe('claudeRemote async message handling', () => {
 
 describe('claudeRemote in-process /clear', () => {
     it.each([
-        'success', 'failure', 'untagged-failure', 'eof', 'no-result',
+        'success', 'foreign-result', 'failure', 'untagged-failure', 'eof', 'no-result',
         'autonomous-eof', 'acknowledged', 'hook', 'late-result', 'late-init',
         'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout', 'result-eof',
         'unacknowledged-input-eof', 'acknowledged-input-eof', 'failed-clear-input-eof',
         'follow-up-result', 'legacy-follow-up-result', 'follow-up-after-compact',
-        'later-follow-up-result', 'idle-background-output', 'native-slash-follow-up', 'native-slash-follow-up-without-hook',
+        'later-follow-up-result', 'idle-background-output', 'native-slash-follow-up', 'native-slash-stale-result', 'native-slash-follow-up-without-hook',
         'native-slash-follow-up-init', 'native-slash-follow-up-init-eof', 'native-slash-follow-up-receipt-first',
         'native-slash-follow-up-untagged-hook', 'native-command-receipt-before-replay'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
@@ -485,6 +485,7 @@ describe('claudeRemote in-process /clear', () => {
         const { claudeRemote } = await import('./claudeRemote');
         const order: string[] = [];
         const forwarded: SDKMessage[] = [];
+        const dropped: SDKMessage[] = [];
         const priorId = 'previous-native-session';
         const lateRotation = outcome === 'late-result' || outcome === 'late-init' || outcome === 'late-stale-result' || outcome === 'late-hook';
         const timesOut = lateRotation || outcome === 'untagged-failure' || outcome === 'tagged-timeout' || outcome === 'silent-timeout';
@@ -497,10 +498,10 @@ describe('claudeRemote in-process /clear', () => {
         const aliasReceiptFirst = outcome === 'native-slash-follow-up-receipt-first';
         const aliasUntaggedHook = outcome === 'native-slash-follow-up-untagged-hook';
         const earlyCommandReceipt = outcome === 'native-command-receipt-before-replay';
-        const nativeSlashFollowUp = outcome === 'native-slash-follow-up' || outcome === 'native-slash-follow-up-without-hook'
+        const nativeSlashFollowUp = outcome === 'native-slash-follow-up' || outcome === 'native-slash-stale-result' || outcome === 'native-slash-follow-up-without-hook'
             || aliasInit || aliasReceiptFirst || aliasUntaggedHook;
         const hasFollowUpResult = outcome === 'follow-up-result' || legacyFollowUp || interveningCompact || hasLaterFollowUp;
-        const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook'
+        const success = outcome === 'success' || outcome === 'foreign-result' || outcome === 'eof' || outcome === 'hook'
             || outcome === 'result-eof' || exitsAfterFollowUp || hasFollowUpResult || idleBackgroundOutput || nativeSlashFollowUp
             || earlyCommandReceipt;
         const resultId = success || lateRotation ? 'fresh-native-session' : priorId;
@@ -559,8 +560,8 @@ describe('claudeRemote in-process /clear', () => {
                     yield {
                         ...result,
                         is_error: !success,
-                        ...(outcome === 'success' ? { local_command: 'clear' } : {}),
-                        session_id: resultId,
+                        ...(outcome === 'success' || outcome === 'foreign-result' ? { local_command: 'clear' } : {}),
+                        session_id: outcome === 'foreign-result' ? 'foreign-native-session' : resultId,
                         user_message_uuid: outcome === 'hook' ? undefined : clear.value?.uuid
                     };
                 }
@@ -589,7 +590,7 @@ describe('claudeRemote in-process /clear', () => {
                     if (!aliasInit && !aliasReceiptFirst) {
                         yield { type: 'user', isReplay: true, uuid: alias.value?.uuid };
                     }
-                    if (outcome === 'native-slash-follow-up' || aliasUntaggedHook) hookSessionId = 'native-alias-session';
+                    if (outcome === 'native-slash-follow-up' || outcome === 'native-slash-stale-result' || aliasUntaggedHook) hookSessionId = 'native-alias-session';
                     if (aliasInit) {
                         yield { type: 'system', subtype: 'init', session_id: 'native-alias-session' };
                         expect(order).not.toContain('session:native-alias-session');
@@ -597,7 +598,7 @@ describe('claudeRemote in-process /clear', () => {
                     }
                     nativeSlashResult = {
                         ...autonomousResult,
-                        session_id: 'native-alias-session',
+                        session_id: outcome === 'native-slash-stale-result' ? resultId : 'native-alias-session',
                         local_command: aliasUntaggedHook ? undefined : 'clear'
                     };
                     yield nativeSlashResult;
@@ -709,6 +710,7 @@ describe('claudeRemote in-process /clear', () => {
                     expect(message.type === 'user' && message.isReplay === true).toBe(false);
                     forwarded.push(message);
                 },
+                onDroppedResult: (message) => { dropped.push(message); },
                 onCompletionEvent: outcome === 'acknowledged' || lateRotation ? (event) => { order.push(event); } : undefined,
                 getClearHookSessionId: () => hookSessionId,
                 onSessionReset: () => order.push('reset')
@@ -755,6 +757,11 @@ describe('claudeRemote in-process /clear', () => {
                         ...(hasLaterFollowUp ? ['later follow-up', 'ready'] : [])]
                     : [`session:${priorId}`, 'ready', '/clear', 'accepted', completion, 'follow-up']);
             }
+            // Only the accepted /clear result of the newly bound session is fed to accounting.
+            if (outcome === 'success') {
+                expect(dropped.map((m) => (m as { session_id?: string }).session_id)).toEqual([resultId]);
+            }
+            if (outcome === 'foreign-result') expect(dropped).toEqual([]);
             expect(clearContextTokens).toEqual(nativeSlashFollowUp ? [0, 0] : success || lateRotation ? [0] : []);
             if (outcome === 'result-eof' || outcome === 'unacknowledged-input-eof' || outcome === 'failed-clear-input-eof') {
                 expect(inputs).toEqual(['follow-up']);
@@ -764,7 +771,10 @@ describe('claudeRemote in-process /clear', () => {
             const expectedResults = [firstResult, result];
             if (timesOut && outcome !== 'silent-timeout') expectedResults.push(unmatchedResult);
             if (compactResult) expectedResults.push({ ...compactResult, hapi_compact_turn: true });
-            if (nativeSlashResult) expectedResults.push(nativeSlashResult);
+            if (nativeSlashResult) {
+                expectedResults.push(outcome === 'native-slash-stale-result'
+                    ? { ...nativeSlashResult, hapi_skip_usage: true } : nativeSlashResult);
+            }
             if (nativeCommandResult) expectedResults.push(nativeCommandResult);
             if (followUpResult) expectedResults.push(...(legacyFollowUp ? [] : foreignResults), followUpResult);
             if (laterFollowUpResult) expectedResults.push(laterFollowUpResult);
@@ -935,6 +945,7 @@ describe('claudeRemote /compact result reporting', () => {
 
     it.each([
         { identity: 'uuid', next: 'follow-up' },
+        { identity: 'foreign-uuid', next: 'follow-up' },
         { identity: 'name', next: 'follow-up' },
         { identity: 'untagged', next: 'follow-up' },
         { identity: 'absent', next: '/compact' }
@@ -945,6 +956,7 @@ describe('claudeRemote /compact result reporting', () => {
         const events: string[] = [];
         const timeoutNotice = '📦 Claude did not identify the /compact result. Waiting for Claude to exit so background tasks can finish.';
         let accepted = 0;
+        const dropped: unknown[] = [];
         queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string; message: { content: string } }> }) => ({
             async *[Symbol.asyncIterator]() {
                 const input = prompt[Symbol.asyncIterator]();
@@ -961,8 +973,9 @@ describe('claudeRemote /compact result reporting', () => {
                 if (identity !== 'absent') {
                     yield {
                         ...resultMessage,
+                        session_id: identity === 'foreign-uuid' ? 'other-session' : 'session-1',
                         local_command: identity === 'name' ? 'compact' : undefined,
-                        user_message_uuid: identity === 'uuid' ? compact.value?.uuid : undefined
+                        user_message_uuid: identity === 'uuid' || identity === 'foreign-uuid' ? compact.value?.uuid : undefined
                     };
                 }
                 expect(events).toEqual(['ready', timeoutNotice]);
@@ -986,9 +999,11 @@ describe('claudeRemote /compact result reporting', () => {
                 onResultAccepted: () => { accepted += 1; },
                 isAborted: () => false,
                 onSessionFound: () => {},
-                onMessage: () => {}
+                onMessage: () => {},
+                onDroppedResult: (message) => { dropped.push(message); }
             };
             await claudeRemote(options);
+            expect(dropped).toHaveLength(identity === 'uuid' || identity === 'name' ? 1 : 0);
             expect(inputs).toEqual([next]);
             queryMock.mockReturnValueOnce(createAsyncStream(next === '/compact'
                 ? [{ type: 'system', subtype: 'status', status: 'compacting' }, { ...resultMessage, local_command: 'compact' }]
@@ -1577,6 +1592,52 @@ describe('claudeRemote compact summary promotion', () => {
             queryMock.mockReset();
             querySpy.mockRestore();
             await rm(projectDir, { recursive: true, force: true });
+        }
+    });
+
+    it('keeps a stale first-prompt alias result out of usage accounting', async () => {
+        const { claudeRemote } = await import('./claudeRemote');
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        transcriptDir = await mkdtemp(join(tmpdir(), 'claude-stale-alias-'));
+        const projectDir = getProjectPath(transcriptDir);
+        await mkdir(projectDir, { recursive: true });
+        const rotatedId = 'rotated-by-alias';
+        const inputs = ['/reset', 'ordinary prompt'];
+        let clearHookId: string | undefined;
+        const results: SDKMessage[] = [];
+        queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string }> }) => ({
+            async *[Symbol.asyncIterator]() {
+                const input = prompt[Symbol.asyncIterator]();
+                await input.next();
+                yield initMessage;
+                clearHookId = rotatedId;
+                // The alias result still carries the previous session id.
+                yield { ...resultMessage, session_id: 's-9' };
+                const ordinary = await input.next();
+                yield { ...resultMessage, session_id: rotatedId, user_message_uuid: ordinary.value.uuid };
+            }
+        }));
+        try {
+            await claudeRemote({
+                sessionId: 's-9',
+                path: transcriptDir,
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => {
+                    const message = inputs.shift();
+                    return message ? { message, mode: { permissionMode: 'default' } } : null;
+                },
+                onReady: () => {},
+                isAborted: () => false,
+                onMessage: (message) => { if (message.type === 'result') results.push(message); },
+                onSessionFound: () => {},
+                getClearHookSessionId: () => clearHookId
+            });
+            expect(results.map((m) => m.hapi_skip_usage === true)).toEqual([true, false]);
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
         }
     });
 
@@ -2463,6 +2524,49 @@ describe('claudeRemote live effort', () => {
             expect(results).toEqual([false, false]);
         } finally {
             vi.useRealTimers();
+        }
+    });
+});
+
+describe('claudeRemote spawn baseline signal', () => {
+    it.each([
+        ['fresh', null, [], true],
+        ['resumed', 'session-1', [], false],
+        ['forked', null, ['--fork-session'], false]
+    ] as const)('reports a %s spawn to onSpawn', { timeout: 15_000 }, async (_label, sessionId, claudeArgs, expectedFresh) => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const onSpawn = vi.fn();
+        queryMock.mockReturnValueOnce(createAsyncStream([
+            { type: 'result', subtype: 'success' } as unknown as SDKMessage
+        ]));
+
+        let nextCallCount = 0;
+        try {
+            await claudeRemote({
+                sessionId,
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [...claudeArgs],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => nextCallCount++ === 0
+                    ? { message: 'A', mode: { permissionMode: 'default' } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onSpawn
+            });
+
+            expect(onSpawn).toHaveBeenCalledTimes(1);
+            expect(onSpawn).toHaveBeenCalledWith(expectedFresh);
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
         }
     });
 });

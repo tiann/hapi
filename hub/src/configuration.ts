@@ -286,6 +286,11 @@ class Configuration {
 // Singleton instance (set by createConfiguration)
 let _configuration: Configuration | null = null
 
+/** @internal Reset the singleton after a test removes its data directory. */
+export function resetConfigurationForTests(dataDir?: string): void {
+    if (dataDir === undefined || _configuration?.dataDir === dataDir) _configuration = null
+}
+
 /**
  * Create and initialize configuration asynchronously.
  * Must be called once at startup before getConfiguration() can be used.

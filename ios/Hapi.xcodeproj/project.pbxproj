@@ -412,7 +412,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.36.5;
+				MARKETING_VERSION = 0.36.7;
 				PRODUCT_BUNDLE_IDENTIFIER = run.hapi.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MACCATALYST = YES;
@@ -447,7 +447,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.36.5;
+				MARKETING_VERSION = 0.36.7;
 				PRODUCT_BUNDLE_IDENTIFIER = run.hapi.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MACCATALYST = YES;
@@ -475,7 +475,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.36.5;
+				MARKETING_VERSION = 0.36.7;
 				PRODUCT_BUNDLE_IDENTIFIER = run.hapi.app.HapiNotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -504,7 +504,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.36.5;
+				MARKETING_VERSION = 0.36.7;
 				PRODUCT_BUNDLE_IDENTIFIER = run.hapi.app.HapiNotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;

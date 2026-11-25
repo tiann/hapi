@@ -3,7 +3,8 @@ import { EMPTY_READ_STATE, mergeReadState, type SessionReadState, type SessionRe
 import { randomId } from '@/lib/randomId'
 
 type SessionInput = { id: string; contentRevision?: number; readState?: SessionReadState }
-type Pending = { id: string; request: SessionReadStateRequest }
+type ReadRequest = Extract<SessionReadStateRequest, { type: 'read' }>
+type Pending = { id: string; request: SessionReadStateRequest; onUnreadConflict?: ReadRequest; manualReadFrom?: number }
 type Entry = { server: SessionReadState; pending?: Pending }
 type Store = Record<string, Entry>
 type Sender = (id: string, request: SessionReadStateRequest) => Promise<{ readState: SessionReadState }>
@@ -96,15 +97,29 @@ export async function flushSessionReadState(): Promise<void> {
     const send = sender
     let failed = false
     try {
-        for (const [id, entry] of Object.entries(readStore(key))) {
-            const pending = entry.pending
-            if (!pending || sender !== send || scope !== key) continue
+        for (const id of Object.keys(readStore(key))) {
+            if (sender !== send || scope !== key) break
+            // A user or another tab may replace this operation while an
+            // earlier session awaits the Hub. Only send the current intent.
+            const entry = readStore(key)[id]
+            const pending = entry?.pending
+            if (!pending) continue
             try {
                 const response = await send(id, pending.request)
                 const store = readStore(key)
                 const current = store[id] ?? entry
                 current.server = mergeReadState(current.server, response.readState)!
-                if (current.pending?.id === pending.id) delete current.pending
+                if (current.pending?.manualReadFrom !== undefined && pending.request.type === 'read'
+                    && response.readState.manualUnread && response.readState.version === current.server.version
+                    && response.readState.version === current.pending.request.expectedVersion + 1
+                    && response.readState.readRevision > current.pending.manualReadFrom) {
+                    // The single intervening write advanced the watermark without
+                    // changing the manual flag the newer read intended to clear.
+                    current.pending = {
+                        ...current.pending, id: randomId(), manualReadFrom: response.readState.readRevision,
+                        request: { ...current.pending.request, expectedVersion: response.readState.version }
+                    }
+                } else if (current.pending?.id === pending.id) delete current.pending
                 else if (current.pending?.request.expectedVersion === pending.request.expectedVersion
                     && response.readState.version <= pending.request.expectedVersion + 1
                     && response.readState.manualUnread === (pending.request.type === 'unread')) {
@@ -121,16 +136,26 @@ export async function flushSessionReadState(): Promise<void> {
                     const store = readStore(key)
                     const current = store[id]
                     if (current?.pending?.id === pending.id) {
-                        // 409 includes the authoritative manual choice.
+                        let restore: ReadRequest | undefined
+                        // A replacement also returns 409, but never includes readState.
                         try {
                             const body = JSON.parse(failure.body ?? '{}') as { readState?: SessionReadState }
                             current.server = mergeReadState(current.server, body.readState)!
+                            const fallback = current.pending.onUnreadConflict
+                            if (failure.status === 409 && body.readState && !current.server.manualUnread
+                                && fallback && fallback.readRevision > current.server.readRevision) restore = fallback
                         } catch { /* a removed/replaced session has no read state */ }
-                        delete current.pending
+                        if (restore) current.pending = { id: randomId(), request: restore }
+                        else delete current.pending
                         if (!save(store, key)) failed = true
                         if (scope === key) notify()
                     }
-                } else { failed = true; break }
+                } else {
+                    failed = true
+                    // One session failing on the Hub must not starve unrelated
+                    // receipts. Back off immediately on transport or gateway errors.
+                    if (failure.status !== 500) break
+                }
             }
         }
     } finally {
@@ -163,9 +188,14 @@ function enqueue(sessionId: string, request: SessionReadStateRequest): void {
     const entry = store[sessionId] ?? { server: EMPTY_READ_STATE }
     const previous = entry.pending?.request
     if (request.type === 'read' && previous?.type === 'read') {
-        request = { ...request, readRevision: Math.max(request.readRevision, previous.readRevision) }
+        // Coalesce independent monotonic observations: the furthest rendered
+        // revision and the newest manual choice either read actually observed.
+        request = { type: 'read', readRevision: Math.max(request.readRevision, previous.readRevision),
+            expectedVersion: Math.max(request.expectedVersion, previous.expectedVersion) }
     }
-    store[sessionId] = { ...entry, pending: { id: randomId(), request } }
+    const manualReadFrom = request.type === 'read' && entry.server.manualUnread && request.expectedVersion === entry.server.version
+        ? entry.server.readRevision : undefined
+    store[sessionId] = { ...entry, pending: { id: randomId(), request, manualReadFrom } }
     // Persistence failure must not claim a successful local read.
     if (save(store)) { notify(); void flushSessionReadState() }
 }
@@ -198,6 +228,35 @@ export function getSessionManualUnreadSnapshot(sessions: readonly SessionInput[]
     const store = readStore()
     return Object.fromEntries(sessions.map(session => [session.id, effective(store[session.id], session.readState).manualUnread ? 0 : null]))
 }
+/** A local unread choice can be newer than the Hub version while its write is queued. */
+export function pendingUnreadId(sessionId: string): string | undefined {
+    const pending = readStore()[sessionId]?.pending
+    return pending?.request.type === 'unread' ? pending.id : undefined
+}
+
+/** The receipt was already rendered and visible. If a later local unread is
+ * in flight, keep its precedence; recover the read only on authoritative conflict. */
+export function markRenderedSessionSeen(id: string, revision: number, version: number | undefined, observedUnread: string | undefined): void {
+    const store = readStore()
+    const pending = store[id]?.pending
+    if (pending?.request.type === 'unread' && pending.id !== observedUnread) {
+        if (revision > (pending.onUnreadConflict?.readRevision ?? -1)) {
+            pending.onUnreadConflict = { type: 'read', readRevision: revision, expectedVersion: version ?? store[id].server.version }
+            save(store)
+        }
+    } else markSessionSeen(id, revision, version)
+}
+
+export function sessionNeedsReadAction(session: SessionInput): boolean {
+    const state = effective(readStore()[session.id], session.readState)
+    return state.manualUnread || (session.contentRevision ?? 0) > state.readRevision
+}
+
+export function markListedSessionSeen(session: SessionInput): void {
+    observeSessionReadStates([session])
+    markSessionSeen(session.id, session.contentRevision ?? 0)
+}
+
 export function markSessionSeen(sessionId: string, readRevision: number, observedVersion?: number): void {
     if (!Number.isSafeInteger(readRevision) || readRevision < 0) return
     const entry = readStore()[sessionId]

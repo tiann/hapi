@@ -3,8 +3,8 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
-import { CODEX_PERMISSION_MODES } from '@hapi/protocol/modes'
-import type { CodexPermissionMode } from '@hapi/protocol/types'
+import { Flavors } from '@hapi/protocol/modes'
+import type { PermissionModeOf } from '@hapi/protocol/types'
 import { CodexCollaborationModeSchema } from '@hapi/protocol/schemas'
 import type { ReasoningEffort } from '@/codex/appServerTypes'
 import { parseReasoningEffortValue } from '@/codex/utils/reasoningEffort'
@@ -38,7 +38,7 @@ export const codexCommand: CommandDefinition = {
             const options: {
                 startedBy?: 'runner' | 'terminal'
                 codexArgs?: string[]
-                permissionMode?: CodexPermissionMode
+                permissionMode?: PermissionModeOf<typeof Flavors.codex>
                 resumeSessionId?: string
                 resumeLast?: boolean
                 resumeAll?: boolean
@@ -90,10 +90,10 @@ export const codexCommand: CommandDefinition = {
                     options.existingSessionId = sessionId
                 } else if (arg === '--permission-mode') {
                     const mode = commandArgs[++i]
-                    if (!mode || !(CODEX_PERMISSION_MODES as readonly string[]).includes(mode)) {
+                    if (!mode || !Flavors.codex.allowsPermissionMode(mode)) {
                         throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
                     }
-                    options.permissionMode = mode as CodexPermissionMode
+                    options.permissionMode = mode
                     hasExplicitPermissionMode = true
                 } else if ((arg === '--yolo' || arg === '--dangerously-bypass-approvals-and-sandbox') && !hasExplicitPermissionMode) {
                     options.permissionMode = 'yolo'
