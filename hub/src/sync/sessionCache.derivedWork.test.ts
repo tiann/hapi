@@ -109,6 +109,37 @@ describe('derived tool work flag', () => {
         }
     })
 
+    it('clearing the last background task keeps session metadata parseable (#2021 Major)', () => {
+        const originalDateNow = Date.now
+        Date.now = () => baseTime
+        try {
+            const store = new Store(':memory:')
+            const cache = new SessionCache(store, createPublisher([]))
+            const session = cache.getOrCreateSession(
+                'bg-clear-meta',
+                { path: '/tmp/project', host: 'localhost', flavor: 'agy' },
+                null,
+                'default'
+            )
+
+            cache.setBackgroundTasks(session.id, [
+                { id: 'b1', type: 'local_bash', description: 'job' },
+            ])
+            expect(cache.getSession(session.id)!.metadata?.backgroundWork?.tasks).toHaveLength(1)
+
+            cache.setBackgroundTasks(session.id, [])
+            const after = cache.getSession(session.id)!
+            expect(after.backgroundTaskCount).toBe(0)
+            expect(after.metadata).not.toBeNull()
+            expect(after.metadata?.path).toBe('/tmp/project')
+            expect(after.metadata?.host).toBe('localhost')
+            expect(after.metadata?.backgroundWork).toBeUndefined()
+            store.close()
+        } finally {
+            Date.now = originalDateNow
+        }
+    })
+
     it('expireInactive preserves background tasks across heartbeat expiry (#2021 Major)', () => {
         const originalDateNow = Date.now
         Date.now = () => baseTime

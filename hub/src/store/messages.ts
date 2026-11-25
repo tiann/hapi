@@ -464,8 +464,11 @@ function applyChildToolCallContent(state: ChildToolCallState, content: unknown, 
     const codexChild = codexAgentRunChildStatus(content)
     if (codexChild) {
         if (codexChild.status === 'running') {
-            state.runningChildren.add(codexChild.childSessionId)
-            state.settledChildren.delete(codexChild.childSessionId)
+            // Wait / late agent-run-update must not reopen a verified completion
+            // (#2021 Major) — that would re-block Archive after the child finished.
+            if (!state.settledChildren.has(codexChild.childSessionId)) {
+                state.runningChildren.add(codexChild.childSessionId)
+            }
         } else {
             state.runningChildren.delete(codexChild.childSessionId)
             state.settledChildren.add(codexChild.childSessionId)

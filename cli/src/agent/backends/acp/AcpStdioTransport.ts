@@ -70,20 +70,37 @@ export type AcpStderrError = {
     raw: string;
 };
 
+/**
+ * Prefer a PE image over PATH's .cmd/.bat shim so shell:false + Job Object
+ * containment stay viable (#2021 Major).
+ */
 function resolveWindowsLaunchCommand(command: string, cwd?: string): string {
     if (process.platform !== 'win32') return command;
+    const peFirst = resolveExecutable(command, { cwd, pathExt: '.COM;.EXE' });
+    if (peFirst) return peFirst;
     return resolveExecutable(command, { cwd }) ?? command;
 }
 
+function windowsShimNeedsShell(command: string): boolean {
+    return process.platform === 'win32' && /\.(cmd|bat)$/i.test(command);
+}
+
 /** @internal Exported for regression tests. */
-export function buildAcpStdioSpawnOptions(env?: Record<string, string>, cwd?: string): SpawnOptions {
+export function buildAcpStdioSpawnOptions(
+    env?: Record<string, string>,
+    cwd?: string,
+    command?: string,
+): SpawnOptions {
+    const needsShell = typeof command === 'string' && windowsShimNeedsShell(command);
     return {
         env,
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
-        // shell:false — Job Object settlement forbids a cmd.exe intermediary that
-        // can start the agent before Assign (#2021 Approach).
-        shell: false,
+        // shell:false for PE — Job Object settlement forbids a cmd.exe
+        // intermediary that can start the agent before Assign. .cmd/.bat shims
+        // cannot CreateProcess without a shell; prefer .exe above, else shell
+        // without claiming containment (#2021 Major).
+        shell: needsShell,
         windowsHide: process.platform === 'win32',
         // Own process group on POSIX so Stop can cover mid-teardown forks
         // without signaling HAPI's inherited group (#2021).
@@ -163,6 +180,7 @@ export class AcpStdioTransport {
                 file: command,
                 args: options.args ?? [],
                 cwd: options.cwd,
+                env: options.env,
                 stdio: ['pipe', 'pipe', 'pipe'],
             });
             if (contained?.stdin && contained.stdout && contained.stderr) {
@@ -175,7 +193,7 @@ export class AcpStdioTransport {
         const child = spawn(
             command,
             options.args ?? [],
-            buildAcpStdioSpawnOptions(options.env, options.cwd),
+            buildAcpStdioSpawnOptions(options.env, options.cwd, command),
         ) as ChildProcessWithoutNullStreams;
         return new AcpStdioTransport(child, shouldGuardAgentCli, command);
     }

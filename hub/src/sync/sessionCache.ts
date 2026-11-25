@@ -942,28 +942,33 @@ export class SessionCache {
         session.backgroundTaskCount = tasks.length
         // Persist with the owning worker generation so Hub restart + reconnect
         // without a membership-change emit still blocks Archive (#2021 Major).
-        const hostStartMarker = session.metadata?.hostStartMarker
-        const metadata = {
-            ...(session.metadata ?? { path: '', host: '' }),
-            backgroundWork: tasks.length > 0
-                ? {
-                    tasks,
-                    ...(typeof hostStartMarker === 'string' && hostStartMarker.length > 0
-                        ? { hostStartMarker }
-                        : {}),
-                }
-                : null,
-        }
-        const metaResult = this.store.sessions.updateSessionMetadata(
-            sessionId,
-            metadata,
-            session.metadataVersion,
-            session.namespace,
-            { touchUpdatedAt: false },
-        )
-        if (metaResult.result === 'success') {
-            session.metadata = metaResult.value as typeof session.metadata
-            session.metadataVersion = metaResult.version
+        // Never invent stub {path:'',host:''} — when prior metadata is missing,
+        // mergeSessionMetadata returns the write as-is and a `backgroundWork: null`
+        // (or empty identity) fails MetadataSchema and nulls the whole blob (#2021 Major).
+        if (session.metadata) {
+            const hostStartMarker = session.metadata.hostStartMarker
+            const metadata = {
+                ...session.metadata,
+                backgroundWork: tasks.length > 0
+                    ? {
+                        tasks,
+                        ...(typeof hostStartMarker === 'string' && hostStartMarker.length > 0
+                            ? { hostStartMarker }
+                            : {}),
+                    }
+                    : null,
+            }
+            const metaResult = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                metadata,
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false },
+            )
+            if (metaResult.result === 'success') {
+                session.metadata = metaResult.value as typeof session.metadata
+                session.metadataVersion = metaResult.version
+            }
         }
         this.recordAgentProgress(sessionId)
         this.publisher.emit({
@@ -1259,7 +1264,7 @@ export class SessionCache {
         // Confirmed exit — drop durable background evidence (#2021 Major).
         if (session.metadata?.backgroundWork) {
             const clearedMeta = {
-                ...(session.metadata ?? { path: '', host: '' }),
+                ...session.metadata,
                 backgroundWork: null,
             }
             const metaResult = this.store.sessions.updateSessionMetadata(

@@ -15,6 +15,7 @@ import { WindowsAgentJob, canContainWithoutShell } from './windowsJobObject';
 
 const CREATE_SUSPENDED = 0x0000_0004;
 const CREATE_NO_WINDOW = 0x0800_0000;
+const CREATE_UNICODE_ENVIRONMENT = 0x0000_0400;
 const STARTF_USESTDHANDLES = 0x0000_0100;
 const HANDLE_FLAG_INHERIT = 0x0000_0001;
 const JobObjectExtendedLimitInformation = 9;
@@ -30,6 +31,8 @@ export type ContainedSpawnOptions = {
     file: string;
     args: string[];
     cwd?: string;
+    /** When set, passed as a Unicode environment block (CREATE_UNICODE_ENVIRONMENT). */
+    env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
     stdio: ['ignore' | 'pipe', 'ignore' | 'pipe', 'ignore' | 'pipe'];
 };
 
@@ -62,7 +65,7 @@ type ContainedKernel = {
         ta: null,
         inherit: number,
         flags: number,
-        env: null,
+        env: FfiPtr | null,
         cwd: FfiPtr | null,
         startup: FfiPtr,
         pi: FfiPtr,
@@ -118,6 +121,20 @@ function quoteWinArg(argument: string): string {
 
 function wstr(value: string): Buffer {
     return Buffer.from(`${value}\0`, 'utf16le');
+}
+
+/** UTF-16LE `KEY=value\0`…`\0` block for CreateProcessW + CREATE_UNICODE_ENVIRONMENT. */
+export function buildWindowsUnicodeEnvBlock(
+    env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): Buffer {
+    const parts: string[] = [];
+    for (const [key, value] of Object.entries(env)) {
+        if (value === undefined) continue;
+        // CreateProcess forbids `=` in the name; skip corrupt entries.
+        if (!key || key.includes('=')) continue;
+        parts.push(`${key}=${value}`);
+    }
+    return Buffer.from(`${parts.join('\0')}\0\0`, 'utf16le');
 }
 
 async function loadKernel(): Promise<ContainedKernel | null> {
@@ -235,12 +252,13 @@ function streamFromHandle(
     handle: bigint,
     kind: 'read' | 'write',
 ): ReadStream | WriteStream | null {
-    // Test factory kernels skip real CRT handles — PassThrough stands in.
+    const fd = kernel.openOsFhandle(handle, kind === 'read' ? O_RDONLY_BINARY : O_WRONLY_BINARY);
+    if (fd < 0) return null;
+    // Test factory kernels skip real CRT handles — PassThrough stands in after
+    // the openOsFhandle probe so tests can still force adapt failure (#2021).
     if (kernelFactory) {
         return new PassThrough() as unknown as ReadStream & WriteStream;
     }
-    const fd = kernel.openOsFhandle(handle, kind === 'read' ? O_RDONLY_BINARY : O_WRONLY_BINARY);
-    if (fd < 0) return null;
     try {
         return kind === 'read'
             ? createReadStream('', { fd, autoClose: true })
@@ -337,6 +355,11 @@ export async function spawnWindowsContainedProcess(
         const app = wstr(options.file);
         const cmd = wstr([options.file, ...options.args].map(quoteWinArg).join(' '));
         const cwdBuf = options.cwd ? wstr(options.cwd) : null;
+        // Inherit parent env when unset; otherwise pass a Unicode block so ACP
+        // / Cursor configured vars survive CREATE_SUSPENDED (#2021 Major).
+        const envBlock = options.env ? buildWindowsUnicodeEnvBlock(options.env) : null;
+        let createFlags = CREATE_SUSPENDED | CREATE_NO_WINDOW;
+        if (envBlock) createFlags |= CREATE_UNICODE_ENVIRONMENT;
 
         if (!kernel.CreateProcessW(
             kernel.ptr(app),
@@ -344,8 +367,8 @@ export async function spawnWindowsContainedProcess(
             null,
             null,
             1,
-            CREATE_SUSPENDED | CREATE_NO_WINDOW,
-            null,
+            createFlags,
+            envBlock ? kernel.ptr(envBlock) : null,
             cwdBuf ? kernel.ptr(cwdBuf) : null,
             kernel.ptr(startup),
             kernel.ptr(processInfo),
@@ -369,6 +392,27 @@ export async function spawnWindowsContainedProcess(
             kernel.TerminateProcess(hProcess, 1);
             throw new Error('IsProcessInJob returned false');
         }
+
+        // Wire stdio while still suspended — a failed pipe must not leave a
+        // resumed agent running (#2021 Major).
+        const stdin = pipeEnds[0]
+            ? streamFromHandle(kernel, pipeEnds[0].parent, 'write') as WriteStream
+            : null;
+        const stdout = pipeEnds[1]
+            ? streamFromHandle(kernel, pipeEnds[1].parent, 'read') as ReadStream
+            : null;
+        const stderr = pipeEnds[2]
+            ? streamFromHandle(kernel, pipeEnds[2].parent, 'read') as ReadStream
+            : null;
+        if (
+            (pipeEnds[0] && !stdin)
+            || (pipeEnds[1] && !stdout)
+            || (pipeEnds[2] && !stderr)
+        ) {
+            kernel.TerminateProcess(hProcess, 1);
+            throw new Error('failed to adapt stdio handles');
+        }
+
         if (kernel.ResumeThread(hThread) === 0xffff_ffff) {
             kernel.TerminateProcess(hProcess, 1);
             throw new Error(`ResumeThread failed (${kernel.GetLastError()})`);
@@ -376,7 +420,8 @@ export async function spawnWindowsContainedProcess(
         kernel.CloseHandle(hThread);
         hThread = 0;
 
-        // Adapt kernel shape to WindowsAgentJob without closing the shared lib early.
+        // Keep bun:ffi symbols alive until the launcher releases the job —
+        // Cursor/ACP verify emptiness after the root exits (#2021 Major).
         const jobKernel = {
             CreateJobObjectW: kernel.CreateJobObjectW,
             SetInformationJobObject: kernel.SetInformationJobObject,
@@ -389,7 +434,7 @@ export async function spawnWindowsContainedProcess(
             GetLastError: kernel.GetLastError,
             ptr: kernel.ptr,
             closeLibrary: () => {
-                // Deferred: keep kernel alive until child exit watcher finishes.
+                try { kernel.closeLibrary(); } catch { /* ignore */ }
             },
         };
         const job = WindowsAgentJob.fromAssigned(jobKernel, jobHandle, true);
@@ -397,15 +442,9 @@ export async function spawnWindowsContainedProcess(
 
         const child = new EventEmitter() as ContainedWindowsChild;
         child.pid = pid;
-        child.stdin = pipeEnds[0]
-            ? streamFromHandle(kernel, pipeEnds[0].parent, 'write') as WriteStream
-            : null;
-        child.stdout = pipeEnds[1]
-            ? streamFromHandle(kernel, pipeEnds[1].parent, 'read') as ReadStream
-            : null;
-        child.stderr = pipeEnds[2]
-            ? streamFromHandle(kernel, pipeEnds[2].parent, 'read') as ReadStream
-            : null;
+        child.stdin = stdin;
+        child.stdout = stdout;
+        child.stderr = stderr;
         child.killed = false;
         child.exitCode = null;
         child.signalCode = null;
@@ -428,8 +467,8 @@ export async function spawnWindowsContainedProcess(
                         if (code !== STILL_ACTIVE) {
                             child.exitCode = code;
                             kernel.CloseHandle(processHandle);
-                            job.release();
-                            kernel.closeLibrary();
+                            // Do NOT job.release() / closeLibrary here — Stop
+                            // still needs QueryInformationJobObject (#2021 Major).
                             child.emit('exit', code, null);
                             child.emit('close', code, null);
                             return;

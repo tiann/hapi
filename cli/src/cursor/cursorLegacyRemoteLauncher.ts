@@ -380,17 +380,25 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         // CREATE_SUSPENDED → Assign → Resume on Windows PE launches so the
         // agent cannot run before Job Object membership (#2021 Approach).
         const launchCmd = getAgentLaunchCommand('cursor');
+        // Prefer PE over PATH .cmd shim so shell:false + Job Object stay viable
+        // (#2021 Major — same as ACP).
         const resolved = isWindows()
-            ? (resolveExecutable(launchCmd, { cwd }) ?? launchCmd)
+            ? (
+                resolveExecutable(launchCmd, { cwd, pathExt: '.COM;.EXE' })
+                ?? resolveExecutable(launchCmd, { cwd })
+                ?? launchCmd
+            )
             : launchCmd;
         this.windowsAgentJob?.release();
         this.windowsAgentJob = null;
         let child: ChildProcess;
+        const windowsShim = isWindows() && /\.(cmd|bat)$/i.test(resolved);
         if (isWindows() && canContainWithoutShell(resolved)) {
             const contained = await spawnWindowsContainedProcess({
                 file: resolved,
                 args,
                 cwd,
+                env: process.env,
                 stdio: ['ignore', 'pipe', 'pipe'],
             });
             if (contained) {
@@ -410,7 +418,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 cwd,
                 env: process.env,
                 stdio: ['ignore', 'pipe', 'pipe'],
-                shell: false,
+                shell: windowsShim,
                 windowsHide: process.platform === 'win32',
                 // Own process group on POSIX so Stop can signal -pgid without
                 // killing the HAPI wrapper (#2021 Blocker).
@@ -769,8 +777,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         }
         merged.push(root);
         this.retainedStopTree = merged;
-        // Job Object membership already covers post-scan forks (#2021 Approach).
-        if (this.windowsAgentJob) {
+        // Only create-time Job Object covers post-scan forks (#2021 Major).
+        if (this.windowsAgentJob?.establishedAtCreate) {
             this.stopTreeSnapshotIncomplete = false;
         }
     }
@@ -822,7 +830,17 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     }
                     merged.push(liveRoot);
                     this.retainedStopTree = merged;
-                    this.stopTreeSnapshotIncomplete = false;
+                    // A successful PID snapshot alone does not cover mid-session
+                    // forks on Windows — only CREATE_SUSPENDED Job Object
+                    // membership does. Clearing incomplete without that reopens
+                    // uncontained Stop (#2021 Major).
+                    if (isWindows()) {
+                        this.stopTreeSnapshotIncomplete = !(
+                            this.windowsAgentJob?.establishedAtCreate
+                        );
+                    } else {
+                        this.stopTreeSnapshotIncomplete = false;
+                    }
                 } else if (!this.retainedStopTree && !this.windowsAgentJob) {
                     this.stopTreeSnapshotIncomplete = true;
                 } else if (isWindows() && !this.windowsAgentJob) {

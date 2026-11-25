@@ -1021,4 +1021,50 @@ describe('truncateOpenCodeRewind child settlement (#2021)', () => {
         expect(store.messages.getLiveToolWork(session.id)).toBe(true)
         store.close()
     })
+
+    it('does not reopen Codex children after a completed agent-run-update (#2021 Major)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-codex-settled-sticky')
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'agent-run-update',
+                    agentId: 'codex-child-1',
+                    status: 'running',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'agent-run-update',
+                    agentId: 'codex-child-1',
+                    status: 'completed',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+
+        // Late wait/result traffic must not resurrect the settled child.
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'agent-run-update',
+                    agentId: 'codex-child-1',
+                    status: 'running',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
 })

@@ -270,13 +270,21 @@ describe('AcpSdkBackend', () => {
     it('hides the ACP stdio window on Windows without shell:true (#2021 Job Object)', () => {
         setPlatform('win32');
 
-        expect(buildAcpStdioSpawnOptions({ TEST_ENV: '1' })).toMatchObject({
+        expect(buildAcpStdioSpawnOptions({ TEST_ENV: '1' }, undefined, 'C:\\Tools\\agent.exe')).toMatchObject({
             env: { TEST_ENV: '1' },
             stdio: ['pipe', 'pipe', 'pipe'],
             // shell:false so Assign targets the agent PID, not cmd.exe (#2021).
             shell: false,
             windowsHide: true,
             detached: false,
+        });
+    });
+
+    it('allows shell:true only for unresolved .cmd/.bat shims (#2021 Major)', () => {
+        setPlatform('win32');
+        expect(buildAcpStdioSpawnOptions(undefined, undefined, 'C:\\Tools\\agent.cmd')).toMatchObject({
+            shell: true,
+            windowsHide: true,
         });
     });
 
