@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import type { Session } from '@/types/api'
 import { createQueryClient } from '@/lib/query-client'
+import { readSessionWithLiveUpdates } from '@/lib/sessionDetailRead'
 import { queryKeys } from '@/lib/query-keys'
 import {
     applySessionDetailPatch,
@@ -507,6 +508,19 @@ describe('useSSE user-activity ordering', () => {
         expect(queryClient.getQueryData(detail)).toMatchObject({
             session: { agentStateVersion: 3, agentState: { requests: {} } }
         })
+        unmount()
+    })
+
+    it('observes an expiry even without a detail row to patch during a cold fetch', async () => {
+        const { queryClient, unmount } = renderUseSSE()
+        let resolve!: (value: { session: Session }) => void
+        const stopped = { active: false, activeAt: 10, thinking: false, activeTurnStartedAt: null } as Session
+        const fetch = vi.fn().mockImplementationOnce(() => new Promise(done => { resolve = done })).mockResolvedValue({ session: stopped })
+        const read = readSessionWithLiveUpdates(queryClient, 'cold', fetch)
+        act(() => FakeEventSource.instances[0]?.simulateMessage({ type: 'session-updated', sessionId: 'cold',
+            data: { active: false, activeAt: 10, thinking: false, activeTurnStartedAt: null } }))
+        resolve({ session: { active: true, activeAt: 10, thinking: true, activeTurnStartedAt: 5 } as Session })
+        expect((await read).session).toMatchObject({ active: false, activeAt: 10, thinking: false, activeTurnStartedAt: null })
         unmount()
     })
 

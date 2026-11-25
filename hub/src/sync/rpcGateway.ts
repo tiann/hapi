@@ -18,8 +18,10 @@ import {
     CursorChatStoreStatusSchema,
     ListCodexSessionsRpcResponseSchema,
     ListOpencodeSessionsRpcResponseSchema,
-    ListPiSessionsRpcResponseSchema
+    ListPiSessionsRpcResponseSchema,
+    PrepareCursorImportRpcResponseSchema
 } from '@hapi/protocol/apiTypes'
+import type { PrepareCursorImportRpcResponse } from '@hapi/protocol/apiTypes'
 import { ListLocalSessionsRpcResponseSchema } from '@hapi/protocol/localTranscript'
 import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
 import type {
@@ -705,6 +707,21 @@ export class RpcGateway {
             MODEL_LIST_RPC_TIMEOUT_MS
         )
         return ListLocalSessionsRpcResponseSchema.parse(result)
+    }
+
+    async prepareCursorImportForMachine(
+        machineId: string,
+        uuid: string,
+        workspacePath?: string | null
+    ): Promise<PrepareCursorImportRpcResponse> {
+        // ACP verify can take tens of seconds; reuse the long list timeout.
+        const result = await this.machineRpc(
+            machineId,
+            RPC_METHODS.PrepareCursorImport,
+            { uuid, workspacePath: workspacePath ?? null },
+            MODEL_LIST_RPC_TIMEOUT_MS
+        )
+        return PrepareCursorImportRpcResponseSchema.parse(result)
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {

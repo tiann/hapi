@@ -83,6 +83,7 @@ function setup(fromCache = false) {
             hasMoreMessages={false}
             isSyncingTail={false}
             isCatchingUpFromCache={false}
+            cachedTailFirstFrame={false}
             isLoadingMoreMessages={false}
             isSending={false}
             viewMode="tail"

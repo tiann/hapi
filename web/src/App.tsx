@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Outlet, useLocation, useMatchRoute, useRouter } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { getTelegramWebApp, isTelegramApp } from '@/hooks/useTelegram'
@@ -6,6 +6,8 @@ import { initializeChatSurfaceColors } from '@/hooks/useChatSurfaceColors'
 import { initializeTheme } from '@/hooks/useTheme'
 import { initializeThemeColors } from '@/hooks/useThemeColors'
 import { useAuth } from '@/hooks/useAuth'
+import { useOnlineStatus } from '@/hooks/useOnlineStatus'
+import { authConnectionMessage } from '@/lib/authConnection'
 import { useAuthSource } from '@/hooks/useAuthSource'
 import { useServerUrl } from '@/hooks/useServerUrl'
 import { useSSE } from '@/hooks/useSSE'
@@ -73,8 +75,10 @@ export function App() {
 function AppInner() {
     const { t } = useTranslation()
     const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
-    const { authSource, isLoading: isAuthSourceLoading, setAccessToken, setPasskeySession } = useAuthSource(baseUrl)
-    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind, handleSseClosed } = useAuth(authSource, baseUrl)
+    const { authSource, isLoading: isAuthSourceLoading, setAccessToken, setPasskeySession, clearAuth } = useAuthSource(baseUrl)
+    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, connectionError, retryConnection, cancelRecovery, bind, handleSseClosed } = useAuth(authSource, baseUrl)
+    const isOnline = useOnlineStatus()
+    const connectionMessage = connectionError ? authConnectionMessage(connectionError, isOnline) : null
     const [titleSuggestionAvailable, setTitleSuggestionAvailable] = useState(false)
     const goBack = useAppGoBack()
     const pathname = useLocation({ select: (location) => location.pathname })
@@ -229,21 +233,34 @@ function AppInner() {
         queryClient.clear()
     }, [baseUrl, queryClient])
 
-    // Clean up URL params after successful auth (for direct access links)
-    useEffect(() => {
-        if (!token || !api) return
-        const { pathname, search, hash, state } = router.history.location
-        const searchParams = new URLSearchParams(search)
-        if (!searchParams.has('server') && !searchParams.has('hub') && !searchParams.has('token')) {
-            return
+    const clearSignInUrl = useCallback((dropLaunchData = false) => {
+        const cleanParams = (value: string, prefix: '?' | '#') => {
+            const params = new URLSearchParams(value.slice(1))
+            let changed = false
+            for (const key of [...params.keys()]) {
+                if (['token', 'server', 'hub'].includes(key) || dropLaunchData && (key === 'initData' || key === 'startapp' || key.startsWith('tgWebApp'))) {
+                    params.delete(key); changed = true
+                }
+            }
+            const cleaned = params.toString()
+            return changed ? cleaned ? prefix + cleaned : '' : value
         }
-        searchParams.delete('server')
-        searchParams.delete('hub')
-        searchParams.delete('token')
-        const nextSearch = searchParams.toString()
-        const nextHref = `${pathname}${nextSearch ? `?${nextSearch}` : ''}${hash}`
-        router.history.replace(nextHref, state)
-    }, [token, api, router])
+        const { pathname, search, hash, state } = router.history.location
+        const browserUrl = new URL(window.location.href)
+        const nextHref = pathname + cleanParams(search, '?') + (dropLaunchData ? cleanParams(hash, '#') : hash)
+        const browserHref = browserUrl.pathname + cleanParams(browserUrl.search, '?') + (dropLaunchData ? cleanParams(browserUrl.hash, '#') : browserUrl.hash)
+        if (nextHref !== pathname + search + hash) router.history.replace(nextHref, state)
+        // Telegram bootstrap may use memory history; auth reads the real URL.
+        if (browserHref !== browserUrl.pathname + browserUrl.search + browserUrl.hash) window.history.replaceState(window.history.state, '', browserHref)
+    }, [router])
+    // Clean up direct access links after success or an explicit abandoned recovery.
+    useEffect(() => { if (token && api) clearSignInUrl() }, [token, api, clearSignInUrl])
+    const abandonRecovery = useCallback(() => {
+        if (authSource?.type === 'telegram' || isTelegramApp()) return
+        cancelRecovery()
+        clearAuth()
+        clearSignInUrl(true)
+    }, [authSource, cancelRecovery, clearSignInUrl, clearAuth])
 
     useEffect(() => {
         if (!api || !token) {
@@ -423,10 +440,6 @@ function AppInner() {
         [selectedSessionId]
     )
     const sseEnabled = Boolean(api && token)
-    const showReconnectingBanner = sseDisconnected && !isSyncing
-    // Transient states wait before showing; quick reconnects never flash.
-    const revealReconnecting = useDelayedFlag(showReconnectingBanner, CONNECTION_STATUS_DELAY_MS)
-    const revealSyncing = useDelayedFlag(isSyncing, CONNECTION_STATUS_DELAY_MS)
 
     const { subscriptionId: globalSubscriptionId } = useSSE({
         enabled: sseEnabled,
@@ -434,6 +447,7 @@ function AppInner() {
         baseUrl,
         subscription: globalEventSubscription,
         scope: 'global',
+        hubClock: api?.hubClock,
         onConnect: handleSseConnect,
         onDisconnect: handleSseDisconnect,
         onEvent: () => {},
@@ -449,6 +463,15 @@ function AppInner() {
         onConnect: handleSessionSseConnect,
         onEvent: handleSseEvent
     })
+
+    const streamConnected = globalSubscriptionId !== null
+    const showReconnectingBanner = !streamConnected && !isSyncing && (Boolean(connectionError) || sseDisconnected || !isOnline)
+    const showAuthRefreshBanner = streamConnected && !isSyncing && isOnline && Boolean(connectionError)
+    // Transient states wait before showing; quick reconnects never flash.
+    const revealReconnecting = useDelayedFlag(showReconnectingBanner, CONNECTION_STATUS_DELAY_MS)
+    const revealAuthRefresh = useDelayedFlag(showAuthRefreshBanner, CONNECTION_STATUS_DELAY_MS)
+    const [connectionBannerHeight, setConnectionBannerHeight] = useState(0)
+    const revealSyncing = useDelayedFlag(isSyncing, CONNECTION_STATUS_DELAY_MS)
 
     useVisibilityReporter({
         api,
@@ -501,6 +524,22 @@ function AppInner() {
         )
     }
 
+    if (connectionError && !token) {
+        return withPwaBanner(
+            <LoginPrompt
+                mode="reconnect"
+                onReconnect={retryConnection}
+                onChooseHub={authSource.type === 'telegram' || isTelegramApp() ? undefined : abandonRecovery}
+                error={connectionMessage}
+                baseUrl={baseUrl}
+                serverUrl={serverUrl}
+                setServerUrl={setServerUrl}
+                clearServerUrl={clearServerUrl}
+                requireServerUrl={REQUIRE_SERVER_URL}
+            />,
+        )
+    }
+
     // Authenticating (also covers the gap before useAuth effect starts)
     if (isAuthLoading || (authSource && !token && !authError)) {
         return withPwaBanner(
@@ -545,25 +584,38 @@ function AppInner() {
     return (
         <AppContextProvider value={{ api, token, baseUrl, titleSuggestionAvailable }}>
             <VoiceProvider>
-                <PwaUpdateBannerWithStatusOffset
-                    isSyncing={revealSyncing}
-                    isReconnecting={revealReconnecting}
-                />
                 <SyncingBanner isSyncing={revealSyncing} />
                 <ReconnectingBanner
-                    isReconnecting={revealReconnecting}
-                    reason={sseDisconnectReason}
+                    isReconnecting={revealReconnecting && !streamConnected}
+                    reason={!isOnline ? authConnectionMessage({}, false) : connectionMessage ?? sseDisconnectReason}
+                    onHeightChange={setConnectionBannerHeight}
+                />
+                <ReconnectingBanner
+                    isReconnecting={revealAuthRefresh && streamConnected}
+                    message="Sign-in refresh failed. Chat updates may be delayed; retrying automatically."
+                    onHeightChange={setConnectionBannerHeight}
+                    reason={connectionError?.diagnostic ?? (connectionError?.status ? `HTTP ${connectionError.status}` : null)}
                 />
                 <VoiceErrorBanner />
                 <OfflineBanner
                     isHubConnected={globalSubscriptionId !== null}
                     isReconnecting={showReconnectingBanner}
                 />
-                <RunnerVersionSkewBanner />
-                <div className="h-full min-h-0 flex flex-col">
-                    <CodexQuestionSubmissionProvider key={baseUrl}>
-                        <Outlet />
-                    </CodexQuestionSubmissionProvider>
+                <div className="h-full min-h-0 flex flex-col" style={{
+                    paddingTop: connectionBannerHeight,
+                    '--route-safe-area-top': connectionBannerHeight ? '0px' : undefined
+                } as CSSProperties}>
+                    <PwaUpdateBannerWithStatusOffset
+                        isSyncing={revealSyncing}
+                        isReconnecting={revealReconnecting || revealAuthRefresh}
+                        inStatusStack={connectionBannerHeight > 0}
+                    />
+                    <RunnerVersionSkewBanner inStatusStack={connectionBannerHeight > 0} />
+                    <div className="flex min-h-0 flex-1 flex-col">
+                        <CodexQuestionSubmissionProvider key={baseUrl}>
+                            <Outlet />
+                        </CodexQuestionSubmissionProvider>
+                    </div>
                 </div>
                 <ToastContainer />
                 <InstallPrompt />

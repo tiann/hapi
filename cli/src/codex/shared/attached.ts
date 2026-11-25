@@ -6,6 +6,7 @@ import { ApiClient } from '@/api/api';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory';
 import { configuration } from '@/configuration';
+import { readSettings } from '@/persistence';
 import { getProcessStartMarker } from '@/utils/process';
 import { notifyRunnerSessionStarted } from '@/runner/controlClient';
 import { CodexAppServerClient } from '../codexAppServerClient';
@@ -18,11 +19,12 @@ import { AttachedHistoryChangedError, validateAttachedHistory } from './attached
 
 export const AttachedOptionsSchema = z.object({
     endpoint: z.string().min(1), threadId: z.string().min(1), newView: z.boolean().optional(),
-    startedBy: z.enum(['runner', 'terminal']).optional()
-}).strict();
+    startedBy: z.enum(['runner', 'terminal']).optional(), desktopHome: z.string().optional()
+}).strict().refine(options => !options.newView || options.desktopHome === undefined, 'Automatic sync cannot replace an existing view');
 export type AttachedOptions = z.infer<typeof AttachedOptionsSchema>;
 export type AttachedReady = { sessionId: string; runtime: CodexRuntimeRecord };
-type StopReason = 'detached' | 'unavailable' | 'history-changed' | 'archived';
+export type AttachedStopReason = 'detached' | 'unavailable' | 'history-changed' | 'archived';
+export class AttachedIneligibleThreadError extends Error {}
 
 /** Explicitly trusted, same-user local UDS only. Official daemon symlinks are supported. */
 export async function validateAttachedEndpoint(endpoint: string): Promise<string> {
@@ -47,13 +49,20 @@ export async function validateAttachedEndpoint(endpoint: string): Promise<string
     return `unix://${path}`;
 }
 
-export async function requireLoadedThread(client: CodexAppServerClient, threadId: string): Promise<void> {
+export async function* loadedThreadIds(client: CodexAppServerClient): AsyncGenerator<string> {
     let cursor: string | undefined;
+    const seen = new Set<string>();
     do {
         const page = z.object({ data: z.array(z.string()), nextCursor: z.string().nullish() }).parse(await client.request('thread/loaded/list', { cursor }));
-        if (page.data.includes(threadId)) return;
+        yield* page.data;
         cursor = page.nextCursor ?? undefined;
+        if (cursor && seen.has(cursor)) throw new Error('Codex repeated a loaded-thread cursor');
+        if (cursor) seen.add(cursor);
     } while (cursor);
+}
+
+export async function requireLoadedThread(client: CodexAppServerClient, threadId: string): Promise<void> {
+    for await (const id of loadedThreadIds(client)) if (id === threadId) return;
     throw new Error('Thread is not loaded in the external engine. Open it in the owning desktop first; HAPI will not cold-resume it.');
 }
 
@@ -61,7 +70,7 @@ export function assertAttachableRoot(thread: Record<string, unknown>, threadId: 
     const source = thread.source;
     if (thread.id !== threadId || thread.parentThreadId || thread.ephemeral === true
         || typeof source === 'object' && source !== null || typeof source === 'string' && /subagent/i.test(source)) {
-        throw new Error('Only persistent user-root threads can be explicitly attached');
+        throw new AttachedIneligibleThreadError('Only persistent user-root threads can be attached');
     }
     const cwd = string(thread.cwd);
     if (!cwd || !isAbsolute(cwd)) throw new Error('Native thread has no absolute working directory');
@@ -69,7 +78,7 @@ export function assertAttachableRoot(thread: Record<string, unknown>, threadId: 
 }
 
 /** One independent bridge worker. It never starts, configures, archives or kills the external engine. */
-export async function runAttachedRuntime(raw: AttachedOptions, onReady?: (ready: AttachedReady) => void, signal?: AbortSignal): Promise<void> {
+export async function runAttachedRuntime(raw: AttachedOptions, onReady?: (ready: AttachedReady) => void, signal?: AbortSignal): Promise<AttachedStopReason> {
     const options = AttachedOptionsSchema.parse(raw);
     signal?.throwIfAborted();
     const endpoint = await validateAttachedEndpoint(options.endpoint);
@@ -79,25 +88,30 @@ export async function runAttachedRuntime(raw: AttachedOptions, onReady?: (ready:
     let session: ApiSessionClient | undefined;
     let control: Awaited<ReturnType<typeof startAttachedControl>> | undefined;
     let runtime: CodexRuntimeRecord | undefined;
-    const lifecycle: { reason: StopReason } = { reason: 'detached' };
+    const lifecycle: { reason: AttachedStopReason } = { reason: 'detached' };
     let stopping = false;
     let finish!: () => void;
     const stopped = new Promise<void>(resolve => { finish = resolve; });
-    const stop = (next: StopReason = 'detached') => {
+    const stop = (next: AttachedStopReason = 'detached') => {
         if (next === 'history-changed' || !stopping) lifecycle.reason = next;
         stopping = true; root?.stopAccepting(); finish();
     };
     const onSignal = () => stop();
     const assertRunning = () => { signal?.throwIfAborted(); if (stopping) throw new Error('Attached worker is stopping'); };
     signal?.addEventListener('abort', onSignal, { once: true });
-    for (const event of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(event, onSignal);
+    if (!signal) for (const event of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(event, onSignal);
     observer.setTransportAbandonedHandler(() => stop('unavailable'));
     try {
+        if (signal?.aborted) stop();
+        assertRunning();
         await observer.connect();
         const initialized = await observer.initialize({ clientInfo: { name: 'hapi_attached_observer', version: '1' }, capabilities: { experimentalApi: true } });
         const homePath = string(record(initialized).codexHome);
         if (!homePath || !isAbsolute(homePath)) throw new Error('External engine did not report CODEX_HOME');
         const home = await realpath(homePath);
+        if (options.desktopHome !== undefined && home !== await realpath(options.desktopHome)) {
+            throw new Error('Desktop daemon reported a different CODEX_HOME');
+        }
         const homeStat = await stat(home);
         if (!homeStat.isDirectory() || homeStat.uid !== process.getuid?.() || (homeStat.mode & 0o022) !== 0) {
             throw new Error('External CODEX_HOME must be owned by this user and not writable by others');
@@ -114,10 +128,20 @@ export async function runAttachedRuntime(raw: AttachedOptions, onReady?: (ready:
         await withThreadOwnership(home, options.threadId, id, async () => {
             assertRunning();
             let existing = await findAttachedBinding(home, options.threadId);
-            let bindingId: string = randomUUID();
+            // Automatic retries after a lost Hub response must reuse the same
+            // initial row/binding even before a local runtime record exists.
+            const seed = options.desktopHome !== undefined ? createHash('sha256')
+                .update(JSON.stringify([home, options.threadId, (await readSettings()).machineId])).digest('hex') : undefined;
+            let bindingId = seed === undefined ? randomUUID()
+                : `${seed.slice(0, 8)}-${seed.slice(8, 12)}-8${seed.slice(13, 16)}-8${seed.slice(17, 20)}-${seed.slice(20, 32)}`;
             if (existing) {
                 const session = await (await ApiClient.create()).getSession(existing);
-                if (session.metadata?.codexRuntime?.kind !== 'attached' || session.metadata.codexSessionId !== options.threadId || session.metadata.path !== cwd) {
+                // The initial desktop binding may have reached the local
+                // registry just before its native ID was flushed to the Hub.
+                const partialDesktopBinding = seed !== undefined && session.metadata?.codexSessionId === undefined
+                    && session.metadata?.codexRuntime?.bindingId === bindingId;
+                if (session.metadata?.codexRuntime?.kind !== 'attached' || session.metadata.path !== cwd
+                    || !(session.metadata.codexSessionId === options.threadId || partialDesktopBinding)) {
                     throw new Error('Attached binding identity mismatch');
                 }
                 if (options.newView) {
@@ -130,6 +154,7 @@ export async function runAttachedRuntime(raw: AttachedOptions, onReady?: (ready:
                 }
             } else if (options.newView) throw new Error('No previous attached view to replace');
             const bootstrapOptions = { flavor: 'codex', startedBy: options.startedBy ?? 'terminal', workingDirectory: cwd,
+                ...(seed !== undefined ? { tag: `codex-desktop:${seed}` } : {}),
                 exportSessionEnv: false, reportStarted: false, metadataOverrides: {
                     codexRuntime: { kind: 'attached', bindingId, state: 'attached' },
                     ...(typeof thread.name === 'string' ? { name: thread.name } : {}),
@@ -142,6 +167,7 @@ export async function runAttachedRuntime(raw: AttachedOptions, onReady?: (ready:
                 ? await bootstrapExistingSession({ ...bootstrapOptions, sessionId: existing })
                 : await bootstrapSession({ ...bootstrapOptions, agentState: { controlledByUser: false } });
             session = bootstrap.session;
+            if (seed !== undefined && bootstrap.sessionInfo.metadata?.conversationHistoryDiverged) throw new AttachedHistoryChangedError();
             const verifyHubBinding = async () => {
                 if (!await bootstrap.session.flushMetadata()) throw new Error('Cannot persist attached runtime metadata');
                 const persisted = await (await ApiClient.create()).getSession(bootstrap.session.sessionId);
@@ -181,7 +207,9 @@ export async function runAttachedRuntime(raw: AttachedOptions, onReady?: (ready:
             await root.activate(); assertRunning();
             if (!await root.session.flush()) throw new Error('Cannot confirm attached session readiness');
             assertRunning();
-            await notifyRunnerSessionStarted(root.session.sessionId, { ...bootstrap.metadata, hostStartMarker: marker });
+            // The desktop supervisor hosts many independent runtime records on
+            // one PID. Do not register it as a Runner-managed process.
+            if (options.desktopHome === undefined) await notifyRunnerSessionStarted(root.session.sessionId, { ...bootstrap.metadata, hostStartMarker: marker });
             assertRunning();
             onReady?.({ sessionId: root.session.sessionId, runtime: runtime! });
         }, undefined, 'attached');
@@ -194,7 +222,7 @@ export async function runAttachedRuntime(raw: AttachedOptions, onReady?: (ready:
     } finally {
         stopping = true; root?.stopAccepting();
         signal?.removeEventListener('abort', onSignal);
-        for (const event of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.off(event, onSignal);
+        if (!signal) for (const event of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.off(event, onSignal);
         observer.setTransportAbandonedHandler(null);
         await control?.close();
         await observer.disconnect();
@@ -215,4 +243,5 @@ export async function runAttachedRuntime(raw: AttachedOptions, onReady?: (ready:
             await saveRuntime(runtime);
         }
     }
+    return lifecycle.reason;
 }

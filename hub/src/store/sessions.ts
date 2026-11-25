@@ -80,7 +80,8 @@ const SIMPLE_RESUME_TOKENS = [
     'kimiSessionId',
     'copilotSessionId',
     'piSessionId',
-    'dshSessionId'
+    'dshSessionId',
+    'agySessionId'
 ] as const
 
 // Hub-owned metadata that must survive sparse CLI metadata replacements.
@@ -91,6 +92,7 @@ const HUB_OWNED_METADATA_FIELDS = [
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
     'promptTitle',
+    'translateInput',
     'forkedFrom',
     'conversationBranch'
 ] as const

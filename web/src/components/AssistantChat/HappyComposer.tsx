@@ -50,7 +50,7 @@ import { persistInactiveComposerAttachments, setComposerDraftSnapshot, updateCom
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
-import { StatusBar } from '@/components/AssistantChat/StatusBar'
+import { StatusBar, type StatusBarInputTranslation } from '@/components/AssistantChat/StatusBar'
 import {
     ComposerButtons,
     UnifiedButton,
@@ -312,6 +312,8 @@ export function HappyComposer(props: {
     agentState?: AgentState | null
     pendingRequestReceipts?: ReadonlyMap<string, CodexQuestionSubmission['status']>
     onPendingRequestClick?: (requestId: string) => void
+    /** Quick toggle for hub input translation; omitted when the hub has no provider. */
+    inputTranslation?: StatusBarInputTranslation
     backgroundTaskCount?: number
     contextSize?: number
     contextCacheRead?: number
@@ -438,6 +440,7 @@ export function HappyComposer(props: {
         agentState,
         pendingRequestReceipts,
         onPendingRequestClick,
+        inputTranslation,
         backgroundTaskCount,
         contextSize,
         contextCacheRead,
@@ -2361,6 +2364,7 @@ export function HappyComposer(props: {
                         agentState={agentState}
                         pendingRequestReceipts={pendingRequestReceipts}
                         onPendingRequestClick={onPendingRequestClick}
+                        inputTranslation={inputTranslation}
                         backgroundTaskCount={backgroundTaskCount}
                         contextSize={contextSize}
                         contextCacheRead={contextCacheRead}

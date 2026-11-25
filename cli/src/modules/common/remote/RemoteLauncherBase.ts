@@ -1,4 +1,4 @@
-import { render } from 'ink';
+import type { Instance } from 'ink';
 import type { ReactElement } from 'react';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { restoreTerminalState } from '@/ui/terminalState';
@@ -45,7 +45,7 @@ export abstract class RemoteLauncherBase {
     protected exitReason: RemoteLauncherExitReason | null = null;
     protected shouldExit: boolean = false;
     protected ptyAbortController: AbortController | null = null;
-    private inkInstance: ReturnType<typeof render> | null = null;
+    private inkInstance: Instance | null = null;
     private abortInFlight: Promise<void> | null = null;
 
     protected constructor(logPath?: string) {
@@ -63,7 +63,7 @@ export abstract class RemoteLauncherBase {
         );
     }
 
-    protected abstract createDisplay(context: RemoteLauncherDisplayContext): ReactElement;
+    protected abstract createDisplay(context: RemoteLauncherDisplayContext): ReactElement | Promise<ReactElement>;
 
     protected abstract runMainLoop(): Promise<void>;
 
@@ -156,31 +156,40 @@ export abstract class RemoteLauncherBase {
         }
     }
 
-    protected setupTerminal(handlers: RemoteLauncherTerminalHandlers): void {
+    protected setupTerminal(handlers: RemoteLauncherTerminalHandlers): void | Promise<void> {
         // Local mode destroys stdin so the child TUI gets all console input
         // (Bun keeps reading fd 0 after pause()). Re-create it before the
         // remote-mode UI reads keys again.
         ensureLiveStdin();
-        if (this.hasTTY) {
-            console.clear();
-            this.inkInstance = render(this.createDisplay({
-                messageBuffer: this.messageBuffer,
-                logPath: this.logPath,
-                onExit: handlers.onExit,
-                onSwitchToLocal: handlers.onSwitchToLocal
-            }), {
-                exitOnCtrlC: false,
-                patchConsole: false
-            });
-        }
+        if (!this.hasTTY) return;
+        console.clear();
+        const display = this.renderDisplay({
+            messageBuffer: this.messageBuffer,
+            logPath: this.logPath,
+            onExit: handlers.onExit,
+            onSwitchToLocal: handlers.onSwitchToLocal
+        });
 
-        if (this.hasTTY) {
-            process.stdin.resume();
-            if (process.stdin.isTTY) {
-                process.stdin.setRawMode(true);
-            }
-            process.stdin.setEncoding('utf8');
+        if (display instanceof Promise) return display.then(instance => this.activateTerminal(instance));
+        this.activateTerminal(display);
+    }
+
+    private activateTerminal(instance: Instance | null): void {
+        if (!instance) return;
+        if (!this.hasTTY) {
+            instance.unmount();
+            return;
         }
+        this.inkInstance = instance;
+        process.stdin.resume();
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.setEncoding('utf8');
+    }
+
+    protected renderDisplay(context: RemoteLauncherDisplayContext): Instance | Promise<Instance | null> {
+        return Promise.all([import('ink'), this.createDisplay(context)]).then(([{ render }, element]) =>
+            this.hasTTY ? render(element, { exitOnCtrlC: false, patchConsole: false }) : null
+        );
     }
 
     protected setupAbortHandlers(
@@ -346,15 +355,19 @@ export abstract class RemoteLauncherBase {
     }
 
     protected async start(handlers: RemoteLauncherTerminalHandlers): Promise<RemoteLauncherExitReason> {
-        this.setupTerminal(handlers);
         try {
+            const terminal = this.setupTerminal(handlers);
+            if (terminal) await terminal;
             await this.runMainLoop();
         } finally {
             // Backstop call — see onLeavingRemote()'s doc comment for why
             // this needs to run here too, not just from requestExit().
             this.onLeavingRemote();
-            await this.cleanup();
-            this.finalizeTerminal();
+            try {
+                await this.cleanup();
+            } finally {
+                this.finalizeTerminal();
+            }
         }
 
         return this.exitReason || 'exit';

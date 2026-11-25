@@ -22,6 +22,7 @@ import type {
     SessionSummary,
     SyncEvent
 } from '@/types/api'
+import { observeSessionDetail } from '@/lib/sessionDetailRead'
 import { queryKeys } from '@/lib/query-keys'
 import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
 import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesDispatching, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
@@ -238,6 +239,7 @@ export function useSSE(options: {
     baseUrl: string
     subscription?: SSESubscription
     scope?: SSEScope
+    hubClock?: import('@/lib/hubClock').HubClock
     onEvent: (event: SyncEvent) => void
     /**
      * Fires on the server's connection-changed handshake. `resumed` is true
@@ -686,6 +688,7 @@ export function useSSE(options: {
             lastActivityAtRef.current = Date.now()
 
             if (event.type === 'heartbeat') {
+                if (event.data) options.hubClock?.observe(event.data.timestamp)
                 return
             }
 
@@ -781,6 +784,7 @@ export function useSSE(options: {
                     clearMessageWindow(event.sessionId)
                     queueScratchlistStatusInvalidation()
                 } else if (isSessionRecord(event.data) && event.data.id === event.sessionId) {
+                    observeSessionDetail(queryClient, event.sessionId, event.data)
                     queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), { session: event.data })
                     upsertSessionSummary(event.data)
                     if (event.type === 'session-added') {
@@ -789,6 +793,7 @@ export function useSSE(options: {
                 } else {
                     const patch = getSessionPatch(event.data)
                     if (patch) {
+                        observeSessionDetail(queryClient, event.sessionId, patch)
                         const detailPatched = patchSessionDetail(event.sessionId, patch)
                         const summaryPatched = patchSessionSummary(event.sessionId, patch)
 
@@ -972,7 +977,7 @@ export function useSSE(options: {
             }
             setSubscriptionId(null)
         }
-    }, [options.baseUrl, options.enabled, options.scope, options.token, scope, subscriptionKey, queryClient, reconnectNonce])
+    }, [options.baseUrl, options.enabled, options.scope, options.token, options.hubClock, scope, subscriptionKey, queryClient, reconnectNonce])
 
     return { subscriptionId }
 }
