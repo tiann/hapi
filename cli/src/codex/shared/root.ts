@@ -177,14 +177,19 @@ export class SharedCodexRoot {
             const paramsRecord = record(params);
             const isRoot = this.threadId !== '' && paramsRecord.threadId === this.threadId;
             const turnId = string(paramsRecord.turnId);
+            const liveTurnAtReceipt = Boolean(isRoot && turnId && turnId === this.currentTurn);
             if (this.host.attached && isRoot && method === 'thread/tokenUsage/updated' && turnId && this.pendingAttachUsage) {
-                // Subscribe can precede the first snapshot. Keep only the newest
-                // sample per turn until the snapshot identifies the active one.
-                this.pendingAttachUsage.set(turnId, { params, receivedAt });
-                return;
+                if (!liveTurnAtReceipt) {
+                    // Subscribe can precede the first snapshot. Keep unclassified
+                    // samples until that snapshot identifies the active turn.
+                    this.pendingAttachUsage.set(turnId, { params, receivedAt });
+                    return;
+                }
+                // Do not replay an older unclassified sample over this live one.
+                this.pendingAttachUsage.delete(turnId);
             }
             const modelAtReceipt = isRoot ? this.settings.model ?? undefined : undefined;
-            this.enqueueNotification(method, params, modelAtReceipt, receivedAt, Boolean(isRoot && turnId && turnId === this.currentTurn));
+            this.enqueueNotification(method, params, modelAtReceipt, receivedAt, liveTurnAtReceipt);
         });
         this.client.setTransportAbandonedHandler(() => {
             if (this.host.attached) {

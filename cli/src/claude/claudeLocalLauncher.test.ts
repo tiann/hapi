@@ -66,7 +66,7 @@ function createSessionStub() {
         claudeEnvVars: {},
         claudeArgs: [] as string[] | undefined,
         startupResumeSessionAt: undefined as string | undefined,
-        getModel: () => 'claude-opus-4-1',
+        getModel: (): string | null => 'claude-opus-4-1',
         getPermissionMode: () => 'default',
         mcpServers: [],
         allowedTools: [],
@@ -472,14 +472,19 @@ describe('claudeLocalLauncher context window seed (#1858)', () => {
         expect((sentMessages[0].message as { usage: Record<string, unknown> }).usage.context_window).toBeUndefined()
     })
 
-    it.each([undefined, 350_000])('drops a saved 1M window on the first sample after resuming a plain preset (%s)', async (explicitWindow) => {
+    it.each([
+        ['sonnet', undefined], ['sonnet', 350_000], [null, undefined], [null, 350_000]
+    ] as const)('drops a saved 1M window on the first sample with preset %s and window %s', async (preset, explicitWindow) => {
         const { session, getMetadata, setMetadata } = createSessionStub()
-        session.getModel = () => 'sonnet'
+        session.getModel = () => preset
         setMetadata({ ...getMetadata(), contextDetails: {
             version: 1, provider: 'claude', updatedAt: 10,
             model: 'claude-sonnet-4-6', contextWindow: 1_000_000, usage: { contextTokens: 10 }
         } })
         await claudeLocalLauncher(session as never)
+        // Simulate the resolved preset, independent of the test runner's user settings.
+        const local = session as typeof session & { localContextModel: string | null }
+        local.localContextModel = preset
 
         harness.scannerOnMessage!(assistant('claude-sonnet-4-6', {
             input_tokens: 20, ...(explicitWindow ? { context_window: explicitWindow } : {})

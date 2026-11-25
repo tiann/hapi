@@ -67,11 +67,11 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                         const saved = publishedLocalPreset === undefined ? session.client.getMetadata()?.contextDetails : undefined;
                         // A resumed local transcript may keep the same bare model ID
                         // even when the selected preset no longer requests 1M.
-                        const resumedWithPlainPreset = Boolean(preset && !/\[1m\]$/i.test(preset)
+                        const resumedWithoutExpandedPreset = Boolean(!/\[1m\]$/i.test(preset ?? '')
                             && saved?.provider === 'claude' && saved.contextWindow === 1_000_000
                             && saved.model && details.model && sameClaudeModelID(saved.model, details.model));
                         publishedLocalPreset = preset;
-                        publishContextDetails(session.client, details, { clearContextSample: presetChanged || resumedWithPlainPreset });
+                        publishContextDetails(session.client, details, { clearContextSample: presetChanged || resumedWithoutExpandedPreset });
                     }
                 }
             }

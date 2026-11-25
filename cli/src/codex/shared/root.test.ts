@@ -1239,6 +1239,41 @@ describe('shared steering availability', () => {
         expect(f.send.mock.calls.filter(call => call.some(arg => arg?.type === 'token_count'))).toHaveLength(1);
     });
 
+    it.each(['inProgress', 'completed'])('keeps newer known live usage when a turn is %s before the attach snapshot resolves', async (status) => {
+        const f = await fixture({ attached: true, beforeBind: root => {
+            const native = root.client as unknown as {
+                thread: { turns: NativeTurn[] };
+                notify(method: string, params: unknown): void;
+                request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+            };
+            native.thread.turns = [{ id: 'live', status, items: [] }];
+            const request = native.request.bind(native);
+            let firstRead = true;
+            native.request = async (method, params) => {
+                if (firstRead && method === 'thread/read' && params?.threadId === 'thread' && params.includeTurns) {
+                    firstRead = false;
+                    const sample = (inputTokens: number) => native.notify('thread/tokenUsage/updated', {
+                        threadId: 'thread', turnId: 'live', tokenUsage: { modelContextWindow: 128_000, last: { inputTokens } }
+                    });
+                    sample(6_000); // No live attribution until turn/started.
+                    native.notify('turn/started', { threadId: 'thread', turn: { id: 'live', status: 'inProgress' } });
+                    sample(12_000);
+                    if (status === 'completed') {
+                        native.notify('turn/completed', { threadId: 'thread', turn: { id: 'live', status } });
+                    }
+                }
+                return request(method, params);
+            };
+        }, contextDetails: {
+            version: 1, provider: 'codex', updatedAt: 10,
+            model: 'old-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        } });
+        await f.root.activate();
+        await f.drain();
+        expect(f.metadata().contextDetails).toMatchObject({ contextWindow: 128_000, usage: { contextTokens: 12_000 } });
+        expect(f.send.mock.calls.filter(call => call.some(arg => arg?.type === 'token_count'))).toHaveLength(1);
+    });
+
     it('keeps the rerouted usage model and window while publishing inventory-only updates', async () => {
         const f = await fixture({ contextDetails: {
             version: 1, provider: 'codex', updatedAt: 10,
