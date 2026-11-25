@@ -2327,14 +2327,16 @@ class ChatViewModelInteractionTest {
         harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("c++"), cpp17))
         vm.start()
 
-        val caret = "Run \$c++".length
-        vm.onComposerChange("Run \$c++\$lint", caret, caret)
-        testScheduler.runCurrent()
-        vm.selectSkillSuggestion(vm.skillSuggestions.value.single { it.skill == cpp17 })
-        testScheduler.runCurrent()
+        for (query in listOf("c++", "c+", "c")) {
+            val caret = "Run \$$query".length
+            vm.onComposerChange("Run \$c++\$lint", caret, caret)
+            testScheduler.runCurrent()
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single { it.skill == cpp17 })
+            testScheduler.runCurrent()
 
-        assertEquals("Run \$c++17\$lint", vm.composer.value.text)
-        assertEquals("Run \$c++17".length, vm.composer.value.caretPosition)
+            assertEquals("Run \$c++17\$lint", vm.composer.value.text, query)
+            assertEquals("Run \$c++17".length, vm.composer.value.caretPosition)
+        }
         assertTrue(harness.api.sendCalls.value.isEmpty())
     }
 

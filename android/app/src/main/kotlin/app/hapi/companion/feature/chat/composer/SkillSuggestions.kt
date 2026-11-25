@@ -72,12 +72,15 @@ internal object SkillSuggestions {
         val word = if (token.trailingPlusBeforeReference) {
             val fullName = token.word.substring(1)
             val fullNameKey = skillNameKey(fullName)
-            // Preserve the separator unless the plus completes the selected name,
-            // or the caret is already after the full name of another known skill.
-            if (fullNameKey == skillNameKey(skill.name) || (token.query == fullName && fullNameKey in knownNames)) {
+            val shorterWord = token.word.dropLast(1)
+            // When both spans match, keep the separator unless the full
+            // name is selected or the caret is already after the plus.
+            val preferFullSpan = fullNameKey in knownNames &&
+                (token.query == fullName || skillNameKey(shorterWord.substring(1)) !in knownNames)
+            if (fullNameKey == skillNameKey(skill.name) || preferFullSpan) {
                 return token.end
             }
-            token.word.dropLast(1)
+            shorterWord
         } else token.word
         var start = minOf(token.query.length + 1, word.length) // Include '$'.
         // Treat a just-typed punctuation run as part of the name only when
