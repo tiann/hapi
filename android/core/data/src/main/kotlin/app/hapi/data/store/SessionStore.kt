@@ -30,7 +30,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonElement
 
 /**
@@ -131,16 +130,11 @@ class SessionStore(
     private val refreshBatchMs: Long = REFRESH_BATCH_MS,
 ) : SessionDetailStore {
 
-    private val snapshot: JsonSnapshotStore<List<SessionSummary>>? = snapshotDir?.let { dir ->
-        JsonSnapshotStore(
-            file = File(dir, "sessions.json"),
-            serializer = ListSerializer(SessionSummary.serializer()),
-            scope = scope,
-        )
-    }
+    private val list = SnapshotList(snapshotDir, "sessions.json", SessionSummary.serializer(), scope, ::sortSessionSummaries)
+    override val sessions: StateFlow<List<SessionSummary>> = list.values
 
-    private val _sessions = MutableStateFlow(snapshot?.load()?.let(::sortSessionSummaries) ?: emptyList())
-    override val sessions: StateFlow<List<SessionSummary>> = _sessions.asStateFlow()
+    /** Enables the namespace-specific snapshot after identity is learned. */
+    fun enableSnapshots(dir: File) = list.enableSnapshots(dir)
 
     private val _details = MutableStateFlow<Map<String, Session>>(emptyMap())
 
@@ -188,7 +182,7 @@ class SessionStore(
 
     /** Forces the debounced snapshot to disk (app background / tests). */
     suspend fun flushPersistence() {
-        snapshot?.flush()
+        list.flush()
     }
 
     override suspend fun refresh() {
@@ -279,7 +273,7 @@ class SessionStore(
     }
 
     override suspend fun archiveSession(sessionId: String) {
-        val removed = _sessions.value.firstOrNull { it.id == sessionId }
+        val removed = sessions.value.firstOrNull { it.id == sessionId }
         updateSummaries { list -> list.filter { it.id != sessionId } }
         try {
             api.archiveSession(sessionId)
@@ -322,7 +316,7 @@ class SessionStore(
     }
 
     override suspend fun deleteSession(sessionId: String) {
-        val removed = _sessions.value.firstOrNull { it.id == sessionId }
+        val removed = sessions.value.firstOrNull { it.id == sessionId }
         val removedDetail = _details.value[sessionId]
         updateSummaries { list -> list.filter { it.id != sessionId } }
         _details.update { it - sessionId }
@@ -475,18 +469,7 @@ class SessionStore(
         return present
     }
 
-    /** CAS update; snapshots only when the transform produced a new list. */
-    private fun updateSummaries(transform: (List<SessionSummary>) -> List<SessionSummary>) {
-        while (true) {
-            val previous = _sessions.value
-            val next = transform(previous)
-            if (next === previous) return
-            if (_sessions.compareAndSet(previous, next)) {
-                snapshot?.scheduleWrite(next)
-                return
-            }
-        }
-    }
+    private fun updateSummaries(transform: (List<SessionSummary>) -> List<SessionSummary>) = list.update(transform)
 
     private companion object {
         /** `INVALIDATION_BATCH_MS` in the web reference. */

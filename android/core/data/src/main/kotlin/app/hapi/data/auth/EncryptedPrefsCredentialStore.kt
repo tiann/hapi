@@ -10,6 +10,7 @@ import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import app.hapi.protocol.wire.HapiJson
+import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.encodeToString
 
 /**
@@ -32,6 +33,9 @@ class EncryptedPrefsCredentialStore(
 ) : CredentialStore {
 
     private val appContext = context.applicationContext
+    private val changes = CredentialChanges()
+
+    override fun observeNamespace(hubUrl: String): Flow<String?> = changes.observe { get(hubUrl)?.pairedNamespace }
 
     private val prefs: SharedPreferences by lazy {
         val masterKey = MasterKey.Builder(appContext)
@@ -60,6 +64,7 @@ class EncryptedPrefsCredentialStore(
         prefs.edit()
             .putString(credentialKey(credentials.hubUrl), HapiJson.encodeToString(credentials))
             .commit()
+        changes.invalidate()
     }
 
     @Synchronized
@@ -67,12 +72,13 @@ class EncryptedPrefsCredentialStore(
         if (get(expected.hubUrl) != expected) return false
         return prefs.edit()
             .putString(credentialKey(expected.hubUrl), HapiJson.encodeToString(updated))
-            .commit()
+            .commit().also { if (it) changes.invalidate() }
     }
 
     @Synchronized
     override fun delete(hubUrl: String) {
         prefs.edit().remove(credentialKey(hubUrl)).commit()
+        changes.invalidate()
     }
 
     companion object {

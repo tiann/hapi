@@ -14,6 +14,9 @@ import app.hapi.companion.feature.passkey.passkeyUserHandle
 import app.hapi.data.auth.CredentialStore
 import app.hapi.data.auth.HubCredentials
 import app.hapi.data.auth.InMemoryCredentialStore
+import app.hapi.data.push.DeviceRegistrar
+import app.hapi.data.push.PushDeviceGateway
+import app.hapi.data.push.PushIdentity
 import app.hapi.data.sse.SseSubscriptionKey
 import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.AuthUser
@@ -31,10 +34,12 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertNotSame
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -61,7 +66,23 @@ class AppGraphPairingTest {
         val ownerJwt = jwt("owner")
         val guestJwt = jwt("guest")
         val creds = InMemoryCredentialStore().apply { set(HubCredentials(hubUrl, accessToken = "owner", jwt = ownerJwt)) }
-        val app = AppGraph(context, creds)
+        val registrations = Channel<String>(Channel.UNLIMITED)
+        val app = AppGraph(context, creds, deviceRegistrarFactory = { registry, scope ->
+            DeviceRegistrar(
+                registry = registry,
+                gateway = object : PushDeviceGateway {
+                    override suspend fun register(hubUrl: String, token: String, identity: PushIdentity) {
+                        registrations.send(requireNotNull(creds.get(hubUrl)?.pairedNamespace))
+                    }
+
+                    override suspend fun unregister(hubUrl: String, token: String) = Unit
+                },
+                tokenSource = { "device-token" },
+                identities = { PushIdentity("device-id", "push-key") },
+                retryScheduler = { error("Unexpected push registration retry") },
+                scope = scope,
+            )
+        })
         Dispatchers.setMain(UnconfinedTestDispatcher())
         try {
             withTimeout(10_000) {
@@ -70,8 +91,9 @@ class AppGraphPairingTest {
                 app.start()
                 val owner = app.activeHubGraph.filterNotNull().first()
                 assertEquals(ownerJwt, owner.session.authenticator.currentJwt())
+                assertEquals("owner", registrations.receive())
                 assertTrue(owner.sessionStore.sessions.value.isEmpty(), "Do not hydrate URL-only legacy snapshots")
-                requireNotNull(owner.recentSkills).record("owner-only")
+                owner.recentSkills.record("owner-only")
                 seedOwnerSnapshots(owner)
 
                 val pairing = app.newPairingViewModel {
@@ -88,7 +110,8 @@ class AppGraphPairingTest {
                 val guest = requireNotNull(app.activeHubGraph.value)
                 assertNotSame(owner, guest)
                 assertEquals(guestJwt, guest.session.authenticator.currentJwt())
-                val guestHistory = requireNotNull(guest.recentSkills)
+                assertEquals("guest", registrations.receive())
+                val guestHistory = guest.recentSkills
                 assertEquals(emptyList(), guestHistory.names.first())
                 guestHistory.record("guest-only")
                 assertTrue(guest.sessionStore.sessions.value.isEmpty(), "Guest must not see owner sessions")
@@ -116,7 +139,7 @@ class AppGraphPairingTest {
                 HubGraph(hubUrl, withoutJwt, { _, _ -> }, context).use { restarted ->
                     assertEquals("owner", restarted.pairedNamespace)
                     assertEquals(listOf("owner-session"), restarted.sessionStore.sessions.value.map { it.id })
-                    assertEquals(listOf("owner-only"), requireNotNull(restarted.recentSkills).names.first())
+                    assertEquals(listOf("owner-only"), restarted.recentSkills.names.first())
                 }
             }
         } finally {
@@ -173,6 +196,47 @@ class AppGraphPairingTest {
             app.scope.cancel()
             app.activeHubGraph.value?.close()
             Dispatchers.resetMain()
+        }
+    }
+
+    @Test fun `legacy background refresh recovers persistence without replacing the live graph`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val hubUrl = "https://legacy-skills.example.test"
+        val legacy = HubCredentials(hubUrl, accessToken = "owner")
+        val creds = InMemoryCredentialStore().apply { set(legacy) }
+        val app = AppGraph(context, creds)
+        try {
+            withTimeout(10_000) {
+                app.setForeground(false)
+                app.hubRegistry.addHub(hubUrl)
+                app.start()
+                val live = app.activeHubGraph.filterNotNull().first()
+                seedOwnerSnapshots(live)
+                val window = live.messageWindows.open("owner-session")
+                val history = live.recentSkills
+
+                // The push worker's independent authenticator updates the shared store.
+                assertTrue(creds.replace(legacy, legacy.withJwt(jwt("owner"), System.currentTimeMillis())))
+                assertTrue(live.session.authenticator.ensureFreshToken() != null)
+                HubGraph(hubUrl, creds, { _, _ -> }, context).use { known ->
+                    known.recentSkills.record("owner-only")
+                    assertEquals(listOf("owner-only"), history.names.first { it.isNotEmpty() })
+                }
+
+                assertSame(live, app.activeHubGraph.value)
+                assertSame(window, live.messageWindows.open("owner-session"))
+                assertEquals(listOf("owner-session"), live.sessionStore.sessions.value.map { it.id })
+                live.sessionStore.flushPersistence()
+                live.machineStore.flushPersistence()
+                HubGraph(hubUrl, creds, { _, _ -> }, context).use { restarted ->
+                    assertEquals(listOf("owner-session"), restarted.sessionStore.sessions.value.map { it.id })
+                    assertEquals(listOf("owner-machine"), restarted.machineStore.machines.value.map { it.id })
+                    assertEquals(1, restarted.messageWindows.open("owner-session").state.value.messages.size)
+                }
+            }
+        } finally {
+            app.scope.cancel()
+            app.activeHubGraph.value?.close()
         }
     }
 

@@ -2021,13 +2021,16 @@ class ChatViewModelInteractionTest {
         assertEquals(listOf(qualified), vm.skillSuggestions.value.map { it.skill })
         assertEquals(1, harness.api.skillsCalls.size)
 
-        val draft = "Run \$url-plugin:url-sk then continue"
-        val beforeColon = "Run \$url-plugin".length
-        vm.onComposerChange(draft, beforeColon, beforeColon)
-        testScheduler.runCurrent()
-        vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
-        testScheduler.runCurrent()
-        assertEquals("Run \$url-plugin:url-skill then continue", vm.composer.value.text)
+        for (suffix in listOf(" then continue", ".then continue")) {
+            val draft = "Run \$plugin:URL$suffix"
+            vm.setComposerText(draft)
+            val beforeColon = "Run \$plugin".length
+            vm.onComposerChange(draft, beforeColon, beforeColon)
+            testScheduler.runCurrent()
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+            testScheduler.runCurrent()
+            assertEquals("Run \$url-plugin:url-skill$suffix", vm.composer.value.text)
+        }
 
         val prose = "Run \$rev:继续"
         val beforeProseColon = "Run \$rev".length
@@ -2068,7 +2071,7 @@ class ChatViewModelInteractionTest {
         harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(skill))
         vm.start()
 
-        val draft = "Run \$foo.baz please"
+        val draft = "Run \$foo.ba please"
         val caret = "Run \$foo".length
         vm.onComposerChange(draft, caret, caret)
         testScheduler.runCurrent()
@@ -2090,7 +2093,7 @@ class ChatViewModelInteractionTest {
         harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("Review")))
         vm.start()
 
-        for (suffix in listOf(", then run", ". Then run")) {
+        for (suffix in listOf(", then run", ". Then run", ".then continue")) {
             // Exact match exercises the caret-only path: the text should not change.
             val draft = "Run \$Review$suffix"
             val caret = "Run \$Review".length

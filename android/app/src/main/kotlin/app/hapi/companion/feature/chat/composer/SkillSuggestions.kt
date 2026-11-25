@@ -28,7 +28,7 @@ internal object SkillSuggestions {
     }
 
     private fun isNameAt(text: String, index: Int): Boolean = if (text.getOrNull(index) == '.') {
-        // A dot in foo.bar belongs to the name; a sentence-final dot does not.
+        // Interior dots are provisional until the catalogue resolves the boundary.
         isNameChar(text, index - 1) && isNameChar(text, index + 1)
     } else {
         isNameChar(text, index)
@@ -50,26 +50,16 @@ internal object SkillSuggestions {
         return Token(wordStart, wordEnd, text.substring(wordStart, wordEnd), text.substring(wordStart + 1, start))
     }
 
-    /** Use the catalogue to distinguish a Claude plugin qualifier from a prose colon. */
-    fun resolveToken(token: Token, skills: List<SkillSummary>): Token? {
-        val colon = token.word.indexOf(':')
-        if (colon < 0) return token
-        val secondColon = token.word.indexOf(':', colon + 1)
-        val qualifiedEnd = if (secondColon < 0) token.word.length else secondColon
-        val plugin = token.word.substring(1, colon)
-        val name = token.word.substring(colon + 1, qualifiedEnd)
-        // With the colon already typed, let the normal ranking match the
-        // full query (including substrings across the colon). Otherwise only
-        // consume the suffix if the catalogue recognizes a qualified name.
-        val caretIsAfterColon = token.query.length >= colon
-        val qualified = caretIsAfterColon || skills.any { skill ->
-            val separator = skill.name.indexOf(':')
-            separator >= 0 &&
-                skill.name.substring(0, separator).startsWith(plugin, ignoreCase = true) &&
-                skill.name.substring(separator + 1).startsWith(name, ignoreCase = true)
-        }
-        val length = if (qualified) qualifiedEnd else colon
-        if (token.query.length + 1 > length) return null
+    /** Only replace past punctuation after the caret if the catalogue recognizes the longer word. */
+    fun resolveToken(token: Token, skills: List<SkillSummary>): Token {
+        val caret = token.query.length + 1 // Include '$'.
+        val boundaries = (caret until token.word.length).filter { token.word[it] in ".:" }
+        if (boundaries.isEmpty()) return token
+        val names = skills.map { skillNameKey(it.name) }
+        val length = (boundaries + token.word.length).lastOrNull { end ->
+            val candidate = skillNameKey(token.word.substring(1, end))
+            names.any { candidate in it }
+        } ?: boundaries.first()
         return token.copy(end = token.start + length, word = token.word.take(length))
     }
 

@@ -2,6 +2,11 @@ package app.hapi.data.auth
 
 import app.hapi.protocol.wire.AuthRequest
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.serialization.Serializable
 
 /**
@@ -83,6 +88,8 @@ data class HubCredentials(
  */
 interface CredentialStore {
     fun get(hubUrl: String): HubCredentials?
+    /** Namespace of the current record, including JWT refreshes made by another session. */
+    fun observeNamespace(hubUrl: String): Flow<String?>
     fun set(credentials: HubCredentials)
     /** Update the same record atomically; an in-flight JWT refresh must not undo a later pairing/sign-out. */
     fun replace(expected: HubCredentials, updated: HubCredentials): Boolean
@@ -95,17 +102,31 @@ internal fun credentialKey(hubUrl: String): String = HubUrls.normalize(hubUrl) ?
 /** Hermetic in-memory [CredentialStore] for tests and previews. */
 class InMemoryCredentialStore : CredentialStore {
     private val entries = ConcurrentHashMap<String, HubCredentials>()
+    private val changes = CredentialChanges()
+
+    override fun observeNamespace(hubUrl: String): Flow<String?> = changes.observe { get(hubUrl)?.pairedNamespace }
 
     override fun get(hubUrl: String): HubCredentials? = entries[credentialKey(hubUrl)]
 
     override fun set(credentials: HubCredentials) {
         entries[credentialKey(credentials.hubUrl)] = credentials
+        changes.invalidate()
     }
 
     override fun replace(expected: HubCredentials, updated: HubCredentials): Boolean =
-        entries.replace(credentialKey(expected.hubUrl), expected, updated)
+        entries.replace(credentialKey(expected.hubUrl), expected, updated).also { if (it) changes.invalidate() }
 
     override fun delete(hubUrl: String) {
         entries.remove(credentialKey(hubUrl))
+        changes.invalidate()
     }
+}
+
+/** Replay an invalidation, not a credential. Collect off the main thread, like [CredentialStore.get]. */
+internal class CredentialChanges {
+    private val revision = MutableStateFlow(0L)
+
+    fun observe(readNamespace: () -> String?): Flow<String?> = revision.map { readNamespace() }.distinctUntilChanged()
+
+    fun invalidate() = revision.update { it + 1 }
 }

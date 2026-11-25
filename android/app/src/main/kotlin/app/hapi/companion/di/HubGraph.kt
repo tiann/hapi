@@ -34,12 +34,19 @@ import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 
 /**
  * Everything scoped to the **active** hub. [AppGraph] creates one per
@@ -86,14 +93,18 @@ class HubGraph(
 
     private val networkMonitor = AndroidNetworkMonitor(context, sseEngine::networkChanged)
 
-    internal val pairedNamespace = credentialStore.get(session.hubUrl)?.pairedNamespace
+    private val initialNamespace = credentialStore.get(session.hubUrl)?.pairedNamespace
+    @Volatile internal var pairedNamespace = initialNamespace
+        private set
 
     // Legacy URL-only snapshots have no reliable owner. Never read them, and
     // do not open disk snapshots until this graph has an identified namespace.
-    private val snapshotDir: File? = pairedNamespace?.let { namespace ->
+    private fun snapshotDir(context: Context, namespace: String): File {
         val digest = MessageDigest.getInstance("SHA-256").digest("${session.hubUrl}\u0000$namespace".encodeToByteArray())
-        File(File(context.filesDir, "hub-snapshots"), digest.joinToString("") { "%02x".format(it) })
+        return File(File(context.filesDir, "hub-snapshots"), digest.joinToString("") { "%02x".format(it) })
     }
+
+    private val snapshotDir = initialNamespace?.let { snapshotDir(context, it) }
 
     val sessionStore: SessionStore = SessionStore(session.api, scope, snapshotDir)
 
@@ -216,8 +227,32 @@ class HubGraph(
     /** Per-session composer drafts, keyed under this hub (process-wide DataStore). */
     val chatDrafts: ChatDrafts = DataStoreChatDrafts(context.chatDraftsDataStore, hubKey = session.hubUrl)
 
-    // Without an identified namespace the picker still works, but never shares history across accounts.
-    val recentSkills: RecentSkills? = pairedNamespace?.let { DataStoreRecentSkills(context.hapiDataStore, session.hubUrl, it) }
+    private val skillHistory = MutableStateFlow(initialNamespace?.let { DataStoreRecentSkills(context.hapiDataStore, session.hubUrl, it) })
+
+    // Keep the source held by an open chat, even if its namespace is still unknown.
+    val recentSkills: RecentSkills = object : RecentSkills {
+        @OptIn(ExperimentalCoroutinesApi::class)
+        override val names: Flow<List<String>> = skillHistory.flatMapLatest { it?.names ?: flowOf(emptyList()) }
+
+        override suspend fun record(name: String) {
+            skillHistory.value?.record(name)
+        }
+    }
+
+    init {
+        if (initialNamespace == null) scope.launch(Dispatchers.IO) {
+            // A push worker can refresh before this graph's own authenticator.
+            // Bind once from the shared record, without replacing clients or view models.
+            val namespace = credentialStore.observeNamespace(session.hubUrl).filterNotNull().first()
+            val dir = snapshotDir(context, namespace)
+            sessionStore.enableSnapshots(dir)
+            machineStore.enableSnapshots(dir)
+            messageWindows.enableSnapshots(WindowSnapshots(File(dir, "windows")))
+            pairedNamespace = namespace
+            skillHistory.value = DataStoreRecentSkills(context.hapiDataStore, session.hubUrl, namespace)
+            configureReadState()
+        }
+    }
 
     override fun close() {
         networkMonitor.close()

@@ -49,9 +49,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -83,7 +81,11 @@ internal val Context.hapiDataStore by preferencesDataStore(name = "hapi_prefs")
  * ([ready] flips true) and then keeps [activeHubGraph] in sync with the
  * registry.
  */
-class AppGraph internal constructor(context: Context, val credentialStore: CredentialStore) {
+class AppGraph internal constructor(
+    context: Context,
+    val credentialStore: CredentialStore,
+    deviceRegistrarFactory: ((HubRegistry, CoroutineScope) -> DeviceRegistrar)? = null,
+) {
     constructor(context: Context) : this(context, EncryptedPrefsCredentialStore(context))
 
     private val appContext = context.applicationContext
@@ -231,7 +233,7 @@ class AppGraph internal constructor(context: Context, val credentialStore: Crede
     val pushIdentityManager = PushIdentityManager(EncryptedPrefsPushIdentityStore(appContext))
     val pushMessageDecoder = PushMessageDecoder(pushIdentityManager::existingKey)
 
-    val deviceRegistrar: DeviceRegistrar = DeviceRegistrar(
+    val deviceRegistrar: DeviceRegistrar = deviceRegistrarFactory?.invoke(hubRegistry, scope) ?: DeviceRegistrar(
         registry = hubRegistry,
         gateway = ApiPushDeviceGateway(pushHubAccess),
         tokenSource = { PushBinding.currentToken(appContext) },
@@ -258,7 +260,7 @@ class AppGraph internal constructor(context: Context, val credentialStore: Crede
     private val mutableActiveHubGraph = MutableStateFlow<HubGraph?>(null)
     private val activeHubSwapMutex = Mutex()
 
-    /** Per-active-hub graph; rebuilt on hub switch, re-pairing, or first learning an old pairing's namespace. */
+    /** Per-active-hub graph; rebuilt on hub switch or re-pairing, not on a credential refresh. */
     val activeHubGraph: StateFlow<HubGraph?> = mutableActiveHubGraph.asStateFlow()
 
     private val mutableReady = MutableStateFlow(false)
@@ -268,18 +270,6 @@ class AppGraph internal constructor(context: Context, val credentialStore: Crede
 
     /** Idempotent-enough for the single Application.onCreate call site. */
     fun start() {
-        scope.launch {
-            activeHubGraph.collectLatest { graph ->
-                if (graph == null || graph.pairedNamespace != null) return@collectLatest
-                // Older records can have lost their JWT before namespace was persisted.
-                graph.session.authenticator.refreshedNamespace.filterNotNull().first()
-                activeHubSwapMutex.withLock {
-                    if (mutableActiveHubGraph.value === graph && hubRegistry.activeHubUrl == graph.hubUrl) {
-                        swapActiveHub(graph.hubUrl)
-                    }
-                }
-            }
-        }
         scope.launch {
             try {
                 shareInbox.load()
@@ -326,8 +316,12 @@ class AppGraph internal constructor(context: Context, val credentialStore: Crede
                     mutableActiveHubGraph.value = null
                     closeHubGraph(previous)
                 }
+                val previousNamespace = credentialStore.get(credentials.hubUrl)?.pairedNamespace
+                val namespaceChanged = credentials.hubUrl in hubRegistry.state.value.hubs &&
+                    credentials.pairedNamespace != null && credentials.pairedNamespace != previousNamespace
                 credentialStore.set(credentials)
                 hubRegistry.addHub(credentials.hubUrl, makeActive = true)
+                if (namespaceChanged) deviceRegistrar.onHubRepaired(credentials.hubUrl)
                 swapActiveHub(hubRegistry.activeHubUrl)
             }
         }.await()

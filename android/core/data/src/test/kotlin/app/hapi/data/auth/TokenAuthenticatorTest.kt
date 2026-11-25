@@ -18,7 +18,10 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -371,15 +374,19 @@ class TokenAuthenticatorTest {
     }
 
     @Test
-    fun `legacy pairing learns its namespace after refreshing a missing JWT`() {
-        store.set(HubCredentials(hubUrl, accessToken))
+    fun `a separate session can restore the namespace of a legacy pairing`() = runBlocking {
+        val active = startSession(jwt = null)
         val refreshed = fakeJwt(expSeconds = 4_100_000_000, ns = "research")
         server.enqueue(authOk(refreshed))
 
-        val authenticator = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
-        assertEquals(refreshed, runBlocking { authenticator.ensureFreshToken() })
-        assertEquals("research", store.get(hubUrl)?.namespace)
-        assertEquals("research", authenticator.refreshedNamespace.value)
+        HubSession(server.url("/"), store, events).use { background ->
+            assertEquals(refreshed, background.ensureFreshToken())
+        }
+        withTimeout(2_000) {
+            assertEquals("research", store.observeNamespace(hubUrl).filterNotNull().first())
+        }
+        assertEquals(refreshed, active.ensureFreshToken())
+        assertEquals(1, server.requestCount)
     }
 
     @Test

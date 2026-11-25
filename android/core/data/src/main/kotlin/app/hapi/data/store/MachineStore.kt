@@ -11,13 +11,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonNull
 
 /** Machine-list store surface (production impl [MachineStore]; tests fake it). */
@@ -52,23 +49,18 @@ class MachineStore(
     private val refreshBatchMs: Long = REFRESH_BATCH_MS,
 ) : MachineListStore {
 
-    private val snapshot: JsonSnapshotStore<List<Machine>>? = snapshotDir?.let { dir ->
-        JsonSnapshotStore(
-            file = File(dir, "machines.json"),
-            serializer = ListSerializer(Machine.serializer()),
-            scope = scope,
-        )
-    }
+    private val list = SnapshotList(snapshotDir, "machines.json", Machine.serializer(), scope)
+    override val machines: StateFlow<List<Machine>> = list.values
 
-    private val _machines = MutableStateFlow(snapshot?.load() ?: emptyList())
-    override val machines: StateFlow<List<Machine>> = _machines.asStateFlow()
+    /** Enables the namespace-specific snapshot after identity is learned. */
+    fun enableSnapshots(dir: File) = list.enableSnapshots(dir)
 
     private val refreshMutex = Mutex()
     private val refreshQueued = AtomicBoolean(false)
 
     /** Forces the debounced snapshot to disk (app background / tests). */
     suspend fun flushPersistence() {
-        snapshot?.flush()
+        list.flush()
     }
 
     override suspend fun refresh() {
@@ -134,17 +126,7 @@ class MachineStore(
         }
     }
 
-    private fun updateMachines(transform: (List<Machine>) -> List<Machine>) {
-        while (true) {
-            val previous = _machines.value
-            val next = transform(previous)
-            if (next === previous) return
-            if (_machines.compareAndSet(previous, next)) {
-                snapshot?.scheduleWrite(next)
-                return
-            }
-        }
-    }
+    private fun updateMachines(transform: (List<Machine>) -> List<Machine>) = list.update(transform)
 
     private companion object {
         const val REFRESH_BATCH_MS: Long = 16

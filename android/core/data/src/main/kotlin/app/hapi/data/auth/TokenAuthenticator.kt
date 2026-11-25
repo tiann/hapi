@@ -4,8 +4,6 @@ import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.HapiJson
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -65,9 +63,6 @@ class TokenAuthenticator(
         .addPathSegment("api").addPathSegment("auth").build()
 
     private val mutex = Mutex()
-    private val mutableRefreshedNamespace = MutableStateFlow<String?>(null)
-    /** Identity learned by this authenticator after a successful exchange. */
-    val refreshedNamespace = mutableRefreshedNamespace.asStateFlow()
 
     @Volatile
     private var cachedJwt: String? = null
@@ -169,7 +164,6 @@ class TokenAuthenticator(
             if (!credentialStore.replace(credentials, updated)) return null
             rejectedSecret = null
             cachedJwt = auth.token
-            mutableRefreshedNamespace.value = updated.pairedNamespace
             return auth.token
         }
     }

@@ -18,29 +18,47 @@ import kotlinx.coroutines.sync.withLock
 class MessageWindowStores(
     private val api: MessagesApi,
     private val scope: CoroutineScope,
-    private val snapshots: WindowSnapshots? = null,
+    snapshots: WindowSnapshots? = null,
     private val historyRetentionLimit: Int = HISTORY_WINDOW_SIZE,
 ) {
     private val mutex = Mutex()
+    private var snapshots = snapshots
     private val stores = HashMap<String, MessageWindowStore>()
 
     /** The session's store, hydrating from its snapshot on first open. */
     suspend fun open(sessionId: String): MessageWindowStore {
-        mutex.withLock { stores[sessionId] }?.let { return it }
-        // Hydrate outside the lock (disk I/O), then race-tolerantly install.
-        val hydrated = snapshots?.load(sessionId)?.let { MessageWindowLogic.hydrate(sessionId, it) }
-        return mutex.withLock {
-            stores.getOrPut(sessionId) {
-                MessageWindowStore(
-                    sessionId = sessionId,
-                    api = api,
-                    scope = scope,
-                    snapshots = snapshots,
-                    initialState = hydrated,
-                    historyRetentionLimit = historyRetentionLimit,
-                )
+        while (true) {
+            val snapshots = mutex.withLock {
+                stores[sessionId]?.let { return it }
+                this.snapshots
+            }
+            val hydrated = snapshots?.load(sessionId)?.let { MessageWindowLogic.hydrate(sessionId, it) }
+            mutex.withLock {
+                // Hydrate outside the lock. Retry if a namespace was bound mid-open.
+                if (snapshots === this.snapshots) {
+                    return stores.getOrPut(sessionId) {
+                        MessageWindowStore(
+                            sessionId = sessionId,
+                            api = api,
+                            scope = scope,
+                            snapshots = snapshots,
+                            initialState = hydrated,
+                            historyRetentionLimit = historyRetentionLimit,
+                        )
+                    }
+                }
             }
         }
+    }
+
+    /** Late identity recovery must keep the same stores for already-open chats. */
+    suspend fun enableSnapshots(snapshots: WindowSnapshots) {
+        val open = mutex.withLock {
+            if (this.snapshots != null) return
+            this.snapshots = snapshots
+            stores.values.toList()
+        }
+        for (store in open) store.enableSnapshots(snapshots)
     }
 
     /** Already-open store, if any (no hydration). */
