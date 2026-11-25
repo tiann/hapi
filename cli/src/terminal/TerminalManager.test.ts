@@ -36,6 +36,7 @@ describe('buildFilteredEnv web Terminal PTY', () => {
             CLAUDECODE: '1',
             CLI_API_TOKEN: 'secret-token',
             OPENAI_API_KEY: 'sk-test',
+            QQBOT_APP_SECRET: 'fake-qq-app-secret',
             TERM: 'xterm-256color',
         })
 
@@ -48,13 +49,27 @@ describe('buildFilteredEnv web Terminal PTY', () => {
         expect(env.CLAUDECODE).toBeUndefined()
         expect(env.CLI_API_TOKEN).toBeUndefined()
         expect(env.OPENAI_API_KEY).toBeUndefined()
+        expect(env.QQBOT_APP_SECRET).toBeUndefined()
+    })
+
+    it('strips a case-variant QQ secret from the Windows web terminal environment', () => {
+        setPlatform('win32')
+        try {
+            const env = buildFilteredEnv({ QqBoT_ApP_SeCrEt: 'fake-qq-app-secret', Path: 'C:\\bin' })
+            expect(env.QqBoT_ApP_SeCrEt).toBeUndefined()
+            expect(env.Path).toBe('C:\\bin')
+        } finally {
+            Object.defineProperty(process, 'platform', originalPlatformDescriptor!)
+        }
     })
 
     it('passes filtered env into Bun.spawn for a new terminal', () => {
         const previousAgentContext = process.env.HAPI_AGENT_CONTEXT
         const previousCursorAgent = process.env.CURSOR_AGENT
+        const previousQqSecret = process.env.QQBOT_APP_SECRET
         process.env.HAPI_AGENT_CONTEXT = '1'
         process.env.CURSOR_AGENT = '1'
+        process.env.QQBOT_APP_SECRET = 'fake-qq-app-secret'
 
         const terminal = {
             write: vi.fn(),
@@ -89,8 +104,11 @@ describe('buildFilteredEnv web Terminal PTY', () => {
             expect(spawnEnv?.HAPI_USER_TERMINAL).toBe('1')
             expect(spawnEnv?.HAPI_AGENT_CONTEXT).toBeUndefined()
             expect(spawnEnv?.CURSOR_AGENT).toBeUndefined()
+            expect(spawnEnv?.QQBOT_APP_SECRET).toBeUndefined()
         } finally {
             globalWithBun.Bun = previousBun
+            if (previousQqSecret === undefined) delete process.env.QQBOT_APP_SECRET
+            else process.env.QQBOT_APP_SECRET = previousQqSecret
             if (previousAgentContext === undefined) {
                 delete process.env.HAPI_AGENT_CONTEXT
             } else {

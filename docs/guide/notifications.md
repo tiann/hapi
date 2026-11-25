@@ -86,15 +86,14 @@ groups, inbound messages, and approval actions are not supported.
 
 1. Create or use an existing bot on the [QQ Open Platform](https://q.qq.com/) and obtain its App ID and App Secret.
 2. Set up a direct chat with the bot and make sure the recipient allows proactive messages. Obtain the `user_openid` for this bot (for example, from the sender information in an incoming direct-message event handled by your existing bot integration). This is not the recipient's QQ number, and an OpenID for another bot will not work. HAPI does not receive QQ events or discover this ID for you.
-3. Configure the hub and restart it. Use an explicit `HAPI_PUBLIC_URL` that you can open from the device receiving the notification.
+3. Configure the hub and restart it. Use an explicit `HAPI_PUBLIC_URL` that you can open from the device receiving the notification. Pass the App Secret only to the hub command or its service, not to a shell environment shared with the runner or agents.
 
 ```bash
-export QQBOT_NOTIFICATION=true
-export QQBOT_APP_ID="your-app-id"
-export QQBOT_APP_SECRET="your-app-secret"
-export QQBOT_USER_OPENID="the-recipients-openid-for-this-bot"
-export HAPI_PUBLIC_URL="https://hapi.example.com"
-
+QQBOT_NOTIFICATION=true \
+QQBOT_APP_ID="your-app-id" \
+QQBOT_APP_SECRET="your-app-secret" \
+QQBOT_USER_OPENID="the-recipients-openid-for-this-bot" \
+HAPI_PUBLIC_URL="https://hapi.example.com" \
 hapi hub
 ```
 
