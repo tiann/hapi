@@ -105,18 +105,43 @@ export function getProcessThreadGroupId(pid: number): number | null {
 
 /** POSIX process-group id (pgid); null when unavailable. Used to cover mid-Stop forks (#2021). */
 export function getProcessGroupId(pid: number): number | null {
-  if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return null;
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const commandEnd = stat.lastIndexOf(')');
-    if (commandEnd < 0) return null;
-    // Fields after comm: state(3) ppid(4) pgrp(5) → index 2 after the split.
-    const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
-    const pgrp = Number(fields[2]);
-    return Number.isSafeInteger(pgrp) && pgrp > 0 ? pgrp : null;
-  } catch {
-    return null;
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  if (process.platform === 'linux') {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const commandEnd = stat.lastIndexOf(')');
+      if (commandEnd < 0) return null;
+      // Fields after comm: state(3) ppid(4) pgrp(5) → index 2 after the split.
+      const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+      const pgrp = Number(fields[2]);
+      return Number.isSafeInteger(pgrp) && pgrp > 0 ? pgrp : null;
+    } catch {
+      return null;
+    }
   }
+  if (process.platform === 'darwin') {
+    const result = spawn.sync('ps', ['-o', 'pgid=', '-p', String(pid)], {
+      encoding: 'utf8',
+      timeout: SPAWN_SYNC_TIMEOUT_MS,
+    });
+    if (result.error || result.status !== 0) return null;
+    const pgrp = Number((result.stdout ?? '').toString().trim());
+    return Number.isSafeInteger(pgrp) && pgrp > 0 ? pgrp : null;
+  }
+  return null;
+}
+
+/**
+ * True when `root` leads a process group we may signal without hitting HAPI.
+ * Requires the agent to be its own group leader and not share HAPI's pgid (#2021 Blocker).
+ */
+export function isAgentOwnedProcessGroup(root: RetainedProcessIdentity): boolean {
+  if (typeof root.pgid !== 'number' || root.pgid <= 0) return false;
+  // Group leader check — only the leader's pgid equals its pid.
+  if (root.pgid !== root.pid) return false;
+  const selfPgid = getProcessGroupId(process.pid);
+  if (selfPgid !== null && root.pgid === selfPgid) return false;
+  return true;
 }
 
 /** Stable marker for one OS PID generation; null means the platform probe failed. */
@@ -544,31 +569,43 @@ export async function killRetainedProcessTree(
   if (!identities.every((identity) => classifyRetainedIdentity(identity) === 'gone')) {
     return false;
   }
-  // Cover mid-Stop forks via the original process group (#2021 tip Major).
-  // Windows taskkill /T already covered the console tree in phase 1/2.
+  // Cover mid-Stop forks via an agent-owned process group only (#2021 Blocker).
+  // Never signal HAPI's inherited group. Windows taskkill /T already covered the tree.
   if (!isWindows()) {
-    const root = identities[identities.length - 1]!;
-    const pgid = root.pgid;
-    if (typeof pgid !== 'number' || pgid <= 0) {
-      // No group coverage — keep unresolved rather than trusting PID-only kills.
-      return false;
-    }
+    return await verifyAgentOwnedProcessGroupExited(identities[identities.length - 1]!, true);
+  }
+  return true;
+}
+
+/**
+ * After captured PIDs look gone, require an agent-owned process group to be empty
+ * before claiming verified exit (covers mid-teardown forks) (#2021).
+ */
+export async function verifyAgentOwnedProcessGroupExited(
+  root: RetainedProcessIdentity,
+  signalGroup: boolean,
+): Promise<boolean> {
+  if (!isAgentOwnedProcessGroup(root)) {
+    // No safe group coverage — keep Stop unresolved.
+    return false;
+  }
+  const pgid = root.pgid!;
+  if (signalGroup) {
     try {
       process.kill(-pgid, 'SIGKILL');
     } catch {
       // group already gone
     }
-    const deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      const remaining = listProcessGroupPids(pgid);
-      if (remaining === 'scan_failed') return false;
-      if (remaining.length === 0) return true;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    const remaining = listProcessGroupPids(pgid);
-    return remaining !== 'scan_failed' && remaining.length === 0;
   }
-  return true;
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline) {
+    const remaining = listProcessGroupPids(pgid);
+    if (remaining === 'scan_failed') return false;
+    if (remaining.length === 0) return true;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const remaining = listProcessGroupPids(pgid);
+  return remaining !== 'scan_failed' && remaining.length === 0;
 }
 
 /** PIDs currently in process group `pgid`, or scan_failed when pgrep is unusable. */

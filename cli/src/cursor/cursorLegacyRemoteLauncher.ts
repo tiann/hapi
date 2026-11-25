@@ -8,8 +8,10 @@ import {
     getProcessStartMarker,
     getProcessThreadGroupId,
     getSystemBootId,
+    isAgentOwnedProcessGroup,
     killRetainedProcessTree,
     snapshotProcessTreeIdentities,
+    verifyAgentOwnedProcessGroupExited,
     type RetainedProcessIdentity,
 } from '@/utils/process';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -362,23 +364,33 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 env: process.env,
                 stdio: ['ignore', 'pipe', 'pipe'],
                 shell: process.platform === 'win32',
-                windowsHide: process.platform === 'win32'
+                windowsHide: process.platform === 'win32',
+                // Own process group on POSIX so Stop can signal -pgid without
+                // killing the HAPI wrapper (#2021 Blocker).
+                detached: process.platform !== 'win32',
             });
             this.activeChild = child;
             this.stopKillEscalated = false;
             this.stopDrainArmed = false;
             this.stopTreeVerified = null;
-            this.retainedStopTree = null;
             this.stopTreeSnapshotIncomplete = false;
-            this.spawnedRootIdentity = typeof child.pid === 'number' && child.pid > 0
-                ? {
+            // Capture identity + tree at spawn while the root is still alive —
+            // a later Stop after root exit can still verify retained members (#2021).
+            if (typeof child.pid === 'number' && child.pid > 0) {
+                this.spawnedRootIdentity = {
                     pid: child.pid,
                     startMarker: getProcessStartMarker(child.pid),
                     bootId: getSystemBootId(),
                     tgid: getProcessThreadGroupId(child.pid),
                     pgid: getProcessGroupId(child.pid),
-                }
-                : null;
+                };
+                this.retainedStopTree = snapshotProcessTreeIdentities(child.pid);
+                if (!this.retainedStopTree) this.stopTreeSnapshotIncomplete = true;
+            } else {
+                this.spawnedRootIdentity = null;
+                this.retainedStopTree = null;
+                this.stopTreeSnapshotIncomplete = true;
+            }
             this.resolveAfterStopTreeVerified = null;
             this.abandonStopVerification = null;
 
@@ -605,30 +617,28 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         const child = this.activeChild;
         let stopped = !child?.pid;
         if (child?.pid) {
-            // Capture the original tree once — later retries must not rescan
-            // from a root that already exited and left reparented descendants.
-            // A failed first snapshot stays sticky: a later scan from an absent
-            // root would falsely report "gone" while descendants survive (#2021).
+            // Prefer the spawn-time retained tree. Only attempt a live snapshot
+            // when spawn capture failed and the spawn root still matches (#2021).
+            // When the root has already exited, fall through to agent-owned
+            // process-group verification — do not sticky-block forever (#2021).
             if (!this.retainedStopTree && !this.stopTreeSnapshotIncomplete) {
                 const spawned = this.spawnedRootIdentity;
-                // Root must still be the spawn generation — a reused PID would
-                // make snapshotProcessTreeIdentities record the replacement (#2021).
-                if (!spawned || classifyRetainedIdentity(spawned) !== 'match') {
-                    this.stopTreeSnapshotIncomplete = true;
-                } else {
+                if (spawned && classifyRetainedIdentity(spawned) === 'match') {
                     const snap = snapshotProcessTreeIdentities(child.pid);
                     const root = snap?.[snap.length - 1];
                     if (
-                        !snap
-                        || !root
-                        || root.pid !== spawned.pid
-                        || root.startMarker !== spawned.startMarker
+                        snap
+                        && root
+                        && root.pid === spawned.pid
+                        && root.startMarker === spawned.startMarker
                     ) {
-                        this.stopTreeSnapshotIncomplete = true;
-                    } else {
                         this.retainedStopTree = snap;
+                    } else {
+                        this.stopTreeSnapshotIncomplete = true;
                     }
                 }
+                // Root gone / unknown: leave retainedStopTree null and recover
+                // via the spawn-time process group below when ownership holds.
             }
             let force = this.stopKillEscalated || leavingRemote;
             const attempts = leavingRemote ? 2 : 1;
@@ -636,12 +646,33 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 try {
                     if (this.retainedStopTree) {
                         stopped = await killRetainedProcessTree(this.retainedStopTree, force);
+                    } else if (
+                        this.spawnedRootIdentity
+                        && isAgentOwnedProcessGroup(this.spawnedRootIdentity)
+                    ) {
+                        // Spawn-time tree missing (or root already exited) but
+                        // we own the agent's process group — cover descendants
+                        // that outlived the root without signaling by a reused
+                        // ChildProcess PID (#2021 Major).
+                        if (classifyRetainedIdentity(this.spawnedRootIdentity) === 'match') {
+                            try {
+                                process.kill(
+                                    this.spawnedRootIdentity.pid,
+                                    force ? 'SIGKILL' : 'SIGTERM',
+                                );
+                            } catch {
+                                // root may have raced out
+                            }
+                        }
+                        stopped = await verifyAgentOwnedProcessGroupExited(
+                            this.spawnedRootIdentity,
+                            true,
+                        );
                     } else {
-                        // Incomplete snapshot: do not signal by live ChildProcess PID —
-                        // the root may have exited and the OS may have reused it.
-                        // Keep settlement pending until a verified original identity
-                        // exists (#2021 tip Major).
+                        // No verified tree and no agent-owned group — do not
+                        // signal by live ChildProcess PID (reuse hazard).
                         stopped = false;
+                        this.stopTreeSnapshotIncomplete = true;
                     }
                 } catch (error) {
                     logger.debug('[cursor-remote] Stop kill failed', error);

@@ -71,7 +71,10 @@ export function buildAcpStdioSpawnOptions(env?: Record<string, string>, cwd?: st
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: process.platform === 'win32',
-        windowsHide: process.platform === 'win32'
+        windowsHide: process.platform === 'win32',
+        // Own process group on POSIX so Stop can cover mid-teardown forks
+        // without signaling HAPI's inherited group (#2021).
+        detached: process.platform !== 'win32',
     };
 }
 

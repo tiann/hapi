@@ -274,7 +274,16 @@ describe('AcpSdkBackend', () => {
             env: { TEST_ENV: '1' },
             stdio: ['pipe', 'pipe', 'pipe'],
             shell: true,
-            windowsHide: true
+            windowsHide: true,
+            detached: false,
+        });
+    });
+
+    it('detaches ACP stdio on POSIX so Stop owns a private process group (#2021)', () => {
+        setPlatform('linux');
+        expect(buildAcpStdioSpawnOptions()).toMatchObject({
+            detached: true,
+            shell: false,
         });
     });
 

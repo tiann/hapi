@@ -58,12 +58,16 @@ vi.mock('@/utils/process', () => ({
     getProcessThreadGroupId: vi.fn((pid: number) => pid),
     getProcessGroupId: vi.fn((pid: number) => pid),
     classifyRetainedIdentity: vi.fn(() => 'match'),
+    isAgentOwnedProcessGroup: vi.fn(() => true),
+    verifyAgentOwnedProcessGroupExited: vi.fn(async () => true),
 }));
 
 import {
+    isAgentOwnedProcessGroup,
     killProcessByChildProcess,
     killRetainedProcessTree,
     snapshotProcessTreeIdentities,
+    verifyAgentOwnedProcessGroupExited,
 } from '@/utils/process';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { CursorSession } from './session';
@@ -599,13 +603,17 @@ describe('cursorLegacyRemoteLauncher', () => {
         killMock.mockResolvedValue(true);
     });
 
-    it('keeps Stop unresolved across retries when the first tree snapshot fails (#2021)', async () => {
+    it('keeps Stop unresolved when spawn tree and agent-owned group are both unavailable (#2021)', async () => {
         const snapMock = vi.mocked(snapshotProcessTreeIdentities);
         const killRetained = vi.mocked(killRetainedProcessTree);
         const killChild = vi.mocked(killProcessByChildProcess);
+        const ownedGroup = vi.mocked(isAgentOwnedProcessGroup);
+        const verifyGroup = vi.mocked(verifyAgentOwnedProcessGroupExited);
         snapMock.mockReturnValueOnce(null);
+        ownedGroup.mockReturnValue(false);
         killRetained.mockClear();
         killChild.mockClear();
+        verifyGroup.mockClear();
 
         const child1 = makeChild({ hold: true, pid: 9999 });
         spawnMock.mockReturnValueOnce(child1);
@@ -627,18 +635,21 @@ describe('cursorLegacyRemoteLauncher', () => {
         // Must not signal by live ChildProcess PID when the original tree is unknown.
         expect(killChild).not.toHaveBeenCalled();
         expect(killRetained).not.toHaveBeenCalled();
+        expect(verifyGroup).not.toHaveBeenCalled();
         expect(thinking).not.toHaveBeenCalledWith(false);
 
         // Second Stop must not take a replacement snapshot from the root, and
         // must still refuse to signal by reused PID.
-        snapMock.mockReturnValue([{ pid: 9999, startMarker: null, bootId: null, tgid: null }]);
+        snapMock.mockReturnValue([{ pid: 9999, startMarker: null, bootId: null, tgid: null, pgid: null }]);
         await abort();
         expect(snapMock).toHaveBeenCalledTimes(1);
         expect(killChild).not.toHaveBeenCalled();
         expect(killRetained).not.toHaveBeenCalled();
+        expect(verifyGroup).not.toHaveBeenCalled();
         expect(thinking).not.toHaveBeenCalledWith(false);
 
         thinking.mockRestore();
+        ownedGroup.mockReturnValue(true);
         snapMock.mockImplementation((pid: number) => [{
             pid,
             startMarker: `marker-${pid}`,
@@ -651,6 +662,58 @@ describe('cursorLegacyRemoteLauncher', () => {
         child1.failChild?.(new Error('test teardown after incomplete snapshot'));
         queue.close();
         await launchPromise.catch(() => undefined);
+    });
+
+    it('recovers Stop via spawn-time process group after the root exits (#2021)', async () => {
+        const { classifyRetainedIdentity } = await import('@/utils/process');
+        const snapMock = vi.mocked(snapshotProcessTreeIdentities);
+        const killRetained = vi.mocked(killRetainedProcessTree);
+        const verifyGroup = vi.mocked(verifyAgentOwnedProcessGroupExited);
+        const ownedGroup = vi.mocked(isAgentOwnedProcessGroup);
+        const classify = vi.mocked(classifyRetainedIdentity);
+        // Spawn captures a tree; later the root generation is gone while a
+        // descendant still holds stdout — recover via agent-owned pgid.
+        snapMock.mockReturnValueOnce(null);
+        ownedGroup.mockReturnValue(true);
+        verifyGroup.mockResolvedValue(true);
+        classify.mockReturnValue('gone');
+        killRetained.mockClear();
+        verifyGroup.mockClear();
+
+        const child1 = makeChild({ hold: true, pid: 5555 });
+        spawnMock.mockReturnValueOnce(child1);
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        queue.push('first', { permissionMode: 'default' }, 'first');
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        const thinking = vi.spyOn(session, 'onThinkingChange');
+
+        const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+        const launchPromise = cursorLegacyRemoteLauncher(session);
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+        expect(spawnMock.mock.calls[0]?.[2]).toMatchObject({ detached: true });
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
+        await abort();
+        expect(killRetained).not.toHaveBeenCalled();
+        expect(verifyGroup).toHaveBeenCalled();
+        expect(thinking).toHaveBeenCalledWith(false);
+
+        child1.closeChild?.(null);
+        queue.close();
+        await launchPromise;
+        thinking.mockRestore();
+        classify.mockReturnValue('match');
+        ownedGroup.mockReturnValue(true);
+        snapMock.mockImplementation((pid: number) => [{
+            pid,
+            startMarker: `marker-${pid}`,
+            bootId: 'boot',
+            tgid: pid,
+            pgid: pid,
+        }]);
     });
 
     it('blocks Switch when tree kill stays unconfirmed (#2021)', async () => {

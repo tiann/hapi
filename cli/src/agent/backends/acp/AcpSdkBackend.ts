@@ -18,6 +18,7 @@ import {
     killRetainedProcessTree,
     retainedIdentityStillAlive,
     snapshotProcessTreeIdentities,
+    verifyAgentOwnedProcessGroupExited,
     type RetainedProcessIdentity,
 } from '@/utils/process';
 
@@ -1390,6 +1391,12 @@ export class AcpSdkBackend implements AgentBackend {
         const tree = this.retainedAgentTree;
         if (!tree || tree.length === 0) return this.agentTreeEnded;
         if (tree.every((identity) => !retainedIdentityStillAlive(identity))) {
+            // Captured PIDs gone is not enough — require agent-owned process-group
+            // emptiness so mid-teardown forks cannot slip through (#2021).
+            const root = tree[tree.length - 1]!;
+            if (!await verifyAgentOwnedProcessGroupExited(root, true)) {
+                return false;
+            }
             this.agentTreeEnded = true;
             this.retainedAgentTree = null;
             this.publishPendingDisconnectSettle();
@@ -1554,9 +1561,17 @@ export class AcpSdkBackend implements AgentBackend {
                     this.retainedAgentTree = preCloseTree;
                     agentEnded = false;
                 } else if (closeOk) {
-                    agentEnded = true;
-                    this.agentTreeEnded = true;
-                    this.retainedAgentTree = null;
+                    // Same exit check as verifyRetainedAgentExit — process-group
+                    // emptiness, not PID absence alone (#2021).
+                    const root = preCloseTree[preCloseTree.length - 1]!;
+                    if (await verifyAgentOwnedProcessGroupExited(root, true)) {
+                        agentEnded = true;
+                        this.agentTreeEnded = true;
+                        this.retainedAgentTree = null;
+                    } else {
+                        this.retainedAgentTree = preCloseTree;
+                        agentEnded = false;
+                    }
                 } else {
                     // Tree members look gone but close itself was incomplete —
                     // keep the snapshot for a retry rather than claiming exit.

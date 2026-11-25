@@ -1122,7 +1122,11 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
     const settledClaudeToolUseIds = new Set<string>()
     for (const row of rows) {
         const decoded = decodeMessageContent(row.content)
-        if (isUserMessageRow(decoded)) continue
+        if (isUserMessageRow(decoded)) {
+            // Invoked user turn: older rows are a previous turn — stop collecting.
+            if (row.invoked_at != null) break
+            continue
+        }
         const turnCompleteSettled = acpTurnCompleteSettledCallIds(decoded)
         if (turnCompleteSettled.length > 0) {
             for (const callId of turnCompleteSettled) settledAcpCallIds.add(callId)
@@ -1133,6 +1137,11 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
             if (isHiddenClaudeOutput(claudeData)) continue
             if (claudeData.type === 'user') {
                 collectClaudeToolResultIds(claudeData, settledClaudeToolUseIds)
+                continue
+            }
+            if (claudeData.type === 'result') {
+                // Idle Claude ends here — do not decompress the rest of lookback (#2021).
+                break
             }
             continue
         }

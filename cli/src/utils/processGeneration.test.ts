@@ -16,9 +16,11 @@ vi.mock('node:fs', async (importOriginal) => {
 
 import {
     getSystemBootId,
+    getProcessGroupId,
     getProcessThreadGroupId,
     normalizeBootId,
     classifyRetainedIdentity,
+    isAgentOwnedProcessGroup,
     killRetainedProcessTree,
     retainedIdentityStillAlive,
     type RetainedProcessIdentity,
@@ -193,5 +195,44 @@ describe('retained process identity classification (#2021)', () => {
         expect(await killRetainedProcessTree([identity()], false)).toBe(true)
         // Phase-1 SIGTERM against the PID; phase-2 must not escalate that PID.
         expect(signals).toEqual(['SIGTERM'])
+    })
+
+    it('refuses process-group signals when the agent inherited HAPI’s group (#2021 Blocker)', async () => {
+        // Not a group leader (pgid !== pid) — typical inherited wrapper group.
+        expect(isAgentOwnedProcessGroup(identity({ pid: 4242, pgid: 7 }))).toBe(false)
+
+        let alive = true
+        const signals: Array<{ pid: number; signal?: NodeJS.Signals | number }> = []
+        vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (signal === 0) {
+                if (!alive) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
+                return true
+            }
+            signals.push({ pid, signal })
+            alive = false
+            return true
+        }) as typeof process.kill)
+        mockPsMarker('Wed Nov 25 00:00:00 2026')
+        // Captured PIDs exit, but inherited-group coverage must keep Stop unresolved
+        // rather than SIGKILL -pgid against HAPI (#2021).
+        expect(await killRetainedProcessTree([identity({ pid: 4242, pgid: 7 })], true)).toBe(false)
+        expect(signals.every((entry) => entry.pid > 0)).toBe(true)
+        expect(signals.some((entry) => entry.pid < 0)).toBe(false)
+    })
+
+    it('reads process group id on macOS via ps (#2021)', () => {
+        platform('darwin')
+        spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {
+            if (cmd === 'ps' && Array.isArray(args) && args.includes('pgid=')) {
+                return { status: 0, stdout: '  4242\n', stderr: '', error: null }
+            }
+            return { status: 1, stdout: '', stderr: '', error: null }
+        })
+        expect(getProcessGroupId(4242)).toBe(4242)
+        expect(spawnSyncMock).toHaveBeenCalledWith(
+            'ps',
+            ['-o', 'pgid=', '-p', '4242'],
+            expect.objectContaining({ encoding: 'utf8' }),
+        )
     })
 })
