@@ -1087,6 +1087,33 @@ describe('claudeRemoteLauncher resume anchor', () => {
         } finally { session.stopKeepAlive() }
     })
 
+    it('uses the window stamped on the matching assistant row before the probe reports', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        const { SDKToLogConverter } = await import('./utils/sdkToLogConverter')
+        const stamp = '2026-09-01T13:00:00.000Z'
+        const convert = vi.spyOn(SDKToLogConverter.prototype, 'convert').mockImplementation(message =>
+            message.type === 'assistant' ? { type: 'assistant', uuid: 'stamped', timestamp: stamp, message: {
+                content: [{ type: 'text', text: 'Answer' }],
+                usage: { input_tokens: 100, output_tokens: 1, context_window: 1_000_000 }
+            } } : null)
+        harness.messages = [{ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-4-6',
+            content: [{ type: 'text', text: 'Answer' }], usage: { input_tokens: 100, output_tokens: 1 } } }]
+        try {
+            queue.push('hello', { permissionMode: 'default', model: 'sonnet[1m]' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                model: 'claude-sonnet-4-6', contextWindow: 1_000_000,
+                usage: { contextTokens: 100, sourceMessageUuid: 'stamped', sampledAt: Date.parse(stamp) }
+            })
+        } finally {
+            convert.mockRestore()
+            session.stopKeepAlive()
+        }
+    })
+
     it.each([13_681, 0])('persists the post-compaction usage snapshot, including zero (%i)', async compactTokens => {
         // The status bar replaces latestUsage wholesale, so a context-only
         // sample without a window would erase a known 1M denominator and
@@ -1117,9 +1144,12 @@ describe('claudeRemoteLauncher resume anchor', () => {
                     modelContextWindow: 1_000_000
                 })
             }))
+            const sample = client.sendAgentMessage.mock.calls[0]?.[0] as { uuid?: string; timestamp?: string } | undefined
+            expect(sample?.uuid).toEqual(expect.any(String))
             expect(client.getMetadata().contextDetails).toMatchObject({
                 contextWindow: 1_000_000,
-                usage: { contextTokens: compactTokens, cacheReadTokens: 0 }
+                usage: { contextTokens: compactTokens, cacheReadTokens: 0, sourceMessageUuid: sample?.uuid,
+                    sampledAt: Date.parse(sample?.timestamp ?? '') }
             })
         } finally {
             session.stopKeepAlive()

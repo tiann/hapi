@@ -29,7 +29,7 @@ function seedTwoTurns(store: Store, session: { id: string }) {
 }
 
 describe('Claude rewind hub integration', () => {
-    it.each(['discarded', 'legacy', 'legacy-ambiguous', 'clamped', 'retained', 'post-dispatch', 'not-yet-mirrored'] as const)(
+    it.each(['discarded', 'compacted', 'legacy', 'legacy-ambiguous', 'clamped', 'retained', 'post-dispatch', 'not-yet-mirrored'] as const)(
         'reconciles saved Claude usage with the actual rewind cut (%s)', async (source) => {
             const { store, engine } = createEngine()
             const sampleTime = 3_000
@@ -63,7 +63,11 @@ describe('Claude rewind hub integration', () => {
                 store.messages.addMessage(session.id, { role: 'user', content: 'rewind here' }, 'rewind-boundary', null, sampleTime)
                 store.messages.markMessagesInvoked(session.id, ['rewind-boundary'], sampleTime)
                 const sourceTime = source === 'clamped' ? sampleTime + 500 : sampleTime
-                const drop = store.messages.addMessage(session.id, reply('drop', sourceTime), undefined, null, sampleTime)
+                const discarded = source === 'compacted' ? { role: 'agent', content: { type: 'codex', data: {
+                    type: 'token_count', flavor: 'claude', uuid: 'drop', timestamp: new Date(sourceTime).toISOString(),
+                    info: { contextTokens: 15_000, modelContextWindow: 200_000 }
+                } } } : reply('drop', sourceTime)
+                const drop = store.messages.addMessage(session.id, discarded, undefined, null, sampleTime)
                 let expected = initialDetails
                 ;(engine as any).rpcGateway.rewindConversation = async () => {
                     if (source === 'post-dispatch') {
@@ -84,7 +88,7 @@ describe('Claude rewind hub integration', () => {
                 expect(messages.some(row => row.id === drop.id)).toBe(false)
                 const final = engine.getSession(session.id)?.metadata?.contextDetails
                 expect(final?.claude).toEqual(inv)
-                if (source === 'discarded' || source === 'legacy' || source === 'clamped') {
+                if (source === 'discarded' || source === 'compacted' || source === 'legacy' || source === 'clamped') {
                     expect(final?.usage).toBeUndefined()
                     expect(final?.contextWindow).toBeUndefined()
                 } else {

@@ -71,7 +71,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                             && saved?.provider === 'claude' && saved.contextWindow === 1_000_000
                             && saved.model && details.model && sameClaudeModelID(saved.model, details.model));
                         publishedLocalPreset = preset;
-                        publishContextDetails(session.client, withClaudeUsageSource(details, message), { clearContextSample: presetChanged || resumedWithoutExpandedPreset });
+                        publishContextDetails(session.client, withClaudeUsageSource(details, message.type === 'assistant' ? message : undefined), { clearContextSample: presetChanged || resumedWithoutExpandedPreset });
                     }
                 }
             }

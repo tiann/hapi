@@ -3482,10 +3482,13 @@ export class SyncEngine {
         const matches = (row: StoredMessage): boolean => {
             const envelope = unwrapRoleWrappedRecordEnvelope(row.content)
             const content = envelope?.role === 'agent' ? asRecord(envelope.content) : null
-            const entry = content?.type === 'output' ? asRecord(content.data) : null
-            return entry?.type === 'assistant' && entry.isSidechain !== true
+            const entry = asRecord(content?.data)
+            const isAssistant = content?.type === 'output' && entry?.type === 'assistant' && entry.isSidechain !== true
+            const isCompactionUsage = sourceUuid !== undefined && content?.type === 'codex'
+                && entry?.type === 'token_count' && entry.flavor === 'claude'
+            return Boolean(entry && (isAssistant || isCompactionUsage)
                 && (sourceUuid === undefined || entry.uuid === sourceUuid)
-                && typeof entry.timestamp === 'string' && Date.parse(entry.timestamp) === sampledAt
+                && typeof entry.timestamp === 'string' && Date.parse(entry.timestamp) === sampledAt)
         }
         const atSampleTime = this.store.messages.getMessagesAfterPosition(sessionId, 200,
             { at: sampledAt, seq: 0 }, { at: sampledAt, seq: Number.MAX_SAFE_INTEGER })

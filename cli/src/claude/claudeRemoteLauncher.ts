@@ -3,6 +3,7 @@ import { claudeRemote, type ClaudeSteerTarget, type CompactSummaryPayload } from
 import { convertAgentMessage } from "@/agent/messageConverter";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
+import { randomUUID } from 'node:crypto';
 import { hashObject } from "@/utils/deterministicJson";
 import { SDKAssistantMessage, SDKMessage, SDKResultMessage, SDKSystemMessage, SDKUserMessage } from "./sdk";
 import { formatClaudeMessageForInk } from "@/ui/messageFormatterInk";
@@ -467,7 +468,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
             const logMessage = sdkToLogConverter.convert(msg);
             if (assistantDetails) {
-                publishContextDetails(session.client, withClaudeUsageSource(assistantDetails, logMessage));
+                const relayed = logMessage?.type === 'assistant' ? logMessage : undefined;
+                const relayedWindow = relayed?.message?.usage?.context_window;
+                if (assistantDetails.contextWindow === undefined && typeof relayedWindow === 'number'
+                    && Number.isSafeInteger(relayedWindow) && relayedWindow > 0) {
+                    assistantDetails.contextWindow = relayedWindow;
+                }
+                publishContextDetails(session.client, withClaudeUsageSource(assistantDetails, relayed));
             }
             if (logMessage) {
                 if (logMessage.type === 'user' && logMessage.message?.content) {
@@ -966,11 +973,6 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                     model: lastSystemModel,
                                     effectiveContextWindow: contextWindow
                                 })
-                                if (details) {
-                                    usageSampleLaunch = activeContextLaunch;
-                                    usageSamplePreset = selectedContextPreset;
-                                    publishContextDetails(session.client, details)
-                                }
                                 // The status bar keeps the last pre-compaction
                                 // usage until the next model response; refresh
                                 // it with the boundary's post-tokens the same
@@ -987,9 +989,18 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                         contextTokens: compactContextTokens,
                                         contextWindow
                                     },
-                                    session.getModel()
+                                    details?.model ?? session.getModel()
                                 );
-                                if (convertedUsage) session.client.sendAgentMessage(convertedUsage);
+                                const usageEvent = convertedUsage ? {
+                                    ...convertedUsage, flavor: 'claude', uuid: randomUUID(), timestamp: new Date().toISOString()
+                                } : undefined;
+                                if (details) {
+                                    usageSampleLaunch = activeContextLaunch;
+                                    usageSamplePreset = selectedContextPreset;
+                                    assistantSampleModel = details.model ?? null;
+                                    publishContextDetails(session.client, withClaudeUsageSource(details, usageEvent));
+                                }
+                                if (usageEvent) session.client.sendAgentMessage(usageEvent);
                             }
 
                             logger.debug(
