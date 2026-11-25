@@ -158,6 +158,9 @@ class WakeupTestBackend {
     wasAgentTreeEnded(): boolean {
         return this.agentTreeEnded;
     }
+    async verifyRetainedAgentExit(_force = false): Promise<boolean> {
+        return this.agentTreeEnded;
+    }
 }
 
 function makeHarness(permissionMode: AgyMode['permissionMode'] = 'always-proceed', sessionId: string | null = null) {

@@ -352,19 +352,13 @@ function writeDurableChildToolWork(db: Database, sessionId: string, state: Child
     // settledCallIds are an OpenCode rewind latch (null flavor uses the same
     // full-rebuild path). Named non-OpenCode flavors still settle in memory
     // but must not grow metadata on every foreground tool result (#2021 Minor).
-    // Cap the latch so ordinary tool-result ingest stays O(bound) instead of
-    // rewriting an unbounded growing JSON blob each time (#2021 Minor).
-    const SETTLED_CALL_ID_LATCH_CAP = 256
+    // Upsert by call ID (Set) — do not FIFO-evict; rewind can delete a result
+    // while its start remains and needs this evidence (#2021 Minor).
     let settledCallIds: string[]
     if (flavor === null || flavor === 'opencode') {
-        const priorSet = new Set(priorSettledCalls)
-        settledCallIds = [...priorSettledCalls]
-        for (const id of state.settled) {
-            if (!priorSet.has(id)) settledCallIds.push(id)
-        }
-        if (settledCallIds.length > SETTLED_CALL_ID_LATCH_CAP) {
-            settledCallIds = settledCallIds.slice(settledCallIds.length - SETTLED_CALL_ID_LATCH_CAP)
-        }
+        const merged = new Set(priorSettledCalls)
+        for (const id of state.settled) merged.add(id)
+        settledCallIds = [...merged]
     } else {
         settledCallIds = priorSettledCalls
     }
@@ -2398,11 +2392,20 @@ export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSe
         `).get(sessionId, boundaryId, cutoffSeq) as { seq: number; position_at: number } | undefined
         if (!target) throw new Error('Rewind boundary not found')
         const deletedRows = prepareCached(db, `
-            SELECT id FROM messages WHERE session_id = ? AND (
+            SELECT id, content FROM messages WHERE session_id = ? AND (
                 COALESCE(invoked_at, created_at) > ?
                 OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
             )
-        `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<{ id: string }>
+        `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<{ id: string; content: string }>
+        // Harvest settlements whose completion rows are about to disappear while
+        // their starts may remain — store by call ID in durable metadata (#2021).
+        const harvested = childToolCallState(db, sessionId)
+        seedDurableChildToolWorkIfNeeded(db, sessionId, harvested)
+        for (const row of deletedRows) {
+            applyChildToolCallContent(harvested, decodeMessageContent(row.content))
+        }
+        const harvestedSettledIds = [...harvested.settled]
+        const harvestedSettledChildren = [...harvested.settledChildren]
         prepareCached(db, `
             DELETE FROM messages WHERE session_id = ? AND (
                 COALESCE(invoked_at, created_at) > ?
@@ -2421,6 +2424,10 @@ export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSe
         state.settled.clear()
         state.runningChildren.clear()
         state.settledChildren.clear()
+        for (const id of harvestedSettledIds) state.settled.add(id)
+        for (const id of harvestedSettledChildren) state.settledChildren.add(id)
+        writeDurableChildToolWork(db, sessionId, state)
+        state.durableSeeded = true
         prepareCached(db, `UPDATE sessions SET read_revision = content_revision, read_state_version = read_state_version + 1
             WHERE id = ? AND read_revision < content_revision AND NOT EXISTS (
                 SELECT 1 FROM messages WHERE session_id = sessions.id AND content_revision > sessions.read_revision

@@ -43,6 +43,9 @@ class FakeAgyBackend {
     wasAgentTreeEnded(): boolean {
         return this.agentTreeEnded;
     }
+    async verifyRetainedAgentExit(_force = false): Promise<boolean> {
+        return this.agentTreeEnded;
+    }
 
     initializeGate: Promise<void> | null = null;
     async initialize(): Promise<void> {

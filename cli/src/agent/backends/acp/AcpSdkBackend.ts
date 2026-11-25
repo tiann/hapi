@@ -14,6 +14,7 @@ import {
 } from './toolCallLifetimes';
 import { defaultToolCallLifetimeStore, type ToolCallLifetimeStore } from './toolCallLifetimeStore';
 import { randomUUID } from 'node:crypto';
+import { isProcessAlive, killProcessTreeByPid } from '@/utils/process';
 
 /** Why the backend is bumping/clearing hub thinking — launchers filter chatter here (#1553). */
 export type AgentActivitySource =
@@ -206,6 +207,11 @@ export class AcpSdkBackend implements AgentBackend {
     private readonly knownChildSessionIds = new Set<string>();
     /** Latched once `transport.close()` confirms the agent process tree is gone (#2021). */
     private agentTreeEnded = false;
+    /**
+     * PID retained after an unconfirmed close so a later Stop can re-verify /
+     * re-kill without a live transport (#2021).
+     */
+    private retainedAgentPid: number | null = null;
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -1340,7 +1346,32 @@ export class AcpSdkBackend implements AgentBackend {
 
     /** PID of the spawned ACP agent process, when known (used by the opencode v2 REST discovery). */
     getProcessPid(): number | null {
-        return this.transport ? this.transport.getProcessPid() : null;
+        return this.transport ? this.transport.getProcessPid() : this.retainedAgentPid;
+    }
+
+    /**
+     * Re-check / re-kill a process retained after an unconfirmed close.
+     * Used by Stop retry when `disconnect` already nulled the transport (#2021).
+     */
+    async verifyRetainedAgentExit(force = false): Promise<boolean> {
+        if (this.agentTreeEnded) return true;
+        if (this.transport) {
+            await this.disconnect();
+            return this.agentTreeEnded;
+        }
+        const pid = this.retainedAgentPid;
+        if (pid == null) return this.agentTreeEnded;
+        if (!isProcessAlive(pid)) {
+            this.agentTreeEnded = true;
+            this.retainedAgentPid = null;
+            return true;
+        }
+        const killed = await killProcessTreeByPid(pid, force);
+        if (killed) {
+            this.agentTreeEnded = true;
+            this.retainedAgentPid = null;
+        }
+        return killed;
     }
 
     getLastSessionUpdateAt(): number {
@@ -1387,7 +1418,13 @@ export class AcpSdkBackend implements AgentBackend {
                 await this.transportOpening?.catch(() => undefined);
             }
         }
-        if (!this.transport) return;
+        if (!this.transport) {
+            // Prior unconfirmed close retained a PID — retry verification (#2021).
+            if (this.retainedAgentPid != null) {
+                await this.verifyRetainedAgentExit(true);
+            }
+            return;
+        }
         for (const timer of this.sessionInfoRefreshTimers.values()) {
             clearTimeout(timer);
         }
@@ -1420,9 +1457,18 @@ export class AcpSdkBackend implements AgentBackend {
         this.notifyResponseComplete();
         this.settlePendingElicitations();
         let agentEnded = false;
+        const closePid = typeof this.transport.getProcessPid === 'function'
+            ? this.transport.getProcessPid()
+            : null;
         try {
             agentEnded = (await this.transport.close()) === true;
-            if (agentEnded) this.agentTreeEnded = true;
+            if (agentEnded) {
+                this.agentTreeEnded = true;
+                this.retainedAgentPid = null;
+            } else if (typeof closePid === 'number' && closePid > 0) {
+                // Keep a generation-bound verifier for Stop retry (#2021).
+                this.retainedAgentPid = closePid;
+            }
         } finally {
             this.transport = null;
             // Delete transition: only once the agent process tree is confirmed

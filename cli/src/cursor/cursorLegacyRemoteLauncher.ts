@@ -137,6 +137,18 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
     /** Invoked after a confirmed kill so a Stop retry can still bound drain
      *  after the original abortController was replaced. */
     private armActiveChildDrain: (() => void) | null = null;
+    /**
+     * Latest Stop tree-kill outcome for the active child. `null` while kill is
+     * still running; aborted turns must not settle until this is `true` (#2021).
+     */
+    private stopTreeVerified: boolean | null = null;
+    /** Resolve a close that arrived before Stop finished verifying the tree. */
+    private resolveAfterStopTreeVerified: (() => void) | null = null;
+    /**
+     * Rejected Switch/Exit abandons the Stop verify gate so a later natural
+     * process close is not stranded (#2021).
+     */
+    private abandonStopVerification: (() => void) | null = null;
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -333,10 +345,15 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             this.activeChild = child;
             this.stopKillEscalated = false;
             this.stopDrainArmed = false;
+            this.stopTreeVerified = null;
+            this.resolveAfterStopTreeVerified = null;
+            this.abandonStopVerification = null;
 
             let stderrCapture = '';
             let settled = false;
             let drainTimer: ReturnType<typeof setTimeout> | undefined;
+            let stdoutClosed = false;
+            let closeExitCode: number | null = null;
 
             // Abort marks the turn cancelled but must NOT resolve early — wait
             // for `close` (or the post-kill drain bound) so buffered stdout
@@ -345,17 +362,45 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             // reading the new controller's signal from `close` would miss it.
             // Tree kill itself lives in handleAbort so a second Stop can retry
             // against the same activeChild when the first kill is unconfirmed.
+            // For Stop, also wait for tree verification — root stdio can close
+            // while a descendant survives (#2021).
             let aborted = false;
             const runSignal = this.abortController.signal;
+            const finish = (exitCode: number | null) => {
+                if (settled) return;
+                settled = true;
+                cleanup(true);
+                resolve({ exitCode, stderr: stderrCapture });
+            };
+            const tryFinishAfterStop = () => {
+                if (settled || !aborted || !stdoutClosed) return;
+                if (this.stopTreeVerified === true) {
+                    this.resolveAfterStopTreeVerified = null;
+                    finish(null);
+                    return;
+                }
+                // Unverified or still pending: keep activeChild for Stop retry.
+                this.resolveAfterStopTreeVerified = () => {
+                    if (settled || !stdoutClosed) return;
+                    if (this.stopTreeVerified === true) finish(null);
+                };
+            };
+            this.abandonStopVerification = () => {
+                // Rejected Switch: agent keeps running — do not gate natural close.
+                aborted = false;
+                this.resolveAfterStopTreeVerified = null;
+                this.stopTreeVerified = null;
+                if (stdoutClosed && !settled) finish(closeExitCode);
+            };
             const armDrainBound = () => {
                 if (settled || drainTimer !== undefined || !this.stopDrainArmed) return;
                 drainTimer = setTimeout(() => {
                     if (settled) return;
-                    settled = true;
-                    cleanup();
+                    stdoutClosed = true;
                     try { child.stdout?.destroy(); } catch { /* ignore */ }
                     try { child.stderr?.destroy(); } catch { /* ignore */ }
-                    resolve({ exitCode: null, stderr: stderrCapture });
+                    tryFinishAfterStop();
+                    if (!aborted) finish(null);
                 }, STOP_DRAIN_MS);
                 drainTimer.unref?.();
             };
@@ -366,21 +411,24 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             };
             runSignal.addEventListener('abort', abortHandler);
 
-            const cleanup = () => {
+            const cleanup = (clearChild: boolean) => {
                 runSignal.removeEventListener('abort', abortHandler);
                 if (drainTimer !== undefined) clearTimeout(drainTimer);
-                if (this.activeChild === child) {
+                if (clearChild && this.activeChild === child) {
                     this.activeChild = null;
                     this.stopKillEscalated = false;
                     this.stopDrainArmed = false;
                     this.armActiveChildDrain = null;
+                    this.resolveAfterStopTreeVerified = null;
+                    this.abandonStopVerification = null;
+                    this.stopTreeVerified = null;
                 }
             };
 
             child.on('error', (err) => {
                 if (settled) return;
                 settled = true;
-                cleanup();
+                cleanup(true);
                 reject(err);
             });
 
@@ -389,14 +437,17 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             // (e.g. "Authentication required" → exit 1) can arrive after we
             // already classified the failure, turning a transient error into a
             // dropped message. Stop also relies on this so settlement runs
-            // after the last buffered tool_call line is forwarded.
+            // after the last buffered tool_call line is forwarded — and after
+            // tree verification when the turn was explicitly stopped (#2021).
             child.on('close', (code, _signal) => {
                 if (settled) return;
-                settled = true;
-                cleanup();
-                // Abort kills the child; treat that exit as a cancelled turn
-                // (exitCode null) rather than the kernel signal code.
-                resolve({ exitCode: aborted ? null : code, stderr: stderrCapture });
+                stdoutClosed = true;
+                closeExitCode = aborted ? null : code;
+                if (aborted) {
+                    tryFinishAfterStop();
+                    return;
+                }
+                finish(closeExitCode);
             });
 
             const rl = createInterface({ input: child.stdout!, crlfDelay: Infinity });
@@ -529,13 +580,16 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 force = true;
                 this.stopKillEscalated = true;
             }
+            this.stopTreeVerified = stopped;
             if (stopped) {
                 this.stopDrainArmed = true;
                 this.armActiveChildDrain?.();
+                this.resolveAfterStopTreeVerified?.();
             } else if (leavingRemote) {
                 // Keep the launcher recoverable: do not reset the queue or mark
                 // the turn aborted until the process tree is confirmed gone (#2021).
                 this.stopDrainArmed = false;
+                this.abandonStopVerification?.();
                 this.messageBuffer.addMessage(
                     'Exit: agent process still open after force kill — handoff blocked',
                     'status'
@@ -553,8 +607,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         } else {
             // No live child — still abort waiters; nothing to drain-bound.
             this.stopDrainArmed = true;
+            this.stopTreeVerified = true;
+            this.resolveAfterStopTreeVerified?.();
         }
-
         // Terminal cleanup resets the queue only after kill confirms — a rejected
         // Switch must leave queued work and launcher state recoverable (#2021).
         if (leavingRemote) {

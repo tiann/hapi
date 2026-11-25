@@ -185,6 +185,8 @@ export class AgyAcpStartError extends Error {}
 type AgyTurn = {
     modeHash: string;
     aborted: boolean;
+    /** Stop closed ACP stdin without a terminal cancel — do not settle yet (#2021). */
+    indeterminateAbort: boolean;
     stopReason: string | null;
     sentAt: number | null;
     answeredAt: number | null;
@@ -1059,7 +1061,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         } catch (error) {
             logger.debug('[agy-acp] disconnect failed', error);
         }
-        return backend.wasAgentTreeEnded();
+        if (backend.wasAgentTreeEnded()) return true;
+        // Unconfirmed close nulled the transport but retained a PID — probe again.
+        return backend.verifyRetainedAgentExit(true);
     }
 
     /** Apply the batch's mode and model; false when the turn must not run. */
@@ -1122,6 +1126,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const turn: AgyTurn = {
             modeHash,
             aborted: false,
+            indeterminateAbort: false,
             stopReason: null,
             sentAt: null,
             answeredAt: null,
@@ -1283,7 +1288,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
             } catch (error) {
                 logger.warn('[agy-acp] prompt failed', error);
-                if (isAcpIndeterminateError(error)) this.backendLost = true;
+                if (isAcpIndeterminateError(error)) {
+                    this.backendLost = true;
+                    // Cancel write may have closed stdin while tools still run —
+                    // carry that into the finalizer so we do not settle early (#2021).
+                    if (turn.aborted) turn.indeterminateAbort = true;
+                }
                 if (!turn.aborted) {
                     this.reportTurnError(`Antigravity prompt failed: ${errorMessage(error)}`);
                 }
@@ -1301,7 +1311,40 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             this.closeBackgroundCommands(turn, commandWindowAfterStepIndex, false, internalWakeup);
         } finally {
-            if (turn.aborted || turn.stopReason === 'cancelled') {
+            let keepThinkingForUnverifiedStop = false;
+            if (turn.aborted && turn.indeterminateAbort) {
+                // Backend left lifetimes unsettled. Settle only after verified
+                // process-tree exit; otherwise keep work visible / Stop-retryable.
+                let verified = this.backend?.wasAgentTreeEnded() ?? false;
+                if (!verified && this.backend) {
+                    verified = await this.retireBackend(this.backend);
+                }
+                if (verified) {
+                    await this.discardStoppedWakeup(turn);
+                    this.syncTranscriptCursor();
+                    const settledCallIds = [...new Set([
+                        ...turn.openCommands,
+                        ...turn.commandCallIds,
+                        ...turn.deferredLiveCommandCalls.keys(),
+                        ...turn.backendSettledCallIds,
+                    ])];
+                    if (settledCallIds.length > 0) {
+                        const settlement = convertAgentMessage({
+                            type: 'turn_complete',
+                            stopReason: turn.stopReason ?? 'cancelled',
+                            settledCallIds,
+                        });
+                        if (settlement) session.sendAgentMessage(settlement);
+                    }
+                } else {
+                    this.pendingVerifiedWakeupStop = true;
+                    keepThinkingForUnverifiedStop = true;
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Antigravity stop could not be verified; try Stop again.',
+                    });
+                }
+            } else if (turn.aborted || turn.stopReason === 'cancelled') {
                 // Union launcher command bookkeeping with the backend's own
                 // settledCallIds (ask_question and other non-run_command calls
                 // live only on the backend list — #2021).
@@ -1349,10 +1392,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 const generationMs = turn.generation.generationMs(turn.sentAt, turn.answeredAt);
                 session.sendAgentMessage(agyRoundSummary(turn.usage, durationMs, this.currentModelId, generationMs, turn.numTurns ?? turn.transcriptNumTurns ?? null));
             }
-            session.onThinkingChange(false);
-            await this.permissionHandler?.cancelAll('Prompt finished');
-            if (session.queue.size() === 0 && !this.shouldExit) {
-                session.sendSessionEvent({ type: 'ready' });
+            if (!keepThinkingForUnverifiedStop) {
+                session.onThinkingChange(false);
+                await this.permissionHandler?.cancelAll('Prompt finished');
+                if (session.queue.size() === 0 && !this.shouldExit) {
+                    session.sendSessionEvent({ type: 'ready' });
+                }
             }
         }
     }
