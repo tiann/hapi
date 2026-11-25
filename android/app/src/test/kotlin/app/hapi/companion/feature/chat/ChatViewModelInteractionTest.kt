@@ -2016,6 +2016,9 @@ class ChatViewModelInteractionTest {
         vm.setComposerText("\$url-plugin:url-sk")
         testScheduler.runCurrent()
         assertEquals(listOf(qualified), vm.skillSuggestions.value.map { it.skill })
+        vm.setComposerText("\$plugin:URL")
+        testScheduler.runCurrent()
+        assertEquals(listOf(qualified), vm.skillSuggestions.value.map { it.skill })
         assertEquals(1, harness.api.skillsCalls.size)
 
         val draft = "Run \$url-plugin:url-sk then continue"

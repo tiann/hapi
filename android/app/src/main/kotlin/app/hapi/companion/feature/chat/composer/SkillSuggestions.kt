@@ -58,13 +58,15 @@ internal object SkillSuggestions {
         val qualifiedEnd = if (secondColon < 0) token.word.length else secondColon
         val plugin = token.word.substring(1, colon)
         val name = token.word.substring(colon + 1, qualifiedEnd)
+        // With the colon already typed, let the normal ranking match the
+        // full query (including substrings across the colon). Otherwise only
+        // consume the suffix if the catalogue recognizes a qualified name.
         val caretIsAfterColon = token.query.length >= colon
-        val qualified = skills.any { skill ->
+        val qualified = caretIsAfterColon || skills.any { skill ->
             val separator = skill.name.indexOf(':')
-            if (separator < 0) return@any false
-            val pluginMatches = skill.name.substring(0, separator).startsWith(plugin, ignoreCase = true)
-            val namePrefix = if (caretIsAfterColon) token.query.substring(colon) else name
-            pluginMatches && skill.name.substring(separator + 1).startsWith(namePrefix, ignoreCase = true)
+            separator >= 0 &&
+                skill.name.substring(0, separator).startsWith(plugin, ignoreCase = true) &&
+                skill.name.substring(separator + 1).startsWith(name, ignoreCase = true)
         }
         val length = if (qualified) qualifiedEnd else colon
         if (token.query.length + 1 > length) return null
