@@ -2,7 +2,12 @@ import React from 'react';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { logger } from '@/ui/logger';
-import { killProcessByChildProcess } from '@/utils/process';
+import {
+    killProcessByChildProcess,
+    killRetainedProcessTree,
+    snapshotProcessTreeIdentities,
+    type RetainedProcessIdentity,
+} from '@/utils/process';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import {
@@ -142,6 +147,12 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
      * still running; aborted turns must not settle until this is `true` (#2021).
      */
     private stopTreeVerified: boolean | null = null;
+    /**
+     * Generation-bound snapshot of the original agent tree, captured before the
+     * first Stop signal. Retries kill/verify these members — not a fresh scan
+     * from a possibly-exited root (#2021 tip Major).
+     */
+    private retainedStopTree: RetainedProcessIdentity[] | null = null;
     /** Resolve a close that arrived before Stop finished verifying the tree. */
     private resolveAfterStopTreeVerified: (() => void) | null = null;
     /**
@@ -346,6 +357,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             this.stopKillEscalated = false;
             this.stopDrainArmed = false;
             this.stopTreeVerified = null;
+            this.retainedStopTree = null;
             this.resolveAfterStopTreeVerified = null;
             this.abandonStopVerification = null;
 
@@ -424,6 +436,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     this.resolveAfterStopTreeVerified = null;
                     this.abandonStopVerification = null;
                     this.stopTreeVerified = null;
+                    this.retainedStopTree = null;
                 }
             };
 
@@ -569,11 +582,22 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         const child = this.activeChild;
         let stopped = !child?.pid;
         if (child?.pid) {
+            // Capture the original tree once — later retries must not rescan
+            // from a root that already exited and left reparented descendants.
+            if (!this.retainedStopTree) {
+                this.retainedStopTree = snapshotProcessTreeIdentities(child.pid);
+            }
             let force = this.stopKillEscalated || leavingRemote;
             const attempts = leavingRemote ? 2 : 1;
             for (let i = 0; i < attempts; i += 1) {
                 try {
-                    stopped = await killProcessByChildProcess(child, force);
+                    if (this.retainedStopTree) {
+                        stopped = await killRetainedProcessTree(this.retainedStopTree, force);
+                    } else {
+                        // Incomplete snapshot: best-effort kill, never claim verified.
+                        await killProcessByChildProcess(child, force);
+                        stopped = false;
+                    }
                 } catch (error) {
                     logger.debug('[cursor-remote] Stop kill failed', error);
                     stopped = false;
@@ -584,6 +608,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             }
             this.stopTreeVerified = stopped;
             if (stopped) {
+                this.retainedStopTree = null;
                 this.stopDrainArmed = true;
                 this.armActiveChildDrain?.();
                 this.resolveAfterStopTreeVerified?.();

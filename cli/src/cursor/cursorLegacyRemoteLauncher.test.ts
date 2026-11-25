@@ -44,10 +44,21 @@ vi.mock('@/ui/ink/OpencodeDisplay', () => ({
 }));
 
 vi.mock('@/utils/process', () => ({
-    killProcessByChildProcess: vi.fn(async () => true)
+    killProcessByChildProcess: vi.fn(async () => true),
+    snapshotProcessTreeIdentities: vi.fn((pid: number) => [{
+        pid,
+        startMarker: `marker-${pid}`,
+        bootId: 'boot',
+        tgid: pid,
+    }]),
+    killRetainedProcessTree: vi.fn(async () => true),
 }));
 
-import { killProcessByChildProcess } from '@/utils/process';
+import {
+    killProcessByChildProcess,
+    killRetainedProcessTree,
+    snapshotProcessTreeIdentities,
+} from '@/utils/process';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { CursorSession } from './session';
 import type { EnhancedMode } from './loop';
@@ -135,6 +146,9 @@ describe('cursorLegacyRemoteLauncher', () => {
         spawnMock.mockReset();
         vi.mocked(killProcessByChildProcess).mockReset();
         vi.mocked(killProcessByChildProcess).mockResolvedValue(true);
+        vi.mocked(killRetainedProcessTree).mockReset();
+        vi.mocked(killRetainedProcessTree).mockResolvedValue(true);
+        vi.mocked(snapshotProcessTreeIdentities).mockClear();
         process.stdin.isTTY = false;
         process.stdout.isTTY = false;
         process.env.CURSOR_LEGACY_TRANSIENT_BACKOFF_MS = '0';
@@ -529,10 +543,12 @@ describe('cursorLegacyRemoteLauncher', () => {
         await launchPromise;
     });
 
-    it('retries Stop against the same subprocess when the first kill is unconfirmed (#2021)', async () => {
-        const killMock = vi.mocked(killProcessByChildProcess);
+    it('retries Stop against the retained tree when the first kill is unconfirmed (#2021)', async () => {
+        const killMock = vi.mocked(killRetainedProcessTree);
         killMock.mockReset();
         killMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+        const snapMock = vi.mocked(snapshotProcessTreeIdentities);
+        snapMock.mockClear();
 
         const child1 = makeChild({ hold: true, pid: 7777 });
         spawnMock.mockReturnValueOnce(child1);
@@ -550,14 +566,19 @@ describe('cursorLegacyRemoteLauncher', () => {
 
         const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
         await abort();
+        expect(snapMock).toHaveBeenCalledTimes(1);
+        expect(snapMock).toHaveBeenCalledWith(7777);
         expect(killMock).toHaveBeenCalledTimes(1);
         expect(killMock.mock.calls[0]?.[1]).toBe(false);
         // Unconfirmed kill must leave thinking true so web Stop stays enabled.
         expect(thinking).not.toHaveBeenCalledWith(false);
 
         await abort();
+        // Second Stop reuses the first snapshot — does not rescan the root.
+        expect(snapMock).toHaveBeenCalledTimes(1);
         expect(killMock).toHaveBeenCalledTimes(2);
         expect(killMock.mock.calls[1]?.[1]).toBe(true);
+        expect(killMock.mock.calls[0]?.[0]).toEqual(killMock.mock.calls[1]?.[0]);
         expect(thinking).toHaveBeenCalledWith(false);
 
         child1.closeChild?.(null);
@@ -568,7 +589,7 @@ describe('cursorLegacyRemoteLauncher', () => {
     });
 
     it('blocks Switch when tree kill stays unconfirmed (#2021)', async () => {
-        const killMock = vi.mocked(killProcessByChildProcess);
+        const killMock = vi.mocked(killRetainedProcessTree);
         killMock.mockReset();
         killMock.mockResolvedValue(false);
 

@@ -1445,12 +1445,18 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 const generationMs = turn.generation.generationMs(turn.sentAt, turn.answeredAt);
                 session.sendAgentMessage(agyRoundSummary(turn.usage, durationMs, this.currentModelId, generationMs, turn.numTurns ?? turn.transcriptNumTurns ?? null));
             }
-            if (!keepThinkingForUnverifiedStop) {
+            // A queued prompt that hit an unverified pending Stop returns before
+            // keepThinkingForUnverifiedStop is set — still keep thinking/ready
+            // gated on the pending flag so Archive cannot interrupt the retained
+            // backend (#2021 tip Major).
+            if (!keepThinkingForUnverifiedStop && !this.pendingVerifiedWakeupStop) {
                 session.onThinkingChange(false);
                 await this.permissionHandler?.cancelAll('Prompt finished');
                 if (session.queue.size() === 0 && !this.shouldExit) {
                     session.sendSessionEvent({ type: 'ready' });
                 }
+            } else if (this.pendingVerifiedWakeupStop) {
+                session.onThinkingChange(true);
             }
         }
     }

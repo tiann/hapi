@@ -147,9 +147,14 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
                 parsed.data.metadata,
                 getConfiguration().githubPrAwareness
             )
-            // Hub stamps spawnedBySessionId at peer spawn; CLI create/adopt must not forge it.
-            if (metadata && typeof metadata === 'object' && !Array.isArray(metadata) && 'spawnedBySessionId' in metadata) {
-                const { spawnedBySessionId: _ignored, ...rest } = metadata as Record<string, unknown>
+            // Hub stamps spawnedBySessionId at peer spawn and owns childToolWork
+            // settlement evidence; CLI create/adopt must not forge either (#2021).
+            if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+                const {
+                    spawnedBySessionId: _ignoredParent,
+                    childToolWork: _ignoredChildWork,
+                    ...rest
+                } = metadata as Record<string, unknown>
                 metadata = rest
             }
             if (!externalRefsInMetadataValid(metadata)) {

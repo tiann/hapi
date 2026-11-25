@@ -281,7 +281,7 @@ function launch(
             return backend as unknown as AcpSdkBackend;
         }
     });
-    return { run: launcher.launch(), created };
+    return { run: launcher.launch(), created, launcher };
 }
 
 function steeringStates(client: ReturnType<typeof makeClient>): boolean[] {
@@ -811,6 +811,43 @@ describe('AgyAcpRemoteLauncher', () => {
             .map(([message]) => message as { settledCallIds?: string[] })
             .filter((message) => Array.isArray(message?.settledCallIds));
         expect(settlements).toEqual([]);
+    });
+
+    it('keeps thinking and withholds ready when a queued prompt hits unverified pending Stop (#2021)', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.agentTreeEnded = false;
+        const thinking = vi.spyOn(session, 'onThinkingChange');
+        const { run, launcher } = launch(session, [backend]);
+        await vi.waitFor(() => expect(client.rpcHandlerManager.handlers.has(RPC_METHODS.Abort)).toBe(true));
+
+        (launcher as unknown as {
+            pendingVerifiedWakeupStop: boolean
+            pendingStopBackend: unknown
+        }).pendingVerifiedWakeupStop = true;
+        (launcher as unknown as { pendingStopBackend: unknown }).pendingStopBackend = backend;
+        vi.spyOn(
+            launcher as unknown as { retireBackend: (b: unknown) => Promise<boolean> },
+            'retireBackend'
+        ).mockResolvedValue(false);
+
+        queue.push('next after stop', REVIEW, 'next');
+        await vi.waitFor(() =>
+            expect(sessionEvents(client).some((e) =>
+                typeof (e as { message?: string }).message === 'string'
+                && (e as { message: string }).message.includes('still unverified')
+            )).toBe(true)
+        );
+
+        expect(backend.prompts).toEqual([]);
+        expect(thinking).toHaveBeenCalledWith(true);
+        expect(thinking).not.toHaveBeenCalledWith(false);
+        expect(sessionEvents(client)).not.toContainEqual({ type: 'ready' });
+        expect((launcher as unknown as { pendingVerifiedWakeupStop: boolean }).pendingVerifiedWakeupStop).toBe(true);
+
+        queue.close();
+        await run;
+        thinking.mockRestore();
     });
 });
 

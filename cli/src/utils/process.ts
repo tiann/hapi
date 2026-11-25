@@ -419,44 +419,58 @@ export function snapshotProcessTreeIdentities(rootPid: number): RetainedProcessI
   }));
 }
 
-/** True when this OS PID still matches the retained generation (PID-reuse safe). */
-export function retainedIdentityStillAlive(identity: RetainedProcessIdentity): boolean {
-  if (!isProcessAlive(identity.pid)) return false;
+/**
+ * Three-way generation probe for a retained PID (#2021 tip Major):
+ * - `match` — confirmed same generation (safe to signal)
+ * - `gone` — confirmed absent or replaced
+ * - `unknown` — probe failed / insufficient markers — do not signal, keep Stop unresolved
+ *
+ * Boot ID + TGID alone cannot distinguish PID reuse within one boot, so a live
+ * PID without a matching start-marker is `unknown`, never a confirmed match.
+ */
+export type RetainedIdentityStatus = 'match' | 'gone' | 'unknown';
+
+export function classifyRetainedIdentity(identity: RetainedProcessIdentity): RetainedIdentityStatus {
+  if (!isProcessAlive(identity.pid)) return 'gone';
   if (identity.startMarker) {
     const marker = getProcessStartMarker(identity.pid);
-    if (marker === null) return true; // probe failed — fail closed as still alive
-    return marker === identity.startMarker;
+    if (marker === null) return 'unknown';
+    return marker === identity.startMarker ? 'match' : 'gone';
   }
-  if (identity.bootId && identity.tgid) {
-    const bootId = getSystemBootId();
-    const tgid = getProcessThreadGroupId(identity.pid);
-    if (bootId === null || tgid === null) return true;
-    return bootId === identity.bootId && tgid === identity.tgid;
-  }
-  // No generation marker — treat as still alive while the PID exists.
-  return true;
+  // Alive without a start-marker: cannot confirm generation (boot+tgid is not enough).
+  return 'unknown';
+}
+
+/** True when settlement must treat this identity as still blocking (match or unknown). */
+export function retainedIdentityStillAlive(identity: RetainedProcessIdentity): boolean {
+  return classifyRetainedIdentity(identity) !== 'gone';
 }
 
 /**
  * Kill retained tree members whose generation still matches, then verify none remain.
- * Incomplete verification returns false (#2021).
+ * Signals only confirmed matches; unknown identities keep Stop unresolved (#2021).
  */
 export async function killRetainedProcessTree(
   identities: RetainedProcessIdentity[],
   force = false,
 ): Promise<boolean> {
   if (identities.length === 0) return true;
-  // Kill each retained member by identity — descendants may have been
+  // Kill each confirmed match by identity — descendants may have been
   // reparented off the original root after the first attempt (#2021).
   for (const identity of identities) {
-    if (!retainedIdentityStillAlive(identity)) continue;
+    if (classifyRetainedIdentity(identity) !== 'match') continue;
     try {
       await killProcess(identity.pid, force);
     } catch {
       // continue verifying others
     }
   }
-  return identities.every((identity) => !retainedIdentityStillAlive(identity));
+  // Any unknown identity blocks verification — never claim the tree is gone
+  // when a probe failed or generation cannot be confirmed.
+  if (identities.some((identity) => classifyRetainedIdentity(identity) === 'unknown')) {
+    return false;
+  }
+  return identities.every((identity) => classifyRetainedIdentity(identity) === 'gone');
 }
 
 /**

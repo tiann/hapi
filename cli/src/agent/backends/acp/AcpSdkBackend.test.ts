@@ -3306,4 +3306,57 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             } finally { t.restore(); }
         });
     });
+
+    it('does not publish child interruption when a pre-close tree member survives close (#2021)', async () => {
+        const processUtils = await import('@/utils/process');
+        const snap = vi.spyOn(processUtils, 'snapshotProcessTreeIdentities').mockReturnValue([{
+            pid: 4242,
+            startMarker: 'gen-a',
+            bootId: 'boot',
+            tgid: 4242,
+        }]);
+        const alive = vi.spyOn(processUtils, 'retainedIdentityStillAlive').mockReturnValue(true);
+
+        const childEmits: AgentMessage[] = [];
+        const backend = new AcpSdkBackend({
+            command: 'opencode',
+            args: ['acp'],
+            flavor: 'opencode',
+            textChunkMode: 'delta',
+            toolCallLifetimeStore: null,
+        });
+        const createSpy = vi.spyOn(AcpStdioTransport, 'create').mockImplementation(async () => ({
+            sendRequest: vi.fn(async (method: string) => {
+                if (method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+                return {};
+            }),
+            sendNotification: vi.fn(),
+            onNotification: vi.fn(),
+            onStderrError: () => {},
+            registerRequestHandler: () => {},
+            isAlive: () => true,
+            getProcessPid: () => 4242,
+            close: async () => true,
+        } as unknown as AcpStdioTransport));
+
+        try {
+            await backend.initialize();
+            (backend as unknown as { childEmitSink: (msg: AgentMessage) => void }).childEmitSink = (msg) => {
+                childEmits.push(msg);
+            };
+            (backend as unknown as { knownChildSessionIds: Set<string> }).knownChildSessionIds.add('child-1');
+            (backend as unknown as { activeSessionId: string }).activeSessionId = 's1';
+
+            await backend.disconnect();
+
+            expect(snap).toHaveBeenCalledWith(4242);
+            expect(alive).toHaveBeenCalled();
+            expect(backend.wasAgentTreeEnded()).toBe(false);
+            expect(childEmits.filter((m) => m.type === 'turn_complete')).toEqual([]);
+        } finally {
+            createSpy.mockRestore();
+            snap.mockRestore();
+            alive.mockRestore();
+        }
+    });
 });

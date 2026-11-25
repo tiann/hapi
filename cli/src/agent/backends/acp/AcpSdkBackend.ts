@@ -1471,14 +1471,35 @@ export class AcpSdkBackend implements AgentBackend {
             ? snapshotProcessTreeIdentities(closePid)
             : null;
         try {
-            agentEnded = (await this.transport.close()) === true;
-            if (agentEnded) {
+            const closeOk = (await this.transport.close()) === true;
+            // Even when transport.close reports success, the root may have
+            // exited on EOF while a reparented pre-close descendant survives.
+            // Always check the retained pre-close tree before publishing
+            // settlement / child interruption (#2021 tip Major).
+            if (preCloseTree && preCloseTree.length > 0) {
+                const survivors = preCloseTree.some((identity) => retainedIdentityStillAlive(identity));
+                if (survivors) {
+                    this.retainedAgentTree = preCloseTree;
+                    agentEnded = false;
+                } else if (closeOk) {
+                    agentEnded = true;
+                    this.agentTreeEnded = true;
+                    this.retainedAgentTree = null;
+                } else {
+                    // Tree members look gone but close itself was incomplete —
+                    // keep the snapshot for a retry rather than claiming exit.
+                    this.retainedAgentTree = preCloseTree;
+                    agentEnded = false;
+                }
+            } else if (closeOk) {
+                // No pre-close snapshot (unknown PID) — trust close only when it
+                // confirmed; otherwise leave unresolved without a forgeable tree.
+                agentEnded = true;
                 this.agentTreeEnded = true;
                 this.retainedAgentTree = null;
             } else {
-                // Incomplete scan → keep unresolved (null tree means retry cannot
-                // claim verified exit via root-only absence).
                 this.retainedAgentTree = preCloseTree;
+                agentEnded = false;
             }
         } finally {
             this.transport = null;
