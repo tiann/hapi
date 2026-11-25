@@ -10,6 +10,7 @@ import {
     getResponseGroupTimestamps,
     buildAssistantReplyTargets
 } from './assistant-runtime'
+import { reconcileChatBlocks } from '@/chat/reconcile'
 import type { AgentEventBlock, AgentTextBlock, CliOutputBlock, ToolCallBlock, UserTextBlock } from '@/chat/types'
 import { buildVisibleChatBlocks, type ToolGroupBlock, type VisibleChatBlock } from '@/chat/toolGroups'
 
@@ -379,6 +380,19 @@ describe('buildAssistantReplyTargets', () => {
             agentText('answer', { invokedAt: 3_000 })
         ])
         expect(buildAssistantReplyTargets(blocks).get('agent-text:answer')).toBe('user-text:original')
+    })
+
+    it('retargets a reply when a late acknowledgement adds only the steered flag', () => {
+        const prompt = userText('prompt', { invokedAt: 1_000 })
+        const steer = userText('correction', { invokedAt: 2_000 })
+        const answer = agentText('answer', { invokedAt: 3_000 })
+        const before = reconcileChatBlocks([prompt, steer, answer], new Map())
+        expect(buildAssistantReplyTargets(assignThreadMessageIds(buildVisibleChatBlocks(before.blocks, { hasMoreMessages: false })))
+            .get('agent-text:answer')).toBe('user-text:correction')
+
+        const after = reconcileChatBlocks([prompt, { ...steer, steered: true }, answer], before.byId)
+        expect(buildAssistantReplyTargets(assignThreadMessageIds(buildVisibleChatBlocks(after.blocks, { hasMoreMessages: false })))
+            .get('agent-text:answer')).toBe('user-text:prompt')
     })
 
     it('keeps queued, failed, and steered user rows from becoming response targets', () => {
