@@ -121,7 +121,8 @@ const archiveApi = {
 } as unknown as ApiClient
 
 const linkPrApi = {
-    getFeatures: async () => ({ githubPrAwareness: { enabled: true, source: 'default' }, prChipDisplay: undefined })
+    getFeatures: async () => ({ githubPrAwareness: { enabled: true, source: 'default' }, prChipDisplay: undefined }),
+    upsertSessionExternalRef: () => new Promise<void>(resolve => { window.finishProjectLink = resolve })
 } as unknown as ApiClient
 
 const exportApi = {
@@ -136,6 +137,7 @@ declare global {
         showProjectSortProjects: (names: string[]) => void
         finishProjectExport: () => void
         finishProjectArchive: () => void
+        finishProjectLink: () => void
     }
 }
 

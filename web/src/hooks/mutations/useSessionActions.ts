@@ -10,6 +10,7 @@ import { isKnownFlavor } from '@hapi/protocol'
 
 export const sessionModelMutationKey = (sessionId: string) => ['session-model', sessionId] as const
 export const sessionArchiveMutationKey = (sessionId: string | null) => ['session-archive', sessionId] as const
+export const sessionExternalRefMutationKey = (sessionId: string | null) => ['session-external-ref', sessionId] as const
 export const sessionPinMutationKey = (sessionId: string | null) => ['session-pin', sessionId] as const
 
 export function useSessionActions(
@@ -265,6 +266,7 @@ export function useSessionActions(
     })
 
     const upsertExternalRefMutation = useMutation({
+        mutationKey: sessionExternalRefMutationKey(sessionId),
         mutationFn: async (ref: import('@/types/api').ExternalRef) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
@@ -275,6 +277,7 @@ export function useSessionActions(
     })
 
     const removePrimaryExternalRefMutation = useMutation({
+        mutationKey: sessionExternalRefMutationKey(sessionId),
         mutationFn: async () => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')

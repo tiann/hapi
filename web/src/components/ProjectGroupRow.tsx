@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { MutationObserver, useMutation, useQueryClient } from '@tanstack/react-query'
+import { MutationObserver, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import { useTranslation } from '@/lib/use-translation'
 import { useAddToast } from '@/lib/toast-context'
@@ -126,8 +126,9 @@ export function ProjectGroupRow(props: {
 }
 
 /** Owned by the list so moving between Combined sections does not unmount the request. */
-export function ProjectArchiveDialog({ api, displayName, sessionIds, onClose }: {
+export function ProjectArchiveDialog({ api, projectKey, displayName, sessionIds, onClose }: {
     api: ApiClient | null
+    projectKey: string
     displayName: string
     sessionIds: string[]
     onClose: () => void
@@ -135,7 +136,14 @@ export function ProjectArchiveDialog({ api, displayName, sessionIds, onClose }: 
     const { t } = useTranslation()
     const addToast = useAddToast()
     const queryClient = useQueryClient()
+    const mutationKey = ['project-archive', projectKey] as const
+    const pendingCounts = useMutationState({
+        filters: { mutationKey, exact: true, status: 'pending' },
+        select: ({ state }) => Array.isArray(state.variables) ? state.variables.length : 0
+    })
+    const pendingCount = pendingCounts.at(-1)
     const archiveAll = useMutation({
+        mutationKey,
         mutationFn: async (sessionIds: string[]) => {
             if (!api) return
             // Per-session archive key so row spinners and the delete dialog's
@@ -161,17 +169,16 @@ export function ProjectArchiveDialog({ api, displayName, sessionIds, onClose }: 
         }
     })
 
-    const submittedIds = archiveAll.isPending ? archiveAll.variables : sessionIds
     return (
         <ConfirmDialog
             isOpen
             onClose={onClose}
             title={t('sessions.group.archiveAll')}
-            description={t('dialog.archiveAll.description', { n: submittedIds.length, name: displayName })}
+            description={t('dialog.archiveAll.description', { n: pendingCount ?? sessionIds.length, name: displayName })}
             confirmLabel={t('dialog.archive.confirm')}
             confirmingLabel={t('dialog.archive.confirming')}
             onConfirm={() => archiveAll.mutateAsync(sessionIds)}
-            isPending={archiveAll.isPending}
+            isPending={pendingCount !== undefined || archiveAll.isPending}
             isConfirmDisabled={!api || sessionIds.length === 0}
             destructive
         />

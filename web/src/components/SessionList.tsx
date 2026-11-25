@@ -14,7 +14,7 @@ import {
 import { useLongPress } from '@/hooks/useLongPress'
 import { useLowRateAnimation } from '@/hooks/useLowRateAnimation'
 import { usePlatform } from '@/hooks/usePlatform'
-import { sessionArchiveMutationKey, sessionPinMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { sessionArchiveMutationKey, sessionExternalRefMutationKey, sessionPinMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useIsMutating } from '@tanstack/react-query'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
@@ -2031,7 +2031,8 @@ function StableArchiveSessionDialog(props: { session: SessionSummary; api: ApiCl
 
 function StableLinkPrDialog(props: { session: SessionSummary; api: ApiClient | null; onClose: () => void }) {
     const { session, api, onClose } = props
-    const { upsertExternalRef, removePrimaryExternalRef, isPending } = useSessionActions(api, session.id, session.metadata?.flavor ?? null)
+    const { upsertExternalRef, removePrimaryExternalRef } = useSessionActions(api, session.id, session.metadata?.flavor ?? null)
+    const isPending = useIsMutating({ mutationKey: sessionExternalRefMutationKey(session.id), exact: true }) > 0
     const primaryPrRef = getPrimaryGithubPrRef(session.metadata?.externalRefs)
     return (
         <LinkPrDialog
@@ -2103,7 +2104,10 @@ export function SessionList(props: {
     const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null)
     const [renameTargetId, setRenameTargetId] = useState<string | null>(null)
     const [exportTargetId, setExportTargetId] = useState<string | null>(null)
-    const [linkPrTargetId, setLinkPrTargetId] = useState<string | null>(null)
+    // A late request can only close the dialog opening that submitted it.
+    const [linkPrOpening, setLinkPrOpening] = useState<{ sessionId: string } | null>(null)
+    const openLinkPr = useCallback((sessionId: string) => setLinkPrOpening({ sessionId }), [])
+    const linkPrTargetId = linkPrOpening?.sessionId
     const [archiveTargetId, setArchiveTargetId] = useState<string | null>(null)
     const [projectArchiveTarget, setProjectArchiveTarget] = useState<{ key: string; displayName: string } | null>(null)
     const [forkTargetId, setForkTargetId] = useState<string | null>(null)
@@ -2958,7 +2962,7 @@ export function SessionList(props: {
                                             onRequestDelete={setDeleteTarget}
                                             onRequestRename={setRenameTargetId}
                                             onRequestExport={setExportTargetId}
-                                            onRequestLinkPr={setLinkPrTargetId}
+                                            onRequestLinkPr={openLinkPr}
                                             onRequestArchive={setArchiveTargetId}
                                             onRequestFork={setForkTargetId}
                                             renameOpen={renameTargetId === s.id}
@@ -3052,7 +3056,7 @@ export function SessionList(props: {
             onRequestDelete={setDeleteTarget}
             onRequestRename={setRenameTargetId}
             onRequestExport={setExportTargetId}
-            onRequestLinkPr={setLinkPrTargetId}
+            onRequestLinkPr={openLinkPr}
             onRequestArchive={setArchiveTargetId}
             onRequestFork={setForkTargetId}
             renameOpen={renameTargetId === s.id}
@@ -3974,7 +3978,7 @@ export function SessionList(props: {
                                             onRequestDelete={setDeleteTarget}
                                             onRequestRename={setRenameTargetId}
                                             onRequestExport={setExportTargetId}
-                                            onRequestLinkPr={setLinkPrTargetId}
+                                            onRequestLinkPr={openLinkPr}
                                             onRequestArchive={setArchiveTargetId}
                                             onRequestFork={setForkTargetId}
                                             renameOpen={renameTargetId === s.id}
@@ -4075,6 +4079,7 @@ export function SessionList(props: {
             {projectArchiveTarget ? (
                 <ProjectArchiveDialog
                     key={projectArchiveTarget.key}
+                    projectKey={projectArchiveTarget.key}
                     api={api}
                     displayName={projectArchiveTarget.displayName}
                     sessionIds={archivableProjectSessions(projectArchiveTarget.key).map(session => session.id)}
@@ -4085,7 +4090,7 @@ export function SessionList(props: {
                 <StableArchiveSessionDialog key={archiveTarget.id} session={archiveTarget} api={api} onClose={() => setArchiveTargetId(current => current === archiveTarget.id ? null : current)} />
             ) : null}
             {linkPrTarget ? (
-                <StableLinkPrDialog key={linkPrTarget.id} session={linkPrTarget} api={api} onClose={() => setLinkPrTargetId(current => current === linkPrTarget.id ? null : current)} />
+                <StableLinkPrDialog key={linkPrTarget.id} session={linkPrTarget} api={api} onClose={() => setLinkPrOpening(current => current === linkPrOpening ? null : current)} />
             ) : null}
             {exportTargetId ? (
                 <SessionExportDialog

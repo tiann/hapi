@@ -108,6 +108,32 @@ test('keeps an unsaved PR link when a Combined session disconnects', async ({ pa
 })
 
 
+test('reopening a PR link keeps pending state without the old request closing the new opening', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?mode=combined-count&linkPr=1`)
+    const openLink = async () => {
+        await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })
+        await page.getByRole('menuitem', { name: 'Link pull request…' }).click()
+    }
+    const dialog = page.getByRole('dialog')
+    const input = dialog.getByRole('textbox')
+    await openLink()
+    await input.fill('https://github.com/tiann/hapi/pull/2093')
+    await dialog.getByRole('button', { name: 'Link', exact: true }).click()
+    await expect(input).toBeDisabled()
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await openLink()
+    await expect(input).toBeDisabled()
+    await page.evaluate(() => window.finishProjectLink())
+    await expect(input).toBeEnabled()
+    const url = 'https://github.com/tiann/hapi/pull/1692'
+    await input.fill(url)
+    await expect(input).toHaveValue(url)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-reopened-pr-link-draft.png`, fullPage: true })
+})
+
+
 test('keeps archive cleanup visible through an inactive update', async ({ page }) => {
     await page.goto(`${fixtureUrl}?mode=combined-count&archivePending=1`)
     await page.getByRole('button', { name: /Mine task/ }).click({ button: 'right' })
@@ -186,6 +212,28 @@ test('keeps Archive all pending after the active project moves into history', as
     if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-archive-all-pending-after-disconnect.png`, fullPage: true })
     await page.evaluate(() => window.finishProjectArchive())
     await expect(dialog).toHaveCount(0)
+})
+
+
+test('reopening Archive all follows the pending batch for the same project', async ({ page }) => {
+    await page.goto(`${fixtureUrl}?archivePending=1`)
+    const openBatch = async () => {
+        await page.getByTitle('/projects/mine', { exact: true }).click({ button: 'right' })
+        await page.getByRole('menuitem', { name: 'Archive all', exact: true }).click()
+    }
+    const dialog = page.getByRole('dialog')
+    await openBatch()
+    await dialog.getByRole('button', { name: 'Archive', exact: true }).click()
+    await expect(dialog.getByRole('button', { name: /^Archiving/ })).toBeDisabled()
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await openBatch()
+    await expect(dialog.getByRole('button', { name: /^Archiving/ })).toBeDisabled()
+    await expect(dialog).toContainText('Archive 1 sessions')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/project-sort-reopened-archive-all.png`, fullPage: true })
+    await page.evaluate(() => window.finishProjectArchive())
+    await expect(dialog.getByRole('button', { name: 'Archive', exact: true })).toBeEnabled()
 })
 
 
