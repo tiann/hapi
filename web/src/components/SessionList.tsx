@@ -2782,7 +2782,7 @@ export function SessionList(props: {
     // Detailed retains its legacy storage key and raw project keys. Combined
     // stores its two section folds separately from real directory names.
     const foldKey = identity
-        ? `${isCombinedPinLayout ? 'hapi.closed-projects.combined.v1' : 'hapi.closed-projects.v1'}:${identity}`
+        ? (isCombinedPinLayout ? `hapi.closed-projects.combined.v1:${identity}` : `hapi.closed-projects.v1:${identity}`)
         : null
     const [foldRevision, setFoldRevision] = useState(0)
     const savedFolds = useMemo(() => {
