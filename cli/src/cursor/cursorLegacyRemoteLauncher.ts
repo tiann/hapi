@@ -497,7 +497,47 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     tryFinishAfterStop();
                     return;
                 }
-                finish(closeExitCode);
+                // Ordinary close (crash / natural exit): stdio close is not
+                // proof that descendants with separate stdio are gone. Verify
+                // the spawn-time tree / agent-owned group before settling (#2021).
+                void (async () => {
+                    if (settled) return;
+                    let verified = true;
+                    try {
+                        if (this.retainedStopTree) {
+                            verified = await killRetainedProcessTree(this.retainedStopTree, true);
+                        } else if (
+                            this.spawnedRootIdentity
+                            && isAgentOwnedProcessGroup(this.spawnedRootIdentity)
+                        ) {
+                            verified = await verifyAgentOwnedProcessGroupExited(
+                                this.spawnedRootIdentity,
+                                true,
+                            );
+                        } else if (this.spawnedRootIdentity || this.stopTreeSnapshotIncomplete) {
+                            // Had a spawn identity but no safe coverage — keep
+                            // settlement pending for a Stop retry (#2021).
+                            verified = false;
+                        }
+                    } catch (error) {
+                        logger.debug('[cursor-remote] ordinary-close tree verify failed', error);
+                        verified = false;
+                    }
+                    this.stopTreeVerified = verified;
+                    if (verified) {
+                        finish(closeExitCode);
+                        return;
+                    }
+                    // Keep identities for a later Stop; do not settle tools yet.
+                    this.resolveAfterStopTreeVerified = () => {
+                        if (settled || !stdoutClosed) return;
+                        if (this.stopTreeVerified === true) finish(closeExitCode);
+                    };
+                    this.messageBuffer.addMessage(
+                        'Exit: agent process closed but descendants unverified — press Stop to retry',
+                        'status',
+                    );
+                })();
             });
 
             const rl = createInterface({ input: child.stdout!, crlfDelay: Infinity });

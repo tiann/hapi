@@ -15,6 +15,7 @@ import {
 import { defaultToolCallLifetimeStore, type ToolCallLifetimeStore } from './toolCallLifetimeStore';
 import { randomUUID } from 'node:crypto';
 import {
+    classifyRetainedIdentity,
     getProcessGroupId,
     getProcessStartMarker,
     getProcessThreadGroupId,
@@ -1440,18 +1441,29 @@ export class AcpSdkBackend implements AgentBackend {
     }
 
     /**
-     * After retained members look gone: Windows trusts the tree scan (taskkill /T
-     * already covered descendants); POSIX requires agent-owned group emptiness.
-     * Prefers spawn-time root identity when the disconnect snapshot lost PGID (#2021).
+     * After retained members look gone: Windows re-scans/kills from a matching
+     * root (spawn snapshot alone can miss later descendants); POSIX requires
+     * agent-owned group emptiness. Prefers spawn-time root identity when the
+     * disconnect snapshot lost PGID (#2021).
      */
     private async verifyTreeExitBeyondPidSnapshot(
         tree: RetainedProcessIdentity[],
     ): Promise<boolean> {
         if (isWindows()) {
-            // Windows snapshots carry null pgid; killRetainedProcessTree already
-            // verified members via taskkill /T semantics when it returned true.
-            // All-gone + closeOk is sufficient here (#2021 Major).
-            return true;
+            const root = this.spawnedRootIdentity ?? tree[tree.length - 1]!;
+            // Refresh while the original root still matches so mid-close
+            // descendants enter the verified set (#2021 Major).
+            if (classifyRetainedIdentity(root) === 'match') {
+                const fresh = snapshotProcessTreeIdentities(root.pid);
+                if (fresh && fresh.length > 0) {
+                    return await killRetainedProcessTree(fresh, true);
+                }
+                return false;
+            }
+            // Root gone: only the retained snapshot is generation-bound.
+            // Re-run kill/verify on it — never claim success from PID absence
+            // alone after an earlier unconfirmed Windows close (#2021).
+            return await killRetainedProcessTree(tree, true);
         }
         const root = this.spawnedRootIdentity ?? tree[tree.length - 1]!;
         return await verifyAgentOwnedProcessGroupExited(root, true);

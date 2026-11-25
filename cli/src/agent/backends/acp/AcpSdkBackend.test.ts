@@ -3383,18 +3383,21 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
         }
     });
 
-    it('trusts Windows ACP close when retained PIDs are gone (#2021)', async () => {
+    it('re-verifies Windows ACP trees instead of trusting PID absence alone (#2021)', async () => {
         const processUtils = await import('@/utils/process');
         const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
         Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
-        const snap = vi.spyOn(processUtils, 'snapshotProcessTreeIdentities').mockReturnValue([{
+        const tree = [{
             pid: 4242,
             startMarker: 'gen-win',
             bootId: null,
             tgid: null,
             pgid: null,
-        }]);
+        }];
+        const snap = vi.spyOn(processUtils, 'snapshotProcessTreeIdentities').mockReturnValue(tree);
         const alive = vi.spyOn(processUtils, 'retainedIdentityStillAlive').mockReturnValue(false);
+        const classify = vi.spyOn(processUtils, 'classifyRetainedIdentity').mockReturnValue('gone');
+        const killRetained = vi.spyOn(processUtils, 'killRetainedProcessTree').mockResolvedValue(true);
         const verifyGroup = vi.spyOn(processUtils, 'verifyAgentOwnedProcessGroupExited');
 
         const backend = new AcpSdkBackend({
@@ -3422,11 +3425,14 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             await backend.initialize();
             await backend.disconnect();
             expect(backend.wasAgentTreeEnded()).toBe(true);
+            expect(killRetained).toHaveBeenCalled();
             expect(verifyGroup).not.toHaveBeenCalled();
         } finally {
             createSpy.mockRestore();
             snap.mockRestore();
             alive.mockRestore();
+            classify.mockRestore();
+            killRetained.mockRestore();
             verifyGroup.mockRestore();
             Object.defineProperty(process, 'platform', platform);
         }

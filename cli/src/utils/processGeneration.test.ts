@@ -245,6 +245,28 @@ describe('retained process identity classification (#2021)', () => {
         expect(signals.some((pid) => pid < 0)).toBe(false)
     })
 
+    it('does not treat a leaderless recycled group as ours (#2021 Blocker)', async () => {
+        const signals: number[] = []
+        vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (signal === 0) return true
+            signals.push(pid)
+            return true
+        }) as typeof process.kill)
+        // Members remain under the old pgid but the replacement leader has exited.
+        spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {
+            if (cmd === 'pgrep' && Array.isArray(args) && args[0] === '-g') {
+                return { status: 0, stdout: '9999\n', stderr: '', error: null }
+            }
+            if (cmd === 'ps') {
+                return { status: 0, stdout: 'Wed Nov 25 00:00:00 2026', stderr: '', error: null }
+            }
+            return { status: 1, stdout: '', stderr: '', error: null }
+        })
+        expect(classifyAgentOwnedProcessGroup(identity())).toBe('unknown')
+        expect(await killRetainedProcessTree([identity()], true)).toBe(false)
+        expect(signals.some((pid) => pid < 0)).toBe(false)
+    })
+
     it('reads process group id on macOS via ps (#2021)', () => {
         platform('darwin')
         spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {

@@ -593,21 +593,19 @@ export function classifyAgentOwnedProcessGroup(
   const remaining = listProcessGroupPids(pgid);
   if (remaining === 'scan_failed') return 'unknown';
   if (remaining.length === 0) return 'empty';
-  // A live leader (pid === pgid) must match the original root generation.
-  if (remaining.includes(pgid)) {
-    if (root.startMarker === null) return 'unknown';
-    const marker = getProcessStartMarker(pgid);
-    if (marker === null) return 'unknown';
-    if (marker !== root.startMarker) return 'foreign';
-    if (root.bootId !== null) {
-      const boot = getSystemBootId();
-      if (boot === null) return 'unknown';
-      if (boot !== root.bootId) return 'foreign';
-    }
-    return 'ours';
+  // Only a live leader (pid === pgid) can bind the group to the original
+  // generation. A leaderless nonempty group may be a recycled PGID whose
+  // replacement leader already exited — never treat that as ours (#2021 Blocker).
+  if (!remaining.includes(pgid)) return 'unknown';
+  if (root.startMarker === null) return 'unknown';
+  const marker = getProcessStartMarker(pgid);
+  if (marker === null) return 'unknown';
+  if (marker !== root.startMarker) return 'foreign';
+  if (root.bootId !== null) {
+    const boot = getSystemBootId();
+    if (boot === null) return 'unknown';
+    if (boot !== root.bootId) return 'foreign';
   }
-  // Leader gone, members remain: original group still draining. Kernel will
-  // not reuse this PGID until the group is empty (POSIX / Linux fork rules).
   return 'ours';
 }
 
