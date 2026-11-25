@@ -321,7 +321,7 @@ it.each([false, true])('suppresses stale QQ ready after an earlier channel delay
     }
 })
 
-it('suppresses a permission request cleared during the NotificationHub debounce', async () => {
+it.each([false, true])('ignores cleared requests but retains other requests from the debounce batch (second request: %s)', async (anotherRequest) => {
     const store = new Store(':memory:')
     const io = { of: () => ({ to: () => ({ emit() {} }) }) }
     const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
@@ -342,14 +342,33 @@ it('suppresses a permission request cleared during the NotificationHub debounce'
         expect(first.result).toBe('success')
         if (first.result !== 'success') throw new Error('Could not set the pending request fixture')
         engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id })
-        const cleared = store.sessions.updateSessionAgentState(session.id, { requests: {} }, first.version, config.namespace)
+        const firstOnly = { req: { tool: 'Read', arguments: {}, createdAt: now } }
+        let version = first.version
+        if (anotherRequest) {
+            const added = store.sessions.updateSessionAgentState(session.id, {
+                requests: { ...firstOnly, next: { tool: 'AskUserQuestion', arguments: {}, createdAt: now } }
+            }, version, config.namespace)
+            expect(added.result).toBe('success')
+            if (added.result !== 'success') throw new Error('Could not add the second request fixture')
+            version = added.version
+            engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id })
+        }
+        const cleared = store.sessions.updateSessionAgentState(session.id, {
+            requests: anotherRequest ? firstOnly : {}
+        }, version, config.namespace)
         expect(cleared.result).toBe('success')
         engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id })
 
         const deadline = Date.now() + 1_000
         while (dispatched.mock.calls.length === 0 && Date.now() < deadline) await Bun.sleep(5)
         expect(dispatched).toHaveBeenCalledTimes(1)
-        expect(fetch).not.toHaveBeenCalled()
+        if (anotherRequest) {
+            const sends = fetch.mock.calls.filter(([url]) => url === messageUrl)
+            expect(sends).toHaveLength(1)
+            expect(getBody(sends[0]?.[1]).markdown.content).toContain('Permission Request')
+        } else {
+            expect(fetch).not.toHaveBeenCalled()
+        }
     } finally {
         hub.stop()
         engine.stop()
@@ -357,7 +376,7 @@ it('suppresses a permission request cleared during the NotificationHub debounce'
     }
 })
 
-it('does not notify twice for a replacement request while an earlier channel awaits I/O', async () => {
+it.each([false, true])('selects the newly added request at dispatch (older request stays pending: %s)', async (olderRemains) => {
     const store = new Store(':memory:')
     const io = { of: () => ({ to: () => ({ emit() {} }) }) }
     const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
@@ -382,21 +401,31 @@ it('does not notify twice for a replacement request while an earlier channel awa
         const session = engine.getOrCreateSession('replacement-permission', { path: '/workspace/test', host: 'test' }, {}, config.namespace)
         const now = Date.now()
         engine.handleSessionAlive({ sid: session.id, time: now, mode: 'remote' })
-        const addRequest = (version: number, id: string, tool: string) => engine.handleRealtimeEvent({
+        const updateRequests = (requests: Record<string, { tool: string; arguments: object; createdAt: number }>) => engine.handleRealtimeEvent({
             type: 'session-updated', sessionId: session.id,
-            data: { agentState: { version, value: { requests: { [id]: { tool, arguments: {}, createdAt: now } } } } }
+            data: { agentState: { version: session.agentStateVersion + 1, value: { requests } } }
         })
-        addRequest(session.agentStateVersion + 1, 'first', 'Read')
+        const waitForDispatches = async (count: number) => {
+            const deadline = Date.now() + 1_000
+            while (dispatched.mock.calls.length < count && Date.now() < deadline) await Bun.sleep(5)
+            expect(dispatched).toHaveBeenCalledTimes(count)
+        }
+        const first = { tool: 'Read', arguments: {}, createdAt: now }
+        const question = { tool: 'AskUserQuestion', arguments: {}, createdAt: now + 1 }
+        updateRequests({ first })
         await firstStarted.promise
-        addRequest(session.agentStateVersion + 1, 'replacement', 'AskUserQuestion')
+        if (olderRemains) {
+            releaseFirst.resolve()
+            await waitForDispatches(1)
+        }
+        updateRequests(olderRemains ? { first, question } : { question })
         releaseFirst.resolve()
+        await waitForDispatches(2)
 
-        const deadline = Date.now() + 1_000
-        while (dispatched.mock.calls.length < 2 && Date.now() < deadline) await Bun.sleep(5)
-        expect(dispatched).toHaveBeenCalledTimes(2)
         const sends = fetch.mock.calls.filter(([url]) => url === messageUrl)
-        expect(sends).toHaveLength(1)
-        expect(getBody(sends[0]?.[1]).markdown.content).toContain('needs your input')
+        expect(sends).toHaveLength(olderRemains ? 2 : 1)
+        if (olderRemains) expect(getBody(sends[0]?.[1]).markdown.content).toContain('Permission Request')
+        expect(getBody(sends.at(-1)?.[1]).markdown.content).toContain('needs your input')
     } finally {
         releaseFirst.resolve()
         hub.stop()

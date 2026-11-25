@@ -17,6 +17,6 @@ export type NotificationSendContext = {
         activeTurnStartedAt?: number | null
         isSuperseded: () => boolean
     }>
-    /** Requests present when permission dispatch began, before any channel awaits I/O. */
+    /** Newly detected requests in this permission debounce window, captured before dispatch. */
     permissionRequestIds?: readonly string[]
 }

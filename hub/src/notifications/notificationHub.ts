@@ -14,7 +14,7 @@ export class NotificationHub {
     private readonly permissionDebounceMs: number
     private readonly modelErrorRetryDelaysMs: number[]
     private readonly lastKnownRequests: Map<string, Set<string>> = new Map()
-    private readonly notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
+    private readonly notificationDebounce = new Map<string, { timer: NodeJS.Timeout; requestIds: Set<string> }>()
     private readonly lastReadyNotificationAt: Map<string, number> = new Map()
     // Only track turn transitions while at least one ready notification is in flight.
     private readonly readyDispatches = new Map<string, { thinking: boolean; generation: number; inFlight: number }>()
@@ -76,7 +76,7 @@ export class NotificationHub {
             this.unsubscribeSyncEvents = null
         }
 
-        for (const timer of this.notificationDebounce.values()) {
+        for (const { timer } of this.notificationDebounce.values()) {
             clearTimeout(timer)
         }
         this.notificationDebounce.clear()
@@ -148,9 +148,9 @@ export class NotificationHub {
     }
 
     private clearSessionState(sessionId: string, removeModelErrorWatermark = false): void {
-        const existingTimer = this.notificationDebounce.get(sessionId)
-        if (existingTimer) {
-            clearTimeout(existingTimer)
+        const existing = this.notificationDebounce.get(sessionId)
+        if (existing) {
+            clearTimeout(existing.timer)
             this.notificationDebounce.delete(sessionId)
         }
         this.lastKnownRequests.delete(sessionId)
@@ -351,45 +351,35 @@ export class NotificationHub {
             return
         }
 
-        const newRequestIds = new Set(Object.keys(requests))
-        const oldRequestIds = this.lastKnownRequests.get(session.id) || new Set()
+        const currentIds = Object.keys(requests)
+        const previousIds = this.lastKnownRequests.get(session.id)
+        this.lastKnownRequests.set(session.id, new Set(currentIds))
 
-        let hasNewRequests = false
-        for (const requestId of newRequestIds) {
-            if (!oldRequestIds.has(requestId)) {
-                hasNewRequests = true
-                break
-            }
-        }
+        const addedIds = currentIds.filter(id => !previousIds?.has(id))
+        if (addedIds.length === 0) return
 
-        this.lastKnownRequests.set(session.id, newRequestIds)
-
-        if (!hasNewRequests) {
-            return
-        }
-
-        const existingTimer = this.notificationDebounce.get(session.id)
-        if (existingTimer) {
-            clearTimeout(existingTimer)
-        }
+        const existing = this.notificationDebounce.get(session.id)
+        if (existing) clearTimeout(existing.timer)
+        const requestIds = existing?.requestIds ?? new Set<string>()
+        for (const id of addedIds) requestIds.add(id)
 
         const timer = setTimeout(() => {
             this.notificationDebounce.delete(session.id)
-            this.sendPermissionNotification(session.id).catch((error) => {
+            this.sendPermissionNotification(session.id, [...requestIds]).catch((error) => {
                 console.error('[NotificationHub] Failed to send permission notification:', error)
             })
         }, this.permissionDebounceMs)
 
-        this.notificationDebounce.set(session.id, timer)
+        this.notificationDebounce.set(session.id, { timer, requestIds })
     }
 
-    private async sendPermissionNotification(sessionId: string): Promise<void> {
+    private async sendPermissionNotification(sessionId: string, requestIds: readonly string[]): Promise<void> {
         const session = this.getNotifiableSession(sessionId)
         if (!session) {
             return
         }
 
-        await this.notifyPermission(session)
+        await this.notifyPermission(session, requestIds)
     }
 
     private async sendReadyNotification(sessionId: string): Promise<void> {
@@ -446,10 +436,10 @@ export class NotificationHub {
         }
     }
 
-    private async notifyPermission(session: Session): Promise<void> {
+    private async notifyPermission(session: Session, requestIds: readonly string[]): Promise<void> {
         const ctx: NotificationSendContext = {
             nativeGate: { sent: false },
-            permissionRequestIds: Object.keys(session.agentState?.requests ?? {})
+            permissionRequestIds: requestIds
         }
         for (const channel of this.channels) {
             try {
