@@ -1450,19 +1450,21 @@ export class AcpSdkBackend implements AgentBackend {
         tree: RetainedProcessIdentity[],
     ): Promise<boolean> {
         if (isWindows()) {
+            // Incomplete pre-close refresh: spawn-only PIDs cannot prove a
+            // later descendant exited (#2021 Major).
+            if (this.retainedTreeSnapshotIncomplete) return false;
             const root = this.spawnedRootIdentity ?? tree[tree.length - 1]!;
             // Refresh while the original root still matches so mid-close
             // descendants enter the verified set (#2021 Major).
             if (classifyRetainedIdentity(root) === 'match') {
                 const fresh = snapshotProcessTreeIdentities(root.pid);
                 if (fresh && fresh.length > 0) {
+                    this.retainedAgentTree = fresh;
                     return await killRetainedProcessTree(fresh, true);
                 }
                 return false;
             }
-            // Root gone: only the retained snapshot is generation-bound.
-            // Re-run kill/verify on it — never claim success from PID absence
-            // alone after an earlier unconfirmed Windows close (#2021).
+            // Root gone: re-kill the last refreshed retained tree only.
             return await killRetainedProcessTree(tree, true);
         }
         const root = this.spawnedRootIdentity ?? tree[tree.length - 1]!;
@@ -1602,30 +1604,35 @@ export class AcpSdkBackend implements AgentBackend {
             ? this.transport.getProcessPid()
             : null;
         const knownPid = typeof closePid === 'number' && closePid > 0;
-        // Prefer spawn-time tree. Live resnapshot only when spawn capture missed
-        // and the root still matches — a reaped root yields a null-pgid tree (#2021).
+        // Always refresh the tree before closing stdin while the original root
+        // still matches — descendants started after spawn must be retained
+        // (#2021 Major). A reaped root yields a null-pgid tree, so fall back
+        // to spawn-time evidence only when refresh is impossible.
         let preCloseTree = this.retainedAgentTree;
-        if ((!preCloseTree || preCloseTree.length === 0) && knownPid && !this.retainedTreeSnapshotIncomplete) {
-            const live = snapshotProcessTreeIdentities(closePid);
-            if (live && live.length > 0) {
-                const liveRoot = live[live.length - 1]!;
-                const spawned = this.spawnedRootIdentity;
-                if (
-                    !spawned
-                    || (
-                        liveRoot.pid === spawned.pid
-                        && liveRoot.startMarker === spawned.startMarker
-                    )
-                ) {
-                    preCloseTree = live;
-                }
+        const spawned = this.spawnedRootIdentity;
+        if (knownPid && spawned && classifyRetainedIdentity(spawned) === 'match') {
+            const live = snapshotProcessTreeIdentities(closePid!);
+            const liveRoot = live?.[live.length - 1];
+            if (
+                live
+                && live.length > 0
+                && liveRoot
+                && liveRoot.pid === spawned.pid
+                && liveRoot.startMarker === spawned.startMarker
+            ) {
+                preCloseTree = live;
+                this.retainedAgentTree = live;
+                this.retainedTreeSnapshotIncomplete = false;
+            } else if (isWindows() && !live) {
+                // Windows cannot cover mid-close forks without a fresh tree.
+                this.retainedTreeSnapshotIncomplete = true;
             }
         }
         // When live snapshot failed but spawn identity exists, retain a
-        // single-member tree from spawn so group verify still has evidence.
+        // single-member tree from spawn so POSIX group verify still has evidence.
         if ((!preCloseTree || preCloseTree.length === 0) && this.spawnedRootIdentity) {
             preCloseTree = [this.spawnedRootIdentity];
-            this.retainedTreeSnapshotIncomplete = false;
+            if (!isWindows()) this.retainedTreeSnapshotIncomplete = false;
         }
         try {
             const closeOk = (await this.transport.close()) === true;

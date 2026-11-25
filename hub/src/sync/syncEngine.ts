@@ -1949,12 +1949,15 @@ export class SyncEngine {
         }
     }
 
-    /** Eligibility for the derived-work sweep: connected, no thinking flag,
-     *  and no declared background tasks. */
+    /** Eligibility for the derived-work sweep: no thinking flag and no
+     *  declared background tasks. Active sessions always qualify; inactive
+     *  live-lifecycle rows also qualify so durable OpenCode child work keeps
+     *  derivedToolWork honest after heartbeat expiry (#2021 Minor). */
     private isDerivedToolWorkCandidate(session: Session): boolean {
-        if (!session.active || session.thinking) return false
+        if (session.thinking) return false
         if ((session.backgroundTaskCount ?? 0) > 0) return false
-        return true
+        if (session.active) return true
+        return isLiveLifecycleState(session.metadata?.lifecycleState)
     }
 
     private async reconcileOpenCodeClears(): Promise<void> {

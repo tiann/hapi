@@ -657,28 +657,28 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         const child = this.activeChild;
         let stopped = !child?.pid;
         if (child?.pid) {
-            // Prefer the spawn-time retained tree. Only attempt a live snapshot
-            // when spawn capture failed and the spawn root still matches (#2021).
-            // When the root has already exited, fall through to agent-owned
-            // process-group verification — do not sticky-block forever (#2021).
-            if (!this.retainedStopTree && !this.stopTreeSnapshotIncomplete) {
-                const spawned = this.spawnedRootIdentity;
-                if (spawned && classifyRetainedIdentity(spawned) === 'match') {
-                    const snap = snapshotProcessTreeIdentities(child.pid);
-                    const root = snap?.[snap.length - 1];
-                    if (
-                        snap
-                        && root
-                        && root.pid === spawned.pid
-                        && root.startMarker === spawned.startMarker
-                    ) {
-                        this.retainedStopTree = snap;
-                    } else {
-                        this.stopTreeSnapshotIncomplete = true;
-                    }
+            // Refresh the retained tree immediately before the first Stop
+            // signal while the root generation still matches — tools spawned
+            // after the spawn-time snapshot must be included (#2021 Major).
+            // When the root has already exited, keep any prior retained tree
+            // or fall through to agent-owned process-group verification.
+            const spawned = this.spawnedRootIdentity;
+            if (spawned && classifyRetainedIdentity(spawned) === 'match') {
+                const snap = snapshotProcessTreeIdentities(child.pid);
+                const root = snap?.[snap.length - 1];
+                if (
+                    snap
+                    && root
+                    && root.pid === spawned.pid
+                    && root.startMarker === spawned.startMarker
+                ) {
+                    this.retainedStopTree = snap;
+                    this.stopTreeSnapshotIncomplete = false;
+                } else if (!this.retainedStopTree) {
+                    this.stopTreeSnapshotIncomplete = true;
                 }
-                // Root gone / unknown: leave retainedStopTree null and recover
-                // via the spawn-time process group below when ownership holds.
+                // Refresh failed but spawn-time tree exists — keep it for
+                // individual member signaling; do not sticky-incomplete.
             }
             let force = this.stopKillEscalated || leavingRemote;
             const attempts = leavingRemote ? 2 : 1;

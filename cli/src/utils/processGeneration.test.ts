@@ -246,13 +246,19 @@ describe('retained process identity classification (#2021)', () => {
     })
 
     it('does not treat a leaderless recycled group as ours (#2021 Blocker)', async () => {
+        let alive = true
         const signals: number[] = []
         vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
-            if (signal === 0) return true
+            if (signal === 0) {
+                if (!alive) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
+                return true
+            }
             signals.push(pid)
+            alive = false
             return true
         }) as typeof process.kill)
-        // Members remain under the old pgid but the replacement leader has exited.
+        // Captured PIDs exit; members remain under the old pgid but the
+        // replacement leader has already exited — unknown, no -pgid.
         spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {
             if (cmd === 'pgrep' && Array.isArray(args) && args[0] === '-g') {
                 return { status: 0, stdout: '9999\n', stderr: '', error: null }

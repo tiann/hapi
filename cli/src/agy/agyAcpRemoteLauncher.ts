@@ -836,9 +836,18 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         );
                     }
                     if (abortController.signal.aborted || this.pendingVerifiedWakeupStop) {
-                        // Stop landed during settlement — finish via the aborted-wakeup
-                        // completion path (verify exit, settle, clear thinking) (#2021).
-                        continue;
+                        // Wakeup already completed — disarm the hard-stop restart
+                        // timer and finish settlement without retiring a finished
+                        // wakeup (#2021 Minor).
+                        this.clearWakeupCancelHardStop();
+                        this.pendingVerifiedWakeupStop = false;
+                        this.pendingStopBackend = null;
+                        this.pendingStopSettlements = [];
+                        session.onThinkingChange(false);
+                        if (session.queue.size() === 0 && !this.shouldExit) {
+                            session.sendSessionEvent({ type: 'ready' });
+                        }
+                        return;
                     }
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {

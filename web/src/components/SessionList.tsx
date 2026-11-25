@@ -15,7 +15,7 @@ import { useLongPress } from '@/hooks/useLongPress'
 import { useLowRateAnimation } from '@/hooks/useLowRateAnimation'
 import { usePlatform } from '@/hooks/usePlatform'
 import { sessionArchiveMutationKey, sessionPinMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
-import { sessionHasLiveWork } from '@/lib/sessionHasLiveWork'
+import { sessionHasDurableLiveWork, sessionHasLiveWork } from '@/lib/sessionHasLiveWork'
 import { useIsMutating } from '@tanstack/react-query'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
@@ -1578,12 +1578,13 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     // an archived session moves between sections (e.g. out of Active), and the
     // spinner must survive that until the request settles.
     const quickArchivePending = useIsMutating({ mutationKey: sessionArchiveMutationKey(s.id), exact: true }) > 0
-    // #2020: hub refuses archive while *active* live work is visible — hide
-    // the affordance rather than surprise the operator with a 409. Stop the
-    // turn first (e.g. Abort) when the session is still connected.
+    // #2020/#2021: hub refuses archive while active live work OR disconnected
+    // durable tool work is visible — hide the affordance rather than 409.
     // Disconnected rows may keep stale pending requests after heartbeat
-    // expiry and still take Runner-verified cleanup (#2020 Approach).
-    const blockedByLiveWork = s.active && sessionHasLiveWork(s)
+    // expiry; those alone still take Runner-verified cleanup.
+    const blockedByLiveWork = s.active
+        ? sessionHasLiveWork(s)
+        : sessionHasDurableLiveWork(s)
     // The row can turn inactive before the archive request settles (the hub
     // still confirms cleanup); keep the spinner until it does.
     const canArchive = !blockedByLiveWork && (s.active || isLiveLifecycleState(s.metadata?.lifecycleState))
