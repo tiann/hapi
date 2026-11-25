@@ -833,8 +833,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         );
                     }
                     if (abortController.signal.aborted || this.pendingVerifiedWakeupStop) {
-                        // Stop landed during settlement — verification gate owns thinking/ready.
-                        return;
+                        // Stop landed during settlement — finish via the aborted-wakeup
+                        // completion path (verify exit, settle, clear thinking) (#2021).
+                        continue;
                     }
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
@@ -848,10 +849,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     // late output under the same `SYSTEM_MESSAGE` still wakes HAPI.
                     this.pausedWakeupStepIndex = inspection.latestStepIndex;
                     if (this.usesLiveWakeupRendering()) await this.backend?.flushPendingMessageBuffers();
-                    // Stop may have arrived during the flush drain — do not clear
-                    // thinking/ready while retirement is still pending (#2021).
+                    // Stop may have arrived during the flush drain — finish via the
+                    // aborted-wakeup completion path rather than returning early (#2021).
                     if (abortController.signal.aborted || this.pendingVerifiedWakeupStop) {
-                        return;
+                        continue;
                     }
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {

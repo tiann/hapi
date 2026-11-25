@@ -218,13 +218,20 @@ export class AcpSdkBackend implements AgentBackend {
      */
     private retainedAgentTree: RetainedProcessIdentity[] | null = null;
     /**
-     * Child interruption deferred until process-tree exit is verified. Cleared
-     * only after publish or when a later verified close has nothing to settle (#2021).
+     * Child + foreground settlement deferred until process-tree exit is verified.
+     * Cleared only after publish (#2021).
      */
-    private pendingChildInterrupt: {
+    private pendingDisconnectSettle: {
         childIds: string[];
         sink: (msg: AgentMessage) => void;
+        /** Also settle root-scope (foreground) cancelled lifetimes after verify. */
+        settleForeground: boolean;
     } | null = null;
+    /**
+     * Known ACP PID existed but the pre-close tree snapshot failed — never trust
+     * transport.close() alone for settlement (#2021 tip Major).
+     */
+    private retainedTreeSnapshotIncomplete = false;
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -1369,8 +1376,12 @@ export class AcpSdkBackend implements AgentBackend {
      */
     async verifyRetainedAgentExit(force = false): Promise<boolean> {
         if (this.agentTreeEnded) {
-            this.publishPendingChildInterrupts();
+            this.publishPendingDisconnectSettle();
             return true;
+        }
+        if (this.retainedTreeSnapshotIncomplete) {
+            // No generation-bound tree — cannot confirm exit independently.
+            return false;
         }
         if (this.transport) {
             await this.disconnect();
@@ -1381,23 +1392,23 @@ export class AcpSdkBackend implements AgentBackend {
         if (tree.every((identity) => !retainedIdentityStillAlive(identity))) {
             this.agentTreeEnded = true;
             this.retainedAgentTree = null;
-            this.publishPendingChildInterrupts();
+            this.publishPendingDisconnectSettle();
             return true;
         }
         const killed = await killRetainedProcessTree(tree, force);
         if (killed) {
             this.agentTreeEnded = true;
             this.retainedAgentTree = null;
-            this.publishPendingChildInterrupts();
+            this.publishPendingDisconnectSettle();
         }
         return killed;
     }
 
-    /** Publish deferred OpenCode child interruptions once the tree is gone (#2021). */
-    private publishPendingChildInterrupts(): void {
-        const pending = this.pendingChildInterrupt;
+    /** Publish deferred child + foreground settlements once the tree is gone (#2021). */
+    private publishPendingDisconnectSettle(): void {
+        const pending = this.pendingDisconnectSettle;
         if (!pending) return;
-        this.pendingChildInterrupt = null;
+        this.pendingDisconnectSettle = null;
         for (const childSessionId of pending.childIds) {
             const scope = childToolCallScope(childSessionId);
             this.toolCallLifetimes.cancel(scope);
@@ -1416,6 +1427,25 @@ export class AcpSdkBackend implements AgentBackend {
                     '[AcpSdkBackend] deferred child interrupt publish failed:',
                     error instanceof Error ? error.message : String(error)
                 );
+            }
+        }
+        if (pending.settleForeground) {
+            this.toolCallLifetimes.cancel();
+            const settledCallIds = this.toolCallLifetimes.settleCancelled();
+            this.toolCallLifetimes.beginGeneration();
+            if (settledCallIds.length > 0) {
+                try {
+                    pending.sink({
+                        type: 'turn_complete',
+                        stopReason: 'cancelled',
+                        settledCallIds,
+                    });
+                } catch (error) {
+                    logger.debug(
+                        '[AcpSdkBackend] deferred foreground settle publish failed:',
+                        error instanceof Error ? error.message : String(error)
+                    );
+                }
             }
         }
     }
@@ -1506,8 +1536,9 @@ export class AcpSdkBackend implements AgentBackend {
         const closePid = typeof this.transport.getProcessPid === 'function'
             ? this.transport.getProcessPid()
             : null;
+        const knownPid = typeof closePid === 'number' && closePid > 0;
         // Snapshot before close so reparented descendants stay verifiable (#2021).
-        const preCloseTree = typeof closePid === 'number' && closePid > 0
+        const preCloseTree = knownPid
             ? snapshotProcessTreeIdentities(closePid)
             : null;
         try {
@@ -1517,6 +1548,7 @@ export class AcpSdkBackend implements AgentBackend {
             // Always check the retained pre-close tree before publishing
             // settlement / child interruption (#2021 tip Major).
             if (preCloseTree && preCloseTree.length > 0) {
+                this.retainedTreeSnapshotIncomplete = false;
                 const survivors = preCloseTree.some((identity) => retainedIdentityStillAlive(identity));
                 if (survivors) {
                     this.retainedAgentTree = preCloseTree;
@@ -1531,9 +1563,15 @@ export class AcpSdkBackend implements AgentBackend {
                     this.retainedAgentTree = preCloseTree;
                     agentEnded = false;
                 }
+            } else if (knownPid && preCloseTree === null) {
+                // Known PID but snapshot failed — never trust closeOk alone;
+                // stdin-EOF can exit the root while a descendant survives (#2021).
+                this.retainedTreeSnapshotIncomplete = true;
+                this.retainedAgentTree = null;
+                agentEnded = false;
             } else if (closeOk) {
-                // No pre-close snapshot (unknown PID) — trust close only when it
-                // confirmed; otherwise leave unresolved without a forgeable tree.
+                // No known PID — trust close only when it confirmed.
+                this.retainedTreeSnapshotIncomplete = false;
                 agentEnded = true;
                 this.agentTreeEnded = true;
                 this.retainedAgentTree = null;
@@ -1560,14 +1598,16 @@ export class AcpSdkBackend implements AgentBackend {
         const childIds = [...this.knownChildSessionIds];
         this.knownChildSessionIds.clear();
         this.childEmitSink = null;
-        if (sink && childIds.length > 0) {
+        if (sink) {
+            // Retain child + foreground settlement until exit is verified —
+            // indeterminate Stop leaves foreground calls open (#2021).
+            this.pendingDisconnectSettle = {
+                childIds,
+                sink,
+                settleForeground: true,
+            };
             if (agentEnded) {
-                this.pendingChildInterrupt = { childIds, sink };
-                this.publishPendingChildInterrupts();
-            } else {
-                // Keep settlement evidence until verifyRetainedAgentExit confirms
-                // the tree is gone — otherwise Archive sticks on open children (#2021).
-                this.pendingChildInterrupt = { childIds, sink };
+                this.publishPendingDisconnectSettle();
             }
         }
         this.activeSessionId = null;

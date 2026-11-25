@@ -595,7 +595,6 @@ describe('cursorLegacyRemoteLauncher', () => {
         snapMock.mockReturnValueOnce(null);
         killRetained.mockClear();
         killChild.mockClear();
-        killChild.mockResolvedValue(true);
 
         const child1 = makeChild({ hold: true, pid: 9999 });
         spawnMock.mockReturnValueOnce(child1);
@@ -614,21 +613,20 @@ describe('cursorLegacyRemoteLauncher', () => {
         const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
         await abort();
         expect(snapMock).toHaveBeenCalledTimes(1);
-        expect(killChild).toHaveBeenCalled();
+        // Must not signal by live ChildProcess PID when the original tree is unknown.
+        expect(killChild).not.toHaveBeenCalled();
         expect(killRetained).not.toHaveBeenCalled();
         expect(thinking).not.toHaveBeenCalledWith(false);
 
-        // Second Stop must not take a replacement snapshot from the root.
+        // Second Stop must not take a replacement snapshot from the root, and
+        // must still refuse to signal by reused PID.
         snapMock.mockReturnValue([{ pid: 9999, startMarker: null, bootId: null, tgid: null }]);
         await abort();
         expect(snapMock).toHaveBeenCalledTimes(1);
+        expect(killChild).not.toHaveBeenCalled();
         expect(killRetained).not.toHaveBeenCalled();
         expect(thinking).not.toHaveBeenCalledWith(false);
 
-        child1.closeChild?.(null);
-        queue.close();
-        // Unverified incomplete snapshot: turn must not settle on stdout close alone.
-        await new Promise((resolve) => setTimeout(resolve, 50));
         thinking.mockRestore();
         snapMock.mockImplementation((pid: number) => [{
             pid,
@@ -636,14 +634,12 @@ describe('cursorLegacyRemoteLauncher', () => {
             bootId: 'boot',
             tgid: pid,
         }]);
-        // Recover so launch can finish: force a verified path is unavailable —
-        // abandon by killing the process mock and closing.
-        killRetained.mockResolvedValue(true);
-        // Reset incomplete state only happens on new child; force-kill path stays false.
-        // Close queue; launch may stay pending — race with timeout.
+        // Detach so the launcher can exit without a verified tree (test-only).
+        child1.closeChild?.(null);
+        queue.close();
         await Promise.race([
             launchPromise,
-            new Promise<void>((resolve) => setTimeout(resolve, 200)),
+            new Promise<void>((resolve) => setTimeout(resolve, 300)),
         ]);
     });
 

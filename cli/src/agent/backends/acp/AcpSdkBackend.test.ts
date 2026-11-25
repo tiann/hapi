@@ -3369,4 +3369,41 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             alive.mockRestore();
         }
     });
+
+    it('keeps ACP exit unverified when a known-PID pre-close snapshot fails (#2021)', async () => {
+        const processUtils = await import('@/utils/process');
+        const snap = vi.spyOn(processUtils, 'snapshotProcessTreeIdentities').mockReturnValue(null);
+
+        const backend = new AcpSdkBackend({
+            command: 'opencode',
+            args: ['acp'],
+            flavor: 'opencode',
+            textChunkMode: 'delta',
+            toolCallLifetimeStore: null,
+        });
+        const createSpy = vi.spyOn(AcpStdioTransport, 'create').mockImplementation(async () => ({
+            sendRequest: vi.fn(async (method: string) => {
+                if (method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+                return {};
+            }),
+            sendNotification: vi.fn(),
+            onNotification: vi.fn(),
+            onStderrError: () => {},
+            registerRequestHandler: () => {},
+            isAlive: () => true,
+            getProcessPid: () => 4242,
+            close: async () => true,
+        } as unknown as AcpStdioTransport));
+
+        try {
+            await backend.initialize();
+            await backend.disconnect();
+            expect(snap).toHaveBeenCalledWith(4242);
+            expect(backend.wasAgentTreeEnded()).toBe(false);
+            expect(await backend.verifyRetainedAgentExit(true)).toBe(false);
+        } finally {
+            createSpy.mockRestore();
+            snap.mockRestore();
+        }
+    });
 });

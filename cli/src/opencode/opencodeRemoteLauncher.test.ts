@@ -3046,6 +3046,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 await harness.disconnectImpl();
             }
         }),
+            wasAgentTreeEnded: vi.fn(() => true),
+            verifyRetainedAgentExit: vi.fn(async () => true),
             getSessionModelsMetadata: vi.fn(() => ({
                 currentModelId: 'ollama/qwen3.6:35b-a3b-q8_0-mtp',
                 availableModels: []
@@ -4414,6 +4416,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 await harness.disconnectImpl();
             }
         }),
+            wasAgentTreeEnded: vi.fn(() => true),
+            verifyRetainedAgentExit: vi.fn(async () => true),
             getSessionModelsMetadata: vi.fn((sessionId: string) => {
                 if (sessionId === 'acp-session-1') {
                     return { availableModels: fixtureModels, currentModelId: 'ollama/exaone:4.5-33b-q8' };

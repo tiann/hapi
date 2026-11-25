@@ -3,7 +3,6 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { logger } from '@/ui/logger';
 import {
-    killProcessByChildProcess,
     killRetainedProcessTree,
     snapshotProcessTreeIdentities,
     type RetainedProcessIdentity,
@@ -605,9 +604,10 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     if (this.retainedStopTree) {
                         stopped = await killRetainedProcessTree(this.retainedStopTree, force);
                     } else {
-                        // Incomplete snapshot: best-effort kill, never claim verified
-                        // and never replace with a fresh root scan.
-                        await killProcessByChildProcess(child, force);
+                        // Incomplete snapshot: do not signal by live ChildProcess PID —
+                        // the root may have exited and the OS may have reused it.
+                        // Keep settlement pending until a verified original identity
+                        // exists (#2021 tip Major).
                         stopped = false;
                     }
                 } catch (error) {
