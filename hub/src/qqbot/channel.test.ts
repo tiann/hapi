@@ -274,6 +274,46 @@ it('delivers real SyncEngine notification events through NotificationHub to the 
     }
 })
 
+it('suppresses a stale QQ ready alert after an earlier channel delays dispatch', async () => {
+    const store = new Store(':memory:')
+    const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+    const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+    const fetch = mockFetch()
+    const qq = new QqBotChannel(config, baseUrl, new VisibilityTracker(), id => engine.getSession(id), fetch)
+    const releaseEarlier = Promise.withResolvers<void>()
+    const earlier = mock(async (_session: Session) => releaseEarlier.promise)
+    const dispatched = Promise.withResolvers<void>()
+    const hub = new NotificationHub(engine, [
+        { sendReady: earlier, sendPermissionRequest: async () => {} },
+        qq,
+        { sendReady: async () => dispatched.resolve(), sendPermissionRequest: async () => {} }
+    ])
+    try {
+        const session = engine.getOrCreateSession('delayed-ready', { path: '/workspace/test', host: 'test' }, {}, config.namespace)
+        const time = Date.now()
+        engine.handleSessionAlive({ sid: session.id, time, mode: 'remote', thinking: false })
+        engine.handleRealtimeEvent({ type: 'message-received', sessionId: session.id, message: {
+            id: 'ready-event', seq: 1, localId: null, createdAt: time,
+            content: { role: 'agent', content: { type: 'event', data: { type: 'ready' } } }
+        } })
+        expect(earlier).toHaveBeenCalledTimes(1)
+        expect(fetch).not.toHaveBeenCalled()
+        // Apply an in-place cache update while the earlier channel is still awaiting I/O.
+        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id, data: { thinking: true } })
+        const dispatchedSession = earlier.mock.calls[0]?.[0]
+        expect(dispatchedSession === engine.getSession(session.id)).toBe(true)
+        expect(dispatchedSession?.thinking).toBe(true)
+        releaseEarlier.resolve()
+        await dispatched.promise
+        expect(fetch).not.toHaveBeenCalled()
+    } finally {
+        releaseEarlier.resolve()
+        hub.stop()
+        engine.stop()
+        store.close()
+    }
+})
+
 it('suppresses a permission request cleared during the NotificationHub debounce', async () => {
     const store = new Store(':memory:')
     const io = { of: () => ({ to: () => ({ emit() {} }) }) }

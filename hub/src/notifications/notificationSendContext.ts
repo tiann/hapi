@@ -11,4 +11,6 @@ export type NativeDeliveryGate = {
 
 export type NotificationSendContext = {
     nativeGate?: NativeDeliveryGate
+    /** Ready-event turn state, captured before the first channel can await network I/O. */
+    readyState?: Readonly<{ thinking: boolean; activeTurnStartedAt?: number | null }>
 }

@@ -407,7 +407,10 @@ export class NotificationHub {
     }
 
     private async notifyReady(session: Session): Promise<void> {
-        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
+        const ctx: NotificationSendContext = {
+            nativeGate: { sent: false },
+            readyState: { thinking: session.thinking, activeTurnStartedAt: session.activeTurnStartedAt }
+        }
         for (const channel of this.channels) {
             try {
                 await channel.sendReady(session, ctx)

@@ -1,6 +1,7 @@
 import type { SessionEndReason } from '@hapi/protocol'
 import type { QqBotOptions } from '../config/qqBotSettings'
 import { isInputRequestTool } from '../notifications/inputRequest'
+import type { NotificationSendContext } from '../notifications/notificationSendContext'
 import type { NotificationChannel } from '../notifications/notificationTypes'
 import { getAgentName } from '../notifications/sessionInfo'
 import type { Session } from '../sync/syncEngine'
@@ -22,9 +23,9 @@ export class QqBotChannel implements NotificationChannel {
         this.origin = new URL(publicUrl).origin
     }
 
-    async sendReady(session: Session): Promise<void> {
+    async sendReady(session: Session, ctx?: NotificationSendContext): Promise<void> {
         if (!session.active) return
-        const { thinking: wasThinking, activeTurnStartedAt: turnStartedAt } = session
+        const { thinking: wasThinking, activeTurnStartedAt: turnStartedAt } = ctx?.readyState ?? session
         await this.send(session, () => {
             const current = this.getSession(session.id)
             if (!current?.active) return null
