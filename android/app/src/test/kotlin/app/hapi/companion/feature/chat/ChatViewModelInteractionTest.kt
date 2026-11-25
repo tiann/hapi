@@ -2294,6 +2294,32 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `an adjacent skill keeps trailing plus signs that belong to the selected name`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val cpp = SkillSummary("c++")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(cpp))
+        vm.start()
+
+        for ((suffix, caretAfter) in listOf("++" to "", "+++" to "+")) {
+            val text = "Run \$c$suffix\$lint"
+            for (query in listOf("c", "c+", "c++")) {
+                vm.setComposerText("")
+                val caret = "Run \$$query".length
+                vm.onComposerChange(text, caret, caret)
+                testScheduler.runCurrent()
+                assertEquals(listOf(cpp), vm.skillSuggestions.value.map { it.skill }, "$suffix at $query")
+                vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+                testScheduler.runCurrent()
+
+                assertEquals(text, vm.composer.value.text, "$suffix at $query")
+                assertEquals("Run \$c++$caretAfter".length, vm.composer.value.caretPosition)
+            }
+        }
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+    }
+
+    @Test
     fun `qualified Claude skills match past the colon and replace the existing qualified word`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel

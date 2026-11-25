@@ -11,7 +11,13 @@ class SkillSuggestion internal constructor(
 )
 
 internal object SkillSuggestions {
-    data class Token(val start: Int, val end: Int, val word: String, val query: String)
+    data class Token(
+        val start: Int,
+        val end: Int,
+        val word: String,
+        val query: String,
+        val trailingPlusBeforeReference: Boolean,
+    )
     data class Edit(val text: String, val caret: Int)
 
     private val provisionalPunctuation = charArrayOf('.', ':', '+')
@@ -42,8 +48,7 @@ internal object SkillSuggestions {
             // Scan punctuation after a provisional plus run; the catalogue resolves the boundary.
             '.', ':' -> (isNameChar(text, index - 1) || text.getOrNull(index - 1) == '+') &&
                 (index == caret - 1 || isNameChar(text, index + 1) || (char == ':' && index == text.lastIndex))
-            // A plus directly before the next reference is always a separator.
-            '+' -> text.getOrNull(index + 1) != '$'
+            '+' -> true
             else -> isNameChar(text, index)
         }
     }
@@ -55,18 +60,26 @@ internal object SkillSuggestions {
         if (text.getOrNull(wordStart) != '$' || isNameAt(text, wordStart - 1)) return null
         var wordEnd = start
         while (isCandidateAt(text, wordEnd, start)) wordEnd++
-        return Token(wordStart, wordEnd, text.substring(wordStart, wordEnd), text.substring(wordStart + 1, start))
+        val word = text.substring(wordStart, wordEnd)
+        return Token(
+            wordStart, wordEnd, word, text.substring(wordStart + 1, start),
+            trailingPlusBeforeReference = word.endsWith('+') && text.getOrNull(wordEnd) == '$',
+        )
     }
 
     /** Exact catalogue tokens outrank partial suffixes that only match the selected skill. */
     fun replacementEnd(token: Token, skill: SkillSummary, knownNames: Set<String>, maxNameLength: Int): Int {
-        val word = token.word
-        var start = token.query.length + 1 // Include '$'.
+        val word = if (token.trailingPlusBeforeReference) {
+            // Preserve the separator unless the plus completes the selected name.
+            if (skillNameKey(token.word.substring(1)) == skillNameKey(skill.name)) return token.end
+            token.word.dropLast(1)
+        } else token.word
+        var start = minOf(token.query.length + 1, word.length) // Include '$'.
         // Treat a just-typed punctuation run as part of the name only when
         // the catalogue confirms it (including partial matches).
         while (start > 1 && word[start - 1] in provisionalPunctuation) start--
         val boundary = word.indexOfAny(provisionalPunctuation, startIndex = start)
-        if (boundary == -1) return token.end
+        if (boundary == -1) return token.start + word.length
         val name = skillNameKey(skill.name)
         var partialEnd: Int? = null
         for (end in minOf(word.length, maxNameLength + 1) downTo boundary + 1) {
