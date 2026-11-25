@@ -662,6 +662,7 @@ describe('MessageService.getQueuedState', () => {
         const otherSession = makeSession(store, 'queued-state-other')
         store.messages.addMessage(session.id, 'queued', 'local-queued')
         store.messages.addMessage(session.id, 'invoked', 'local-invoked')
+        store.messages.addMessage(session.id, 'steered', 'local-steered')
         store.messages.addMessage(
             session.id,
             'future scheduled',
@@ -670,19 +671,24 @@ describe('MessageService.getQueuedState', () => {
         )
         store.messages.addMessage(otherSession.id, 'other session', 'local-other')
         store.messages.markMessagesInvoked(session.id, ['local-invoked'], 1_000)
+        store.messages.markMessagesInvoked(session.id, ['local-steered'], 1_000, true)
 
         const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
 
         expect(service.getQueuedState(session.id, [
             'local-queued',
             'local-invoked',
+            'local-steered',
             'local-absent',
             'local-future',
             'local-other'
         ])).toEqual({
             queuedLocalIds: ['local-queued', 'local-future'],
             indeterminateLocalIds: [],
-            invokedLocalMessages: [{ localId: 'local-invoked', invokedAt: 1_000 }]
+            invokedLocalMessages: [
+                { localId: 'local-invoked', invokedAt: 1_000 },
+                { localId: 'local-steered', invokedAt: 1_000, steered: true }
+            ]
         })
         expect(service.getQueuedState(session.id, [])).toEqual({
             queuedLocalIds: [],

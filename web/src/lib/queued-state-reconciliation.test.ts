@@ -103,6 +103,19 @@ describe('reconcileQueuedStateAfterConnect', () => {
         )
     })
 
+    it('does not conflate steered and ordinary invocation at the same timestamp', async () => {
+        mockGetCandidates.mockReturnValueOnce(['prompt', 'correction'])
+        await reconcileQueuedStateAfterConnect(createMockApi(async () => ({
+            queuedLocalIds: [],
+            invokedLocalMessages: [
+                { localId: 'prompt', invokedAt: 1_000 },
+                { localId: 'correction', invokedAt: 1_000, steered: true }
+            ]
+        })), 'session-B')
+        expect(mockMarkMessagesConsumed).toHaveBeenCalledWith('session-B', ['prompt'], 1_000)
+        expect(mockMarkMessagesConsumed).toHaveBeenCalledWith('session-B', ['correction'], 1_000, true)
+    })
+
     it('applies authoritative invoked timestamps before reconciling absent rows', async () => {
         mockGetCandidates.mockReturnValueOnce(['local-1', 'local-2'])
         const getQueuedState = vi.fn(async () => ({

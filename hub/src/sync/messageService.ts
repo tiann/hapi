@@ -314,7 +314,8 @@ export class MessageService {
                 .map((state) => state.localId),
             invokedLocalMessages: states.flatMap((state) => state.invokedAt === null
                 ? []
-                : [{ localId: state.localId, invokedAt: state.invokedAt }])
+                : [{ localId: state.localId, invokedAt: state.invokedAt,
+                    ...(state.deliveryState === 'steered' ? { steered: true } : {}) }])
         }
     }
 

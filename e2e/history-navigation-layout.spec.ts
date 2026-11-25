@@ -239,6 +239,71 @@ test('settles at the start of a prompt taller than the viewport', async ({ page 
 })
 
 
+for (const structuralReset of [false, true]) {
+    test(`handles a reconnect after the jump-to-start has trimmed newer pages (reset=${structuralReset})`, async ({ page }) => {
+        await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartGap=1')
+        const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Latest fixture reply' })
+        await reply.hover()
+        await reply.getByRole('button', { name: 'Jump to conversation start' }).press('Enter')
+        await expect.poll(() => page.evaluate(() => window.__probe.requests.some(r => r.beforeSeq === 201))).toBe(true)
+        await page.evaluate(next => window.__probe.gap(next ? 2 : undefined), structuralReset)
+        await page.evaluate(() => window.__probe.releaseBefore())
+        const success = page.getByText('Reached conversation start', { exact: true })
+        if (structuralReset) {
+            await expect(page.getByText('Fixture message 1199', { exact: true })).toBeAttached()
+            await expect(success).toHaveCount(0)
+            await expect(page.getByText('Fixture message 1', { exact: true })).toHaveCount(0)
+        } else {
+            await expect(success).toBeVisible()
+            const oldest = page.getByText('Fixture message 1', { exact: true })
+            await expect(oldest).toBeInViewport()
+            const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+            if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-reconnect-keeps-start.png` })
+            // A second reconnect after settlement must not replace the page either.
+            await page.evaluate(() => window.__probe.gap())
+            await expect(oldest).toBeInViewport()
+            await page.getByRole('button', { name: 'Latest messages', exact: true }).click()
+            await expect(reply).toBeInViewport()
+        }
+    })
+}
+
+
+test('does not preload older history while a jump to a loaded prompt is settling', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&loadedPromptPreload=1')
+    await page.addStyleTag({ content: '[data-hapi-message-role="assistant"] { min-height: 1800px; }' })
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply to loaded prompt' })
+    await expect(reply).toBeAttached()
+    await expect.poll(async () => (await geometry(page)).chatScrollTop).toBeGreaterThan(500)
+    expect(await page.evaluate(() => window.__probe.requests.filter(r => r.direction === 'before'))).toHaveLength(0)
+    await page.evaluate(() => {
+        const original = HTMLElement.prototype.scrollIntoView
+        HTMLElement.prototype.scrollIntoView = function (options) {
+            if (this.matches('[data-hapi-turn-input="true"]') && this.textContent?.includes('Already loaded prompt')) {
+                // Hold a smooth jump between scroll events inside the preload
+                // margin while the target is still just outside the viewport.
+                const viewport = this.closest<HTMLElement>('.chat-scroll-y')!
+                viewport.scrollTo({ top: 150, behavior: 'instant' })
+                viewport.dataset.testMidJump = 'true'
+                window.addEventListener('release-fixture-prompt-scroll', () => original.call(this, options), { once: true })
+                return
+            }
+            original.call(this, options)
+        }
+    })
+    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter')
+    await expect(page.locator('.chat-scroll-y')).toHaveAttribute('data-test-mid-jump', 'true')
+    await page.waitForTimeout(250)
+    expect(await page.evaluate(() => window.__probe.requests.filter(r => r.direction === 'before'))).toHaveLength(0)
+    await page.evaluate(() => window.dispatchEvent(new Event('release-fixture-prompt-scroll')))
+    const prompt = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Already loaded prompt' })
+    await expect(prompt).toBeInViewport()
+    await expect.poll(() => page.evaluate(() => window.__probe.requests.filter(r => r.direction === 'before').length)).toBe(1)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-preload-after-settlement.png` })
+})
+
+
 test('keeps following new output after loading an older page that completes a short chat', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&rekeyReply=1')
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Last part of the reply' })

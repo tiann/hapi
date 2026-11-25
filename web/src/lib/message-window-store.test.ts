@@ -31,6 +31,7 @@ import {
     subscribeMessageWindow,
     syncTailMessages,
     recoverWindowAfterGapResume,
+    holdConversationStartWindow,
     updateMessageStatus,
 } from '@/lib/message-window-store'
 
@@ -2890,6 +2891,43 @@ describe('gap recovery', () => {
     function mergedContentOf(state: ReturnType<typeof getMessageWindowState>): unknown {
         return state.messages.find(message => message.id === 'call-row')?.content
     }
+
+    it.each([false, true])('waits for a pending epoch probe before confirming history start (reset=%s)', async reset => {
+        const id = sessionId('gap-during-start-settlement')
+        const old = makeAgentMessage({ id: 'oldest', seq: 1, at: 1_000 })
+        const latest = makeAgentMessage({ id: 'latest', seq: 2, at: 2_000 })
+        const probe = deferred<MessagesResponse>()
+        let needsReplacement = false
+        const getMessages = vi.fn(async (_id: string, query: { limit?: number }) => {
+            if (query.limit === 1) return probe.promise
+            return needsReplacement ? latestResponse([latest], { epoch: 2 }) : latestResponse([old], { epoch: 1 })
+        })
+        const api = createApi(getMessages)
+        await syncTailMessages(api, id)
+        setMessageViewMode(id, 'history')
+        const navigation = holdConversationStartWindow(id)!
+        expect(navigation.isCurrent()).toBe(true)
+        const gap = recoverWindowAfterGapResume(api, id)
+        const completed = vi.fn()
+        const verification = navigation.verifyStart().then(completed)
+        await Promise.resolve()
+        expect(completed).not.toHaveBeenCalled()
+
+        needsReplacement = reset
+        probe.resolve(latestResponse([latest], { epoch: reset ? 2 : 1 }))
+        await Promise.all([gap, verification])
+        expect(completed).toHaveBeenCalledWith(!reset)
+        expect(getMessageWindowState(id).messages.map(row => row.id)).toEqual([reset ? 'latest' : 'oldest'])
+        if (!reset) {
+            navigation.finish(true)
+            expect(navigation.isCurrent()).toBe(true)
+            setMessageViewMode(id, 'tail')
+            expect(navigation.isCurrent()).toBe(false)
+            needsReplacement = true
+            await syncTailMessages(api, id)
+            expect(getMessageWindowState(id).messages.map(row => row.id)).toEqual(['latest'])
+        }
+    })
 
     it('replaces a merged row with its current content after a gap resume', async () => {
         const id = sessionId('gap-recovery')

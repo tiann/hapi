@@ -114,7 +114,7 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
                         const state = await api.getQueuedState(input.sessionId, [input.localId])
                         const invoked = state.invokedLocalMessages.find((item) => item.localId === input.localId)
                         if (invoked) {
-                            markMessagesConsumed(input.sessionId, [input.localId], invoked.invokedAt)
+                            markMessagesConsumed(input.sessionId, [input.localId], invoked.invokedAt, invoked.steered)
                         }
                     } catch {
                         // SSE / the next reconnect will reconcile the held row.

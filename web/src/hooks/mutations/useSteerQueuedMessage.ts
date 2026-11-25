@@ -45,7 +45,7 @@ export function useSteerQueuedMessage(api: ApiClient | null) {
                 // messages-consumed SSE was missed while the row was still
                 // queued, reconcile it now so the queued bar cannot keep a
                 // stale actionable row (mirrors useCancelQueuedMessage).
-                markMessagesConsumed(input.sessionId, [result.message.localId], result.message.invokedAt)
+                markMessagesConsumed(input.sessionId, [result.message.localId], result.message.invokedAt, result.message.steered)
             }
             if (result.status === 'steered' && result.localId && api) {
                 const localId = result.localId
@@ -60,7 +60,7 @@ export function useSteerQueuedMessage(api: ApiClient | null) {
                     const state = await api.getQueuedState(input.sessionId, [localId])
                     const invoked = state.invokedLocalMessages.find(message => message.localId === localId)
                     if (invoked) {
-                        markMessagesConsumed(input.sessionId, [localId], invoked.invokedAt)
+                        markMessagesConsumed(input.sessionId, [localId], invoked.invokedAt, invoked.steered)
                     } else if (current() === pending) {
                         if (state.dispatchingLocalIds?.includes(localId)) {
                             markMessagesDispatching(input.sessionId, [localId])

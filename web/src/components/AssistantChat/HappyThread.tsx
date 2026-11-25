@@ -29,7 +29,7 @@ import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
-import type { OlderLoadOutcome } from '@/lib/message-window-store'
+import { holdConversationStartWindow, type ConversationStartWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
@@ -1263,6 +1263,7 @@ export function HappyThread(props: {
     // which immediately requests and renders the latest page.
     const historyNavigationRef = useRef(false)
     const navigationRunRef = useRef(0)
+    const conversationStartWindowRef = useRef<ConversationStartWindow | null>(null)
     const navigationInFlightRef = useRef(false)
     const [isNavigationInFlight, setIsNavigationInFlight] = useState(false)
     const promptNavigationTimerRef = useRef<number | null>(null)
@@ -1446,7 +1447,8 @@ export function HappyThread(props: {
     }, [])
 
     const isReadyForAutomaticCoverage = useCallback((): boolean => {
-        return !isSyncingTailRef.current
+        return !navigationInFlightRef.current
+            && !isSyncingTailRef.current
             && !isLoadingMoreRef.current
             && appliedMessagesVersionRef.current === messagesVersionRef.current
             && !(rawMessagesCountRef.current > 0 && isAwaitingInitialTailCommit())
@@ -1615,6 +1617,8 @@ export function HappyThread(props: {
 
     const cancelHistoryNavigation = useCallback(() => {
         navigationRunRef.current += 1
+        conversationStartWindowRef.current?.finish(false)
+        conversationStartWindowRef.current = null
         historyNavigationRef.current = false
         navigationInFlightRef.current = false
         setIsNavigationInFlight(false)
@@ -2158,6 +2162,8 @@ export function HappyThread(props: {
         userCancelledInitialTailRef.current = false
         searchTargetHistoryLockRef.current = false
         navigationRunRef.current += 1
+        conversationStartWindowRef.current?.finish(false)
+        conversationStartWindowRef.current = null
         historyNavigationRef.current = false
         navigationInFlightRef.current = false
         setIsNavigationInFlight(false)
@@ -2532,6 +2538,8 @@ export function HappyThread(props: {
     useEffect(() => {
         return () => {
             navigationRunRef.current += 1
+            conversationStartWindowRef.current?.finish(false)
+            conversationStartWindowRef.current = null
             historyNavigationRef.current = false
             navigationInFlightRef.current = false
             historyLoaderRef.current.runId += 1
@@ -3063,9 +3071,10 @@ export function HappyThread(props: {
                 historyNavigationRef.current = false
                 navigationInFlightRef.current = false
                 setIsNavigationInFlight(false)
+                scheduleCoverageAfterSettling()
             }
         }
-    }, [clearConversationStartFeedback, releaseSearchTargetHistoryLock, scrollToPromptForMessage])
+    }, [clearConversationStartFeedback, releaseSearchTargetHistoryLock, scheduleCoverageAfterSettling, scrollToPromptForMessage])
 
     const scrollToConversationStart = useCallback(async (focusTarget = false): Promise<boolean> => {
         if (navigationInFlightRef.current) return false
@@ -3087,7 +3096,11 @@ export function HappyThread(props: {
             return true
         }
         const runId = navigationRunRef.current
-        const isCancelled = () => navigationRunRef.current !== runId
+        const heldWindow = holdConversationStartWindow(props.sessionId)
+        conversationStartWindowRef.current = heldWindow
+        const runCancelled = () => navigationRunRef.current !== runId
+        const isCancelled = () => runCancelled() || heldWindow?.isCurrent() === false
+        let reachedStart = false
         navigationInFlightRef.current = true
         setIsNavigationInFlight(true)
         historyNavigationRef.current = true
@@ -3123,6 +3136,7 @@ export function HappyThread(props: {
             // still count as upward movement. Zeroing this first makes an early
             // near-bottom frame look non-upward and can flip view mode back to
             // tail, compacting the history we just loaded.
+            const firstAnchor = viewport.querySelector(MESSAGE_ANCHOR_SELECTOR)
             lastScrollTopRef.current = viewport.scrollTop
             viewport.scrollTo({ top: 0, behavior: 'smooth' })
             if (!await waitForViewportTop(viewport, 2500, isCancelled)) {
@@ -3135,10 +3149,13 @@ export function HappyThread(props: {
                 await waitForViewportTop(viewport, 250, isCancelled)
             }
             if (isCancelled()) return false
-            if (viewport.scrollTop > 1) {
+            const verified = await heldWindow?.verifyStart() ?? true
+            if (isCancelled()) return false
+            if (!verified || viewport.querySelector(MESSAGE_ANCHOR_SELECTOR) !== firstAnchor || viewport.scrollTop > 1) {
                 throw new Error('Could not reach conversation start')
             }
             if (focusTarget) focusFirstConversationMessage(viewport)
+            reachedStart = true
             lastScrollTopRef.current = viewport.scrollTop
             setConversationStartStatus('success')
             conversationStartStatusTimerRef.current = window.setTimeout(() => setConversationStartStatus('idle'), 1400)
@@ -3150,7 +3167,11 @@ export function HappyThread(props: {
             conversationStartStatusTimerRef.current = window.setTimeout(() => setConversationStartStatus('idle'), 3000)
             return false
         } finally {
-            if (!isCancelled()) {
+            heldWindow?.finish(reachedStart)
+            if (!runCancelled()) {
+                if (heldWindow?.isCurrent() === false && !reachedStart) {
+                    setConversationStartStatus(status => status === 'loading' ? 'idle' : status)
+                }
                 const restoreTail = wasTailFollowing && !hasMoreMessagesRef.current && currentViewport
                     && currentViewport.scrollHeight - currentViewport.clientHeight <= 1
                 historyNavigationRef.current = false
@@ -3166,6 +3187,7 @@ export function HappyThread(props: {
         clearPromptNavigationFeedback,
         loadOlderForNavigation,
         markExplicitNavigationAwayFromBottom,
+        props.sessionId,
         releaseSearchTargetHistoryLock
     ])
 

@@ -933,6 +933,8 @@ export type QueuedStateResponse = {
     invokedLocalMessages: Array<{
         localId: string
         invokedAt: number
+        /** The agent consumed this input within an already running turn. */
+        steered?: boolean
     }>
 }
 

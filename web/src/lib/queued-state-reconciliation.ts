@@ -1,4 +1,5 @@
 import type { ApiClient } from '@/api/client'
+import type { QueuedStateResponse } from '@hapi/protocol/apiTypes'
 import {
     getQueuedReconcileCandidateLocalIds,
     markMessagesConsumed,
@@ -25,7 +26,7 @@ export async function reconcileQueuedStateAfterConnect(
     const queuedLocalIds: string[] = []
     const dispatchingLocalIds: string[] = []
     const indeterminateLocalIds: string[] = []
-    const invokedLocalMessages: Array<{ localId: string; invokedAt: number }> = []
+    const invokedLocalMessages: QueuedStateResponse['invokedLocalMessages'] = []
     for (let index = 0; index < candidateLocalIds.length; index += QUEUED_STATE_BATCH_SIZE) {
         const batch = candidateLocalIds.slice(index, index + QUEUED_STATE_BATCH_SIZE)
         const state = await api.getQueuedState(sessionId, batch)
@@ -34,14 +35,15 @@ export async function reconcileQueuedStateAfterConnect(
         indeterminateLocalIds.push(...(state.indeterminateLocalIds ?? []))
         invokedLocalMessages.push(...state.invokedLocalMessages)
     }
-    const invokedByTimestamp = new Map<number, string[]>()
+    const invokedByTimestamp = new Map<number, { ordinary: string[]; steered: string[] }>()
     for (const message of invokedLocalMessages) {
-        const localIds = invokedByTimestamp.get(message.invokedAt) ?? []
-        localIds.push(message.localId)
-        invokedByTimestamp.set(message.invokedAt, localIds)
+        const group = invokedByTimestamp.get(message.invokedAt) ?? { ordinary: [], steered: [] }
+        group[message.steered ? 'steered' : 'ordinary'].push(message.localId)
+        invokedByTimestamp.set(message.invokedAt, group)
     }
-    for (const [invokedAt, localIds] of invokedByTimestamp) {
-        markMessagesConsumed(sessionId, localIds, invokedAt)
+    for (const [invokedAt, { ordinary, steered }] of invokedByTimestamp) {
+        if (ordinary.length) markMessagesConsumed(sessionId, ordinary, invokedAt)
+        if (steered.length) markMessagesConsumed(sessionId, steered, invokedAt, true)
     }
     // Nonterminal snapshots must not overwrite newer SSE or local operations.
     const current = new Map(getMessageWindowState(sessionId).messages.map(message => [message.localId, message]))

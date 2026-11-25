@@ -15,7 +15,7 @@ import { isQueuedForInvocation } from '../src/lib/messages'
 import { useHappyRuntime } from '../src/lib/assistant-runtime'
 import { HappyThread } from '../src/components/AssistantChat/HappyThread'
 import type { ChatBlock } from '../src/chat/types'
-import { getMessageWindowState, ingestIncomingMessages } from '../src/lib/message-window-store'
+import { getMessageWindowState, ingestIncomingMessages, recoverWindowAfterGapResume } from '../src/lib/message-window-store'
 import { buildConversationOutline } from '../src/chat/outline'
 
 // Drives the real message-window store + chat pipeline + HappyThread against a
@@ -35,6 +35,7 @@ type Probe = {
     requests: { sessionId?: string; direction: string; beforeSeq: number | null; limit: number | undefined; at: number }[]
     loadMore: () => Promise<unknown>
     refetch: () => Promise<void>
+    gap: (nextEpoch?: number) => Promise<void>
     releaseLatest: () => void
     holdBefore: () => void
     releaseBefore: () => void
@@ -69,6 +70,10 @@ window.__probe = {
     requests: [],
     loadMore: async () => {},
     refetch: async () => {},
+    gap: async (nextEpoch) => {
+        if (nextEpoch !== undefined) fixtureEpoch = nextEpoch
+        await recoverWindowAfterGapResume(fakeApi, currentActiveSessionId)
+    },
     releaseLatest: () => releaseLatestResponse(),
     holdBefore: () => {
         beforeResponseGate = new Promise<void>((resolve) => {
@@ -253,12 +258,19 @@ const sessionMessagesById: Record<string, DecryptedMessage[]> = sessionSwitch
     }
     : {}
 
+const jumpStartGap = fixtureParams.has('jumpStartGap')
+const loadedPromptPreload = fixtureParams.has('loadedPromptPreload')
+let fixtureEpoch = 1
 const rekeyReply = fixtureParams.has('rekeyReply')
 if (rekeyReply) window.__probe.holdBefore()
 const allMessages: DecryptedMessage[] = rekeyReply ? [
     createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Prompt from the older page' } }),
     createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Earlier part of the reply' } } }),
     createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Last part of the reply' } } }),
+] : loadedPromptPreload ? [
+    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'History before loaded prompt' } }),
+    createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Already loaded prompt' } }),
+    createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply to loaded prompt' } } }),
 ] : fixtureParams.has('jumpStartShort') ? [
     createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Short chat prompt' } }),
     createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'First short reply' } } }),
@@ -279,7 +291,9 @@ const allMessages: DecryptedMessage[] = rekeyReply ? [
         id: `m-${seq}`,
         seq,
         localId: null,
-        content: navigationMedia && seq % 50 === 0 && seq < TOTAL_MESSAGES
+        content: jumpStartGap && seq === TOTAL_MESSAGES
+            ? { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Latest fixture reply' } } }
+            : navigationMedia && seq % 50 === 0 && seq < TOTAL_MESSAGES
             ? {
                 role: 'agent',
                 content: {
@@ -354,8 +368,10 @@ const fakeApi = {
         let direction = 'latest'
         if (query.beforeSeq != null || query.beforeAt != null) direction = 'before'
         else if (query.afterSeq != null || query.afterAt != null) direction = 'after'
-        const limit = direction === 'latest' && rekeyReply ? 1
+        const limit = direction === 'latest' && loadedPromptPreload ? 2
+            : direction === 'latest' && rekeyReply ? 1
             : direction === 'latest' && !coldInitial && !cachedReentry && !sessionSwitch ? 200 : requestedLimit
+        if (jumpStartGap && direction === 'before' && query.beforeSeq === 201 && !beforeResponseGate) window.__probe.holdBefore()
         const responseGate = direction === 'before' ? beforeResponseGate : null
         window.__probe.requests.push({
             sessionId: requestedSessionId,
@@ -394,7 +410,7 @@ const fakeApi = {
                 page: pageFrom(pageMessages, {
                     direction: 'before',
                     limit,
-                    epoch: epochBump ? 2 : 1,
+                    epoch: epochBump ? 2 : fixtureEpoch,
                     hasMore: older.length > pageMessages.length,
                     nextBeforeSeq: oldest?.seq ?? null,
                     nextBeforeAt: oldest ? positionOf(oldest).at : null,
@@ -424,6 +440,7 @@ const fakeApi = {
             page: pageFrom(pageMessages, {
                 direction: 'latest',
                 limit,
+                epoch: fixtureEpoch,
                 reset: true,
                 hasMore: sourceMessages.length > pageMessages.length
             })
