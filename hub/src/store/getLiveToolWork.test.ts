@@ -124,6 +124,24 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 
+    it('clears warm-cache foreground work when a queued prompt is invoked (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-invoke-foreground')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('fg-queued', { status: 'in_progress' }), 'fg-queued')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        // Warm the registry, then insert an uninvoked queued prompt.
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'queued follow-up' },
+            localId: 'queued-follow-up',
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        store.messages.markMessagesInvoked(session.id, ['queued-follow-up'], Date.now())
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
     it('treats a terminal-status ACP call as settled even without a result row', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-acp-terminal')

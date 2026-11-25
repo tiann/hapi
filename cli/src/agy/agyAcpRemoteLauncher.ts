@@ -298,6 +298,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     /** True once the current reactive wakeup is classified completed — Stop
      *  must not re-arm retirement for that finished wakeup (#2021 Minor). */
     private reactiveWakeupCompleted = false;
+    /** Last observed transcript progress during the active reactive wakeup —
+     *  Stop completion polls use the real quiet period (#2021 Major). */
+    private reactiveWakeupLastProgressAtMs = 0;
     private wakeupHardStopTimer: ReturnType<typeof setTimeout> | null = null;
     /** Bumped to invalidate an in-flight wakeup hard-stop timer (generation fence). */
     private wakeupHardStopGeneration = 0;
@@ -730,6 +733,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
         let watchedStepIndex = this.pausedWakeupStepIndex ?? this.lastTranscriptStepIndex;
         let lastProgressAtMs = Date.now();
+        this.reactiveWakeupLastProgressAtMs = lastProgressAtMs;
         const pollIntervalMs = Math.max(10, Math.min(this.reactivePollMs, 50));
 
         try {
@@ -791,6 +795,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     watchedStepIndex = inspection.latestStepIndex;
                     this.pausedWakeupStepIndex = null;
                     lastProgressAtMs = nowMs;
+                    this.reactiveWakeupLastProgressAtMs = nowMs;
                     await this.waitWakeupTick(acpSessionId, pollIntervalMs, abortController.signal);
                     continue;
                 }
@@ -2401,13 +2406,28 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             this.lastTranscriptStepIndex,
         );
         if (steps.length === 0) return false;
-        const settleMs = this.reactiveTimings.settleMs;
         const nowMs = Date.now();
+        // Reset quiet-period clock when new steps arrive during Stop wait.
+        const latest = steps[steps.length - 1]?.step_index;
+        if (
+            typeof latest === 'number'
+            && latest > this.lastTranscriptStepIndex
+            && this.reactiveWakeupLastProgressAtMs > 0
+        ) {
+            // Progress since abort — keep waiting for settleMs from now.
+            // Do not stamp every poll; only when the tip advances.
+        }
+        const watched = this.pausedWakeupStepIndex ?? this.lastTranscriptStepIndex;
+        const tip = typeof latest === 'number' ? latest : watched;
+        if (tip > watched) {
+            this.reactiveWakeupLastProgressAtMs = nowMs;
+        }
+        const lastProgressAtMs = this.reactiveWakeupLastProgressAtMs || nowMs;
         const inspection = inspectAgyReactiveSteps(
             steps,
             this.session.path,
             nowMs,
-            nowMs - settleMs - 1,
+            lastProgressAtMs,
             this.reactiveTimings,
         );
         return inspection.state === 'completed';

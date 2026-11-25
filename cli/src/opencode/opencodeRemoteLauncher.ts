@@ -3131,7 +3131,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 this.messageBuffer.addMessage(`Generated image: ${message.fileName}`, 'assistant');
                 break;
             case 'turn_complete':
-                this.messageBuffer.addMessage('Turn complete', 'status');
+                // Child created/running markers reuse turn_complete for Hub
+                // live-work — do not announce "Turn complete" in the terminal
+                // while the parent/child are still working (#2021 Minor).
+                if (!('childSessionId' in message && message.childSessionId)) {
+                    this.messageBuffer.addMessage('Turn complete', 'status');
+                }
                 break;
             case 'round_summary':
                 break;

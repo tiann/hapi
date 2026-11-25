@@ -474,15 +474,28 @@ function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): Child
     const durable = readDurableChildToolWork(db, sessionId)
     const flavor = readSessionFlavor(db, sessionId)
 
+    // Claude/Pi (and other lookback-only flavors) keep the bounded scan —
+    // full-history decode on every cold Hub sweep stalls REST (#2021 Minor).
+    // ACP agent flavors need unbounded parent+child opens across lookback.
+    const needsFullAcpReplay = flavor === null
+        || flavor === 'opencode'
+        || flavor === 'codex'
+        || flavor === 'cursor'
+        || flavor === 'agy'
+        || flavor === 'gemini'
+        || flavor === 'antigravity'
+    if (!needsFullAcpReplay) {
+        applyDurableChildToolWork(state, durable)
+        state.durableSeeded = true
+        state.rebuilt = true
+        return state
+    }
+
     state.open.clear()
     state.openForeground.clear()
     state.settled.clear()
     state.runningChildren.clear()
     state.settledChildren.clear()
-    // Full transcript rebuild for every flavor — foreground ACP opens must
-    // survive lookback eviction and hub restart (#2021 Major). Non-OpenCode
-    // sessions previously skipped this; durable overlay alone cannot see
-    // unmatched parent-scope starts.
     const rows = prepareCached(db, `
         SELECT content, invoked_at FROM messages
         WHERE session_id = ?
@@ -2246,14 +2259,23 @@ export function markMessagesInvoked(
                 WHERE session_id = ? AND local_id IN (${placeholders}) AND invoked_at IS NOT NULL
             `).all(sessionId, ...localIds) as DbMessageRow[]
             for (const row of rows) {
+                const decoded = decodeMessageContent(row.content)
                 indexMessageContent(db, {
                     id: row.id,
                     sessionId: row.session_id,
-                    content: decodeMessageContent(row.content),
+                    content: decoded,
                     seq: row.seq,
                     createdAt: row.created_at,
                     invokedAt: row.invoked_at
                 })
+                // Durable ack path must apply the same foreground boundary as
+                // insert-time invoked prompts (#2021 Major).
+                if (isUserMessageRow(decoded)) {
+                    const state = childToolCallState(db, sessionId)
+                    seedDurableChildToolWorkIfNeeded(db, sessionId, state)
+                    state.openForeground.clear()
+                    writeDurableChildToolWork(db, sessionId, state)
+                }
             }
         }
         return changes
