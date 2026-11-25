@@ -1,10 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process';
 import { resolveExecutable } from '@/agent/agentLaunchCommand';
+import { canContainWithoutShell, type WindowsAgentJob } from '@/utils/windowsJobObject';
 import {
-    canContainWithoutShell,
-    tryAssignWindowsAgentJob,
-    type WindowsAgentJob,
-} from '@/utils/windowsJobObject';
+    asNodeChild,
+    spawnWindowsContainedProcess,
+} from '@/utils/windowsContainedSpawn';
 import {
     acquireAgentCliSpawnLease,
     releaseAgentCliSpawnLeaseFromAcpRegisterSync
@@ -139,15 +139,7 @@ export class AcpStdioTransport {
             try {
                 registerActiveAcpTransport();
                 try {
-                    const command = resolveWindowsLaunchCommand(options.command, options.cwd);
-                    const child = spawn(
-                        command,
-                        options.args ?? [],
-                        buildAcpStdioSpawnOptions(options.env, options.cwd)
-                    ) as ChildProcessWithoutNullStreams;
-                    const transport = new AcpStdioTransport(child, true, command);
-                    await transport.attachWindowsJobIfNeeded();
-                    return transport;
+                    return await AcpStdioTransport.spawnTransport(options, true);
                 } catch (error) {
                     unregisterActiveAcpTransport();
                     throw error;
@@ -157,26 +149,35 @@ export class AcpStdioTransport {
             }
         }
 
+        return AcpStdioTransport.spawnTransport(options, false);
+    }
+
+    /** Prefer CREATE_SUSPENDED Job Object spawn on Windows PE commands (#2021). */
+    private static async spawnTransport(
+        options: { command: string; args?: string[]; env?: Record<string, string>; cwd?: string },
+        shouldGuardAgentCli: boolean,
+    ): Promise<AcpStdioTransport> {
         const command = resolveWindowsLaunchCommand(options.command, options.cwd);
+        if (process.platform === 'win32' && canContainWithoutShell(command)) {
+            const contained = await spawnWindowsContainedProcess({
+                file: command,
+                args: options.args ?? [],
+                cwd: options.cwd,
+                stdio: ['pipe', 'pipe', 'pipe'],
+            });
+            if (contained?.stdin && contained.stdout && contained.stderr) {
+                const child = asNodeChild(contained) as ChildProcessWithoutNullStreams;
+                const transport = new AcpStdioTransport(child, shouldGuardAgentCli, command);
+                transport.windowsAgentJob = contained.windowsAgentJob;
+                return transport;
+            }
+        }
         const child = spawn(
             command,
             options.args ?? [],
-            buildAcpStdioSpawnOptions(options.env, options.cwd)
+            buildAcpStdioSpawnOptions(options.env, options.cwd),
         ) as ChildProcessWithoutNullStreams;
-        const transport = new AcpStdioTransport(child, false, command);
-        await transport.attachWindowsJobIfNeeded();
-        return transport;
-    }
-
-    /**
-     * Suspend→Assign→confirm→Resume after a shell:false spawn so the agent
-     * cannot fork outside the job (#2021 Approach). Skips .cmd/.bat roots.
-     */
-    private async attachWindowsJobIfNeeded(): Promise<void> {
-        const pid = this.getProcessPid();
-        if (typeof pid !== 'number' || pid <= 0 || process.platform !== 'win32') return;
-        if (!canContainWithoutShell(this.command)) return;
-        this.windowsAgentJob = await tryAssignWindowsAgentJob(pid);
+        return new AcpStdioTransport(child, shouldGuardAgentCli, command);
     }
 
     private constructor(process: ChildProcessWithoutNullStreams, shouldGuardAgentCli: boolean, command: string) {
@@ -465,13 +466,18 @@ export class AcpStdioTransport {
     async close(): Promise<boolean> {
         this.process.stdin.end();
         let treeGone: boolean;
-        if (this.windowsAgentJob) {
-            // Job membership is the settlement source of truth on Windows (#2021).
+        if (this.windowsAgentJob?.establishedAtCreate) {
+            // CREATE_SUSPENDED membership — empty ActiveProcesses is authoritative (#2021).
             this.windowsAgentJob.terminate(1);
             treeGone = this.windowsAgentJob.isEmpty();
             this.windowsAgentJob.release();
             this.windowsAgentJob = null;
         } else {
+            if (this.windowsAgentJob) {
+                this.windowsAgentJob.terminate(1);
+                this.windowsAgentJob.release();
+                this.windowsAgentJob = null;
+            }
             treeGone = await killProcessByChildProcess(this.process);
         }
         this.releaseAgentCliGuard();

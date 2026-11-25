@@ -180,14 +180,28 @@ function handleOk(handle: number | bigint | null | undefined): boolean {
  * closes the handle (KILL_ON_JOB_CLOSE also terminates any remaining members).
  */
 export class WindowsAgentJob {
+    /**
+     * True only when membership was confirmed while the initial thread was
+     * still suspended (CREATE_SUSPENDED path). Empty-job settlement must not
+     * trust post-spawn Assign alone (#2021 Approach).
+     */
+    readonly establishedAtCreate: boolean;
+
     private constructor(
         private readonly kernel: WindowsJobKernel,
         private job: number | bigint,
-    ) {}
+        establishedAtCreate = false,
+    ) {
+        this.establishedAtCreate = establishedAtCreate;
+    }
 
-    /** Module-private construction — prefer {@link tryAssignWindowsAgentJob}. */
-    static fromAssigned(kernel: WindowsJobKernel, job: number | bigint): WindowsAgentJob {
-        return new WindowsAgentJob(kernel, job);
+    /** Module-private construction — prefer spawn/assign helpers. */
+    static fromAssigned(
+        kernel: WindowsJobKernel,
+        job: number | bigint,
+        establishedAtCreate = false,
+    ): WindowsAgentJob {
+        return new WindowsAgentJob(kernel, job, establishedAtCreate);
     }
 
     /** ActiveProcesses from JobObjectBasicAccountingInformation, or null on query failure. */

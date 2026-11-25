@@ -18,11 +18,11 @@ import {
     type RetainedProcessIdentity,
 } from '@/utils/process';
 import { getAgentLaunchCommand, resolveExecutable } from '@/agent/agentLaunchCommand';
+import { canContainWithoutShell, type WindowsAgentJob } from '@/utils/windowsJobObject';
 import {
-    canContainWithoutShell,
-    tryAssignWindowsAgentJob,
-    type WindowsAgentJob,
-} from '@/utils/windowsJobObject';
+    asNodeChild,
+    spawnWindowsContainedProcess,
+} from '@/utils/windowsContainedSpawn';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import {
@@ -377,38 +377,54 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         cwd: string,
         onEvent: (event: ReturnType<typeof parseCursorEvent> & object) => void
     ): Promise<{ exitCode: number | null; stderr: string }> {
-        // Never shell:true on Windows for Job Object settlement — cmd.exe can
-        // start the agent before Assign, leaving tools outside the job (#2021).
+        // CREATE_SUSPENDED → Assign → Resume on Windows PE launches so the
+        // agent cannot run before Job Object membership (#2021 Approach).
         const launchCmd = getAgentLaunchCommand('cursor');
         const resolved = isWindows()
             ? (resolveExecutable(launchCmd, { cwd }) ?? launchCmd)
             : launchCmd;
-        const containable = !isWindows() || canContainWithoutShell(resolved);
-        const child = spawn(resolved, args, {
-            cwd,
-            env: process.env,
-            stdio: ['ignore', 'pipe', 'pipe'],
-            shell: false,
-            windowsHide: process.platform === 'win32',
-            // Own process group on POSIX so Stop can signal -pgid without
-            // killing the HAPI wrapper (#2021 Blocker).
-            detached: process.platform !== 'win32',
-        });
+        this.windowsAgentJob?.release();
+        this.windowsAgentJob = null;
+        let child: ChildProcess;
+        if (isWindows() && canContainWithoutShell(resolved)) {
+            const contained = await spawnWindowsContainedProcess({
+                file: resolved,
+                args,
+                cwd,
+                stdio: ['ignore', 'pipe', 'pipe'],
+            });
+            if (contained) {
+                child = asNodeChild(contained);
+                this.windowsAgentJob = contained.windowsAgentJob;
+            } else {
+                child = spawn(resolved, args, {
+                    cwd,
+                    env: process.env,
+                    stdio: ['ignore', 'pipe', 'pipe'],
+                    shell: false,
+                    windowsHide: true,
+                });
+            }
+        } else {
+            child = spawn(resolved, args, {
+                cwd,
+                env: process.env,
+                stdio: ['ignore', 'pipe', 'pipe'],
+                shell: false,
+                windowsHide: process.platform === 'win32',
+                // Own process group on POSIX so Stop can signal -pgid without
+                // killing the HAPI wrapper (#2021 Blocker).
+                detached: process.platform !== 'win32',
+            });
+        }
         this.activeChild = child;
         this.stopKillEscalated = false;
         this.stopDrainArmed = false;
         this.stopTreeVerified = null;
         this.stopTreeSnapshotIncomplete = false;
-        this.windowsAgentJob?.release();
-        this.windowsAgentJob = null;
         // Capture identity + tree at spawn while the root is still alive —
         // a later Stop after root exit can still verify retained members (#2021).
         if (typeof child.pid === 'number' && child.pid > 0) {
-            // Suspend→Assign→confirm→Resume before any tree snapshot / settle
-            // trust so the agent cannot fork outside the job (#2021 Approach).
-            if (isWindows() && containable) {
-                this.windowsAgentJob = await tryAssignWindowsAgentJob(child.pid);
-            }
             this.spawnedRootIdentity = {
                 pid: child.pid,
                 startMarker: getProcessStartMarker(child.pid),
@@ -418,7 +434,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             };
             this.retainedStopTree = snapshotProcessTreeIdentities(child.pid);
             if (isWindows()) {
-                this.stopTreeSnapshotIncomplete = !this.windowsAgentJob;
+                // Empty-job settlement only when CREATE_SUSPENDED path confirmed
+                // membership before ResumeThread (#2021 Approach).
+                this.stopTreeSnapshotIncomplete = !(this.windowsAgentJob?.establishedAtCreate);
             } else if (!this.retainedStopTree) {
                 this.stopTreeSnapshotIncomplete = true;
             }
@@ -552,10 +570,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     if (settled) return;
                     let verified = true;
                     try {
-                        // Job emptiness is authoritative when containment was
-                        // established at launch — ancestry cannot prove mid-turn
-                        // forks after the root exits (#2021 Approach).
-                        if (this.windowsAgentJob) {
+                        // Job emptiness is authoritative only when CREATE_SUSPENDED
+                        // confirmed membership before ResumeThread (#2021 Approach).
+                        if (this.windowsAgentJob?.establishedAtCreate) {
                             verified = this.windowsAgentJob.isEmpty();
                             if (verified) this.stopTreeSnapshotIncomplete = false;
                         } else if (this.retainedStopTree) {
@@ -821,12 +838,17 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             const attempts = leavingRemote ? 2 : 1;
             for (let i = 0; i < attempts; i += 1) {
                 try {
-                    if (this.windowsAgentJob) {
+                    if (this.windowsAgentJob?.establishedAtCreate) {
                         // Job membership covers post-root descendants; terminate
                         // then settle on empty ActiveProcesses (#2021 Approach).
-                        this.windowsAgentJob.terminate(force ? 1 : 1);
+                        this.windowsAgentJob.terminate(1);
                         stopped = this.windowsAgentJob.isEmpty();
                         if (stopped) this.stopTreeSnapshotIncomplete = false;
+                    } else if (this.windowsAgentJob) {
+                        // Post-spawn Assign only — terminate for cleanup but do
+                        // not settle on emptiness (membership race) (#2021).
+                        this.windowsAgentJob.terminate(1);
+                        stopped = false;
                     } else if (this.retainedStopTree) {
                         if (isWindows()) {
                             // Expand from generation-bound members so late tool

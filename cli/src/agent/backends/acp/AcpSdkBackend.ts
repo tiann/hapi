@@ -368,8 +368,11 @@ export class AcpSdkBackend implements AgentBackend {
         const spawnPid = typeof this.transport.getProcessPid === 'function'
             ? this.transport.getProcessPid()
             : null;
-        this.windowsJobContained = typeof this.transport.getWindowsAgentJob === 'function'
-            && this.transport.getWindowsAgentJob() !== null;
+        const job = typeof this.transport.getWindowsAgentJob === 'function'
+            ? this.transport.getWindowsAgentJob()
+            : null;
+        // Only CREATE_SUSPENDED → Assign → Resume membership is settlement-safe (#2021).
+        this.windowsJobContained = !!job?.establishedAtCreate;
         if (typeof spawnPid === 'number' && spawnPid > 0) {
             this.spawnedRootIdentity = {
                 pid: spawnPid,
