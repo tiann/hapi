@@ -1,11 +1,11 @@
-import type { CursorPermissionMode } from '@hapi/protocol/types';
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
 import { cursorCliSkuBaseId, cursorModelBaseId, cursorModelBaseMatches, isCursorAutoModelId, matchCliSkuToAcpWireId, parseCursorSkuParamHints, parseCursorWireParams, resolveCursorLegacyModelBase } from '@hapi/protocol';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { logger } from '@/ui/logger';
 
 export type CursorAcpMode = 'agent' | 'plan' | 'ask' | 'debug';
 
-export function toCursorAcpMode(mode: CursorPermissionMode | undefined): CursorAcpMode {
+export function toCursorAcpMode(mode: PermissionModeOf<typeof Flavors.cursor> | undefined): CursorAcpMode {
     if (mode === 'plan') return 'plan';
     if (mode === 'ask') return 'ask';
     if (mode === 'debug') return 'debug';
@@ -19,8 +19,8 @@ export function toCursorAcpMode(mode: CursorPermissionMode | undefined): CursorA
  * "Yes" means continue the task, not "plan complete, stop".
  */
 export function resolveCursorModeAfterPlanApproval(
-    mode: CursorPermissionMode | undefined
-): CursorPermissionMode {
+    mode: PermissionModeOf<typeof Flavors.cursor> | undefined
+): PermissionModeOf<typeof Flavors.cursor> {
     if (mode === 'plan' || mode === 'ask' || mode === undefined) {
         return 'default';
     }
@@ -28,12 +28,12 @@ export function resolveCursorModeAfterPlanApproval(
 }
 
 /** True when HAPI permission mode should spawn/toggle Cursor Auto-review. */
-export function isCursorAutoReviewMode(mode: CursorPermissionMode | undefined): boolean {
+export function isCursorAutoReviewMode(mode: PermissionModeOf<typeof Flavors.cursor> | undefined): boolean {
     return mode === 'autoReview';
 }
 
 function resolveAcpModeConfigValue(
-    mode: CursorPermissionMode | undefined,
+    mode: PermissionModeOf<typeof Flavors.cursor> | undefined,
     backend: AcpSdkBackend,
     sessionId: string
 ): string {
@@ -57,7 +57,7 @@ function resolveAcpModeConfigValue(
 export async function applyCursorAcpMode(
     backend: AcpSdkBackend,
     sessionId: string,
-    mode: CursorPermissionMode | undefined
+    mode: PermissionModeOf<typeof Flavors.cursor> | undefined
 ): Promise<void> {
     const configValue = resolveAcpModeConfigValue(mode, backend, sessionId);
 

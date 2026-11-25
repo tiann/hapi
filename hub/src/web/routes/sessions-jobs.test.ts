@@ -164,6 +164,17 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
         expect(body.sessions[0]!.attachedJob?.key).toBe('beets')
         expect(body.sessions[0]!.attachedJob?.remaining).toBe(120)
 
+        const path = `http://localhost/api/sessions/${session.id}/jobs/beets/clear-stale`
+        const clear = (data: object) => app.request(path, { method: 'POST', body: JSON.stringify(data) })
+        const { startedAt, heartbeatAt, runId } = jobs.get('beets')!
+        expect((await clear({ startedAt, heartbeatAt, runId })).status).toBe(409) // fresh
+        jobs.set('beets', { ...jobs.get('beets')!, heartbeatAt: 1 })
+        expect((await clear({ startedAt, heartbeatAt, runId })).status).toBe(409) // heartbeat changed
+        expect((await clear({ startedAt, heartbeatAt: 1, runId: 'previous' })).status).toBe(409)
+        expect((await clear({ startedAt, heartbeatAt: 1, runId })).status).toBe(200)
+        expect(jobs.size).toBe(0)
+        jobs.set('beets', listedBody.jobs[0]!)
+
         const staleDel = await app.request(
             `http://localhost/api/sessions/${session.id}/jobs/beets?expectedRunId=run-stale`,
             { method: 'DELETE' }

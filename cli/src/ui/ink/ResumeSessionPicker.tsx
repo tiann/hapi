@@ -33,62 +33,14 @@ export type ResumeSessionPickerProps = {
     onCancel: () => void
 }
 
-function isWideCodePoint(codePoint: number): boolean {
-    return (codePoint >= 0x1100 && codePoint <= 0x115f)
-        || codePoint === 0x2329
-        || codePoint === 0x232a
-        || (codePoint >= 0x2e80 && codePoint <= 0xa4cf)
-        || (codePoint >= 0xac00 && codePoint <= 0xd7a3)
-        || (codePoint >= 0xf900 && codePoint <= 0xfaff)
-        || (codePoint >= 0xfe10 && codePoint <= 0xfe19)
-        || (codePoint >= 0xfe30 && codePoint <= 0xfe6f)
-        || (codePoint >= 0xff00 && codePoint <= 0xff60)
-        || (codePoint >= 0xffe0 && codePoint <= 0xffe6)
-        || (codePoint >= 0x1f300 && codePoint <= 0x1faff)
-        || (codePoint >= 0x20000 && codePoint <= 0x3fffd)
-}
-
-function columnWidth(value: string): number {
-    let width = 0
-    for (const char of value) {
-        const codePoint = char.codePointAt(0) ?? 0
-        width += isWideCodePoint(codePoint) ? 2 : 1
-    }
-    return width
-}
-
-function sliceColumns(value: string, maxWidth: number): string {
-    let width = 0
-    let result = ''
-    for (const char of value) {
-        const codePoint = char.codePointAt(0) ?? 0
-        const charWidth = isWideCodePoint(codePoint) ? 2 : 1
-        if (width + charWidth > maxWidth) break
-        result += char
-        width += charWidth
-    }
-    return result
-}
-
-function truncateText(value: string, maxLength: number): string {
-    if (maxLength <= 0) return ''
-    if (columnWidth(value) <= maxLength) return value
-    if (maxLength <= 3) return '.'.repeat(maxLength)
-    return `${sliceColumns(value, maxLength - 3)}...`
-}
-
-function padEndColumns(value: string, width: number): string {
-    const padding = Math.max(0, width - columnWidth(value))
-    return `${value}${' '.repeat(padding)}`
-}
-
 function formatSessionLine(session: ResumableSession, width: number): string {
     const state = getResumeSessionState(session)
-    const time = formatResumeSessionRelativeTime(session.updatedAt).padStart(10)
-    const prefix = `${time}  ${session.flavor.padEnd(8)} ${state.padEnd(8)} `
-    const nameBudget = Math.max(12, width - prefix.length)
-    const name = truncateText(getResumeSessionName(session), nameBudget)
-    return padEndColumns(`${prefix}${name}`, width)
+    const time = formatResumeSessionRelativeTime(session.updatedAt)
+    const alignedPrefix = `${time.padStart(10)}  ${session.flavor.padEnd(8)} ${state.padEnd(8)} `
+    const prefix = width - alignedPrefix.length >= 12
+        ? alignedPrefix
+        : `${time} ${state} `
+    return prefix + getResumeSessionName(session).replace(/[\r\n\t]+/g, ' ')
 }
 
 function isPrintableInput(input: string, key: ExtendedKey): boolean {
@@ -106,7 +58,7 @@ export const ResumeSessionPicker: React.FC<ResumeSessionPickerProps> = ({
     const { stdout } = useStdout()
     const terminalWidth = stdout.columns || 80
     const terminalHeight = stdout.rows || 24
-    const visibleCount = Math.min(16, Math.max(5, terminalHeight - 8))
+    const visibleCount = Math.min(16, Math.max(1, terminalHeight - 9))
     const [state, setState] = useState<PickerState>({
         query: '',
         selectedIndex: 0,
@@ -191,15 +143,14 @@ export const ResumeSessionPicker: React.FC<ResumeSessionPickerProps> = ({
         }
     })
 
-    const width = Math.max(40, terminalWidth - 4)
     const shownStart = filteredSessions.length === 0 ? 0 : scrollOffset + 1
     const shownEnd = Math.min(filteredSessions.length, scrollOffset + visibleSessions.length)
-    const selectedTitle = selectedSession?.name ?? selectedSession?.summary ?? selectedSession?.sessionId
+    const firstMessage = selectedSession?.firstUserMessage
 
     return (
         <Box flexDirection="column" width={terminalWidth}>
             <Text bold>Resumable sessions</Text>
-            <Text color="gray">
+            <Text color="gray" wrap="truncate">
                 Search: <Text color={state.query ? 'cyan' : 'gray'}>{state.query || 'type to filter'}</Text>
             </Text>
             <Text color="gray">
@@ -214,26 +165,26 @@ export const ResumeSessionPicker: React.FC<ResumeSessionPickerProps> = ({
                     return (
                         <Text
                             key={session.sessionId}
+                            wrap="truncate"
                             color={selected ? 'cyan' : undefined}
                         >
                             {selected ? '> ' : '  '}
-                            {formatSessionLine(session, width - 2)}
+                            {formatSessionLine(session, terminalWidth - 2)}
                         </Text>
                     )
                 })}
             </Box>
             <Box marginTop={1}>
-                <Text color="gray">
-                    Title: {selectedTitle ? truncateText(selectedTitle, Math.max(10, terminalWidth - 11)) : '-'}
-                </Text>
+                <Text color="gray" wrap="truncate-middle">ID: {selectedSession?.sessionId ?? '-'}</Text>
             </Box>
             <Box>
-                <Text color="gray">
-                    Directory: {selectedSession ? truncateText(selectedSession.directory, Math.max(10, terminalWidth - 15)) : '-'}
-                </Text>
+                <Text color="gray" wrap="truncate">First message: {firstMessage || '-'}</Text>
             </Box>
             <Box>
-                <Text color="gray">Up/Down move | PageUp/PageDown scroll | type search | Enter resume | Esc clear/cancel | Ctrl-C cancel</Text>
+                <Text color="gray" wrap="truncate">Directory: {selectedSession?.directory ?? '-'}</Text>
+            </Box>
+            <Box>
+                <Text color="gray" wrap="truncate">Up/Down move | Enter resume | Esc clear/cancel | PageUp/PageDown scroll | Ctrl-C cancel</Text>
             </Box>
         </Box>
     )

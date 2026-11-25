@@ -39,6 +39,7 @@ class ReplayTransport {
     private notify: (method: string, params: unknown) => void = () => {};
     private steerArrived!: () => void;
     private readonly steerReceived = new Promise<void>((resolve) => { this.steerArrived = resolve; });
+    private promptCount = 0;
     readonly methods: string[] = [];
 
     onNotification(handler: (method: string, params: unknown) => void): void {
@@ -86,6 +87,16 @@ class ReplayTransport {
 
     sendRequestWithDispatch(method: string): { dispatched: Promise<void>; completed: Promise<unknown> } {
         this.methods.push(method);
+        if (method === 'session/prompt' && this.promptCount === 0) {
+            this.promptCount += 1;
+            const completed = (async () => {
+                await this.play(updatesBetween(requests[0]!.t, requests[1]!.t), requests[0]!.t);
+                await this.steerReceived;
+                return resultOf(104);
+            })();
+            return { dispatched: Promise.resolve(), completed };
+        }
+        this.promptCount += 1;
         this.steerArrived();
         const completed = (async () => {
             const last = await this.play(updatesBetween(requests[1]!.t, resultTime(105)), requests[1]!.t);
