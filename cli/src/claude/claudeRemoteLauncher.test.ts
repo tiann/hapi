@@ -74,6 +74,7 @@ vi.mock('./claudeRemote', () => ({
         const nativePromptUuid = `native-uuid-${harness.callCount}`
         opts.onInputSubmitted?.(nativePromptUuid)
         harness.inputSubmittedCalls.push(nativePromptUuid)
+        opts.onInputAccepted?.(nativePromptUuid)
 
         if (harness.compactSummary !== null) await opts.onReady(undefined, harness.compactSummary)
         if (harness.compactContextTokens !== null) {
@@ -254,6 +255,30 @@ describe('claudeRemoteLauncher resume anchor', () => {
             )
             expect(pointWrites.length).toBeGreaterThan(0)
             expect(pointWrites.at(-1)?.conversationHistoryEntryIds?.['local-1']).toBe('native-uuid-1')
+        } finally {
+            session.stopKeepAlive()
+        }
+    })
+
+    it('associates all members of a confirmed batch with its first native input, not separate rewind points', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        harness.switchAfterCall = 1
+        harness.triggerSwitch = () => { client.rpcHandlers.get(RPC_METHODS.Switch)?.() }
+        try {
+            queue.push('first user input', { permissionMode: 'default' }, 'local-first')
+            queue.push('second user input', { permissionMode: 'default' }, 'local-second')
+            await claudeRemoteLauncher(session as any)
+            expect(harness.initialMessages).toHaveLength(1)
+            expect(harness.initialMessages[0]).toContain('first user input')
+            expect(harness.initialMessages[0]).toContain('second user input')
+            const writes = harness.metadataWrites as Record<string, any>[]
+            const boundary = writes.find(metadata => metadata.conversationHistoryPoints?.['local-first'])
+            expect(boundary?.conversationHistoryPoints['local-second']).toBeUndefined()
+            expect(boundary?.conversationHistoryTurns).toBeUndefined()
+            expect(writes.find(metadata => metadata.conversationHistoryTurns)?.conversationHistoryTurns).toEqual({
+                'local-first': 'native-uuid-1', 'local-second': 'native-uuid-1'
+            })
         } finally {
             session.stopKeepAlive()
         }

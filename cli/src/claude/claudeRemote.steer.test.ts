@@ -88,6 +88,7 @@ async function startRemote(firstMessage = 'Run the tests') {
     const thinking: boolean[] = [];
     const onReady = vi.fn();
     const onResultAccepted = vi.fn();
+    const onInputAccepted = vi.fn();
     let delivered = false;
     const run = claudeRemote({
         sessionId: null,
@@ -105,6 +106,7 @@ async function startRemote(firstMessage = 'Run the tests') {
         },
         onReady,
         onResultAccepted,
+        onInputAccepted,
         isAborted: () => false,
         onSessionFound: () => {},
         onThinkingChange: (value) => thinking.push(value),
@@ -120,6 +122,7 @@ async function startRemote(firstMessage = 'Run the tests') {
         thinking,
         onReady,
         onResultAccepted,
+        onInputAccepted,
         currentTarget: () => targets.at(-1) ?? null,
         restore: () => querySpy.mockRestore()
     };
@@ -130,6 +133,25 @@ describe('claudeRemote steering', () => {
     afterEach(() => {
         restore?.();
         restore = null;
+    });
+
+    it.each(['echo', 'result', 'not delivered'])('publishes native input acceptance only with evidence from %s', async (evidence) => {
+        const remote = await startRemote();
+        restore = remote.restore;
+        const { fake, onInputAccepted } = remote;
+        expect(onInputAccepted).not.toHaveBeenCalled();
+        if (evidence === 'echo') {
+            fake.replay(fake.stdin[0]!);
+            await waitFor(() => onInputAccepted.mock.calls.length === 1);
+        }
+        if (evidence !== 'not delivered') {
+            fake.result();
+            await waitFor(() => remote.onReady.mock.calls.length === 1);
+            expect(onInputAccepted).toHaveBeenCalledExactlyOnceWith(fake.stdin[0]!.uuid);
+        }
+        fake.close();
+        await remote.run;
+        if (evidence === 'not delivered') expect(onInputAccepted).not.toHaveBeenCalled();
     });
 
     it('injects a steered message into the running turn and acks it by its echo', async () => {
@@ -150,7 +172,7 @@ describe('claudeRemote steering', () => {
         expect(delivery!.uuid).toBe(fake.stdin[1]!.uuid);
 
         fake.replay(fake.stdin[1]!);
-        await expect(delivery!.delivered).resolves.toBe(true);
+        await expect(delivery!.delivered).resolves.toBe('mid-turn');
 
         fake.result();
         await waitFor(() => remote.onReady.mock.calls.length === 1);
@@ -180,7 +202,7 @@ describe('claudeRemote steering', () => {
         expect(remote.currentTarget()).not.toBeNull();
 
         fake.replay(fake.stdin[1]!);
-        await expect(delivery.delivered).resolves.toBe(true);
+        await expect(delivery.delivered).resolves.toBe('follow-up');
         fake.result();
         await waitFor(() => remote.onReady.mock.calls.length === 1);
         expect(remote.thinking.at(-1)).toBe(false);
@@ -204,7 +226,7 @@ describe('claudeRemote steering', () => {
 
         fake.fail(new Error('Claude exited'));
         await expect(remote.run).rejects.toThrow('Claude exited');
-        await expect(delivery.delivered).resolves.toBe(false);
+        await expect(delivery.delivered).resolves.toBe('undelivered');
         expect(remote.currentTarget()).toBeNull();
     });
 
@@ -248,7 +270,7 @@ describe('claudeRemote steering', () => {
 
         fake.close();
         await remote.run;
-        await expect(delivery.delivered).resolves.toBe(false);
+        await expect(delivery.delivered).resolves.toBe('undelivered');
         expect(remote.currentTarget()).toBeNull();
     });
 

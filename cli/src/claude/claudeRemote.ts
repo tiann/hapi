@@ -34,14 +34,15 @@ interface CompactCompletion {
  * at its next tool boundary, or opens a follow-up turn for it when the current
  * one ends first.
  */
+export type ClaudeSteerPickup = 'mid-turn' | 'follow-up' | 'undelivered';
+
 export interface ClaudeSteerTarget {
     /**
-     * Null when the turn can no longer accept a message. `delivered` resolves
-     * true once Claude echoes the message (it is processing it), false when the
-     * stream closes first. `uuid` is the native transcript entry id assigned to
-     * the injected user message.
+     * Null when the turn can no longer accept a message. The echoed message
+     * is either part of the current turn or starts a follow-up after its result.
+     * A stream that closes before the echo reports undelivered.
      */
-    steer(message: string): { delivered: Promise<boolean>; uuid: string } | null;
+    steer(message: string): { delivered: Promise<ClaudeSteerPickup>; uuid: string } | null;
 }
 
 interface ActiveCompact {
@@ -132,6 +133,7 @@ export async function claudeRemote(opts: {
     onInputUndelivered?: () => void,
     /** The native prompt uuid of a just-submitted user message (queue batches only). */
     onInputSubmitted?: (nativePromptUuid: string) => void,
+    onInputAccepted?: (nativePromptUuid: string) => void,
     onCompletionEvent?: (message: string) => void,
     getClearHookSessionId?: () => string | undefined,
     onSessionReset?: (sessionId?: string) => void,
@@ -236,7 +238,18 @@ export async function claudeRemote(opts: {
     };
     // Steered messages Claude has not echoed yet. A result while any is
     // pending is not the end of the turn: Claude runs a follow-up turn for it.
-    const pendingSteers = new Map<string, (delivered: boolean) => void>();
+    const pendingSteers = new Map<string, (pickup: ClaudeSteerPickup) => void>();
+    let nextSteerStartsFollowUp = false;
+    let submittedPromptUuid: string | undefined;
+    const noteSubmittedPrompt = (uuid: string) => {
+        submittedPromptUuid = uuid;
+        opts.onInputSubmitted?.(uuid);
+    };
+    const confirmSubmittedPrompt = (uuid: string) => {
+        if (submittedPromptUuid !== uuid) return;
+        submittedPromptUuid = undefined;
+        opts.onInputAccepted?.(uuid);
+    };
     let steerTarget: ClaudeSteerTarget | null = null;
     let responseClosed = false;
     let inputEnded = false;
@@ -251,7 +264,7 @@ export async function claudeRemote(opts: {
             steer: (message) => {
                 if (steerTarget !== target || responseClosed || inputEnded) return null;
                 const uuid = randomUUID();
-                const delivered = new Promise<boolean>((resolve) => pendingSteers.set(uuid, resolve));
+                const delivered = new Promise<ClaudeSteerPickup>((resolve) => pendingSteers.set(uuid, resolve));
                 pushUserMessage(message, uuid);
                 logger.debug(`${debugPrefix} steered message pushed uuid=${uuid} length=${message.length}`);
                 return { delivered, uuid };
@@ -266,7 +279,7 @@ export async function claudeRemote(opts: {
         responseClosed = true;
         setSteerable(false);
         for (const resolveSteer of pendingSteers.values()) {
-            resolveSteer(false);
+            resolveSteer('undelivered');
         }
         pendingSteers.clear();
     };
@@ -401,7 +414,7 @@ export async function claudeRemote(opts: {
         // filters out, so advertising them sends rewind/fork at a boundary
         // that can never resolve.
         if (specialCommand.type === null) {
-            opts.onInputSubmitted?.(submittedUuid);
+            noteSubmittedPrompt(submittedUuid);
         }
         setSteerable(specialCommand.type === null);
         // A turn is now actually in flight: the dequeue, not the query()
@@ -666,7 +679,7 @@ export async function claudeRemote(opts: {
                 // See applyInitialTurn: only plain prompts are resolvable
                 // history points.
                 if (nextSpecialCommand.type === null) {
-                    opts.onInputSubmitted?.(followUpUuid);
+                    noteSubmittedPrompt(followUpUuid);
                 }
                 setSteerable(nextSpecialCommand.type === null && !clearAlias);
                 // A follow-up prompt starts a new turn; only the first turn gets system/init.
@@ -845,7 +858,11 @@ export async function claudeRemote(opts: {
                     if (resolveSteer) {
                         pendingSteers.delete(uuid);
                         logger.debug(`${debugPrefix} steered message picked up uuid=${uuid}`);
-                        resolveSteer(true);
+                        const pickup = nextSteerStartsFollowUp ? 'follow-up' : 'mid-turn';
+                        nextSteerStartsFollowUp = false;
+                        resolveSteer(pickup);
+                    } else {
+                        confirmSubmittedPrompt(uuid);
                     }
                     if (clearFollowUp?.uuid !== uuid || !clearFollowUp.earlyResult) continue;
                     message = clearFollowUp.earlyResult;
@@ -1052,7 +1069,14 @@ export async function claudeRemote(opts: {
                     opts.onFirstResult?.(initial.message);
                 }
 
+                // Older native streams do not always echo user input. A matching
+                // normal result also proves that the submitted input ran.
+                if (submittedPromptUuid && specialCommand.type === null && message.subtype === 'success'
+                    && (typeof message.user_message_uuid !== 'string' || message.user_message_uuid === submittedPromptUuid)) {
+                    confirmSubmittedPrompt(submittedPromptUuid);
+                }
                 if (pendingSteers.size > 0) {
+                    nextSteerStartsFollowUp = true;
                     // The turn ended before Claude reached a tool boundary for
                     // a steered message; it starts a follow-up turn for it.
                     logger.debug(`${debugPrefix} result #${resultSeq} received with ${pendingSteers.size} pending steer(s); turn continues`);
