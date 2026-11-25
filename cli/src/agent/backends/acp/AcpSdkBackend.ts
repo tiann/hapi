@@ -1620,8 +1620,25 @@ export class AcpSdkBackend implements AgentBackend {
                 && liveRoot.pid === spawned.pid
                 && liveRoot.startMarker === spawned.startMarker
             ) {
-                preCloseTree = live;
-                this.retainedAgentTree = live;
+                // Merge unresolved prior identities (reparented descendants
+                // omitted from the fresh root scan). Keep liveRoot last so
+                // POSIX group verify binds the original leader (#2021 Major).
+                const prior = this.retainedAgentTree ?? [];
+                const merged = live.slice(0, -1);
+                const seen = new Set(
+                    live.map((identity) => `${identity.pid}:${identity.startMarker}`),
+                );
+                for (const old of prior) {
+                    const key = `${old.pid}:${old.startMarker}`;
+                    if (seen.has(key)) continue;
+                    if (retainedIdentityStillAlive(old)) {
+                        merged.push(old);
+                        seen.add(key);
+                    }
+                }
+                merged.push(liveRoot);
+                preCloseTree = merged;
+                this.retainedAgentTree = merged;
                 this.retainedTreeSnapshotIncomplete = false;
             } else if (isWindows() && !live) {
                 // Windows cannot cover mid-close forks without a fresh tree.

@@ -295,6 +295,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         streamedTextCounts: Map<string, number>;
     } | null = null;
     private reactiveWakeupAbort: AbortController | null = null;
+    /** True once the current reactive wakeup is classified completed — Stop
+     *  must not re-arm retirement for that finished wakeup (#2021 Minor). */
+    private reactiveWakeupCompleted = false;
     private wakeupHardStopTimer: ReturnType<typeof setTimeout> | null = null;
     /** Bumped to invalidate an in-flight wakeup hard-stop timer (generation fence). */
     private wakeupHardStopGeneration = 0;
@@ -722,6 +725,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
         const abortController = new AbortController();
         this.reactiveWakeupAbort = abortController;
+        this.reactiveWakeupCompleted = false;
         session.onThinkingChange(true);
 
         let watchedStepIndex = this.pausedWakeupStepIndex ?? this.lastTranscriptStepIndex;
@@ -795,8 +799,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     this.pausedWakeupStepIndex = null;
                     this.lastTranscriptStepIndex = Math.max(this.lastTranscriptStepIndex, inspection.latestStepIndex);
                     // Record completion before any await that Stop can race —
-                    // disarm hard-stop so a slow resume cannot restart a finished
-                    // wakeup (#2021 Minor).
+                    // disarm hard-stop and refuse re-arm so a slow resume cannot
+                    // retire a finished wakeup (#2021 Minor).
+                    this.reactiveWakeupCompleted = true;
                     this.clearWakeupCancelHardStop();
                     this.pendingVerifiedWakeupStop = false;
                     this.pendingStopBackend = null;
@@ -2307,12 +2312,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.restartIfCancelIgnored(backend, turn);
             } else if (wakeupAbort) {
                 // Cancel when stdin still accepts it, then hard-stop. stdin
-                // closed ≠ process dead — always arm retirement so settlement
-                // waits on verified tree exit (#2021).
+                // closed ≠ process dead — arm retirement so settlement waits on
+                // verified tree exit, unless this wakeup already completed
+                // (#2021 Minor).
                 if (backend.isTransportAlive()) {
                     await backend.cancelPrompt(acpSessionId);
                 }
-                this.armWakeupCancelHardStop(backend);
+                if (!this.reactiveWakeupCompleted) {
+                    this.armWakeupCancelHardStop(backend);
+                }
             } else if (this.pendingVerifiedWakeupStop) {
                 // Prior wakeup Stop could not verify exit — retry retirement.
                 this.armWakeupCancelHardStop(backend);

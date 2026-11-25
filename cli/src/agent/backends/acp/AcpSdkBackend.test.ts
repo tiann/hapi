@@ -3475,6 +3475,80 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
         }
     });
 
+    it('merges previously retained ACP descendants omitted from a pre-close scan (#2021)', async () => {
+        const processUtils = await import('@/utils/process');
+        const spawnTree = [
+            {
+                pid: 9001,
+                startMarker: 'gen-child',
+                bootId: 'boot',
+                tgid: 9001,
+                pgid: 4242,
+            },
+            {
+                pid: 4242,
+                startMarker: 'gen-root',
+                bootId: 'boot',
+                tgid: 4242,
+                pgid: 4242,
+            },
+        ];
+        const refreshTree = [{
+            pid: 4242,
+            startMarker: 'gen-root',
+            bootId: 'boot',
+            tgid: 4242,
+            pgid: 4242,
+        }];
+        const snap = vi.spyOn(processUtils, 'snapshotProcessTreeIdentities')
+            .mockReturnValueOnce(spawnTree)
+            .mockReturnValue(refreshTree);
+        const alive = vi.spyOn(processUtils, 'retainedIdentityStillAlive')
+            .mockImplementation((identity) => identity.pid === 9001);
+        const classify = vi.spyOn(processUtils, 'classifyRetainedIdentity').mockReturnValue('match');
+        const killRetained = vi.spyOn(processUtils, 'killRetainedProcessTree').mockResolvedValue(false);
+
+        const backend = new AcpSdkBackend({
+            command: 'opencode',
+            args: ['acp'],
+            flavor: 'opencode',
+            textChunkMode: 'delta',
+            toolCallLifetimeStore: null,
+        });
+        const createSpy = vi.spyOn(AcpStdioTransport, 'create').mockImplementation(async () => ({
+            sendRequest: vi.fn(async (method: string) => {
+                if (method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+                return {};
+            }),
+            sendNotification: vi.fn(),
+            onNotification: vi.fn(),
+            onStderrError: () => {},
+            registerRequestHandler: () => {},
+            isAlive: () => true,
+            getProcessPid: () => 4242,
+            close: async () => true,
+        } as unknown as AcpStdioTransport));
+
+        try {
+            await backend.initialize();
+            await backend.disconnect();
+            expect(backend.wasAgentTreeEnded()).toBe(false);
+            expect(killRetained).not.toHaveBeenCalled();
+            // Surviving omitted descendant keeps exit unverified on retry.
+            alive.mockReturnValue(true);
+            expect(await backend.verifyRetainedAgentExit(true)).toBe(false);
+            const retained = (backend as unknown as { retainedAgentTree: Array<{ pid: number }> }).retainedAgentTree;
+            expect(retained?.some((identity) => identity.pid === 9001)).toBe(true);
+            expect(retained?.[retained.length - 1]?.pid).toBe(4242);
+        } finally {
+            createSpy.mockRestore();
+            snap.mockRestore();
+            alive.mockRestore();
+            classify.mockRestore();
+            killRetained.mockRestore();
+        }
+    });
+
     it('preserves Windows incomplete ACP evidence after spawn PIDs look gone (#2021)', async () => {
         const processUtils = await import('@/utils/process');
         const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;

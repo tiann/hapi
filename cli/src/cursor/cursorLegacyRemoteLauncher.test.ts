@@ -61,10 +61,12 @@ vi.mock('@/utils/process', () => ({
     isAgentOwnedProcessGroup: vi.fn(() => true),
     verifyAgentOwnedProcessGroupExited: vi.fn(async () => true),
     retainedIdentityStillAlive: vi.fn(() => false),
+    isWindows: vi.fn(() => process.platform === 'win32'),
 }));
 
 import {
     isAgentOwnedProcessGroup,
+    isWindows,
     killProcessByChildProcess,
     killRetainedProcessTree,
     retainedIdentityStillAlive,
@@ -894,8 +896,13 @@ describe('cursorLegacyRemoteLauncher', () => {
         const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
         await abort();
         expect(killMock).toHaveBeenCalled();
-        const killedTree = killMock.mock.calls[0]?.[0] as Array<{ pid: number }>;
+        const killedTree = killMock.mock.calls[0]?.[0] as Array<{ pid: number; startMarker: string }>;
         expect(killedTree.some((identity) => identity.pid === descendant.pid)).toBe(true);
+        // Root-last invariant for POSIX process-group verification.
+        expect(killedTree[killedTree.length - 1]).toMatchObject({
+            pid: root.pid,
+            startMarker: root.startMarker,
+        });
 
         child1.closeChild?.(null);
         queue.close();
@@ -908,6 +915,68 @@ describe('cursorLegacyRemoteLauncher', () => {
             tgid: pid,
             pgid: pid,
         }]);
+    });
+
+    it('keeps Windows Cursor Stop unconfirmed when tree refresh fails (#2021)', async () => {
+        const winMock = vi.mocked(isWindows);
+        winMock.mockImplementation(() => true);
+        const snapMock = vi.mocked(snapshotProcessTreeIdentities);
+        const killMock = vi.mocked(killRetainedProcessTree);
+        const classify = vi.mocked((await import('@/utils/process')).classifyRetainedIdentity);
+        classify.mockReturnValue('match');
+        // Spawn captures a tree; every later scan fails — incomplete latch must
+        // block settlement even if known PIDs look gone.
+        snapMock.mockImplementation((pid: number) => {
+            if (snapMock.mock.calls.length <= 1) {
+                return [{
+                    pid,
+                    startMarker: `marker-${pid}`,
+                    bootId: 'boot',
+                    tgid: pid,
+                    pgid: pid,
+                }];
+            }
+            return null;
+        });
+        killMock.mockResolvedValue(true);
+        killMock.mockClear();
+
+        const child1 = makeChild({ hold: true, pid: 4242 });
+        spawnMock.mockReturnValueOnce(child1);
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        queue.push('first', { permissionMode: 'default' }, 'first');
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        const thinking = vi.spyOn(session, 'onThinkingChange');
+
+        try {
+            const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+            const launchPromise = cursorLegacyRemoteLauncher(session);
+            await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+            await new Promise((resolve) => setTimeout(resolve, 30));
+
+            const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
+            await abort();
+            expect(winMock).toHaveBeenCalled();
+            expect(killMock).toHaveBeenCalled();
+            expect(thinking).not.toHaveBeenCalledWith(false);
+
+            child1.failChild?.(new Error('test teardown after incomplete Windows Stop'));
+            queue.close();
+            await launchPromise.catch(() => undefined);
+        } finally {
+            thinking.mockRestore();
+            winMock.mockImplementation(() => process.platform === 'win32');
+            classify.mockReturnValue('match');
+            snapMock.mockImplementation((pid: number) => [{
+                pid,
+                startMarker: `marker-${pid}`,
+                bootId: 'boot',
+                tgid: pid,
+                pgid: pid,
+            }]);
+        }
     });
 
     it('finishes ordinary Cursor close without a process-group scan when no tools are open (#2021)', async () => {

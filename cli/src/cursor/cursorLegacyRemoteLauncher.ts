@@ -9,6 +9,7 @@ import {
     getProcessThreadGroupId,
     getSystemBootId,
     isAgentOwnedProcessGroup,
+    isWindows,
     killRetainedProcessTree,
     retainedIdentityStillAlive,
     snapshotProcessTreeIdentities,
@@ -685,26 +686,35 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 ) {
                     // Merge with unresolved prior members — a reparented
                     // descendant can drop out of a fresh scan while still
-                    // alive (#2021 Major).
+                    // alive. Keep the live root last so POSIX group verify
+                    // binds the original leader (#2021 Major).
                     const prior = this.retainedStopTree ?? [];
-                    const merged = [...snap];
+                    const liveRoot = root;
+                    const merged = snap.slice(0, -1);
+                    const seen = new Set(
+                        snap.map((identity) => `${identity.pid}:${identity.startMarker}`),
+                    );
                     for (const old of prior) {
-                        const stillListed = snap.some(
-                            (identity) =>
-                                identity.pid === old.pid
-                                && identity.startMarker === old.startMarker,
-                        );
-                        if (!stillListed && retainedIdentityStillAlive(old)) {
+                        const key = `${old.pid}:${old.startMarker}`;
+                        if (seen.has(key)) continue;
+                        if (retainedIdentityStillAlive(old)) {
                             merged.push(old);
+                            seen.add(key);
                         }
                     }
+                    merged.push(liveRoot);
                     this.retainedStopTree = merged;
                     this.stopTreeSnapshotIncomplete = false;
                 } else if (!this.retainedStopTree) {
                     this.stopTreeSnapshotIncomplete = true;
+                } else if (isWindows()) {
+                    // Windows refresh failed while a prior snapshot exists —
+                    // keep PIDs for kill attempts but require complete exit
+                    // evidence (mid-session forks may be missing) (#2021 Major).
+                    this.stopTreeSnapshotIncomplete = true;
                 }
-                // Refresh failed but prior tree exists — keep it for
-                // individual member signaling; do not sticky-incomplete.
+                // POSIX: refresh failed but prior tree exists — keep it for
+                // individual member signaling without sticky-incomplete.
             }
             let force = this.stopKillEscalated || leavingRemote;
             const attempts = leavingRemote ? 2 : 1;
@@ -748,9 +758,21 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 force = true;
                 this.stopKillEscalated = true;
             }
+            // Incomplete retained-list kills may miss mid-session forks —
+            // known-PID exit is not complete evidence. Process-group verify
+            // without a retained list covers the group and may clear the latch
+            // (#2021 Major).
+            if (stopped && this.stopTreeSnapshotIncomplete) {
+                if (this.retainedStopTree) {
+                    stopped = false;
+                } else {
+                    this.stopTreeSnapshotIncomplete = false;
+                }
+            }
             this.stopTreeVerified = stopped;
             if (stopped) {
                 this.retainedStopTree = null;
+                this.stopTreeSnapshotIncomplete = false;
                 this.stopDrainArmed = true;
                 this.armActiveChildDrain?.();
                 this.resolveAfterStopTreeVerified?.();
