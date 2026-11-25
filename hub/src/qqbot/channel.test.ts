@@ -14,6 +14,7 @@ const config = {
 const baseUrl = 'https://hapi.example.test:38443/base?token=should-not-be-shared#fragment'
 const tokenUrl = 'https://api.bot.qq.com/app/getAppAccessToken'
 const messageUrl = 'https://api.bot.qq.com/v2/users/test-open-id/messages'
+const pendingPermission = { requests: { req: { tool: 'Read', arguments: {}, createdAt: 1 } } }
 const tokenResponse = (token = 'test-token', expiresIn: string | number = '7200') => Response.json({
     access_token: token, expires_in: expiresIn
 })
@@ -42,7 +43,7 @@ describe('QQ bot DM notifications', () => {
     it('sends all three events as proactive Markdown, sharing one token and never including URL credentials', async () => {
         const fetch = mockFetch()
         const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), fetch)
-        const session = createSession()
+        const session = createSession({ agentState: pendingPermission })
         await Promise.all([
             channel.sendReady(session),
             channel.sendPermissionRequest(session),
@@ -81,7 +82,7 @@ describe('QQ bot DM notifications', () => {
         visibility.registerConnection('other-open', 'other', 'visible')
         const channel = new QqBotChannel({ ...config, backgroundOnly: true }, baseUrl, visibility, fetch)
         await channel.sendReady(createSession())
-        await channel.sendPermissionRequest(createSession())
+        await channel.sendPermissionRequest(createSession({ agentState: pendingPermission }))
         await channel.sendSessionCompletion(createSession(), 'completed')
         expect(fetch).not.toHaveBeenCalled()
 
@@ -94,13 +95,20 @@ describe('QQ bot DM notifications', () => {
     it('never sends outside its namespace, for inactive ready/permission or for a failed session end', async () => {
         const fetch = mockFetch()
         const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), fetch)
-        const other = createSession({ namespace: 'other' })
+        const other = createSession({ namespace: 'other', agentState: pendingPermission })
         await channel.sendReady(other)
         await channel.sendPermissionRequest(other)
         await channel.sendSessionCompletion(other, 'completed')
         await channel.sendReady(createSession({ active: false }))
-        await channel.sendPermissionRequest(createSession({ active: false }))
+        await channel.sendPermissionRequest(createSession({ active: false, agentState: pendingPermission }))
         await channel.sendSessionCompletion(createSession(), 'error')
+        expect(fetch).not.toHaveBeenCalled()
+    })
+
+    it('does not authenticate or send when there is nothing left to answer', async () => {
+        const fetch = mockFetch()
+        const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), fetch)
+        await channel.sendPermissionRequest(createSession({ agentState: { requests: {} } }))
         expect(fetch).not.toHaveBeenCalled()
     })
 
@@ -173,6 +181,42 @@ it('delivers real SyncEngine notification events through NotificationHub to the 
             expect.stringContaining('HAPI Session completed')
         ])
         expect(notifications.every(content => content.includes(`/sessions/${session.id}`))).toBe(true)
+    } finally {
+        hub.stop()
+        engine.stop()
+        store.close()
+    }
+})
+
+it('suppresses a permission request cleared during the NotificationHub debounce', async () => {
+    const store = new Store(':memory:')
+    const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+    const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+    const fetch = mockFetch()
+    const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), fetch)
+    const dispatched = mock(async () => {})
+    // This second channel confirms the debounce actually reached dispatch.
+    const hub = new NotificationHub(engine, [channel, { sendReady: async () => {}, sendPermissionRequest: dispatched }], {
+        permissionDebounceMs: 1
+    })
+    try {
+        const session = engine.getOrCreateSession('cleared-request', { path: '/workspace/test', host: 'test' }, {}, config.namespace)
+        const now = Date.now()
+        engine.handleSessionAlive({ sid: session.id, time: now, mode: 'remote' })
+        const first = store.sessions.updateSessionAgentState(session.id, {
+            requests: { req: { tool: 'Read', arguments: {}, createdAt: now } }
+        }, session.agentStateVersion, config.namespace)
+        expect(first.result).toBe('success')
+        if (first.result !== 'success') throw new Error('Could not set the pending request fixture')
+        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id })
+        const cleared = store.sessions.updateSessionAgentState(session.id, { requests: {} }, first.version, config.namespace)
+        expect(cleared.result).toBe('success')
+        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id })
+
+        const deadline = Date.now() + 1_000
+        while (dispatched.mock.calls.length === 0 && Date.now() < deadline) await Bun.sleep(5)
+        expect(dispatched).toHaveBeenCalledTimes(1)
+        expect(fetch).not.toHaveBeenCalled()
     } finally {
         hub.stop()
         engine.stop()

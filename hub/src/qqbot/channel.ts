@@ -28,7 +28,8 @@ export class QqBotChannel implements NotificationChannel {
     async sendPermissionRequest(session: Session): Promise<void> {
         if (!session.active) return
         const pending = getFirstPendingRequest(session)
-        const title = pending && isInputRequestTool(pending.request.tool)
+        if (!pending) return
+        const title = isInputRequestTool(pending.request.tool)
             ? `HAPI: ${getAgentName(session)} needs your input`
             : 'HAPI Permission Request'
         await this.send(session, title)
