@@ -52,17 +52,18 @@ internal object SkillSuggestions {
         return Token(wordStart, wordEnd, text.substring(wordStart, wordEnd), text.substring(wordStart + 1, start))
     }
 
-    /** Only replace past punctuation after the caret if the catalogue recognizes the longer word. */
-    fun resolveToken(token: Token, skills: List<SkillSummary>): Token {
-        val caret = token.query.length + 1 // Include '$'.
-        val boundaries = (caret until token.word.length).filter { token.word[it] in ".:" }
-        if (boundaries.isEmpty()) return token
-        val names = skills.map { skillNameKey(it.name) }
-        val length = (boundaries + token.word.length).lastOrNull { end ->
-            val candidate = skillNameKey(token.word.substring(1, end))
-            names.any { candidate in it }
-        } ?: boundaries.first()
-        return token.copy(end = token.start + length, word = token.word.take(length))
+    /** Punctuation after the caret belongs to the replacement only if this row matches it. */
+    fun replacementEnd(token: Token, skill: SkillSummary): Int {
+        val word = token.word
+        val boundary = word.indexOfAny(charArrayOf('.', ':'), startIndex = token.query.length + 1)
+        if (boundary == -1) return token.end
+        val name = skillNameKey(skill.name)
+        // Try the longest matching fragment first, without scanning a long prose suffix per row.
+        for (end in minOf(word.length, name.length + 1) downTo boundary + 1) {
+            if (end < word.length && word[end] !in ".:") continue
+            if (skillNameKey(word.substring(1, end)) in name) return token.start + end
+        }
+        return token.start + boundary
     }
 
     fun filter(skills: List<SkillSummary>, query: String, recent: List<String>): List<SkillSummary> {

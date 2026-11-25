@@ -723,10 +723,9 @@ class ChatViewModel(
                 if (skills.isNotEmpty()) {
                     emitAll(combine(composerDraft, recentSkills?.names ?: flowOf(emptyList())) { draft, recent ->
                         val token = draft.skillToken
-                        val resolved = token?.let { SkillSuggestions.resolveToken(it, skills) }
-                        if (token == null || resolved == null || draft.skillOpening != opening) emptyList()
-                        else SkillSuggestions.filter(skills, resolved.query, recent).map {
-                            SkillSuggestion(it, token, opening, replacementEnd = resolved.end)
+                        if (token == null || draft.skillOpening != opening) emptyList()
+                        else SkillSuggestions.filter(skills, token.query, recent).map {
+                            SkillSuggestion(it, token, opening, replacementEnd = SkillSuggestions.replacementEnd(token, it))
                         }
                     })
                 }

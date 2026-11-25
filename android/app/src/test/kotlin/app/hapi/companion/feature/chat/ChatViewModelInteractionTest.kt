@@ -2064,6 +2064,27 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `only the chosen skill can consume a matching punctuation suffix`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val review = SkillSummary("review")
+        val qualified = SkillSummary("pre:continue")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(review, qualified))
+        vm.start()
+
+        val draft = "Run \$re:continue"
+        val caret = "Run \$re".length
+        for ((skill, completed) in listOf(review to "Run \$review:continue", qualified to "Run \$pre:continue ")) {
+            vm.onComposerChange(draft, caret, caret)
+            testScheduler.runCurrent()
+            assertEquals(listOf(review, qualified), vm.skillSuggestions.value.map { it.skill })
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single { it.skill == skill })
+            testScheduler.runCurrent()
+            assertEquals(completed, vm.composer.value.text)
+        }
+    }
+
+    @Test
     fun `typing a dot or qualifier before existing text keeps the same skill picker open`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel
