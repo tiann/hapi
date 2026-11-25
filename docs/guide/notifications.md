@@ -100,7 +100,7 @@ hapi hub
 
 - Set `QQBOT_NAMESPACE` if the recipient should receive notifications for a namespace other than `default`. A destination never receives notifications from another namespace.
 - Set `QQBOT_BACKGROUND_ONLY=true` to suppress these notifications while a visible HAPI client is connected in that namespace.
-- The notification includes the session name and a link; it does not include permission arguments or conversation contents. The link does not grant access to HAPI. If QQ asks you to use an external browser, open it there and sign in as usual.
+- The notification includes the first eight characters of the session ID and a link. HAPI does not send session names, summaries, workspace paths, permission arguments, or conversation contents to QQ. The link does not grant access to HAPI. If QQ asks you to use an external browser, open it there and sign in as usual.
 - Equivalent `qqBot` settings are listed in the [configuration reference](./configuration.md#notifications). Environment overrides win and are not copied into `settings.json`.
 - QQ applies [proactive message permissions and rate limits](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/overview.html). If delivery fails, check the Hub log for the HTTP status or QQ error code, then verify the recipient's OpenID and proactive-message permissions in QQ.
 

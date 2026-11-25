@@ -1,4 +1,5 @@
 import type { QqBotCredentials } from '../qqbot/client'
+import { DEFAULT_NAMESPACE, parseAccessToken } from '../utils/accessToken'
 
 export type QqBotFileSettings = {
     enabled?: boolean
@@ -25,7 +26,13 @@ export function resolveQqBotSettings(
     const appId = readRequiredString(env.QQBOT_APP_ID ?? file?.appId, 'QQBOT_APP_ID / qqBot.appId', /^\d+$/)
     const appSecret = readRequiredString(env.QQBOT_APP_SECRET ?? file?.appSecret, 'QQBOT_APP_SECRET / qqBot.appSecret', /^\S+$/)
     const userOpenId = readRequiredString(env.QQBOT_USER_OPENID ?? file?.userOpenId, 'QQBOT_USER_OPENID / qqBot.userOpenId', /^[A-Za-z0-9_-]+$/)
-    const namespace = readRequiredString(env.QQBOT_NAMESPACE ?? file?.namespace ?? 'default', 'QQBOT_NAMESPACE / qqBot.namespace', /^[^:\s]+$/)
+    const namespace = env.QQBOT_NAMESPACE ?? file?.namespace ?? DEFAULT_NAMESPACE
+    // Round-trip a single namespace through the same parser used for access tokens.
+    const tokenPrefix = 'qqbot'
+    const parsed = typeof namespace === 'string' ? parseAccessToken(`${tokenPrefix}:${namespace}`) : null
+    if (parsed?.baseToken !== tokenPrefix || parsed.namespace !== namespace) {
+        throw new Error('QQBOT_NAMESPACE / qqBot.namespace must be a valid HAPI namespace')
+    }
     const backgroundOnly = readBoolean(env.QQBOT_BACKGROUND_ONLY, file?.backgroundOnly, 'QQBOT_BACKGROUND_ONLY / qqBot.backgroundOnly')
 
     if (!publicUrl) throw new Error('QQ Bot notifications require an explicit HAPI_PUBLIC_URL / publicUrl')

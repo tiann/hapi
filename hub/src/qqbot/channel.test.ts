@@ -1,4 +1,5 @@
 import { describe, expect, it, mock } from 'bun:test'
+import { resolveQqBotSettings } from '../config/qqBotSettings'
 import { NotificationHub } from '../notifications/notificationHub'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { Store } from '../store'
@@ -61,6 +62,8 @@ describe('QQ bot DM notifications', () => {
             expect(Object.keys(payload).sort()).toEqual(['markdown', 'msg_type'])
             expect(payload.msg_type).toBe(2)
             expect(payload.markdown.content).toContain('[Open HAPI session](https://hapi.example.test:38443/sessions/session-1)')
+            expect(payload.markdown.content).toContain('Session: session-\n')
+            expect(payload.markdown.content).not.toContain('My session')
             expect(payload.markdown.content).not.toContain('should-not-be-shared')
             return payload.markdown.content
         })
@@ -101,21 +104,29 @@ describe('QQ bot DM notifications', () => {
         expect(fetch).not.toHaveBeenCalled()
     })
 
-    it('escapes Markdown in session names and does not include request arguments', async () => {
-        const fetch = mockFetch()
-        const visibility = new VisibilityTracker()
-        visibility.registerConnection('open', 'work', 'visible')
-        const channel = new QqBotChannel(config, baseUrl, visibility, fetch)
-        await channel.sendPermissionRequest(createSession({
-            metadata: { host: 'test', path: '/workspace/private', name: 'test\n[bad](bad)' },
-            agentState: { requests: { pending: { tool: 'AskUserQuestion', arguments: { questions: [{ question: 'private question' }] }, createdAt: 1 } } }
-        }))
-        const content = getBody(fetch.mock.calls[1]?.[1]).markdown.content
-        expect(content).toContain('needs your input')
-        expect(content).toContain(String.raw`test \[bad\]\(bad\)`)
-        expect(content).not.toContain('private question')
-        expect(content).not.toContain('/workspace/private')
-    })
+    it.each(['imported name', 'generated summary', 'workspace path'])(
+        'keeps private session metadata and input request arguments out of QQ (%s)', async (source) => {
+            const fetch = mockFetch()
+            const visibility = new VisibilityTracker()
+            visibility.registerConnection('open', 'work', 'visible')
+            const channel = new QqBotChannel(config, baseUrl, visibility, fetch)
+            const secret = 'private-fixture-text'
+            const id = '7b134bd8-3e07-4fc8-a5ed-938a04d68780'
+            await channel.sendPermissionRequest(createSession({
+                id,
+                metadata: {
+                    host: 'test', path: `/workspace/${secret}`,
+                    ...(source === 'imported name' ? { name: secret } : {}),
+                    ...(source === 'generated summary' ? { summary: { text: secret, updatedAt: 1 } } : {})
+                },
+                agentState: { requests: { pending: { tool: 'AskUserQuestion', arguments: { questions: [{ question: 'private question' }] }, createdAt: 1 } } }
+            }))
+            const content = getBody(fetch.mock.calls[1]?.[1]).markdown.content
+            expect(content).toBe(`**HAPI: Agent needs your input**\n\nSession: 7b134bd8\n\n[Open HAPI session](https://hapi.example.test:38443/sessions/${id})`)
+            expect(content).not.toContain(secret)
+            expect(content).not.toContain('private question')
+        }
+    )
 })
 
 it('delivers real SyncEngine notification events through NotificationHub to the QQ API boundary', async () => {
@@ -123,7 +134,8 @@ it('delivers real SyncEngine notification events through NotificationHub to the 
     const io = { of: () => ({ to: () => ({ emit() {} }) }) }
     const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
     const fetch = mockFetch()
-    const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), fetch)
+    const scoped = resolveQqBotSettings({ enabled: true, ...config, namespace: 'team west' }, {}, baseUrl)!
+    const channel = new QqBotChannel(scoped, baseUrl, new VisibilityTracker(), fetch)
     const hub = new NotificationHub(engine, [channel], { readyCooldownMs: 60_000, permissionDebounceMs: 1 })
     const deliveries = () => fetch.mock.calls.filter(([url]) => url === messageUrl)
     const waitForMessageCount = async (count: number) => {
@@ -133,7 +145,7 @@ it('delivers real SyncEngine notification events through NotificationHub to the 
     }
     try {
         const metadata = { path: '/workspace/test', host: 'test', name: 'Integration fixture' }
-        const session = engine.getOrCreateSession('test-session', metadata, {}, config.namespace)
+        const session = engine.getOrCreateSession('test-session', metadata, {}, scoped.namespace)
         const time = Date.now()
         engine.handleSessionAlive({ sid: session.id, time, mode: 'remote' })
         const readyMessage = {
@@ -144,7 +156,7 @@ it('delivers real SyncEngine notification events through NotificationHub to the 
         engine.handleRealtimeEvent({ type: 'message-received', sessionId: session.id, message: readyMessage })
         const update = store.sessions.updateSessionAgentState(session.id, {
             requests: { req: { tool: 'Bash', arguments: { command: 'not for QQ' }, createdAt: time } }
-        }, session.agentStateVersion, config.namespace)
+        }, session.agentStateVersion, scoped.namespace)
         expect(update.result).toBe('success')
         engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id })
         await waitForMessageCount(2)

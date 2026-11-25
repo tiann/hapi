@@ -161,6 +161,20 @@ describe('loadServerSettings', () => {
         })
     })
 
+    it('accepts the same namespace with internal spaces from settings and environment', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ qqBot: { ...qqBotFile, namespace: 'team west' }, publicUrl }))
+        expect((await loadServerSettings(dir)).settings.qqBot?.namespace).toBe('team west')
+        process.env.QQBOT_NAMESPACE = 'team east'
+        expect((await loadServerSettings(dir)).settings.qqBot?.namespace).toBe('team east')
+    })
+
+    it.each(['', ' team west', 'team west ', 'team:west'])('rejects invalid QQ namespace %j', async (namespace) => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ qqBot: { ...qqBotFile, namespace }, publicUrl }))
+        await expect(loadServerSettings(dir)).rejects.toThrow(/QQBOT_NAMESPACE/)
+    })
+
     it('rejects enabled QQ bot credentials missing an OpenID and does not print the secret', async () => {
         dir = makeTempDir()
         const path = join(dir, 'settings.json')

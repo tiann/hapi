@@ -2,25 +2,10 @@ import type { SessionEndReason } from '@hapi/protocol'
 import type { QqBotOptions } from '../config/qqBotSettings'
 import { getFirstPendingRequest, isInputRequestTool } from '../notifications/inputRequest'
 import type { NotificationChannel } from '../notifications/notificationTypes'
-import { getAgentName, getSessionName } from '../notifications/sessionInfo'
+import { getAgentName } from '../notifications/sessionInfo'
 import type { Session } from '../sync/syncEngine'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import { QqBotClient, type QqBotFetch } from './client'
-
-const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
-
-function escapeSessionName(name: string): string {
-    const line = name.replace(/\s+/gu, ' ').trim()
-    let preview = ''
-    for (const { segment } of graphemes.segment(line)) {
-        if (preview.length + segment.length > 160) {
-            preview += '…'
-            break
-        }
-        preview += segment
-    }
-    return preview.replace(/[\\`*_{}\[\]()<>#!|~]/g, '\\$&')
-}
 
 export class QqBotChannel implements NotificationChannel {
     private readonly client: QqBotClient
@@ -58,8 +43,8 @@ export class QqBotChannel implements NotificationChannel {
             || (this.options.backgroundOnly && this.visibilityTracker.hasVisibleConnection(session.namespace))) return
 
         const id = encodeURIComponent(session.id).replace(/[()]/g, char => char === '(' ? '%28' : '%29')
-        const name = escapeSessionName(getSessionName(session))
-        const content = `**${title}**\n\nSession: ${name}\n\n[Open HAPI session](${this.origin}/sessions/${id})`
+        // Imported names and generated summaries can contain conversation text.
+        const content = `**${title}**\n\nSession: ${session.id.slice(0, 8)}\n\n[Open HAPI session](${this.origin}/sessions/${id})`
         await this.client.sendMarkdown(content)
     }
 }
