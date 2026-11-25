@@ -1114,8 +1114,33 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
     // Lookback-local settled set only — do not copy the unbounded lifetime
     // latch into every derived-work scan. Latched ids are membership-checked
     // below (#2021 ingestion/scan cost).
+    // Pass 1: collect ACP/Claude settlements across the whole lookback before
+    // deciding any call is open. ACP can emit result then a later start with
+    // the same lifetime id in one prompt; DESC order alone would see the
+    // pending row first and falsely report live work after a cold rebuild (#2021).
     const settledAcpCallIds = new Set<string>()
     const settledClaudeToolUseIds = new Set<string>()
+    for (const row of rows) {
+        const decoded = decodeMessageContent(row.content)
+        if (isUserMessageRow(decoded)) continue
+        const turnCompleteSettled = acpTurnCompleteSettledCallIds(decoded)
+        if (turnCompleteSettled.length > 0) {
+            for (const callId of turnCompleteSettled) settledAcpCallIds.add(callId)
+            continue
+        }
+        const claudeData = claudeOutputData(decoded)
+        if (claudeData !== null) {
+            if (isHiddenClaudeOutput(claudeData)) continue
+            if (claudeData.type === 'user') {
+                collectClaudeToolResultIds(claudeData, settledClaudeToolUseIds)
+            }
+            continue
+        }
+        const resultCallId = toolCallResultCallId(decoded)
+        if (resultCallId !== null) settledAcpCallIds.add(resultCallId)
+    }
+
+    // Pass 2: decide open work with the full settled set.
     for (const row of rows) {
         const decoded = decodeMessageContent(row.content)
         // A human turn closes parent-scope work in the lookback window. Child
@@ -1126,13 +1151,8 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
             return false
         }
 
-        // ACP scoped settlement (cancelled prompts): mark those call ids
-        // settled and keep scanning.
         const turnCompleteSettled = acpTurnCompleteSettledCallIds(decoded)
-        if (turnCompleteSettled.length > 0) {
-            for (const callId of turnCompleteSettled) settledAcpCallIds.add(callId)
-            continue
-        }
+        if (turnCompleteSettled.length > 0) continue
 
         const claudeData = claudeOutputData(decoded)
         if (claudeData !== null) {
@@ -1158,10 +1178,7 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
         }
 
         const resultCallId = toolCallResultCallId(decoded)
-        if (resultCallId !== null) {
-            settledAcpCallIds.add(resultCallId)
-            continue
-        }
+        if (resultCallId !== null) continue
         const callId = getToolCallId(decoded)
         if (
             callId !== null

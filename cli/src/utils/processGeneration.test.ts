@@ -91,6 +91,7 @@ describe('retained process identity classification (#2021)', () => {
         startMarker: 'Wed Nov 25 00:00:00 2026',
         bootId,
         tgid: 4242,
+        pgid: 4242,
         ...overrides,
     })
 
@@ -104,7 +105,7 @@ describe('retained process identity classification (#2021)', () => {
     })
 
     function mockPsMarker(marker: string | null, status = 0) {
-        spawnSyncMock.mockImplementation((cmd: string) => {
+        spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {
             if (cmd === 'ps') {
                 return {
                     status: marker === null ? 1 : status,
@@ -112,6 +113,10 @@ describe('retained process identity classification (#2021)', () => {
                     stderr: '',
                     error: null,
                 }
+            }
+            // Process-group recheck after retained kills — empty group = verified.
+            if (cmd === 'pgrep' && Array.isArray(args) && args[0] === '-g') {
+                return { status: 1, stdout: '', stderr: '', error: null }
             }
             return { status: 1, stdout: '', stderr: '', error: null }
         })
@@ -161,7 +166,8 @@ describe('retained process identity classification (#2021)', () => {
         }) as typeof process.kill)
         mockPsMarker('Wed Nov 25 00:00:00 2026')
         expect(await killRetainedProcessTree([identity()], true)).toBe(true)
-        expect(signals).toEqual(['SIGKILL'])
+        // Phase-1 broadcast + phase-2 escalate both send SIGKILL when force=true.
+        expect(signals).toEqual(['SIGKILL', 'SIGKILL'])
 
         // Generation changes after SIGTERM — must not escalate SIGKILL to the replacement.
         alive = true
@@ -176,6 +182,8 @@ describe('retained process identity classification (#2021)', () => {
         })
         vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
             if (signal === 0) return true
+            // Process-group cleanup uses negative pgid — ignore for this assertion.
+            if (pid < 0) return true
             signals.push(signal)
             if (signal === 'SIGTERM') {
                 marker = 'Thu Nov 26 00:00:00 2026' // PID reused during grace
@@ -183,7 +191,7 @@ describe('retained process identity classification (#2021)', () => {
             return true
         }) as typeof process.kill)
         expect(await killRetainedProcessTree([identity()], false)).toBe(true)
+        // Phase-1 SIGTERM against the PID; phase-2 must not escalate that PID.
         expect(signals).toEqual(['SIGTERM'])
-        expect(signals).not.toContain('SIGKILL')
     })
 })

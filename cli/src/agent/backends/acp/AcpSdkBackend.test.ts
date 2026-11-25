@@ -3314,6 +3314,7 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             startMarker: 'gen-a',
             bootId: 'boot',
             tgid: 4242,
+            pgid: 4242,
         }]);
         const alive = vi.spyOn(processUtils, 'retainedIdentityStillAlive').mockReturnValue(true);
 

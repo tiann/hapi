@@ -305,6 +305,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private pendingWakeupSettlements: string[] = [];
     /** Set when the armed wakeup hard-stop confirmed process-tree exit (#2021). */
     private wakeupHardStopVerifiedExit = false;
+    /** True once a hard-stop was armed for this Stop attempt — distinguishes
+     *  "never armed" from "already finished and cleared the promise" (#2021). */
+    private wakeupHardStopAttempted = false;
     /**
      * Wakeup/prompt Stop ran but tree exit was unconfirmed — keep thinking on
      * and let a later Stop retry verified retirement (#2021).
@@ -2345,7 +2348,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
      */
     private async waitForWakeupCancelHardStop(): Promise<boolean> {
         const pending = this.wakeupHardStopDone;
-        if (!pending) return true;
+        if (!pending) {
+            // Promise already cleared by a finished hard-stop — return the
+            // latched result, never assume success (#2021 tip Major).
+            return this.wakeupHardStopAttempted ? this.wakeupHardStopVerifiedExit : true;
+        }
         if (process.env.VITEST) {
             await Promise.race([
                 pending,
@@ -2367,6 +2374,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private armWakeupCancelHardStop(backend: AcpSdkBackend): void {
         this.clearWakeupCancelHardStop();
         this.wakeupHardStopVerifiedExit = false;
+        this.wakeupHardStopAttempted = true;
         const generation = this.wakeupHardStopGeneration;
         const backendRef = backend;
         this.wakeupHardStopDone = new Promise<void>((resolve) => {

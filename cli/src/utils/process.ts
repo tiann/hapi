@@ -103,6 +103,22 @@ export function getProcessThreadGroupId(pid: number): number | null {
   }
 }
 
+/** POSIX process-group id (pgid); null when unavailable. Used to cover mid-Stop forks (#2021). */
+export function getProcessGroupId(pid: number): number | null {
+  if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return null;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const commandEnd = stat.lastIndexOf(')');
+    if (commandEnd < 0) return null;
+    // Fields after comm: state(3) ppid(4) pgrp(5) → index 2 after the split.
+    const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+    const pgrp = Number(fields[2]);
+    return Number.isSafeInteger(pgrp) && pgrp > 0 ? pgrp : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Stable marker for one OS PID generation; null means the platform probe failed. */
 export function getProcessStartMarker(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
@@ -399,6 +415,8 @@ export type RetainedProcessIdentity = {
   startMarker: string | null;
   bootId: string | null;
   tgid: number | null;
+  /** Process group id at snapshot time — covers forks during teardown (#2021). */
+  pgid: number | null;
 };
 
 /**
@@ -416,6 +434,7 @@ export function snapshotProcessTreeIdentities(rootPid: number): RetainedProcessI
     startMarker: getProcessStartMarker(pid),
     bootId,
     tgid: getProcessThreadGroupId(pid),
+    pgid: getProcessGroupId(pid),
   }));
 }
 
@@ -493,8 +512,22 @@ export async function killRetainedProcessTree(
   force = false,
 ): Promise<boolean> {
   if (identities.length === 0) return true;
-  // Kill each confirmed match by identity — descendants may have been
-  // reparented off the original root after the first attempt (#2021).
+  // Phase 1: signal every confirmed match immediately — do not wait between
+  // members. Waiting on one child while a parent is still alive lets that
+  // parent spawn a replacement subprocess that is not in the snapshot (#2021).
+  for (const identity of identities) {
+    if (classifyRetainedIdentity(identity) !== 'match') continue;
+    try {
+      if (isWindows()) {
+        killProcessWindows(identity.pid, force);
+      } else {
+        process.kill(identity.pid, force ? 'SIGKILL' : 'SIGTERM');
+      }
+    } catch {
+      // continue
+    }
+  }
+  // Phase 2: wait / escalate each captured identity with generation rechecks.
   for (const identity of identities) {
     if (classifyRetainedIdentity(identity) !== 'match') continue;
     try {
@@ -508,7 +541,46 @@ export async function killRetainedProcessTree(
   if (identities.some((identity) => classifyRetainedIdentity(identity) === 'unknown')) {
     return false;
   }
-  return identities.every((identity) => classifyRetainedIdentity(identity) === 'gone');
+  if (!identities.every((identity) => classifyRetainedIdentity(identity) === 'gone')) {
+    return false;
+  }
+  // Cover mid-Stop forks via the original process group (#2021 tip Major).
+  // Windows taskkill /T already covered the console tree in phase 1/2.
+  if (!isWindows()) {
+    const root = identities[identities.length - 1]!;
+    const pgid = root.pgid;
+    if (typeof pgid !== 'number' || pgid <= 0) {
+      // No group coverage — keep unresolved rather than trusting PID-only kills.
+      return false;
+    }
+    try {
+      process.kill(-pgid, 'SIGKILL');
+    } catch {
+      // group already gone
+    }
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      const remaining = listProcessGroupPids(pgid);
+      if (remaining === 'scan_failed') return false;
+      if (remaining.length === 0) return true;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const remaining = listProcessGroupPids(pgid);
+    return remaining !== 'scan_failed' && remaining.length === 0;
+  }
+  return true;
+}
+
+/** PIDs currently in process group `pgid`, or scan_failed when pgrep is unusable. */
+function listProcessGroupPids(pgid: number): number[] | 'scan_failed' {
+  const result = spawn.sync('pgrep', ['-g', String(pgid)], {
+    encoding: 'utf8',
+    timeout: SPAWN_SYNC_TIMEOUT_MS,
+  });
+  if (result.error) return 'scan_failed';
+  if (result.status !== 0 && result.status !== 1) return 'scan_failed';
+  if (!result.stdout || result.status === 1) return [];
+  return result.stdout.trim().split('\n').filter(Boolean).map(Number).filter((n) => Number.isFinite(n) && n > 0);
 }
 
 /**

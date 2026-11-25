@@ -3,6 +3,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { logger } from '@/ui/logger';
 import {
+    classifyRetainedIdentity,
+    getProcessGroupId,
+    getProcessStartMarker,
+    getProcessThreadGroupId,
+    getSystemBootId,
     killRetainedProcessTree,
     snapshotProcessTreeIdentities,
     type RetainedProcessIdentity,
@@ -157,6 +162,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
      * possibly-exited root on later Stops; keep thinking unresolved (#2021).
      */
     private stopTreeSnapshotIncomplete = false;
+    /** Root identity captured at spawn — first Stop snapshot must match it (#2021). */
+    private spawnedRootIdentity: RetainedProcessIdentity | null = null;
     /** Resolve a close that arrived before Stop finished verifying the tree. */
     private resolveAfterStopTreeVerified: (() => void) | null = null;
     /**
@@ -363,6 +370,15 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             this.stopTreeVerified = null;
             this.retainedStopTree = null;
             this.stopTreeSnapshotIncomplete = false;
+            this.spawnedRootIdentity = typeof child.pid === 'number' && child.pid > 0
+                ? {
+                    pid: child.pid,
+                    startMarker: getProcessStartMarker(child.pid),
+                    bootId: getSystemBootId(),
+                    tgid: getProcessThreadGroupId(child.pid),
+                    pgid: getProcessGroupId(child.pid),
+                }
+                : null;
             this.resolveAfterStopTreeVerified = null;
             this.abandonStopVerification = null;
 
@@ -443,6 +459,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     this.stopTreeVerified = null;
                     this.retainedStopTree = null;
                     this.stopTreeSnapshotIncomplete = false;
+                    this.spawnedRootIdentity = null;
                 }
             };
 
@@ -593,9 +610,25 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             // A failed first snapshot stays sticky: a later scan from an absent
             // root would falsely report "gone" while descendants survive (#2021).
             if (!this.retainedStopTree && !this.stopTreeSnapshotIncomplete) {
-                const snap = snapshotProcessTreeIdentities(child.pid);
-                if (snap) this.retainedStopTree = snap;
-                else this.stopTreeSnapshotIncomplete = true;
+                const spawned = this.spawnedRootIdentity;
+                // Root must still be the spawn generation — a reused PID would
+                // make snapshotProcessTreeIdentities record the replacement (#2021).
+                if (!spawned || classifyRetainedIdentity(spawned) !== 'match') {
+                    this.stopTreeSnapshotIncomplete = true;
+                } else {
+                    const snap = snapshotProcessTreeIdentities(child.pid);
+                    const root = snap?.[snap.length - 1];
+                    if (
+                        !snap
+                        || !root
+                        || root.pid !== spawned.pid
+                        || root.startMarker !== spawned.startMarker
+                    ) {
+                        this.stopTreeSnapshotIncomplete = true;
+                    } else {
+                        this.retainedStopTree = snap;
+                    }
+                }
             }
             let force = this.stopKillEscalated || leavingRemote;
             const attempts = leavingRemote ? 2 : 1;

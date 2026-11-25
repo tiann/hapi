@@ -50,8 +50,14 @@ vi.mock('@/utils/process', () => ({
         startMarker: `marker-${pid}`,
         bootId: 'boot',
         tgid: pid,
+        pgid: pid,
     }]),
     killRetainedProcessTree: vi.fn(async () => true),
+    getProcessStartMarker: vi.fn((pid: number) => `marker-${pid}`),
+    getSystemBootId: vi.fn(() => 'boot'),
+    getProcessThreadGroupId: vi.fn((pid: number) => pid),
+    getProcessGroupId: vi.fn((pid: number) => pid),
+    classifyRetainedIdentity: vi.fn(() => 'match'),
 }));
 
 import {
@@ -79,6 +85,10 @@ function makeChild(opts: ChildOptions = {}) {
         stdout,
         stderr,
         on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+            if (event === 'error') {
+                child.failChild = (error: Error) => handler(error);
+                return;
+            }
             if (event === 'close') {
                 if (opts.hold) {
                     child.closeChild = (code: number | null, stderrText?: string) => {
@@ -100,6 +110,7 @@ function makeChild(opts: ChildOptions = {}) {
             }
         }),
         closeChild: undefined as ((code: number | null, stderrText?: string) => void) | undefined,
+        failChild: undefined as ((error: Error) => void) | undefined,
         emitStdout(line: string) {
             stdout.write(`${line}\n`);
         }
@@ -633,14 +644,13 @@ describe('cursorLegacyRemoteLauncher', () => {
             startMarker: `marker-${pid}`,
             bootId: 'boot',
             tgid: pid,
+            pgid: pid,
         }]);
-        // Detach so the launcher can exit without a verified tree (test-only).
-        child1.closeChild?.(null);
+        // Force the runAgentProcess promise to reject so the suite does not
+        // leave a hanging Vitest worker (incomplete snapshot never verifies).
+        child1.failChild?.(new Error('test teardown after incomplete snapshot'));
         queue.close();
-        await Promise.race([
-            launchPromise,
-            new Promise<void>((resolve) => setTimeout(resolve, 300)),
-        ]);
+        await launchPromise.catch(() => undefined);
     });
 
     it('blocks Switch when tree kill stays unconfirmed (#2021)', async () => {

@@ -584,6 +584,45 @@ describe('getLiveToolWork', () => {
     })
 })
 
+describe('ACP lifetime result-before-start after cold rebuild (#2021)', () => {
+    it('does not treat a later pending row as live when an earlier result settled the same id', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-live-work-acp-order-'))
+        const path = join(dir, 'hub.db')
+        try {
+            const store = new Store(path)
+            const session = store.sessions.getOrCreateSession(
+                'acp-order',
+                { path: '/tmp/acp-order', flavor: 'cursor' },
+                null,
+                'default',
+            )
+            // Durable order: result first, then a nonterminal start with the same lifetime.
+            store.messages.addMessage(session.id, toolCallResultContent('life-1', 'done'))
+            store.messages.upsertToolCallMessage(session.id, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'life-1',
+                        name: 'Shell',
+                        input: {},
+                        status: 'in_progress',
+                    },
+                },
+            }, 'life-1')
+            expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+            store.close()
+
+            const restarted = new Store(path)
+            expect(restarted.messages.getLiveToolWork(session.id)).toBe(false)
+            restarted.close()
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+})
+
 describe('child tool-work cache eviction (#2021)', () => {
     it('releases tool-work cache entries when a session is deleted', () => {
         const store = makeStore()
