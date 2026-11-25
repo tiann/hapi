@@ -1,3 +1,7 @@
+---
+description: "How a native client obtains and refreshes credentials for a HAPI hub, including pairing, JWTs and passkeys."
+---
+
 # Auth & pairing
 
 How a native client obtains and maintains credentials for one hub. A client may be paired with multiple hubs; everything below is **per hub URL**.
@@ -223,6 +227,19 @@ provider, a synced password manager, or an accessible authenticator.
 Direct options/verify routes are native-only; browser-channel challenges cannot
 be used there, and native-channel challenges cannot use the browser bridge.
 All binary fields are base64url without padding; user verification is required.
+
+## Managing passkeys {#passkeys-manage}
+
+Source of truth: `hub/src/web/routes/passkey.ts`, `shared/src/apiTypes.ts` (`PasskeySummary`).
+
+Both routes require a JWT and are scoped to its namespace.
+
+| Endpoint | Response |
+|----------|----------|
+| `GET /api/passkeys` | `{passkeys: [{id, name, rpId, createdAt, lastUsedAt, valid}]}`; `valid` is `false` once `CLI_API_TOKEN` was rotated after registration (or the RP ID is unsupported) |
+| `DELETE /api/passkeys/:id` | `{ok: true}`; `404 {"error":"Passkey not found"}` outside the namespace. Deleting a passkey also invalidates its passkey sessions at the next `POST /api/auth` refresh |
+
+User-facing overview: [Authentication](../../guide/authentication.md).
 
 ### Native sign-in (single ceremony) {#passkeys-native-login}
 

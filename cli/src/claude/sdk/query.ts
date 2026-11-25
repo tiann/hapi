@@ -30,7 +30,7 @@ import { killProcessByChildProcess } from '@/utils/process'
 import { stripNewlinesForWindowsShellArg } from '@/utils/shellEscape'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
-import type { ClaudePermissionMode } from '@hapi/protocol/types'
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types'
 import { appendMcpConfigArg } from '../utils/mcpConfig'
 
 const DEFAULT_PROMPT_FAILURE_CLEANUP_TIMEOUT_MS = 3_000
@@ -229,7 +229,7 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
     /**
      * Change Claude's native permission mode without restarting the process
      */
-    async setPermissionMode(mode: ClaudePermissionMode): Promise<void> {
+    async setPermissionMode(mode: PermissionModeOf<typeof Flavors.claude>): Promise<void> {
         if (!this.childStdin) {
             throw new Error('setPermissionMode requires --input-format stream-json')
         }
@@ -389,6 +389,7 @@ export function query(config: {
             continue: continueConversation,
             resume,
             forkSession,
+            resumeSessionAt,
             model,
             effort,
             fallbackModel,
@@ -423,6 +424,7 @@ export function query(config: {
     if (continueConversation) args.push('--continue')
     if (resume) args.push('--resume', resume)
     if (forkSession) args.push('--fork-session')
+    if (resumeSessionAt) args.push('--resume-session-at', resumeSessionAt)
     args.push(...additionalArgs)
     if (settingsPath) args.push('--settings', settingsPath)
     if (allowedTools.length > 0) args.push('--allowedTools', allowedTools.join(','))

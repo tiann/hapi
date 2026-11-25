@@ -16,7 +16,10 @@ function mount(onSubmit = vi.fn().mockResolvedValue(undefined), boundary: { mess
     </QueryClientProvider>)
     return { api, onSubmit }
 }
-afterEach(cleanup)
+afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+})
 describe('BranchConversationDialog', () => {
     it('submits a terminal message id as the historical boundary', async () => {
         const onSubmit = vi.fn().mockResolvedValue(undefined)
@@ -59,5 +62,26 @@ describe('BranchConversationDialog', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Create branch' }))
         await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(3))
         expect(onSubmit.mock.calls[2][0].requestId).not.toBe(onSubmit.mock.calls[0][0].requestId)
+    })
+    it('creates a branch request when crypto.randomUUID is unavailable (plain HTTP)', async () => {
+        vi.stubGlobal('crypto', {
+            getRandomValues: (bytes: Uint8Array) => {
+                for (let i = 0; i < bytes.length; i++) bytes[i] = i
+                return bytes
+            },
+        })
+        const { onSubmit } = mount()
+        fireEvent.change(screen.getByLabelText('First instruction in the new branch'), { target: { value: 'Continue' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Create branch' }))
+        await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce())
+        expect(onSubmit.mock.calls[0][0].requestId).toMatch(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+        )
+    })
+    it('shows a hub rejection when a branch request reaches the dialog', async () => {
+        mount(vi.fn().mockRejectedValue(new Error('A Claude rewind is pending; send a message to settle it first')))
+        fireEvent.change(screen.getByLabelText('First instruction in the new branch'), { target: { value: 'Continue' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Create branch' }))
+        expect(await screen.findByRole('alert')).toHaveTextContent('A Claude rewind is pending; send a message to settle it first')
     })
 })

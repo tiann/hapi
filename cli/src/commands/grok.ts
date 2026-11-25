@@ -3,7 +3,7 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
-import { GROK_PERMISSION_MODES } from '@hapi/protocol/modes'
+import { Flavors } from '@hapi/protocol/modes'
 import { parseRemoteAgentCommandOptions } from './agentCommandOptions'
 
 export const grokCommand: CommandDefinition = {
@@ -17,7 +17,7 @@ export const grokCommand: CommandDefinition = {
                 : commandArgs.flatMap((arg) => arg === '--yolo'
                     ? ['--permission-mode', 'bypassPermissions']
                     : [arg])
-            const options = parseRemoteAgentCommandOptions(normalizedArgs, GROK_PERMISSION_MODES)
+            const options = parseRemoteAgentCommandOptions(normalizedArgs, Flavors.grok.permissionModes)
 
             await initializeToken()
             await maybeAutoStartServer()

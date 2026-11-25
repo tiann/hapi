@@ -2,12 +2,15 @@ import { compareSessionSummaries } from '@hapi/protocol'
 import {
     AcknowledgeModelErrorRequestSchema,
     AttachedJobPatchSchema,
+    AttachedJobSchema,
+    isAttachedJobStale,
     AttachedJobUpsertSchema,
     BridgeModelErrorRequestSchema,
     SessionReadStateRequestSchema,
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
     ForkConversationRequestSchema,
+    ForkPreviewRequestSchema,
     BranchConversationRequestSchema,
     ImplementCodexPlanRequestSchema,
     InitChunkedUploadRequestSchema,
@@ -29,6 +32,9 @@ import {
     SessionServiceTierRequestSchema,
     SessionModelRequestSchema,
     SessionPermissionModeRequestSchema,
+    SetExternalRefsRequestSchema,
+    UpsertExternalRefRequestSchema,
+    upsertGithubPrIntoExternalRefs,
     UpdateSessionSummaryRequestSchema,
     supportsModelChange,
     supportsEffort,
@@ -39,6 +45,7 @@ import {
 import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
 import type { SlashCommand } from '@hapi/protocol/apiTypes'
 import { Hono, type Context } from 'hono'
+import { getConfiguration } from '../../configuration'
 import { bodyLimit } from 'hono/body-limit'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
@@ -46,6 +53,7 @@ import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
 import { TitleSuggestionError } from '../../sync/titleSuggestion'
+import { mapExternalRefRouteError } from '../../sync/externalRefErrors'
 import {
     MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES,
     serializeContentSearchSessionIds
@@ -59,6 +67,18 @@ const UPLOAD_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
 // scope itself remains bounded by MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES.
 const MAX_CONTENT_SEARCH_REQUEST_BYTES = MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES + 4 * 1024
 const MAX_CONTENT_SEARCH_QUERY_CHARACTERS = 200
+
+export type SessionsRouteOptions = {
+    isGithubPrAwarenessEnabled?: () => boolean
+}
+
+function defaultGithubPrAwarenessEnabled(): boolean {
+    try {
+        return getConfiguration().githubPrAwareness
+    } catch {
+        return false
+    }
+}
 
 function uploadErrorStatus(code?: string): 400 | 404 | 409 | 413 | 500 | 503 {
     switch (code) {
@@ -192,8 +212,12 @@ function estimateBase64Bytes(base64: string): number {
     return Math.floor((len * 3) / 4) - padding
 }
 
-export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
+export function createSessionsRoutes(
+    getSyncEngine: () => SyncEngine | null,
+    options: SessionsRouteOptions = {}
+): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+    const isGithubPrAwarenessEnabled = options.isGithubPrAwarenessEnabled ?? defaultGithubPrAwarenessEnabled
 
     app.get('/sessions', (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
@@ -247,7 +271,18 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }
         })
 
-        return c.json({ sessions })
+        return c.json({ sessions, serverTime: Date.now() })
+    })
+
+    app.get('/sessions/scratchlist-status', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        return c.json({
+            sessionIds: engine.getScratchlistSessionIdsByNamespace(c.get('namespace'))
+        })
     })
 
     const respondToSessionContentSearch = (
@@ -492,6 +527,119 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         return c.json({ session: sessionResult.session })
+    })
+
+    app.get('/sessions/:id/external-refs', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const externalRefs = sessionResult.session.metadata?.externalRefs ?? []
+        return c.json({ externalRefs })
+    })
+
+    app.put('/sessions/:id/external-refs', async (c) => {
+        if (!isGithubPrAwarenessEnabled()) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = SetExternalRefsRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body: externalRefs is required' }, 400)
+        }
+
+        try {
+            await engine.setSessionExternalRefs(sessionResult.sessionId, parsed.data.externalRefs)
+            return c.json({ ok: true, externalRefs: parsed.data.externalRefs })
+        } catch (error) {
+            const mapped = mapExternalRefRouteError(error, 'Failed to update external refs')
+            return c.json({ error: mapped.message }, mapped.status)
+        }
+    })
+
+    app.post('/sessions/:id/external-refs/upsert', async (c) => {
+        if (!isGithubPrAwarenessEnabled()) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = UpsertExternalRefRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body: ref is required' }, 400)
+        }
+
+        const ref = parsed.data.ref
+        try {
+            const externalRefs = await engine.mutateSessionExternalRefs(sessionResult.sessionId, (current) =>
+                upsertGithubPrIntoExternalRefs(current, ref)
+            )
+            return c.json({ ok: true, externalRefs })
+        } catch (error) {
+            const mapped = mapExternalRefRouteError(error, 'Failed to upsert external ref')
+            return c.json({ error: mapped.message }, mapped.status)
+        }
+    })
+
+    app.post('/sessions/:id/external-refs/remove-primary', async (c) => {
+        if (!isGithubPrAwarenessEnabled()) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        try {
+            const externalRefs = await engine.mutateSessionExternalRefs(sessionResult.sessionId, (current) =>
+                current.filter((candidate) => candidate.kind !== 'github_pr' || candidate.role !== 'primary')
+            )
+            return c.json({ ok: true, externalRefs })
+        } catch (error) {
+            const mapped = mapExternalRefRouteError(error, 'Failed to remove primary external ref')
+            return c.json({ error: mapped.message }, mapped.status)
+        }
     })
 
     app.get('/sessions/:id/cursor-chat-store', async (c) => {
@@ -900,12 +1048,42 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             sessionResult.sessionId,
             c.get('namespace'),
             parsed.data.messageLocalId,
-            parsed.data.latestCompleted
+            parsed.data.latestCompleted,
+            parsed.data.boundary
+        )
+        if (result.type === 'error') {
+            return c.json({ error: result.message, ...(result.code ? { code: result.code } : {}) }, 409)
+        }
+        return c.json({ sessionId: result.sessionId })
+    })
+
+    app.post('/sessions/:id/fork-preview', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = ForkPreviewRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const result = await engine.forkPreview(
+            sessionResult.sessionId,
+            c.get('namespace'),
+            parsed.data.intent,
+            parsed.data.messageLocalId
         )
         if (result.type === 'error') {
             return c.json({ error: result.message }, 409)
         }
-        return c.json({ sessionId: result.sessionId })
+        return c.json(result.preview)
     })
 
     app.post('/sessions/:id/rewind', async (c) => {
@@ -914,21 +1092,26 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) {
-            return sessionResult
-        }
-
         const body = await c.req.json().catch(() => null)
         const parsed = RewindConversationRequestSchema.safeParse(body)
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
 
+        // Every rewind boundary token is minted on an active source, so a
+        // confirm arriving on an inactive one is a moved boundary the engine
+        // must re-check (boundary_moved refresh), mirroring the fork route.
+        // Legacy token-less rewinds keep the session_inactive 409.
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: !parsed.data.boundary })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
         const result = await engine.rewindConversation(
             sessionResult.sessionId,
             c.get('namespace'),
-            parsed.data.messageLocalId
+            parsed.data.messageLocalId,
+            parsed.data.boundary
         )
         if (result.type === 'error') {
             return c.json({
@@ -1486,11 +1669,19 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const body = await c.req.json().catch(() => null)
         const parsed = RenameSessionRequestSchema.safeParse(body)
         if (!parsed.success) {
-            return c.json({ error: 'Invalid body: name or titleLocked is required' }, 400)
+            return c.json({ error: 'Invalid body: name, titleLocked, or translateInput is required' }, 400)
         }
 
         try {
-            await engine.renameSession(sessionResult.sessionId, parsed.data.name, parsed.data.titleLocked)
+            if (parsed.data.translateInput !== undefined) {
+                if (parsed.data.translateInput && !engine.isInputTranslationAvailable()) {
+                    return c.json({ error: 'Input translation is not configured on this hub' }, 400)
+                }
+                await engine.setSessionTranslateInput(sessionResult.sessionId, parsed.data.translateInput)
+            }
+            if (parsed.data.name !== undefined || parsed.data.titleLocked !== undefined) {
+                await engine.renameSession(sessionResult.sessionId, parsed.data.name, parsed.data.titleLocked)
+            }
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to rename session'
@@ -1582,13 +1773,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         if (sessionResult.session.active) {
-            return c.json({ error: 'Cannot delete active session. Archive it first.' }, 409)
+            return c.json({ code: 'session_active', error: 'Cannot delete active session. Archive it first.' }, 409)
         }
 
         // Attached jobs outlive active=false; CASCADE would erase the live meter and
         // leave supervisors PATCHing a deleted session (404 forever).
-        if (engine.getPrimaryAttachedJob(sessionResult.sessionId)) {
+        const job = engine.getPrimaryAttachedJob(sessionResult.sessionId)
+        if (job) {
             return c.json({
+                code: 'attached_job_running', job, canClearStale: isAttachedJobStale(job),
                 error: 'Cannot delete a session while an attached job is running. Complete or clear it first.'
             }, 409)
         }
@@ -2090,6 +2283,28 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }, 409)
         }
         return c.json({ job: result.job })
+    })
+
+    // Separate endpoint: an older hub must never interpret this as an unconditional clear.
+    const jobObservation = AttachedJobSchema.pick({ startedAt: true, heartbeatAt: true, runId: true }).strict()
+    app.post('/sessions/:id/jobs/:jobKey/clear-stale', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const observed = jobObservation.safeParse(await c.req.json().catch(() => null))
+        if (!observed.success || !JOB_KEY_RE.test(c.req.param('jobKey'))) return c.json({ error: 'Invalid job observation' }, 400)
+        const owner = resolveJobOwnerSession(c, engine)
+        if (owner instanceof Response) return owner
+        const key = resolveJobKey(c, engine, owner, c.req.param('jobKey'))
+        // No await between the authoritative read and removal. The generation and
+        // heartbeat must still match the exact record the operator confirmed.
+        const job = engine.listSessionJobs(owner.sessionId).find(j => j.key === key)
+        if (!job || job.status !== 'running' || !isAttachedJobStale(job)
+            || job.runId !== observed.data.runId || job.startedAt !== observed.data.startedAt
+            || job.heartbeatAt !== observed.data.heartbeatAt) {
+            return c.json({ error: 'Job changed; check its current status.', code: 'job_changed' }, 409)
+        }
+        const result = engine.deleteSessionJob(owner.sessionId, key, job.runId)
+        return result.outcome === 'deleted' ? c.json({ ok: true }) : c.json({ error: 'Job changed', code: 'job_changed' }, 409)
     })
 
     app.delete('/sessions/:id/jobs/:jobKey', (c) => {

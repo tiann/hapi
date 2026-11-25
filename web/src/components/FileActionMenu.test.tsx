@@ -112,27 +112,16 @@ describe('FileActionMenu', () => {
     it('anchors the left edge at the pointer instead of centering on it', () => {
         const originalInnerWidth = window.innerWidth
         Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
-        const menuRect = {
-            bottom: 200,
-            height: 200,
-            left: 0,
-            right: 240,
-            top: 0,
-            width: 240,
-            x: 0,
-            y: 0,
-            toJSON: () => ({}),
-        } as DOMRect
-        const getBoundingClientRect = vi
-            .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
-            .mockReturnValue(menuRect)
+        const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(200)
+        const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(240)
 
         try {
             renderMenu({ anchorPoint: { x: 800, y: 300 } })
 
             expect(screen.getByRole('menu').parentElement).toHaveStyle({ left: '800px' })
         } finally {
-            getBoundingClientRect.mockRestore()
+            height.mockRestore()
+            width.mockRestore()
             Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth })
         }
     })

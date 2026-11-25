@@ -1,4 +1,5 @@
 import React from 'react';
+import { settleAcpLauncherShutdown } from '@/modules/common/remote/settleAcpLauncherShutdown';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { emitReadyIfIdle } from '@/agent/readyPolicy';
 import { logger } from '@/ui/logger';
@@ -19,6 +20,8 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
     private readonly onEffortRollback?: (effort: string | null) => void;
     private readonly getQueuedModel?: () => string | null;
     private backend: ReturnType<typeof createKimiBackend> | null = null;
+    private shutdownRequested = false;
+    private disconnectPromise: Promise<void> | undefined;
     private permissionHandler: KimiPermissionHandler | null = null;
     private happyServer: { stop: () => void } | null = null;
     private abortController = new AbortController();
@@ -43,10 +46,31 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
-        return this.start({
+        let shutdown: Promise<void> | undefined;
+        const running = this.start({
             onExit: () => this.handleExitFromUi(),
             onSwitchToLocal: () => this.handleSwitchFromUi()
+        }).catch((error) => {
+            if (!this.shutdownRequested) throw error;
+            logger.debug('[kimi-remote] Launcher failed during shutdown', error);
+            return 'exit' as const;
         });
+        this.session.setKillHandler(() => shutdown ??= settleAcpLauncherShutdown({
+            logTag: 'kimi-remote',
+            cancel: () => {
+                this.shutdownRequested = true;
+                this.exitReason = 'exit';
+                return this.requestExit('exit', () => this.handleAbort(true));
+            },
+            disconnect: () => this.backend ? this.disconnectBackend() : undefined,
+            running
+        }));
+        try {
+            const reason = await running;
+            return this.shutdownRequested ? 'exit' : reason;
+        } finally {
+            this.session.setKillHandler(() => {});
+        }
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
@@ -63,6 +87,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
             skillLookup: { workingDirectory: session.path, flavor: 'kimi' }
         });
         this.happyServer = happyServer;
+        if (this.shouldExit) return;
 
         const runtimeConfig = resolveKimiRuntimeConfig({ model: this.model });
 
@@ -77,6 +102,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
         });
 
         await backend.initialize();
+        if (this.shouldExit) return;
 
         const resumeSessionId = session.sessionId;
         const acpMcpServers = toAcpMcpServers(mcpServers);
@@ -89,6 +115,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                     mcpServers: acpMcpServers
                 });
             } catch (error) {
+                if (this.shouldExit) return;
                 logger.warn('[kimi-remote] resume failed, starting new session', error);
                 session.sendSessionEvent({
                     type: 'message',
@@ -105,6 +132,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 mcpServers: acpMcpServers
             });
         }
+        if (this.shouldExit) return;
         session.onSessionFound(acpSessionId);
 
         this.permissionHandler = new KimiPermissionHandler(
@@ -269,6 +297,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 });
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
+                if (this.shouldExit) break;
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 logger.warn('[kimi-remote] prompt failed', { message: errorMessage });
                 session.sendSessionEvent({
@@ -315,22 +344,32 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private async disconnectBackend(): Promise<void> {
+        this.disconnectPromise ??= this.backend?.disconnect({ waitForTransport: true });
+        await this.disconnectPromise;
+    }
+
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
 
-        if (this.permissionHandler) {
-            await this.permissionHandler.cancelAll('Session ended');
-            this.permissionHandler = null;
-        }
-
-        if (this.backend) {
-            await this.backend.disconnect();
+        try {
+            try {
+                if (this.permissionHandler) {
+                    await this.permissionHandler.cancelAll('Session ended');
+                    this.permissionHandler = null;
+                }
+            } finally {
+                await this.disconnectBackend();
+            }
+        } catch (error) {
+            if (!this.shutdownRequested) throw error;
+            logger.debug('[kimi-remote] Error during launcher cleanup', error);
+        } finally {
             this.backend = null;
-        }
-
-        if (this.happyServer) {
-            this.happyServer.stop();
-            this.happyServer = null;
+            if (this.happyServer) {
+                this.happyServer.stop();
+                this.happyServer = null;
+            }
         }
     }
 

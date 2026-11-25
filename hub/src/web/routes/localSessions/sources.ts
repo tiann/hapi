@@ -87,6 +87,8 @@ export type HubLocalSessionSource = {
     requiredMachineCapability?: MachineCapability
     /** Codex request flag yolo -> metadata.preferredPermissionMode. */
     requestMetadata?: (body: Record<string, unknown>) => Record<string, unknown>
+    /** Optional hub-owned timestamp used to label imported sessions. */
+    importTimestampKey?: 'codexImportedAt'
 }
 
 /** True when the machine advertises the source's required capability. */
@@ -228,6 +230,7 @@ export const CLAUDE_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
 }
 
 export const CODEX_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
+    importTimestampKey: 'codexImportedAt',
     flavor: 'codex',
     displayName: 'Codex',
     routeBase: 'codex',

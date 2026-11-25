@@ -47,6 +47,7 @@ internal fun machineFilterLabel(filter: MachineFilterUi): String = when {
 @Composable
 internal fun SessionFilterSheet(
     state: SessionListUiState,
+    onSetGrouped: (Boolean) -> Unit,
     onSelectSort: (SessionListSort) -> Unit,
     onSetActiveFirst: (Boolean) -> Unit,
     onSelectStatus: (SessionListStatus) -> Unit,
@@ -151,6 +152,9 @@ internal fun SessionFilterSheet(
                 SwitchOption(stringResource(R.string.sessions_view_unread_only), state.unreadOnly, onSetUnreadOnly, "session-unread-only")
             }
             item("sort-title") { SectionTitle(stringResource(R.string.sessions_sort_section)) }
+            item("grouped") {
+                SwitchOption(stringResource(R.string.sessions_grouped), state.grouped, onSetGrouped, "session-grouped")
+            }
             item("sort") {
                 val sortLabel = sortLabel(state.order.sort)
                 ChoiceRow(stringResource(R.string.sessions_view_sort), sortLabel, "session-sort") { close ->

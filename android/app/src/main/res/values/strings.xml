@@ -680,6 +680,11 @@
     <string name="tool_custom_answer">Custom answer</string>
     <string name="tool_answer_note">Note</string>
     <string name="chat_view_full_message">View full message</string>
+    <string name="chat_translate_input_on">Translate my messages to English</string>
+    <string name="chat_translate_input_off">Stop translating my messages</string>
+    <string name="chat_translated_label">Translated</string>
+    <string name="chat_translated_show_sent">Show English sent to agent</string>
+    <string name="chat_translated_show_original">Show original</string>
     <string name="chat_full_message">Full message</string>
     <string name="chat_previous_part">Previous part</string>
     <string name="chat_next_part">Next part</string>
@@ -818,4 +823,8 @@
     <string name="passkey_enter_hub">Enter Hub address manually</string>
     <string name="passkey_hub_address_required">This passkey does not include its Hub address. Enter the address, then continue with the passkey.</string>
     <string name="passkey_error_wrong_hub">This passkey belongs to a different Hub. Choose a passkey for this Hub or check the address.</string>
+    <string name="sessions_grouped">Group by project folder</string>
+    <string name="sessions_other_project">Other</string>
+    <string name="sessions_folder_expanded">Expanded</string>
+    <string name="sessions_folder_collapsed">Collapsed</string>
 </resources>

@@ -82,10 +82,15 @@ export async function runKimi(opts: {
     let resolvedModel = sessionModel ?? machineDefault;
     let sessionEffort: string | null = opts.effort ?? null;
 
+    let shuttingDown = false;
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'kimi',
-        stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive()
+        stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive(),
+        onBeforeClose: () => {
+            shuttingDown = true;
+            return sessionWrapperRef.current?.kill().catch((error) => logger.debug('[kimi] Launcher kill failed', error));
+        }
     });
 
     lifecycle.registerProcessHandlers();
@@ -203,7 +208,7 @@ export async function runKimi(opts: {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${localFailure.message.slice(0, 200)}`);
             lifecycle.setSessionEndReason('error');
-        } else if (!crashed) {
+        } else if (!crashed && !shuttingDown) {
             lifecycle.setSessionEndReason('completed');
         }
         await lifecycle.cleanupAndExit();

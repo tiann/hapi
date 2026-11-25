@@ -2,9 +2,10 @@ import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentBackend, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PermissionResponse } from '@/agent/types';
 import { randomUUID } from 'node:crypto';
 import { isObject } from '@hapi/protocol';
-import type { OpencodePermissionMode } from '@hapi/protocol/types';
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
 import { deriveToolInput, deriveToolName } from '@/agent/utils';
 import { logger } from '@/ui/logger';
+import { settleRequestsOfPreviousAgentProcess } from '@/modules/common/permission/settleStaleRequests';
 import {
     buildQuestionContent,
     parseQuestionSchema,
@@ -97,9 +98,10 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
     constructor(
         session: ApiSessionClient,
         private readonly backend: AgentBackend,
-        private readonly getPermissionMode: () => OpencodePermissionMode | undefined
+        private readonly getPermissionMode: () => PermissionModeOf<typeof Flavors.opencode> | undefined
     ) {
         super(session);
+        settleRequestsOfPreviousAgentProcess(this.backend, session);
         this.backend.onPermissionRequest((request) => this.handlePermissionRequest(request));
         this.backend.onFormElicitation?.((request) => this.handleFormElicitation(request));
     }
@@ -121,7 +123,7 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
             return Promise.resolve({ action: 'cancel' });
         }
 
-        const id = request.toolCallId ?? `opencode-question-${randomUUID()}`;
+        const id = request.requestId ?? request.toolCallId ?? `opencode-question-${randomUUID()}`;
         // A new form with the same id replaces the old one; the old one can no longer be answered.
         this.pendingQuestions.get(id)?.settle({ action: 'cancel' });
 
@@ -206,6 +208,7 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
                 ...currentState.completedRequests,
                 [request.id]: {
                     tool: toolName,
+                    toolCallId: request.toolCallId,
                     arguments: toolInput,
                     createdAt: Date.now(),
                     completedAt: Date.now(),
@@ -234,6 +237,7 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
                 ...currentState.completedRequests,
                 [request.id]: {
                     tool: toolName,
+                    toolCallId: request.toolCallId,
                     arguments: toolInput,
                     createdAt: timestamp,
                     completedAt: timestamp,

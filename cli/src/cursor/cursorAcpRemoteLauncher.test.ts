@@ -1,4 +1,6 @@
+import * as shutdown from '@/modules/common/remote/settleAcpLauncherShutdown';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
+import { expectAcpKill } from '@/test/expectAcpKill';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { EnhancedMode } from './loop';
 import type { AgentMessage } from '@/agent/types';
@@ -474,6 +476,123 @@ function makeClient() {
 }
 
 describe('cursorAcpRemoteLauncher', () => {
+
+
+    it.each(['initialize', 'loadSession'] as const)('disconnects during a stalled %s', async (phase) => {
+        const session = makeSession('resume-me', { keepQueueOpen: true });
+        const blocked = Promise.withResolvers<never>();
+        void blocked.promise.catch(() => undefined);
+        const entered = vi.fn();
+        const disconnect = vi.fn(async () => { blocked.reject(new Error('stopped during startup')) });
+        const create = vi.mocked(createCursorAcpBackend);
+        const factory = create.getMockImplementation()!;
+        create.mockImplementationOnce((...args) => {
+            const backend = factory(...args);
+            vi.mocked(backend[phase]).mockImplementation(async () => {
+                entered();
+                return blocked.promise;
+            });
+            vi.mocked(backend.disconnect).mockImplementation(disconnect);
+            return backend;
+        });
+        const running = cursorAcpRemoteLauncher(session);
+        const failure = running.catch(() => undefined);
+        try {
+            await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+            const killing = session.kill();
+            void killing.catch(() => undefined);
+            await vi.waitFor(() => expect(disconnect).toHaveBeenCalledOnce(), { timeout: 350 });
+            await expect(killing).resolves.toBeUndefined();
+            await expect(running).resolves.toBe('exit');
+        } finally {
+            blocked.reject(new Error('test cleanup'));
+            session.queue.close();
+            await failure;
+        }
+    });
+
+    it.each(['rejects', 'hangs'] as const)('settles kill when disconnect %s', async (outcome) => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const waiting = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString');
+        const running = cursorAcpRemoteLauncher(session);
+        const failure = running.catch(() => undefined);
+        const disconnect = Promise.withResolvers<void>();
+        try {
+            await vi.waitFor(() => expect(waiting).toHaveBeenCalled());
+            const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;
+            vi.mocked(backend.disconnect).mockReturnValue(disconnect.promise);
+            const kill = session.kill;
+            vi.useFakeTimers();
+            const settled = vi.fn();
+            const killing = kill().then(settled);
+            void killing.catch(() => undefined);
+            if (outcome === 'rejects') disconnect.reject(new Error('disconnect failed'));
+            await vi.advanceTimersByTimeAsync(5_000);
+            expect(settled).toHaveBeenCalledOnce();
+            expect(backend.disconnect).toHaveBeenCalledOnce();
+        } finally {
+            vi.useRealTimers();
+            disconnect.resolve();
+            session.queue.close();
+            await failure;
+        }
+    });
+
+    it('ends an active prompt and wins over a pending switch to local', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const waiting = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString');
+        const running = cursorAcpRemoteLauncher(session);
+        const prompt = Promise.withResolvers<boolean>();
+        const settle = vi.spyOn(shutdown, 'settleAcpLauncherShutdown');
+        const switching = Promise.withResolvers<void>();
+        try {
+            await vi.waitFor(() => expect(waiting).toHaveBeenCalled());
+            const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;
+            vi.mocked(backend.prompt).mockReturnValue(prompt.promise);
+            vi.mocked(backend.cancelPrompt).mockReturnValueOnce(switching.promise);
+            vi.mocked(backend.disconnect).mockImplementation(async () => { prompt.reject(new Error('ACP transport closed')) });
+            session.queue.push('active', { permissionMode: 'default', model: undefined });
+            await vi.waitFor(() => expect(backend.prompt).toHaveBeenCalledOnce());
+            const manager = session.client.rpcHandlerManager as unknown as {
+                handlers: Map<string, () => Promise<void>>
+            };
+            const switchToLocal = manager.handlers.get(RPC_METHODS.Switch)!;
+            const switched = switchToLocal();
+            const kill = session.kill;
+            await kill();
+            switching.resolve();
+            await switched;
+            // Check the base loop result before launch() applies its final shutdown guard.
+            await expect(settle.mock.calls[0][0].running).resolves.toBe('exit');
+            await expect(running).resolves.toBe('exit');
+            expect(session.client.sendAgentMessage).not.toHaveBeenCalledWith({
+                type: 'error',
+                message: expect.stringContaining('ACP transport closed')
+            });
+        } finally {
+            settle.mockRestore();
+            switching.resolve();
+            prompt.resolve(true);
+            session.queue.close();
+            await running;
+        }
+    });
+
+    it('waits for one backend disconnect when killed', async () => {
+        const session = makeSession(null, { keepQueueOpen: true })
+        const setKillHandler = vi.spyOn(session, 'setKillHandler');
+        const waitForMessage = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString');
+        const running = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(waitForMessage).toHaveBeenCalled());
+            expect(setKillHandler).toHaveBeenCalled();
+            const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;
+            await expectAcpKill(session.kill, vi.mocked(backend.disconnect), running);
+        } finally {
+            session.queue.close();
+            await running;
+        }
+    });
     beforeEach(() => {
         harness.initializeError = null;
         harness.initializeAttempts = 0;
@@ -1244,6 +1363,773 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
+    it('drains an in-flight soft steer before sending an automatic retry', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('drains an in-flight soft steer before sending post-tool auto-continue', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'ls' },
+            status: 'completed'
+        }]];
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('releases an in-loop retry soft-steer wait on Abort without sending a retry', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise(() => {});
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendAgentMessage).not.toHaveBeenCalled();
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+
+        await handlers.get(RPC_METHODS.Abort)!();
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendAgentMessage).not.toHaveBeenCalled();
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+
+        session.queue.close();
+        await runPromise;
+    }, 10_000);
+
+    it('switches from replay to post-tool auto-continue when a soft steer emits tool activity during the retry drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+
+        harness.activeOnMessage!({
+            type: 'tool_call',
+            id: 'steer-tool-1',
+            name: 'shell',
+            input: { command: 'ls' },
+            status: 'completed'
+        });
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('publishes give-up failure and Blocked status before waiting on a pending soft steer when one-shot Continue fails', async () => {
+        let releasePrompt1!: () => void;
+        let releasePrompt2!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt1 = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'ls' },
+            status: 'completed'
+        }], []];
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        let launcherFinished = false;
+        const runPromise = cursorAcpRemoteLauncher(session).then((result) => {
+            launcherFinished = true;
+            return result;
+        });
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt2 = resolve; });
+        releasePrompt1();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt2();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'error',
+                message: expect.stringContaining('auto-continue also failed')
+            }));
+        });
+        expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError'
+        }));
+        expect(harness.promptCalls).toBe(2);
+        // Cleanup in finally still holds ready / turn exit until the steer completes.
+        expect(launcherFinished).toBe(false);
+
+        releaseSoftSteer();
+        session.queue.close();
+        await runPromise;
+        expect(launcherFinished).toBe(true);
+    });
+
+    it('publishes exhausted retries and Blocked when a soft steer stalls on the final attempt while holding next prompt behind cleanup', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        let launcherFinished = false;
+        const runPromise = cursorAcpRemoteLauncher(session, { exhaustedRetrySteerWaitTimeoutMs: 40 }).then((result) => {
+            launcherFinished = true;
+            return result;
+        });
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        // Queue a subsequent turn while the stalled steer is still open.
+        session.queue.push('next turn', mode, 'next');
+
+        harness.deferPrompt = null;
+        releasePrompt();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'error',
+                message: expect.stringContaining('Cursor Agent failed after 3 retries.')
+            }));
+        });
+        expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError'
+        }));
+        // The next queued turn must still wait for cleanup to drain the stalled steer.
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(harness.promptCalls).toBe(4);
+        expect(launcherFinished).toBe(false);
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(5));
+        expect(harness.prompts[4]).toEqual([{ type: 'text', text: 'next turn' }]);
+        session.queue.close();
+        await runPromise;
+        expect(launcherFinished).toBe(true);
+    });
+
+    it('switches to one-shot Continue when a soft steer settles with tool activity within the final-attempt decision window', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session, { exhaustedRetrySteerWaitTimeoutMs: 250 });
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(4);
+
+        harness.activeOnMessage!({
+            type: 'tool_call',
+            id: 'steer-tool-final',
+            name: 'shell',
+            input: { command: 'ls' },
+            status: 'completed'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(5));
+        expect(harness.prompts[4]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(session.client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('Cursor Agent failed after 3 retries.')
+        }));
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('reports pending-steer timeout instead of failed auto-continue when tool activity preceded a stalled steer on the final attempt', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        let launcherFinished = false;
+        const runPromise = cursorAcpRemoteLauncher(session, { exhaustedRetrySteerWaitTimeoutMs: 40 }).then((result) => {
+            launcherFinished = true;
+            return result;
+        });
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        // Tool activity occurs on the final ordinary attempt before it fails.
+        harness.activeOnMessage!({
+            type: 'tool_call',
+            id: 'tool-before-stalled-steer',
+            name: 'shell',
+            input: { command: 'ls' },
+            status: 'completed'
+        });
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        session.queue.push('next turn', mode, 'next');
+
+        harness.deferPrompt = null;
+        releasePrompt();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'error',
+                message: expect.stringContaining('pending soft steer')
+            }));
+        });
+        expect(session.client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('auto-continue also failed')
+        }));
+        expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*pending soft steer.*\}/)
+        }));
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError'
+        }));
+
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(harness.promptCalls).toBe(4);
+        expect(launcherFinished).toBe(false);
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(5));
+        expect(harness.prompts[4]).toEqual([{ type: 'text', text: 'next turn' }]);
+        session.queue.close();
+        await runPromise;
+        expect(launcherFinished).toBe(true);
+    });
+
+    it('surfaces a status update when an unresolved soft steer stalls an earlier retry and resumes once it settles', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session, { exhaustedRetrySteerWaitTimeoutMs: 40 });
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith({
+                type: 'message',
+                message: 'Waiting for a pending soft steer to finish before retrying Cursor Agent.'
+            });
+        });
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'first' }]);
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('releases an earlier stalled-steer status wait on Abort without sending a retry', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise(() => {});
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session, { exhaustedRetrySteerWaitTimeoutMs: 40 });
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith({
+                type: 'message',
+                message: 'Waiting for a pending soft steer to finish before retrying Cursor Agent.'
+            });
+        });
+        expect(harness.promptCalls).toBe(1);
+
+        await handlers.get(RPC_METHODS.Abort)!();
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+
+        session.queue.close();
+        await runPromise;
+    }, 10_000);
+
+    it('preserves the final prompt retryable RPC error when a pending steer emits a different inline error during the drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('Error: T: [unavailable]')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(4);
+
+        // Steer emits a different inline retryable error while the drain awaits it.
+        harness.activeOnMessage!({
+            type: 'text',
+            text: 'Error: T: [canceled]'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'modelError',
+                kind: 'unavailable',
+                rawSnippet: expect.stringContaining('[unavailable]')
+            }));
+        });
+        expect(session.client.sendSessionEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError',
+            kind: 'canceled'
+        }));
+
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('preserves the final prompt inline retryable error when the RPC resolves and a pending steer emits a different error during the drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        harness.promptMessageBatches = [
+            [],
+            [],
+            [],
+            [{ type: 'text', text: 'Error: T: [unavailable]' }]
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        // Attempt 4 resolves after emitting Error: T: [unavailable] inline.
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(4);
+
+        // Steer emits a different inline retryable error while the drain awaits it.
+        harness.activeOnMessage!({
+            type: 'text',
+            text: 'Error: T: [canceled]'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'modelError',
+                kind: 'unavailable',
+                rawSnippet: expect.stringContaining('[unavailable]')
+            }));
+        });
+        expect(session.client.sendSessionEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError',
+            kind: 'canceled'
+        }));
+
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('preserves generic final RPC classification when a pending steer emits rate-limit stderr during the drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        // Attempt 4 rejects with generic http/2 CANCEL and enters the drain.
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(4);
+
+        // Steer logs typed rate_limit stderr while the drain awaits it.
+        harness.stderrErrorHandler?.({
+            type: 'rate_limit',
+            message: 'HTTP 429',
+            raw: 'status 429'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'modelError',
+                kind: 'prompt_failed',
+                rawSnippet: expect.stringContaining('http/2 stream closed')
+            }));
+        });
+        expect(session.client.sendSessionEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError',
+            kind: 'rate_limited'
+        }));
+
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('preserves primary stderr classification across the soft-steer drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        // Attempt 4 emits typed rate_limit stderr while in flight, then rejects.
+        harness.stderrErrorHandler?.({
+            type: 'rate_limit',
+            message: 'HTTP 429',
+            raw: 'status 429'
+        });
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(4);
+        releaseSoftSteer();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'modelError',
+                kind: 'rate_limited',
+                rawSnippet: expect.stringContaining('status 429')
+            }));
+        });
+
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('releases an in-loop retry soft-steer wait on Switch without sending a retry', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise(() => {});
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+
+        await handlers.get(RPC_METHODS.Switch)!();
+        await expect(runPromise).resolves.toBe('switch');
+        expect(harness.promptCalls).toBe(1);
+    });
+
     it('acknowledges a steer dispatched before an overlapping abort', async () => {
         let releasePrompt!: () => void;
         let releaseDispatch!: () => void;
@@ -1352,6 +2238,45 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.titleSyncRegistered.length).toBeGreaterThan(0);
         for (const controller of harness.titleSyncRegistered) {
             expect(controller).toBe(harness.titleSyncControllers[0]);
+        }
+    });
+
+    it('disconnects an unpublished replacement on kill during model relaunch', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        session.model = 'composer-2.5[fast=false]';
+        const running = cursorAcpRemoteLauncher(session);
+        const blocked = Promise.withResolvers<never>();
+        void blocked.promise.catch(() => undefined);
+        const entered = vi.fn();
+        const disconnect = vi.fn(async () => { blocked.reject(new Error('replacement stopped')); });
+        try {
+            await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+            const create = vi.mocked(createCursorAcpBackend);
+            const factory = create.getMockImplementation()!;
+            const before = create.mock.calls.length;
+            create.mockImplementationOnce((...args) => {
+                const backend = factory(...args);
+                vi.mocked(backend.initialize).mockImplementation(async () => {
+                    entered();
+                    return blocked.promise;
+                });
+                vi.mocked(backend.disconnect).mockImplementation(disconnect);
+                return backend;
+            });
+            const switching = session.applyModelConfig('auto');
+            void switching.catch(() => undefined);
+            await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+            const killing = session.kill();
+            void killing.catch(() => undefined);
+            await vi.waitFor(() => expect(disconnect).toHaveBeenCalledOnce(), { timeout: 350 });
+            await killing;
+            await expect(switching).rejects.toThrow();
+            await expect(running).resolves.toBe('exit');
+            expect(create).toHaveBeenCalledTimes(before + 1);
+        } finally {
+            blocked.reject(new Error('test cleanup'));
+            session.queue.close();
+            await running;
         }
     });
 
@@ -1725,14 +2650,14 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.promptCalls).toBe(1);
     });
 
-    it('does not replay a prompt when a transient failure follows tool activity', async () => {
-        harness.promptMessages = [{
+    it('auto-continues once when a transient failure follows tool activity instead of replaying the prompt', async () => {
+        harness.promptMessageBatches = [[{
             type: 'tool_call',
             id: 'tool-1',
             name: 'shell',
             input: { command: 'touch output.txt' },
             status: 'completed'
-        }];
+        }], []];
         harness.promptErrors = [
             new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
         ];
@@ -1760,10 +2685,73 @@ describe('cursorAcpRemoteLauncher', () => {
 
         await cursorAcpRemoteLauncher(session);
 
-        expect(harness.promptCalls).toBe(1);
-        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[0]).toEqual([{ type: 'text', text: 'finish the task' }]);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        // Successful auto-continue must not stamp Blocked / "not retried" give-up.
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
             type: 'error',
             message: expect.stringContaining('not retried')
+        }));
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked"/)
+        }));
+    });
+
+    it('stamps Blocked when auto-continue after tool activity also fails', async () => {
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], [{
+            type: 'tool_call',
+            id: 'tool-2',
+            name: 'shell',
+            input: { command: 'touch again.txt' },
+            status: 'completed'
+        }]];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('auto-continue also failed')
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(
+                /AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/
+            )
         }));
         expect(client.sendSessionEvent.mock.calls.some(
             (call) => call[0]?.type === 'modelError'
@@ -1773,19 +2761,296 @@ describe('cursorAcpRemoteLauncher', () => {
         )).toBe(false);
     });
 
-    it('does not auto-bridge a transient failure after tool side effects', async () => {
+    it('does not auto-bridge a transient failure after tool side effects, even once the one-shot Continue also fails', async () => {
         // Cold-review Major 2026-09-08: ordinary retry respects
         // attemptProducedToolActivity, but auto-Bridge only checked
         // bridgeability/transience/settings — re-sending lastUserMessage
         // would re-run completed shell/edit tools.
+        //
+        // The one-shot auto-Continue (#1724) now retries once with "Continue."
+        // instead of giving up immediately on tool-activity failures — spend
+        // that attempt too so this still reaches the give-up/bridgeable-false
+        // path the original regression guarded.
         setAutoBridgeTransientModelErrors(true);
-        harness.promptMessages = [{
+        harness.promptMessageBatches = [[{
             type: 'tool_call',
             id: 'tool-1',
             name: 'shell',
             input: { command: 'touch output.txt' },
             status: 'completed'
+        }], []];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+            updateMetadata: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(queue.queue.some(
+            (item) => item.internal?.kind === 'model-error-bridge'
+        )).toBe(false);
+        expect(queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+
+        const wroteBridgeableFalse = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { bridgeable?: boolean } | undefined;
+            return err?.bridgeable === false;
+        });
+        expect(wroteBridgeableFalse).toBe(true);
+
+        setAutoBridgeTransientModelErrors(false);
+    });
+
+    it('does not auto-bridge a non-retryable failure on the Continue attempt after tool side effects', async () => {
+        // Cold-review Major 2026-11-19: the retryable give-up branch forces
+        // bridgeable:false, but the non-retryable catch branch recorded the
+        // model error without checking postToolAutoContinueUsed — a rate-limit
+        // rejection (non-retryable, but transient/bridgeable by default) on the
+        // Continue attempt could still auto-Bridge and resend the *original*
+        // prompt into tools that already ran on the first attempt.
+        setAutoBridgeTransientModelErrors(true);
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], []];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Rate limit exceeded')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+            updateMetadata: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        // Non-retryable catch surfaces the raw error message, not the give-up copy.
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Rate limit exceeded'
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(queue.queue.some(
+            (item) => item.internal?.kind === 'model-error-bridge'
+        )).toBe(false);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+
+        const wroteBridgeableFalse = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { bridgeable?: boolean } | undefined;
+            return err?.bridgeable === false;
+        });
+        expect(wroteBridgeableFalse).toBe(true);
+
+        setAutoBridgeTransientModelErrors(false);
+    });
+
+    it('stamps Blocked when a settled text classification ends the turn without a thrown error', async () => {
+        // Cold-review Major 2026-11-19: this branch calls recordModelError but
+        // never surfaced a chat error or stamped the blocked footer at all —
+        // unlike every other path that ends the turn without recovering.
+        harness.promptMessages = [
+            { type: 'text', text: 'Error: RetriableError: [resource_exhausted] quota hit' }
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(1);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+    });
+
+    it('trims leading assistant prose from a settled failure before surfacing it', async () => {
+        // Minor (2026-11-19): Cursor can append `Error: T: […]` after real
+        // assistant prose in the same message; .raw is the whole message, so
+        // the chat error / blocked summary must not just echo it back.
+        harness.promptMessages = [{
+            type: 'text',
+            text: 'All done, wrapping up the task.\nError: RetriableError: [resource_exhausted] quota hit'
         }];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }));
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('wrapping up the task')
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY.*wrapping up the task/)
+        }));
+    });
+
+    it('does not double the chat error for a settled stderr failure wireStderrErrorListener already announced', async () => {
+        // Minor (bot, 2026-11-19): wireStderrErrorListener sends a chat error
+        // row the moment a non-retryable stderr arrives while promptInFlight.
+        // The settled branch (added to fix the missing-footer Major) must not
+        // surface a second one for the same failure once it's picked up from
+        // pendingStderrFailure — only the footer/Bridge bookkeeping is new.
+        harness.promptStderrErrors = [{
+            type: 'rate_limit',
+            message: 'status 429',
+            raw: 'status 429'
+        }];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const errorCallsForThisFailure = client.sendAgentMessage.mock.calls.filter(
+            ([message]) => message?.type === 'error' && message.message === 'status 429'
+        );
+        expect(errorCallsForThisFailure).toHaveLength(1);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+    });
+
+    it('does not auto-bridge a settled text classification on the Continue attempt after tool side effects', async () => {
+        // Audit (orchestrator-requested, 2026-11-19): the settled branch's
+        // postToolAutoContinueUsed gate was only exercised via the thrown-error
+        // branches before. Cover the same gap through the settled-text path.
+        setAutoBridgeTransientModelErrors(true);
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], [{
+            type: 'text',
+            text: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }]];
         harness.promptErrors = [
             new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
         ];
@@ -1814,11 +3079,19 @@ describe('cursorAcpRemoteLauncher', () => {
 
         await cursorAcpRemoteLauncher(session);
 
-        expect(harness.promptCalls).toBe(1);
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
         expect(queue.queue.some(
             (item) => item.internal?.kind === 'model-error-bridge'
         )).toBe(false);
-        expect(queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
         expect(client.sendSessionEvent.mock.calls.some(
             (call) => call[0]?.type === 'modelErrorBridged'
         )).toBe(false);
@@ -1832,6 +3105,103 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(wroteBridgeableFalse).toBe(true);
 
         setAutoBridgeTransientModelErrors(false);
+    });
+
+    it('stamps Blocked after exhausting all retries with no tool activity (no Bridge eligible)', async () => {
+        // Audit (orchestrator-requested, 2026-11-19): the exhausted-retries
+        // give-up branch was restructured to defer-then-stamp the footer like
+        // its siblings, but no test drove it all the way to exhaustion before.
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(4);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: `Cursor Agent failed after ${3} retries.`
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+    });
+
+    it('gives up after one Continue instead of retrying it when the continuation itself fails without tool activity', async () => {
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], []];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        // One-shot contract (#1724): the Continue attempt itself failing
+        // retryably (no new tool activity) must not spend the normal retry
+        // budget resending "Continue." — exactly 2 prompt calls total, not 3+.
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[0]).toEqual([{ type: 'text', text: 'finish the task' }]);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('auto-continue also failed')
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(
+                /AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/
+            )
+        }));
     });
 
     it('removes the Cursor MCP overlay even when backend.disconnect rejects', async () => {

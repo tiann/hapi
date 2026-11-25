@@ -1,5 +1,6 @@
 export const queryKeys = {
     sessions: ['sessions'] as const,
+    scratchlistSessionIds: ['scratchlist-session-ids'] as const,
     session: (sessionId: string) => ['session', sessionId] as const,
     messages: (sessionId: string) => ['messages', sessionId] as const,
     sessionContentSearch: (sessionId: string, query: string) => ['session-content-search', sessionId, query] as const,
@@ -48,4 +49,5 @@ export const queryKeys = {
     machineClaudeModels: (machineId: string) => ['machine-claude-models', machineId] as const,
     skills: (sessionId: string) => ['skills', sessionId] as const,
     scratchlist: (sessionId: string) => ['scratchlist', sessionId] as const,
+    features: ['features'] as const,
 }

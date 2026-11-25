@@ -1,3 +1,7 @@
+---
+description: "Share one Codex app-server between the official Codex terminal UI and HAPI web and native clients, including usage limits and attaching to desktop runtimes."
+---
+
 # Codex shared sessions
 
 Codex **0.154.0 or newer**: the official terminal UI and HAPI Web / native
@@ -21,11 +25,48 @@ on execution exit rather than applying the legacy session-end queue sweep.
 
 ## Experimental external desktop bridge (macOS)
 
-An **owned** execution (`hapi codex`) and an **attached** worker can coexist.
-They are independent: the attached worker connects to an explicitly selected,
-externally owned app-server and never starts or stops that server. This path is
-off by default; starting HAPI or its Runner does not discover or adopt desktop
-threads.
+An **owned** execution (`hapi codex`) and a bridge to a desktop app-server can
+coexist. They are independent: the bridge uses the desktop daemon and cannot
+stop it. Desktop sync is opt-in; starting HAPI or its Runner alone does not
+discover or adopt desktop threads.
+
+### One-time ChatGPT desktop setup
+
+On macOS, with a compatible `/Applications/ChatGPT.app`, the default `~/.codex`
+directory, and a saved connection to a running HAPI Hub, run as your logged-in
+user (no `sudo`). Save your HAPI token with `hapi auth login` if it was only set
+in your terminal environment.
+
+```bash
+hapi codex-desktop setup --restart
+```
+
+This starts the bundled Codex daemon, sets `CODEX_APP_SERVER_USE_LOCAL_DAEMON=1`
+in your GUI login environment, and installs a per-user LaunchAgent to run
+desktop sync now and at future GUI logins. It uses your saved HAPI settings,
+not terminal-only credentials. The launch setting applies to the GUI login
+session; existing custom GUI Codex overrides are not overwritten.
+Use `--restart` only when ready to quit ChatGPT. Without it, quit and reopen
+ChatGPT yourself; setup will not interrupt the GUI. If macOS restores ChatGPT
+before the daemon is ready at login, quit and reopen it once.
+
+Open a **Codex** conversation in ChatGPT and it appears automatically in HAPI.
+Already-loaded conversations and ones opened later are eligible. Desktop and
+HAPI clients can send messages to the same thread; reconnect reuses the same
+HAPI conversation. HAPI does not import unopened desktop history, cloud ChatGPT
+chats, or migrate threads created by `hapi codex` into the desktop daemon. If
+no desktop sessions appear after setup, quit and reopen ChatGPT and verify
+that your HAPI Hub is reachable. Custom installs and other external engines
+can still use an explicit socket below.
+
+To undo the setup, run `hapi codex-desktop remove` and reopen ChatGPT, or use
+`hapi codex-desktop remove --restart` to reopen it automatically. Removal
+unloads the HAPI LaunchAgent, detaches automatically synced sessions, and clears
+the GUI flag only if HAPI set it for this login and it has not changed. It
+preserves a pre-existing manual setting and does not stop the daemon, interrupt
+turns, delete HAPI history, or stop manual attachment workers.
+
+### Manual attachment
 
 ```bash
 # The desktop/owner must already expose a compatible WebSocket-over-Unix socket.
@@ -59,7 +100,11 @@ it in the external owner and attach the new thread instead.
   native thread, or kill the App/server. **Stop** remains an explicit turn
   interrupt. A native archive ends the bridge and archives its HAPI view.
 - Native transport loss ends the worker; it never launches a replacement
-  engine. Run `hapi attach` again after the owner has restored the thread.
+  engine. Desktop sync reconnects automatically when the native thread is
+  loaded again; for manual attachment, rerun `hapi attach` after the owner
+  restores it. Explicit detach of an automatic session keeps that view
+  disconnected until the native thread unloads and is reopened, or the
+  desktop sync service restarts.
   Reattachment in the same HAPI home, Hub and auth namespace reuses the HAPI
   session and projection identity. An inactive attached view cannot use
   ordinary `hapi resume`, Runner resume-on-send, or an archived-history fork.
@@ -92,9 +137,8 @@ credentials; production login, real-model requests and long-running desktop
 use remain unverified. The earlier App 26.908.31748 frontend startup failure
 did not recur in this upgraded test.
 
-This phase does **not** configure `launchctl`, login items, a production App
-launcher or automatic Runner attachment, and does not change your original App
-configuration. It requires a separately configured, compatible external endpoint.
+Desktop sync is a separate, opt-in login service. The Runner does not scan for
+external runtimes, and manual attachment still requires a compatible endpoint.
 
 ## Lifecycle
 
