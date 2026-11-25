@@ -42,6 +42,37 @@ describe('MARKDOWN_PLUGINS integration', () => {
     })
 })
 
+describe('MARKDOWN_PLUGINS — CJK autolink boundaries', () => {
+    it.each([
+        [
+            '预览：**http://192.168.20.187:58783/**（2026-11-29 前有效）',
+            '<p>预览：<strong><a href="http://192.168.20.187:58783/">http://192.168.20.187:58783/</a></strong>（2026-11-29 前有效）</p>',
+        ],
+        [
+            '预览 **http://a.b/x**，后续',
+            '<p>预览 <strong><a href="http://a.b/x">http://a.b/x</a></strong>，后续</p>',
+        ],
+        [
+            '见 http://a.b/x（说明）',
+            '<p>见 <a href="http://a.b/x">http://a.b/x</a>（说明）</p>',
+        ],
+    ])('leaves punctuation and following prose outside the URL: %s', (markdown, expectedHtml) => {
+        expect(render(markdown)).toBe(expectedHtml)
+    })
+
+    it('leaves explicit links unchanged even when their label matches the URL', () => {
+        expect(render('[http://a.b/x（说明）](http://a.b/x（说明）)')).toBe(
+            '<p><a href="http://a.b/x%EF%BC%88%E8%AF%B4%E6%98%8E%EF%BC%89">http://a.b/x（说明）</a></p>'
+        )
+    })
+
+    it('keeps CJK letters in bare URL paths linked', () => {
+        expect(render('https://zh.wikipedia.org/wiki/中文')).toBe(
+            '<p><a href="https://zh.wikipedia.org/wiki/%E4%B8%AD%E6%96%87">https://zh.wikipedia.org/wiki/中文</a></p>'
+        )
+    })
+})
+
 describe('MARKDOWN_PLUGINS — CJK emphasis flanking', () => {
     // CommonMark fails to close `**` when the closing delimiter run's inner
     // neighbor is punctuation and its outer neighbor is a CJK letter

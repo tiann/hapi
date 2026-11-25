@@ -10,18 +10,18 @@ import remarkStripCjkAutolink from '@/lib/remark-strip-cjk-autolink'
 describe('remarkStripCjkAutolink', () => {
     const transform = remarkStripCjkAutolink()
 
-    function makeAutolink(url: string) {
+    function makeAutolink(url: string, prefix = 'See ', label = url) {
         return {
             type: 'root',
             children: [
                 {
                     type: 'paragraph',
                     children: [
-                        { type: 'text', value: 'See ' },
+                        { type: 'text', value: prefix },
                         {
                             type: 'link',
                             url,
-                            children: [{ type: 'text', value: url }]
+                            children: [{ type: 'text', value: label }]
                         }
                     ]
                 }
@@ -64,6 +64,106 @@ describe('remarkStripCjkAutolink', () => {
         expect(paragraph.children[2].value).toBe('，。')
     })
 
+    it('stops the URL at punctuation followed by CJK prose', () => {
+        const tree = makeAutolink('https://example.com/path（说明）')
+        transform(tree)
+
+        expect(tree.children[0].children).toEqual([
+            { type: 'text', value: 'See ' },
+            { type: 'link', url: 'https://example.com/path', children: [{ type: 'text', value: 'https://example.com/path' }] },
+            { type: 'text', value: '（说明）' },
+        ])
+    })
+
+    it.each([
+        '，后续', '。后续', '！后续', '“说明”', '…后续', '｡next',
+    ])('stops at different CJK/fullwidth punctuation: %s', (tail) => {
+        const url = 'https://example.com/path'
+        const tree = makeAutolink(url + tail)
+        transform(tree)
+
+        expect(tree.children[0].children[1]).toMatchObject({ url, children: [{ value: url }] })
+        expect(tree.children[0].children[2]).toEqual({ type: 'text', value: tail })
+    })
+
+    it('also trims ASCII trailing punctuation exposed by the CJK boundary', () => {
+        const tree = makeAutolink(`https://example.com/path.,:;!?'"*_~，后续`)
+        transform(tree)
+
+        expect(tree.children[0].children[1].url).toBe('https://example.com/path')
+        expect(tree.children[0].children[2].value).toBe(`.,:;!?'"*_~，后续`)
+    })
+
+    it.each([
+        ['**', 'strong'], ['__', 'strong'], ['*', 'emphasis'], ['_', 'emphasis'], ['~~', 'delete'],
+    ])('repairs matching %s delimiters around the URL', (delimiter, type) => {
+        const url = 'https://example.com/path'
+        const tree = makeAutolink(`${url}${delimiter}，后续`, `See ${delimiter}`)
+        transform(tree)
+
+        expect(tree.children[0].children).toEqual([
+            { type: 'text', value: 'See ' },
+            { type, children: [{ type: 'link', url, children: [{ type: 'text', value: url }] }] },
+            { type: 'text', value: '，后续' },
+        ])
+    })
+
+    it('repairs a wrapper before a bracket-only suffix and removes an empty opening text node', () => {
+        const url = 'https://example.com/path'
+        const tree = makeAutolink(`${url}**）`, '**')
+        transform(tree)
+
+        expect(tree.children[0].children).toEqual([
+            { type: 'strong', children: [{ type: 'link', url, children: [{ type: 'text', value: url }] }] },
+            { type: 'text', value: '）' },
+        ])
+    })
+
+    it('leaves mismatched delimiter runs literal', () => {
+        const url = 'https://example.com/path'
+        const tree = makeAutolink(`${url}*，后续`, 'See **')
+        transform(tree)
+
+        expect(tree.children[0].children).toEqual([
+            { type: 'text', value: 'See **' },
+            { type: 'link', url, children: [{ type: 'text', value: url }] },
+            { type: 'text', value: '*，后续' },
+        ])
+    })
+
+    it('does not pair delimiters across different parents', () => {
+        const url = 'https://example.com/path'
+        const tree = {
+            type: 'paragraph',
+            children: [
+                { type: 'text', value: '**' },
+                { type: 'emphasis', children: [{ type: 'link', url: `${url}**，后续`, children: [{ type: 'text', value: `${url}**，后续` }] }] },
+            ],
+        }
+        transform(tree)
+
+        expect(tree.children).toEqual([
+            { type: 'text', value: '**' },
+            { type: 'emphasis', children: [
+                { type: 'link', url, children: [{ type: 'text', value: url }] },
+                { type: 'text', value: '**，后续' },
+            ] },
+        ])
+    })
+
+    it('also repairs www. autolinks without adding http:// to the display text', () => {
+        const label = 'www.example.com/path'
+        const url = `http://${label}`
+        const tree = makeAutolink(`${url}**，后续`, 'See **', `${label}**，后续`)
+        transform(tree)
+
+        expect(tree.children[0].children).toEqual([
+            { type: 'text', value: 'See ' },
+            { type: 'strong', children: [{ type: 'link', url, children: [{ type: 'text', value: label }] }] },
+            { type: 'text', value: '，后续' },
+        ])
+    })
+
     it('does not modify URLs without CJK trailing punctuation', () => {
         const tree = makeAutolink('https://example.com/path')
         transform(tree)
@@ -74,12 +174,16 @@ describe('remarkStripCjkAutolink', () => {
         expect(tree.children[0].children.length).toBe(2)
     })
 
-    it('does not strip CJK characters that are part of the URL path', () => {
-        const tree = makeAutolink('https://example.com/路径/page')
+    it.each([
+        'https://example.com/路径/page',
+        'https://zh.wikipedia.org/wiki/中文',
+        'https://example.com/佐々木',
+    ])('does not strip CJK characters that are part of the URL path: %s', (url) => {
+        const tree = makeAutolink(url)
         transform(tree)
 
         const link = tree.children[0].children[1]
-        expect(link.url).toBe('https://example.com/路径/page')
+        expect(link.url).toBe(url)
         expect(tree.children[0].children.length).toBe(2)
     })
 
